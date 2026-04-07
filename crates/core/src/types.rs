@@ -81,6 +81,29 @@ impl AudioCodec {
             Self::Aac => 21_333,
         }
     }
+
+    /// Canonical lowercase name used in the C ABI (`custom_type_id`).
+    ///
+    /// Adding a new `AudioCodec` variant?  Add its name here and in
+    /// [`Self::from_c_name`] — that's the **only** place codec-name
+    /// strings need to live.
+    pub const fn as_c_name(self) -> &'static str {
+        match self {
+            Self::Opus => "opus",
+            Self::Aac => "aac",
+        }
+    }
+
+    /// Parse a C ABI codec name back to an `AudioCodec`.
+    ///
+    /// Accepts the canonical lowercase names produced by [`Self::as_c_name`].
+    pub fn from_c_name(name: &str) -> Result<Self, String> {
+        match name {
+            "opus" => Ok(Self::Opus),
+            "aac" => Ok(Self::Aac),
+            other => Err(format!("unknown audio codec name: {other:?}")),
+        }
+    }
 }
 
 /// Supported encoded video codecs.
@@ -97,6 +120,33 @@ pub enum VideoCodec {
     /// CPU AV1 codec support via rav1e (encoder) and rav1d (decoder).
     #[serde(alias = "Av1", alias = "AV1")]
     Av1,
+}
+
+impl VideoCodec {
+    /// Canonical lowercase name used in the C ABI (`custom_type_id`).
+    ///
+    /// Adding a new `VideoCodec` variant?  Add its name here and in
+    /// [`Self::from_c_name`] — that's the **only** place codec-name
+    /// strings need to live.
+    pub const fn as_c_name(self) -> &'static str {
+        match self {
+            Self::Vp9 => "vp9",
+            Self::H264 => "h264",
+            Self::Av1 => "av1",
+        }
+    }
+
+    /// Parse a C ABI codec name back to a `VideoCodec`.
+    ///
+    /// Accepts the canonical lowercase names produced by [`Self::as_c_name`].
+    pub fn from_c_name(name: &str) -> Result<Self, String> {
+        match name {
+            "vp9" => Ok(Self::Vp9),
+            "h264" => Ok(Self::H264),
+            "av1" => Ok(Self::Av1),
+            other => Err(format!("unknown video codec name: {other:?}")),
+        }
+    }
 }
 
 /// Bitstream format hints for video codecs (primarily H264).
@@ -896,5 +946,45 @@ mod tests {
         }
 
         assert_eq!(pool.stats().buckets[0].available, 1);
+    }
+
+    // ── Codec C-name roundtrip tests ───────────────────────────────────
+
+    #[test]
+    fn audio_codec_c_name_roundtrip() {
+        for codec in [AudioCodec::Opus, AudioCodec::Aac] {
+            let name = codec.as_c_name();
+            let parsed = AudioCodec::from_c_name(name)
+                .unwrap_or_else(|e| panic!("roundtrip failed for {codec:?}: {e}"));
+            assert_eq!(codec, parsed, "roundtrip mismatch for {name:?}");
+        }
+    }
+
+    #[test]
+    fn video_codec_c_name_roundtrip() {
+        for codec in [VideoCodec::Vp9, VideoCodec::H264, VideoCodec::Av1] {
+            let name = codec.as_c_name();
+            let parsed = VideoCodec::from_c_name(name)
+                .unwrap_or_else(|e| panic!("roundtrip failed for {codec:?}: {e}"));
+            assert_eq!(codec, parsed, "roundtrip mismatch for {name:?}");
+        }
+    }
+
+    #[test]
+    fn codec_from_c_name_is_strict_canonical_only() {
+        // from_c_name only accepts canonical lowercase names from as_c_name().
+        // Serde aliases ("avc", "avc1", "H264", etc.) are for config
+        // deserialization only — the C ABI is a controlled interface.
+        assert!(VideoCodec::from_c_name("avc").is_err());
+        assert!(VideoCodec::from_c_name("avc1").is_err());
+        assert!(VideoCodec::from_c_name("H264").is_err());
+        assert!(AudioCodec::from_c_name("Opus").is_err());
+        assert!(AudioCodec::from_c_name("AAC").is_err());
+    }
+
+    #[test]
+    fn codec_from_c_name_unknown_errors() {
+        assert!(AudioCodec::from_c_name("mp3").is_err());
+        assert!(VideoCodec::from_c_name("hevc").is_err());
     }
 }

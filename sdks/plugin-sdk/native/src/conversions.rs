@@ -18,8 +18,8 @@ use std::sync::Arc;
 use streamkit_core::frame_pool::{PooledSamples, PooledVideoData};
 use streamkit_core::types::{
     AudioCodec, AudioFormat, AudioFrame, CustomEncoding, CustomPacketData, EncodedAudioFormat,
-    Packet, PacketMetadata, PacketType, PixelFormat, RawVideoFormat, SampleFormat,
-    TranscriptionData, VideoFrame,
+    EncodedVideoFormat, Packet, PacketMetadata, PacketType, PixelFormat, RawVideoFormat,
+    SampleFormat, TranscriptionData, VideoCodec, VideoFrame,
 };
 
 /// Convert C packet type info to Rust PacketType
@@ -62,27 +62,48 @@ pub fn packet_type_from_c(cpt_info: CPacketTypeInfo) -> Result<PacketType, Strin
             Ok(PacketType::RawVideo(raw_video_format_from_c(c_fmt)))
         },
         CPacketType::EncodedVideo => {
-            // TODO: Add CVideoCodec enum to carry codec through the C ABI.
-            // Until then, EncodedVideo is accepted as a discriminant for pin
-            // declarations but the codec field is meaningless.  Using Binary
-            // as the packet-level representation (see `packet_from_c`) avoids
-            // silently mislabelling the codec.
-            Ok(PacketType::Binary)
+            // The codec name is carried in `custom_type_id` (same pattern as
+            // EncodedAudio).  Null `custom_type_id` falls back to Binary for
+            // backward compat with plugins compiled before codec strings were
+            // added to EncodedVideo.
+            if cpt_info.custom_type_id.is_null() {
+                tracing::warn!(
+                    "EncodedVideo pin has null custom_type_id; \
+                     falling back to Binary (pre-codec-string plugin?)"
+                );
+                Ok(PacketType::Binary)
+            } else {
+                let name = unsafe { c_str_to_string(cpt_info.custom_type_id) }?;
+                let codec =
+                    VideoCodec::from_c_name(&name).map_err(|e| format!("EncodedVideo: {e}"))?;
+                // Note: bitstream_format, codec_private, profile, and level
+                // are not carried through the C ABI — this conversion is used
+                // for pin-type declarations only, not runtime packet data.
+                Ok(PacketType::EncodedVideo(EncodedVideoFormat {
+                    codec,
+                    bitstream_format: None,
+                    codec_private: None,
+                    profile: None,
+                    level: None,
+                }))
+            }
         },
         CPacketType::EncodedAudio => {
             // The codec name is carried in `custom_type_id` to avoid changing
             // the CPacketTypeInfo struct layout (see ABI stability note).
             let codec = if cpt_info.custom_type_id.is_null() {
                 // Default to Opus when no codec name is provided.
+                tracing::warn!(
+                    "EncodedAudio pin has null custom_type_id; \
+                     falling back to Opus (pre-codec-string plugin?)"
+                );
                 AudioCodec::Opus
             } else {
                 let name = unsafe { c_str_to_string(cpt_info.custom_type_id) }?;
-                match name.as_str() {
-                    "opus" => AudioCodec::Opus,
-                    "aac" => AudioCodec::Aac,
-                    other => return Err(format!("Unknown EncodedAudio codec name: {other:?}")),
-                }
+                AudioCodec::from_c_name(&name).map_err(|e| format!("EncodedAudio: {e}"))?
             };
+            // Note: codec_private is not carried through the C ABI — this
+            // conversion is used for pin-type declarations only.
             Ok(PacketType::EncodedAudio(EncodedAudioFormat { codec, codec_private: None }))
         },
         CPacketType::Binary | CPacketType::BinaryWithMeta => Ok(PacketType::Binary),
@@ -169,6 +190,21 @@ pub const fn raw_video_format_from_c(cfmt: &CRawVideoFormat) -> RawVideoFormat {
     }
 }
 
+/// Build a `CString` from a codec name returned by `as_c_name()`.
+///
+/// Codec names are compile-time ASCII constants that never contain interior
+/// null bytes, so `CString::new` cannot fail here.
+///
+/// # Panics
+///
+/// Panics if `name` contains an interior null byte.  This is a programmer
+/// error — `as_c_name()` values are controlled constants that never contain
+/// null bytes.
+#[allow(clippy::expect_used)] // as_c_name() returns controlled constants; null bytes are a programmer error
+pub fn codec_name_to_cstring(name: &str) -> CString {
+    CString::new(name).expect("codec name from as_c_name() must not contain null bytes")
+}
+
 /// Ancillary data kept alive alongside a `CPacketTypeInfo`.
 ///
 /// `packet_type_to_c` returns this alongside the info struct so that
@@ -179,6 +215,10 @@ pub enum CPacketTypeOwned {
     None,
     Audio(CAudioFormat),
     Video(CRawVideoFormat),
+    /// Null-terminated codec name derived from `AudioCodec::as_c_name()` or
+    /// `VideoCodec::as_c_name()`.  The `custom_type_id` pointer in the
+    /// accompanying `CPacketTypeInfo` points into this `CString`.
+    CodecName(CString),
 }
 
 /// Convert Rust PacketType to C representation.
@@ -224,21 +264,18 @@ pub fn packet_type_to_c(pt: &PacketType) -> (CPacketTypeInfo, CPacketTypeOwned) 
                     CPacketTypeOwned::None,
                 )
             } else {
-                // Carry the codec name in `custom_type_id` (reusing the
-                // existing pointer field to avoid changing the struct layout).
-                let codec_name: &'static [u8] = match format.codec {
-                    AudioCodec::Opus => b"opus\0",
-                    AudioCodec::Aac => b"aac\0",
-                    _ => b"unknown\0",
-                };
+                // Derive the null-terminated codec name from as_c_name() so
+                // the canonical name lives in exactly one place.
+                let name = codec_name_to_cstring(format.codec.as_c_name());
+                let ptr = name.as_ptr();
                 (
                     CPacketTypeInfo {
                         type_discriminant: CPacketType::EncodedAudio,
                         audio_format: std::ptr::null(),
-                        custom_type_id: codec_name.as_ptr().cast::<c_char>(),
+                        custom_type_id: ptr,
                         raw_video_format: std::ptr::null(),
                     },
-                    CPacketTypeOwned::None,
+                    CPacketTypeOwned::CodecName(name),
                 )
             }
         },
@@ -282,15 +319,21 @@ pub fn packet_type_to_c(pt: &PacketType) -> (CPacketTypeInfo, CPacketTypeOwned) 
                 CPacketTypeOwned::Video(c_fmt),
             )
         },
-        PacketType::EncodedVideo(_) => (
-            CPacketTypeInfo {
-                type_discriminant: CPacketType::EncodedVideo,
-                audio_format: std::ptr::null(),
-                custom_type_id: std::ptr::null(),
-                raw_video_format: std::ptr::null(),
-            },
-            CPacketTypeOwned::None,
-        ),
+        PacketType::EncodedVideo(format) => {
+            // Derive the null-terminated codec name from as_c_name() so
+            // the canonical name lives in exactly one place.
+            let name = codec_name_to_cstring(format.codec.as_c_name());
+            let ptr = name.as_ptr();
+            (
+                CPacketTypeInfo {
+                    type_discriminant: CPacketType::EncodedVideo,
+                    audio_format: std::ptr::null(),
+                    custom_type_id: ptr,
+                    raw_video_format: std::ptr::null(),
+                },
+                CPacketTypeOwned::CodecName(name),
+            )
+        },
         PacketType::Binary => (
             CPacketTypeInfo {
                 type_discriminant: CPacketType::Binary,
@@ -989,5 +1032,85 @@ mod tests {
         repr.downgrade_binary_with_meta();
         assert_eq!(repr.packet.packet_type, CPacketType::Binary, "should remain Binary");
         assert_eq!(repr.packet.len, payload.len());
+    }
+
+    // ── EncodedVideo codec roundtrip tests ─────────────────────────────
+
+    /// `packet_type_to_c` → `packet_type_from_c` must roundtrip all video
+    /// codecs through the `custom_type_id` string pointer.
+    #[test]
+    fn encoded_video_codec_roundtrip_via_c() {
+        use streamkit_core::types::{EncodedVideoFormat, VideoCodec};
+
+        for codec in [VideoCodec::Vp9, VideoCodec::H264, VideoCodec::Av1] {
+            let pt = PacketType::EncodedVideo(EncodedVideoFormat {
+                codec,
+                bitstream_format: None,
+                codec_private: None,
+                profile: None,
+                level: None,
+            });
+
+            let (info, _owned) = packet_type_to_c(&pt);
+            assert_eq!(
+                info.type_discriminant,
+                CPacketType::EncodedVideo,
+                "discriminant mismatch for {codec:?}"
+            );
+            assert!(!info.custom_type_id.is_null(), "custom_type_id should be set for {codec:?}");
+
+            let roundtripped = packet_type_from_c(info)
+                .unwrap_or_else(|e| panic!("roundtrip failed for {codec:?}: {e}"));
+
+            match roundtripped {
+                PacketType::EncodedVideo(fmt) => {
+                    assert_eq!(fmt.codec, codec, "codec mismatch after roundtrip");
+                },
+                other => panic!("expected EncodedVideo, got {other:?}"),
+            }
+        }
+    }
+
+    /// `EncodedVideo` with null `custom_type_id` falls back to `Binary`
+    /// (backward compat with pre-codec-string plugins).
+    #[test]
+    fn encoded_video_null_codec_falls_back_to_binary() {
+        let info = CPacketTypeInfo {
+            type_discriminant: CPacketType::EncodedVideo,
+            audio_format: std::ptr::null(),
+            custom_type_id: std::ptr::null(),
+            raw_video_format: std::ptr::null(),
+        };
+        let pt = packet_type_from_c(info)
+            .unwrap_or_else(|e| panic!("null custom_type_id should fall back to Binary: {e}"));
+        assert_eq!(pt, PacketType::Binary);
+    }
+
+    /// `EncodedAudio` roundtrips correctly through `custom_type_id`.
+    #[test]
+    fn encoded_audio_codec_roundtrip_via_c() {
+        for codec in [AudioCodec::Opus, AudioCodec::Aac] {
+            let pt = PacketType::EncodedAudio(EncodedAudioFormat { codec, codec_private: None });
+
+            let (info, _owned) = packet_type_to_c(&pt);
+
+            // Opus without codec_private uses the legacy OpusAudio discriminant.
+            if codec == AudioCodec::Opus {
+                assert_eq!(info.type_discriminant, CPacketType::OpusAudio);
+            } else {
+                assert_eq!(info.type_discriminant, CPacketType::EncodedAudio);
+                assert!(!info.custom_type_id.is_null());
+            }
+
+            let roundtripped = packet_type_from_c(info)
+                .unwrap_or_else(|e| panic!("roundtrip failed for {codec:?}: {e}"));
+
+            match roundtripped {
+                PacketType::EncodedAudio(fmt) => {
+                    assert_eq!(fmt.codec, codec, "codec mismatch after roundtrip");
+                },
+                other => panic!("expected EncodedAudio, got {other:?}"),
+            }
+        }
     }
 }
