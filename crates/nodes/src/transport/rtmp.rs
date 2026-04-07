@@ -1303,7 +1303,7 @@ mod tests {
         let audio_ts1 = state.stamp(&make_packet(Some(20_000)), Track::Audio, "test");
         // Audio should start near video's current position (~2966ms).
         assert!(
-            audio_ts0 >= 2900 && audio_ts0 <= 3100,
+            (2900..=3100).contains(&audio_ts0),
             "audio should start near video position, got {audio_ts0}"
         );
         // Cadence preserved: 20ms between audio frames.
