@@ -157,8 +157,9 @@ pub enum CPacketType {
     /// Binary packet that preserves optional `content_type` and `metadata`
     /// across the plugin ↔ host boundary.  Points to a [`CBinaryPacket`].
     BinaryWithMeta = 10,
-    /// Encoded audio with codec metadata.  Uses `audio_codec` in
-    /// [`CPacketTypeInfo`] to identify the codec.
+    /// Encoded audio with codec metadata.  Uses `custom_type_id` in
+    /// [`CPacketTypeInfo`] to carry the codec name (e.g. `"opus"`, `"aac"`).
+    /// Null `custom_type_id` defaults to Opus for backward compat.
     EncodedAudio = 11,
 }
 

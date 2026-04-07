@@ -93,6 +93,10 @@ pub fn packet_type_from_c(cpt_info: CPacketTypeInfo) -> Result<PacketType, Strin
             // the CPacketTypeInfo struct layout (see ABI stability note).
             let codec = if cpt_info.custom_type_id.is_null() {
                 // Default to Opus when no codec name is provided.
+                tracing::warn!(
+                    "EncodedAudio pin has null custom_type_id; \
+                     falling back to Opus (pre-codec-string plugin?)"
+                );
                 AudioCodec::Opus
             } else {
                 let name = unsafe { c_str_to_string(cpt_info.custom_type_id) }?;
@@ -191,7 +195,7 @@ pub const fn raw_video_format_from_c(cfmt: &CRawVideoFormat) -> RawVideoFormat {
 /// Codec names are compile-time ASCII constants that never contain interior
 /// null bytes, so `CString::new` cannot fail here.
 #[allow(clippy::expect_used)] // as_c_name() returns controlled constants; null bytes are a programmer error
-fn codec_name_to_cstring(name: &str) -> CString {
+pub fn codec_name_to_cstring(name: &str) -> CString {
     CString::new(name).expect("codec name from as_c_name() must not contain null bytes")
 }
 

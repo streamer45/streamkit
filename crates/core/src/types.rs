@@ -142,7 +142,7 @@ impl VideoCodec {
     pub fn from_c_name(name: &str) -> Result<Self, String> {
         match name {
             "vp9" => Ok(Self::Vp9),
-            "h264" | "avc" | "avc1" => Ok(Self::H264),
+            "h264" => Ok(Self::H264),
             "av1" => Ok(Self::Av1),
             other => Err(format!("unknown video codec name: {other:?}")),
         }
@@ -971,10 +971,15 @@ mod tests {
     }
 
     #[test]
-    fn video_codec_from_c_name_aliases() {
-        // H264 should accept common aliases from container formats.
-        assert_eq!(VideoCodec::from_c_name("avc").unwrap(), VideoCodec::H264);
-        assert_eq!(VideoCodec::from_c_name("avc1").unwrap(), VideoCodec::H264);
+    fn codec_from_c_name_is_strict_canonical_only() {
+        // from_c_name only accepts canonical lowercase names from as_c_name().
+        // Serde aliases ("avc", "avc1", "H264", etc.) are for config
+        // deserialization only — the C ABI is a controlled interface.
+        assert!(VideoCodec::from_c_name("avc").is_err());
+        assert!(VideoCodec::from_c_name("avc1").is_err());
+        assert!(VideoCodec::from_c_name("H264").is_err());
+        assert!(AudioCodec::from_c_name("Opus").is_err());
+        assert!(AudioCodec::from_c_name("AAC").is_err());
     }
 
     #[test]
