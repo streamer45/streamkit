@@ -12,6 +12,7 @@
 //! tokio I/O and the library's `feed_recv_buf()` / `send_buf()` interface.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use opentelemetry::KeyValue;
@@ -63,7 +64,10 @@ pub struct RtmpPublishConfig {
     /// Environment variable name containing the stream key.
     ///
     /// Read at node startup.  Takes precedence over `stream_key`.
-    /// Example: `"RTMP_STREAM_KEY"` → reads `$RTMP_STREAM_KEY`.
+    /// The name is fully user-controlled, so multiple RTMP output nodes
+    /// can each reference different variables.
+    ///
+    /// Example: `"SKIT_RTMP_STREAM_KEY"` → reads `$SKIT_RTMP_STREAM_KEY`.
     #[serde(default)]
     pub stream_key_env: Option<String>,
 
@@ -212,6 +216,13 @@ impl ProcessorNode for RtmpPublishNode {
         let mut packet_count: u64 = 0;
         let mut tcp_read_buf = vec![0u8; 8192];
 
+        // Wall-clock epoch for RTMP timestamps.  Audio and video packets
+        // arrive from different pipeline paths whose source timestamps use
+        // unrelated epoch bases (e.g. compositor running clock vs. MoQ
+        // origin).  Using wall-clock elapsed time guarantees A/V sync
+        // regardless of upstream timestamp origins.
+        let publish_start = Instant::now();
+
         // ── Main publishing loop ────────────────────────────────────────
         tracing::info!(%node_name, "Entering RTMP publishing loop");
 
@@ -224,8 +235,15 @@ impl ProcessorNode for RtmpPublishNode {
                             tracing::info!(%node_name, "Video input channel closed");
                             break;
                         };
+                        // Stop sending if the server has disconnected.
+                        if connection.state() != RtmpConnectionState::Publishing {
+                            tracing::warn!(%node_name, state = %connection.state(), "Connection no longer publishing, exiting");
+                            break;
+                        }
+                        let timestamp_ms = wallclock_timestamp_ms(publish_start);
                         if let Err(e) = process_video_packet(
-                            &pkt, &mut connection, &packet_counter, &metric_labels,
+                            &pkt, &mut connection, timestamp_ms,
+                            &packet_counter, &metric_labels,
                             &mut stats, &mut packet_count, &node_name,
                         ) {
                             tracing::warn!(%node_name, error = %e, "Error processing video packet");
@@ -240,8 +258,14 @@ impl ProcessorNode for RtmpPublishNode {
                             tracing::info!(%node_name, "Audio input channel closed");
                             break;
                         };
+                        if connection.state() != RtmpConnectionState::Publishing {
+                            tracing::warn!(%node_name, state = %connection.state(), "Connection no longer publishing, exiting");
+                            break;
+                        }
+                        let timestamp_ms = wallclock_timestamp_ms(publish_start);
                         if let Err(e) = process_audio_packet(
                             &pkt, &mut connection, &mut audio_seq_header_sent,
+                            timestamp_ms,
                             self.config.sample_rate, self.config.channels,
                             &packet_counter, &metric_labels,
                             &mut stats, &mut packet_count, &node_name,
@@ -498,6 +522,15 @@ fn drain_events(connection: &mut RtmpPublishClientConnection, node_name: &str) -
     disconnected
 }
 
+/// Compute the RTMP timestamp (ms) from the wall-clock elapsed since
+/// publishing started.  This ensures audio and video share a common
+/// time base regardless of upstream timestamp origins.
+#[allow(clippy::cast_possible_truncation)]
+// RTMP timestamps are u32 ms; wrapping after ~49 days is acceptable.
+fn wallclock_timestamp_ms(publish_start: Instant) -> u32 {
+    publish_start.elapsed().as_millis() as u32
+}
+
 // ---------------------------------------------------------------------------
 // Video packet processing
 // ---------------------------------------------------------------------------
@@ -506,10 +539,14 @@ fn drain_events(connection: &mut RtmpPublishClientConnection, node_name: &str) -
 ///
 /// Converts H.264 Annex B to AVCC format, extracts SPS/PPS on keyframes
 /// to send as an AVC sequence header, then sends the video frame.
+///
+/// `timestamp_ms` is the wall-clock-relative RTMP timestamp computed by
+/// the caller, ensuring audio and video share a common time base.
 #[allow(clippy::too_many_arguments)] // Packet-processing context (connection, counters, stats) is passed individually; bundling into a struct is a future cleanup.
 fn process_video_packet(
     packet: &Packet,
     connection: &mut RtmpPublishClientConnection,
+    timestamp_ms: u32,
     counter: &opentelemetry::metrics::Counter<u64>,
     labels: &[KeyValue],
     stats: &mut NodeStatsTracker,
@@ -524,10 +561,6 @@ fn process_video_packet(
 
     stats.received();
 
-    #[allow(clippy::cast_possible_truncation)]
-    // RTMP timestamps are u32 ms; wrapping after ~49 days is acceptable.
-    let timestamp_ms =
-        metadata.as_ref().and_then(|m| m.timestamp_us).map_or(0, |us| (us / 1_000) as u32);
     let keyframe = metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(false);
 
     // Convert H.264 Annex B → AVCC
@@ -574,18 +607,27 @@ fn process_video_packet(
 
     // Send the actual video data (AVCC-formatted), excluding SPS/PPS NALUs
     // which are already conveyed in the sequence header above.
-    let frame = RtmpVideoFrame {
-        timestamp: RtmpTimestamp::from_millis(timestamp_ms),
-        composition_timestamp_offset: RtmpTimestampDelta::ZERO,
-        frame_type: if keyframe { VideoFrameType::KeyFrame } else { VideoFrameType::InterFrame },
-        codec: RtmpVideoCodec::Avc,
-        avc_packet_type: Some(AvcPacketType::NalUnit),
-        data: conv.video_data,
-    };
+    // Guard: if an access unit contained only SPS/PPS (no slice NALUs),
+    // video_data will be empty — skip the NalUnit frame to avoid sending
+    // a zero-length payload that some RTMP servers reject.
+    if !conv.video_data.is_empty() {
+        let frame = RtmpVideoFrame {
+            timestamp: RtmpTimestamp::from_millis(timestamp_ms),
+            composition_timestamp_offset: RtmpTimestampDelta::ZERO,
+            frame_type: if keyframe {
+                VideoFrameType::KeyFrame
+            } else {
+                VideoFrameType::InterFrame
+            },
+            codec: RtmpVideoCodec::Avc,
+            avc_packet_type: Some(AvcPacketType::NalUnit),
+            data: conv.video_data,
+        };
 
-    connection
-        .send_video(frame)
-        .map_err(|e| StreamKitError::Runtime(format!("Failed to send video frame: {e}")))?;
+        connection
+            .send_video(frame)
+            .map_err(|e| StreamKitError::Runtime(format!("Failed to send video frame: {e}")))?;
+    }
 
     *packet_count += 1;
     counter.add(1, labels);
@@ -606,11 +648,15 @@ fn process_video_packet(
 ///
 /// On the first audio packet, sends an AAC `AudioSpecificConfig` as the
 /// RTMP sequence header.  Subsequent packets are sent as raw AAC frames.
+///
+/// `timestamp_ms` is the wall-clock-relative RTMP timestamp computed by
+/// the caller, ensuring audio and video share a common time base.
 #[allow(clippy::too_many_arguments)] // Packet-processing context (connection, counters, stats) is passed individually; bundling into a struct is a future cleanup.
 fn process_audio_packet(
     packet: &Packet,
     connection: &mut RtmpPublishClientConnection,
     seq_header_sent: &mut bool,
+    timestamp_ms: u32,
     sample_rate: u32,
     channels: u8,
     counter: &opentelemetry::metrics::Counter<u64>,
@@ -626,15 +672,6 @@ fn process_audio_packet(
     };
 
     stats.received();
-
-    #[allow(clippy::cast_possible_truncation)]
-    // RTMP timestamps are u32 ms; wrapping after ~49 days is acceptable.
-    let timestamp_ms = match packet {
-        Packet::Binary { metadata, .. } => {
-            metadata.as_ref().and_then(|m| m.timestamp_us).map_or(0, |us| (us / 1_000) as u32)
-        },
-        _ => 0,
-    };
 
     // Send AAC sequence header (AudioSpecificConfig) on first audio packet.
     if !*seq_header_sent {
@@ -1086,5 +1123,45 @@ mod tests {
         let err = resolve_rtmp_url(&cfg).unwrap_err();
         std::env::remove_var(var);
         assert!(err.contains("empty"), "error should mention 'empty': {err}");
+    }
+
+    // ── wallclock_timestamp_ms tests ────────────────────────────────────
+
+    #[test]
+    fn wallclock_timestamp_increases_over_time() {
+        let start = Instant::now();
+        let t0 = wallclock_timestamp_ms(start);
+        // Sleep briefly to ensure elapsed time is non-zero.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let t1 = wallclock_timestamp_ms(start);
+        assert!(t1 > t0, "wallclock timestamp should increase: t0={t0}, t1={t1}");
+    }
+
+    #[test]
+    fn wallclock_timestamp_starts_near_zero() {
+        let start = Instant::now();
+        let ts = wallclock_timestamp_ms(start);
+        // Should be very close to 0 when called immediately.
+        assert!(ts < 50, "expected near-zero timestamp, got {ts}ms");
+    }
+
+    // ── empty NalUnit guard test ────────────────────────────────────────
+
+    #[test]
+    fn convert_annexb_sps_pps_only_yields_empty_video_data() {
+        // An access unit containing only SPS+PPS (no slice NALUs) should
+        // produce empty video_data so the caller can skip the NalUnit frame.
+        let mut annexb = Vec::new();
+        annexb.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xC0, 0x1F]); // SPS
+        annexb.extend_from_slice(&[0x00, 0x00, 0x01, 0x68, 0xCE, 0x38, 0x80]); // PPS
+
+        let result = convert_annexb_to_avcc(&annexb);
+
+        assert_eq!(result.sps_list.len(), 1);
+        assert_eq!(result.pps_list.len(), 1);
+        assert!(
+            result.video_data.is_empty(),
+            "video_data should be empty for SPS/PPS-only access units"
+        );
     }
 }

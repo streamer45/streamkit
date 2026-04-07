@@ -11,7 +11,7 @@
 #
 # Requires:
 #   - aac-encoder native plugin (just install-plugin aac-encoder)
-#   - Set the RTMP_STREAM_KEY env var before starting the server,
+#   - Set the SKIT_RTMP_STREAM_KEY env var before starting the server,
 #     or replace stream_key_env with a literal stream_key value.
 
 name: MoQ to RTMP (Composited)
@@ -82,6 +82,12 @@ nodes:
       num_inputs: 2
       layers:
         in_0:
+          rect:
+            x: 0
+            y: 0
+            width: 1280
+            height: 720
+          aspect_fit: true
           opacity: 1.0
           z_index: 0
         in_1:
@@ -129,9 +135,11 @@ nodes:
     kind: transport::rtmp::publish
     params:
       url: "rtmp://a.rtmp.youtube.com/live2"
-      # Read the stream key from the RTMP_STREAM_KEY environment variable.
+      # Read the stream key from the SKIT_RTMP_STREAM_KEY environment variable.
       # Alternatively, use `stream_key: "your-key-here"` for a literal value.
-      stream_key_env: "RTMP_STREAM_KEY"
+      # The env var name is fully user-controlled — use any name you like
+      # (e.g. SKIT_TWITCH_KEY, SKIT_YT_KEY) to support multiple RTMP outputs.
+      stream_key_env: "SKIT_RTMP_STREAM_KEY"
     needs:
       video: h264_encoder
       audio: aac_encoder
