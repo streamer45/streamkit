@@ -74,8 +74,8 @@ pub fn packet_type_from_c(cpt_info: CPacketTypeInfo) -> Result<PacketType, Strin
                 Ok(PacketType::Binary)
             } else {
                 let name = unsafe { c_str_to_string(cpt_info.custom_type_id) }?;
-                let codec = VideoCodec::from_c_name(&name)
-                    .map_err(|e| format!("EncodedVideo: {e}"))?;
+                let codec =
+                    VideoCodec::from_c_name(&name).map_err(|e| format!("EncodedVideo: {e}"))?;
                 // Note: bitstream_format, codec_private, profile, and level
                 // are not carried through the C ABI — this conversion is used
                 // for pin-type declarations only, not runtime packet data.
@@ -96,8 +96,7 @@ pub fn packet_type_from_c(cpt_info: CPacketTypeInfo) -> Result<PacketType, Strin
                 AudioCodec::Opus
             } else {
                 let name = unsafe { c_str_to_string(cpt_info.custom_type_id) }?;
-                AudioCodec::from_c_name(&name)
-                    .map_err(|e| format!("EncodedAudio: {e}"))?
+                AudioCodec::from_c_name(&name).map_err(|e| format!("EncodedAudio: {e}"))?
             };
             // Note: codec_private is not carried through the C ABI — this
             // conversion is used for pin-type declarations only.
