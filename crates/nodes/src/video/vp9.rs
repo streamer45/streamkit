@@ -88,7 +88,7 @@ const VP9_DEFAULT_THREADS: u32 = 2;
 const VP9_DEFAULT_CPU_USED: i32 = 6;
 
 #[derive(Deserialize, Debug, JsonSchema, Clone)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Vp9DecoderConfig {
     pub threads: u32,
 }
@@ -126,7 +126,7 @@ impl Vp9EncoderDeadline {
 }
 
 #[derive(Deserialize, Debug, JsonSchema, Clone)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Vp9EncoderConfig {
     pub bitrate_kbps: u32,
     pub keyframe_interval: u32,

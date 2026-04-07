@@ -286,7 +286,7 @@ pub(super) fn make_broadcast_frame(packet: Packet, kind: MediaKind) -> Option<Br
 // ── MoqPeerConfig ────────────────────────────────────────────────────────────
 
 #[derive(Deserialize, Debug, JsonSchema, Clone)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MoqPeerConfig {
     /// Broadcast names to receive from the publisher client.
     ///

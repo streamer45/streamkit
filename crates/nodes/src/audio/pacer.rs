@@ -19,7 +19,7 @@ use tokio::time::{Instant, Interval, MissedTickBehavior};
 
 /// Configuration for the AudioPacerNode
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AudioPacerConfig {
     /// Playback speed multiplier (1.0 = real-time, 2.0 = 2x speed, 0.5 = half speed)
     pub speed: f32,

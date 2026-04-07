@@ -38,7 +38,7 @@ const OUTPUT_FRAME_SIZE: usize = 1920;
 use crate::streaming_utils::StreamingReader;
 
 #[derive(Deserialize, Debug, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct WavDemuxerConfig {}
 
 /// A node that demuxes WAV container files to raw PCM audio frames.

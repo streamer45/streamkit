@@ -38,7 +38,7 @@ const OUTPUT_FRAME_SIZE: usize = 1920;
 use crate::streaming_utils::StreamingReader;
 
 #[derive(Deserialize, Debug, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct FlacDecoderConfig {}
 
 /// A node that decodes FLAC audio files to raw PCM audio frames.

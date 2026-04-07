@@ -151,7 +151,7 @@ fn validate_av1_obus(data: &[u8]) -> Result<(), &'static str> {
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize, Debug, JsonSchema, Clone)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Av1DecoderConfig {
     /// Number of decoder threads.  `0` = auto-detect (rav1d picks a
     /// thread count based on the number of logical cores, matching
@@ -166,7 +166,7 @@ impl Default for Av1DecoderConfig {
 }
 
 #[derive(Deserialize, Debug, JsonSchema, Clone)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Av1EncoderConfig {
     pub bitrate_kbps: u32,
     pub keyframe_interval: u32,

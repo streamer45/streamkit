@@ -42,7 +42,7 @@ const fn default_frame_count() -> u32 {
 
 /// Configuration for the SMPTE color bars generator.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ColorBarsConfig {
     /// Frame width in pixels.
     #[serde(default = "default_width")]

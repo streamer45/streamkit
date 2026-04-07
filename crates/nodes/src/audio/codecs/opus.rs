@@ -35,7 +35,7 @@ const OPUS_OUTPUT_BUFFER_SIZE: usize = 4000;
 // --- Opus Decoder ---
 
 #[derive(Deserialize, Debug, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct OpusDecoderConfig {}
 
 /// A node that decodes Opus packets into raw audio frames.
@@ -248,7 +248,7 @@ fn bitrate_schema(_gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
 }
 
 #[derive(Deserialize, Debug, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct OpusEncoderConfig {
     #[schemars(schema_with = "bitrate_schema")]
     pub bitrate: i32,

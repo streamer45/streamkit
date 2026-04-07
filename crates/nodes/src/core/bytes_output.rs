@@ -14,6 +14,7 @@ use tokio::sync::mpsc;
 
 /// Configuration for BytesOutputNode
 #[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct BytesOutputConfig {
     /// Optional content type to set for the HTTP response
     /// If not specified, will be auto-detected from Binary packet or fall back to input type

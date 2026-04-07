@@ -188,6 +188,7 @@ const fn default_aspect_fit() -> bool {
 /// Layer configuration for a single compositing input.
 #[derive(Deserialize, Debug, Clone, JsonSchema)]
 #[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
 pub struct LayerConfig {
     /// Destination rectangle on the output canvas. If `None`, the input is
     /// scaled to fill the entire canvas.
@@ -261,7 +262,7 @@ impl Default for LayerConfig {
 /// overlays configured here.
 #[derive(Deserialize, Debug, Clone, JsonSchema)]
 #[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct CompositorConfig {
     /// Output canvas width in pixels.
     #[serde(default = "default_width")]

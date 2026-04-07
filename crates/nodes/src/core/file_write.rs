@@ -16,6 +16,7 @@ use tokio::io::AsyncWriteExt;
 
 /// Configuration for the FileWriteNode
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct FileWriteConfig {
     /// Path to the file to write
     pub path: String,

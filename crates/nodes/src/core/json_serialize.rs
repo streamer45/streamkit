@@ -19,6 +19,7 @@ use streamkit_core::{
 
 /// Configuration for JSON serialization
 #[derive(Serialize, Deserialize, Default, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct JsonSerializeConfig {
     /// Enable pretty-printing (formatted with indentation)
     #[serde(default)]

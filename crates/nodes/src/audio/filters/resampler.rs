@@ -20,6 +20,7 @@ use streamkit_core::{
 
 /// Configuration for the AudioResamplerNode
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AudioResamplerConfig {
     /// Target output sample rate in Hz (e.g., 48000, 24000, 16000)
     /// Input audio will be resampled to this rate
