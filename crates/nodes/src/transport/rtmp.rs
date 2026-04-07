@@ -12,7 +12,6 @@
 //! tokio I/O and the library's `feed_recv_buf()` / `send_buf()` interface.
 
 use std::sync::Arc;
-use std::time::Instant;
 
 use async_trait::async_trait;
 use opentelemetry::KeyValue;
@@ -216,12 +215,21 @@ impl ProcessorNode for RtmpPublishNode {
         let mut packet_count: u64 = 0;
         let mut tcp_read_buf = vec![0u8; 8192];
 
-        // Wall-clock epoch for RTMP timestamps.  Audio and video packets
-        // arrive from different pipeline paths whose source timestamps use
-        // unrelated epoch bases (e.g. compositor running clock vs. MoQ
-        // origin).  Using wall-clock elapsed time guarantees A/V sync
-        // regardless of upstream timestamp origins.
-        let publish_start = Instant::now();
+        // Per-track timestamp rebase state.  Source timestamps from
+        // mic + camera are synchronized (same browser epoch), but audio
+        // and video arrive through different pipeline paths that may
+        // start at different wall-clock times (e.g. compositor generates
+        // early frames before MoQ video arrives, while audio waits for
+        // the opus→AAC chain).
+        //
+        // To align the tracks in the RTMP stream we follow the same
+        // pattern as the WebM muxer: each track's first frame computes
+        // a rebase offset so its RTMP timestamp starts at the current
+        // global position.  Subsequent frames preserve the source-
+        // timestamp cadence (which is correct because mic/camera are
+        // synchronized).  Large backward jumps (compositor calibration)
+        // trigger an offset reset.
+        let mut ts_state = RtmpTimestampState::new();
 
         // ── Main publishing loop ────────────────────────────────────────
         tracing::info!(%node_name, "Entering RTMP publishing loop");
@@ -240,7 +248,7 @@ impl ProcessorNode for RtmpPublishNode {
                             tracing::warn!(%node_name, state = %connection.state(), "Connection no longer publishing, exiting");
                             break;
                         }
-                        let timestamp_ms = wallclock_timestamp_ms(publish_start);
+                        let timestamp_ms = ts_state.stamp(&pkt, Track::Video, &node_name);
                         if let Err(e) = process_video_packet(
                             &pkt, &mut connection, timestamp_ms,
                             &packet_counter, &metric_labels,
@@ -262,7 +270,7 @@ impl ProcessorNode for RtmpPublishNode {
                             tracing::warn!(%node_name, state = %connection.state(), "Connection no longer publishing, exiting");
                             break;
                         }
-                        let timestamp_ms = wallclock_timestamp_ms(publish_start);
+                        let timestamp_ms = ts_state.stamp(&pkt, Track::Audio, &node_name);
                         if let Err(e) = process_audio_packet(
                             &pkt, &mut connection, &mut audio_seq_header_sent,
                             timestamp_ms,
@@ -522,17 +530,138 @@ fn drain_events(connection: &mut RtmpPublishClientConnection, node_name: &str) -
     disconnected
 }
 
-/// Compute the RTMP timestamp (ms) from the wall-clock elapsed since
-/// publishing started.  This ensures audio and video share a common
-/// time base regardless of upstream timestamp origins.
-#[allow(clippy::cast_possible_truncation)]
-// RTMP timestamps are u32 ms; wrapping after ~49 days is acceptable.
-fn wallclock_timestamp_ms(publish_start: Instant) -> u32 {
-    publish_start.elapsed().as_millis() as u32
+// ---------------------------------------------------------------------------
+// Per-track timestamp rebase (mirrors WebM muxer `stage_frame` logic)
+// ---------------------------------------------------------------------------
+
+/// Identifies the media track for timestamp rebase bookkeeping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Track {
+    Video,
+    Audio,
 }
 
-// ---------------------------------------------------------------------------
-// Video packet processing
+/// Per-track rebase state for a single media track.
+struct TrackTimestamp {
+    /// Offset (in ms) added to source timestamps so the track starts at
+    /// the current global RTMP position when it first produces output.
+    rebase_offset_ms: Option<i64>,
+    /// Last RTMP timestamp emitted for this track (for monotonicity).
+    last_ms: Option<u32>,
+}
+
+impl TrackTimestamp {
+    const fn new() -> Self {
+        Self { rebase_offset_ms: None, last_ms: None }
+    }
+}
+
+/// Manages RTMP timestamps for audio and video tracks.
+///
+/// Source timestamps (from `PacketMetadata::timestamp_us`) are synchronized
+/// because mic and camera are captured in the same browser epoch.  However,
+/// audio and video arrive through different pipeline paths that may start at
+/// different wall-clock times (e.g. the compositor generates early video
+/// frames before MoQ input arrives, while audio waits for the opus→AAC
+/// chain).
+///
+/// To align the tracks we apply the same per-track rebase pattern used by
+/// the WebM muxer: each track's first frame computes an offset so its RTMP
+/// timestamp starts at the current global position.  Subsequent frames
+/// preserve the source-timestamp cadence.  Large backward jumps (compositor
+/// calibration) trigger an offset reset so the track re-aligns.
+struct RtmpTimestampState {
+    video: TrackTimestamp,
+    audio: TrackTimestamp,
+    /// The highest RTMP timestamp written across both tracks (ms).
+    global_last_ms: u32,
+}
+
+impl RtmpTimestampState {
+    const fn new() -> Self {
+        Self {
+            video: TrackTimestamp::new(),
+            audio: TrackTimestamp::new(),
+            global_last_ms: 0,
+        }
+    }
+
+    /// Compute the RTMP timestamp (u32 ms) for a packet, applying per-track
+    /// rebase and monotonicity enforcement.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_sign_loss)]
+    // RTMP timestamps are u32 ms; wrapping after ~49 days is acceptable.
+    // Source timestamps in ms fit comfortably in i64 for practical streams.
+    // Sign loss is guarded by `.max(0)` before each cast.
+    fn stamp(&mut self, packet: &Packet, track: Track, node_name: &str) -> u32 {
+        let timestamp_us = match packet {
+            Packet::Binary { metadata, .. } | Packet::Video(streamkit_core::types::VideoFrame { metadata, .. }) => {
+                metadata.as_ref().and_then(|m| m.timestamp_us)
+            },
+            _ => None,
+        };
+
+        let pkt_ms = timestamp_us.map_or(0i64, |us| (us / 1_000) as i64);
+
+        let ts = match track {
+            Track::Video => &mut self.video,
+            Track::Audio => &mut self.audio,
+        };
+
+        // First frame for this track: compute rebase offset so the track
+        // starts at the current global position.
+        let is_new_offset = ts.rebase_offset_ms.is_none();
+        let offset = *ts.rebase_offset_ms.get_or_insert_with(|| {
+            i64::from(self.global_last_ms) - pkt_ms
+        });
+        if is_new_offset {
+            tracing::info!(
+                %node_name,
+                track = ?track,
+                offset,
+                pkt_ms,
+                global_last_ms = self.global_last_ms,
+                "RTMP timestamp rebase initialized"
+            );
+        }
+
+        let mut rtmp_ms = pkt_ms.saturating_add(offset).max(0) as u32;
+
+        // Handle large backward jumps (> 500 ms) — typically caused by the
+        // compositor calibrating its running clock to a remote MoQ input.
+        // Reset the rebase offset so the track re-aligns with the global
+        // position (same strategy as the WebM muxer).
+        if let Some(last) = ts.last_ms {
+            if rtmp_ms < last {
+                let gap_ms = last - rtmp_ms;
+                if gap_ms > 500 {
+                    let new_offset = i64::from(self.global_last_ms) - pkt_ms;
+                    tracing::info!(
+                        %node_name,
+                        track = ?track,
+                        gap_ms,
+                        old_offset = offset,
+                        new_offset,
+                        "RTMP timestamp rebase reset (backward jump)"
+                    );
+                    ts.rebase_offset_ms = Some(new_offset);
+                    rtmp_ms = pkt_ms.saturating_add(new_offset).max(0) as u32;
+                }
+                // Enforce monotonicity for remaining small gaps / jitter.
+                if rtmp_ms <= last {
+                    rtmp_ms = last + 1;
+                }
+            }
+        }
+
+        ts.last_ms = Some(rtmp_ms);
+        if rtmp_ms > self.global_last_ms {
+            self.global_last_ms = rtmp_ms;
+        }
+
+        rtmp_ms
+    }
+}
+
 // ---------------------------------------------------------------------------
 
 /// Process one encoded video packet and send it via RTMP.
@@ -540,8 +669,9 @@ fn wallclock_timestamp_ms(publish_start: Instant) -> u32 {
 /// Converts H.264 Annex B to AVCC format, extracts SPS/PPS on keyframes
 /// to send as an AVC sequence header, then sends the video frame.
 ///
-/// `timestamp_ms` is the wall-clock-relative RTMP timestamp computed by
-/// the caller, ensuring audio and video share a common time base.
+/// `timestamp_ms` is the rebased RTMP timestamp computed by the caller
+/// via `RtmpTimestampState::stamp`, ensuring audio and video share a
+/// common time base derived from source timestamps.
 #[allow(clippy::too_many_arguments)] // Packet-processing context (connection, counters, stats) is passed individually; bundling into a struct is a future cleanup.
 fn process_video_packet(
     packet: &Packet,
@@ -649,8 +779,9 @@ fn process_video_packet(
 /// On the first audio packet, sends an AAC `AudioSpecificConfig` as the
 /// RTMP sequence header.  Subsequent packets are sent as raw AAC frames.
 ///
-/// `timestamp_ms` is the wall-clock-relative RTMP timestamp computed by
-/// the caller, ensuring audio and video share a common time base.
+/// `timestamp_ms` is the rebased RTMP timestamp computed by the caller
+/// via `RtmpTimestampState::stamp`, ensuring audio and video share a
+/// common time base derived from source timestamps.
 #[allow(clippy::too_many_arguments)] // Packet-processing context (connection, counters, stats) is passed individually; bundling into a struct is a future cleanup.
 fn process_audio_packet(
     packet: &Packet,
@@ -917,6 +1048,7 @@ pub fn register_rtmp_nodes(registry: &mut NodeRegistry) {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use streamkit_core::types::PacketMetadata;
 
     #[test]
     fn parse_annexb_single_nal_4byte_sc() {
@@ -1125,24 +1257,91 @@ mod tests {
         assert!(err.contains("empty"), "error should mention 'empty': {err}");
     }
 
-    // ── wallclock_timestamp_ms tests ────────────────────────────────────
+    // ── RtmpTimestampState rebase tests ───────────────────────────────
 
-    #[test]
-    fn wallclock_timestamp_increases_over_time() {
-        let start = Instant::now();
-        let t0 = wallclock_timestamp_ms(start);
-        // Sleep briefly to ensure elapsed time is non-zero.
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        let t1 = wallclock_timestamp_ms(start);
-        assert!(t1 > t0, "wallclock timestamp should increase: t0={t0}, t1={t1}");
+    /// Helper: build a `Packet::Binary` with a given `timestamp_us`.
+    fn make_packet(timestamp_us: Option<u64>) -> Packet {
+        Packet::Binary {
+            data: bytes::Bytes::from_static(&[0]),
+            metadata: timestamp_us.map(|ts| PacketMetadata {
+                timestamp_us: Some(ts),
+                duration_us: None,
+                sequence: None,
+                keyframe: None,
+            }),
+            content_type: None,
+        }
     }
 
     #[test]
-    fn wallclock_timestamp_starts_near_zero() {
-        let start = Instant::now();
-        let ts = wallclock_timestamp_ms(start);
-        // Should be very close to 0 when called immediately.
-        assert!(ts < 50, "expected near-zero timestamp, got {ts}ms");
+    fn rebase_first_video_starts_at_zero() {
+        let mut state = RtmpTimestampState::new();
+        let pkt = make_packet(Some(0));
+        let ts = state.stamp(&pkt, Track::Video, "test");
+        assert_eq!(ts, 0);
+    }
+
+    #[test]
+    fn rebase_video_preserves_cadence() {
+        let mut state = RtmpTimestampState::new();
+        let ts0 = state.stamp(&make_packet(Some(0)), Track::Video, "test");
+        let ts1 = state.stamp(&make_packet(Some(33_000)), Track::Video, "test");
+        let ts2 = state.stamp(&make_packet(Some(66_000)), Track::Video, "test");
+        assert_eq!(ts0, 0);
+        assert_eq!(ts1, 33);
+        assert_eq!(ts2, 66);
+    }
+
+    #[test]
+    fn rebase_late_audio_aligns_to_video() {
+        // Video has been running for 3 seconds.
+        let mut state = RtmpTimestampState::new();
+        for i in 0..90 {
+            // 30fps video for 3 seconds (90 frames).
+            state.stamp(&make_packet(Some(i * 33_333)), Track::Video, "test");
+        }
+        // 89 * 33_333us = 2_966_637us → global_last_ms ≈ 2966.
+        // Audio arrives with source_ts=0 (MoQ normalized).  It should
+        // start at the current global position.
+        let audio_ts0 = state.stamp(&make_packet(Some(0)), Track::Audio, "test");
+        let audio_ts1 = state.stamp(&make_packet(Some(20_000)), Track::Audio, "test");
+        // Audio should start near video's current position (~2966ms).
+        assert!(audio_ts0 >= 2900 && audio_ts0 <= 3100,
+            "audio should start near video position, got {audio_ts0}");
+        // Cadence preserved: 20ms between audio frames.
+        assert_eq!(audio_ts1 - audio_ts0, 20);
+    }
+
+    #[test]
+    fn rebase_backward_jump_resets_offset() {
+        // Simulate compositor calibration: video starts at running clock
+        // ts=0, then after calibration jumps backward to MoQ origin.
+        let mut state = RtmpTimestampState::new();
+
+        // Pre-calibration: compositor running clock 0..~4000ms.
+        for i in 0..120 {
+            state.stamp(&make_packet(Some(i * 33_333)), Track::Video, "test");
+        }
+        // 119 * 33_333us = 3_966_627us → global_last_ms ≈ 3966.
+        let global_before = state.global_last_ms;
+
+        // Post-calibration: compositor jumps to MoQ timestamp ~100ms
+        // (a large backward jump).
+        let ts = state.stamp(&make_packet(Some(100_000)), Track::Video, "test");
+        // Should have reset and re-aligned near the global position.
+        assert!(ts >= global_before,
+            "after rebase reset, ts ({ts}) should be >= global_before ({global_before})");
+    }
+
+    #[test]
+    fn rebase_monotonicity_enforced() {
+        let mut state = RtmpTimestampState::new();
+        // First packet at 0ms to establish the offset.
+        let _ = state.stamp(&make_packet(Some(0)), Track::Video, "test");
+        let ts0 = state.stamp(&make_packet(Some(100_000)), Track::Video, "test");
+        // Small backward jitter (< 500ms threshold).
+        let ts1 = state.stamp(&make_packet(Some(99_000)), Track::Video, "test");
+        assert!(ts1 > ts0, "timestamps must be monotonically increasing: ts0={ts0}, ts1={ts1}");
     }
 
     // ── empty NalUnit guard test ────────────────────────────────────────
