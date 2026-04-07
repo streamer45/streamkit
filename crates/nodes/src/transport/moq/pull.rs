@@ -33,7 +33,7 @@ struct DiscoveredTrack {
 }
 
 #[derive(Deserialize, Debug, JsonSchema, Clone, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MoqPullConfig {
     pub url: String,
     /// Optional JWT for authenticated MoQ relays. When set, it is appended as `?jwt=...`.

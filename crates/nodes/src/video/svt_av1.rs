@@ -76,7 +76,7 @@ const SVT_AV1_DEFAULT_FPS: u32 = 30;
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize, Debug, JsonSchema, Clone)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SvtAv1EncoderConfig {
     /// Target bitrate in kbps.  `0` = CRF mode (constant quality).
     pub bitrate_kbps: u32,

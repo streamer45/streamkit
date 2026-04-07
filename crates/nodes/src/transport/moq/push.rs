@@ -22,7 +22,7 @@ use streamkit_core::{
 };
 
 #[derive(Deserialize, Debug, JsonSchema, Clone)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MoqPushConfig {
     pub url: String,
     /// Optional JWT for authenticated MoQ relays. When set, it is appended as `?jwt=...`.

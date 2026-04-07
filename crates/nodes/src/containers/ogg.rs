@@ -61,7 +61,7 @@ pub enum OggMuxerCodec {
 }
 
 #[derive(Deserialize, Debug, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct OggMuxerConfig {
     // A serial number is required for an Ogg stream.
     pub stream_serial: u32,
@@ -356,7 +356,7 @@ impl ProcessorNode for OggMuxerNode {
 // --- Ogg Demuxer ---
 
 #[derive(Deserialize, Debug, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct OggDemuxerConfig {}
 
 /// A node that demuxes an Ogg container stream into its underlying compressed packets.
@@ -606,7 +606,7 @@ use crate::streaming_utils::StreamingReader;
 
 #[cfg(feature = "symphonia")]
 #[derive(Deserialize, Debug, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SymphoniaOggDemuxerConfig {}
 
 /// Symphonia-based Ogg demuxer node (more robust alternative to the ogg crate based one)

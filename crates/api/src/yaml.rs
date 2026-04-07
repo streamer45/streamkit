@@ -927,13 +927,13 @@ pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<Clie
             // Rule 14f: unrecognized codec
             if let Some(ref codec) = track.codec {
                 let recognized = match track.kind {
-                    TrackKind::Video => ["vp9", "av1"].contains(&codec.as_str()),
-                    TrackKind::Audio => ["opus"].contains(&codec.as_str()),
+                    TrackKind::Video => ["vp9", "av1", "h264"].contains(&codec.as_str()),
+                    TrackKind::Audio => ["opus", "aac"].contains(&codec.as_str()),
                 };
                 if !recognized {
                     let supported = match track.kind {
-                        TrackKind::Video => "vp9, av1",
-                        TrackKind::Audio => "opus",
+                        TrackKind::Video => "vp9, av1, h264",
+                        TrackKind::Audio => "opus, aac",
                     };
                     warnings.push(ClientLintWarning {
                         rule: "unrecognized-codec",
@@ -3511,7 +3511,7 @@ client:
                 broadcast: None,
                 width: None,
                 height: None,
-                codec: Some("h264".into()),
+                codec: Some("hevc".into()),
                 max_bitrate: None,
             }],
         });
@@ -3533,7 +3533,7 @@ client:
                 broadcast: None,
                 width: None,
                 height: None,
-                codec: Some("aac".into()),
+                codec: Some("mp3".into()),
                 max_bitrate: None,
             }],
         });
@@ -3575,6 +3575,24 @@ client:
                     width: None,
                     height: None,
                     codec: Some("opus".into()),
+                    max_bitrate: None,
+                },
+                PublishTrackConfig {
+                    kind: TrackKind::Video,
+                    source: CaptureSource::Camera,
+                    broadcast: None,
+                    width: None,
+                    height: None,
+                    codec: Some("h264".into()),
+                    max_bitrate: None,
+                },
+                PublishTrackConfig {
+                    kind: TrackKind::Audio,
+                    source: CaptureSource::Microphone,
+                    broadcast: None,
+                    width: None,
+                    height: None,
+                    codec: Some("aac".into()),
                     max_bitrate: None,
                 },
             ],

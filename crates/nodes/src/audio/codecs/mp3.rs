@@ -40,7 +40,7 @@ const OUTPUT_FRAME_SIZE: usize = 1920;
 // --- MP3 Decoder ---
 
 #[derive(Deserialize, Debug, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Mp3DecoderConfig {}
 
 /// A node that decodes MP3 audio files to raw PCM audio frames.

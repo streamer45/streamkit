@@ -24,7 +24,7 @@ pub enum SplitMode {
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TextChunkerConfig {
     /// Splitting mode: "sentences" or "words"
     pub split_mode: SplitMode,

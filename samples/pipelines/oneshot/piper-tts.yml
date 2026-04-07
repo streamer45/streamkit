@@ -34,7 +34,6 @@ steps:
   - kind: containers::webm::muxer
     params:
       channels: 1
-      chunk_size: 65536
       sample_rate: 48000
       streaming_mode: live
   - kind: streamkit::http_output

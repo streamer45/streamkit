@@ -47,7 +47,7 @@ const H264_DEFAULT_GOP_SIZE: u32 = 60;
 /// OpenH264 only supports Constrained Baseline profile (no B-frames, no
 /// CABAC).  This is well-suited for real-time / low-latency use cases.
 #[derive(Deserialize, Debug, JsonSchema, Clone)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct OpenH264EncoderConfig {
     /// Target bitrate in kilobits per second.  Must be greater than zero.
     pub bitrate_kbps: u32,

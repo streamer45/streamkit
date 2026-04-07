@@ -17,6 +17,7 @@ use tokio::io::AsyncReadExt;
 
 /// Configuration for the FileReadNode
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct FileReadConfig {
     /// Path to the file to read
     pub path: String,
