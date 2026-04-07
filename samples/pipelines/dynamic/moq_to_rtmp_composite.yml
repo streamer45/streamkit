@@ -141,7 +141,10 @@ nodes:
   rtmp_publish:
     kind: transport::rtmp::publish
     params:
-      url: "rtmp://a.rtmp.youtube.com/live2"
+      url: "rtmps://x.rtmps.youtube.com/live2"
+      # Twitch:
+      # url: "rtmps://ingest.global-contribute.live-video.net/app"
+      #
       # Read the stream key from the SKIT_RTMP_STREAM_KEY environment variable.
       # Alternatively, use `stream_key: "your-key-here"` for a literal value.
       # The env var name is fully user-controlled — use any name you like
