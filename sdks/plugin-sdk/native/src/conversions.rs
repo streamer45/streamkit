@@ -178,6 +178,18 @@ pub const fn raw_video_format_from_c(cfmt: &CRawVideoFormat) -> RawVideoFormat {
     }
 }
 
+/// Build a `CString` from a codec name returned by `as_c_name()`.
+///
+/// Codec names are compile-time ASCII constants that never contain interior
+/// null bytes, so `CString::new` cannot fail here.
+fn codec_name_to_cstring(name: &str) -> CString {
+    // Safety-net: as_c_name() values are controlled constants ("opus", "aac",
+    // "vp9", etc.) that will never contain '\0'.  If this somehow fails, the
+    // empty CString is a safe (if wrong) fallback that will be rejected by
+    // from_c_name() on the receiving side.
+    CString::new(name).unwrap_or_default()
+}
+
 /// Ancillary data kept alive alongside a `CPacketTypeInfo`.
 ///
 /// `packet_type_to_c` returns this alongside the info struct so that
@@ -188,6 +200,10 @@ pub enum CPacketTypeOwned {
     None,
     Audio(CAudioFormat),
     Video(CRawVideoFormat),
+    /// Null-terminated codec name derived from `AudioCodec::as_c_name()` or
+    /// `VideoCodec::as_c_name()`.  The `custom_type_id` pointer in the
+    /// accompanying `CPacketTypeInfo` points into this `CString`.
+    CodecName(CString),
 }
 
 /// Convert Rust PacketType to C representation.
@@ -233,23 +249,18 @@ pub fn packet_type_to_c(pt: &PacketType) -> (CPacketTypeInfo, CPacketTypeOwned) 
                     CPacketTypeOwned::None,
                 )
             } else {
-                // Carry the codec name in `custom_type_id` (reusing the
-                // existing pointer field to avoid changing the struct layout).
-                // Static null-terminated byte strings for the C ABI; the
-                // canonical names match AudioCodec::as_c_name().
-                let codec_cstr: &'static [u8] = match format.codec {
-                    AudioCodec::Opus => b"opus\0",
-                    AudioCodec::Aac => b"aac\0",
-                    _ => b"unknown\0",
-                };
+                // Derive the null-terminated codec name from as_c_name() so
+                // the canonical name lives in exactly one place.
+                let name = codec_name_to_cstring(format.codec.as_c_name());
+                let ptr = name.as_ptr();
                 (
                     CPacketTypeInfo {
                         type_discriminant: CPacketType::EncodedAudio,
                         audio_format: std::ptr::null(),
-                        custom_type_id: codec_cstr.as_ptr().cast::<c_char>(),
+                        custom_type_id: ptr,
                         raw_video_format: std::ptr::null(),
                     },
-                    CPacketTypeOwned::None,
+                    CPacketTypeOwned::CodecName(name),
                 )
             }
         },
@@ -294,22 +305,18 @@ pub fn packet_type_to_c(pt: &PacketType) -> (CPacketTypeInfo, CPacketTypeOwned) 
             )
         },
         PacketType::EncodedVideo(format) => {
-            // Carry the video codec name in `custom_type_id` (same pattern
-            // as EncodedAudio).
-            let codec_cstr: &'static [u8] = match format.codec {
-                VideoCodec::Vp9 => b"vp9\0",
-                VideoCodec::H264 => b"h264\0",
-                VideoCodec::Av1 => b"av1\0",
-                _ => b"unknown\0",
-            };
+            // Derive the null-terminated codec name from as_c_name() so
+            // the canonical name lives in exactly one place.
+            let name = codec_name_to_cstring(format.codec.as_c_name());
+            let ptr = name.as_ptr();
             (
                 CPacketTypeInfo {
                     type_discriminant: CPacketType::EncodedVideo,
                     audio_format: std::ptr::null(),
-                    custom_type_id: codec_cstr.as_ptr().cast::<c_char>(),
+                    custom_type_id: ptr,
                     raw_video_format: std::ptr::null(),
                 },
-                CPacketTypeOwned::None,
+                CPacketTypeOwned::CodecName(name),
             )
         },
         PacketType::Binary => (
