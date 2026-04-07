@@ -590,7 +590,36 @@ RUN PIP_BREAK_SYSTEM_PACKAGES=1 pip3 install --no-cache-dir \
       tokenizers && \
     python3 plugins/native/helsinki/download-models.py
 
-# Stage 12: Build Slint UI plugin
+# Stage 12: Build AAC Encoder plugin (CPU-only, no CUDA needed for audio encoding)
+FROM rust:1.92-slim-bookworm AS aac-encoder-builder
+
+WORKDIR /build
+
+# Install build dependencies (libfdk-aac-dev needed by shiguredo_fdk_aac)
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    libclang-dev \
+    clang \
+    libfdk-aac-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy only what's needed to build aac-encoder plugin
+COPY Cargo.toml Cargo.lock ./
+COPY crates/core ./crates/core
+COPY sdks/plugin-sdk ./sdks/plugin-sdk
+COPY plugins/native/aac-encoder ./plugins/native/aac-encoder
+
+# Build aac-encoder plugin
+RUN --mount=type=cache,id=cargo-registry-aac-encoder,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=cargo-git-aac-encoder,target=/usr/local/cargo/git \
+    --mount=type=cache,id=aac-encoder-target,target=/build/plugins/native/aac-encoder/target \
+    cd plugins/native/aac-encoder && \
+    cargo build --release --target-dir target && \
+    mkdir -p /build/plugins/native && \
+    cp target/release/libaac_encoder.so /build/plugins/native/
+
+# Stage 13: Build Slint UI plugin
 FROM rust:1.92-slim-bookworm AS slint-builder
 
 WORKDIR /build
@@ -638,6 +667,7 @@ RUN apt-get update && apt-get install -y \
     libgomp1 \
     libfontconfig1 \
     fonts-dejavu-core \
+    libfdk-aac2 \
     libvulkan1 \
     gdb \
     curl \
@@ -708,6 +738,9 @@ COPY --chown=app:app --from=matcha-builder /build/models/matcha-icefall-en_US-lj
 
 # Copy slint plugin (no models needed)
 COPY --chown=app:app --from=slint-builder /build/plugins/native/* /opt/streamkit/plugins/native/
+
+# Copy aac-encoder plugin (no models needed)
+COPY --chown=app:app --from=aac-encoder-builder /build/plugins/native/* /opt/streamkit/plugins/native/
 
 # Copy sample pipelines
 COPY --chown=app:app samples /opt/streamkit/samples
