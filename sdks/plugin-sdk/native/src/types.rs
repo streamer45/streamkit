@@ -150,6 +150,9 @@ pub enum CPacketType {
     Any = 6,
     Passthrough = 7,
     RawVideo = 8,
+    /// Encoded video with codec metadata.  Uses `custom_type_id` in
+    /// [`CPacketTypeInfo`] to carry the codec name (e.g. `"vp9"`, `"h264"`).
+    /// Null `custom_type_id` falls back to `Binary` for backward compat.
     EncodedVideo = 9,
     /// Binary packet that preserves optional `content_type` and `metadata`
     /// across the plugin ↔ host boundary.  Points to a [`CBinaryPacket`].
@@ -238,9 +241,22 @@ pub struct CCustomPacket {
 /// Exactly one of the optional pointers is non-null depending on
 /// `type_discriminant`:
 /// - `RawAudio`     → `audio_format`
-/// - `Custom`       → `custom_type_id`
+/// - `Custom`       → `custom_type_id` (null-terminated type id string)
 /// - `RawVideo`     → `raw_video_format`
 /// - `EncodedAudio` → `custom_type_id` (null-terminated codec name, e.g. `"aac"`)
+/// - `EncodedVideo` → `custom_type_id` (null-terminated codec name, e.g. `"h264"`)
+///
+/// ## Adding a new codec
+///
+/// Codec names are the canonical lowercase strings defined by
+/// [`AudioCodec::as_c_name()`] and [`VideoCodec::as_c_name()`] in
+/// `streamkit-core`.  To add a new codec:
+///
+/// 1. Add the variant to `AudioCodec` or `VideoCodec`.
+/// 2. Add its name in `as_c_name()` and `from_c_name()` — these are the
+///    **only** places codec-name strings need to live.
+/// 3. The SDK macros and conversion functions use these methods, so no
+///    further changes are needed in the plugin SDK.
 ///
 /// # ABI stability
 ///
@@ -256,7 +272,10 @@ pub struct CPacketTypeInfo {
     pub audio_format: *const CAudioFormat,
     /// For Custom: pointer to a null-terminated type id string.
     /// For EncodedAudio: pointer to a null-terminated codec name
-    /// (e.g. `"opus"`, `"aac"`).  Otherwise null.
+    /// (e.g. `"opus"`, `"aac"`).
+    /// For EncodedVideo: pointer to a null-terminated codec name
+    /// (e.g. `"vp9"`, `"h264"`, `"av1"`).
+    /// Otherwise null.
     pub custom_type_id: *const c_char,
     /// For RawVideo: pointer to CRawVideoFormat, otherwise null.
     pub raw_video_format: *const CRawVideoFormat,
