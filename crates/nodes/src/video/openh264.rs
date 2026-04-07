@@ -11,7 +11,9 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use openh264::encoder::{BitRate, EncoderConfig, FrameRate, FrameType, RateControlMode};
+use openh264::encoder::{
+    BitRate, EncoderConfig, FrameRate, FrameType, IntraFramePeriod, RateControlMode,
+};
 use openh264::formats::YUVSlices;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -34,6 +36,7 @@ use super::H264_CONTENT_TYPE;
 
 const H264_DEFAULT_BITRATE_KBPS: u32 = 2000;
 const H264_DEFAULT_MAX_FRAME_RATE: f32 = 30.0;
+const H264_DEFAULT_GOP_SIZE: u32 = 60;
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -50,6 +53,16 @@ pub struct OpenH264EncoderConfig {
     pub bitrate_kbps: u32,
     /// Maximum frame rate in Hz.  Must be greater than zero.
     pub max_frame_rate: f32,
+    /// GOP size: number of frames between IDR (keyframe) insertions.
+    ///
+    /// 0 = let the encoder decide (OpenH264 "auto" mode — may produce very
+    /// few keyframes).  For RTMP streaming to platforms like YouTube Live or
+    /// Twitch, set this to `2 × max_frame_rate` (e.g. 60 for 30fps) to get
+    /// a keyframe every 2 seconds, which is within the 2–4 s range most CDNs
+    /// require.
+    ///
+    /// Defaults to 60 (≈ 2 s at 30 fps).
+    pub gop_size: u32,
 }
 
 impl Default for OpenH264EncoderConfig {
@@ -57,6 +70,7 @@ impl Default for OpenH264EncoderConfig {
         Self {
             bitrate_kbps: H264_DEFAULT_BITRATE_KBPS,
             max_frame_rate: H264_DEFAULT_MAX_FRAME_RATE,
+            gop_size: H264_DEFAULT_GOP_SIZE,
         }
     }
 }
@@ -205,6 +219,7 @@ impl OpenH264Encoder {
             .bitrate(BitRate::from_bps(config.bitrate_kbps.saturating_mul(1000)))
             .max_frame_rate(FrameRate::from_hz(config.max_frame_rate))
             .rate_control_mode(RateControlMode::Bitrate)
+            .intra_frame_period(IntraFramePeriod::from_num_frames(config.gop_size))
             .skip_frames(false);
 
         let encoder = openh264::encoder::Encoder::with_api_config(
@@ -408,7 +423,11 @@ mod tests {
         enc_inputs.insert("in".to_string(), enc_input_rx);
 
         let (enc_context, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 10);
-        let encoder_config = OpenH264EncoderConfig { bitrate_kbps: 2000, max_frame_rate: 30.0 };
+        let encoder_config = OpenH264EncoderConfig {
+            bitrate_kbps: 2000,
+            max_frame_rate: 30.0,
+            ..Default::default()
+        };
         let encoder = OpenH264EncoderNode::new(encoder_config).unwrap();
 
         let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
@@ -539,6 +558,7 @@ mod tests {
         let result = OpenH264EncoderNode::new(OpenH264EncoderConfig {
             bitrate_kbps: 0,
             max_frame_rate: 30.0,
+            ..Default::default()
         });
         assert!(result.is_err(), "bitrate_kbps=0 should be rejected");
     }
@@ -548,6 +568,7 @@ mod tests {
         let result = OpenH264EncoderNode::new(OpenH264EncoderConfig {
             bitrate_kbps: 2000,
             max_frame_rate: -1.0,
+            ..Default::default()
         });
         assert!(result.is_err(), "negative max_frame_rate should be rejected");
     }
@@ -557,6 +578,7 @@ mod tests {
         let result = OpenH264EncoderNode::new(OpenH264EncoderConfig {
             bitrate_kbps: 2000,
             max_frame_rate: 0.0,
+            ..Default::default()
         });
         assert!(result.is_err(), "zero max_frame_rate should be rejected");
     }
@@ -566,6 +588,7 @@ mod tests {
         let result = OpenH264EncoderNode::new(OpenH264EncoderConfig {
             bitrate_kbps: 2000,
             max_frame_rate: f32::NAN,
+            ..Default::default()
         });
         assert!(result.is_err(), "NaN max_frame_rate should be rejected");
     }
@@ -575,12 +598,14 @@ mod tests {
         let result = OpenH264EncoderNode::new(OpenH264EncoderConfig {
             bitrate_kbps: 2000,
             max_frame_rate: f32::INFINITY,
+            ..Default::default()
         });
         assert!(result.is_err(), "INFINITY max_frame_rate should be rejected");
 
         let result = OpenH264EncoderNode::new(OpenH264EncoderConfig {
             bitrate_kbps: 2000,
             max_frame_rate: f32::NEG_INFINITY,
+            ..Default::default()
         });
         assert!(result.is_err(), "NEG_INFINITY max_frame_rate should be rejected");
     }
@@ -590,6 +615,7 @@ mod tests {
         let result = OpenH264EncoderNode::new(OpenH264EncoderConfig {
             bitrate_kbps: 500_001,
             max_frame_rate: 30.0,
+            ..Default::default()
         });
         assert!(result.is_err(), "bitrate_kbps above 500_000 should be rejected");
 
@@ -597,6 +623,7 @@ mod tests {
         let result = OpenH264EncoderNode::new(OpenH264EncoderConfig {
             bitrate_kbps: 500_000,
             max_frame_rate: 30.0,
+            ..Default::default()
         });
         assert!(result.is_ok(), "bitrate_kbps=500_000 should be accepted");
     }
