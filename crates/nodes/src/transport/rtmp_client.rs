@@ -2364,15 +2364,15 @@ mod tests {
         // ── Step 3: server sends WinAckSize + SetPeerBandwidth ──────
         let mut srv_enc = ChunkEncoder::new();
         let win_ack = server_encode(
-            &mut srv_enc, 2, MSG_WIN_ACK_SIZE, 0,
+            &mut srv_enc,
+            2,
+            MSG_WIN_ACK_SIZE,
+            0,
             2_500_000u32.to_be_bytes().to_vec(),
         );
         let mut set_bw_payload = 59_768_832u32.to_be_bytes().to_vec();
         set_bw_payload.push(2); // limit_type = Dynamic
-        let set_bw = server_encode(
-            &mut srv_enc, 2, MSG_SET_PEER_BANDWIDTH, 0,
-            set_bw_payload,
-        );
+        let set_bw = server_encode(&mut srv_enc, 2, MSG_SET_PEER_BANDWIDTH, 0, set_bw_payload);
 
         let mut server_msg = Vec::new();
         server_msg.extend_from_slice(&win_ack);
@@ -2389,20 +2389,28 @@ mod tests {
         let mut result_payload = Vec::new();
         amf0_encode(&Amf0Value::String("_result".to_string()), &mut result_payload).unwrap();
         amf0_encode(&Amf0Value::Number(1.0), &mut result_payload).unwrap();
-        amf0_encode(&Amf0Value::Object(vec![
-            ("fmsVer".to_string(), Amf0Value::String("FMS/3,5,7,7009".to_string())),
-            ("capabilities".to_string(), Amf0Value::Number(31.0)),
-        ]), &mut result_payload).unwrap();
-        amf0_encode(&Amf0Value::Object(vec![
-            ("level".to_string(), Amf0Value::String("status".to_string())),
-            ("code".to_string(), Amf0Value::String("NetConnection.Connect.Success".to_string())),
-            ("description".to_string(), Amf0Value::String("Connection succeeded".to_string())),
-            ("objectEncoding".to_string(), Amf0Value::Number(0.0)),
-        ]), &mut result_payload).unwrap();
-        let result_msg = server_encode(
-            &mut srv_enc, 3, MSG_COMMAND_AMF0, 0,
-            result_payload,
-        );
+        amf0_encode(
+            &Amf0Value::Object(vec![
+                ("fmsVer".to_string(), Amf0Value::String("FMS/3,5,7,7009".to_string())),
+                ("capabilities".to_string(), Amf0Value::Number(31.0)),
+            ]),
+            &mut result_payload,
+        )
+        .unwrap();
+        amf0_encode(
+            &Amf0Value::Object(vec![
+                ("level".to_string(), Amf0Value::String("status".to_string())),
+                (
+                    "code".to_string(),
+                    Amf0Value::String("NetConnection.Connect.Success".to_string()),
+                ),
+                ("description".to_string(), Amf0Value::String("Connection succeeded".to_string())),
+                ("objectEncoding".to_string(), Amf0Value::Number(0.0)),
+            ]),
+            &mut result_payload,
+        )
+        .unwrap();
+        let result_msg = server_encode(&mut srv_enc, 3, MSG_COMMAND_AMF0, 0, result_payload);
 
         conn.feed_recv_buf(&result_msg).unwrap();
         // After _result → Connected → auto-sends createStream
@@ -2415,10 +2423,7 @@ mod tests {
         amf0_encode(&Amf0Value::Number(2.0), &mut cs_payload).unwrap();
         amf0_encode(&Amf0Value::Null, &mut cs_payload).unwrap();
         amf0_encode(&Amf0Value::Number(1.0), &mut cs_payload).unwrap(); // stream_id=1
-        let cs_msg = server_encode(
-            &mut srv_enc, 3, MSG_COMMAND_AMF0, 0,
-            cs_payload,
-        );
+        let cs_msg = server_encode(&mut srv_enc, 3, MSG_COMMAND_AMF0, 0, cs_payload);
 
         conn.feed_recv_buf(&cs_msg).unwrap();
         // MediaStreamCreated → auto-sends publish → PublishPending
@@ -2431,15 +2436,16 @@ mod tests {
         amf0_encode(&Amf0Value::String("onStatus".to_string()), &mut status_payload).unwrap();
         amf0_encode(&Amf0Value::Number(0.0), &mut status_payload).unwrap();
         amf0_encode(&Amf0Value::Null, &mut status_payload).unwrap();
-        amf0_encode(&Amf0Value::Object(vec![
-            ("level".to_string(), Amf0Value::String("status".to_string())),
-            ("code".to_string(), Amf0Value::String("NetStream.Publish.Start".to_string())),
-            ("description".to_string(), Amf0Value::String("Publishing stream-key".to_string())),
-        ]), &mut status_payload).unwrap();
-        let status_msg = server_encode(
-            &mut srv_enc, 4, MSG_COMMAND_AMF0, 1,
-            status_payload,
-        );
+        amf0_encode(
+            &Amf0Value::Object(vec![
+                ("level".to_string(), Amf0Value::String("status".to_string())),
+                ("code".to_string(), Amf0Value::String("NetStream.Publish.Start".to_string())),
+                ("description".to_string(), Amf0Value::String("Publishing stream-key".to_string())),
+            ]),
+            &mut status_payload,
+        )
+        .unwrap();
+        let status_msg = server_encode(&mut srv_enc, 4, MSG_COMMAND_AMF0, 1, status_payload);
 
         conn.feed_recv_buf(&status_msg).unwrap();
         assert_eq!(conn.state(), RtmpConnectionState::Publishing);
