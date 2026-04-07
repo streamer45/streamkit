@@ -4,7 +4,6 @@
 
 //! MoQ Pull Node - subscribes to broadcasts from a MoQ server
 
-use super::constants::DEFAULT_AUDIO_FRAME_DURATION_US_OPUS;
 use crate::video::{AV1_CONTENT_TYPE, H264_CONTENT_TYPE, VP9_CONTENT_TYPE};
 use async_trait::async_trait;
 use bytes::Buf;
@@ -866,7 +865,7 @@ impl MoqPullNode {
                         // codec-aware once AAC MoQ broadcasts are supported.
                         ReadSource::Audio => (
                             &mut last_audio_timestamp_us,
-                            DEFAULT_AUDIO_FRAME_DURATION_US_OPUS,
+                            AudioCodec::Opus.default_frame_duration_us(),
                             &mut audio_clock,
                             &mut audio_is_first_in_group,
                         ),

@@ -48,24 +48,6 @@ use crate::video::DEFAULT_VIDEO_FRAME_DURATION_US;
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Default audio frame duration when metadata is missing.
-///
-/// The correct value depends on the codec:
-/// - Opus: 20 ms (960 samples at 48 kHz)
-/// - AAC-LC: ~21.333 ms (1024 samples at 48 kHz)
-///
-/// Use [`default_audio_frame_duration_us`] to get the codec-aware value.
-const DEFAULT_AUDIO_FRAME_DURATION_US_OPUS: u64 = 20_000;
-const DEFAULT_AUDIO_FRAME_DURATION_US_AAC: u64 = 21_333;
-
-/// Return the default audio frame duration for the given codec.
-const fn default_audio_frame_duration_us(codec: AudioCodec) -> u64 {
-    match codec {
-        AudioCodec::Aac => DEFAULT_AUDIO_FRAME_DURATION_US_AAC,
-        _ => DEFAULT_AUDIO_FRAME_DURATION_US_OPUS,
-    }
-}
-
 /// Default video timescale (90 kHz — standard for MPEG transport streams / MP4).
 const DEFAULT_VIDEO_TIMESCALE: NonZeroU32 = match NonZeroU32::new(90_000) {
     Some(v) => v,
@@ -564,18 +546,18 @@ pub struct Mp4MuxerConfig {
     pub num_inputs: u32,
 
     /// Override the audio codec used for sample-entry construction and MIME
-    /// content-type resolution.  Accepted values: `"opus"`, `"aac"`.
-    /// When omitted the codec is auto-detected from the upstream
-    /// `EncodedAudio` pin type; if detection fails it falls back to `Opus`.
+    /// content-type resolution.  When omitted the codec is auto-detected from
+    /// the upstream `EncodedAudio` pin type; if detection fails it falls back
+    /// to `Opus`.
     #[serde(default)]
-    pub audio_codec: Option<String>,
+    pub audio_codec: Option<AudioCodec>,
 
     /// Override the video codec used for the pre-connection MIME content-type
-    /// hint.  Accepted values: `"av1"`, `"h264"`, `"vp9"`.
-    /// When omitted, the hint defaults to AV1 (if video dimensions are set).
-    /// The runtime MIME type is always resolved from the actual input codec.
+    /// hint.  When omitted, the hint defaults to AV1 (if video dimensions
+    /// are set).  The runtime MIME type is always resolved from the actual
+    /// input codec.
     #[serde(default)]
-    pub video_codec: Option<String>,
+    pub video_codec: Option<VideoCodec>,
 }
 
 const fn default_num_inputs() -> u32 {
@@ -637,41 +619,6 @@ fn classify_packet(packet: Packet) -> Option<MuxFrame> {
             })
         },
         _ => None,
-    }
-}
-
-/// Parse an optional audio codec config string into an [`AudioCodec`].
-///
-/// Returns `Opus` when the input is `None` or unrecognised.
-/// The parsing logic is intentionally inlined here (rather than imported from
-/// `transport::moq::constants`) so that the `mp4` feature does not depend on
-/// the `moq` feature at compile time.
-fn parse_mp4_audio_codec_config(s: Option<&str>) -> AudioCodec {
-    s.map_or(AudioCodec::Opus, |v| {
-        match v.to_ascii_lowercase().as_str() {
-            "aac" => AudioCodec::Aac,
-            "opus" => AudioCodec::Opus,
-            other => {
-                tracing::warn!(audio_codec = %other, "unrecognised audio_codec config — defaulting to Opus");
-                AudioCodec::Opus
-            },
-        }
-    })
-}
-
-/// Parse a video codec config string into a [`VideoCodec`].
-///
-/// Defaults to `Av1` for unrecognised values.  Used only for the
-/// pre-connection MIME hint.
-fn parse_mp4_video_codec_config(s: &str) -> VideoCodec {
-    match s.to_ascii_lowercase().as_str() {
-        "h264" | "avc1" | "avc" => VideoCodec::H264,
-        "vp9" => VideoCodec::Vp9,
-        "av1" => VideoCodec::Av1,
-        other => {
-            tracing::warn!(video_codec = %other, "unrecognised video_codec config — defaulting to AV1");
-            VideoCodec::Av1
-        },
     }
 }
 
@@ -865,16 +812,11 @@ impl ProcessorNode for Mp4MuxerNode {
         // no `video_codec` config is set; this can be overridden for H.264 or
         // VP9 pipelines.
         let video = if self.config.video_width > 0 && self.config.video_height > 0 {
-            Some(
-                self.config
-                    .video_codec
-                    .as_deref()
-                    .map_or(VideoCodec::Av1, parse_mp4_video_codec_config),
-            )
+            Some(self.config.video_codec.unwrap_or(VideoCodec::Av1))
         } else {
             None
         };
-        let audio = parse_mp4_audio_codec_config(self.config.audio_codec.as_deref());
+        let audio = self.config.audio_codec.unwrap_or(AudioCodec::Opus);
         Some(mp4_content_type(Some(audio), video).to_string())
     }
 
@@ -897,16 +839,12 @@ impl ProcessorNode for Mp4MuxerNode {
 
         let mut audio_rx: Option<tokio::sync::mpsc::Receiver<Packet>> = None;
         let mut video_rx: Option<tokio::sync::mpsc::Receiver<Packet>> = None;
-        let mut audio_codec = parse_mp4_audio_codec_config(self.config.audio_codec.as_deref());
+        let mut audio_codec = self.config.audio_codec.unwrap_or(AudioCodec::Opus);
         // Initialise video codec from config (matching audio_codec above).
         // Type resolution from upstream encoders will override this when
         // available, but the config-based default ensures the correct codec
         // is used even when type resolution is unavailable or times out.
-        let mut video_codec = self
-            .config
-            .video_codec
-            .as_deref()
-            .map_or(VideoCodec::Av1, parse_mp4_video_codec_config);
+        let mut video_codec = self.config.video_codec.unwrap_or(VideoCodec::Av1);
         let mut all_receivers: Vec<tokio::sync::mpsc::Receiver<Packet>> = Vec::new();
 
         // Resolve input types from engine or pin management messages.
@@ -1289,7 +1227,7 @@ async fn run_stream_mode(
                 let duration_us = metadata
                     .as_ref()
                     .and_then(|m| m.duration_us)
-                    .unwrap_or_else(|| default_audio_frame_duration_us(session.audio_codec));
+                    .unwrap_or_else(|| session.audio_codec.default_frame_duration_us());
                 let duration_ticks = us_to_ticks(duration_us, audio_timescale.get());
 
                 let data_size = data.len();
@@ -1736,7 +1674,7 @@ fn process_file_audio_frame(
 
     let duration_us = metadata
         .and_then(|m| m.duration_us)
-        .unwrap_or_else(|| default_audio_frame_duration_us(audio_codec));
+        .unwrap_or_else(|| audio_codec.default_frame_duration_us());
     let duration_ticks = us_to_ticks(duration_us, state.audio_timescale.get());
 
     let data_offset = state
@@ -2109,19 +2047,58 @@ mod tests {
         }
     }
 
-    /// Regression test: `parse_mp4_video_codec_config` must return H264 for
-    /// "h264" so that the muxer's config-based initialisation produces the
-    /// correct codec when the YAML specifies `video_codec: h264`.
+    /// Regression test: serde deserializes `"h264"`, `"avc1"`, `"avc"`, and
+    /// `"H264"` as `VideoCodec::H264` thanks to `rename_all = "lowercase"`
+    /// and serde aliases on the enum variant.
     ///
     /// Previously `video_codec` was hardcoded to `Av1` regardless of config,
     /// which caused the init segment to contain an `av01` track instead of
     /// `avc1` when type resolution was unavailable.
     #[test]
-    fn parse_video_codec_config_h264() {
-        assert_eq!(parse_mp4_video_codec_config("h264"), VideoCodec::H264);
-        assert_eq!(parse_mp4_video_codec_config("avc1"), VideoCodec::H264);
-        assert_eq!(parse_mp4_video_codec_config("avc"), VideoCodec::H264);
-        assert_eq!(parse_mp4_video_codec_config("H264"), VideoCodec::H264);
+    fn video_codec_serde_aliases() {
+        #[derive(serde::Deserialize)]
+        struct Cfg {
+            video_codec: VideoCodec,
+        }
+        // lowercase (rename_all canonical form)
+        let h264: Cfg = serde_json::from_str(r#"{"video_codec":"h264"}"#).unwrap();
+        assert_eq!(h264.video_codec, VideoCodec::H264);
+        // aliases
+        let avc1: Cfg = serde_json::from_str(r#"{"video_codec":"avc1"}"#).unwrap();
+        assert_eq!(avc1.video_codec, VideoCodec::H264);
+        let avc: Cfg = serde_json::from_str(r#"{"video_codec":"avc"}"#).unwrap();
+        assert_eq!(avc.video_codec, VideoCodec::H264);
+        // PascalCase alias (backward compat with old serialization)
+        let pascal: Cfg = serde_json::from_str(r#"{"video_codec":"H264"}"#).unwrap();
+        assert_eq!(pascal.video_codec, VideoCodec::H264);
+        // Other codecs: case-insensitive via aliases
+        let vp9: Cfg = serde_json::from_str(r#"{"video_codec":"VP9"}"#).unwrap();
+        assert_eq!(vp9.video_codec, VideoCodec::Vp9);
+        let av1_upper: Cfg = serde_json::from_str(r#"{"video_codec":"AV1"}"#).unwrap();
+        assert_eq!(av1_upper.video_codec, VideoCodec::Av1);
+    }
+
+    /// AudioCodec serde roundtrip: lowercase canonical form plus PascalCase
+    /// and uppercase aliases all deserialize correctly.
+    #[test]
+    fn audio_codec_serde_aliases() {
+        #[derive(serde::Deserialize)]
+        struct Cfg {
+            audio_codec: AudioCodec,
+        }
+        // lowercase (canonical)
+        let opus: Cfg = serde_json::from_str(r#"{"audio_codec":"opus"}"#).unwrap();
+        assert_eq!(opus.audio_codec, AudioCodec::Opus);
+        let aac: Cfg = serde_json::from_str(r#"{"audio_codec":"aac"}"#).unwrap();
+        assert_eq!(aac.audio_codec, AudioCodec::Aac);
+        // PascalCase alias (backward compat with old serialization)
+        let opus_pascal: Cfg = serde_json::from_str(r#"{"audio_codec":"Opus"}"#).unwrap();
+        assert_eq!(opus_pascal.audio_codec, AudioCodec::Opus);
+        let aac_pascal: Cfg = serde_json::from_str(r#"{"audio_codec":"Aac"}"#).unwrap();
+        assert_eq!(aac_pascal.audio_codec, AudioCodec::Aac);
+        // Uppercase alias
+        let aac_upper: Cfg = serde_json::from_str(r#"{"audio_codec":"AAC"}"#).unwrap();
+        assert_eq!(aac_upper.audio_codec, AudioCodec::Aac);
     }
 
     /// Verify that `build_sample_entries` produces AVC1 + MP4A when configured
@@ -2132,13 +2109,12 @@ mod tests {
         let config = Mp4MuxerConfig {
             video_width: 640,
             video_height: 480,
-            video_codec: Some("h264".to_string()),
-            audio_codec: Some("aac".to_string()),
+            video_codec: Some(VideoCodec::H264),
+            audio_codec: Some(AudioCodec::Aac),
             ..Mp4MuxerConfig::default()
         };
-        let audio = parse_mp4_audio_codec_config(config.audio_codec.as_deref());
-        let video =
-            config.video_codec.as_deref().map_or(VideoCodec::Av1, parse_mp4_video_codec_config);
+        let audio = config.audio_codec.unwrap_or(AudioCodec::Opus);
+        let video = config.video_codec.unwrap_or(VideoCodec::Av1);
         let (video_entry, audio_entry) = build_sample_entries(&config, audio, video);
         assert!(
             matches!(video_entry, SampleEntry::Avc1(_)),

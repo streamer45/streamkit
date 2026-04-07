@@ -12,17 +12,6 @@ use streamkit_core::types::{
     AudioCodec, EncodedAudioFormat, EncodedVideoFormat, PacketMetadata, PacketType, VideoCodec,
 };
 
-pub const DEFAULT_AUDIO_FRAME_DURATION_US_OPUS: u64 = 20_000;
-pub const DEFAULT_AUDIO_FRAME_DURATION_US_AAC: u64 = 21_333;
-
-/// Return the default audio frame duration for the given codec.
-pub const fn default_audio_frame_duration_us(codec: AudioCodec) -> u64 {
-    match codec {
-        AudioCodec::Aac => DEFAULT_AUDIO_FRAME_DURATION_US_AAC,
-        _ => DEFAULT_AUDIO_FRAME_DURATION_US_OPUS,
-    }
-}
-
 pub fn packet_duration_us(metadata: Option<&PacketMetadata>) -> Option<u64> {
     metadata.and_then(|m| m.duration_us).filter(|d| *d > 0)
 }
@@ -114,11 +103,10 @@ pub fn catalog_video_codec(codec: VideoCodec) -> hang::catalog::VideoCodec {
 ///
 /// Shared by `moq_peer` and `moq_push` to avoid duplicating the resolution chain.
 pub fn resolve_video_codec(
-    config_codec: Option<&str>,
+    config_codec: Option<VideoCodec>,
     input_types: &std::collections::HashMap<String, PacketType>,
 ) -> VideoCodec {
     config_codec
-        .and_then(parse_video_codec_config)
         .or_else(|| {
             input_types.iter().find_map(|(_, pt)| match pt {
                 PacketType::EncodedVideo(fmt) => Some(fmt.codec),
@@ -126,23 +114,6 @@ pub fn resolve_video_codec(
             })
         })
         .unwrap_or(VideoCodec::Vp9)
-}
-
-/// Parse a `video_codec` config string (e.g. `"vp9"`, `"av1"`) into the
-/// corresponding [`VideoCodec`].  Returns `None` for unrecognised values so
-/// the caller can fall back to auto-detection.
-///
-/// Shared by `moq_peer` and `moq_push` to avoid duplicating the parsing logic.
-pub fn parse_video_codec_config(s: &str) -> Option<VideoCodec> {
-    match s.to_ascii_lowercase().as_str() {
-        "vp9" => Some(VideoCodec::Vp9),
-        "av1" => Some(VideoCodec::Av1),
-        "h264" => Some(VideoCodec::H264),
-        _ => {
-            tracing::warn!(video_codec = %s, "unrecognised video_codec config value — ignoring");
-            None
-        },
-    }
 }
 
 /// Build the [`hang::catalog::AudioCodec`] entry for a given [`AudioCodec`].
@@ -170,11 +141,10 @@ pub fn catalog_audio_codec(codec: AudioCodec) -> hang::catalog::AudioCodec {
 ///
 /// Shared by `moq_peer` and `moq_push` to avoid duplicating the resolution chain.
 pub fn resolve_audio_codec(
-    config_codec: Option<&str>,
+    config_codec: Option<AudioCodec>,
     input_types: &std::collections::HashMap<String, PacketType>,
 ) -> AudioCodec {
     config_codec
-        .and_then(parse_audio_codec_config)
         .or_else(|| {
             input_types.iter().find_map(|(_, pt)| match pt {
                 PacketType::EncodedAudio(fmt) => Some(fmt.codec),
@@ -184,47 +154,9 @@ pub fn resolve_audio_codec(
         .unwrap_or(AudioCodec::Opus)
 }
 
-/// Parse an `audio_codec` config string (e.g. `"opus"`, `"aac"`) into the
-/// corresponding [`AudioCodec`].  Returns `None` for unrecognised values so
-/// the caller can fall back to auto-detection.
-pub fn parse_audio_codec_config(s: &str) -> Option<AudioCodec> {
-    match s.to_ascii_lowercase().as_str() {
-        "opus" => Some(AudioCodec::Opus),
-        "aac" => Some(AudioCodec::Aac),
-        _ => {
-            tracing::warn!(audio_codec = %s, "unrecognised audio_codec config value — ignoring");
-            None
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_video_codec_config_vp9() {
-        assert_eq!(parse_video_codec_config("vp9"), Some(VideoCodec::Vp9));
-    }
-
-    #[test]
-    fn parse_video_codec_config_av1() {
-        assert_eq!(parse_video_codec_config("av1"), Some(VideoCodec::Av1));
-    }
-
-    #[test]
-    fn parse_video_codec_config_case_insensitive() {
-        assert_eq!(parse_video_codec_config("AV1"), Some(VideoCodec::Av1));
-        assert_eq!(parse_video_codec_config("VP9"), Some(VideoCodec::Vp9));
-        assert_eq!(parse_video_codec_config("Av1"), Some(VideoCodec::Av1));
-        assert_eq!(parse_video_codec_config("H264"), Some(VideoCodec::H264));
-    }
-
-    #[test]
-    fn parse_video_codec_config_unknown_returns_none() {
-        assert_eq!(parse_video_codec_config(""), None);
-        assert_eq!(parse_video_codec_config("unknown"), None);
-    }
 
     #[test]
     fn catalog_video_codec_av1_produces_av1() {
@@ -267,7 +199,7 @@ mod tests {
             }),
         );
         // Config says AV1 — should win over input_types VP9.
-        assert_eq!(resolve_video_codec(Some("av1"), &input_types), VideoCodec::Av1);
+        assert_eq!(resolve_video_codec(Some(VideoCodec::Av1), &input_types), VideoCodec::Av1);
     }
 
     #[test]
@@ -290,5 +222,30 @@ mod tests {
     fn resolve_video_codec_defaults_to_vp9() {
         let input_types = std::collections::HashMap::new();
         assert_eq!(resolve_video_codec(None, &input_types), VideoCodec::Vp9);
+    }
+
+    #[test]
+    fn resolve_audio_codec_prefers_config() {
+        let input_types = std::collections::HashMap::new();
+        assert_eq!(resolve_audio_codec(Some(AudioCodec::Aac), &input_types), AudioCodec::Aac);
+    }
+
+    #[test]
+    fn resolve_audio_codec_falls_back_to_input_types() {
+        let mut input_types = std::collections::HashMap::new();
+        input_types.insert(
+            "audio".to_string(),
+            PacketType::EncodedAudio(EncodedAudioFormat {
+                codec: AudioCodec::Aac,
+                codec_private: None,
+            }),
+        );
+        assert_eq!(resolve_audio_codec(None, &input_types), AudioCodec::Aac);
+    }
+
+    #[test]
+    fn resolve_audio_codec_defaults_to_opus() {
+        let input_types = std::collections::HashMap::new();
+        assert_eq!(resolve_audio_codec(None, &input_types), AudioCodec::Opus);
     }
 }

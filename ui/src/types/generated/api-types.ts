@@ -12,9 +12,9 @@ export type PixelFormat = "Rgba8" | "I420" | "Nv12";
 
 export type RawVideoFormat = { width: number | null, height: number | null, pixel_format: PixelFormat, };
 
-export type AudioCodec = "Opus";
+export type AudioCodec = "opus" | "aac";
 
-export type VideoCodec = "Vp9" | "H264" | "Av1";
+export type VideoCodec = "vp9" | "h264" | "av1";
 
 export type VideoBitstreamFormat = "AnnexB" | "Avcc";
 
