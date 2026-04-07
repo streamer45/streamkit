@@ -11,8 +11,6 @@
 //! The node manages the TCP (or TLS) socket itself, feeding bytes between
 //! tokio I/O and the library's `feed_recv_buf()` / `send_buf()` interface.
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use opentelemetry::KeyValue;
 use schemars::schema_for;
@@ -207,12 +205,16 @@ impl ProcessorNode for RtmpPublishNode {
         // ── Stats / metrics ─────────────────────────────────────────────
         let meter = opentelemetry::global::meter("streamkit");
         let packet_counter = meter.u64_counter("rtmp_publish.packets").build();
-        let metric_labels = [KeyValue::new("node", node_name.clone())];
+        let video_labels =
+            [KeyValue::new("node", node_name.clone()), KeyValue::new("track", "video")];
+        let audio_labels =
+            [KeyValue::new("node", node_name.clone()), KeyValue::new("track", "audio")];
         let mut stats = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
 
         // ── Publishing state ────────────────────────────────────────────
         let mut audio_seq_header_sent = false;
-        let mut packet_count: u64 = 0;
+        let mut video_packet_count: u64 = 0;
+        let mut audio_packet_count: u64 = 0;
         let mut tcp_read_buf = vec![0u8; 8192];
 
         // Per-track timestamp rebase state.  Source timestamps from
@@ -251,13 +253,13 @@ impl ProcessorNode for RtmpPublishNode {
                         let timestamp_ms = ts_state.stamp(&pkt, Track::Video, &node_name);
                         if let Err(e) = process_video_packet(
                             &pkt, &mut connection, timestamp_ms,
-                            &packet_counter, &metric_labels,
-                            &mut stats, &mut packet_count, &node_name,
+                            &packet_counter, &video_labels,
+                            &mut stats, &mut video_packet_count, &node_name,
                         ) {
                             tracing::warn!(%node_name, error = %e, "Error processing video packet");
                             stats.errored();
                         }
-                        flush_send_buf(&mut connection, &mut stream).await?;
+                        flush_send_buf(&mut connection, &mut stream, &mut tcp_read_buf, &node_name).await?;
                     }
 
                     // Audio input
@@ -275,13 +277,13 @@ impl ProcessorNode for RtmpPublishNode {
                             &pkt, &mut connection, &mut audio_seq_header_sent,
                             timestamp_ms,
                             self.config.sample_rate, self.config.channels,
-                            &packet_counter, &metric_labels,
-                            &mut stats, &mut packet_count, &node_name,
+                            &packet_counter, &audio_labels,
+                            &mut stats, &mut audio_packet_count, &node_name,
                         ) {
                             tracing::warn!(%node_name, error = %e, "Error processing audio packet");
                             stats.errored();
                         }
-                        flush_send_buf(&mut connection, &mut stream).await?;
+                        flush_send_buf(&mut connection, &mut stream, &mut tcp_read_buf, &node_name).await?;
                     }
 
                     // TCP read (server responses / keepalive)
@@ -300,7 +302,7 @@ impl ProcessorNode for RtmpPublishNode {
                                     tracing::info!(%node_name, "Breaking loop: peer disconnected");
                                     break;
                                 }
-                                flush_send_buf(&mut connection, &mut stream).await?;
+                                flush_send_buf(&mut connection, &mut stream, &mut tcp_read_buf, &node_name).await?;
                             }
                             Err(e) => {
                                 tracing::warn!(%node_name, error = %e, "TCP read error");
@@ -324,7 +326,7 @@ impl ProcessorNode for RtmpPublishNode {
         }
         .await;
 
-        tracing::info!(%node_name, packets = packet_count, "RTMP publishing finished");
+        tracing::info!(%node_name, video_packets = video_packet_count, audio_packets = audio_packet_count, "RTMP publishing finished");
 
         match result {
             Ok(()) => {
@@ -419,11 +421,13 @@ async fn connect(url: &RtmpUrl) -> Result<RtmpStream, String> {
     tcp.set_nodelay(true).map_err(|e| format!("Failed to set TCP_NODELAY: {e}"))?;
 
     if url.tls {
+        use rustls_platform_verifier::BuilderVerifierExt;
+
         let config = rustls::ClientConfig::builder()
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(rustls_platform_verifier::Verifier::new()))
+            .with_platform_verifier()
+            .map_err(|e| format!("Failed to build TLS config with platform verifier: {e}"))?
             .with_no_client_auth();
-        let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+        let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
         let server_name = rustls::pki_types::ServerName::try_from(url.host.clone())
             .map_err(|e| format!("Invalid TLS server name '{}': {e}", url.host))?;
         let tls_stream = connector
@@ -481,17 +485,10 @@ async fn drive_handshake(
     }
 }
 
-/// Flush the RTMP connection's send buffer to the TCP stream.
-async fn flush_send_buf(
-    connection: &mut RtmpPublishClientConnection,
-    stream: &mut RtmpStream,
-) -> Result<(), StreamKitError> {
-    flush_send_buf_raw(connection, stream)
-        .await
-        .map_err(|e| StreamKitError::Runtime(format!("RTMP send failed: {e}")))
-}
-
-/// Flush the RTMP connection's send buffer (returns raw io::Error).
+/// Flush the RTMP connection's send buffer to the TCP stream (no ACK drain).
+///
+/// Used during the handshake phase where ACK window overflow is not a concern
+/// because the handshake loop already reads server data between flushes.
 async fn flush_send_buf_raw(
     connection: &mut RtmpPublishClientConnection,
     stream: &mut RtmpStream,
@@ -502,8 +499,71 @@ async fn flush_send_buf_raw(
         let len = buf.len();
         connection.advance_send_buf(len);
     }
-    // Explicit flush to ensure TLS buffered data is sent immediately.
     stream.flush().await?;
+    Ok(())
+}
+
+/// Flush the RTMP connection's send buffer to the TCP stream.
+///
+/// After flushing, performs a non-blocking drain of any pending server data
+/// (ACK messages, pings, etc.).  This prevents the ACK window from
+/// overflowing when media packets arrive faster than the main select loop
+/// services the TCP read arm — without this, `advance_send_buf` sees
+/// `unacked_bytes > window * 2` and transitions to `Disconnecting`.
+async fn flush_send_buf(
+    connection: &mut RtmpPublishClientConnection,
+    stream: &mut RtmpStream,
+    tcp_read_buf: &mut [u8],
+    node_name: &str,
+) -> Result<(), StreamKitError> {
+    // Write all pending outbound data.
+    while !connection.send_buf().is_empty() {
+        let buf = connection.send_buf();
+        stream
+            .write_all(buf)
+            .await
+            .map_err(|e| StreamKitError::Runtime(format!("RTMP send failed: {e}")))?;
+        let len = buf.len();
+        connection.advance_send_buf(len);
+    }
+    // Explicit flush to ensure TLS buffered data is sent immediately.
+    stream.flush().await.map_err(|e| StreamKitError::Runtime(format!("RTMP flush failed: {e}")))?;
+
+    // Non-blocking drain of any pending server data (ACKs, pings).
+    // Uses biased select: try the async read first, but if it would block,
+    // the `ready(())` arm fires immediately and we break out.  This works
+    // for both plain TCP and TLS streams (unlike `try_read` which can't
+    // decrypt TLS data synchronously).
+    loop {
+        tokio::select! {
+            biased;
+            result = stream.read(tcp_read_buf) => {
+                match result {
+                    Ok(0) => {
+                        return Err(StreamKitError::Runtime(
+                            "RTMP server closed connection".to_string(),
+                        ));
+                    }
+                    Ok(n) => {
+                        if let Err(e) = connection.feed_recv_buf(&tcp_read_buf[..n]) {
+                            tracing::warn!(%node_name, error = %e, "Error feeding RTMP recv buffer (flush drain)");
+                        }
+                        drain_events(connection, node_name);
+                    }
+                    Err(e) => {
+                        return Err(StreamKitError::Runtime(format!(
+                            "RTMP read failed during flush drain: {e}"
+                        )));
+                    }
+                }
+            }
+            () = std::future::ready(()) => {
+                // No data immediately available — done draining.
+                break;
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -533,6 +593,11 @@ fn drain_events(connection: &mut RtmpPublishClientConnection, node_name: &str) -
 // ---------------------------------------------------------------------------
 // Per-track timestamp rebase (mirrors WebM muxer `stage_frame` logic)
 // ---------------------------------------------------------------------------
+
+/// Backward timestamp jump threshold (ms).  Jumps larger than this trigger
+/// a rebase offset reset.  Typically caused by the compositor calibrating
+/// its running clock to a newly-arrived remote MoQ input.
+const BACKWARD_JUMP_THRESHOLD_MS: u32 = 500;
 
 /// Identifies the media track for timestamp rebase bookkeeping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -584,12 +649,14 @@ impl RtmpTimestampState {
 
     /// Compute the RTMP timestamp (u32 ms) for a packet, applying per-track
     /// rebase and monotonicity enforcement.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_sign_loss)]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     // RTMP timestamps are u32 ms; wrapping after ~49 days is acceptable.
-    // Source timestamps in ms fit comfortably in i64 for practical streams.
     // Sign loss is guarded by `.max(0)` before each cast.
     fn stamp(&mut self, packet: &Packet, track: Track, node_name: &str) -> u32 {
         let timestamp_us = match packet {
+            // In practice this node only receives Binary packets (encoded
+            // H.264 / AAC), but the Video variant is included for
+            // completeness since the type system allows it.
             Packet::Binary { metadata, .. }
             | Packet::Video(streamkit_core::types::VideoFrame { metadata, .. }) => {
                 metadata.as_ref().and_then(|m| m.timestamp_us)
@@ -597,7 +664,7 @@ impl RtmpTimestampState {
             _ => None,
         };
 
-        let pkt_ms = timestamp_us.map_or(0i64, |us| (us / 1_000) as i64);
+        let pkt_ms = timestamp_us.map_or(0i64, |us| i64::try_from(us / 1_000).unwrap_or(i64::MAX));
 
         let ts = match track {
             Track::Video => &mut self.video,
@@ -622,14 +689,14 @@ impl RtmpTimestampState {
 
         let mut rtmp_ms = pkt_ms.saturating_add(offset).max(0) as u32;
 
-        // Handle large backward jumps (> 500 ms) — typically caused by the
-        // compositor calibrating its running clock to a remote MoQ input.
-        // Reset the rebase offset so the track re-aligns with the global
-        // position (same strategy as the WebM muxer).
+        // Handle large backward jumps — typically caused by the compositor
+        // calibrating its running clock to a remote MoQ input.  Reset the
+        // rebase offset so the track re-aligns with the global position
+        // (same strategy as the WebM muxer).
         if let Some(last) = ts.last_ms {
             if rtmp_ms < last {
                 let gap_ms = last - rtmp_ms;
-                if gap_ms > 500 {
+                if gap_ms > BACKWARD_JUMP_THRESHOLD_MS {
                     let new_offset = i64::from(self.global_last_ms) - pkt_ms;
                     tracing::info!(
                         %node_name,
@@ -1045,6 +1112,11 @@ pub fn register_rtmp_nodes(registry: &mut NodeRegistry) {
 mod tests {
     use super::*;
     use streamkit_core::types::PacketMetadata;
+
+    // Note: env-var tests use unique variable names per test (prefixed
+    // `_SK_TEST_RTMP_*`) so they are safe to run in parallel without
+    // `#[serial]`.  If a test is added that shares a variable name,
+    // add the `serial_test` crate.
 
     #[test]
     fn parse_annexb_single_nal_4byte_sc() {

@@ -91,7 +91,7 @@ openh264 = { version = "0.9", optional = true }
 shiguredo_rtmp = { version = "2026.1.0-canary.5", optional = true }
 tokio-rustls = { version = "0.26", optional = true }
 rustls = { version = "0.23", optional = true, default-features = false, features = ["std"] }
-rustls-platform-verifier = { version = "0.5", optional = true }
+rustls-platform-verifier = { version = "0.6", optional = true }
 
 # AV1 codec (optional, behind `av1` feature)
 rav1e = { version = "0.8", optional = true, default-features = false, features = ["threading", "asm"] }
