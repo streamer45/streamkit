@@ -1973,9 +1973,8 @@ mod tests {
         let mut dec = ChunkDecoder::new();
         dec.set_chunk_size(5);
         dec.push(&wire);
-        // Multi-chunk messages require multiple decode_message() calls —
-        // each call processes one chunk and returns None until the final
-        // chunk completes the message.
+        // decode_message() internally loops over continuation chunks,
+        // so a single call assembles the full multi-chunk message.
         let decoded = loop {
             if let Some(msg) = dec.decode_message().unwrap() {
                 break msg;
