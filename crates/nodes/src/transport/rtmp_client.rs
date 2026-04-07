@@ -676,184 +676,189 @@ impl ChunkDecoder {
 
     /// Try to decode the next complete message from the buffer.
     ///
-    /// Returns `Ok(None)` if there isn't enough data yet.
+    /// Internally loops over continuation chunks so that a multi-chunk
+    /// message whose chunks are all present in the buffer is fully
+    /// reassembled in a single call.  Returns `Ok(None)` only when the
+    /// buffer is empty or contains an incomplete chunk.
     #[allow(clippy::cast_possible_truncation)]
     fn decode_message(&mut self) -> Result<Option<InboundMessage>, Error> {
-        if self.buf.is_empty() {
-            return Ok(None);
-        }
-
-        let mut pos = 0;
-
-        // ── Basic header ────────────────────────────────────────────
-        if pos >= self.buf.len() {
-            return Ok(None);
-        }
-        let first_byte = self.buf[pos];
-        pos += 1;
-        let fmt = first_byte >> 6;
-        let csid_low = first_byte & 0x3F;
-
-        let csid: u16 = match csid_low {
-            0 => {
-                // 2-byte form.
-                if pos >= self.buf.len() {
-                    return Ok(None);
-                }
-                let c = u16::from(self.buf[pos]) + 64;
-                pos += 1;
-                c
-            },
-            1 => {
-                // 3-byte form.
-                if pos + 1 >= self.buf.len() {
-                    return Ok(None);
-                }
-                let c = u16::from(self.buf[pos]) + u16::from(self.buf[pos + 1]) * 256 + 64;
-                pos += 2;
-                c
-            },
-            _ => u16::from(csid_low),
-        };
-
-        // ── Message header ──────────────────────────────────────────
-        let header_len: usize = match fmt {
-            0 => 11,
-            1 => 7,
-            2 => 3,
-            3 => 0,
-            _ => return Err(Error::new(format!("Invalid chunk fmt: {fmt}"))),
-        };
-
-        if pos + header_len > self.buf.len() {
-            return Ok(None); // need more data
-        }
-
-        let state = self.csid_states.entry(csid).or_default();
-
-        match fmt {
-            0 => {
-                let ts = u32::from(self.buf[pos]) << 16
-                    | u32::from(self.buf[pos + 1]) << 8
-                    | u32::from(self.buf[pos + 2]);
-                let ml = u32::from(self.buf[pos + 3]) << 16
-                    | u32::from(self.buf[pos + 4]) << 8
-                    | u32::from(self.buf[pos + 5]);
-                let mt = self.buf[pos + 6];
-                let si = u32::from(self.buf[pos + 7])
-                    | u32::from(self.buf[pos + 8]) << 8
-                    | u32::from(self.buf[pos + 9]) << 16
-                    | u32::from(self.buf[pos + 10]) << 24;
-                pos += 11;
-                state.timestamp = ts;
-                state.msg_length = ml;
-                state.msg_type_id = mt;
-                state.stream_id = si;
-                state.timestamp_delta = ts; // for fmt=0, delta equals timestamp
-            },
-            1 => {
-                let td = u32::from(self.buf[pos]) << 16
-                    | u32::from(self.buf[pos + 1]) << 8
-                    | u32::from(self.buf[pos + 2]);
-                let ml = u32::from(self.buf[pos + 3]) << 16
-                    | u32::from(self.buf[pos + 4]) << 8
-                    | u32::from(self.buf[pos + 5]);
-                let mt = self.buf[pos + 6];
-                pos += 7;
-                state.timestamp_delta = td;
-                if state.has_prev {
-                    state.timestamp = state.timestamp.wrapping_add(td);
-                } else {
-                    state.timestamp = td;
-                }
-                state.msg_length = ml;
-                state.msg_type_id = mt;
-                // stream_id inherited
-            },
-            2 => {
-                let td = u32::from(self.buf[pos]) << 16
-                    | u32::from(self.buf[pos + 1]) << 8
-                    | u32::from(self.buf[pos + 2]);
-                pos += 3;
-                state.timestamp_delta = td;
-                if state.has_prev {
-                    state.timestamp = state.timestamp.wrapping_add(td);
-                } else {
-                    state.timestamp = td;
-                }
-                // msg_length, msg_type_id, stream_id inherited
-            },
-            3 => {
-                // All inherited. Apply delta for continuation of a new message
-                // (not a continuation chunk of the same message).
-                if state.bytes_remaining == 0 && state.has_prev {
-                    state.timestamp = state.timestamp.wrapping_add(state.timestamp_delta);
-                }
-            },
-            _ => unreachable!(),
-        }
-
-        // Extended timestamp.
-        let is_extended = if fmt == 0 {
-            state.timestamp == 0x00FF_FFFF
-        } else {
-            state.timestamp_delta == 0x00FF_FFFF
-        };
-
-        if is_extended {
-            if pos + 4 > self.buf.len() {
+        loop {
+            if self.buf.is_empty() {
                 return Ok(None);
             }
-            let ext = u32::from_be_bytes([
-                self.buf[pos],
-                self.buf[pos + 1],
-                self.buf[pos + 2],
-                self.buf[pos + 3],
-            ]);
-            pos += 4;
-            state.timestamp = if fmt == 0 {
-                ext
+
+            let mut pos = 0;
+
+            // ── Basic header ────────────────────────────────────────
+            if pos >= self.buf.len() {
+                return Ok(None);
+            }
+            let first_byte = self.buf[pos];
+            pos += 1;
+            let fmt = first_byte >> 6;
+            let csid_low = first_byte & 0x3F;
+
+            let csid: u16 = match csid_low {
+                0 => {
+                    // 2-byte form.
+                    if pos >= self.buf.len() {
+                        return Ok(None);
+                    }
+                    let c = u16::from(self.buf[pos]) + 64;
+                    pos += 1;
+                    c
+                },
+                1 => {
+                    // 3-byte form.
+                    if pos + 1 >= self.buf.len() {
+                        return Ok(None);
+                    }
+                    let c = u16::from(self.buf[pos]) + u16::from(self.buf[pos + 1]) * 256 + 64;
+                    pos += 2;
+                    c
+                },
+                _ => u16::from(csid_low),
+            };
+
+            // ── Message header ──────────────────────────────────────
+            let header_len: usize = match fmt {
+                0 => 11,
+                1 => 7,
+                2 => 3,
+                3 => 0,
+                _ => return Err(Error::new(format!("Invalid chunk fmt: {fmt}"))),
+            };
+
+            if pos + header_len > self.buf.len() {
+                return Ok(None); // need more data
+            }
+
+            let state = self.csid_states.entry(csid).or_default();
+
+            match fmt {
+                0 => {
+                    let ts = u32::from(self.buf[pos]) << 16
+                        | u32::from(self.buf[pos + 1]) << 8
+                        | u32::from(self.buf[pos + 2]);
+                    let ml = u32::from(self.buf[pos + 3]) << 16
+                        | u32::from(self.buf[pos + 4]) << 8
+                        | u32::from(self.buf[pos + 5]);
+                    let mt = self.buf[pos + 6];
+                    let si = u32::from(self.buf[pos + 7])
+                        | u32::from(self.buf[pos + 8]) << 8
+                        | u32::from(self.buf[pos + 9]) << 16
+                        | u32::from(self.buf[pos + 10]) << 24;
+                    pos += 11;
+                    state.timestamp = ts;
+                    state.msg_length = ml;
+                    state.msg_type_id = mt;
+                    state.stream_id = si;
+                    state.timestamp_delta = ts; // for fmt=0, delta equals timestamp
+                },
+                1 => {
+                    let td = u32::from(self.buf[pos]) << 16
+                        | u32::from(self.buf[pos + 1]) << 8
+                        | u32::from(self.buf[pos + 2]);
+                    let ml = u32::from(self.buf[pos + 3]) << 16
+                        | u32::from(self.buf[pos + 4]) << 8
+                        | u32::from(self.buf[pos + 5]);
+                    let mt = self.buf[pos + 6];
+                    pos += 7;
+                    state.timestamp_delta = td;
+                    if state.has_prev {
+                        state.timestamp = state.timestamp.wrapping_add(td);
+                    } else {
+                        state.timestamp = td;
+                    }
+                    state.msg_length = ml;
+                    state.msg_type_id = mt;
+                    // stream_id inherited
+                },
+                2 => {
+                    let td = u32::from(self.buf[pos]) << 16
+                        | u32::from(self.buf[pos + 1]) << 8
+                        | u32::from(self.buf[pos + 2]);
+                    pos += 3;
+                    state.timestamp_delta = td;
+                    if state.has_prev {
+                        state.timestamp = state.timestamp.wrapping_add(td);
+                    } else {
+                        state.timestamp = td;
+                    }
+                    // msg_length, msg_type_id, stream_id inherited
+                },
+                3 => {
+                    // All inherited. Apply delta for continuation of a new message
+                    // (not a continuation chunk of the same message).
+                    if state.bytes_remaining == 0 && state.has_prev {
+                        state.timestamp = state.timestamp.wrapping_add(state.timestamp_delta);
+                    }
+                },
+                _ => unreachable!(),
+            }
+
+            // Extended timestamp.
+            let is_extended = if fmt == 0 {
+                state.timestamp == 0x00FF_FFFF
             } else {
-                // For fmt 1/2/3 with extended timestamp, the ext field
-                // replaces the delta.
-                state.timestamp.wrapping_sub(state.timestamp_delta).wrapping_add(ext)
+                state.timestamp_delta == 0x00FF_FFFF
             };
-            state.timestamp_delta = ext;
-        }
 
-        // ── Payload ─────────────────────────────────────────────────
-        // If bytes_remaining == 0, this is the first chunk of a new message.
-        if state.bytes_remaining == 0 {
-            state.payload.clear();
-            state.bytes_remaining = state.msg_length;
-        }
+            if is_extended {
+                if pos + 4 > self.buf.len() {
+                    return Ok(None);
+                }
+                let ext = u32::from_be_bytes([
+                    self.buf[pos],
+                    self.buf[pos + 1],
+                    self.buf[pos + 2],
+                    self.buf[pos + 3],
+                ]);
+                pos += 4;
+                state.timestamp = if fmt == 0 {
+                    ext
+                } else {
+                    // For fmt 1/2/3 with extended timestamp, the ext field
+                    // replaces the delta.
+                    state.timestamp.wrapping_sub(state.timestamp_delta).wrapping_add(ext)
+                };
+                state.timestamp_delta = ext;
+            }
 
-        let chunk_data_len = (state.bytes_remaining).min(self.chunk_size) as usize;
-        if pos + chunk_data_len > self.buf.len() {
-            return Ok(None); // need more data
-        }
+            // ── Payload ─────────────────────────────────────────────
+            // If bytes_remaining == 0, this is the first chunk of a new message.
+            if state.bytes_remaining == 0 {
+                state.payload.clear();
+                state.bytes_remaining = state.msg_length;
+            }
 
-        state.payload.extend_from_slice(&self.buf[pos..pos + chunk_data_len]);
-        state.bytes_remaining -= chunk_data_len as u32;
-        pos += chunk_data_len;
+            let chunk_data_len = (state.bytes_remaining).min(self.chunk_size) as usize;
+            if pos + chunk_data_len > self.buf.len() {
+                return Ok(None); // need more data
+            }
 
-        // Consume the bytes we've processed.
-        self.buf.drain(..pos);
+            state.payload.extend_from_slice(&self.buf[pos..pos + chunk_data_len]);
+            state.bytes_remaining -= chunk_data_len as u32;
+            pos += chunk_data_len;
 
-        // Check if the message is complete.
-        if state.bytes_remaining == 0 {
-            state.has_prev = true;
-            let msg = InboundMessage {
-                #[cfg(test)]
-                timestamp: state.timestamp,
-                msg_type_id: state.msg_type_id,
-                #[cfg(test)]
-                stream_id: state.stream_id,
-                payload: std::mem::take(&mut state.payload),
-            };
-            Ok(Some(msg))
-        } else {
-            Ok(None) // message not yet fully assembled
+            // Consume the bytes we've processed.
+            self.buf.drain(..pos);
+
+            // Check if the message is complete.
+            if state.bytes_remaining == 0 {
+                state.has_prev = true;
+                let msg = InboundMessage {
+                    #[cfg(test)]
+                    timestamp: state.timestamp,
+                    msg_type_id: state.msg_type_id,
+                    #[cfg(test)]
+                    stream_id: state.stream_id,
+                    payload: std::mem::take(&mut state.payload),
+                };
+                return Ok(Some(msg));
+            }
+            // Message not yet fully assembled — loop back to try the
+            // next continuation chunk from the buffer.
         }
     }
 }
@@ -2307,5 +2312,148 @@ mod tests {
         assert_eq!(out[0], 0x01); // fmt=0, csid=1 (3-byte marker)
         let val = u16::from(out[1]) + u16::from(out[2]) * 256 + 64;
         assert_eq!(val, 320);
+    }
+
+    // ── Full server simulation (YouTube-like flow) ────────────────
+
+    /// Helper: build an RTMP chunk from scratch using our encoder, simulating
+    /// a server sending a message.  Returns the raw bytes ready to feed into
+    /// a client connection's `feed_recv_buf`.
+    fn server_encode(
+        encoder: &mut ChunkEncoder,
+        csid: u16,
+        msg_type_id: u8,
+        stream_id: u32,
+        payload: Vec<u8>,
+    ) -> Vec<u8> {
+        let mut out = Vec::new();
+        encoder.encode_message(
+            &OutboundMessage { csid, timestamp: 0, msg_type_id, stream_id, payload },
+            &mut out,
+        );
+        out
+    }
+
+    /// Simulate the complete YouTube RTMP server flow from handshake
+    /// through to Publishing state.  This catches regressions in the
+    /// state machine, AMF0 codec, and chunk encoder/decoder interop.
+    #[test]
+    fn full_youtube_server_simulation() {
+        let url = RtmpUrl::parse("rtmp://x.rtmp.youtube.com/live2/stream-key").unwrap();
+        let mut conn = RtmpPublishClientConnection::new(url);
+        assert_eq!(conn.state(), RtmpConnectionState::Handshaking);
+
+        // ── Step 1: client sends C0+C1 ──────────────────────────────
+        let c0c1 = conn.send_buf().to_vec();
+        assert_eq!(c0c1.len(), 1 + HANDSHAKE_SIZE);
+        conn.advance_send_buf(c0c1.len());
+
+        // ── Step 2: server sends S0+S1+S2 (no leftover bytes) ───────
+        let mut s0s1s2 = Vec::with_capacity(1 + HANDSHAKE_SIZE * 2);
+        s0s1s2.push(0x03); // S0
+        s0s1s2.extend_from_slice(&vec![0xBB; HANDSHAKE_SIZE]); // S1
+        s0s1s2.extend_from_slice(&c0c1[1..=HANDSHAKE_SIZE]); // S2 = echo C1
+
+        conn.feed_recv_buf(&s0s1s2).unwrap();
+        assert_eq!(conn.state(), RtmpConnectionState::Connecting);
+
+        // Send buf now has: C2 + WinAckSize + SetChunkSize + connect
+        assert!(conn.send_buf().len() > HANDSHAKE_SIZE);
+        conn.advance_send_buf(conn.send_buf().len()); // simulate flush
+
+        // ── Step 3: server sends WinAckSize + SetPeerBandwidth ──────
+        let mut srv_enc = ChunkEncoder::new();
+        let win_ack = server_encode(
+            &mut srv_enc, 2, MSG_WIN_ACK_SIZE, 0,
+            2_500_000u32.to_be_bytes().to_vec(),
+        );
+        let mut set_bw_payload = 59_768_832u32.to_be_bytes().to_vec();
+        set_bw_payload.push(2); // limit_type = Dynamic
+        let set_bw = server_encode(
+            &mut srv_enc, 2, MSG_SET_PEER_BANDWIDTH, 0,
+            set_bw_payload,
+        );
+
+        let mut server_msg = Vec::new();
+        server_msg.extend_from_slice(&win_ack);
+        server_msg.extend_from_slice(&set_bw);
+        conn.feed_recv_buf(&server_msg).unwrap();
+        // Still Connecting — waiting for _result
+        assert_eq!(conn.state(), RtmpConnectionState::Connecting);
+
+        // Client should have queued a WinAckSize response to SetPeerBandwidth
+        assert!(!conn.send_buf().is_empty());
+        conn.advance_send_buf(conn.send_buf().len());
+
+        // ── Step 4: server sends connect _result ────────────────────
+        let mut result_payload = Vec::new();
+        amf0_encode(&Amf0Value::String("_result".to_string()), &mut result_payload).unwrap();
+        amf0_encode(&Amf0Value::Number(1.0), &mut result_payload).unwrap();
+        amf0_encode(&Amf0Value::Object(vec![
+            ("fmsVer".to_string(), Amf0Value::String("FMS/3,5,7,7009".to_string())),
+            ("capabilities".to_string(), Amf0Value::Number(31.0)),
+        ]), &mut result_payload).unwrap();
+        amf0_encode(&Amf0Value::Object(vec![
+            ("level".to_string(), Amf0Value::String("status".to_string())),
+            ("code".to_string(), Amf0Value::String("NetConnection.Connect.Success".to_string())),
+            ("description".to_string(), Amf0Value::String("Connection succeeded".to_string())),
+            ("objectEncoding".to_string(), Amf0Value::Number(0.0)),
+        ]), &mut result_payload).unwrap();
+        let result_msg = server_encode(
+            &mut srv_enc, 3, MSG_COMMAND_AMF0, 0,
+            result_payload,
+        );
+
+        conn.feed_recv_buf(&result_msg).unwrap();
+        // After _result → Connected → auto-sends createStream
+        assert_eq!(conn.state(), RtmpConnectionState::Connected);
+        conn.advance_send_buf(conn.send_buf().len());
+
+        // ── Step 5: server sends createStream _result ───────────────
+        let mut cs_payload = Vec::new();
+        amf0_encode(&Amf0Value::String("_result".to_string()), &mut cs_payload).unwrap();
+        amf0_encode(&Amf0Value::Number(2.0), &mut cs_payload).unwrap();
+        amf0_encode(&Amf0Value::Null, &mut cs_payload).unwrap();
+        amf0_encode(&Amf0Value::Number(1.0), &mut cs_payload).unwrap(); // stream_id=1
+        let cs_msg = server_encode(
+            &mut srv_enc, 3, MSG_COMMAND_AMF0, 0,
+            cs_payload,
+        );
+
+        conn.feed_recv_buf(&cs_msg).unwrap();
+        // MediaStreamCreated → auto-sends publish → PublishPending
+        assert_eq!(conn.state(), RtmpConnectionState::PublishPending);
+        assert_eq!(conn.media_stream_id, 1);
+        conn.advance_send_buf(conn.send_buf().len());
+
+        // ── Step 6: server sends onStatus(NetStream.Publish.Start) ──
+        let mut status_payload = Vec::new();
+        amf0_encode(&Amf0Value::String("onStatus".to_string()), &mut status_payload).unwrap();
+        amf0_encode(&Amf0Value::Number(0.0), &mut status_payload).unwrap();
+        amf0_encode(&Amf0Value::Null, &mut status_payload).unwrap();
+        amf0_encode(&Amf0Value::Object(vec![
+            ("level".to_string(), Amf0Value::String("status".to_string())),
+            ("code".to_string(), Amf0Value::String("NetStream.Publish.Start".to_string())),
+            ("description".to_string(), Amf0Value::String("Publishing stream-key".to_string())),
+        ]), &mut status_payload).unwrap();
+        let status_msg = server_encode(
+            &mut srv_enc, 4, MSG_COMMAND_AMF0, 1,
+            status_payload,
+        );
+
+        conn.feed_recv_buf(&status_msg).unwrap();
+        assert_eq!(conn.state(), RtmpConnectionState::Publishing);
+
+        // ── Step 7: verify we can send media ────────────────────────
+        let video = VideoFrame {
+            timestamp: RtmpTimestamp::from_millis(0),
+            composition_timestamp_offset: RtmpTimestampDelta::ZERO,
+            frame_type: VideoFrameType::KeyFrame,
+            codec: VideoCodec::Avc,
+            avc_packet_type: Some(AvcPacketType::NalUnit),
+            data: vec![0x00, 0x00, 0x01, 0x67, 0x42],
+        };
+        conn.send_video(&video).unwrap();
+        assert!(!conn.send_buf().is_empty());
     }
 }

@@ -931,7 +931,9 @@ fn process_video_packet(
     counter.add(1, labels);
     stats.sent();
 
-    if *packet_count <= 5 || (*packet_count).is_multiple_of(100) {
+    // `% N == 0` instead of `.is_multiple_of(N)` for MSRV < 1.85 compat.
+    #[allow(clippy::manual_is_multiple_of)]
+    if *packet_count <= 5 || *packet_count % 100 == 0 {
         tracing::debug!(%node_name, packet = *packet_count, %timestamp_ms, %keyframe, "Sent video");
     }
 
@@ -1013,7 +1015,9 @@ fn process_audio_packet(
     counter.add(1, labels);
     stats.sent();
 
-    if *packet_count <= 5 || (*packet_count).is_multiple_of(200) {
+    // `% N == 0` instead of `.is_multiple_of(N)` for MSRV < 1.85 compat.
+    #[allow(clippy::manual_is_multiple_of)]
+    if *packet_count <= 5 || *packet_count % 200 == 0 {
         tracing::debug!(%node_name, packet = *packet_count, %timestamp_ms, "Sent audio");
     }
 
