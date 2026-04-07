@@ -335,6 +335,13 @@ impl ProcessorNode for RtmpPublishNode {
 
         tracing::info!(%node_name, video_packets = video_packet_count, audio_packets = audio_packet_count, "RTMP publishing finished");
 
+        // Best-effort graceful TCP shutdown so the server sees a FIN
+        // rather than an abrupt RST.  The shiguredo_rtmp library does
+        // not expose deleteStream/FCUnpublish on the publish client,
+        // so we cannot send a clean RTMP-level teardown; the TCP
+        // close is the next best signal.
+        let _ = stream.shutdown().await;
+
         match result {
             Ok(()) => {
                 state_helpers::emit_stopped(&context.state_tx, &node_name, "completed");
@@ -392,15 +399,39 @@ impl RtmpStream {
             Self::Tls(s) => tokio::io::AsyncWriteExt::flush(s).await,
         }
     }
+
+    async fn shutdown(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Plain(s) => tokio::io::AsyncWriteExt::shutdown(s).await,
+            Self::Tls(s) => tokio::io::AsyncWriteExt::shutdown(s).await,
+        }
+    }
 }
 
 /// Mask the stream-key portion of an RTMP URL for safe logging.
 ///
-/// Returns the URL with everything after the last `/` in the path replaced
-/// by `<redacted>`.  If parsing fails, returns `<redacted>`.
+/// If the URL path has two or more segments (e.g. `/app/stream_key`),
+/// the last segment is replaced with `<redacted>`.  If the path has
+/// only one segment (e.g. `/app` — no key embedded), the URL is
+/// returned as-is so the app name remains visible in logs.
 fn mask_stream_key(url: &str) -> String {
-    url.rfind('/')
-        .map_or_else(|| "<redacted>".to_string(), |idx| format!("{}/<redacted>", &url[..idx]))
+    // Find the start of the path portion (after ://host[:port]).
+    let path_start = url
+        .find("://")
+        .and_then(|scheme_end| url[scheme_end + 3..].find('/').map(|p| scheme_end + 3 + p));
+
+    path_start.map_or_else(
+        || "<redacted>".to_string(),
+        |start| {
+            let path = &url[start..];
+            // rfind('/') always succeeds (at least the leading `/`).
+            // If > 0 there is a second segment to redact.
+            match path.rfind('/') {
+                Some(last) if last > 0 => format!("{}/<redacted>", &url[..start + last]),
+                _ => url.to_string(),
+            }
+        },
+    )
 }
 
 /// Resolve the final RTMP URL from config fields.
@@ -1228,8 +1259,16 @@ mod tests {
     }
 
     #[test]
-    fn mask_stream_key_no_slash() {
-        let masked = mask_stream_key("no-slash-at-all");
+    fn mask_stream_key_bare_url_not_over_redacted() {
+        // When no stream key is embedded, the app name should remain visible.
+        let url = "rtmp://a.rtmp.youtube.com/live2";
+        let masked = mask_stream_key(url);
+        assert_eq!(masked, url, "bare URL without key should not be redacted");
+    }
+
+    #[test]
+    fn mask_stream_key_no_scheme() {
+        let masked = mask_stream_key("no-scheme-at-all");
         assert_eq!(masked, "<redacted>");
     }
 
