@@ -92,8 +92,9 @@ nodes:
   mixer:
     kind: audio::mixer
     params:
-      samples_per_channel: 960
-      generate_silence: true
+      clocked:
+        frame_samples_per_channel: 960
+        generate_silence: true
     needs:
       - mic_gain
       - music_gain
