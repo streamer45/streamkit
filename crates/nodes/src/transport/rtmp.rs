@@ -579,11 +579,7 @@ struct RtmpTimestampState {
 
 impl RtmpTimestampState {
     const fn new() -> Self {
-        Self {
-            video: TrackTimestamp::new(),
-            audio: TrackTimestamp::new(),
-            global_last_ms: 0,
-        }
+        Self { video: TrackTimestamp::new(), audio: TrackTimestamp::new(), global_last_ms: 0 }
     }
 
     /// Compute the RTMP timestamp (u32 ms) for a packet, applying per-track
@@ -594,7 +590,8 @@ impl RtmpTimestampState {
     // Sign loss is guarded by `.max(0)` before each cast.
     fn stamp(&mut self, packet: &Packet, track: Track, node_name: &str) -> u32 {
         let timestamp_us = match packet {
-            Packet::Binary { metadata, .. } | Packet::Video(streamkit_core::types::VideoFrame { metadata, .. }) => {
+            Packet::Binary { metadata, .. }
+            | Packet::Video(streamkit_core::types::VideoFrame { metadata, .. }) => {
                 metadata.as_ref().and_then(|m| m.timestamp_us)
             },
             _ => None,
@@ -610,9 +607,8 @@ impl RtmpTimestampState {
         // First frame for this track: compute rebase offset so the track
         // starts at the current global position.
         let is_new_offset = ts.rebase_offset_ms.is_none();
-        let offset = *ts.rebase_offset_ms.get_or_insert_with(|| {
-            i64::from(self.global_last_ms) - pkt_ms
-        });
+        let offset =
+            *ts.rebase_offset_ms.get_or_insert_with(|| i64::from(self.global_last_ms) - pkt_ms);
         if is_new_offset {
             tracing::info!(
                 %node_name,
@@ -1306,8 +1302,10 @@ mod tests {
         let audio_ts0 = state.stamp(&make_packet(Some(0)), Track::Audio, "test");
         let audio_ts1 = state.stamp(&make_packet(Some(20_000)), Track::Audio, "test");
         // Audio should start near video's current position (~2966ms).
-        assert!(audio_ts0 >= 2900 && audio_ts0 <= 3100,
-            "audio should start near video position, got {audio_ts0}");
+        assert!(
+            audio_ts0 >= 2900 && audio_ts0 <= 3100,
+            "audio should start near video position, got {audio_ts0}"
+        );
         // Cadence preserved: 20ms between audio frames.
         assert_eq!(audio_ts1 - audio_ts0, 20);
     }
@@ -1329,8 +1327,10 @@ mod tests {
         // (a large backward jump).
         let ts = state.stamp(&make_packet(Some(100_000)), Track::Video, "test");
         // Should have reset and re-aligned near the global position.
-        assert!(ts >= global_before,
-            "after rebase reset, ts ({ts}) should be >= global_before ({global_before})");
+        assert!(
+            ts >= global_before,
+            "after rebase reset, ts ({ts}) should be >= global_before ({global_before})"
+        );
     }
 
     #[test]
