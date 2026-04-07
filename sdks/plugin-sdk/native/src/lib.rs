@@ -1431,10 +1431,14 @@ macro_rules! native_source_plugin_entry {
                                     )
                                 },
                                 $crate::streamkit_core::types::PacketType::EncodedAudio(format) => {
-                                    Some($crate::conversions::codec_name_to_cstring(format.codec.as_c_name()))
+                                    Some($crate::conversions::codec_name_to_cstring(
+                                        format.codec.as_c_name(),
+                                    ))
                                 },
                                 $crate::streamkit_core::types::PacketType::EncodedVideo(format) => {
-                                    Some($crate::conversions::codec_name_to_cstring(format.codec.as_c_name()))
+                                    Some($crate::conversions::codec_name_to_cstring(
+                                        format.codec.as_c_name(),
+                                    ))
                                 },
                                 _ => None,
                             };
@@ -1552,10 +1556,14 @@ macro_rules! native_source_plugin_entry {
                                     .expect("Custom type_id should not contain null bytes"),
                             ),
                             $crate::streamkit_core::types::PacketType::EncodedAudio(format) => {
-                                Some($crate::conversions::codec_name_to_cstring(format.codec.as_c_name()))
+                                Some($crate::conversions::codec_name_to_cstring(
+                                    format.codec.as_c_name(),
+                                ))
                             },
                             $crate::streamkit_core::types::PacketType::EncodedVideo(format) => {
-                                Some($crate::conversions::codec_name_to_cstring(format.codec.as_c_name()))
+                                Some($crate::conversions::codec_name_to_cstring(
+                                    format.codec.as_c_name(),
+                                ))
                             },
                             _ => None,
                         };
