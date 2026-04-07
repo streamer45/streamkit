@@ -813,7 +813,7 @@ impl RtmpTimestampState {
                 }
                 // Enforce monotonicity for remaining small gaps / jitter.
                 if rtmp_ms <= last {
-                    rtmp_ms = last + 1;
+                    rtmp_ms = last.saturating_add(1);
                 }
             }
         }
