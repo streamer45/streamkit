@@ -194,6 +194,12 @@ pub const fn raw_video_format_from_c(cfmt: &CRawVideoFormat) -> RawVideoFormat {
 ///
 /// Codec names are compile-time ASCII constants that never contain interior
 /// null bytes, so `CString::new` cannot fail here.
+///
+/// # Panics
+///
+/// Panics if `name` contains an interior null byte.  This is a programmer
+/// error — `as_c_name()` values are controlled constants that never contain
+/// null bytes.
 #[allow(clippy::expect_used)] // as_c_name() returns controlled constants; null bytes are a programmer error
 pub fn codec_name_to_cstring(name: &str) -> CString {
     CString::new(name).expect("codec name from as_c_name() must not contain null bytes")
