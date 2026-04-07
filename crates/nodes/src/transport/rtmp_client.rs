@@ -323,7 +323,7 @@ const AMF0_NULL: u8 = 0x05;
 const AMF0_OBJECT_END: [u8; 3] = [0x00, 0x00, 0x09];
 
 /// Encode an AMF0 value, appending bytes to `buf`.
-fn amf0_encode(val: &Amf0Value, buf: &mut Vec<u8>) {
+fn amf0_encode(val: &Amf0Value, buf: &mut Vec<u8>) -> Result<(), Error> {
     match val {
         Amf0Value::Number(n) => {
             buf.push(AMF0_NUMBER);
@@ -335,13 +335,13 @@ fn amf0_encode(val: &Amf0Value, buf: &mut Vec<u8>) {
         },
         Amf0Value::String(s) => {
             buf.push(AMF0_STRING);
-            amf0_encode_string_payload(s, buf);
+            amf0_encode_string_payload(s, buf)?;
         },
         Amf0Value::Object(props) => {
             buf.push(AMF0_OBJECT);
             for (key, val) in props {
-                amf0_encode_string_payload(key, buf);
-                amf0_encode(val, buf);
+                amf0_encode_string_payload(key, buf)?;
+                amf0_encode(val, buf)?;
             }
             buf.extend_from_slice(&AMF0_OBJECT_END);
         },
@@ -349,14 +349,16 @@ fn amf0_encode(val: &Amf0Value, buf: &mut Vec<u8>) {
             buf.push(AMF0_NULL);
         },
     }
+    Ok(())
 }
 
 /// Encode an AMF0 string payload (u16 length + UTF-8, no type marker).
-#[allow(clippy::cast_possible_truncation)]
-fn amf0_encode_string_payload(s: &str, buf: &mut Vec<u8>) {
-    let len = s.len().min(u16::MAX as usize) as u16;
+fn amf0_encode_string_payload(s: &str, buf: &mut Vec<u8>) -> Result<(), Error> {
+    let len = u16::try_from(s.len())
+        .map_err(|_| Error::new(format!("AMF0 string too long ({} bytes, max 65535)", s.len())))?;
     buf.extend_from_slice(&len.to_be_bytes());
-    buf.extend_from_slice(&s.as_bytes()[..len as usize]);
+    buf.extend_from_slice(s.as_bytes());
+    Ok(())
 }
 
 /// Decode one AMF0 value from a byte slice.
@@ -863,7 +865,6 @@ impl ChunkDecoder {
 /// Client-side RTMP handshake state machine.
 struct Handshake {
     state: HandshakeState,
-    _c1: Vec<u8>, // 1536 bytes — kept for S2 validation
     recv_buf: Vec<u8>,
 }
 
@@ -895,7 +896,6 @@ impl Handshake {
         (
             Self {
                 state: HandshakeState::WaitingForS0S1,
-                _c1: c1,
                 recv_buf: Vec::with_capacity(1 + HANDSHAKE_SIZE * 2),
             },
             c0c1,
@@ -906,8 +906,10 @@ impl Handshake {
     ///
     /// Returns:
     /// - `None` — need more data.
-    /// - `Some(c2)` — handshake complete, send C2.
-    fn feed(&mut self, data: &[u8]) -> Option<Vec<u8>> {
+    /// - `Some((c2, leftover))` — handshake complete, send C2.  `leftover`
+    ///   contains any post-S2 bytes that arrived in the same TCP segment
+    ///   and must be forwarded to the chunk decoder.
+    fn feed(&mut self, data: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
         self.recv_buf.extend_from_slice(data);
 
         match self.state {
@@ -942,17 +944,29 @@ impl Handshake {
         }
     }
 
-    /// Validate S2 and produce C2.
-    fn complete_handshake(&mut self) -> Vec<u8> {
+    /// Validate S2 and produce C2, returning any leftover bytes.
+    fn complete_handshake(&mut self) -> (Vec<u8>, Vec<u8>) {
         // C2 = echo of S1 (bytes 1..=HANDSHAKE_SIZE of recv_buf).
         let s1 = &self.recv_buf[1..=HANDSHAKE_SIZE];
         let c2 = s1.to_vec();
+
+        // Bytes beyond S0(1) + S1(1536) + S2(1536) = 3073 are
+        // post-handshake protocol messages (e.g. WinAckSize,
+        // SetPeerBandwidth) that the server pipelined in the same
+        // TCP segment.  Return them so the caller can forward them
+        // to the chunk decoder.
+        let handshake_total = 1 + HANDSHAKE_SIZE * 2;
+        let leftover = if self.recv_buf.len() > handshake_total {
+            self.recv_buf[handshake_total..].to_vec()
+        } else {
+            Vec::new()
+        };
 
         self.state = HandshakeState::Complete;
         // Free the receive buffer — no longer needed.
         self.recv_buf = Vec::new();
 
-        c2
+        (c2, leftover)
     }
 }
 
@@ -1068,6 +1082,11 @@ impl RtmpPublishClientConnection {
     /// OBS/FFmpeg; the RTMP default of 128 is too small for video).
     const LOCAL_CHUNK_SIZE: u32 = 4096;
 
+    /// Maximum send buffer size (8 MB).  If the TCP socket stalls and
+    /// the buffer exceeds this, we refuse to enqueue more media so the
+    /// caller can detect backpressure and disconnect gracefully.
+    const MAX_SEND_BUF: usize = 8 * 1024 * 1024;
+
     /// Create a new RTMP publish client.  C0+C1 are queued in the send
     /// buffer immediately.
     pub fn new(url: RtmpUrl) -> Self {
@@ -1093,16 +1112,28 @@ impl RtmpPublishClientConnection {
     /// Feed received bytes from the server.  Drives the state machine
     /// (handshake → connect → createStream → publish).
     pub fn feed_recv_buf(&mut self, buf: &[u8]) -> Result<(), Error> {
-        self.total_bytes_received += buf.len() as u64;
-
         // ── Handshake phase ─────────────────────────────────────────
+        // ACK sequence numbers are based on post-handshake bytes only
+        // (RTMP spec §5.4), so we defer the counter increment.
         if let Some(ref mut hs) = self.handshake {
-            if let Some(c2) = hs.feed(buf) {
+            if let Some((c2, leftover)) = hs.feed(buf) {
                 self.send_buf.extend_from_slice(&c2);
 
                 // Handshake complete — send the RTMP connect sequence.
                 self.handshake = None;
-                self.send_connect_sequence();
+                self.send_connect_sequence()?;
+
+                // Forward any post-S2 bytes (e.g. WinAckSize,
+                // SetPeerBandwidth pipelined in the same TCP segment)
+                // to the chunk decoder so they aren't silently lost.
+                if !leftover.is_empty() {
+                    self.total_bytes_received += leftover.len() as u64;
+                    self.decoder.push(&leftover);
+                    while let Some(msg) = self.decoder.decode_message()? {
+                        self.handle_message(&msg)?;
+                    }
+                    self.maybe_send_ack();
+                }
                 return Ok(());
             }
             // Still handshaking, need more data.
@@ -1110,6 +1141,7 @@ impl RtmpPublishClientConnection {
         }
 
         // ── Post-handshake: decode chunks ───────────────────────────
+        self.total_bytes_received += buf.len() as u64;
         self.decoder.push(buf);
         while let Some(msg) = self.decoder.decode_message()? {
             self.handle_message(&msg)?;
@@ -1141,6 +1173,12 @@ impl RtmpPublishClientConnection {
     pub fn send_video(&mut self, frame: &VideoFrame) -> Result<(), Error> {
         if self.state != RtmpConnectionState::Publishing {
             return Err(Error::new(format!("Cannot send video in state {}", self.state)));
+        }
+        if self.send_buf.len() > Self::MAX_SEND_BUF {
+            return Err(Error::new(format!(
+                "Send buffer exceeded {} bytes — backpressure (TCP stall?)",
+                Self::MAX_SEND_BUF
+            )));
         }
 
         // Build the FLV video tag payload.
@@ -1186,6 +1224,12 @@ impl RtmpPublishClientConnection {
         if self.state != RtmpConnectionState::Publishing {
             return Err(Error::new(format!("Cannot send audio in state {}", self.state)));
         }
+        if self.send_buf.len() > Self::MAX_SEND_BUF {
+            return Err(Error::new(format!(
+                "Send buffer exceeded {} bytes — backpressure (TCP stall?)",
+                Self::MAX_SEND_BUF
+            )));
+        }
 
         // Build the FLV audio tag payload.
         let mut payload = Vec::with_capacity(2 + frame.data.len());
@@ -1230,7 +1274,7 @@ impl RtmpPublishClientConnection {
     // -------------------------------------------------------------------
 
     /// Send the initial RTMP connect command sequence after handshake.
-    fn send_connect_sequence(&mut self) {
+    fn send_connect_sequence(&mut self) -> Result<(), Error> {
         // 1. WinAckSize (server should ACK every 2.5 MB).
         self.send_protocol_message(MSG_WIN_ACK_SIZE, &2_500_000u32.to_be_bytes());
 
@@ -1244,8 +1288,8 @@ impl RtmpPublishClientConnection {
         let app = self.url.app.clone();
 
         let mut payload = Vec::with_capacity(256);
-        amf0_encode(&Amf0Value::String("connect".to_string()), &mut payload);
-        amf0_encode(&Amf0Value::Number(tid), &mut payload);
+        amf0_encode(&Amf0Value::String("connect".to_string()), &mut payload)?;
+        amf0_encode(&Amf0Value::Number(tid), &mut payload)?;
         amf0_encode(
             &Amf0Value::Object(vec![
                 ("app".to_string(), Amf0Value::String(app)),
@@ -1254,7 +1298,7 @@ impl RtmpPublishClientConnection {
                 ("tcUrl".to_string(), Amf0Value::String(tc_url)),
             ]),
             &mut payload,
-        );
+        )?;
 
         let msg = OutboundMessage {
             csid: CSID_COMMAND,
@@ -1266,6 +1310,7 @@ impl RtmpPublishClientConnection {
         self.encoder.encode_message(&msg, &mut self.send_buf);
 
         self.set_state(RtmpConnectionState::Connecting);
+        Ok(())
     }
 
     // -------------------------------------------------------------------
@@ -1422,9 +1467,9 @@ impl RtmpPublishClientConnection {
                 // Send createStream.
                 let tid = self.next_tid();
                 let mut cmd_payload = Vec::with_capacity(32);
-                amf0_encode(&Amf0Value::String("createStream".to_string()), &mut cmd_payload);
-                amf0_encode(&Amf0Value::Number(tid), &mut cmd_payload);
-                amf0_encode(&Amf0Value::Null, &mut cmd_payload);
+                amf0_encode(&Amf0Value::String("createStream".to_string()), &mut cmd_payload)?;
+                amf0_encode(&Amf0Value::Number(tid), &mut cmd_payload)?;
+                amf0_encode(&Amf0Value::Null, &mut cmd_payload)?;
 
                 let msg = OutboundMessage {
                     csid: CSID_COMMAND,
@@ -1459,11 +1504,11 @@ impl RtmpPublishClientConnection {
                 let tid = self.next_tid();
                 let stream_name = self.url.stream_name.clone();
                 let mut cmd_payload = Vec::with_capacity(64);
-                amf0_encode(&Amf0Value::String("publish".to_string()), &mut cmd_payload);
-                amf0_encode(&Amf0Value::Number(tid), &mut cmd_payload);
-                amf0_encode(&Amf0Value::Null, &mut cmd_payload);
-                amf0_encode(&Amf0Value::String(stream_name), &mut cmd_payload);
-                amf0_encode(&Amf0Value::String("live".to_string()), &mut cmd_payload);
+                amf0_encode(&Amf0Value::String("publish".to_string()), &mut cmd_payload)?;
+                amf0_encode(&Amf0Value::Number(tid), &mut cmd_payload)?;
+                amf0_encode(&Amf0Value::Null, &mut cmd_payload)?;
+                amf0_encode(&Amf0Value::String(stream_name), &mut cmd_payload)?;
+                amf0_encode(&Amf0Value::String("live".to_string()), &mut cmd_payload)?;
 
                 let msg = OutboundMessage {
                     csid: csid_for_stream(self.media_stream_id),
@@ -1697,7 +1742,7 @@ mod tests {
     fn amf0_number_roundtrip() {
         let val = Amf0Value::Number(42.5);
         let mut buf = Vec::new();
-        amf0_encode(&val, &mut buf);
+        amf0_encode(&val, &mut buf).unwrap();
         let (decoded, consumed) = amf0_decode(&buf).unwrap();
         assert_eq!(decoded, val);
         assert_eq!(consumed, buf.len());
@@ -1707,7 +1752,7 @@ mod tests {
     fn amf0_string_roundtrip() {
         let val = Amf0Value::String("hello RTMP".to_string());
         let mut buf = Vec::new();
-        amf0_encode(&val, &mut buf);
+        amf0_encode(&val, &mut buf).unwrap();
         let (decoded, consumed) = amf0_decode(&buf).unwrap();
         assert_eq!(decoded, val);
         assert_eq!(consumed, buf.len());
@@ -1718,7 +1763,7 @@ mod tests {
         for b in [true, false] {
             let val = Amf0Value::Boolean(b);
             let mut buf = Vec::new();
-            amf0_encode(&val, &mut buf);
+            amf0_encode(&val, &mut buf).unwrap();
             let (decoded, consumed) = amf0_decode(&buf).unwrap();
             assert_eq!(decoded, val);
             assert_eq!(consumed, buf.len());
@@ -1729,7 +1774,7 @@ mod tests {
     fn amf0_null_roundtrip() {
         let val = Amf0Value::Null;
         let mut buf = Vec::new();
-        amf0_encode(&val, &mut buf);
+        amf0_encode(&val, &mut buf).unwrap();
         let (decoded, consumed) = amf0_decode(&buf).unwrap();
         assert_eq!(decoded, val);
         assert_eq!(consumed, buf.len());
@@ -1743,7 +1788,7 @@ mod tests {
             ("flag".to_string(), Amf0Value::Boolean(true)),
         ]);
         let mut buf = Vec::new();
-        amf0_encode(&val, &mut buf);
+        amf0_encode(&val, &mut buf).unwrap();
         let (decoded, consumed) = amf0_decode(&buf).unwrap();
         assert_eq!(decoded, val);
         assert_eq!(consumed, buf.len());
@@ -1989,9 +2034,10 @@ mod tests {
                                                                         // S2 = echo of C1.
         server_response.extend_from_slice(&c0c1[1..=HANDSHAKE_SIZE]); // S2
 
-        let c2 = hs.feed(&server_response).unwrap();
+        let (c2, leftover) = hs.feed(&server_response).unwrap();
         assert_eq!(hs.state, HandshakeState::Complete);
         assert_eq!(c2, vec![0xAA; HANDSHAKE_SIZE]);
+        assert!(leftover.is_empty());
     }
 
     #[test]
@@ -2008,9 +2054,32 @@ mod tests {
         assert!(hs.feed(&server_response[..half]).is_none());
         assert_ne!(hs.state, HandshakeState::Complete);
 
-        let c2 = hs.feed(&server_response[half..]).unwrap();
+        let (c2, leftover) = hs.feed(&server_response[half..]).unwrap();
         assert_eq!(hs.state, HandshakeState::Complete);
         assert_eq!(c2.len(), HANDSHAKE_SIZE);
+        assert!(leftover.is_empty());
+    }
+
+    #[test]
+    fn handshake_preserves_leftover_bytes() {
+        // Simulate a server that pipelines S0+S1+S2 plus initial protocol
+        // messages (e.g. WinAckSize) in the same TCP segment.  The leftover
+        // bytes after the 3073-byte handshake must be returned so the caller
+        // can forward them to the chunk decoder.
+        let (mut hs, c0c1) = Handshake::new();
+
+        let extra = b"\x02\x00\x00\x00\x00\x00\x04\x05\x00\x00\x00\x00\x00\x26\x25\xa0";
+
+        let mut server_response = Vec::new();
+        server_response.push(0x03); // S0
+        server_response.extend_from_slice(&vec![0xCC; HANDSHAKE_SIZE]); // S1
+        server_response.extend_from_slice(&c0c1[1..=HANDSHAKE_SIZE]); // S2
+        server_response.extend_from_slice(extra); // extra post-handshake data
+
+        let (c2, leftover) = hs.feed(&server_response).unwrap();
+        assert_eq!(hs.state, HandshakeState::Complete);
+        assert_eq!(c2, vec![0xCC; HANDSHAKE_SIZE]);
+        assert_eq!(leftover, extra);
     }
 
     // ── AvcSequenceHeader ───────────────────────────────────────────

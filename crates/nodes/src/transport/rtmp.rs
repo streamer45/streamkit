@@ -38,6 +38,7 @@ use tokio::net::TcpStream;
 
 /// Configuration for the RTMP publisher node.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RtmpPublishConfig {
     /// RTMP server URL.
     ///
@@ -254,8 +255,19 @@ impl ProcessorNode for RtmpPublishNode {
                 tokio::select! {
                     biased;
 
-                    // TCP read (server responses / keepalive) — highest priority
-                    read_result = stream.read(&mut tcp_read_buf) => {
+                    // TCP read (server responses / keepalive) — highest priority.
+                    // 30s timeout prevents hanging if the server becomes
+                    // unresponsive while input channels are idle.
+                    read_result = tokio::time::timeout(
+                        std::time::Duration::from_secs(30),
+                        stream.read(&mut tcp_read_buf),
+                    ) => {
+                        let Ok(read_result) = read_result else {
+                            // Timeout — server hasn't sent anything in 30s.
+                            // This is normal during idle periods; just loop
+                            // back to check the other select arms.
+                            continue;
+                        };
                         match read_result {
                             Ok(0) => {
                                 tracing::warn!(%node_name, "RTMP server closed connection");
@@ -476,8 +488,18 @@ fn validate_aac_config(config: &RtmpPublishConfig) -> Result<(), String> {
 ///
 /// The resolved key is appended to the base URL separated by `/`.
 fn resolve_rtmp_url(config: &RtmpPublishConfig) -> Result<String, String> {
+    resolve_rtmp_url_with_env(config, |name| std::env::var(name))
+}
+
+/// Inner implementation that accepts an env-var resolver, allowing tests to
+/// avoid `std::env::set_var` (which is unsound in multi-threaded processes
+/// since Rust 1.83).
+fn resolve_rtmp_url_with_env<F>(config: &RtmpPublishConfig, env_var: F) -> Result<String, String>
+where
+    F: Fn(&str) -> Result<String, std::env::VarError>,
+{
     let key = if let Some(ref env_name) = config.stream_key_env {
-        let val = std::env::var(env_name).map_err(|e| {
+        let val = env_var(env_name).map_err(|e| {
             format!("stream_key_env references '{env_name}' but the variable is not set: {e}")
         })?;
         if val.is_empty() {
@@ -545,6 +567,9 @@ async fn drive_handshake(
 
         if connection.state() == RtmpConnectionState::Publishing {
             return Ok(());
+        }
+        if connection.state() == RtmpConnectionState::Disconnecting {
+            return Err("RTMP server rejected the connection".to_string());
         }
 
         // Wait for data from the server (with timeout).
@@ -1440,39 +1465,34 @@ mod tests {
 
     #[test]
     fn resolve_url_env_takes_precedence() {
-        // Set a unique env var for this test.
-        let var = "_SK_TEST_RTMP_KEY_PRECEDENCE";
-        std::env::set_var(var, "env-key");
-        let cfg = make_config("rtmp://host/app", Some("literal-key"), Some(var));
-        let result = resolve_rtmp_url(&cfg).unwrap();
-        std::env::remove_var(var);
+        let cfg = make_config("rtmp://host/app", Some("literal-key"), Some("MY_KEY"));
+        let result = resolve_rtmp_url_with_env(&cfg, |name| {
+            assert_eq!(name, "MY_KEY");
+            Ok("env-key".to_string())
+        })
+        .unwrap();
         assert_eq!(result, "rtmp://host/app/env-key");
     }
 
     #[test]
     fn resolve_url_env_var_set() {
-        let var = "_SK_TEST_RTMP_KEY_SET";
-        std::env::set_var(var, "secret123");
-        let cfg = make_config("rtmp://host/app", None, Some(var));
-        let result = resolve_rtmp_url(&cfg).unwrap();
-        std::env::remove_var(var);
+        let cfg = make_config("rtmp://host/app", None, Some("MY_KEY"));
+        let result = resolve_rtmp_url_with_env(&cfg, |_| Ok("secret123".to_string())).unwrap();
         assert_eq!(result, "rtmp://host/app/secret123");
     }
 
     #[test]
     fn resolve_url_env_var_not_set() {
-        let cfg = make_config("rtmp://host/app", None, Some("_SK_TEST_RTMP_MISSING"));
-        let err = resolve_rtmp_url(&cfg).unwrap_err();
+        let cfg = make_config("rtmp://host/app", None, Some("MISSING"));
+        let err =
+            resolve_rtmp_url_with_env(&cfg, |_| Err(std::env::VarError::NotPresent)).unwrap_err();
         assert!(err.contains("not set"), "error should mention 'not set': {err}");
     }
 
     #[test]
     fn resolve_url_env_var_empty() {
-        let var = "_SK_TEST_RTMP_KEY_EMPTY";
-        std::env::set_var(var, "");
-        let cfg = make_config("rtmp://host/app", None, Some(var));
-        let err = resolve_rtmp_url(&cfg).unwrap_err();
-        std::env::remove_var(var);
+        let cfg = make_config("rtmp://host/app", None, Some("MY_KEY"));
+        let err = resolve_rtmp_url_with_env(&cfg, |_| Ok(String::new())).unwrap_err();
         assert!(err.contains("empty"), "error should mention 'empty': {err}");
     }
 
