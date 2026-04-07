@@ -60,7 +60,7 @@ const EAGAIN_YIELD_THRESHOLD: u32 = 10;
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize, Debug, JsonSchema, Clone)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Dav1dDecoderConfig {
     /// Number of decoder threads.  `0` = auto-detect (dav1d picks a
     /// thread count based on the number of logical cores).

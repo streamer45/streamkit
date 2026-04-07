@@ -92,8 +92,11 @@ nodes:
   mixer:
     kind: audio::mixer
     params:
-      samples_per_channel: 960
-      generate_silence: true
+      # Clocked mixing for real-time MoQ output (consistent with moq_mixing.yml).
+      # Previously these fields were at the top level and silently ignored.
+      clocked:
+        frame_samples_per_channel: 960
+        generate_silence: true
     needs:
       - mic_gain
       - music_gain

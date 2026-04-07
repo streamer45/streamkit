@@ -52,7 +52,7 @@ use crate::video::pixel_ops::{
 
 /// Configuration for the pixel format converter node.
 #[derive(Deserialize, Debug, Clone, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PixelConvertConfig {
     /// Target pixel format: `"nv12"` (default), `"i420"`, or `"rgba8"`.
     pub output_format: String,

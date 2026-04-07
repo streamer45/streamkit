@@ -517,7 +517,7 @@ pub enum Mp4StreamingMode {
 
 /// Configuration for the MP4 muxer node.
 #[derive(Deserialize, Debug, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Mp4MuxerConfig {
     /// Streaming mode: `"stream"` for fMP4 segments, `"file"` for regular MP4.
     pub mode: Mp4StreamingMode,

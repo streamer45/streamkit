@@ -68,12 +68,10 @@ steps:
   - kind: audio::opus::encoder
     params:
       bitrate: 64000
-      frame_size: 960
 
   - kind: containers::webm::muxer
     params:
       channels: 1
-      chunk_size: 65536
       sample_rate: 48000
 
   - kind: streamkit::http_output

@@ -100,6 +100,10 @@ impl Default for OverlayTransform {
 }
 
 /// Configuration for a static image overlay (decoded once at init).
+///
+/// Note: `deny_unknown_fields` is intentionally omitted here because
+/// `#[serde(flatten)]` on `transform` is incompatible with it — serde
+/// cannot distinguish "unknown" fields from flattened struct fields.
 #[derive(Deserialize, Debug, Clone, JsonSchema)]
 #[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
 pub struct ImageOverlayConfig {
@@ -115,6 +119,10 @@ pub struct ImageOverlayConfig {
 }
 
 /// Configuration for a text overlay (rasterized once per `UpdateParams`).
+///
+/// Note: `deny_unknown_fields` is intentionally omitted here because
+/// `#[serde(flatten)]` on `transform` is incompatible with it — serde
+/// cannot distinguish "unknown" fields from flattened struct fields.
 #[derive(Deserialize, Debug, Clone, PartialEq, JsonSchema)]
 #[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
 pub struct TextOverlayConfig {
@@ -188,6 +196,7 @@ const fn default_aspect_fit() -> bool {
 /// Layer configuration for a single compositing input.
 #[derive(Deserialize, Debug, Clone, JsonSchema)]
 #[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
 pub struct LayerConfig {
     /// Destination rectangle on the output canvas. If `None`, the input is
     /// scaled to fill the entire canvas.
@@ -261,7 +270,7 @@ impl Default for LayerConfig {
 /// overlays configured here.
 #[derive(Deserialize, Debug, Clone, JsonSchema)]
 #[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct CompositorConfig {
     /// Output canvas width in pixels.
     #[serde(default = "default_width")]

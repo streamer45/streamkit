@@ -442,7 +442,7 @@ impl WebMStreamingMode {
 }
 
 #[derive(Deserialize, Debug, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct WebMMuxerConfig {
     /// Audio sample rate in Hz (used when an audio input is connected)
     pub sample_rate: u32,

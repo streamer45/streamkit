@@ -44,7 +44,7 @@ fn default_header_template() -> String {
 
 /// Configuration for the script node
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ScriptConfig {
     /// JavaScript code (must define a process(packet) function)
     pub script: String,
