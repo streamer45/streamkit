@@ -1083,6 +1083,15 @@ struct AvccConversion {
 ///
 /// NAL units are delimited by 3-byte (`00 00 01`) or 4-byte (`00 00 00 01`)
 /// start codes.  The returned slices exclude the start-code prefix.
+///
+/// **Known limitation**: the 3-byte `00 00 01` pattern can theoretically
+/// appear inside NAL payload data (e.g. quantized coefficient blocks).
+/// Spec-compliant encoders insert emulation-prevention bytes (`00 00 03`)
+/// to avoid this ambiguity, so OpenH264 output is safe.  If this node
+/// ever receives data from an external encoder that omits prevention
+/// bytes, frames could be mis-split.  This mirrors the Annex B parser in
+/// `containers/mp4.rs` — extracting a shared `h264_utils` module is
+/// tracked as follow-up work.
 fn parse_annexb_nal_units(data: &[u8]) -> Vec<&[u8]> {
     let mut nals = Vec::new();
     let mut nal_start: Option<usize> = None;

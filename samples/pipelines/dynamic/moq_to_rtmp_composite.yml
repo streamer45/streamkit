@@ -129,6 +129,7 @@ nodes:
     params:
       bitrate_kbps: 2500
       max_frame_rate: 30.0
+      gop_size: 60  # keyframe every 2s at 30 fps — explicit for RTMP clarity
     needs: pixel_convert
 
   # ── Monitor output (view composited result via MoQ) ────────────────
