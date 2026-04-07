@@ -9,7 +9,7 @@ node_kind: aac_encoder
 kind: native
 entrypoint: libaac_encoder.so
 artifact: target/plugins/release/libaac_encoder.so
-description: >
+description: >-
   AAC-LC audio encoder using FDK AAC (Fraunhofer).
   Accepts 48 kHz mono or stereo f32 PCM audio, outputs AAC-LC encoded
   stereo frames.  Mono input is automatically upmixed.

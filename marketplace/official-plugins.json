@@ -1,6 +1,18 @@
 {
   "plugins": [
     {
+      "id": "aac-encoder",
+      "name": "AAC Encoder",
+      "version": "0.1.0",
+      "node_kind": "aac_encoder",
+      "kind": "native",
+      "entrypoint": "libaac_encoder.so",
+      "artifact": "target/plugins/release/libaac_encoder.so",
+      "description": "AAC-LC audio encoder using FDK AAC (Fraunhofer). Accepts 48 kHz mono or stereo f32 PCM audio, outputs AAC-LC encoded stereo frames.  Mono input is automatically upmixed. Requires libfdk-aac.so.2 at runtime.",
+      "license": "MPL-2.0",
+      "homepage": "https://github.com/streamer45/streamkit"
+    },
+    {
       "id": "helsinki",
       "name": "Helsinki",
       "version": "0.2.0",
