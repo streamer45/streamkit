@@ -11,7 +11,8 @@
 #
 # Requires:
 #   - aac-encoder native plugin (just install-plugin aac-encoder)
-#   - Replace the RTMP URL below with your actual stream key.
+#   - Set the RTMP_STREAM_KEY env var before starting the server,
+#     or replace stream_key_env with a literal stream_key value.
 
 name: MoQ to RTMP (Composited)
 description: |
@@ -58,6 +59,12 @@ nodes:
     needs: opus_decoder
 
   # ── Video path: decode → composite → encode ────────────────────────
+  vp9_decoder:
+    kind: video::vp9::decoder
+    needs:
+      # @moq/publish uses "video/hd" as the track name (not "video/data")
+      in: moq_peer.video/hd
+
   colorbars_pip:
     kind: video::colorbars
     params:
@@ -96,7 +103,7 @@ nodes:
           opacity: 0.7
           z_index: 3
     needs:
-      - moq_peer.video/data
+      - vp9_decoder
       - colorbars_pip
 
   pixel_convert:
@@ -121,7 +128,10 @@ nodes:
   rtmp_publish:
     kind: transport::rtmp::publish
     params:
-      url: "rtmp://a.rtmp.youtube.com/live2/YOUR_STREAM_KEY"
+      url: "rtmp://a.rtmp.youtube.com/live2"
+      # Read the stream key from the RTMP_STREAM_KEY environment variable.
+      # Alternatively, use `stream_key: "your-key-here"` for a literal value.
+      stream_key_env: "RTMP_STREAM_KEY"
     needs:
       video: h264_encoder
       audio: aac_encoder

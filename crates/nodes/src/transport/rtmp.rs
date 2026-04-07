@@ -41,14 +41,31 @@ use tokio::net::TcpStream;
 /// Configuration for the RTMP publisher node.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct RtmpPublishConfig {
-    /// Full RTMP URL including stream key.
+    /// RTMP server URL.
     ///
     /// Supports `rtmp://` and `rtmps://` (TLS) schemes.
+    /// Can include the stream key in the path, or use the separate
+    /// `stream_key` / `stream_key_env` fields.
     ///
     /// Examples:
-    /// - `rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx`
+    /// - `rtmp://a.rtmp.youtube.com/live2` (key via `stream_key` or `stream_key_env`)
+    /// - `rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx` (key inline)
     /// - `rtmps://live.twitch.tv/app/live_xxxx`
     pub url: String,
+
+    /// Stream key appended to the URL path.
+    ///
+    /// Optional — if omitted, the URL is used as-is (for URLs that
+    /// already include the key).  Ignored when `stream_key_env` is set.
+    #[serde(default)]
+    pub stream_key: Option<String>,
+
+    /// Environment variable name containing the stream key.
+    ///
+    /// Read at node startup.  Takes precedence over `stream_key`.
+    /// Example: `"RTMP_STREAM_KEY"` → reads `$RTMP_STREAM_KEY`.
+    #[serde(default)]
+    pub stream_key_env: Option<String>,
 
     /// Audio sample rate in Hz for the AAC sequence header.
     ///
@@ -130,17 +147,25 @@ impl ProcessorNode for RtmpPublishNode {
 
     async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
         let node_name = context.output_sender.node_name().to_string();
-        // Log without the stream key (it's effectively a bearer token).
-        let masked_url = mask_stream_key(&self.config.url);
-        tracing::info!(%node_name, url = %masked_url, "RtmpPublishNode starting");
 
         state_helpers::emit_initializing(&context.state_tx, &node_name);
 
+        // ── Resolve stream key (env var takes precedence) ───────────────
+        let full_url = resolve_rtmp_url(&self.config).map_err(|e| {
+            let msg = format!("RTMP URL resolution failed: {e}");
+            state_helpers::emit_failed(&context.state_tx, &node_name, &msg);
+            StreamKitError::Configuration(msg)
+        })?;
+
+        // Log without the stream key (it's effectively a bearer token).
+        let masked_url = mask_stream_key(&full_url);
+        tracing::info!(%node_name, url = %masked_url, "RtmpPublishNode starting");
+
         // ── Parse RTMP URL ──────────────────────────────────────────────
-        let rtmp_url: RtmpUrl = self.config.url.parse().map_err(|e| {
+        let rtmp_url: RtmpUrl = full_url.parse().map_err(|e| {
             StreamKitError::Configuration(format!(
                 "Invalid RTMP URL '{}': {e}",
-                mask_stream_key(&self.config.url)
+                mask_stream_key(&full_url)
             ))
         })?;
 
@@ -318,10 +343,39 @@ impl RtmpStream {
 /// Mask the stream-key portion of an RTMP URL for safe logging.
 ///
 /// Returns the URL with everything after the last `/` in the path replaced
-/// by `****`.  If parsing fails, returns `<redacted>`.
+/// by `<redacted>`.  If parsing fails, returns `<redacted>`.
 fn mask_stream_key(url: &str) -> String {
     url.rfind('/')
         .map_or_else(|| "<redacted>".to_string(), |idx| format!("{}/<redacted>", &url[..idx]))
+}
+
+/// Resolve the final RTMP URL from config fields.
+///
+/// Priority:
+/// 1. `stream_key_env` — read the key from the named environment variable.
+/// 2. `stream_key` — use the literal value.
+/// 3. Neither set — use `url` as-is (key already embedded).
+///
+/// The resolved key is appended to the base URL separated by `/`.
+fn resolve_rtmp_url(config: &RtmpPublishConfig) -> Result<String, String> {
+    let key = if let Some(ref env_name) = config.stream_key_env {
+        let val = std::env::var(env_name).map_err(|e| {
+            format!("stream_key_env references '{env_name}' but the variable is not set: {e}")
+        })?;
+        if val.is_empty() {
+            return Err(format!(
+                "stream_key_env references '{env_name}' but the variable is empty"
+            ));
+        }
+        Some(val)
+    } else {
+        config.stream_key.clone()
+    };
+
+    match key {
+        Some(k) if !k.is_empty() => Ok(format!("{}/{}", config.url.trim_end_matches('/'), k)),
+        _ => Ok(config.url.clone()),
+    }
 }
 
 /// Connect to the RTMP server, using TLS if the URL scheme is `rtmps://`.
@@ -795,6 +849,8 @@ fn build_aac_audio_specific_config(sample_rate: u32, channels: u8) -> Vec<u8> {
 pub fn register_rtmp_nodes(registry: &mut NodeRegistry) {
     let default_node = RtmpPublishNode::new(RtmpPublishConfig {
         url: String::new(),
+        stream_key: None,
+        stream_key_env: None,
         sample_rate: default_sample_rate(),
         channels: default_channels(),
     });
@@ -962,5 +1018,73 @@ mod tests {
             assert_ne!(nal_type, H264_NAL_PPS, "PPS should not be in video_data");
             offset += len;
         }
+    }
+
+    // ── resolve_rtmp_url tests ──────────────────────────────────────────
+
+    fn make_config(url: &str, key: Option<&str>, key_env: Option<&str>) -> RtmpPublishConfig {
+        RtmpPublishConfig {
+            url: url.to_string(),
+            stream_key: key.map(String::from),
+            stream_key_env: key_env.map(String::from),
+            sample_rate: default_sample_rate(),
+            channels: default_channels(),
+        }
+    }
+
+    #[test]
+    fn resolve_url_no_key_uses_url_as_is() {
+        let cfg = make_config("rtmp://host/app/inline_key", None, None);
+        assert_eq!(resolve_rtmp_url(&cfg).unwrap(), "rtmp://host/app/inline_key");
+    }
+
+    #[test]
+    fn resolve_url_with_stream_key() {
+        let cfg = make_config("rtmp://a.rtmp.youtube.com/live2", Some("my-key"), None);
+        assert_eq!(resolve_rtmp_url(&cfg).unwrap(), "rtmp://a.rtmp.youtube.com/live2/my-key");
+    }
+
+    #[test]
+    fn resolve_url_strips_trailing_slash() {
+        let cfg = make_config("rtmp://host/app/", Some("key"), None);
+        assert_eq!(resolve_rtmp_url(&cfg).unwrap(), "rtmp://host/app/key");
+    }
+
+    #[test]
+    fn resolve_url_env_takes_precedence() {
+        // Set a unique env var for this test.
+        let var = "_SK_TEST_RTMP_KEY_PRECEDENCE";
+        std::env::set_var(var, "env-key");
+        let cfg = make_config("rtmp://host/app", Some("literal-key"), Some(var));
+        let result = resolve_rtmp_url(&cfg).unwrap();
+        std::env::remove_var(var);
+        assert_eq!(result, "rtmp://host/app/env-key");
+    }
+
+    #[test]
+    fn resolve_url_env_var_set() {
+        let var = "_SK_TEST_RTMP_KEY_SET";
+        std::env::set_var(var, "secret123");
+        let cfg = make_config("rtmp://host/app", None, Some(var));
+        let result = resolve_rtmp_url(&cfg).unwrap();
+        std::env::remove_var(var);
+        assert_eq!(result, "rtmp://host/app/secret123");
+    }
+
+    #[test]
+    fn resolve_url_env_var_not_set() {
+        let cfg = make_config("rtmp://host/app", None, Some("_SK_TEST_RTMP_MISSING"));
+        let err = resolve_rtmp_url(&cfg).unwrap_err();
+        assert!(err.contains("not set"), "error should mention 'not set': {err}");
+    }
+
+    #[test]
+    fn resolve_url_env_var_empty() {
+        let var = "_SK_TEST_RTMP_KEY_EMPTY";
+        std::env::set_var(var, "");
+        let cfg = make_config("rtmp://host/app", None, Some(var));
+        let err = resolve_rtmp_url(&cfg).unwrap_err();
+        std::env::remove_var(var);
+        assert!(err.contains("empty"), "error should mention 'empty': {err}");
     }
 }
