@@ -68,8 +68,8 @@ nodes:
   colorbars_pip:
     kind: video::colorbars
     params:
-      width: 320
-      height: 240
+      width: 1280
+      height: 720
       fps: 30
       pixel_format: rgba8
       draw_time: true
@@ -83,21 +83,27 @@ nodes:
       layers:
         in_0:
           rect:
-            x: 0
-            y: 0
-            width: 1280
-            height: 720
-          aspect_fit: true
-          opacity: 1.0
-          z_index: 0
-        in_1:
-          rect:
             x: 920
             y: 20
             width: 320
             height: 240
-          opacity: 0.85
+          aspect_fit: true
+          opacity: 1.0
           z_index: 1
+          mirror_horizontal: true
+          mirror_vertical: false
+          crop_zoom: 1.8
+          crop_x: 0.5
+          crop_y: 0.4
+          crop_shape: circle
+        in_1:
+          rect:
+            x: 0
+            y: 0
+            width: 1280
+            height: 720
+          opacity: 1
+          z_index: 0
       image_overlays:
         - id: logo
           asset_path: samples/images/system/streamkit-logo.png
