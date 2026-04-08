@@ -25,6 +25,14 @@ use crate::{
     plugin_paths,
     plugin_records::{active_dir as plugin_active_dir, namespaced_kind as active_namespaced_kind},
 };
+
+/// Sentinel substring used in conflict-detection errors to distinguish
+/// expected dedup skips from genuine failures.  Referenced by both the
+/// producer (`load_native_plugin` / `check_kind_conflict`) and the
+/// consumer (`load_native_dir_plugins`).
+const ERR_ALREADY_LOADED: &str = "already loaded";
+const ERR_ALREADY_REGISTERED: &str = "already registered";
+
 /// The type of plugin
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -216,9 +224,10 @@ impl UnifiedPluginManager {
         // Phase 1: active records (marketplace-installed bundles).
         summaries.extend(self.load_active_plugin_records());
 
-        // Phase 2 & 3: directory bundles + bare library files from the
-        // native directory.  Plugins already loaded in phase 1 are
-        // automatically skipped (load_native_plugin checks the map).
+        // Phase 2: directory bundles from the native directory.
+        // Bare library files are warned about and skipped.
+        // Plugins already loaded in phase 1 are automatically skipped
+        // (load_native_plugin checks the map).
         summaries.extend(self.load_native_dir_plugins());
 
         summaries
@@ -327,13 +336,12 @@ impl UnifiedPluginManager {
                     summaries.push(summary);
                 },
                 Err(err) => {
-                    // NOTE: This relies on the exact error wording produced by
-                    // load_native_plugin ("already loaded" / "already registered").
-                    // A pre-check is not feasible here because the plugin kind
-                    // is only known after dlopen (LoadedNativePlugin::load).
-                    // If those messages change, update this check too.
+                    // Uses the shared sentinel constants ERR_ALREADY_LOADED /
+                    // ERR_ALREADY_REGISTERED produced by check_kind_conflict.
+                    // A pre-check is not feasible because the plugin kind is
+                    // only known after dlopen (LoadedNativePlugin::load).
                     let msg = err.to_string();
-                    if msg.contains("already loaded") || msg.contains("already registered") {
+                    if msg.contains(ERR_ALREADY_LOADED) || msg.contains(ERR_ALREADY_REGISTERED) {
                         debug!(file = ?path, "Skipping plugin (already loaded by higher-priority source)");
                     } else {
                         warn!(error = %err, file = ?path, "Failed to load native plugin from disk");
@@ -756,25 +764,7 @@ impl UnifiedPluginManager {
             .with_context(|| format!("invalid plugin kind '{original_kind}'"))?;
         let categories = metadata.categories.clone();
 
-        if self.plugins.contains_key(&kind) {
-            // NOTE: load_native_dir_plugins pattern-matches on "already loaded"
-            // in this message to distinguish expected dedup skips from genuine
-            // failures.  Keep the wording in sync with the check there.
-            return Err(anyhow!(
-                "A plugin providing node '{original_kind}' (registered as '{kind}') is already loaded"
-            ));
-        }
-
-        // Ensure we don't override an existing node definition
-        {
-            let registry =
-                self.engine.registry.read().map_err(|e| anyhow!("Registry lock poisoned: {e}"))?;
-            if registry.contains(&kind) {
-                return Err(anyhow!(
-                    "Node kind '{kind}' is already registered; refusing to overwrite it with a plugin"
-                ));
-            }
-        }
+        self.check_kind_conflict(&kind, &original_kind)?;
 
         // Register with the engine's node registry
         {
@@ -900,6 +890,32 @@ impl UnifiedPluginManager {
         }
     }
 
+    /// Checks whether the given plugin kind conflicts with an already-loaded
+    /// plugin or an already-registered node kind.
+    ///
+    /// Error messages intentionally contain `ERR_ALREADY_LOADED` /
+    /// `ERR_ALREADY_REGISTERED` so that `load_native_dir_plugins` can
+    /// distinguish expected dedup skips from genuine failures.
+    fn check_kind_conflict(&self, kind: &str, original_kind: &str) -> Result<()> {
+        if self.plugins.contains_key(kind) {
+            return Err(anyhow!(
+                "A plugin providing node '{original_kind}' (registered as '{kind}') is {ERR_ALREADY_LOADED}"
+            ));
+        }
+
+        {
+            let registry =
+                self.engine.registry.read().map_err(|e| anyhow!("Registry lock poisoned: {e}"))?;
+            if registry.contains(kind) {
+                return Err(anyhow!(
+                    "Node kind '{kind}' is {ERR_ALREADY_REGISTERED}; refusing to overwrite it with a plugin"
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Probes a native plugin library to discover its kind and checks for
     /// conflicts with already-loaded plugins, without registering anything.
     ///
@@ -907,6 +923,9 @@ impl UnifiedPluginManager {
     /// uploaded file to its final location, preventing accidental overwriting
     /// of an existing plugin's library.
     fn check_native_upload_conflict(&self, probe_path: &Path) -> Result<()> {
+        // Set executable permissions so dlopen can load the probe file.
+        // load_from_written_path sets permissions again on the final path
+        // after the move — the two calls operate on different files.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -925,23 +944,7 @@ impl UnifiedPluginManager {
         // final path.
         drop(plugin);
 
-        if self.plugins.contains_key(&kind) {
-            return Err(anyhow!(
-                "A plugin providing node '{original_kind}' (registered as '{kind}') is already loaded"
-            ));
-        }
-
-        {
-            let registry =
-                self.engine.registry.read().map_err(|e| anyhow!("Registry lock poisoned: {e}"))?;
-            if registry.contains(&kind) {
-                return Err(anyhow!(
-                    "Node kind '{kind}' is already registered; refusing to overwrite it with a plugin"
-                ));
-            }
-        }
-
-        Ok(())
+        self.check_kind_conflict(&kind, &original_kind)
     }
 
     /// Saves raw plugin bytes into the managed directory and loads the resulting plugin.
@@ -954,7 +957,7 @@ impl UnifiedPluginManager {
     /// - The plugin file cannot be written to disk
     /// - The plugin fails to load after being written
     /// - On Unix systems, setting executable permissions fails
-    #[allow(dead_code)] // Useful for non-streaming callers; HTTP uses `load_from_temp_file`.
+    #[allow(dead_code)] // Public API for non-streaming callers; HTTP handler uses load_from_temp_file.
     pub fn load_from_bytes(&mut self, file_name: &str, bytes: &[u8]) -> Result<PluginSummary> {
         let (target_path, plugin_type) = self.validate_plugin_upload_target(file_name)?;
 
@@ -978,9 +981,10 @@ impl UnifiedPluginManager {
                     return Err(e);
                 }
 
-                std::fs::rename(&tmp_path, &target_path).with_context(|| {
-                    format!(
-                        "failed to move temp plugin file from {} to {}",
+                std::fs::rename(&tmp_path, &target_path).map_err(|e| {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    anyhow!(
+                        "failed to move temp plugin file from {} to {}: {e}",
                         tmp_path.display(),
                         target_path.display()
                     )
@@ -995,8 +999,10 @@ impl UnifiedPluginManager {
             self.load_from_written_path(plugin_type, target_path.clone())
         })();
 
-        if result.is_err() && file_placed {
-            let _ = std::fs::remove_file(&target_path);
+        if result.is_err() {
+            if file_placed {
+                let _ = std::fs::remove_file(&target_path);
+            }
             self.try_remove_empty_plugin_dir(&target_path);
         }
         result
@@ -1063,8 +1069,10 @@ impl UnifiedPluginManager {
             self.load_from_written_path(plugin_type, target_path.clone())
         })();
 
-        if result.is_err() && file_placed {
-            let _ = std::fs::remove_file(&target_path);
+        if result.is_err() {
+            if file_placed {
+                let _ = std::fs::remove_file(&target_path);
+            }
             self.try_remove_empty_plugin_dir(&target_path);
         }
         result
