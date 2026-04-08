@@ -192,46 +192,128 @@ impl UnifiedPluginManager {
         })
     }
 
-    /// Load all native plugins from the native directory.
+    /// Unified native plugin loader.
     ///
-    /// Scans the top-level directory for `.so`/`.dylib`/`.dll` files (flat
-    /// layout) and also one level of subdirectories (bundle layout, e.g.
-    /// `native/slint/libslint.so`).
-    fn load_native_plugins_from_dir(&mut self) -> Result<Vec<PluginSummary>> {
+    /// Discovers native plugins from three sources, loaded in priority order:
+    ///
+    /// 1. **Active records** (`.plugins/active/*.json`) — marketplace-installed
+    ///    bundles whose entrypoints live under `.plugins/bundles/`.
+    /// 2. **Directory bundles** (`.plugins/native/<id>/`) — local directory
+    ///    layout where each subdirectory contains a `plugin.yml` manifest and
+    ///    the plugin library.
+    /// 3. **Bare library files** (`.plugins/native/*.so`) — legacy flat layout.
+    ///
+    /// A plugin kind that was already loaded by an earlier source is skipped so
+    /// that marketplace versions always take precedence, followed by directory
+    /// bundles, followed by bare files.
+    fn load_all_native_plugins(&mut self) -> Vec<PluginSummary> {
         let mut summaries = Vec::new();
 
-        info!("Loading native plugins...");
+        info!("Loading native plugins (unified)...");
 
-        let mut lib_paths: Vec<std::path::PathBuf> = Vec::new();
+        // Phase 1: active records (marketplace-installed bundles).
+        summaries.extend(self.load_active_plugin_records());
 
-        for entry in std::fs::read_dir(&self.native_directory).with_context(|| {
-            format!("failed to read native plugin directory {}", self.native_directory.display())
-        })? {
-            let entry = entry?;
+        // Phase 2 & 3: directory bundles + bare library files from the
+        // native directory.  Plugins already loaded in phase 1 are
+        // automatically skipped (load_native_plugin checks the map).
+        summaries.extend(self.load_native_dir_plugins());
+
+        summaries
+    }
+
+    /// Phase 1: load marketplace-managed plugins from active records.
+    fn load_active_plugin_records(&mut self) -> Vec<PluginSummary> {
+        let active_dir = plugin_active_dir(&self.plugin_base_dir);
+        if !active_dir.exists() {
+            return Vec::new();
+        }
+
+        let base_real = std::fs::canonicalize(&self.plugin_base_dir).ok();
+        let entries = match std::fs::read_dir(&active_dir) {
+            Ok(entries) => entries,
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    dir = %active_dir.display(),
+                    "Failed to read active plugins directory"
+                );
+                return Vec::new();
+            },
+        };
+
+        let mut summaries = Vec::new();
+        for entry in entries {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(err) => {
+                    warn!(error = %err, "Failed to read active plugin entry");
+                    continue;
+                },
+            };
             let path = entry.path();
-
-            if path.is_dir() {
-                // Scan one level of subdirectories for plugin bundles.
-                if let Ok(sub_entries) = std::fs::read_dir(&path) {
-                    for sub_entry in sub_entries.flatten() {
-                        let sub_path = sub_entry.path();
-                        if Self::is_native_lib(&sub_path) {
-                            lib_paths.push(sub_path);
-                        }
-                    }
-                }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
                 continue;
             }
+            if let Some(summary) = self.load_active_plugin_record(&path, base_real.as_deref()) {
+                info!(
+                    plugin = %summary.kind,
+                    source = "active-record",
+                    "Loaded marketplace plugin"
+                );
+                summaries.push(summary);
+            }
+        }
+        summaries
+    }
 
-            if Self::is_native_lib(&path) {
-                lib_paths.push(path);
+    /// Phases 2 & 3: scan the native directory for directory bundles and bare
+    /// library files, loading directory bundles first so they take precedence.
+    fn load_native_dir_plugins(&mut self) -> Vec<PluginSummary> {
+        let mut dir_bundle_libs: Vec<std::path::PathBuf> = Vec::new();
+        let mut bare_libs: Vec<std::path::PathBuf> = Vec::new();
+
+        if let Ok(entries) = std::fs::read_dir(&self.native_directory) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+
+                if path.is_dir() {
+                    // Scan one level of subdirectories for plugin libraries.
+                    if let Ok(sub_entries) = std::fs::read_dir(&path) {
+                        for sub_entry in sub_entries.flatten() {
+                            let sub_path = sub_entry.path();
+                            if Self::is_native_lib(&sub_path) {
+                                dir_bundle_libs.push(sub_path);
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                if Self::is_native_lib(&path) {
+                    bare_libs.push(path);
+                }
             }
         }
 
-        for path in lib_paths {
+        // Load directory-bundle plugins first, then bare files.  Skip any
+        // plugin whose kind is already loaded (from active records or an
+        // earlier library in this phase).
+        let mut summaries = Vec::new();
+        for path in dir_bundle_libs.into_iter().chain(bare_libs) {
             match self.load_native_plugin(&path) {
                 Ok(summary) => {
-                    info!(plugin = %summary.kind, file = ?path, plugin_type = ?summary.plugin_type, "Loaded plugin from disk");
+                    let source = if path.parent() == Some(self.native_directory.as_path()) {
+                        "bare-file"
+                    } else {
+                        "directory-bundle"
+                    };
+                    info!(
+                        plugin = %summary.kind,
+                        file = ?path,
+                        source,
+                        "Loaded native plugin from disk"
+                    );
                     summaries.push(summary);
                 },
                 Err(err) => {
@@ -239,8 +321,7 @@ impl UnifiedPluginManager {
                 },
             }
         }
-
-        Ok(summaries)
+        summaries
     }
 
     /// Returns `true` if the path looks like a native plugin library.
@@ -272,33 +353,6 @@ impl UnifiedPluginManager {
                 Err(err) => {
                     warn!(error = %err, file = ?path, "Failed to load WASM plugin from disk");
                 },
-            }
-        }
-
-        Ok(summaries)
-    }
-
-    /// Load marketplace-managed plugins using active records.
-    fn load_active_plugins_from_dir(&mut self) -> Result<Vec<PluginSummary>> {
-        let active_dir = plugin_active_dir(&self.plugin_base_dir);
-        if !active_dir.exists() {
-            return Ok(Vec::new());
-        }
-
-        let base_real = std::fs::canonicalize(&self.plugin_base_dir).ok();
-        let mut summaries = Vec::new();
-
-        for entry in std::fs::read_dir(&active_dir).with_context(|| {
-            format!("failed to read active plugins dir {}", active_dir.display())
-        })? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-                continue;
-            }
-
-            if let Some(summary) = self.load_active_plugin_record(&path, base_real.as_deref()) {
-                summaries.push(summary);
             }
         }
 
@@ -407,16 +461,17 @@ impl UnifiedPluginManager {
         Some(entrypoint_path)
     }
 
-    /// Loads all existing plugins from both WASM and native directories.
-    /// Native plugins are loaded first as they are faster to initialize.
+    /// Loads all existing plugins from both native and WASM directories.
+    ///
+    /// Native plugins (including marketplace-installed bundles) are loaded
+    /// first via the unified loader, then WASM plugins.
     ///
     /// # Errors
     ///
-    /// Returns an error if the plugin directories cannot be read.
+    /// Returns an error if the WASM plugin directory cannot be read.
     /// Individual plugin load failures are logged but do not prevent other plugins from loading.
     pub fn load_existing(&mut self) -> Result<Vec<PluginSummary>> {
-        let mut summaries = self.load_active_plugins_from_dir()?;
-        summaries.extend(self.load_native_plugins_from_dir()?);
+        let mut summaries = self.load_all_native_plugins();
         summaries.extend(self.load_wasm_plugins_from_dir()?);
         Ok(summaries)
     }

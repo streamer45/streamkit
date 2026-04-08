@@ -1011,41 +1011,46 @@ copy-plugins-native:
 
     PLUGINS_TARGET="{{plugins_target_dir}}"
 
-    # Examples (gain-native has its own target dir, not shared)
-    cp examples/plugins/gain-native/target/release/libgain_plugin_native.* .plugins/native/ 2>/dev/null || true
+    # Helper: copy a built plugin into the directory-per-plugin layout.
+    #   copy_plugin <plugin-id> <lib-stem> <source-dir>
+    # Creates .plugins/native/<plugin-id>/ with the .so and plugin.yml.
+    copy_plugin() {
+        local id="$1" stem="$2" src_dir="$3"
+        local dest=".plugins/native/$id"
+        mkdir -p "$dest"
 
-    # Official native plugins (shared target dir)
-    for name in whisper kokoro piper matcha vad sensevoice nllb helsinki supertonic slint; do
         for f in \
-            "$PLUGINS_TARGET"/release/lib"$name".so \
-            "$PLUGINS_TARGET"/release/lib"$name".so.* \
-            "$PLUGINS_TARGET"/release/lib"$name".dylib \
-            "$PLUGINS_TARGET"/release/"$name".dll
+            "$src_dir"/release/lib"$stem".so \
+            "$src_dir"/release/lib"$stem".so.* \
+            "$src_dir"/release/lib"$stem".dylib \
+            "$src_dir"/release/"$stem".dll
         do
             if [[ -f "$f" ]]; then
-                cp -f "$f" .plugins/native/
+                cp -f "$f" "$dest/"
             fi
         done
-        # Copy plugin.yml manifest alongside the .so so asset types can be
+
+        # Copy plugin.yml into the bundle directory so asset types can be
         # discovered at runtime (see plugin_assets::read_local_plugin_manifest).
-        if [[ -f "plugins/native/$name/plugin.yml" ]]; then
-            cp -f "plugins/native/$name/plugin.yml" ".plugins/native/${name}.plugin.yml"
+        if [[ -f "plugins/native/$id/plugin.yml" ]]; then
+            cp -f "plugins/native/$id/plugin.yml" "$dest/plugin.yml"
         fi
+    }
+
+    # Examples (gain-native has its own target dir, not shared)
+    mkdir -p .plugins/native/gain-native
+    cp examples/plugins/gain-native/target/release/libgain_plugin_native.* .plugins/native/gain-native/ 2>/dev/null || true
+
+    # Official native plugins (shared target dir).
+    # For most plugins the lib stem matches the plugin id.
+    for name in whisper kokoro piper matcha vad sensevoice nllb helsinki supertonic slint; do
+        copy_plugin "$name" "$name" "$PLUGINS_TARGET"
     done
-    for f in \
-        "$PLUGINS_TARGET"/release/libpocket_tts.so \
-        "$PLUGINS_TARGET"/release/libpocket_tts.so.* \
-        "$PLUGINS_TARGET"/release/libpocket_tts.dylib \
-        "$PLUGINS_TARGET"/release/pocket_tts.dll
-    do
-        if [[ -f "$f" ]]; then
-            cp -f "$f" .plugins/native/
-        fi
-    done
-    # Copy pocket-tts plugin.yml for consistency with the main loop above.
-    if [[ -f "plugins/native/pocket-tts/plugin.yml" ]]; then
-        cp -f "plugins/native/pocket-tts/plugin.yml" ".plugins/native/pocket-tts.plugin.yml"
-    fi
+
+    # Plugins whose lib stem differs from the plugin id.
+    copy_plugin "pocket-tts"   "pocket_tts"   "$PLUGINS_TARGET"
+    copy_plugin "aac-encoder"  "aac_encoder"  "$PLUGINS_TARGET"
+
     echo "✓ Native plugins copied to .plugins/native/"
 
 # --- License Headers (REUSE) ---
