@@ -848,19 +848,7 @@ impl UnifiedPluginManager {
                 );
             }
 
-            // Clean up the parent directory if it is a now-empty subdirectory
-            // inside the native plugins dir (directory-bundle layout).
-            if let Some(parent) = file_path.parent() {
-                if parent != self.native_directory && parent.starts_with(&self.native_directory) {
-                    let is_empty = parent
-                        .read_dir()
-                        .map(|mut entries| entries.next().is_none())
-                        .unwrap_or(false);
-                    if is_empty {
-                        let _ = std::fs::remove_dir(parent);
-                    }
-                }
-            }
+            self.try_remove_empty_plugin_dir(&file_path);
         }
 
         Ok(summary)
@@ -890,6 +878,20 @@ impl UnifiedPluginManager {
         self.plugins_loaded_gauge.record(native_count, &[KeyValue::new("plugin_type", "native")]);
     }
 
+    /// Remove the parent directory of a plugin file if it is a now-empty
+    /// subdirectory inside the native plugins dir (directory-bundle layout).
+    fn try_remove_empty_plugin_dir(&self, file_path: &Path) {
+        if let Some(parent) = file_path.parent() {
+            if parent != self.native_directory && parent.starts_with(&self.native_directory) {
+                let is_empty =
+                    parent.read_dir().map(|mut entries| entries.next().is_none()).unwrap_or(false);
+                if is_empty {
+                    let _ = std::fs::remove_dir(parent);
+                }
+            }
+        }
+    }
+
     /// Saves raw plugin bytes into the managed directory and loads the resulting plugin.
     /// Automatically detects plugin type based on file extension.
     ///
@@ -907,7 +909,14 @@ impl UnifiedPluginManager {
         std::fs::write(&target_path, bytes)
             .with_context(|| format!("failed to write plugin file {}", target_path.display()))?;
 
-        self.load_from_written_path(plugin_type, target_path)
+        match self.load_from_written_path(plugin_type, target_path.clone()) {
+            Ok(summary) => Ok(summary),
+            Err(e) => {
+                let _ = std::fs::remove_file(&target_path);
+                self.try_remove_empty_plugin_dir(&target_path);
+                Err(e)
+            },
+        }
     }
 
     /// Moves an already-written plugin file into the managed directory and loads it.
@@ -957,20 +966,7 @@ impl UnifiedPluginManager {
             Ok(summary) => Ok(summary),
             Err(e) => {
                 let _ = std::fs::remove_file(&target_path);
-                // Clean up the subdirectory if it is now empty (failed
-                // native upload should not leave orphaned directories).
-                if let Some(parent) = target_path.parent() {
-                    if parent != self.native_directory && parent.starts_with(&self.native_directory)
-                    {
-                        let is_empty = parent
-                            .read_dir()
-                            .map(|mut entries| entries.next().is_none())
-                            .unwrap_or(false);
-                        if is_empty {
-                            let _ = std::fs::remove_dir(parent);
-                        }
-                    }
-                }
+                self.try_remove_empty_plugin_dir(&target_path);
                 Err(e)
             },
         }
