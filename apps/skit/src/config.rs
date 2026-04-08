@@ -761,6 +761,13 @@ pub struct AuthConfig {
     /// Maximum TTL for MoQ tokens in seconds. Default: 86400 (1 day)
     #[serde(default = "default_moq_max_ttl")]
     pub moq_max_ttl_secs: u64,
+
+    /// Gateway paths that allow unauthenticated MoQ WebTransport connections.
+    /// Connections to listed path prefixes skip JWT validation; the HTTP API remains protected.
+    /// Example: `["/moq"]` makes all `/moq/**` paths public; `["/moq/abc123"]` for a single path.
+    /// Empty list (default) = all MoQ connections require auth.
+    #[serde(default)]
+    pub moq_public_paths: Vec<String>,
 }
 
 impl Default for AuthConfig {
@@ -773,6 +780,7 @@ impl Default for AuthConfig {
             api_max_ttl_secs: default_api_max_ttl(),
             moq_default_ttl_secs: default_moq_default_ttl(),
             moq_max_ttl_secs: default_moq_max_ttl(),
+            moq_public_paths: Vec::new(),
         }
     }
 }

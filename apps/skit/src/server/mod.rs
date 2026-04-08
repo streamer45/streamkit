@@ -3422,8 +3422,11 @@ fn start_moq_webtransport_acceptor(
     moq_config.bind = Some(addr);
     moq_config.tls = tls;
 
+    let moq_public_paths: Arc<[String]> = config.auth.moq_public_paths.clone().into();
+
     info!(
         address = %addr,
+        moq_public_paths = ?moq_public_paths,
         "Starting MoQ WebTransport acceptor on UDP"
     );
 
@@ -3450,6 +3453,7 @@ fn start_moq_webtransport_acceptor(
                 while let Some(request) = server.accept().await {
                     let gateway = Arc::clone(&gateway);
                     let auth_state = Arc::clone(&auth_state);
+                    let moq_public_paths = Arc::clone(&moq_public_paths);
 
                     tokio::spawn(async move {
                         // Extract URL data before consuming the request.
@@ -3470,8 +3474,10 @@ fn start_moq_webtransport_acceptor(
                         // SECURITY: Never log the full URL (may contain jwt)
                         debug!(path = %path, "Received MoQ connection request");
 
-                        // Validate MoQ auth if enabled
-                        let moq_auth = if auth_state.is_enabled() {
+                        // Validate MoQ auth if enabled (skipped for paths matching moq_public_paths)
+                        let is_public =
+                            moq_public_paths.iter().any(|prefix| path.starts_with(prefix.as_str()));
+                        let moq_auth = if auth_state.is_enabled() && !is_public {
                             match validate_moq_auth(&auth_state, &path, jwt_param).await {
                                 Ok(ctx) => Some(ctx),
                                 Err(status) => {
