@@ -907,14 +907,10 @@ macro_rules! native_plugin_entry {
                                     ))
                                 }
                                 $crate::streamkit_core::types::PacketType::EncodedAudio(format) => {
-                                    let codec_name = match format.codec {
-                                        $crate::streamkit_core::types::AudioCodec::Opus => "opus",
-                                        $crate::streamkit_core::types::AudioCodec::Aac => "aac",
-                                        _ => "unknown",
-                                    };
-                                    Some(std::ffi::CString::new(codec_name).expect(
-                                        "Codec name should not contain null bytes",
-                                    ))
+                                    Some($crate::conversions::codec_name_to_cstring(format.codec.as_c_name()))
+                                }
+                                $crate::streamkit_core::types::PacketType::EncodedVideo(format) => {
+                                    Some($crate::conversions::codec_name_to_cstring(format.codec.as_c_name()))
                                 }
                                 _ => None,
                             };
@@ -1034,16 +1030,10 @@ macro_rules! native_plugin_entry {
                                 ))
                             }
                             $crate::streamkit_core::types::PacketType::EncodedAudio(format) => {
-                                // Carry the codec name in custom_type_id for
-                                // non-Opus EncodedAudio variants (e.g. AAC).
-                                let codec_name = match format.codec {
-                                    $crate::streamkit_core::types::AudioCodec::Opus => "opus",
-                                    $crate::streamkit_core::types::AudioCodec::Aac => "aac",
-                                    _ => "unknown",
-                                };
-                                Some(std::ffi::CString::new(codec_name).expect(
-                                    "Codec name should not contain null bytes",
-                                ))
+                                Some($crate::conversions::codec_name_to_cstring(format.codec.as_c_name()))
+                            }
+                            $crate::streamkit_core::types::PacketType::EncodedVideo(format) => {
+                                Some($crate::conversions::codec_name_to_cstring(format.codec.as_c_name()))
                             }
                             _ => None,
                         };
@@ -1441,15 +1431,14 @@ macro_rules! native_source_plugin_entry {
                                     )
                                 },
                                 $crate::streamkit_core::types::PacketType::EncodedAudio(format) => {
-                                    let codec_name = match format.codec {
-                                        $crate::streamkit_core::types::AudioCodec::Opus => "opus",
-                                        $crate::streamkit_core::types::AudioCodec::Aac => "aac",
-                                        _ => "unknown",
-                                    };
-                                    Some(
-                                        std::ffi::CString::new(codec_name)
-                                            .expect("Codec name should not contain null bytes"),
-                                    )
+                                    Some($crate::conversions::codec_name_to_cstring(
+                                        format.codec.as_c_name(),
+                                    ))
+                                },
+                                $crate::streamkit_core::types::PacketType::EncodedVideo(format) => {
+                                    Some($crate::conversions::codec_name_to_cstring(
+                                        format.codec.as_c_name(),
+                                    ))
                                 },
                                 _ => None,
                             };
@@ -1567,17 +1556,14 @@ macro_rules! native_source_plugin_entry {
                                     .expect("Custom type_id should not contain null bytes"),
                             ),
                             $crate::streamkit_core::types::PacketType::EncodedAudio(format) => {
-                                // Carry the codec name in custom_type_id for
-                                // non-Opus EncodedAudio variants (e.g. AAC).
-                                let codec_name = match format.codec {
-                                    $crate::streamkit_core::types::AudioCodec::Opus => "opus",
-                                    $crate::streamkit_core::types::AudioCodec::Aac => "aac",
-                                    _ => "unknown",
-                                };
-                                Some(
-                                    std::ffi::CString::new(codec_name)
-                                        .expect("Codec name should not contain null bytes"),
-                                )
+                                Some($crate::conversions::codec_name_to_cstring(
+                                    format.codec.as_c_name(),
+                                ))
+                            },
+                            $crate::streamkit_core::types::PacketType::EncodedVideo(format) => {
+                                Some($crate::conversions::codec_name_to_cstring(
+                                    format.codec.as_c_name(),
+                                ))
                             },
                             _ => None,
                         };

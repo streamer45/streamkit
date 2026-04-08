@@ -22,6 +22,7 @@ use tokio::sync::mpsc;
 
 /// Configuration for the HttpMse node.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct HttpMseConfig {
     /// Path suffix for the MSE stream endpoint (e.g., "/video").
     /// Full URL will be: `/mse/{session_id}{path}`

@@ -46,6 +46,7 @@ const VAD_EVENT_TYPE_ID: &str = "plugin::native::vad/vad-event@1";
 
 /// Configuration for the telemetry tap node.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TelemetryTapConfig {
     /// Which packet types to convert to telemetry.
     /// Default: `["Transcription", "Custom"]`

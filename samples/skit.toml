@@ -31,9 +31,10 @@ samples_dir = "./samples/pipelines"
 # Default: 100MB
 max_body_size = 104857600
 
-# MoQ WebTransport address (optional, requires 'moq' feature)
-# Note: currently unused; the MoQ acceptor binds to `server.address`.
-# moq_address = "127.0.0.1:4545"
+# MoQ WebTransport bind address (optional, requires 'moq' feature).
+# When unset, MoQ QUIC binds to the same address as the HTTP server.
+# Set to a different address/port to separate HTTP and MoQ traffic.
+# moq_address = "0.0.0.0:4445"
 
 # MoQ Gateway URL to expose to the UI (optional, requires 'moq' feature)
 # moq_gateway_url = "https://example.com/moq"

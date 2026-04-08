@@ -19,7 +19,7 @@ use streamkit_core::{
 use tokio::sync::mpsc;
 
 #[derive(Deserialize, Debug, Clone, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ClockedMixerConfig {
     /// Output sample rate (Hz). Inputs are expected to already match this.
     pub sample_rate: u32,
@@ -56,7 +56,7 @@ impl Default for ClockedMixerConfig {
 
 /// Configuration for the AudioMixerNode.
 #[derive(Deserialize, Debug, Clone, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AudioMixerConfig {
     /// Timeout in milliseconds for waiting for slow inputs.
     /// If specified, the mixer will wait up to this duration for all active pins to provide frames.

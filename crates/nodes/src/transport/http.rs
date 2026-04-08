@@ -19,6 +19,7 @@ use streamkit_core::{
 
 /// Configuration for the HttpPullNode
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct HttpPullConfig {
     /// URL to fetch (HTTP or HTTPS)
     pub url: String,

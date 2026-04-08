@@ -286,7 +286,7 @@ pub(super) fn make_broadcast_frame(packet: Packet, kind: MediaKind) -> Option<Br
 // ── MoqPeerConfig ────────────────────────────────────────────────────────────
 
 #[derive(Deserialize, Debug, JsonSchema, Clone)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MoqPeerConfig {
     /// Broadcast names to receive from the publisher client.
     ///
@@ -322,22 +322,20 @@ pub struct MoqPeerConfig {
     /// Video codec for the MoQ catalog.
     ///
     /// Required for dynamic pipelines where `input_types` is not available at
-    /// startup.  Accepted values: `"vp9"`, `"av1"`.  When `None`, the codec
-    /// is auto-detected from `input_types` (static pipelines) and falls back
-    /// to VP9.
-    pub video_codec: Option<String>,
+    /// startup.  When `None`, the codec is auto-detected from `input_types`
+    /// (static pipelines) and falls back to VP9.
+    pub video_codec: Option<VideoCodec>,
     /// Audio codec for the MoQ catalog.
     ///
     /// Required for dynamic pipelines where `input_types` is not available at
-    /// startup.  Accepted values: `"opus"`, `"aac"`.  When `None`, the codec
-    /// is auto-detected from `input_types` (static pipelines) and falls back
-    /// to Opus.
+    /// startup.  When `None`, the codec is auto-detected from `input_types`
+    /// (static pipelines) and falls back to Opus.
     ///
     /// Controls the **publisher output pin** type (`audio/data`).  For
     /// transcoding scenarios where the subscriber receives a different codec
     /// (e.g. Opus in → AAC out), use [`subscriber_audio_codec`] to override
     /// the subscriber catalog codec independently.
-    pub audio_codec: Option<String>,
+    pub audio_codec: Option<AudioCodec>,
     /// Audio codec advertised in the **subscriber** MoQ catalog.
     ///
     /// When set, overrides [`audio_codec`] for the subscriber side only
@@ -348,9 +346,8 @@ pub struct MoqPeerConfig {
     /// (e.g. Opus) but the pipeline re-encodes to another (e.g. AAC) before
     /// feeding it back to subscribers.
     ///
-    /// Accepted values: `"opus"`, `"aac"`.  When `None`, falls back to
-    /// [`audio_codec`].
-    pub subscriber_audio_codec: Option<String>,
+    /// When `None`, falls back to [`audio_codec`].
+    pub subscriber_audio_codec: Option<AudioCodec>,
 }
 
 impl Default for MoqPeerConfig {

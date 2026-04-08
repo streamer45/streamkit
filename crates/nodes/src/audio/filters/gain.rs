@@ -26,7 +26,7 @@ fn gain_schema(_gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
 
 /// The configuration struct for the AudioGainNode.
 #[derive(Deserialize, Debug, Clone, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AudioGainConfig {
     /// A linear multiplier for the audio amplitude (e.g., 0.5 is -6dB).
     /// This parameter can be updated in real-time while the node is running.
