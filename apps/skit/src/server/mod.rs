@@ -3382,18 +3382,37 @@ fn start_moq_webtransport_acceptor(
 
     let auth_state = Arc::clone(&app_state.auth);
 
-    // Parse address for WebTransport (UDP will use the same port as HTTP/HTTPS)
-    let addr: SocketAddr = config.server.address.parse()?;
+    // Parse address for WebTransport — use moq_address when set, otherwise fall back
+    // to the main server address (same port for HTTP and QUIC).
+    let addr: SocketAddr =
+        config.server.moq_address.as_deref().unwrap_or(&config.server.address).parse()?;
 
-    // Configure TLS - use provided certificates if available, otherwise auto-generate
-    let tls = if config.server.tls
+    // Configure TLS for MoQ WebTransport.
+    // Priority: moq_cert_path/moq_key_path → server cert_path/key_path (when tls=true) → self-signed.
+    let moq_cert = config.server.moq_cert_path.as_deref().filter(|s| !s.is_empty());
+    let moq_key = config.server.moq_key_path.as_deref().filter(|s| !s.is_empty());
+
+    if moq_cert.is_some() != moq_key.is_some() {
+        return Err(format!(
+            "Invalid MoQ TLS config: both moq_cert_path and moq_key_path must be set (got cert={:?}, key={:?})",
+            config.server.moq_cert_path, config.server.moq_key_path
+        ).into());
+    }
+
+    let tls = if let (Some(cert), Some(key)) = (moq_cert, moq_key) {
+        info!(cert_path = %cert, key_path = %key, "Using MoQ-specific TLS certificates for WebTransport");
+        let mut tls = ServerTlsConfig::default();
+        tls.cert = vec![std::path::PathBuf::from(cert)];
+        tls.key = vec![std::path::PathBuf::from(key)];
+        tls
+    } else if config.server.tls
         && !config.server.cert_path.is_empty()
         && !config.server.key_path.is_empty()
     {
         info!(
             cert_path = %config.server.cert_path,
             key_path = %config.server.key_path,
-            "Using provided TLS certificates for MoQ WebTransport"
+            "Using server TLS certificates for MoQ WebTransport"
         );
         let mut tls = ServerTlsConfig::default();
         tls.cert = vec![std::path::PathBuf::from(&config.server.cert_path)];
@@ -3410,9 +3429,26 @@ fn start_moq_webtransport_acceptor(
     moq_config.bind = Some(addr);
     moq_config.tls = tls;
 
+    let moq_public_paths: Arc<[String]> = config
+        .auth
+        .moq_public_paths
+        .iter()
+        .filter(|p| {
+            if p.is_empty() {
+                warn!("Ignoring empty string in moq_public_paths (would bypass all MoQ auth)");
+                false
+            } else {
+                true
+            }
+        })
+        .cloned()
+        .collect::<Vec<_>>()
+        .into();
+
     info!(
         address = %addr,
-        "Starting MoQ WebTransport acceptor on UDP (same port as HTTP server)"
+        moq_public_paths = ?moq_public_paths,
+        "Starting MoQ WebTransport acceptor on UDP"
     );
 
     tokio::spawn(async move {
@@ -3430,7 +3466,7 @@ fn start_moq_webtransport_acceptor(
                 for (i, fp) in fingerprints.iter().enumerate() {
                     info!("🔐 MoQ WebTransport certificate fingerprint #{}: {}", i + 1, fp);
                 }
-                info!("💡 Access fingerprints at: http://{}/api/v1/moq/fingerprints", addr);
+                info!("💡 Access fingerprints at: /api/v1/moq/fingerprints (served by the HTTP server)");
 
                 info!("MoQ WebTransport server listening for connections");
 
@@ -3438,6 +3474,7 @@ fn start_moq_webtransport_acceptor(
                 while let Some(request) = server.accept().await {
                     let gateway = Arc::clone(&gateway);
                     let auth_state = Arc::clone(&auth_state);
+                    let moq_public_paths = Arc::clone(&moq_public_paths);
 
                     tokio::spawn(async move {
                         // Extract URL data before consuming the request.
@@ -3458,8 +3495,12 @@ fn start_moq_webtransport_acceptor(
                         // SECURITY: Never log the full URL (may contain jwt)
                         debug!(path = %path, "Received MoQ connection request");
 
-                        // Validate MoQ auth if enabled
-                        let moq_auth = if auth_state.is_enabled() {
+                        // Validate MoQ auth if enabled (skipped for paths matching moq_public_paths).
+                        // Segment-based: "/moq" matches "/moq" and "/moq/foo" but NOT "/moq2".
+                        let is_public = moq_public_paths.iter().any(|prefix| {
+                            path == prefix.as_str() || path.starts_with(&format!("{prefix}/"))
+                        });
+                        let moq_auth = if auth_state.is_enabled() && !is_public {
                             match validate_moq_auth(&auth_state, &path, jwt_param).await {
                                 Ok(ctx) => Some(ctx),
                                 Err(status) => {
