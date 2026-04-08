@@ -6,7 +6,7 @@
 # and integration testing.
 #
 # Usage:
-#   docker compose -f docker-compose.rustfs.yml up -d
+#   docker compose -f docker/docker-compose.rustfs.yml up -d
 #
 # S3 API:   http://localhost:9000
 # Console:  http://localhost:9001
