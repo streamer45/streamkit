@@ -269,7 +269,7 @@ impl UnifiedPluginManager {
         summaries
     }
 
-    /// Phases 2 & 3: scan the native directory for directory bundles, loading
+    /// Phase 2: scan the native directory for directory bundles, loading
     /// plugins from subdirectories of `.plugins/native/<id>/`.
     fn load_native_dir_plugins(&mut self) -> Vec<PluginSummary> {
         let mut lib_paths: Vec<std::path::PathBuf> = Vec::new();
@@ -957,6 +957,20 @@ impl UnifiedPluginManager {
             Ok(summary) => Ok(summary),
             Err(e) => {
                 let _ = std::fs::remove_file(&target_path);
+                // Clean up the subdirectory if it is now empty (failed
+                // native upload should not leave orphaned directories).
+                if let Some(parent) = target_path.parent() {
+                    if parent != self.native_directory && parent.starts_with(&self.native_directory)
+                    {
+                        let is_empty = parent
+                            .read_dir()
+                            .map(|mut entries| entries.next().is_none())
+                            .unwrap_or(false);
+                        if is_empty {
+                            let _ = std::fs::remove_dir(parent);
+                        }
+                    }
+                }
                 Err(e)
             },
         }
