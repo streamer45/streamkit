@@ -773,3 +773,98 @@ async fn test_unload_plugin_after_pipeline_use() {
     println!("✅ Server healthy after unload");
     server.shutdown().await;
 }
+
+/// Uploading a plugin whose kind is already loaded must be rejected without
+/// destroying the existing plugin's library file on disk.
+#[tokio::test]
+async fn test_duplicate_upload_preserves_existing_plugin() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let _permit = acquire_test_permit().await;
+
+    let Some(server) = TestServer::start().await else {
+        eprintln!("Skipping plugin integration tests: local TCP bind not permitted");
+        return;
+    };
+    let plugin_path = ensure_gain_plugin_built().await;
+    let plugin_bytes = fs::read(&plugin_path).await.expect("Failed to read plugin file");
+    let file_name = plugin_path.file_name().unwrap().to_string_lossy().to_string();
+    let client = reqwest::Client::new();
+    let url = format!("http://{}/api/v1/plugins", server.addr);
+
+    // First upload — should succeed.
+    let form = multipart::Form::new()
+        .part("plugin", multipart::Part::bytes(plugin_bytes.clone()).file_name(file_name.clone()));
+    let response = timeout(Duration::from_secs(10), client.post(&url).multipart(form).send())
+        .await
+        .expect("Upload timed out")
+        .expect("Failed to upload plugin");
+    assert_eq!(response.status(), StatusCode::CREATED, "First upload should succeed");
+    println!("✅ First upload succeeded");
+
+    // Locate the installed plugin file on disk so we can verify it survives.
+    #[allow(clippy::used_underscore_binding)]
+    let plugins_dir = server._temp_dir.path().join("plugins/native");
+    let installed_file = find_plugin_file(&plugins_dir).await;
+    let original_metadata =
+        fs::metadata(&installed_file).await.expect("Failed to stat installed plugin");
+    let original_len = original_metadata.len();
+    assert!(original_len > 0, "Installed plugin file should not be empty");
+    println!("✅ Plugin installed at {}", installed_file.display());
+
+    // Second upload of the same plugin — should be rejected.
+    let form2 = multipart::Form::new()
+        .part("plugin", multipart::Part::bytes(plugin_bytes).file_name(file_name));
+    let response2 = timeout(Duration::from_secs(10), client.post(&url).multipart(form2).send())
+        .await
+        .expect("Second upload timed out")
+        .expect("Failed to send second upload");
+    assert_eq!(
+        response2.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "Second upload of same plugin kind should be rejected"
+    );
+    println!("✅ Second upload correctly rejected");
+
+    // Verify the original plugin file is still on disk and intact.
+    let after_metadata = fs::metadata(&installed_file)
+        .await
+        .expect("Plugin file should still exist after rejected duplicate upload");
+    assert_eq!(
+        after_metadata.len(),
+        original_len,
+        "Plugin file size should be unchanged after rejected duplicate"
+    );
+    println!("✅ Original plugin file preserved");
+
+    // Verify the plugin is still loaded and functional.
+    let list_url = format!("http://{}/api/v1/plugins", server.addr);
+    let list_response = client.get(&list_url).send().await.expect("Failed to list plugins");
+    assert_eq!(list_response.status(), StatusCode::OK);
+    let plugins: Vec<serde_json::Value> =
+        list_response.json().await.expect("Failed to parse plugins list");
+    assert_eq!(plugins.len(), 1, "Plugin should still be loaded");
+    assert_eq!(plugins[0]["kind"], "plugin::native::gain");
+    println!("✅ Plugin still loaded and listed");
+
+    server.shutdown().await;
+}
+
+/// Find the first native plugin library file under the given directory tree.
+async fn find_plugin_file(dir: &std::path::Path) -> std::path::PathBuf {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let mut entries = fs::read_dir(&current).await.expect("Failed to read dir");
+        while let Some(entry) = entries.next_entry().await.expect("Failed to read entry") {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("so")
+                || path.extension().and_then(|e| e.to_str()) == Some("dylib")
+                || path.extension().and_then(|e| e.to_str()) == Some("dll")
+            {
+                return path;
+            }
+        }
+    }
+    panic!("No plugin library file found under {}", dir.display());
+}

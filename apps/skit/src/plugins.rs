@@ -900,6 +900,50 @@ impl UnifiedPluginManager {
         }
     }
 
+    /// Probes a native plugin library to discover its kind and checks for
+    /// conflicts with already-loaded plugins, without registering anything.
+    ///
+    /// Used by the upload path to detect kind conflicts *before* moving the
+    /// uploaded file to its final location, preventing accidental overwriting
+    /// of an existing plugin's library.
+    fn check_native_upload_conflict(&self, probe_path: &Path) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(probe_path)?.permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(probe_path, perms)?;
+        }
+
+        let plugin = LoadedNativePlugin::load(probe_path)
+            .with_context(|| format!("failed to probe native plugin {}", probe_path.display()))?;
+        let metadata = plugin.metadata();
+        let original_kind = metadata.kind.clone();
+        let kind = streamkit_plugin_native::namespaced_kind(&original_kind)
+            .with_context(|| format!("invalid plugin kind '{original_kind}'"))?;
+        // Close the library before the file is moved and re-opened from the
+        // final path.
+        drop(plugin);
+
+        if self.plugins.contains_key(&kind) {
+            return Err(anyhow!(
+                "A plugin providing node '{original_kind}' (registered as '{kind}') is already loaded"
+            ));
+        }
+
+        {
+            let registry =
+                self.engine.registry.read().map_err(|e| anyhow!("Registry lock poisoned: {e}"))?;
+            if registry.contains(&kind) {
+                return Err(anyhow!(
+                    "Node kind '{kind}' is already registered; refusing to overwrite it with a plugin"
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Saves raw plugin bytes into the managed directory and loads the resulting plugin.
     /// Automatically detects plugin type based on file extension.
     ///
@@ -918,6 +962,16 @@ impl UnifiedPluginManager {
             std::fs::write(&target_path, bytes).with_context(|| {
                 format!("failed to write plugin file {}", target_path.display())
             })?;
+
+            // For native plugins, probe the kind to detect conflicts before
+            // registering.  Note: if target_path already existed, the write
+            // above has already overwritten it.  The primary upload path
+            // (load_from_temp_file) avoids this by probing from the temp file
+            // before moving.
+            if plugin_type == PluginType::Native {
+                self.check_native_upload_conflict(&target_path)?;
+            }
+
             self.load_from_written_path(plugin_type, target_path.clone())
         })();
 
@@ -953,6 +1007,14 @@ impl UnifiedPluginManager {
             })?;
             if !meta.is_file() {
                 return Err(anyhow!("temp plugin path is not a file: {}", temp_path.display()));
+            }
+
+            // For native plugins, probe the kind from the temp file to detect
+            // conflicts before moving to the final location.  This prevents
+            // overwriting an existing plugin's library file when the uploaded
+            // plugin's kind is already loaded.
+            if plugin_type == PluginType::Native {
+                self.check_native_upload_conflict(temp_path)?;
             }
 
             // Prefer atomic move; fall back to copy+remove for cross-device temp dirs.
