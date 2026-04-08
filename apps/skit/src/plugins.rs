@@ -279,6 +279,14 @@ impl UnifiedPluginManager {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if !path.is_dir() {
+                        // Warn about bare library files that will be ignored.
+                        if Self::is_native_lib(&path) {
+                            warn!(
+                                file = ?path,
+                                "Bare plugin file found in native directory; \
+                                 move it into a subdirectory (e.g. .plugins/native/<id>/)"
+                            );
+                        }
                         continue;
                     }
                     // Scan one level of subdirectories for plugin libraries.
@@ -990,7 +998,9 @@ impl UnifiedPluginManager {
                 let stem = Path::new(sanitized)
                     .file_stem()
                     .and_then(|s| s.to_str())
-                    .map_or(sanitized, |s| s.strip_prefix("lib").unwrap_or(s));
+                    .map(|s| s.strip_prefix("lib").unwrap_or(s))
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(sanitized);
                 let subdir = self.native_directory.join(stem);
                 std::fs::create_dir_all(&subdir).with_context(|| {
                     format!("failed to create native plugin directory {}", subdir.display())
