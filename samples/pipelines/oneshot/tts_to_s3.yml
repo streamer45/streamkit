@@ -1,0 +1,70 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Demonstrates the object store writer node with TTS output.
+#
+# Synthesizes speech from text using Kokoro TTS, encodes to Opus/OGG,
+# and uploads the result to S3-compatible object storage.
+#
+# Requires:
+#   - kokoro native plugin (just install-plugin kokoro)
+#   - S3-compatible endpoint (e.g. RustFS via docker-compose.rustfs.yml)
+#   - Set SK_S3_ACCESS_KEY and SK_S3_SECRET_KEY env vars
+
+name: TTS to S3 (Kokoro)
+description: Synthesizes speech from text and uploads the OGG result to S3-compatible storage
+mode: oneshot
+client:
+  input:
+    type: text
+    placeholder: "Enter text to synthesize"
+  output:
+    type: none
+nodes:
+  http_input:
+    kind: streamkit::http_input
+
+  text_chunker:
+    kind: core::text_chunker
+    params:
+      min_length: 10
+    needs: http_input
+
+  tts:
+    kind: plugin::native::kokoro
+    params:
+      model_dir: "models/kokoro-multi-lang-v1_1"
+      speaker_id: 0
+      speed: 1.0
+    needs: text_chunker
+
+  resampler:
+    kind: audio::resampler
+    params:
+      chunk_frames: 960
+      output_frame_size: 960
+      target_sample_rate: 48000
+    needs: tts
+
+  opus_encoder:
+    kind: audio::opus::encoder
+    needs: resampler
+
+  ogg_muxer:
+    kind: containers::ogg::muxer
+    params:
+      channels: 1
+    needs: opus_encoder
+
+  s3_writer:
+    kind: core::object_store_writer
+    params:
+      endpoint: "http://localhost:9000"
+      bucket: "streamkit-output"
+      key: "tts/output.ogg"
+      region: "us-east-1"
+      access_key_id_env: "SK_S3_ACCESS_KEY"
+      secret_key_env: "SK_S3_SECRET_KEY"
+      content_type: "audio/ogg"
+    needs: ogg_muxer
