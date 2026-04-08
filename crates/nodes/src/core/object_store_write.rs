@@ -287,7 +287,7 @@ impl ProcessorNode for ObjectStoreWriteNode {
         let mut total_bytes: u64 = 0;
         let mut buffer = Vec::with_capacity(self.config.chunk_size);
         let mut chunks_written: u64 = 0;
-        let mut reason = "input_closed".to_string();
+        let reason = "input_closed".to_string();
 
         while let Some(packet) = context.recv_with_cancellation(&mut input_rx).await {
             if let Packet::Binary { data, .. } = packet {
@@ -369,8 +369,14 @@ impl ProcessorNode for ObjectStoreWriteNode {
             stats_tracker.force_send();
             let msg = format!("Failed to finalize S3 upload: {e}");
             state_helpers::emit_failed(&context.state_tx, &node_name, &msg);
-            reason = format!("close_failed: {e}");
-            state_helpers::emit_stopped(&context.state_tx, &node_name, reason);
+            // Attempt to abort the multipart upload to avoid orphaned parts.
+            if let Err(abort_err) = writer.abort().await {
+                tracing::error!(
+                    %node_name,
+                    error = %abort_err,
+                    "Failed to abort S3 multipart upload after close error"
+                );
+            }
             return Err(StreamKitError::Runtime(msg));
         }
 
