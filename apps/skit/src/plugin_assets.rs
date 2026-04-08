@@ -898,10 +898,10 @@ pub fn plugin_assets_router() -> Router<Arc<AppState>> {
 ///
 /// Searches for the manifest in two locations:
 /// 1. `plugin.yml` / `plugin.yaml` in the same directory as the `.so` file
-///    (primary — works with the directory-per-plugin layout produced by
+///    (works with the directory-per-plugin layout produced by
 ///    `just copy-plugins-native`, e.g. `.plugins/native/slint/plugin.yml`).
-/// 2. `{stem}.plugin.yml` next to the `.so` file (legacy flat layout fallback,
-///    e.g. `.plugins/native/slint.plugin.yml`).
+/// 2. `{stem}.plugin.yml` / `{stem}.plugin.yaml` next to the `.so` file
+///    (fallback for any non-standard layouts).
 pub fn read_local_plugin_manifest(
     library_path: &std::path::Path,
 ) -> Option<crate::marketplace::PluginManifest> {

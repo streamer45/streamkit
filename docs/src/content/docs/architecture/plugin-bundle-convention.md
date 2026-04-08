@@ -49,14 +49,14 @@ additional `bundle` block for download metadata.
 `read_local_plugin_manifest` searches for:
 
 1. `plugin.yml` / `plugin.yaml` in the same directory as the `.so`
-2. `{stem}.plugin.yml` next to the `.so` (flat layout fallback)
+2. `{stem}.plugin.yml` / `{stem}.plugin.yaml` next to the `.so` (fallback)
 
 The key requirement is that a `plugin.yml` file exists next to the
 entrypoint library.
 
 ## Unified loader
 
-`load_all_native_plugins` discovers native plugins from three sources,
+`load_all_native_plugins` discovers native plugins from two sources,
 loaded in priority order:
 
 1. **Active records** (`.plugins/active/*.json`) — marketplace-installed
@@ -64,12 +64,10 @@ loaded in priority order:
 2. **Directory bundles** (`.plugins/native/<id>/`) — local directory
    layout where each subdirectory contains the plugin library and a
    `plugin.yml` manifest.
-3. **Bare library files** (`.plugins/native/*.so`) — legacy flat layout
-   for backward compatibility.
 
 A plugin kind that was already loaded by an earlier source is skipped so
-that marketplace versions always take precedence, followed by directory
-bundles, followed by bare files.
+that marketplace versions always take precedence.  Duplicate-kind skips
+are logged at `debug` level; genuine load failures are logged at `warn`.
 
 ## Build tooling
 
@@ -85,6 +83,13 @@ Each plugin gets its own subdirectory under `.plugins/native/`.  The
 `plugin.yml` is copied from the plugin's source tree
 (`plugins/native/<id>/plugin.yml`).
 
+## HTTP uploads
+
+Plugins uploaded via `POST /api/v1/plugins` are also placed into the
+directory layout.  The subdirectory name is derived from the library stem
+(e.g. `libgain.so` → `.plugins/native/gain/libgain.so`).  On unload the
+subdirectory is cleaned up if empty.
+
 ## Implemented
 
 - **Marketplace bundles write `plugin.yml` on install** — during
@@ -99,8 +104,12 @@ Each plugin gets its own subdirectory under `.plugins/native/`.  The
 
 - **Unified loader** — `load_all_native_plugins` merges the former
   `load_active_plugins_from_dir` and `load_native_plugins_from_dir` into
-  a single pass that handles active records, directory bundles, and bare
-  library files with correct priority ordering.
+  a single pass that handles active records and directory bundles with
+  correct priority ordering.
+
+- **HTTP uploads use directory layout** — uploaded native plugins are
+  placed into a subdirectory of `.plugins/native/` matching the library
+  stem, consistent with the build-time layout.
 
 ## Future steps
 
@@ -113,17 +122,3 @@ Each plugin gets its own subdirectory under `.plugins/native/`.  The
 2. **Custom UI** — plugins could ship frontend components (e.g.
    `ui/config-panel.jsx`) that the dashboard loads at runtime for
    node-specific configuration UIs.
-
-## Migration path
-
-The migration is **backward-compatible**:
-
-- Bare `.so` files continue to work.  The unified loader scans for them
-  as a fallback after directory bundles.
-- Marketplace bundles already ARE directories — they just need a
-  `plugin.yml` written during installation (done).
-- The `{stem}.plugin.yml` naming convention is still supported by
-  `read_local_plugin_manifest` for any remaining flat layouts.
-
-No breaking changes are required.  New features (bundled assets, custom
-UI) are additive.

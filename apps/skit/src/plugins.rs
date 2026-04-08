@@ -194,18 +194,20 @@ impl UnifiedPluginManager {
 
     /// Unified native plugin loader.
     ///
-    /// Discovers native plugins from three sources, loaded in priority order:
+    /// Discovers native plugins from two sources, loaded in priority order:
     ///
     /// 1. **Active records** (`.plugins/active/*.json`) — marketplace-installed
     ///    bundles whose entrypoints live under `.plugins/bundles/`.
     /// 2. **Directory bundles** (`.plugins/native/<id>/`) — local directory
     ///    layout where each subdirectory contains a `plugin.yml` manifest and
     ///    the plugin library.
-    /// 3. **Bare library files** (`.plugins/native/*.so`) — legacy flat layout.
     ///
     /// A plugin kind that was already loaded by an earlier source is skipped so
-    /// that marketplace versions always take precedence, followed by directory
-    /// bundles, followed by bare files.
+    /// that marketplace versions always take precedence.
+    ///
+    /// Errors reading plugin directories are logged but do not propagate;
+    /// callers cannot distinguish "no plugins found" from "directory unreadable"
+    /// except via the `warn!` log output.
     fn load_all_native_plugins(&mut self) -> Vec<PluginSummary> {
         let mut summaries = Vec::new();
 
@@ -267,32 +269,26 @@ impl UnifiedPluginManager {
         summaries
     }
 
-    /// Phases 2 & 3: scan the native directory for directory bundles and bare
-    /// library files, loading directory bundles first so they take precedence.
+    /// Phases 2 & 3: scan the native directory for directory bundles, loading
+    /// plugins from subdirectories of `.plugins/native/<id>/`.
     fn load_native_dir_plugins(&mut self) -> Vec<PluginSummary> {
-        let mut dir_bundle_libs: Vec<std::path::PathBuf> = Vec::new();
-        let mut bare_libs: Vec<std::path::PathBuf> = Vec::new();
+        let mut lib_paths: Vec<std::path::PathBuf> = Vec::new();
 
         match std::fs::read_dir(&self.native_directory) {
             Ok(entries) => {
                 for entry in entries.flatten() {
                     let path = entry.path();
-
-                    if path.is_dir() {
-                        // Scan one level of subdirectories for plugin libraries.
-                        if let Ok(sub_entries) = std::fs::read_dir(&path) {
-                            for sub_entry in sub_entries.flatten() {
-                                let sub_path = sub_entry.path();
-                                if Self::is_native_lib(&sub_path) {
-                                    dir_bundle_libs.push(sub_path);
-                                }
-                            }
-                        }
+                    if !path.is_dir() {
                         continue;
                     }
-
-                    if Self::is_native_lib(&path) {
-                        bare_libs.push(path);
+                    // Scan one level of subdirectories for plugin libraries.
+                    if let Ok(sub_entries) = std::fs::read_dir(&path) {
+                        for sub_entry in sub_entries.flatten() {
+                            let sub_path = sub_entry.path();
+                            if Self::is_native_lib(&sub_path) {
+                                lib_paths.push(sub_path);
+                            }
+                        }
                     }
                 }
             },
@@ -305,32 +301,20 @@ impl UnifiedPluginManager {
             },
         }
 
-        // Sort for deterministic load order when multiple bundles or bare
-        // files provide the same plugin kind.
-        dir_bundle_libs.sort();
-        bare_libs.sort();
+        // Sort for deterministic load order when multiple bundles provide
+        // the same plugin kind.
+        lib_paths.sort();
 
-        // Load directory-bundle plugins first, then bare files.  Skip any
-        // plugin whose kind is already loaded (from active records or an
-        // earlier library in this phase).
+        // Skip any plugin whose kind is already loaded (from active records
+        // or an earlier library in this phase).
         let mut summaries = Vec::new();
-        for path in dir_bundle_libs.into_iter().chain(bare_libs) {
+        for path in lib_paths {
             match self.load_native_plugin(&path) {
                 Ok(summary) => {
-                    // Classify the source based on the library's parent
-                    // directory: if it is directly inside the native dir it
-                    // came from a bare flat file; otherwise it is nested
-                    // inside a subdirectory (directory-bundle layout).
-                    let source = if path.parent() == Some(self.native_directory.as_path()) {
-                        "bare-file"
-                    } else {
-                        "directory-bundle"
-                    };
                     info!(
                         plugin = %summary.kind,
                         file = ?path,
-                        source,
-                        "Loaded native plugin from disk"
+                        "Loaded native plugin from directory bundle"
                     );
                     summaries.push(summary);
                 },
@@ -855,6 +839,20 @@ impl UnifiedPluginManager {
                     "Failed to remove plugin file during unload"
                 );
             }
+
+            // Clean up the parent directory if it is a now-empty subdirectory
+            // inside the native plugins dir (directory-bundle layout).
+            if let Some(parent) = file_path.parent() {
+                if parent != self.native_directory && parent.starts_with(&self.native_directory) {
+                    let is_empty = parent
+                        .read_dir()
+                        .map(|mut entries| entries.next().is_none())
+                        .unwrap_or(false);
+                    if is_empty {
+                        let _ = std::fs::remove_dir(parent);
+                    }
+                }
+            }
         }
 
         Ok(summary)
@@ -987,7 +985,17 @@ impl UnifiedPluginManager {
         let (target_path, plugin_type) = match extension {
             Some("wasm") => (self.wasm_directory.join(sanitized), PluginType::Wasm),
             Some("so" | "dylib" | "dll") => {
-                (self.native_directory.join(sanitized), PluginType::Native)
+                // Place native plugins inside a subdirectory derived from the
+                // library stem (e.g. `libgain.so` → `native/gain/libgain.so`).
+                let stem = Path::new(sanitized)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map_or(sanitized, |s| s.strip_prefix("lib").unwrap_or(s));
+                let subdir = self.native_directory.join(stem);
+                std::fs::create_dir_all(&subdir).with_context(|| {
+                    format!("failed to create native plugin directory {}", subdir.display())
+                })?;
+                (subdir.join(sanitized), PluginType::Native)
             },
             _ => {
                 return Err(anyhow!(
