@@ -145,9 +145,7 @@ fn resolve_credential(
         }
         return Ok(val.to_string());
     }
-    Err(StreamKitError::Configuration(format!(
-        "No {label} provided (set via config or env var)"
-    )))
+    Err(StreamKitError::Configuration(format!("No {label} provided (set via config or env var)")))
 }
 
 // ---------------------------------------------------------------------------
@@ -164,10 +162,7 @@ struct AbortOnDrop {
 
 impl AbortOnDrop {
     const fn new(writer: opendal::Writer, node_name: String) -> Self {
-        Self {
-            writer: Some(writer),
-            node_name,
-        }
+        Self { writer: Some(writer), node_name }
     }
 
     /// Return a mutable reference to the inner writer.
@@ -178,9 +173,7 @@ impl AbortOnDrop {
     /// consumes `self`.
     #[allow(clippy::expect_used)] // Invariant: writer is always Some until disarm/drop.
     const fn writer_mut(&mut self) -> &mut opendal::Writer {
-        self.writer
-            .as_mut()
-            .expect("writer consumed after disarm")
+        self.writer.as_mut().expect("writer consumed after disarm")
     }
 
     /// Take ownership of the writer, disabling the abort-on-drop guard.
@@ -265,9 +258,7 @@ impl ObjectStoreWriteNode {
                     ));
                 }
                 if config.key.is_empty() {
-                    return Err(StreamKitError::Configuration(
-                        "key must not be empty".to_string(),
-                    ));
+                    return Err(StreamKitError::Configuration("key must not be empty".to_string()));
                 }
             }
 
