@@ -103,7 +103,7 @@ bytemuck = { version = "1.22", optional = true, features = ["derive"] }
 
 # HW-accelerated video codecs (optional, behind respective features)
 # vk-video = { version = "0.3", optional = true }          # vulkan_video feature — uncomment when implementing
-# cros-codecs = { version = "0.0.6", optional = true }     # vaapi feature — uncomment when implementing
+cros-codecs = { version = "0.0.6", optional = true, features = ["vaapi"] }  # vaapi feature — requires libva-dev system package
 # shiguredo_nvcodec = { version = "2025.2", optional = true } # nvcodec feature — uncomment when implementing
 
 futures-util = "0.3"
@@ -180,7 +180,7 @@ video = ["vp9", "av1", "openh264", "colorbars", "compositor"]
 # vulkan_video: H.264 encode/decode via Vulkan Video (vk-video crate). Cross-vendor (Intel/NVIDIA/AMD).
 vulkan_video = ["dep:schemars"]
 # vaapi: AV1 encode/decode via VA-API (cros-codecs crate). Primarily Intel, also AMD.
-vaapi = ["dep:schemars"]
+vaapi = ["dep:schemars", "dep:cros-codecs", "dep:serde_json"]
 # nvcodec: AV1 encode/decode via NVENC/NVDEC (shiguredo_nvcodec crate). NVIDIA only.
 nvcodec = ["dep:schemars"]
 
