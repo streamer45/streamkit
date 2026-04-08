@@ -81,6 +81,15 @@ const DEFAULT_RENDER_DEVICE: &str = "/dev/dri/renderD128";
 /// AV1 superblock size — coded resolution must be aligned to this.
 const AV1_SB_SIZE: u32 = 64;
 
+/// Maximum number of consecutive retries when the decoder returns
+/// `CheckEvents` or `NotEnoughOutputBuffers` without making progress.
+/// Matches the established pattern in `av1.rs` and `dav1d.rs`.
+const MAX_EAGAIN_EMPTY_RETRIES: u32 = 1000;
+
+/// After this many retries, switch from `thread::yield_now()` to
+/// `thread::sleep(1ms)` to avoid a tight spin-loop.
+const EAGAIN_YIELD_THRESHOLD: u32 = 10;
+
 /// Default constant-quality parameter (0–255, lower = better quality).
 const DEFAULT_QUALITY: u32 = 128;
 
@@ -99,7 +108,7 @@ fn nv12_fourcc() -> CrosFourcc {
 /// Align `value` up to the next multiple of `alignment`.
 fn align_up_u32(value: u32, alignment: u32) -> u32 {
     debug_assert!(alignment > 0);
-    (value + alignment - 1) / alignment * alignment
+    value.div_ceil(alignment) * alignment
 }
 
 /// Auto-detect a VA-API render device by scanning `/dev/dri/renderD*`.
@@ -109,10 +118,10 @@ fn align_up_u32(value: u32, alignment: u32) -> u32 {
 fn detect_render_device() -> Option<String> {
     let mut entries: Vec<_> = std::fs::read_dir("/dev/dri")
         .ok()?
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|e| e.file_name().to_str().is_some_and(|n| n.starts_with("renderD")))
         .collect();
-    entries.sort_by_key(|e| e.file_name());
+    entries.sort_by_key(std::fs::DirEntry::file_name);
 
     for entry in entries {
         let path = entry.path();
@@ -125,28 +134,28 @@ fn detect_render_device() -> Option<String> {
 }
 
 /// Resolve the render device path from config, auto-detection, or default.
-fn resolve_render_device(configured: &Option<String>) -> Result<String, String> {
+fn resolve_render_device(configured: Option<&String>) -> String {
     if let Some(path) = configured {
-        return Ok(path.clone());
+        return path.clone();
     }
 
     if let Some(path) = detect_render_device() {
         tracing::info!(device = %path, "auto-detected VA-API render device");
-        return Ok(path);
+        return path;
     }
 
     tracing::info!(
         device = DEFAULT_RENDER_DEVICE,
         "no VA-API device detected, falling back to default"
     );
-    Ok(DEFAULT_RENDER_DEVICE.to_string())
+    DEFAULT_RENDER_DEVICE.to_string()
 }
 
 /// Open a VA display and a GBM device on the same render node.
 fn open_va_and_gbm(
-    render_device: &Option<String>,
+    render_device: Option<&String>,
 ) -> Result<(Rc<libva::Display>, Arc<GbmDevice>, String), String> {
-    let path = resolve_render_device(render_device)?;
+    let path = resolve_render_device(render_device);
     let display = libva::Display::open_drm_display(&path)
         .map_err(|e| format!("failed to open VA display on {path}: {e}"))?;
     let gbm =
@@ -168,7 +177,7 @@ fn read_nv12_from_mapping(
     let w = width as usize;
     let h = height as usize;
     let y_size = w * h;
-    let uv_h = h / 2;
+    let uv_h = h.div_ceil(2);
     let uv_size = w * uv_h;
     let mut data = vec![0u8; y_size + uv_size];
 
@@ -231,7 +240,7 @@ fn write_nv12_to_mapping(
     match frame.pixel_format {
         PixelFormat::Nv12 => {
             let y_size = w * h;
-            let uv_size = w * (h / 2);
+            let uv_size = w * h.div_ceil(2);
 
             // Y plane.
             let y_stride = plane_pitches.first().copied().unwrap_or(w);
@@ -260,7 +269,7 @@ fn write_nv12_to_mapping(
                     let n = uv_size.min(uv_plane.len()).min(src_uv.len());
                     uv_plane[..n].copy_from_slice(&src_uv[..n]);
                 } else {
-                    let uv_h = h / 2;
+                    let uv_h = h.div_ceil(2);
                     for row in 0..uv_h {
                         let s = row * w;
                         let d = row * uv_stride;
@@ -274,8 +283,8 @@ fn write_nv12_to_mapping(
         PixelFormat::I420 => {
             // Convert I420 → NV12: Y stays the same, U and V are interleaved.
             let y_size = w * h;
-            let uv_w = w / 2;
-            let uv_h = h / 2;
+            let uv_w = w.div_ceil(2);
+            let uv_h = h.div_ceil(2);
             let u_plane_size = uv_w * uv_h;
 
             // Y plane.
@@ -414,7 +423,12 @@ impl ProcessorNode for VaapiAv1DecoderNode {
 
         let render_device = self.config.render_device.clone();
         let decode_task = tokio::task::spawn_blocking(move || {
-            vaapi_av1_decode_loop(render_device, decode_rx, result_tx, decode_duration_histogram);
+            vaapi_av1_decode_loop(
+                render_device.as_ref(),
+                decode_rx,
+                &result_tx,
+                &decode_duration_histogram,
+            );
         });
 
         state_helpers::emit_running(&context.state_tx, &node_name);
@@ -474,13 +488,13 @@ impl ProcessorNode for VaapiAv1DecoderNode {
 /// Creates the VA-API display, GBM device, and cros-codecs `StatelessDecoder`,
 /// then processes input packets until the channel is closed.
 fn vaapi_av1_decode_loop(
-    render_device: Option<String>,
+    render_device: Option<&String>,
     mut decode_rx: mpsc::Receiver<(Bytes, Option<PacketMetadata>)>,
-    result_tx: mpsc::Sender<Result<VideoFrame, String>>,
-    duration_histogram: opentelemetry::metrics::Histogram<f64>,
+    result_tx: &mpsc::Sender<Result<VideoFrame, String>>,
+    duration_histogram: &opentelemetry::metrics::Histogram<f64>,
 ) {
     // ── Open VA display + GBM device ─────────────────────────────────────
-    let (_display, gbm, path) = match open_va_and_gbm(&render_device) {
+    let (_display, gbm, path) = match open_va_and_gbm(render_device) {
         Ok(v) => v,
         Err(e) => {
             let _ = result_tx.blocking_send(Err(e));
@@ -532,6 +546,7 @@ fn vaapi_av1_decode_loop(
         // multiple chunks and may require event handling between calls.
         let mut offset = 0usize;
         let bitstream = data.as_ref();
+        let mut eagain_empty_retries: u32 = 0;
 
         while offset < bitstream.len() {
             let gbm_ref = Arc::clone(&gbm);
@@ -549,15 +564,15 @@ fn vaapi_av1_decode_loop(
                     .ok()
             };
 
+            let mut made_progress = false;
+
             match decoder.decode(timestamp, &bitstream[offset..], &mut alloc_cb) {
                 Ok(bytes_consumed) => {
                     offset += bytes_consumed;
+                    made_progress = true;
                 },
-                Err(DecodeError::CheckEvents) => {
-                    // Process pending events before retrying (handled below).
-                },
-                Err(DecodeError::NotEnoughOutputBuffers(_)) => {
-                    // Drain ready frames to free surfaces, then retry.
+                Err(DecodeError::CheckEvents | DecodeError::NotEnoughOutputBuffers(_)) => {
+                    // Process pending events / drain ready frames, then retry.
                 },
                 Err(e) => {
                     tracing::error!(error = %e, "VA-API AV1 decode error");
@@ -567,14 +582,37 @@ fn vaapi_av1_decode_loop(
             }
 
             // Process all pending events (format changes + ready frames).
-            if drain_decoder_events(
+            let (should_exit, had_events) = drain_decoder_events(
                 &mut decoder,
-                &result_tx,
-                &metadata,
+                result_tx,
+                metadata.as_ref(),
                 &mut coded_width,
                 &mut coded_height,
-            ) {
+            );
+            if should_exit {
                 return;
+            }
+
+            if made_progress || had_events {
+                eagain_empty_retries = 0;
+            } else {
+                eagain_empty_retries += 1;
+                if eagain_empty_retries > MAX_EAGAIN_EMPTY_RETRIES {
+                    tracing::error!(
+                        "VA-API AV1 decoder stuck: no progress after {MAX_EAGAIN_EMPTY_RETRIES} retries"
+                    );
+                    let _ = result_tx.blocking_send(Err(
+                        "VA-API AV1 decoder stuck in CheckEvents/NotEnoughOutputBuffers loop"
+                            .to_string(),
+                    ));
+                    break;
+                }
+                // Progressive backoff to avoid a tight spin-loop.
+                if eagain_empty_retries <= EAGAIN_YIELD_THRESHOLD {
+                    std::thread::yield_now();
+                } else {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
             }
         }
 
@@ -588,20 +626,24 @@ fn vaapi_av1_decode_loop(
     if let Err(e) = decoder.flush() {
         tracing::warn!(error = %e, "VA-API AV1 decoder flush failed");
     }
-    drain_decoder_events(&mut decoder, &result_tx, &None, &mut coded_width, &mut coded_height);
+    drain_decoder_events(&mut decoder, result_tx, None, &mut coded_width, &mut coded_height);
 }
 
 /// Drain all pending events from the decoder.
 ///
-/// Returns `true` if the result channel is closed and the caller should exit.
+/// Returns `(should_exit, had_events)`:
+/// - `should_exit`: the result channel is closed and the caller should return.
+/// - `had_events`: at least one event (format change or frame) was processed.
 fn drain_decoder_events(
     decoder: &mut StatelessDecoder<Av1, VaapiDecBackend<GbmVideoFrame>>,
     result_tx: &mpsc::Sender<Result<VideoFrame, String>>,
-    metadata: &Option<PacketMetadata>,
+    metadata: Option<&PacketMetadata>,
     coded_width: &mut u32,
     coded_height: &mut u32,
-) -> bool {
+) -> (bool, bool) {
+    let mut had_events = false;
     while let Some(event) = decoder.next_event() {
+        had_events = true;
         match event {
             DecoderEvent::FormatChanged => {
                 if let Some(info) = decoder.stream_info() {
@@ -649,11 +691,11 @@ fn drain_decoder_events(
                     frame_h,
                     PixelFormat::Nv12,
                     nv12_data,
-                    metadata.clone(),
+                    metadata.cloned(),
                 ) {
                     Ok(frame) => {
                         if result_tx.blocking_send(Ok(frame)).is_err() {
-                            return true;
+                            return (true, had_events);
                         }
                     },
                     Err(e) => {
@@ -666,7 +708,7 @@ fn drain_decoder_events(
             },
         }
     }
-    false
+    (false, had_events)
 }
 
 // ---------------------------------------------------------------------------
@@ -705,11 +747,11 @@ pub struct VaapiAv1EncoderConfig {
     pub hw_accel: HwAccelMode,
 }
 
-fn default_quality() -> u32 {
+const fn default_quality() -> u32 {
     DEFAULT_QUALITY
 }
 
-fn default_framerate() -> u32 {
+const fn default_framerate() -> u32 {
     DEFAULT_FRAMERATE
 }
 
@@ -841,7 +883,7 @@ impl StandardVideoEncoder for VaapiAv1Encoder {
     const CODEC_NAME: &'static str = "VA-API AV1";
 
     fn new_encoder(width: u32, height: u32, config: &Self::Config) -> Result<Self, String> {
-        let (display, gbm, path) = open_va_and_gbm(&config.render_device)?;
+        let (display, gbm, path) = open_va_and_gbm(config.render_device.as_ref())?;
         tracing::info!(device = %path, width, height, "VA-API AV1 encoder opening");
 
         let coded_width = align_up_u32(width, AV1_SB_SIZE);
