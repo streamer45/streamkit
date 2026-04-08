@@ -339,7 +339,7 @@ impl Default for ServerConfig {
             base_path: None,
             cors: CorsConfig::default(),
             #[cfg(feature = "moq")]
-            moq_address: Some("127.0.0.1:4545".to_string()),
+            moq_address: None,
             #[cfg(feature = "moq")]
             moq_cert_path: None,
             #[cfg(feature = "moq")]
