@@ -1064,30 +1064,62 @@ impl UnifiedPluginManager {
                 return Err(anyhow!("temp plugin path is not a file: {}", temp_path.display()));
             }
 
-            // For native plugins, probe the kind from the temp file to detect
-            // conflicts before moving to the final location.  This prevents
-            // overwriting an existing plugin's library file when the uploaded
-            // plugin's kind is already loaded.
             if plugin_type == PluginType::Native {
-                self.check_native_upload_conflict(temp_path)?;
-            }
+                // Move the temp file into the plugin subdirectory *before*
+                // probing.  The original temp file may live on a noexec mount
+                // (e.g. /tmp), which would cause dlopen to fail even though
+                // .plugins/native/ is fine.  Using a .tmp extension keeps it
+                // separate from the final target so a pre-existing plugin is
+                // never overwritten until the probe passes.
+                let probe_path = target_path.with_extension("tmp");
+                if let Err(e) = std::fs::rename(temp_path, &probe_path) {
+                    debug!(
+                        error = %e,
+                        from = %temp_path.display(),
+                        to = %probe_path.display(),
+                        "rename to probe path failed; falling back to copy+remove"
+                    );
+                    std::fs::copy(temp_path, &probe_path).with_context(|| {
+                        format!(
+                            "failed to copy temp plugin file from {} to {}",
+                            temp_path.display(),
+                            probe_path.display()
+                        )
+                    })?;
+                    let _ = std::fs::remove_file(temp_path);
+                }
 
-            // Prefer atomic move; fall back to copy+remove for cross-device temp dirs.
-            if let Err(e) = std::fs::rename(temp_path, &target_path) {
-                debug!(
-                    error = %e,
-                    from = %temp_path.display(),
-                    to = %target_path.display(),
-                    "rename failed; falling back to copy+remove"
-                );
-                std::fs::copy(temp_path, &target_path).with_context(|| {
-                    format!(
-                        "failed to copy temp plugin file from {} to {}",
-                        temp_path.display(),
+                if let Err(e) = self.check_native_upload_conflict(&probe_path) {
+                    let _ = std::fs::remove_file(&probe_path);
+                    return Err(e);
+                }
+
+                std::fs::rename(&probe_path, &target_path).map_err(|e| {
+                    let _ = std::fs::remove_file(&probe_path);
+                    anyhow!(
+                        "failed to move probe file from {} to {}: {e}",
+                        probe_path.display(),
                         target_path.display()
                     )
                 })?;
-                let _ = std::fs::remove_file(temp_path);
+            } else {
+                // WASM plugins don't need dlopen probing; move directly.
+                if let Err(e) = std::fs::rename(temp_path, &target_path) {
+                    debug!(
+                        error = %e,
+                        from = %temp_path.display(),
+                        to = %target_path.display(),
+                        "rename failed; falling back to copy+remove"
+                    );
+                    std::fs::copy(temp_path, &target_path).with_context(|| {
+                        format!(
+                            "failed to copy temp plugin file from {} to {}",
+                            temp_path.display(),
+                            target_path.display()
+                        )
+                    })?;
+                    let _ = std::fs::remove_file(temp_path);
+                }
             }
             file_placed = true;
 
