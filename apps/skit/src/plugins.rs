@@ -958,24 +958,44 @@ impl UnifiedPluginManager {
     pub fn load_from_bytes(&mut self, file_name: &str, bytes: &[u8]) -> Result<PluginSummary> {
         let (target_path, plugin_type) = self.validate_plugin_upload_target(file_name)?;
 
-        let result = (|| {
-            std::fs::write(&target_path, bytes).with_context(|| {
-                format!("failed to write plugin file {}", target_path.display())
-            })?;
+        // Track whether we actually placed a file at target_path so the error
+        // handler only cleans up files *we* created, not a pre-existing plugin.
+        let mut file_placed = false;
 
-            // For native plugins, probe the kind to detect conflicts before
-            // registering.  Note: if target_path already existed, the write
-            // above has already overwritten it.  The primary upload path
-            // (load_from_temp_file) avoids this by probing from the temp file
-            // before moving.
+        let result = (|| {
             if plugin_type == PluginType::Native {
-                self.check_native_upload_conflict(&target_path)?;
+                // Write to a temporary file first, probe for kind conflicts,
+                // then move to the final location.  This mirrors the pattern
+                // used by load_from_temp_file and prevents overwriting an
+                // existing plugin's library when the kind is already loaded.
+                let tmp_path = target_path.with_extension("tmp");
+                std::fs::write(&tmp_path, bytes).with_context(|| {
+                    format!("failed to write temp plugin file {}", tmp_path.display())
+                })?;
+
+                if let Err(e) = self.check_native_upload_conflict(&tmp_path) {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    return Err(e);
+                }
+
+                std::fs::rename(&tmp_path, &target_path).with_context(|| {
+                    format!(
+                        "failed to move temp plugin file from {} to {}",
+                        tmp_path.display(),
+                        target_path.display()
+                    )
+                })?;
+            } else {
+                std::fs::write(&target_path, bytes).with_context(|| {
+                    format!("failed to write plugin file {}", target_path.display())
+                })?;
             }
+            file_placed = true;
 
             self.load_from_written_path(plugin_type, target_path.clone())
         })();
 
-        if result.is_err() {
+        if result.is_err() && file_placed {
             let _ = std::fs::remove_file(&target_path);
             self.try_remove_empty_plugin_dir(&target_path);
         }
