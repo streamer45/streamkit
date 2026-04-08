@@ -273,28 +273,42 @@ impl UnifiedPluginManager {
         let mut dir_bundle_libs: Vec<std::path::PathBuf> = Vec::new();
         let mut bare_libs: Vec<std::path::PathBuf> = Vec::new();
 
-        if let Ok(entries) = std::fs::read_dir(&self.native_directory) {
-            for entry in entries.flatten() {
-                let path = entry.path();
+        match std::fs::read_dir(&self.native_directory) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    let path = entry.path();
 
-                if path.is_dir() {
-                    // Scan one level of subdirectories for plugin libraries.
-                    if let Ok(sub_entries) = std::fs::read_dir(&path) {
-                        for sub_entry in sub_entries.flatten() {
-                            let sub_path = sub_entry.path();
-                            if Self::is_native_lib(&sub_path) {
-                                dir_bundle_libs.push(sub_path);
+                    if path.is_dir() {
+                        // Scan one level of subdirectories for plugin libraries.
+                        if let Ok(sub_entries) = std::fs::read_dir(&path) {
+                            for sub_entry in sub_entries.flatten() {
+                                let sub_path = sub_entry.path();
+                                if Self::is_native_lib(&sub_path) {
+                                    dir_bundle_libs.push(sub_path);
+                                }
                             }
                         }
+                        continue;
                     }
-                    continue;
-                }
 
-                if Self::is_native_lib(&path) {
-                    bare_libs.push(path);
+                    if Self::is_native_lib(&path) {
+                        bare_libs.push(path);
+                    }
                 }
-            }
+            },
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    dir = %self.native_directory.display(),
+                    "Failed to read native plugins directory"
+                );
+            },
         }
+
+        // Sort for deterministic load order when multiple bundles or bare
+        // files provide the same plugin kind.
+        dir_bundle_libs.sort();
+        bare_libs.sort();
 
         // Load directory-bundle plugins first, then bare files.  Skip any
         // plugin whose kind is already loaded (from active records or an
@@ -303,6 +317,10 @@ impl UnifiedPluginManager {
         for path in dir_bundle_libs.into_iter().chain(bare_libs) {
             match self.load_native_plugin(&path) {
                 Ok(summary) => {
+                    // Classify the source based on the library's parent
+                    // directory: if it is directly inside the native dir it
+                    // came from a bare flat file; otherwise it is nested
+                    // inside a subdirectory (directory-bundle layout).
                     let source = if path.parent() == Some(self.native_directory.as_path()) {
                         "bare-file"
                     } else {
@@ -317,7 +335,12 @@ impl UnifiedPluginManager {
                     summaries.push(summary);
                 },
                 Err(err) => {
-                    warn!(error = %err, file = ?path, "Failed to load native plugin from disk");
+                    let msg = err.to_string();
+                    if msg.contains("already loaded") || msg.contains("already registered") {
+                        debug!(file = ?path, "Skipping plugin (already loaded by higher-priority source)");
+                    } else {
+                        warn!(error = %err, file = ?path, "Failed to load native plugin from disk");
+                    }
                 },
             }
         }

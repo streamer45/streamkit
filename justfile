@@ -1038,8 +1038,7 @@ copy-plugins-native:
     }
 
     # Examples (gain-native has its own target dir, not shared)
-    mkdir -p .plugins/native/gain-native
-    cp examples/plugins/gain-native/target/release/libgain_plugin_native.* .plugins/native/gain-native/ 2>/dev/null || true
+    copy_plugin "gain-native" "gain_plugin_native" "examples/plugins/gain-native/target"
 
     # Official native plugins (shared target dir).
     # For most plugins the lib stem matches the plugin id.
