@@ -1001,6 +1001,10 @@ impl UnifiedPluginManager {
     ) -> Result<PluginSummary> {
         let (target_path, plugin_type) = self.validate_plugin_upload_target(file_name)?;
 
+        // Track whether we actually placed a file at target_path so the error
+        // handler only cleans up files *we* created, not a pre-existing plugin.
+        let mut file_placed = false;
+
         let result = (|| {
             let meta = std::fs::metadata(temp_path).with_context(|| {
                 format!("failed to stat temp plugin file {}", temp_path.display())
@@ -1034,11 +1038,12 @@ impl UnifiedPluginManager {
                 })?;
                 let _ = std::fs::remove_file(temp_path);
             }
+            file_placed = true;
 
             self.load_from_written_path(plugin_type, target_path.clone())
         })();
 
-        if result.is_err() {
+        if result.is_err() && file_placed {
             let _ = std::fs::remove_file(&target_path);
             self.try_remove_empty_plugin_dir(&target_path);
         }
