@@ -70,6 +70,29 @@ pub const AV1_CONTENT_TYPE: &str = "video/av1";
 /// MIME-style content type for H.264-encoded video packets.
 pub const H264_CONTENT_TYPE: &str = "video/h264";
 
+// ── Hardware acceleration mode ───────────────────────────────────────────────
+//
+// Shared across all HW-accelerated codec modules (Vulkan Video, VA-API, NVENC).
+
+/// Hardware acceleration mode for GPU codec nodes.
+///
+/// Mirrors the compositor's `gpu_mode` pattern: auto-detect by default,
+/// with explicit force options for testing and deployment.
+#[cfg(any(feature = "vulkan_video", feature = "vaapi", feature = "nvcodec"))]
+#[derive(
+    Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum HwAccelMode {
+    /// Auto-detect: use HW if available, fall back to CPU otherwise.
+    #[default]
+    Auto,
+    /// Force HW acceleration — fail if unavailable.
+    ForceHw,
+    /// Force CPU path — ignore available HW.
+    ForceCpu,
+}
+
 /// Parse a pixel format string into a [`PixelFormat`].
 ///
 /// Accepts `"i420"`, `"nv12"`, `"rgba8"`, or `"rgba"` (case-insensitive).
@@ -102,6 +125,17 @@ pub mod pixel_convert;
 
 #[cfg(any(feature = "vp9", feature = "av1", feature = "svt_av1", feature = "openh264"))]
 pub(crate) mod encoder_trait;
+
+// ── HW-accelerated codec modules ─────────────────────────────────────────────
+
+#[cfg(feature = "vulkan_video")]
+pub mod vulkan_video;
+
+#[cfg(feature = "vaapi")]
+pub mod vaapi_av1;
+
+#[cfg(feature = "nvcodec")]
+pub mod nv_av1;
 
 // ── Shared I420→NV12 conversion helpers ──────────────────────────────────────
 //
@@ -590,4 +624,15 @@ pub fn register_video_nodes(registry: &mut NodeRegistry, constraints: &GlobalNod
 
     #[cfg(feature = "dav1d")]
     dav1d::register_dav1d_nodes(registry);
+
+    // ── HW-accelerated codecs ────────────────────────────────────────────
+
+    #[cfg(feature = "vulkan_video")]
+    vulkan_video::register_vulkan_video_nodes(registry);
+
+    #[cfg(feature = "vaapi")]
+    vaapi_av1::register_vaapi_av1_nodes(registry);
+
+    #[cfg(feature = "nvcodec")]
+    nv_av1::register_nv_av1_nodes(registry);
 }
