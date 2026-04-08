@@ -327,6 +327,11 @@ impl UnifiedPluginManager {
                     summaries.push(summary);
                 },
                 Err(err) => {
+                    // NOTE: This relies on the exact error wording produced by
+                    // load_native_plugin ("already loaded" / "already registered").
+                    // A pre-check is not feasible here because the plugin kind
+                    // is only known after dlopen (LoadedNativePlugin::load).
+                    // If those messages change, update this check too.
                     let msg = err.to_string();
                     if msg.contains("already loaded") || msg.contains("already registered") {
                         debug!(file = ?path, "Skipping plugin (already loaded by higher-priority source)");
@@ -752,6 +757,9 @@ impl UnifiedPluginManager {
         let categories = metadata.categories.clone();
 
         if self.plugins.contains_key(&kind) {
+            // NOTE: load_native_dir_plugins pattern-matches on "already loaded"
+            // in this message to distinguish expected dedup skips from genuine
+            // failures.  Keep the wording in sync with the check there.
             return Err(anyhow!(
                 "A plugin providing node '{original_kind}' (registered as '{kind}') is already loaded"
             ));
@@ -1011,6 +1019,11 @@ impl UnifiedPluginManager {
                     .map(|s| s.strip_prefix("lib").unwrap_or(s))
                     .filter(|s| !s.is_empty())
                     .unwrap_or(sanitized);
+                if stem == "." || stem == ".." {
+                    return Err(anyhow!(
+                        "Cannot derive a valid plugin directory name from '{sanitized}'"
+                    ));
+                }
                 let subdir = self.native_directory.join(stem);
                 std::fs::create_dir_all(&subdir).with_context(|| {
                     format!("failed to create native plugin directory {}", subdir.display())
