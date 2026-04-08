@@ -3392,6 +3392,14 @@ fn start_moq_webtransport_acceptor(
     let moq_cert = config.server.moq_cert_path.as_deref().filter(|s| !s.is_empty());
     let moq_key = config.server.moq_key_path.as_deref().filter(|s| !s.is_empty());
 
+    if moq_cert.is_some() != moq_key.is_some() {
+        warn!(
+            moq_cert_path = ?config.server.moq_cert_path,
+            moq_key_path = ?config.server.moq_key_path,
+            "Only one of moq_cert_path/moq_key_path is set — both are required. Falling back to server certs or self-signed."
+        );
+    }
+
     let tls = if let (Some(cert), Some(key)) = (moq_cert, moq_key) {
         info!(cert_path = %cert, key_path = %key, "Using MoQ-specific TLS certificates for WebTransport");
         let mut tls = ServerTlsConfig::default();
@@ -3422,7 +3430,21 @@ fn start_moq_webtransport_acceptor(
     moq_config.bind = Some(addr);
     moq_config.tls = tls;
 
-    let moq_public_paths: Arc<[String]> = config.auth.moq_public_paths.clone().into();
+    let moq_public_paths: Arc<[String]> = config
+        .auth
+        .moq_public_paths
+        .iter()
+        .filter(|p| {
+            if p.is_empty() {
+                warn!("Ignoring empty string in moq_public_paths (would bypass all MoQ auth)");
+                false
+            } else {
+                true
+            }
+        })
+        .cloned()
+        .collect::<Vec<_>>()
+        .into();
 
     info!(
         address = %addr,
@@ -3474,9 +3496,11 @@ fn start_moq_webtransport_acceptor(
                         // SECURITY: Never log the full URL (may contain jwt)
                         debug!(path = %path, "Received MoQ connection request");
 
-                        // Validate MoQ auth if enabled (skipped for paths matching moq_public_paths)
-                        let is_public =
-                            moq_public_paths.iter().any(|prefix| path.starts_with(prefix.as_str()));
+                        // Validate MoQ auth if enabled (skipped for paths matching moq_public_paths).
+                        // Segment-based: "/moq" matches "/moq" and "/moq/foo" but NOT "/moq2".
+                        let is_public = moq_public_paths.iter().any(|prefix| {
+                            path == prefix.as_str() || path.starts_with(&format!("{prefix}/"))
+                        });
                         let moq_auth = if auth_state.is_enabled() && !is_public {
                             match validate_moq_auth(&auth_state, &path, jwt_param).await {
                                 Ok(ctx) => Some(ctx),

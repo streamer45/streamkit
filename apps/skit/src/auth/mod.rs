@@ -552,6 +552,7 @@ mod tests {
             api_max_ttl_secs: 86400,
             moq_default_ttl_secs: 3600,
             moq_max_ttl_secs: 86400,
+            moq_public_paths: Vec::new(),
         };
 
         let state = AuthState::new(&config, true).await.unwrap();
