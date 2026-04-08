@@ -914,17 +914,18 @@ impl UnifiedPluginManager {
     pub fn load_from_bytes(&mut self, file_name: &str, bytes: &[u8]) -> Result<PluginSummary> {
         let (target_path, plugin_type) = self.validate_plugin_upload_target(file_name)?;
 
-        std::fs::write(&target_path, bytes)
-            .with_context(|| format!("failed to write plugin file {}", target_path.display()))?;
+        let result = (|| {
+            std::fs::write(&target_path, bytes).with_context(|| {
+                format!("failed to write plugin file {}", target_path.display())
+            })?;
+            self.load_from_written_path(plugin_type, target_path.clone())
+        })();
 
-        match self.load_from_written_path(plugin_type, target_path.clone()) {
-            Ok(summary) => Ok(summary),
-            Err(e) => {
-                let _ = std::fs::remove_file(&target_path);
-                self.try_remove_empty_plugin_dir(&target_path);
-                Err(e)
-            },
+        if result.is_err() {
+            let _ = std::fs::remove_file(&target_path);
+            self.try_remove_empty_plugin_dir(&target_path);
         }
+        result
     }
 
     /// Moves an already-written plugin file into the managed directory and loads it.
@@ -946,38 +947,40 @@ impl UnifiedPluginManager {
     ) -> Result<PluginSummary> {
         let (target_path, plugin_type) = self.validate_plugin_upload_target(file_name)?;
 
-        let meta = std::fs::metadata(temp_path)
-            .with_context(|| format!("failed to stat temp plugin file {}", temp_path.display()))?;
-        if !meta.is_file() {
-            return Err(anyhow!("temp plugin path is not a file: {}", temp_path.display()));
-        }
-
-        // Prefer atomic move; fall back to copy+remove for cross-device temp dirs.
-        if let Err(e) = std::fs::rename(temp_path, &target_path) {
-            debug!(
-                error = %e,
-                from = %temp_path.display(),
-                to = %target_path.display(),
-                "rename failed; falling back to copy+remove"
-            );
-            std::fs::copy(temp_path, &target_path).with_context(|| {
-                format!(
-                    "failed to copy temp plugin file from {} to {}",
-                    temp_path.display(),
-                    target_path.display()
-                )
+        let result = (|| {
+            let meta = std::fs::metadata(temp_path).with_context(|| {
+                format!("failed to stat temp plugin file {}", temp_path.display())
             })?;
-            let _ = std::fs::remove_file(temp_path);
-        }
+            if !meta.is_file() {
+                return Err(anyhow!("temp plugin path is not a file: {}", temp_path.display()));
+            }
 
-        match self.load_from_written_path(plugin_type, target_path.clone()) {
-            Ok(summary) => Ok(summary),
-            Err(e) => {
-                let _ = std::fs::remove_file(&target_path);
-                self.try_remove_empty_plugin_dir(&target_path);
-                Err(e)
-            },
+            // Prefer atomic move; fall back to copy+remove for cross-device temp dirs.
+            if let Err(e) = std::fs::rename(temp_path, &target_path) {
+                debug!(
+                    error = %e,
+                    from = %temp_path.display(),
+                    to = %target_path.display(),
+                    "rename failed; falling back to copy+remove"
+                );
+                std::fs::copy(temp_path, &target_path).with_context(|| {
+                    format!(
+                        "failed to copy temp plugin file from {} to {}",
+                        temp_path.display(),
+                        target_path.display()
+                    )
+                })?;
+                let _ = std::fs::remove_file(temp_path);
+            }
+
+            self.load_from_written_path(plugin_type, target_path.clone())
+        })();
+
+        if result.is_err() {
+            let _ = std::fs::remove_file(&target_path);
+            self.try_remove_empty_plugin_dir(&target_path);
         }
+        result
     }
 
     fn validate_plugin_upload_target(&self, file_name: &str) -> Result<(PathBuf, PluginType)> {
