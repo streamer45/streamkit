@@ -3393,11 +3393,10 @@ fn start_moq_webtransport_acceptor(
     let moq_key = config.server.moq_key_path.as_deref().filter(|s| !s.is_empty());
 
     if moq_cert.is_some() != moq_key.is_some() {
-        warn!(
-            moq_cert_path = ?config.server.moq_cert_path,
-            moq_key_path = ?config.server.moq_key_path,
-            "Only one of moq_cert_path/moq_key_path is set — both are required. Falling back to server certs or self-signed."
-        );
+        return Err(format!(
+            "Invalid MoQ TLS config: both moq_cert_path and moq_key_path must be set (got cert={:?}, key={:?})",
+            config.server.moq_cert_path, config.server.moq_key_path
+        ).into());
     }
 
     let tls = if let (Some(cert), Some(key)) = (moq_cert, moq_key) {
