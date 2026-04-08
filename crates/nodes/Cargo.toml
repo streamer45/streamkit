@@ -102,7 +102,7 @@ pollster = { version = "0.4", optional = true }
 bytemuck = { version = "1.22", optional = true, features = ["derive"] }
 
 # HW-accelerated video codecs (optional, behind respective features)
-# vk-video = { version = "0.3", optional = true }          # vulkan_video feature — uncomment when implementing
+vk-video = { version = "0.3", optional = true }            # vulkan_video feature — Vulkan Video H.264 HW codec
 # cros-codecs = { version = "0.0.6", optional = true }     # vaapi feature — uncomment when implementing
 # shiguredo_nvcodec = { version = "2025.2", optional = true } # nvcodec feature — uncomment when implementing
 
@@ -178,7 +178,7 @@ video = ["vp9", "av1", "openh264", "colorbars", "compositor"]
 # HW-accelerated video codecs — not in `default`; each requires vendor-specific
 # system libraries or drivers at runtime.
 # vulkan_video: H.264 encode/decode via Vulkan Video (vk-video crate). Cross-vendor (Intel/NVIDIA/AMD).
-vulkan_video = ["dep:schemars"]
+vulkan_video = ["dep:schemars", "dep:vk-video", "dep:serde_json"]
 # vaapi: AV1 encode/decode via VA-API (cros-codecs crate). Primarily Intel, also AMD.
 vaapi = ["dep:schemars"]
 # nvcodec: AV1 encode/decode via NVENC/NVDEC (shiguredo_nvcodec crate). NVIDIA only.
