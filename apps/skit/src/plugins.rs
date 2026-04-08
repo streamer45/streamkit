@@ -22,6 +22,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     marketplace::PluginKind,
+    plugin_assets::read_local_plugin_manifest,
     plugin_paths,
     plugin_records::{active_dir as plugin_active_dir, namespaced_kind as active_namespaced_kind},
 };
@@ -342,7 +343,31 @@ impl UnifiedPluginManager {
                     // only known after dlopen (LoadedNativePlugin::load).
                     let msg = err.to_string();
                     if msg.contains(ERR_ALREADY_LOADED) || msg.contains(ERR_ALREADY_REGISTERED) {
-                        debug!(file = ?path, "Skipping plugin (already loaded by higher-priority source)");
+                        // Read both versions from manifests so operators can
+                        // spot outdated marketplace installs vs patched locals.
+                        let local_manifest = read_local_plugin_manifest(&path);
+                        let local_version =
+                            local_manifest.as_ref().map_or("unknown", |m| m.version.as_str());
+                        let (loaded_kind, loaded_version) = local_manifest
+                            .as_ref()
+                            .and_then(|m| {
+                                let kind =
+                                    streamkit_plugin_native::namespaced_kind(&m.node_kind).ok()?;
+                                let ver = self
+                                    .plugins
+                                    .get(&kind)
+                                    .and_then(|p| p.version.as_deref())
+                                    .unwrap_or("unknown");
+                                Some((kind, ver.to_owned()))
+                            })
+                            .unwrap_or_else(|| ("unknown".into(), "unknown".into()));
+                        warn!(
+                            file = ?path,
+                            plugin = %loaded_kind,
+                            loaded_version = %loaded_version,
+                            skipped_version = %local_version,
+                            "Skipping local plugin (already loaded by higher-priority source)"
+                        );
                     } else {
                         warn!(error = %err, file = ?path, "Failed to load native plugin from disk");
                     }
