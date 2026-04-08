@@ -401,13 +401,24 @@ impl VulkanVideoH264EncoderNode {
     /// # Errors
     ///
     /// Returns an error if `hw_accel` is `ForceCpu` — this node only
-    /// supports hardware encoding.
+    /// supports hardware encoding.  Also rejects zero bitrate or
+    /// framerate to avoid confusing hardware-level errors later.
     pub fn new(config: VulkanVideoH264EncoderConfig) -> Result<Self, StreamKitError> {
         if matches!(config.hw_accel, HwAccelMode::ForceCpu) {
             return Err(StreamKitError::Configuration(
                 "VulkanVideoH264EncoderNode only supports hardware encoding; \
                  use an OpenH264 encoder for CPU-only mode"
                     .to_string(),
+            ));
+        }
+        if config.bitrate == 0 {
+            return Err(StreamKitError::Configuration(
+                "VulkanVideoH264EncoderNode: bitrate must be > 0".to_string(),
+            ));
+        }
+        if config.framerate == 0 {
+            return Err(StreamKitError::Configuration(
+                "VulkanVideoH264EncoderNode: framerate must be > 0".to_string(),
             ));
         }
         Ok(Self { config })
@@ -588,11 +599,22 @@ impl ProcessorNode for VulkanVideoH264EncoderNode {
 
                 match result {
                     Ok(encoded_chunk) => {
-                        let mut out_meta = metadata;
-                        // Propagate keyframe flag from the encoder.
-                        if let Some(ref mut m) = out_meta {
-                            m.keyframe = Some(encoded_chunk.is_keyframe);
-                        }
+                        // Always propagate the keyframe flag, even when
+                        // the input had no metadata.  Without this,
+                        // downstream RTMP/MoQ transport cannot detect
+                        // keyframes for stream initialisation.
+                        let out_meta = match metadata {
+                            Some(mut m) => {
+                                m.keyframe = Some(encoded_chunk.is_keyframe);
+                                Some(m)
+                            },
+                            None => Some(PacketMetadata {
+                                timestamp_us: None,
+                                duration_us: None,
+                                sequence: None,
+                                keyframe: Some(encoded_chunk.is_keyframe),
+                            }),
+                        };
 
                         let output = EncoderOutput {
                             data: Bytes::from(encoded_chunk.data),
@@ -768,7 +790,7 @@ pub fn register_vulkan_video_nodes(registry: &mut NodeRegistry) {
         false,
         "Decodes H.264 Annex B packets into raw NV12 video frames using Vulkan Video \
          hardware acceleration. Requires a GPU with Vulkan Video decode support \
-         (NVIDIA, AMD, or Intel with recent Mesa drivers). Use video::openh264::encoder \
+         (NVIDIA, AMD, or Intel with recent Mesa drivers). Use video::openh264::decoder \
          for CPU-only fallback.",
     );
 
