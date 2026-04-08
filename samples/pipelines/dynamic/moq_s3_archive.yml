@@ -75,6 +75,9 @@ nodes:
     params:
       endpoint: "http://localhost:9000"
       bucket: "streamkit-archive"
+      # NOTE: Static key — every session overwrites the previous recording.
+      # A future enhancement could support template variables (e.g.
+      # "recordings/{session_id}.ogg") for true multi-session archival.
       key: "recordings/live-session.ogg"
       region: "us-east-1"
       access_key_id_env: "SK_S3_ACCESS_KEY"

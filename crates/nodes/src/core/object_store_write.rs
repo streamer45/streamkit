@@ -106,15 +106,23 @@ pub struct ObjectStoreWriteConfig {
 // Credential helpers
 // ---------------------------------------------------------------------------
 
-/// Resolve a credential value from an env-var name (takes precedence) or a
-/// literal fallback.
+/// Resolve a credential value.
+///
+/// Resolution order:
+/// 1. Environment variable named by `env_name` (if provided and non-empty).
+/// 2. Literal value from `literal` (if provided and non-empty).
+/// 3. Error.
+///
+/// The `env_lookup` parameter allows injecting a custom lookup function
+/// for testability (avoids `std::env::set_var` unsoundness in tests).
 fn resolve_credential(
     env_name: Option<&str>,
     literal: Option<&str>,
     label: &str,
+    env_lookup: impl Fn(&str) -> Result<String, std::env::VarError>,
 ) -> Result<String, StreamKitError> {
     if let Some(env) = env_name {
-        match std::env::var(env) {
+        match env_lookup(env) {
             Ok(val) if !val.is_empty() => {
                 tracing::debug!("Resolved {label} from env var {env}");
                 return Ok(val);
@@ -137,12 +145,85 @@ fn resolve_credential(
         }
         return Ok(val.to_string());
     }
-    Err(StreamKitError::Configuration(format!("No {label} provided (set via config or env var)")))
+    Err(StreamKitError::Configuration(format!(
+        "No {label} provided (set via config or env var)"
+    )))
 }
 
 // ---------------------------------------------------------------------------
 // Node
 // ---------------------------------------------------------------------------
+
+/// RAII guard that aborts an OpenDAL multipart upload on drop unless
+/// explicitly disarmed via [`AbortOnDrop::disarm`].  Protects against
+/// orphaned multipart parts when the Tokio task is cancelled mid-upload.
+struct AbortOnDrop {
+    writer: Option<opendal::Writer>,
+    node_name: String,
+}
+
+impl AbortOnDrop {
+    const fn new(writer: opendal::Writer, node_name: String) -> Self {
+        Self {
+            writer: Some(writer),
+            node_name,
+        }
+    }
+
+    /// Return a mutable reference to the inner writer.
+    ///
+    /// # Panics
+    ///
+    /// Only if called after [`disarm`], which is impossible because `disarm`
+    /// consumes `self`.
+    #[allow(clippy::expect_used)] // Invariant: writer is always Some until disarm/drop.
+    const fn writer_mut(&mut self) -> &mut opendal::Writer {
+        self.writer
+            .as_mut()
+            .expect("writer consumed after disarm")
+    }
+
+    /// Take ownership of the writer, disabling the abort-on-drop guard.
+    /// Call this once the upload has been successfully closed.
+    ///
+    /// # Panics
+    ///
+    /// Only if the `Option` is already `None`, which cannot happen because
+    /// `disarm` consumes `self` and `Drop` only runs afterwards.
+    #[allow(clippy::expect_used, clippy::missing_const_for_fn)] // Not const: Self has a destructor.
+    fn disarm(mut self) -> opendal::Writer {
+        self.writer.take().expect("writer already consumed")
+    }
+}
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        if let Some(writer) = self.writer.take() {
+            let node_name = self.node_name.clone();
+            tracing::warn!(
+                %node_name,
+                "ObjectStoreWriteNode dropped with active writer — spawning abort task"
+            );
+            tokio::spawn(async move {
+                // Writer::abort is not available on all backends, but for S3
+                // it cleans up the incomplete multipart upload.
+                let mut w = writer;
+                if let Err(e) = w.abort().await {
+                    tracing::error!(
+                        %node_name,
+                        error = %e,
+                        "Failed to abort orphaned S3 multipart upload"
+                    );
+                } else {
+                    tracing::info!(
+                        %node_name,
+                        "Successfully aborted orphaned S3 multipart upload"
+                    );
+                }
+            });
+        }
+    }
+}
 
 /// Sink node that streams [`Packet::Binary`] data to S3-compatible object
 /// storage via OpenDAL's multipart upload.
@@ -170,6 +251,25 @@ impl ObjectStoreWriteNode {
             } else {
                 config_helpers::parse_config_required(params)?
             };
+
+            // Validate required fields early (don't defer to runtime S3 errors).
+            if params.is_some() {
+                if config.endpoint.is_empty() {
+                    return Err(StreamKitError::Configuration(
+                        "endpoint must not be empty".to_string(),
+                    ));
+                }
+                if config.bucket.is_empty() {
+                    return Err(StreamKitError::Configuration(
+                        "bucket must not be empty".to_string(),
+                    ));
+                }
+                if config.key.is_empty() {
+                    return Err(StreamKitError::Configuration(
+                        "key must not be empty".to_string(),
+                    ));
+                }
+            }
 
             if config.chunk_size == 0 {
                 return Err(StreamKitError::Configuration(
@@ -210,6 +310,7 @@ impl ProcessorNode for ObjectStoreWriteNode {
             self.config.access_key_id_env.as_deref(),
             self.config.access_key_id.as_deref(),
             "access_key_id",
+            |name| std::env::var(name),
         )
         .inspect_err(|e| {
             state_helpers::emit_failed(&context.state_tx, &node_name, e.to_string());
@@ -219,6 +320,7 @@ impl ProcessorNode for ObjectStoreWriteNode {
             self.config.secret_key_env.as_deref(),
             self.config.secret_access_key.as_deref(),
             "secret_access_key",
+            |name| std::env::var(name),
         )
         .inspect_err(|e| {
             state_helpers::emit_failed(&context.state_tx, &node_name, e.to_string());
@@ -261,7 +363,7 @@ impl ProcessorNode for ObjectStoreWriteNode {
         let writer_future = operator.writer_with(&self.config.key).chunk(self.config.chunk_size);
 
         // Apply content type if configured.
-        let mut writer = if let Some(ref ct) = self.config.content_type {
+        let writer = if let Some(ref ct) = self.config.content_type {
             writer_future.content_type(ct).await
         } else {
             writer_future.await
@@ -271,6 +373,10 @@ impl ProcessorNode for ObjectStoreWriteNode {
             state_helpers::emit_failed(&context.state_tx, &node_name, &msg);
             StreamKitError::Runtime(msg)
         })?;
+
+        // Wrap in AbortOnDrop so a Tokio task cancellation doesn't leak
+        // orphaned multipart parts on the storage backend.
+        let mut guard = AbortOnDrop::new(writer, node_name.clone());
 
         tracing::info!(
             %node_name,
@@ -287,7 +393,6 @@ impl ProcessorNode for ObjectStoreWriteNode {
         let mut total_bytes: u64 = 0;
         let mut buffer = Vec::with_capacity(self.config.chunk_size);
         let mut chunks_written: u64 = 0;
-        let reason = "input_closed".to_string();
 
         while let Some(packet) = context.recv_with_cancellation(&mut input_rx).await {
             if let Packet::Binary { data, .. } = packet {
@@ -299,20 +404,14 @@ impl ProcessorNode for ObjectStoreWriteNode {
 
                 // Flush when buffer reaches chunk_size
                 while buffer.len() >= self.config.chunk_size {
-                    let chunk: Vec<u8> = buffer.drain(..self.config.chunk_size).collect();
-                    if let Err(e) = writer.write(chunk).await {
+                    let tail = buffer.split_off(self.config.chunk_size);
+                    let chunk = std::mem::replace(&mut buffer, tail);
+                    if let Err(e) = guard.writer_mut().write(chunk).await {
                         stats_tracker.errored();
                         stats_tracker.force_send();
                         let msg = format!("S3 write error: {e}");
                         state_helpers::emit_failed(&context.state_tx, &node_name, &msg);
-                        // Attempt to abort the multipart upload to clean up
-                        if let Err(abort_err) = writer.abort().await {
-                            tracing::error!(
-                                %node_name,
-                                error = %abort_err,
-                                "Failed to abort S3 multipart upload after write error"
-                            );
-                        }
+                        // Guard will abort the multipart upload on drop.
                         return Err(StreamKitError::Runtime(msg));
                     }
                     chunks_written += 1;
@@ -342,18 +441,12 @@ impl ProcessorNode for ObjectStoreWriteNode {
                 remaining = buffer.len(),
                 "Flushing remaining buffer to S3"
             );
-            if let Err(e) = writer.write(buffer).await {
+            if let Err(e) = guard.writer_mut().write(buffer).await {
                 stats_tracker.errored();
                 stats_tracker.force_send();
                 let msg = format!("S3 write error (final flush): {e}");
                 state_helpers::emit_failed(&context.state_tx, &node_name, &msg);
-                if let Err(abort_err) = writer.abort().await {
-                    tracing::error!(
-                        %node_name,
-                        error = %abort_err,
-                        "Failed to abort S3 multipart upload after final flush error"
-                    );
-                }
+                // Guard will abort the multipart upload on drop.
                 return Err(StreamKitError::Runtime(msg));
             }
             chunks_written += 1;
@@ -364,21 +457,17 @@ impl ProcessorNode for ObjectStoreWriteNode {
             %node_name,
             "Closing S3 writer (finalizing multipart upload)"
         );
-        if let Err(e) = writer.close().await {
+        if let Err(e) = guard.writer_mut().close().await {
             stats_tracker.errored();
             stats_tracker.force_send();
             let msg = format!("Failed to finalize S3 upload: {e}");
             state_helpers::emit_failed(&context.state_tx, &node_name, &msg);
-            // Attempt to abort the multipart upload to avoid orphaned parts.
-            if let Err(abort_err) = writer.abort().await {
-                tracing::error!(
-                    %node_name,
-                    error = %abort_err,
-                    "Failed to abort S3 multipart upload after close error"
-                );
-            }
+            // Guard will abort the multipart upload on drop.
             return Err(StreamKitError::Runtime(msg));
         }
+
+        // Upload committed successfully — disarm the abort guard.
+        guard.disarm();
 
         stats_tracker.force_send();
         tracing::info!(
@@ -390,7 +479,7 @@ impl ProcessorNode for ObjectStoreWriteNode {
             "ObjectStoreWriteNode finished uploading to S3"
         );
 
-        state_helpers::emit_stopped(&context.state_tx, &node_name, reason);
+        state_helpers::emit_stopped(&context.state_tx, &node_name, "input_closed");
         Ok(())
     }
 }
@@ -454,39 +543,97 @@ mod tests {
         assert!(err.contains("chunk_size"), "Error should mention chunk_size: {err}");
     }
 
+    /// Stub lookup that never finds any variable.
+    fn no_env(_name: &str) -> Result<String, std::env::VarError> {
+        Err(std::env::VarError::NotPresent)
+    }
+
     /// Verify credential resolution logic.
     #[test]
     fn test_resolve_credential_literal() {
-        let result = resolve_credential(None, Some("my-key"), "test");
+        let result = resolve_credential(None, Some("my-key"), "test", no_env);
         assert_eq!(result.unwrap(), "my-key");
     }
 
     #[test]
     fn test_resolve_credential_empty_literal() {
-        let result = resolve_credential(None, Some(""), "test");
+        let result = resolve_credential(None, Some(""), "test", no_env);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_resolve_credential_missing() {
-        let result = resolve_credential(None, None, "test");
+        let result = resolve_credential(None, None, "test", no_env);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_resolve_credential_env_precedence() {
-        // Use a unique env var name to avoid conflicts with parallel tests
-        let env_name = "_SK_TEST_OBJSTORE_CRED_PREC";
-        std::env::set_var(env_name, "from-env");
-        let result = resolve_credential(Some(env_name), Some("from-literal"), "test");
+        // Inject a fake lookup — no std::env::set_var needed.
+        let lookup = |_: &str| Ok("from-env".to_string());
+        let result = resolve_credential(Some("ANY_VAR"), Some("from-literal"), "test", lookup);
         assert_eq!(result.unwrap(), "from-env");
-        std::env::remove_var(env_name);
+    }
+
+    #[test]
+    fn test_resolve_credential_env_empty() {
+        let lookup = |_: &str| Ok(String::new());
+        let result = resolve_credential(Some("ANY_VAR"), None, "test", lookup);
+        assert!(result.is_err());
     }
 
     #[test]
     fn test_resolve_credential_env_not_set() {
-        let result = resolve_credential(Some("_SK_TEST_OBJSTORE_NONEXISTENT_VAR"), None, "test");
+        let result = resolve_credential(Some("MISSING"), None, "test", no_env);
         assert!(result.is_err());
+    }
+
+    /// Verify factory rejects empty endpoint.
+    #[test]
+    fn test_factory_rejects_empty_endpoint() {
+        let factory = ObjectStoreWriteNode::factory();
+        let params = serde_json::json!({
+            "endpoint": "",
+            "bucket": "test",
+            "key": "test.bin",
+        });
+        let err = match factory(Some(&params)) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("Expected error for empty endpoint"),
+        };
+        assert!(err.contains("endpoint"), "Error should mention endpoint: {err}");
+    }
+
+    /// Verify factory rejects empty bucket.
+    #[test]
+    fn test_factory_rejects_empty_bucket() {
+        let factory = ObjectStoreWriteNode::factory();
+        let params = serde_json::json!({
+            "endpoint": "http://localhost:9000",
+            "bucket": "",
+            "key": "test.bin",
+        });
+        let err = match factory(Some(&params)) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("Expected error for empty bucket"),
+        };
+        assert!(err.contains("bucket"), "Error should mention bucket: {err}");
+    }
+
+    /// Verify factory rejects empty key.
+    #[test]
+    fn test_factory_rejects_empty_key() {
+        let factory = ObjectStoreWriteNode::factory();
+        let params = serde_json::json!({
+            "endpoint": "http://localhost:9000",
+            "bucket": "test",
+            "key": "",
+        });
+        let err = match factory(Some(&params)) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("Expected error for empty key"),
+        };
+        assert!(err.contains("key"), "Error should mention key: {err}");
     }
 
     /// Verify that the node emits the correct state transitions and handles
