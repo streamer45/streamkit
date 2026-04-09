@@ -120,7 +120,14 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm cmake pkg-config libopus-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvpx-dev nasm cmake pkg-config libopus-dev
+          # CUDA headers needed by shiguredo_nvcodec (nvcodec feature).
+          # Only install if not already present.
+          if [ ! -f /usr/local/cuda/include/cuda.h ]; then
+            sudo apt-get install -y nvidia-cuda-toolkit
+          fi
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
