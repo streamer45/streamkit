@@ -962,11 +962,7 @@ impl StandardVideoEncoder for VaapiAv1Encoder {
             format: (nv12_fourcc(), 0), // DRM_FORMAT_MOD_LINEAR
             size: CrosResolution { width: self.coded_width, height: self.coded_height },
             planes: vec![
-                PlaneLayout {
-                    buffer_index: 0,
-                    offset: 0,
-                    stride: y_stride,
-                },
+                PlaneLayout { buffer_index: 0, offset: 0, stride: y_stride },
                 PlaneLayout {
                     buffer_index: 0,
                     offset: uv_offset,
