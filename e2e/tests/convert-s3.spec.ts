@@ -2,33 +2,27 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import { execSync } from "child_process";
-import * as fs from "fs";
-import * as path from "path";
+import { execSync } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from '@playwright/test';
 
-import { ensureLoggedIn, getAuthHeaders } from "./auth-helpers";
+import { ensureLoggedIn, getAuthHeaders } from './auth-helpers';
 
-const repoRoot = path.resolve(import.meta.dirname, "..", "..");
-const sampleOggPath = path.join(
-  repoRoot,
-  "samples",
-  "audio",
-  "system",
-  "sample.ogg",
-);
+const repoRoot = path.resolve(import.meta.dirname, '..', '..');
+const sampleOggPath = path.join(repoRoot, 'samples', 'audio', 'system', 'sample.ogg');
 const transcodeToS3Yaml = fs.readFileSync(
-  path.join(repoRoot, "samples", "pipelines", "oneshot", "transcode_to_s3.yml"),
-  "utf8",
+  path.join(repoRoot, 'samples', 'pipelines', 'oneshot', 'transcode_to_s3.yml'),
+  'utf8'
 );
 
 // RustFS / S3 configuration — matches docker/docker-compose.rustfs.yml defaults.
-const S3_ENDPOINT = process.env.E2E_S3_ENDPOINT ?? "http://localhost:9000";
-const S3_ACCESS_KEY = process.env.SK_S3_ACCESS_KEY ?? "rustfsadmin";
-const S3_SECRET_KEY = process.env.SK_S3_SECRET_KEY ?? "rustfsadmin";
-const S3_BUCKET = "streamkit-output";
-const S3_KEY = "transcode/output.mp4";
+const S3_ENDPOINT = process.env.E2E_S3_ENDPOINT ?? 'http://localhost:9000';
+const S3_ACCESS_KEY = process.env.SK_S3_ACCESS_KEY ?? 'rustfsadmin';
+const S3_SECRET_KEY = process.env.SK_S3_SECRET_KEY ?? 'rustfsadmin';
+const S3_BUCKET = 'streamkit-output';
+const S3_KEY = 'transcode/output.mp4';
 
 /** Common env for aws CLI calls. */
 const awsEnv = {
@@ -56,17 +50,14 @@ async function isS3Available(): Promise<boolean> {
  */
 function ensureBucket(): void {
   try {
-    execSync(
-      `aws --endpoint-url ${S3_ENDPOINT} s3api head-bucket --bucket ${S3_BUCKET}`,
-      {
-        env: awsEnv,
-        stdio: "ignore",
-      },
-    );
+    execSync(`aws --endpoint-url ${S3_ENDPOINT} s3api head-bucket --bucket ${S3_BUCKET}`, {
+      env: awsEnv,
+      stdio: 'ignore',
+    });
   } catch {
     execSync(`aws --endpoint-url ${S3_ENDPOINT} s3 mb s3://${S3_BUCKET}`, {
       env: awsEnv,
-      stdio: "ignore",
+      stdio: 'ignore',
     });
   }
 }
@@ -78,7 +69,7 @@ function getS3ObjectSize(): number {
   try {
     const output = execSync(
       `aws --endpoint-url ${S3_ENDPOINT} s3api head-object --bucket ${S3_BUCKET} --key ${S3_KEY} --output json`,
-      { env: awsEnv, encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] },
+      { env: awsEnv, encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }
     );
     const parsed = JSON.parse(output) as { ContentLength?: number };
     return parsed.ContentLength ?? -1;
@@ -92,25 +83,25 @@ function getS3ObjectSize(): number {
  */
 function deleteS3Object(): void {
   try {
-    execSync(
-      `aws --endpoint-url ${S3_ENDPOINT} s3 rm s3://${S3_BUCKET}/${S3_KEY}`,
-      { env: awsEnv, stdio: "ignore" },
-    );
+    execSync(`aws --endpoint-url ${S3_ENDPOINT} s3 rm s3://${S3_BUCKET}/${S3_KEY}`, {
+      env: awsEnv,
+      stdio: 'ignore',
+    });
   } catch {
     // Ignore cleanup errors
   }
 }
 
-test.describe("Convert - Transcode to S3 Pipeline", () => {
+test.describe('Convert - Transcode to S3 Pipeline', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto("/convert");
+    await page.goto('/convert');
     await ensureLoggedIn(page);
-    if (!page.url().includes("/convert")) {
-      await page.goto("/convert");
+    if (!page.url().includes('/convert')) {
+      await page.goto('/convert');
     }
   });
 
-  test("API: transcode Ogg→MP4 with S3 upload returns audio and writes to object store", async ({
+  test('API: transcode Ogg→MP4 with S3 upload returns audio and writes to object store', async ({
     page,
     baseURL,
   }) => {
@@ -122,7 +113,7 @@ test.describe("Convert - Transcode to S3 Pipeline", () => {
     if (!s3Up) {
       test.skip(
         true,
-        `S3 endpoint not reachable at ${S3_ENDPOINT} — start RustFS: docker compose -f docker/docker-compose.rustfs.yml up -d`,
+        `S3 endpoint not reachable at ${S3_ENDPOINT} — start RustFS: docker compose -f docker/docker-compose.rustfs.yml up -d`
       );
       return;
     }
@@ -132,32 +123,28 @@ test.describe("Convert - Transcode to S3 Pipeline", () => {
     deleteS3Object();
 
     // Read the sample Ogg file and send it through the pipeline.
-    const audioBase64 = fs.readFileSync(sampleOggPath).toString("base64");
+    const audioBase64 = fs.readFileSync(sampleOggPath).toString('base64');
     const authHeaders = getAuthHeaders();
 
     const result = await page.evaluate(
       async ({ url, yaml, audio, headers }) => {
         const formData = new FormData();
-        formData.append("config", yaml);
+        formData.append('config', yaml);
         const bytes = Uint8Array.from(atob(audio), (c) => c.charCodeAt(0));
-        formData.append(
-          "media",
-          new Blob([bytes], { type: "audio/ogg" }),
-          "sample.ogg",
-        );
+        formData.append('media', new Blob([bytes], { type: 'audio/ogg' }), 'sample.ogg');
 
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 45_000);
 
         try {
           const response = await fetch(`${url}/api/v1/process`, {
-            method: "POST",
+            method: 'POST',
             body: formData,
             headers,
             signal: controller.signal,
           });
 
-          const contentType = response.headers.get("content-type") ?? "";
+          const contentType = response.headers.get('content-type') ?? '';
 
           // Read the full response to ensure the pipeline completes
           // (including the S3 upload via passthrough).
@@ -177,22 +164,15 @@ test.describe("Convert - Transcode to S3 Pipeline", () => {
         yaml: transcodeToS3Yaml,
         audio: audioBase64,
         headers: authHeaders,
-      },
+      }
     );
 
     // --- Verify HTTP response ---
-    expect(
-      result.status,
-      `Pipeline request failed with status ${result.status}`,
-    ).toBe(200);
-    expect(
-      result.contentType,
-      `Expected audio content type, got: ${result.contentType}`,
-    ).toContain("audio/");
-    expect(
-      result.bodySize,
-      "Response body should contain audio data",
-    ).toBeGreaterThan(0);
+    expect(result.status, `Pipeline request failed with status ${result.status}`).toBe(200);
+    expect(result.contentType, `Expected audio content type, got: ${result.contentType}`).toContain(
+      'audio/'
+    );
+    expect(result.bodySize, 'Response body should contain audio data').toBeGreaterThan(0);
 
     // --- Verify S3 upload ---
     // The passthrough node writes data to S3 as it flows through.  The S3
@@ -205,13 +185,10 @@ test.describe("Convert - Transcode to S3 Pipeline", () => {
       await page.waitForTimeout(500);
     }
 
+    expect(s3Size, 'Object should exist in S3 after pipeline execution').toBeGreaterThan(0);
     expect(
       s3Size,
-      "Object should exist in S3 after pipeline execution",
-    ).toBeGreaterThan(0);
-    expect(
-      s3Size,
-      `S3 object size (${s3Size}) should match HTTP response size (${result.bodySize})`,
+      `S3 object size (${s3Size}) should match HTTP response size (${result.bodySize})`
     ).toBe(result.bodySize);
 
     // Clean up test artifact.
