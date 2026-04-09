@@ -279,8 +279,7 @@ fn write_nv12_to_mapping(
                         let s = row * chroma_w;
                         let d = row * uv_stride;
                         if s + chroma_w <= src_uv.len() && d + chroma_w <= uv_plane.len() {
-                            uv_plane[d..d + chroma_w]
-                                .copy_from_slice(&src_uv[s..s + chroma_w]);
+                            uv_plane[d..d + chroma_w].copy_from_slice(&src_uv[s..s + chroma_w]);
                         }
                     }
                 }
@@ -1322,9 +1321,8 @@ mod tests {
         let mut y_buf = vec![0u8; y_size];
         let mut uv_buf = vec![0u8; chroma_w * uv_h];
 
-        let mapping = MockWriteMapping {
-            planes: vec![RefCell::new(&mut y_buf), RefCell::new(&mut uv_buf)],
-        };
+        let mapping =
+            MockWriteMapping { planes: vec![RefCell::new(&mut y_buf), RefCell::new(&mut uv_buf)] };
         let pitches = [w as usize, chroma_w];
 
         let result = write_nv12_to_mapping(&mapping, &frame, &pitches);
@@ -1347,9 +1345,8 @@ mod tests {
         let mut y_buf = vec![0u8; y_size];
         let mut uv_buf = vec![0u8; chroma_w * uv_h];
 
-        let mapping = MockWriteMapping {
-            planes: vec![RefCell::new(&mut y_buf), RefCell::new(&mut uv_buf)],
-        };
+        let mapping =
+            MockWriteMapping { planes: vec![RefCell::new(&mut y_buf), RefCell::new(&mut uv_buf)] };
         let pitches = [w as usize, chroma_w];
 
         let result = write_nv12_to_mapping(&mapping, &frame, &pitches);
@@ -1377,9 +1374,8 @@ mod tests {
         let mut y_buf = vec![0u8; y_size];
         let mut uv_buf = vec![0u8; chroma_w * uv_h];
 
-        let mapping = MockWriteMapping {
-            planes: vec![RefCell::new(&mut y_buf), RefCell::new(&mut uv_buf)],
-        };
+        let mapping =
+            MockWriteMapping { planes: vec![RefCell::new(&mut y_buf), RefCell::new(&mut uv_buf)] };
         let pitches = [w as usize, chroma_w];
 
         let result = write_nv12_to_mapping(&mapping, &frame, &pitches);
@@ -1413,9 +1409,8 @@ mod tests {
         let mut y_buf = vec![0u8; (w * h) as usize];
         let mut uv_buf = vec![0u8; (w as usize) * (h as usize / 2)];
 
-        let mapping = MockWriteMapping {
-            planes: vec![RefCell::new(&mut y_buf), RefCell::new(&mut uv_buf)],
-        };
+        let mapping =
+            MockWriteMapping { planes: vec![RefCell::new(&mut y_buf), RefCell::new(&mut uv_buf)] };
         let pitches = [w as usize, w as usize];
 
         let result = write_nv12_to_mapping(&mapping, &frame, &pitches);
@@ -1450,8 +1445,7 @@ mod tests {
             let data = read_nv12_from_mapping(&read_mapping, w, h, &pitches);
 
             // Create a VideoFrame from the read data.
-            let frame =
-                VideoFrame::with_metadata(w, h, PixelFormat::Nv12, data, None).unwrap();
+            let frame = VideoFrame::with_metadata(w, h, PixelFormat::Nv12, data, None).unwrap();
 
             // Write back to a new mapping.
             let mut y_dst = vec![0u8; y_size];
@@ -1581,10 +1575,7 @@ mod tests {
         dec_handle.await.unwrap().unwrap();
 
         let decoded_packets = dec_sender.get_packets_for_pin("out").await;
-        assert!(
-            !decoded_packets.is_empty(),
-            "VA-API AV1 decoder produced no frames"
-        );
+        assert!(!decoded_packets.is_empty(), "VA-API AV1 decoder produced no frames");
 
         for packet in decoded_packets {
             match packet {
@@ -1687,10 +1678,7 @@ mod tests {
         for (i, packet) in decoded_packets.iter().enumerate() {
             match packet {
                 Packet::Video(frame) => {
-                    assert!(
-                        frame.metadata.is_some(),
-                        "Decoded frame {i} should have metadata"
-                    );
+                    assert!(frame.metadata.is_some(), "Decoded frame {i} should have metadata");
                 },
                 _ => panic!("Expected Video packet from VA-API AV1 decoder"),
             }
@@ -1755,10 +1743,8 @@ mod tests {
     /// Verify ForceCpu mode returns an error (VA-API is HW-only).
     #[test]
     fn test_vaapi_force_cpu_returns_error() {
-        let decoder_config = VaapiAv1DecoderConfig {
-            render_device: None,
-            hw_accel: HwAccelMode::ForceCpu,
-        };
+        let decoder_config =
+            VaapiAv1DecoderConfig { render_device: None, hw_accel: HwAccelMode::ForceCpu };
         let result = VaapiAv1DecoderNode::new(decoder_config);
         assert!(result.is_err(), "ForceCpu should be rejected for VA-API decoder");
 
