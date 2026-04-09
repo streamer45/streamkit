@@ -347,7 +347,7 @@ fn copy_nvdec_frame(
     let uv_src = decoded.uv_plane();
     let uv_src_stride = decoded.uv_stride();
     let chroma_h = uv_plane.height as usize;
-    let uv_row_bytes = width_usize; // NV12: UV width == luma width (pairs of U,V bytes)
+    let uv_row_bytes = uv_plane.width as usize; // NV12: ceil(width/2) interleaved UV pairs
 
     for row in 0..chroma_h {
         let src_start = row * uv_src_stride;
