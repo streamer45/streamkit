@@ -146,15 +146,11 @@ fn resolve_credential(
             },
             Ok(_) => {
                 // Env var exists but is empty — fall through to literal.
-                tracing::debug!(
-                    "Env var '{env}' for {label} is empty, trying literal fallback"
-                );
+                tracing::debug!("Env var '{env}' for {label} is empty, trying literal fallback");
             },
             Err(_) => {
                 // Env var not set — fall through to literal.
-                tracing::debug!(
-                    "Env var '{env}' for {label} is not set, trying literal fallback"
-                );
+                tracing::debug!("Env var '{env}' for {label} is not set, trying literal fallback");
             },
         }
     }
