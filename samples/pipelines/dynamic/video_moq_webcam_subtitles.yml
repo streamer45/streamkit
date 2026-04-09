@@ -6,7 +6,7 @@
 # transcription rendered as a Slint subtitle overlay.
 #
 # Data flow (subtitles):
-#   mic → opus_decoder → resampler → whisper → [best_effort] →
+#   mic → opus_decoder → resampler → whisper → stt_tap → [best_effort] →
 #   param_bridge → UpdateParams → slint subtitle → compositor layer
 #
 # Requires:
@@ -79,6 +79,13 @@ nodes:
       language: en
     needs: resampler
 
+  # Tap whisper output so transcriptions appear in the stream view telemetry.
+  stt_tap:
+    kind: core::telemetry_tap
+    params:
+      packet_types: ["Transcription"]
+    needs: whisper
+
   # --- Subtitle rendering (Slint) ---
 
   subtitles:
@@ -103,7 +110,7 @@ nodes:
           show: true
       debounce_ms: 100
     needs:
-      in: whisper
+      in: stt_tap
     connection_mode: best_effort
 
   # --- Video decode + compositing ---

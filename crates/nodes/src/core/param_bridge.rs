@@ -26,6 +26,7 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use streamkit_core::telemetry::TelemetryEmitter;
 use streamkit_core::types::{Packet, PacketType};
 use streamkit_core::{
     state_helpers, InputPin, NodeContext, OutputPin, PinCardinality, ProcessorNode, StreamKitError,
@@ -220,6 +221,12 @@ impl ProcessorNode for ParamBridgeNode {
             ));
         }
 
+        let telemetry = TelemetryEmitter::new(
+            node_id.clone(),
+            context.session_id.clone(),
+            context.telemetry_tx.clone(),
+        );
+
         let mut input_rx = context.take_input("in")?;
         state_helpers::emit_running(&context.state_tx, &node_id);
 
@@ -268,13 +275,13 @@ impl ProcessorNode for ParamBridgeNode {
                         pending_params = Some(params);
                         sleep.as_mut().reset(tokio::time::Instant::now() + d);
                     } else {
-                        Self::send_params(&context, &node_id, target, params).await;
+                        Self::send_params(&context, &telemetry, &node_id, target, params).await;
                     }
                 }
 
                 () = &mut sleep, if pending_params.is_some() => {
                     if let Some(params) = pending_params.take() {
-                        Self::send_params(&context, &node_id, target, params).await;
+                        Self::send_params(&context, &telemetry, &node_id, target, params).await;
                     }
                     // Reset sleep to far future so it doesn't fire again.
                     sleep.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_secs(86400));
@@ -284,7 +291,7 @@ impl ProcessorNode for ParamBridgeNode {
 
         // Flush any pending debounced params before shutting down.
         if let Some(params) = pending_params.take() {
-            Self::send_params(&context, &node_id, target, params).await;
+            Self::send_params(&context, &telemetry, &node_id, target, params).await;
         }
 
         state_helpers::emit_stopped(&context.state_tx, &node_id, "input_closed");
@@ -294,12 +301,34 @@ impl ProcessorNode for ParamBridgeNode {
 }
 
 impl ParamBridgeNode {
-    async fn send_params(context: &NodeContext, node_id: &str, target: &str, params: JsonValue) {
+    async fn send_params(
+        context: &NodeContext,
+        telemetry: &TelemetryEmitter,
+        node_id: &str,
+        target: &str,
+        params: JsonValue,
+    ) {
         tracing::debug!(
             node = %node_id,
             target_node = %target,
             "param_bridge sending UpdateParams"
         );
+
+        // Emit telemetry so the stream view can display forwarded text.
+        let text_preview = params
+            .get("properties")
+            .and_then(|p| p.get("text"))
+            .and_then(|t| t.as_str())
+            .or_else(|| params.get("text").and_then(|t| t.as_str()));
+        if let Some(text) = text_preview {
+            telemetry.emit(
+                "stt.result",
+                serde_json::json!({
+                    "text_preview": text,
+                    "target_node": target,
+                }),
+            );
+        }
 
         if let Err(e) = context.tune_sibling(target, params).await {
             tracing::warn!(
