@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Demonstrates the VA-API H.264 HW encoder:
+#   Generates SMPTE color bars (NV12), encodes to H.264 via VA-API
+#   (GPU-accelerated), muxes into an MP4 container, and writes the result
+#   to HTTP output.
+#
+# Requires: skit built with --features vaapi
+#           VA-API capable GPU with H.264 encode support (Intel, AMD)
+#           System packages: libva-dev, libgbm-dev
+
+name: VA-API H.264 Encode (MP4 Oneshot)
+description: Generates color bars, encodes to H.264 using VA-API HW encoder, and muxes into MP4 (30 seconds)
+mode: oneshot
+client:
+  input:
+    type: none
+  output:
+    type: video
+
+nodes:
+  colorbars:
+    kind: video::colorbars
+    params:
+      width: 1280
+      height: 720
+      fps: 30
+      frame_count: 900  # 30 seconds at 30fps
+      pixel_format: nv12
+      draw_time: true
+      draw_time_use_pts: true
+
+  vaapi_h264_encoder:
+    kind: video::vaapi::h264_encoder
+    params:
+      quality: 26
+      framerate: 30
+    needs: colorbars
+
+  mp4_muxer:
+    kind: containers::mp4::muxer
+    params:
+      mode: stream
+      video_width: 1280
+      video_height: 720
+    needs: vaapi_h264_encoder
+
+  http_output:
+    kind: streamkit::http_output
+    params:
+      content_type: 'video/mp4; codecs="avc1.4d0028"'
+    needs: mp4_muxer

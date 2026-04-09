@@ -146,6 +146,9 @@ pub mod vulkan_video;
 #[cfg(feature = "vaapi")]
 pub mod vaapi_av1;
 
+#[cfg(feature = "vaapi")]
+pub mod vaapi_h264;
+
 #[cfg(feature = "nvcodec")]
 pub mod nv_av1;
 
@@ -642,6 +645,9 @@ pub fn register_video_nodes(registry: &mut NodeRegistry, constraints: &GlobalNod
 
     #[cfg(feature = "vaapi")]
     vaapi_av1::register_vaapi_av1_nodes(registry);
+
+    #[cfg(feature = "vaapi")]
+    vaapi_h264::register_vaapi_h264_nodes(registry);
 
     #[cfg(feature = "nvcodec")]
     nv_av1::register_nv_av1_nodes(registry);

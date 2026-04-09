@@ -101,12 +101,12 @@ const DEFAULT_FRAMERATE: u32 = 30;
 // ---------------------------------------------------------------------------
 
 /// NV12 fourcc code for GBM/VA-API surfaces.
-fn nv12_fourcc() -> CrosFourcc {
+pub(super) fn nv12_fourcc() -> CrosFourcc {
     CrosFourcc::from(b"NV12")
 }
 
 /// Align `value` up to the next multiple of `alignment`.
-fn align_up_u32(value: u32, alignment: u32) -> u32 {
+pub(super) fn align_up_u32(value: u32, alignment: u32) -> u32 {
     debug_assert!(alignment > 0);
     value.div_ceil(alignment) * alignment
 }
@@ -134,7 +134,7 @@ fn detect_render_device() -> Option<String> {
 }
 
 /// Resolve the render device path from config, auto-detection, or default.
-fn resolve_render_device(configured: Option<&String>) -> String {
+pub(super) fn resolve_render_device(configured: Option<&String>) -> String {
     if let Some(path) = configured {
         return path.clone();
     }
@@ -152,7 +152,7 @@ fn resolve_render_device(configured: Option<&String>) -> String {
 }
 
 /// Open a VA display and a GBM device on the same render node.
-fn open_va_and_gbm(
+pub(super) fn open_va_and_gbm(
     render_device: Option<&String>,
 ) -> Result<(Rc<libva::Display>, Arc<GbmDevice>, String), String> {
     let path = resolve_render_device(render_device);
@@ -167,7 +167,7 @@ fn open_va_and_gbm(
 /// for a packed StreamKit [`VideoFrame`].
 ///
 /// Handles stride != width by copying row-by-row.
-fn read_nv12_from_mapping(
+pub(super) fn read_nv12_from_mapping(
     mapping: &dyn ReadMapping<'_>,
     width: u32,
     height: u32,
@@ -226,7 +226,7 @@ fn read_nv12_from_mapping(
 ///
 /// If the source is I420, it is converted to NV12 on the fly (U/V planes
 /// are interleaved into a single UV plane).
-fn write_nv12_to_mapping(
+pub(super) fn write_nv12_to_mapping(
     mapping: &dyn WriteMapping<'_>,
     frame: &VideoFrame,
     plane_pitches: &[usize],
