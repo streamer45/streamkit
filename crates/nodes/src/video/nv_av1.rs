@@ -383,6 +383,8 @@ pub struct NvAv1EncoderConfig {
     pub cuda_device: Option<u32>,
     /// Target bitrate in bits per second.
     pub bitrate: u32,
+    /// Target framerate in frames per second.
+    pub framerate: u32,
     /// Keyframe interval (GOP length). `None` uses the NVENC default
     /// (infinite GOP).
     pub keyframe_interval: Option<u32>,
@@ -394,6 +396,7 @@ impl Default for NvAv1EncoderConfig {
             hw_accel: HwAccelMode::Auto,
             cuda_device: None,
             bitrate: 2_000_000,
+            framerate: 30,
             keyframe_interval: None,
         }
     }
@@ -512,7 +515,7 @@ impl StandardVideoEncoder for NvAv1Encoder {
         let nv_config = shiguredo_nvcodec::EncoderConfig {
             width,
             height,
-            fps_numerator: 30,
+            fps_numerator: config.framerate,
             fps_denominator: 1,
             target_bitrate: Some(config.bitrate),
             preset: shiguredo_nvcodec::Preset::P1, // fastest for real-time
@@ -536,6 +539,7 @@ impl StandardVideoEncoder for NvAv1Encoder {
             width,
             height,
             bitrate = config.bitrate,
+            framerate = config.framerate,
             gpu = cuda_device,
             "NVENC AV1 encoder created"
         );
