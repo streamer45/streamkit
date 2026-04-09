@@ -216,11 +216,12 @@ test-skit:
     @cargo test --workspace -- --skip gpu_tests::
     @cargo test -p streamkit-server --features "moq"
 
-# Run GPU compositor tests (requires a machine with a GPU)
+# Run GPU tests (requires a machine with a GPU)
 test-skit-gpu:
     @echo "Testing skit (GPU)..."
     @cargo test -p streamkit-nodes --features gpu
     @cargo test -p streamkit-engine --features gpu
+    @cargo test -p streamkit-nodes --features nvcodec
 
 # Lint and format check the skit code
 # Note: We exclude dhat-heap since it's mutually exclusive with profiling (both define global allocators)
