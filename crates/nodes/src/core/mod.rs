@@ -208,7 +208,8 @@ pub fn register_core_nodes(registry: &mut NodeRegistry, constraints: &GlobalNode
             false,
             "Streams binary data to S3-compatible object storage (AWS S3, GCS, Azure, MinIO, RustFS, etc.). \
              Uses multipart upload for bounded memory usage. \
-             Credentials can be provided via config or environment variables.",
+             Credentials can be provided via config or environment variables. \
+             Set passthrough: true to forward packets downstream (required for oneshot pipelines).",
         );
     }
 }

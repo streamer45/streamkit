@@ -10,6 +10,13 @@
 //! Incoming [`Packet::Binary`] packets are buffered up to `chunk_size` and
 //! written via OpenDAL's multipart [`Writer`](opendal::Writer), keeping memory
 //! bounded regardless of the total upload size.
+//!
+//! ## Passthrough mode
+//!
+//! When `passthrough` is enabled (default: `false`), the node also forwards
+//! every incoming packet to its `"out"` pin, allowing it to sit inline in a
+//! linear pipeline (e.g. `muxer → s3_writer → http_output`).  This is
+//! required for oneshot pipelines which do not support fan-out.
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -100,6 +107,15 @@ pub struct ObjectStoreWriteConfig {
     /// (e.g. `audio/ogg`, `video/mp4`).
     #[serde(default)]
     pub content_type: Option<String>,
+
+    /// When `true`, the node forwards every incoming packet to its `"out"`
+    /// pin in addition to writing it to object storage.  This allows the
+    /// node to sit inline in a linear pipeline (required for oneshot mode
+    /// which does not support fan-out).
+    ///
+    /// Default: `false` (pure sink — no output pin).
+    #[serde(default)]
+    pub passthrough: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -240,6 +256,7 @@ impl ObjectStoreWriteNode {
                     secret_key_env: None,
                     chunk_size: default_chunk_size(),
                     content_type: None,
+                    passthrough: false,
                 }
             } else {
                 config_helpers::parse_config_required(params)?
@@ -288,8 +305,16 @@ impl ProcessorNode for ObjectStoreWriteNode {
     }
 
     fn output_pins(&self) -> Vec<OutputPin> {
-        // Sink — no outputs.
-        vec![]
+        if self.config.passthrough {
+            vec![OutputPin {
+                name: "out".to_string(),
+                produces_type: PacketType::Passthrough,
+                cardinality: PinCardinality::Broadcast,
+            }]
+        } else {
+            // Pure sink — no outputs.
+            vec![]
+        }
     }
 
     async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
@@ -414,6 +439,15 @@ impl ProcessorNode for ObjectStoreWriteNode {
                     );
                 }
 
+                // Forward the packet downstream when in passthrough mode.
+                if self.config.passthrough {
+                    let forwarded = Packet::Binary { data, content_type: None, metadata: None };
+                    if context.output_sender.send("out", forwarded).await.is_err() {
+                        tracing::debug!(%node_name, "Output channel closed, stopping node");
+                        break;
+                    }
+                }
+
                 stats_tracker.sent();
                 stats_tracker.maybe_send();
             } else {
@@ -488,9 +522,9 @@ mod tests {
     use streamkit_core::NodeStatsUpdate;
     use tokio::sync::mpsc;
 
-    /// Verify pin definitions for the object store write node.
+    /// Verify pin definitions for the object store write node (sink mode).
     #[test]
-    fn test_pin_definitions() {
+    fn test_pin_definitions_sink() {
         let node = ObjectStoreWriteNode {
             config: ObjectStoreWriteConfig {
                 endpoint: String::new(),
@@ -503,6 +537,7 @@ mod tests {
                 secret_key_env: None,
                 chunk_size: default_chunk_size(),
                 content_type: None,
+                passthrough: false,
             },
         };
 
@@ -513,6 +548,35 @@ mod tests {
 
         let outputs = node.output_pins();
         assert!(outputs.is_empty(), "Sink node should have no output pins");
+    }
+
+    /// Verify pin definitions for passthrough mode.
+    #[test]
+    fn test_pin_definitions_passthrough() {
+        let node = ObjectStoreWriteNode {
+            config: ObjectStoreWriteConfig {
+                endpoint: String::new(),
+                bucket: String::new(),
+                key: String::new(),
+                region: default_region(),
+                access_key_id: None,
+                access_key_id_env: None,
+                secret_access_key: None,
+                secret_key_env: None,
+                chunk_size: default_chunk_size(),
+                content_type: None,
+                passthrough: true,
+            },
+        };
+
+        let inputs = node.input_pins();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].name, "in");
+
+        let outputs = node.output_pins();
+        assert_eq!(outputs.len(), 1, "Passthrough mode should have one output pin");
+        assert_eq!(outputs[0].name, "out");
+        assert_eq!(outputs[0].produces_type, PacketType::Passthrough);
     }
 
     /// Verify factory rejects zero chunk_size.
@@ -675,6 +739,7 @@ mod tests {
             secret_key_env: None,
             chunk_size: default_chunk_size(),
             content_type: None,
+            passthrough: false,
         };
         let node = Box::new(ObjectStoreWriteNode { config });
 
