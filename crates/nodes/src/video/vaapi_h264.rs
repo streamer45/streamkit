@@ -73,9 +73,10 @@ use super::HwAccelMode;
 use super::H264_CONTENT_TYPE;
 
 // Re-use helpers from the VA-API AV1 module — they are codec-agnostic NV12
-// I/O routines (GBM mapping, render-device detection, etc.).
+// I/O routines (VA surface upload, GBM mapping, render-device detection, etc.).
 use super::vaapi_av1::{
-    align_up_u32, nv12_fourcc, open_va_and_gbm, read_nv12_from_mapping, write_nv12_to_mapping,
+    align_up_u32, nv12_fourcc, open_va_and_gbm, open_va_display, read_nv12_from_mapping,
+    write_nv12_to_mapping, write_nv12_to_va_surface,
 };
 
 // ---------------------------------------------------------------------------
@@ -589,14 +590,17 @@ impl EncoderNodeRunner for VaapiH264EncoderNode {
 // Encoder — internal codec wrapper
 // ---------------------------------------------------------------------------
 
-/// Type alias for the full VA-API H.264 encoder with GBM-backed frames.
+/// Type alias for the VA-API H.264 encoder using direct VA surfaces.
+///
+/// Bypasses GBM buffer allocation entirely — input frames are uploaded to
+/// VA surfaces via the VA-API Image API and passed straight through to the
+/// encoder backend.  This avoids the `GBM_BO_USE_HW_VIDEO_ENCODER` flag
+/// which Mesa's iris driver does not support for NV12 on some hardware
+/// (e.g. Intel Tiger Lake with Mesa 23.x).
 type CrosVaapiH264Encoder = StatelessEncoder<
     cros_codecs::encoder::h264::H264,
-    GbmVideoFrame,
-    cros_codecs::backend::vaapi::encoder::VaapiBackend<
-        GbmExternalBufferDescriptor,
-        libva::Surface<GbmExternalBufferDescriptor>,
-    >,
+    libva::Surface<()>,
+    cros_codecs::backend::vaapi::encoder::VaapiBackend<(), libva::Surface<()>>,
 >;
 
 /// Internal encoder state wrapping the cros-codecs `StatelessEncoder`.
@@ -605,7 +609,7 @@ type CrosVaapiH264Encoder = StatelessEncoder<
 /// a `spawn_blocking` thread.
 struct VaapiH264Encoder {
     encoder: CrosVaapiH264Encoder,
-    gbm: Arc<GbmDevice>,
+    display: Rc<libva::Display>,
     width: u32,
     height: u32,
     coded_width: u32,
@@ -618,7 +622,7 @@ impl StandardVideoEncoder for VaapiH264Encoder {
     const CODEC_NAME: &'static str = "VA-API H.264";
 
     fn new_encoder(width: u32, height: u32, config: &Self::Config) -> Result<Self, String> {
-        let (display, gbm, path) = open_va_and_gbm(config.render_device.as_ref())?;
+        let (display, path) = open_va_display(config.render_device.as_ref())?;
         tracing::info!(device = %path, width, height, "VA-API H.264 encoder opening");
 
         let coded_width = align_up_u32(width, H264_MB_SIZE);
@@ -678,7 +682,7 @@ impl StandardVideoEncoder for VaapiH264Encoder {
         };
 
         let encoder = CrosVaapiH264Encoder::new_vaapi(
-            display,
+            Rc::clone(&display),
             cros_config,
             nv12_fourcc(),
             CrosResolution { width: coded_width, height: coded_height },
@@ -697,7 +701,7 @@ impl StandardVideoEncoder for VaapiH264Encoder {
             "VA-API H.264 encoder created"
         );
 
-        Ok(Self { encoder, gbm, width, height, coded_width, coded_height, frame_count: 0 })
+        Ok(Self { encoder, display, width, height, coded_width, coded_height, frame_count: 0 })
     }
 
     fn encode(
@@ -711,43 +715,36 @@ impl StandardVideoEncoder for VaapiH264Encoder {
                 .into());
         }
 
-        // Create a GBM frame and upload the raw video data.
-        let mut gbm_frame = Arc::clone(&self.gbm)
-            .new_frame(
-                nv12_fourcc(),
-                CrosResolution { width: self.width, height: self.height },
-                CrosResolution { width: self.coded_width, height: self.coded_height },
-                GbmUsage::Encode,
+        // Create a VA surface and upload NV12 data via the Image API.
+        // This bypasses GBM buffer allocation (GBM_BO_USE_HW_VIDEO_ENCODER),
+        // which Mesa's iris driver does not support for NV12 on all hardware.
+        let nv12_fourcc_val: u32 = nv12_fourcc().into();
+        let mut surfaces = self
+            .display
+            .create_surfaces(
+                libva::VA_RT_FORMAT_YUV420,
+                Some(nv12_fourcc_val),
+                self.coded_width,
+                self.coded_height,
+                Some(libva::UsageHint::USAGE_HINT_ENCODER),
+                vec![()],
             )
-            .map_err(|e| format!("failed to allocate GBM frame for encoding: {e}"))?;
+            .map_err(|e| format!("failed to create VA surface for encoding: {e}"))?;
+        let surface =
+            surfaces.pop().ok_or_else(|| "create_surfaces returned empty vec".to_string())?;
 
-        // Write frame data into the GBM buffer.
-        let pitches = gbm_frame.get_plane_pitch();
-        {
-            let mapping = gbm_frame
-                .map_mut()
-                .map_err(|e| format!("failed to map GBM frame for writing: {e}"))?;
-            write_nv12_to_mapping(mapping.as_ref(), frame, &pitches)?;
-        }
+        // Write frame data into the VA surface.
+        let (pitches, offsets) = write_nv12_to_va_surface(&self.display, &surface, frame)?;
 
         let is_keyframe = metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(false);
         let timestamp = metadata.as_ref().and_then(|m| m.timestamp_us).unwrap_or(self.frame_count);
-
-        // Compute UV plane offset from pitch × coded_height (same approach as
-        // the AV1 encoder — get_plane_offset() is private in cros-codecs 0.0.6).
-        let y_stride = pitches.first().copied().unwrap_or(self.coded_width as usize);
-        let uv_offset = y_stride * self.coded_height as usize;
 
         let frame_layout = FrameLayout {
             format: (nv12_fourcc(), 0), // DRM_FORMAT_MOD_LINEAR
             size: CrosResolution { width: self.coded_width, height: self.coded_height },
             planes: vec![
-                PlaneLayout { buffer_index: 0, offset: 0, stride: y_stride },
-                PlaneLayout {
-                    buffer_index: 0,
-                    offset: uv_offset,
-                    stride: pitches.get(1).copied().unwrap_or(self.coded_width as usize),
-                },
+                PlaneLayout { buffer_index: 0, offset: offsets[0], stride: pitches[0] },
+                PlaneLayout { buffer_index: 0, offset: offsets[1], stride: pitches[1] },
             ],
         };
 
@@ -755,7 +752,7 @@ impl StandardVideoEncoder for VaapiH264Encoder {
             CrosFrameMetadata { timestamp, layout: frame_layout, force_keyframe: is_keyframe };
 
         self.encoder
-            .encode(cros_meta, gbm_frame)
+            .encode(cros_meta, surface)
             .map_err(|e| format!("VA-API H.264 encode error: {e}"))?;
 
         self.frame_count += 1;
