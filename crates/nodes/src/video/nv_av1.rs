@@ -56,7 +56,7 @@ use super::AV1_CONTENT_TYPE;
 
 /// Configuration for the NVIDIA AV1 decoder node.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NvAv1DecoderConfig {
     /// Hardware acceleration mode.
     pub hw_accel: HwAccelMode,
@@ -187,11 +187,11 @@ impl ProcessorNode for NvAv1DecoderNode {
                 // Drain all decoded frames produced by this input packet.
                 loop {
                     match decoder.next_frame() {
-                        Ok(Some(decoded)) => {
+                        Ok(Some(nv_frame)) => {
                             decode_duration_histogram
                                 .record(decode_start_time.elapsed().as_secs_f64(), &[]);
 
-                            match copy_nvdec_frame(&decoded, metadata.clone(), video_pool.as_ref())
+                            match copy_nvdec_frame(&nv_frame, metadata.clone(), video_pool.as_ref())
                             {
                                 Ok(frame) => {
                                     if result_tx.blocking_send(Ok(frame)).is_err() {
@@ -224,8 +224,8 @@ impl ProcessorNode for NvAv1DecoderNode {
             }
             loop {
                 match decoder.next_frame() {
-                    Ok(Some(decoded)) => {
-                        match copy_nvdec_frame(&decoded, None, video_pool.as_ref()) {
+                    Ok(Some(nv_frame)) => {
+                        match copy_nvdec_frame(&nv_frame, None, video_pool.as_ref()) {
                             Ok(frame) => {
                                 if result_tx.blocking_send(Ok(frame)).is_err() {
                                     return;
@@ -373,7 +373,7 @@ fn copy_nvdec_frame(
 
 /// Configuration for the NVIDIA AV1 encoder node.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NvAv1EncoderConfig {
     /// Hardware acceleration mode.
     pub hw_accel: HwAccelMode,
@@ -548,7 +548,7 @@ impl StandardVideoEncoder for NvAv1Encoder {
     ) -> Result<Vec<EncodedPacket>, String> {
         let nv12_data = match frame.pixel_format {
             PixelFormat::Nv12 => Cow::Borrowed(frame.data.as_slice()),
-            PixelFormat::I420 => Cow::Owned(i420_to_nv12_buffer(frame)?),
+            PixelFormat::I420 => Cow::Owned(i420_to_nv12_buffer(frame)),
             other => {
                 return Err(format!("NV-AV1 encoder expects NV12 or I420 input, got {other:?}"));
             },
@@ -558,13 +558,13 @@ impl StandardVideoEncoder for NvAv1Encoder {
             .encode(&nv12_data)
             .map_err(|err| format!("NVENC: AV1 encode failed: {err}"))?;
 
-        self.drain_packets(metadata)
+        Ok(self.drain_packets(metadata))
     }
 
     fn flush_encoder(&mut self) -> Result<Vec<EncodedPacket>, String> {
         self.encoder.finish().map_err(|err| format!("NVENC: AV1 finish failed: {err}"))?;
 
-        self.drain_packets(None)
+        Ok(self.drain_packets(None))
     }
 
     fn flush_on_dimension_change() -> bool {
@@ -574,10 +574,7 @@ impl StandardVideoEncoder for NvAv1Encoder {
 
 impl NvAv1Encoder {
     /// Drain all available encoded frames from NVENC.
-    fn drain_packets(
-        &mut self,
-        metadata: Option<PacketMetadata>,
-    ) -> Result<Vec<EncodedPacket>, String> {
+    fn drain_packets(&mut self, metadata: Option<PacketMetadata>) -> Vec<EncodedPacket> {
         let mut packets = Vec::new();
         let mut remaining_metadata = metadata;
 
@@ -601,21 +598,24 @@ impl NvAv1Encoder {
             packets.push(EncodedPacket { data, metadata: Some(output_metadata) });
         }
 
-        Ok(packets)
+        packets
     }
 }
 
 /// Convert an I420 `VideoFrame` to a contiguous NV12 byte buffer suitable
 /// for `shiguredo_nvcodec::Encoder::encode()`.
-fn i420_to_nv12_buffer(frame: &VideoFrame) -> Result<Vec<u8>, String> {
+fn i420_to_nv12_buffer(frame: &VideoFrame) -> Vec<u8> {
     let width = frame.width as usize;
     let height = frame.height as usize;
     let layout = frame.layout();
     let planes = layout.planes();
     let data = frame.data.as_slice();
 
-    // NV12 layout: Y plane (width * height) + UV plane (width * height/2)
-    let nv12_size = width * height + width * height.div_ceil(2);
+    // NV12 layout: Y plane (width * height) + UV plane (chroma_w*2 * chroma_h)
+    let chroma_w = width.div_ceil(2);
+    let chroma_h = height.div_ceil(2);
+    let uv_row_bytes = chroma_w * 2; // ceil(width/2) pairs of (U, V)
+    let nv12_size = width * height + uv_row_bytes * chroma_h;
     let mut nv12 = vec![0u8; nv12_size];
 
     // Copy Y plane.
@@ -629,41 +629,42 @@ fn i420_to_nv12_buffer(frame: &VideoFrame) -> Result<Vec<u8>, String> {
     // Interleave U + V into NV12 UV plane.
     let u_plane = &planes[1];
     let v_plane = &planes[2];
-    let chroma_w = width.div_ceil(2);
-    let chroma_h = height.div_ceil(2);
     let uv_offset = width * height;
 
     for row in 0..chroma_h {
         let u_src_start = u_plane.offset + row * u_plane.stride;
         let v_src_start = v_plane.offset + row * v_plane.stride;
-        let dst_start = uv_offset + row * width;
+        let dst_start = uv_offset + row * uv_row_bytes;
         for col in 0..chroma_w {
             nv12[dst_start + col * 2] = data[u_src_start + col];
             nv12[dst_start + col * 2 + 1] = data[v_src_start + col];
         }
     }
 
-    Ok(nv12)
+    nv12
 }
 
+#[allow(clippy::missing_const_for_fn)] // map_or with closures is not yet stable in const fn
 fn merge_keyframe_metadata(
     metadata: Option<PacketMetadata>,
     keyframe: bool,
     pts: i64,
 ) -> PacketMetadata {
-    match metadata {
-        Some(mut meta) => {
-            meta.keyframe = Some(keyframe);
-            meta
-        },
-        None => PacketMetadata {
+    metadata.map_or(
+        PacketMetadata {
             #[allow(clippy::cast_sign_loss)]
             timestamp_us: if pts >= 0 { Some(pts as u64) } else { None },
             duration_us: None,
             sequence: None,
             keyframe: Some(keyframe),
         },
-    }
+        |meta| PacketMetadata {
+            timestamp_us: meta.timestamp_us,
+            duration_us: meta.duration_us,
+            sequence: meta.sequence,
+            keyframe: Some(keyframe),
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -733,4 +734,445 @@ pub fn register_nv_av1_nodes(registry: &mut NodeRegistry) {
          (Ada Lovelace) or newer GPU. Insert a video::pixel_convert node \
          upstream if the source outputs RGBA8.",
     );
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_macros)]
+mod tests {
+    use super::*;
+    use crate::test_utils::{
+        assert_state_initializing, assert_state_running, assert_state_stopped, create_test_context,
+        create_test_video_frame,
+    };
+    use std::borrow::Cow;
+    use std::collections::HashMap;
+    use tokio::sync::mpsc;
+
+    // ── Helpers ─────────────────────────────────────────────────────────────
+
+    /// Returns `true` if CUDA libraries can be loaded AND a decoder can
+    /// actually be created on device 0.  This catches machines that have
+    /// `libcuda.so` but no physical GPU (or no AV1-capable GPU).
+    fn nvdec_av1_available() -> bool {
+        if !shiguredo_nvcodec::is_cuda_library_available() {
+            return false;
+        }
+        let config = shiguredo_nvcodec::DecoderConfig {
+            device_id: 0,
+            max_display_delay: 0,
+            ..shiguredo_nvcodec::DecoderConfig::default()
+        };
+        shiguredo_nvcodec::Decoder::new_av1(config).is_ok()
+    }
+
+    /// Returns `true` if NVENC AV1 encoding is available on device 0.
+    /// AV1 encode requires RTX 40xx (Ada Lovelace) or newer.
+    fn nvenc_av1_available() -> bool {
+        if !shiguredo_nvcodec::is_cuda_library_available() {
+            return false;
+        }
+        let config = shiguredo_nvcodec::EncoderConfig {
+            width: 64,
+            height: 64,
+            fps_numerator: 30,
+            fps_denominator: 1,
+            target_bitrate: Some(2_000_000),
+            preset: shiguredo_nvcodec::Preset::P1,
+            tuning_info: shiguredo_nvcodec::TuningInfo::LOW_LATENCY,
+            rate_control_mode: shiguredo_nvcodec::RateControlMode::Cbr,
+            gop_length: Some(1),
+            idr_period: Some(1),
+            frame_interval_p: 1,
+            profile: None,
+            device_id: 0,
+            max_encode_width: None,
+            max_encode_height: None,
+        };
+        shiguredo_nvcodec::Encoder::new_av1(config).is_ok()
+    }
+
+    // ── Unit tests (no GPU required) ────────────────────────────────────────
+
+    #[test]
+    fn force_cpu_decoder_rejected() {
+        let result = NvAv1DecoderNode::new(NvAv1DecoderConfig {
+            hw_accel: HwAccelMode::ForceCpu,
+            cuda_device: None,
+        });
+        assert!(result.is_err(), "ForceCpu should be rejected by NV decoder");
+    }
+
+    #[test]
+    fn force_cpu_encoder_rejected() {
+        let result = NvAv1EncoderNode::new(NvAv1EncoderConfig {
+            hw_accel: HwAccelMode::ForceCpu,
+            cuda_device: None,
+            bitrate: 2_000_000,
+            keyframe_interval: None,
+        });
+        assert!(result.is_err(), "ForceCpu should be rejected by NV encoder");
+    }
+
+    #[test]
+    fn default_configs_accepted() {
+        assert!(NvAv1DecoderNode::new(NvAv1DecoderConfig::default()).is_ok());
+        assert!(NvAv1EncoderNode::new(NvAv1EncoderConfig::default()).is_ok());
+    }
+
+    #[test]
+    fn decoder_pins_correct() {
+        let node = NvAv1DecoderNode::new(NvAv1DecoderConfig::default()).unwrap();
+        let inputs = node.input_pins();
+        let outputs = node.output_pins();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(inputs[0].name, "in");
+        assert_eq!(outputs[0].name, "out");
+        assert!(
+            matches!(&inputs[0].accepts_types[0], PacketType::EncodedVideo(fmt) if fmt.codec == VideoCodec::Av1),
+            "Decoder input should accept AV1"
+        );
+        assert!(
+            matches!(&outputs[0].produces_type, PacketType::RawVideo(fmt) if fmt.pixel_format == PixelFormat::Nv12),
+            "Decoder output should produce NV12"
+        );
+    }
+
+    #[test]
+    fn encoder_pins_correct() {
+        let node = NvAv1EncoderNode::new(NvAv1EncoderConfig::default()).unwrap();
+        let inputs = node.input_pins();
+        let outputs = node.output_pins();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(inputs[0].name, "in");
+        assert_eq!(outputs[0].name, "out");
+        // Encoder should accept both I420 and NV12.
+        assert_eq!(inputs[0].accepts_types.len(), 2);
+        assert!(
+            matches!(&outputs[0].produces_type, PacketType::EncodedVideo(fmt) if fmt.codec == VideoCodec::Av1),
+            "Encoder output should produce AV1"
+        );
+    }
+
+    #[test]
+    fn deny_unknown_fields_decoder() {
+        let json = r#"{"hw_accel":"Auto","cuda_device":null,"bogus_field":42}"#;
+        let result: Result<NvAv1DecoderConfig, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "Unknown fields should be rejected");
+    }
+
+    #[test]
+    fn deny_unknown_fields_encoder() {
+        let json = r#"{"bitrate":1000000,"unknown_key":"oops"}"#;
+        let result: Result<NvAv1EncoderConfig, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "Unknown fields should be rejected");
+    }
+
+    #[test]
+    fn i420_to_nv12_basic() {
+        // Build a minimal 4×4 I420 frame and convert.
+        let frame = create_test_video_frame(4, 4, PixelFormat::I420, 1);
+        let nv12 = i420_to_nv12_buffer(&frame);
+
+        // NV12 size: Y (4*4) + UV (ceil(4/2)*2 * ceil(4/2)) = 16 + 4*2 = 24
+        let expected_size = 4 * 4 + 4 * 2;
+        assert_eq!(nv12.len(), expected_size, "NV12 buffer size mismatch");
+    }
+
+    // ── GPU integration tests ───────────────────────────────────────────────
+
+    /// Encode several NV12 frames via NVENC, then decode them via NVDEC.
+    /// This is the full HW roundtrip test.
+    #[tokio::test]
+    async fn gpu_tests_nv_av1_encode_decode_roundtrip() {
+        if !nvenc_av1_available() {
+            eprintln!("Skipping NV AV1 encode/decode roundtrip: NVENC AV1 not available");
+            return;
+        }
+        if !nvdec_av1_available() {
+            eprintln!("Skipping NV AV1 encode/decode roundtrip: NVDEC AV1 not available");
+            return;
+        }
+
+        // --- Encode ---
+        let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
+        let mut enc_inputs = HashMap::new();
+        enc_inputs.insert("in".to_string(), enc_input_rx);
+
+        let (enc_context, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 10);
+        let encoder_config = NvAv1EncoderConfig {
+            bitrate: 2_000_000,
+            keyframe_interval: Some(1),
+            ..Default::default()
+        };
+        let encoder = NvAv1EncoderNode::new(encoder_config).unwrap();
+
+        let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
+
+        assert_state_initializing(&mut enc_state_rx).await;
+        assert_state_running(&mut enc_state_rx).await;
+
+        for index in 0_u64..5 {
+            let timestamp = 1_000 + 33_333_u64 * index;
+            let duration: u64 = 33_333;
+
+            let mut frame = create_test_video_frame(64, 64, PixelFormat::Nv12, 16);
+            frame.metadata = Some(PacketMetadata {
+                timestamp_us: Some(timestamp),
+                duration_us: Some(duration),
+                sequence: Some(index),
+                keyframe: Some(true),
+            });
+            enc_input_tx.send(Packet::Video(frame)).await.unwrap();
+        }
+        drop(enc_input_tx);
+
+        assert_state_stopped(&mut enc_state_rx).await;
+        enc_handle.await.unwrap().unwrap();
+
+        let encoded_packets = enc_sender.get_packets_for_pin("out").await;
+        assert!(!encoded_packets.is_empty(), "NVENC AV1 encoder produced no packets");
+
+        // --- Decode ---
+        let (dec_input_tx, dec_input_rx) = mpsc::channel(10);
+        let mut dec_inputs = HashMap::new();
+        dec_inputs.insert("in".to_string(), dec_input_rx);
+
+        let (dec_context, dec_sender, mut dec_state_rx) = create_test_context(dec_inputs, 10);
+        let decoder = NvAv1DecoderNode::new(NvAv1DecoderConfig::default()).unwrap();
+        let dec_handle = tokio::spawn(async move { Box::new(decoder).run(dec_context).await });
+
+        assert_state_initializing(&mut dec_state_rx).await;
+        assert_state_running(&mut dec_state_rx).await;
+
+        for packet in encoded_packets {
+            if let Packet::Binary { data, metadata, .. } = packet {
+                dec_input_tx
+                    .send(Packet::Binary {
+                        data,
+                        content_type: Some(Cow::Borrowed(AV1_CONTENT_TYPE)),
+                        metadata,
+                    })
+                    .await
+                    .unwrap();
+            }
+        }
+        drop(dec_input_tx);
+
+        assert_state_stopped(&mut dec_state_rx).await;
+        dec_handle.await.unwrap().unwrap();
+
+        let decoded_packets = dec_sender.get_packets_for_pin("out").await;
+        assert!(!decoded_packets.is_empty(), "NVDEC AV1 decoder produced no frames");
+
+        for packet in decoded_packets {
+            match packet {
+                Packet::Video(frame) => {
+                    assert_eq!(frame.width, 64);
+                    assert_eq!(frame.height, 64);
+                    assert_eq!(frame.pixel_format, PixelFormat::Nv12);
+                    assert!(!frame.data().is_empty(), "Decoded frame should have data");
+                },
+                _ => panic!("Expected Video packet from NV AV1 decoder"),
+            }
+        }
+    }
+
+    /// Encode-only test: verify that the encoder produces output packets
+    /// and that the first packet is marked as a keyframe.
+    #[tokio::test]
+    async fn gpu_tests_nv_av1_encoder_produces_keyframes() {
+        if !nvenc_av1_available() {
+            eprintln!("Skipping NV AV1 encoder keyframe test: NVENC AV1 not available");
+            return;
+        }
+
+        let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
+        let mut enc_inputs = HashMap::new();
+        enc_inputs.insert("in".to_string(), enc_input_rx);
+
+        let (enc_context, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 10);
+        let encoder_config = NvAv1EncoderConfig {
+            bitrate: 2_000_000,
+            keyframe_interval: Some(1),
+            ..Default::default()
+        };
+        let encoder = NvAv1EncoderNode::new(encoder_config).unwrap();
+
+        let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
+
+        assert_state_initializing(&mut enc_state_rx).await;
+        assert_state_running(&mut enc_state_rx).await;
+
+        for index in 0_u64..3 {
+            let mut frame = create_test_video_frame(64, 64, PixelFormat::Nv12, 16);
+            frame.metadata = Some(PacketMetadata {
+                timestamp_us: Some(33_333 * index),
+                duration_us: Some(33_333),
+                sequence: Some(index),
+                keyframe: None,
+            });
+            enc_input_tx.send(Packet::Video(frame)).await.unwrap();
+        }
+        drop(enc_input_tx);
+
+        assert_state_stopped(&mut enc_state_rx).await;
+        enc_handle.await.unwrap().unwrap();
+
+        let encoded_packets = enc_sender.get_packets_for_pin("out").await;
+        assert!(!encoded_packets.is_empty(), "NVENC AV1 encoder produced no packets");
+
+        // With keyframe_interval=1, every packet should be a keyframe.
+        for (i, packet) in encoded_packets.iter().enumerate() {
+            if let Packet::Binary { metadata, .. } = packet {
+                let meta = metadata.as_ref().expect("Encoded packet should have metadata");
+                assert_eq!(
+                    meta.keyframe,
+                    Some(true),
+                    "Packet {i} should be a keyframe with keyframe_interval=1"
+                );
+            }
+        }
+    }
+
+    /// Encode from I420 input — verifies the I420→NV12 conversion path.
+    #[tokio::test]
+    async fn gpu_tests_nv_av1_encoder_i420_input() {
+        if !nvenc_av1_available() {
+            eprintln!("Skipping NV AV1 I420 input test: NVENC AV1 not available");
+            return;
+        }
+
+        let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
+        let mut enc_inputs = HashMap::new();
+        enc_inputs.insert("in".to_string(), enc_input_rx);
+
+        let (enc_context, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 10);
+        let encoder_config = NvAv1EncoderConfig {
+            bitrate: 2_000_000,
+            keyframe_interval: Some(1),
+            ..Default::default()
+        };
+        let encoder = NvAv1EncoderNode::new(encoder_config).unwrap();
+
+        let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
+
+        assert_state_initializing(&mut enc_state_rx).await;
+        assert_state_running(&mut enc_state_rx).await;
+
+        // Send I420 frames instead of NV12.
+        for index in 0_u64..3 {
+            let mut frame = create_test_video_frame(64, 64, PixelFormat::I420, 1);
+            frame.metadata = Some(PacketMetadata {
+                timestamp_us: Some(33_333 * index),
+                duration_us: Some(33_333),
+                sequence: Some(index),
+                keyframe: Some(true),
+            });
+            enc_input_tx.send(Packet::Video(frame)).await.unwrap();
+        }
+        drop(enc_input_tx);
+
+        assert_state_stopped(&mut enc_state_rx).await;
+        enc_handle.await.unwrap().unwrap();
+
+        let encoded_packets = enc_sender.get_packets_for_pin("out").await;
+        assert!(
+            !encoded_packets.is_empty(),
+            "NVENC AV1 encoder produced no packets from I420 input"
+        );
+    }
+
+    /// Metadata propagation: timestamps from input frames should be
+    /// preserved through the encode→decode roundtrip.
+    #[tokio::test]
+    async fn gpu_tests_nv_av1_metadata_propagation() {
+        if !nvenc_av1_available() || !nvdec_av1_available() {
+            eprintln!("Skipping NV AV1 metadata test: NVENC/NVDEC AV1 not available");
+            return;
+        }
+
+        // --- Encode ---
+        let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
+        let mut enc_inputs = HashMap::new();
+        enc_inputs.insert("in".to_string(), enc_input_rx);
+
+        let (enc_context, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 10);
+        let encoder_config = NvAv1EncoderConfig {
+            bitrate: 2_000_000,
+            keyframe_interval: Some(1),
+            ..Default::default()
+        };
+        let encoder = NvAv1EncoderNode::new(encoder_config).unwrap();
+        let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
+
+        assert_state_initializing(&mut enc_state_rx).await;
+        assert_state_running(&mut enc_state_rx).await;
+
+        let timestamps: Vec<u64> = vec![1_000, 34_333, 67_666];
+        for (i, &ts) in timestamps.iter().enumerate() {
+            let mut frame = create_test_video_frame(64, 64, PixelFormat::Nv12, 16);
+            frame.metadata = Some(PacketMetadata {
+                timestamp_us: Some(ts),
+                duration_us: Some(33_333),
+                sequence: Some(i as u64),
+                keyframe: Some(true),
+            });
+            enc_input_tx.send(Packet::Video(frame)).await.unwrap();
+        }
+        drop(enc_input_tx);
+
+        assert_state_stopped(&mut enc_state_rx).await;
+        enc_handle.await.unwrap().unwrap();
+
+        let encoded_packets = enc_sender.get_packets_for_pin("out").await;
+        assert!(!encoded_packets.is_empty());
+
+        // --- Decode and verify metadata ---
+        let (dec_input_tx, dec_input_rx) = mpsc::channel(10);
+        let mut dec_inputs = HashMap::new();
+        dec_inputs.insert("in".to_string(), dec_input_rx);
+
+        let (dec_context, dec_sender, mut dec_state_rx) = create_test_context(dec_inputs, 10);
+        let decoder = NvAv1DecoderNode::new(NvAv1DecoderConfig::default()).unwrap();
+        let dec_handle = tokio::spawn(async move { Box::new(decoder).run(dec_context).await });
+
+        assert_state_initializing(&mut dec_state_rx).await;
+        assert_state_running(&mut dec_state_rx).await;
+
+        for packet in encoded_packets {
+            if let Packet::Binary { data, metadata, .. } = packet {
+                dec_input_tx
+                    .send(Packet::Binary {
+                        data,
+                        content_type: Some(Cow::Borrowed(AV1_CONTENT_TYPE)),
+                        metadata,
+                    })
+                    .await
+                    .unwrap();
+            }
+        }
+        drop(dec_input_tx);
+
+        assert_state_stopped(&mut dec_state_rx).await;
+        dec_handle.await.unwrap().unwrap();
+
+        let decoded_packets = dec_sender.get_packets_for_pin("out").await;
+        assert!(!decoded_packets.is_empty(), "Decoder should produce at least one frame");
+
+        // Every decoded frame should have metadata preserved.
+        for (i, packet) in decoded_packets.iter().enumerate() {
+            match packet {
+                Packet::Video(frame) => {
+                    assert!(frame.metadata.is_some(), "Decoded frame {i} should have metadata");
+                },
+                _ => panic!("Expected Video packet from NV AV1 decoder"),
+            }
+        }
+    }
 }
