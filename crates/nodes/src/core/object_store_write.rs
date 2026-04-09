@@ -35,6 +35,11 @@ use streamkit_core::{
 /// Default buffer/chunk size: 5 MiB (the S3 minimum multipart part size).
 const DEFAULT_CHUNK_SIZE: usize = 5 * 1024 * 1024;
 
+/// S3 minimum multipart part size (5 MiB).  Intermediate parts smaller than
+/// this will be rejected with `EntityTooSmall`; only the final part may be
+/// smaller.
+const S3_MIN_PART_SIZE: usize = 5 * 1024 * 1024;
+
 const fn default_chunk_size() -> usize {
     DEFAULT_CHUNK_SIZE
 }
@@ -284,7 +289,6 @@ impl ObjectStoreWriteNode {
                 ));
             }
 
-            const S3_MIN_PART_SIZE: usize = 5 * 1024 * 1024;
             if config.chunk_size < S3_MIN_PART_SIZE && params.is_some() {
                 tracing::warn!(
                     chunk_size = config.chunk_size,
