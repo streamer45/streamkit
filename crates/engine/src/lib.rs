@@ -155,6 +155,7 @@ impl Engine {
     #[cfg(feature = "dynamic")]
     pub fn start_dynamic_actor(&self, config: DynamicEngineConfig) -> DynamicEngineHandle {
         let (control_tx, control_rx) = mpsc::channel(DEFAULT_ENGINE_CONTROL_CAPACITY);
+        let engine_control_tx = control_tx.clone();
         let (query_tx, query_rx) = mpsc::channel(DEFAULT_ENGINE_QUERY_CAPACITY);
 
         let node_input_capacity = config.node_input_capacity.unwrap_or(DEFAULT_NODE_INPUT_CAPACITY);
@@ -236,6 +237,7 @@ impl Engine {
                 .u64_gauge("node.state")
                 .with_description("Node state (1=running, 0=stopped/failed)")
                 .build(),
+            engine_control_tx,
         };
 
         let engine_task = tokio::spawn(dynamic_engine.run());

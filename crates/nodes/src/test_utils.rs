@@ -42,6 +42,7 @@ pub fn create_test_context(
         video_pool: None,
         pipeline_mode: streamkit_core::node::PipelineMode::Dynamic,
         view_data_tx: None,
+        engine_control_tx: None,
     };
 
     (context, mock_sender, state_rx)
@@ -85,6 +86,7 @@ pub fn create_test_context_with_pin_mgmt(
         video_pool: None,
         pipeline_mode: streamkit_core::node::PipelineMode::Dynamic,
         view_data_tx: None,
+        engine_control_tx: None,
     };
 
     (context, mock_sender, state_rx, pin_mgmt_tx)

@@ -19,6 +19,7 @@ use tokio::sync::mpsc;
 fn create_test_engine() -> DynamicEngine {
     let (control_tx, control_rx) = mpsc::channel(32);
     let (query_tx, query_rx) = mpsc::channel(32);
+    let engine_control_tx = control_tx.clone();
     drop(control_tx);
     drop(query_tx);
 
@@ -58,6 +59,7 @@ fn create_test_engine() -> DynamicEngine {
         node_state_gauge: meter.u64_gauge("test.state").build(),
         runtime_schemas: HashMap::new(),
         runtime_schema_subscribers: Vec::new(),
+        engine_control_tx,
     }
 }
 

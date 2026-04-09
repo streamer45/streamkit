@@ -286,6 +286,7 @@ fn test_rasterize_text_overlay_produces_pixels() {
         color: [255, 255, 0, 255],
         font_size: 24,
         font_name: None,
+        word_wrap: false,
     };
     let overlay = rasterize_text_overlay(&cfg, 7680, 10_000);
     // Bitmap is sized to the measured text extent, not the config rect.
@@ -2232,6 +2233,7 @@ fn test_text_overlay_cache_reuses_arc_on_unchanged_config() {
         color: [255, 255, 255, 255],
         font_size: 24,
         font_name: None,
+        word_wrap: false,
     };
     let limits = GlobalCompositorConfig::default();
     let mut config =
@@ -2350,6 +2352,7 @@ fn test_text_overlay_cache_handles_length_changes() {
         color: [255, 255, 255, 255],
         font_size: 24,
         font_name: None,
+        word_wrap: false,
     };
     let limits = GlobalCompositorConfig::default();
     let mut stats = NodeStatsTracker::new("test".to_string(), None);
@@ -2509,6 +2512,7 @@ async fn test_compositor_output_format_runtime_change() {
         video_pool: None,
         pipeline_mode: streamkit_core::node::PipelineMode::Dynamic,
         view_data_tx: None,
+        engine_control_tx: None,
     };
 
     // Start with no output_format (RGBA8).

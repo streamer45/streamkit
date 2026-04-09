@@ -333,6 +333,15 @@ pub struct NodeContext {
     /// Channel for the node to emit structured view data for frontend consumption.
     /// Like stats_tx, this is optional and best-effort.
     pub view_data_tx: Option<mpsc::Sender<NodeViewDataUpdate>>,
+    /// Optional sender for engine-level control messages.
+    ///
+    /// Allows nodes to send [`EngineControlMessage`] to the engine actor,
+    /// enabling cross-node control (e.g. sending `UpdateParams` to a sibling
+    /// node by name via [`EngineControlMessage::TuneNode`]).
+    ///
+    /// Only provided in dynamic pipelines.  `None` in oneshot/static
+    /// pipelines where the graph is fixed at build time.
+    pub engine_control_tx: Option<mpsc::Sender<crate::control::EngineControlMessage>>,
 }
 
 impl NodeContext {
@@ -346,6 +355,35 @@ impl NodeContext {
         self.inputs.remove(pin_name).ok_or_else(|| {
             StreamKitError::Runtime(format!("Engine did not provide '{pin_name}' pin receiver"))
         })
+    }
+
+    /// Send an `UpdateParams` control message to a sibling node by name.
+    ///
+    /// This is a convenience wrapper around [`EngineControlMessage::TuneNode`]
+    /// that routes through the engine actor's control channel — the same path
+    /// the WebSocket/REST API uses.
+    ///
+    /// Only works in dynamic pipelines (where `engine_control_tx` is `Some`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string if the engine control channel is unavailable
+    /// (oneshot pipeline) or closed (engine shut down).
+    pub async fn tune_sibling(
+        &self,
+        target_node_id: &str,
+        params: serde_json::Value,
+    ) -> Result<(), String> {
+        let tx = self
+            .engine_control_tx
+            .as_ref()
+            .ok_or_else(|| "engine_control_tx not available (oneshot pipeline?)".to_string())?;
+        tx.send(crate::control::EngineControlMessage::TuneNode {
+            node_id: target_node_id.to_string(),
+            message: crate::control::NodeControlMessage::UpdateParams(params),
+        })
+        .await
+        .map_err(|_| "Engine control channel closed".to_string())
     }
 
     /// Receives a packet from the given receiver, respecting the cancellation token if present.
