@@ -117,10 +117,7 @@ pub struct VaapiH264DecoderConfig {
 
 impl Default for VaapiH264DecoderConfig {
     fn default() -> Self {
-        Self {
-            render_device: None,
-            hw_accel: HwAccelMode::Auto,
-        }
+        Self { render_device: None, hw_accel: HwAccelMode::Auto }
     }
 }
 
@@ -268,7 +265,7 @@ fn vaapi_h264_decode_loop(
         Err(e) => {
             let _ = result_tx.blocking_send(Err(e));
             return;
-        }
+        },
     };
     tracing::info!(device = %path, "VA-API H.264 decoder opened display");
 
@@ -282,7 +279,7 @@ fn vaapi_h264_decode_loop(
             let _ =
                 result_tx.blocking_send(Err(format!("failed to create VA-API H.264 decoder: {e}")));
             return;
-        }
+        },
     };
 
     // Stream resolution — updated on FormatChanged events.
@@ -324,16 +321,15 @@ fn vaapi_h264_decode_loop(
                 Ok(bytes_consumed) => {
                     offset += bytes_consumed;
                     made_progress = true;
-                }
+                },
                 Err(DecodeError::CheckEvents | DecodeError::NotEnoughOutputBuffers(_)) => {
                     // Process pending events / drain ready frames, then retry.
-                }
+                },
                 Err(e) => {
                     tracing::error!(error = %e, "VA-API H.264 decode error");
-                    let _ =
-                        result_tx.blocking_send(Err(format!("VA-API H.264 decode error: {e}")));
+                    let _ = result_tx.blocking_send(Err(format!("VA-API H.264 decode error: {e}")));
                     break;
-                }
+                },
             }
 
             // Process all pending events (format changes + ready frames).
@@ -381,13 +377,7 @@ fn vaapi_h264_decode_loop(
     if let Err(e) = decoder.flush() {
         tracing::warn!(error = %e, "VA-API H.264 decoder flush failed");
     }
-    drain_decoder_events(
-        &mut decoder,
-        result_tx,
-        None,
-        &mut coded_width,
-        &mut coded_height,
-    );
+    drain_decoder_events(&mut decoder, result_tx, None, &mut coded_width, &mut coded_height);
 }
 
 /// Drain all pending events from the decoder.
@@ -420,7 +410,7 @@ fn drain_decoder_events(
                         "VA-API H.264 decoder stream format changed"
                     );
                 }
-            }
+            },
             DecoderEvent::FrameReady(handle) => {
                 if let Err(e) = handle.sync() {
                     tracing::error!(error = %e, "VA-API H.264 frame sync failed");
@@ -441,7 +431,7 @@ fn drain_decoder_events(
                         Err(e) => {
                             tracing::error!(error = %e, "failed to map decoded GBM frame");
                             continue;
-                        }
+                        },
                     };
                     read_nv12_from_mapping(mapping.as_ref(), frame_w, frame_h, &pitches)
                 };
@@ -457,15 +447,15 @@ fn drain_decoder_events(
                         if result_tx.blocking_send(Ok(frame)).is_err() {
                             return (true, had_events);
                         }
-                    }
+                    },
                     Err(e) => {
                         tracing::error!(
                             error = %e,
                             "failed to construct VideoFrame from decoded data"
                         );
-                    }
+                    },
                 }
-            }
+            },
         }
     }
     (false, had_events)
@@ -635,10 +625,7 @@ impl StandardVideoEncoder for VaapiH264Encoder {
         let coded_height = align_up_u32(height, H264_MB_SIZE);
 
         let cros_config = CrosH264EncoderConfig {
-            resolution: CrosResolution {
-                width: coded_width,
-                height: coded_height,
-            },
+            resolution: CrosResolution { width: coded_width, height: coded_height },
             profile: H264Profile::Main,
             level: H264Level::L4,
             pred_structure: PredictionStructure::LowDelay { limit: 1024 },
@@ -654,10 +641,7 @@ impl StandardVideoEncoder for VaapiH264Encoder {
             display,
             cros_config,
             nv12_fourcc(),
-            CrosResolution {
-                width: coded_width,
-                height: coded_height,
-            },
+            CrosResolution { width: coded_width, height: coded_height },
             config.low_power,
             BlockingMode::Blocking,
         )
@@ -673,15 +657,7 @@ impl StandardVideoEncoder for VaapiH264Encoder {
             "VA-API H.264 encoder created"
         );
 
-        Ok(Self {
-            encoder,
-            gbm,
-            width,
-            height,
-            coded_width,
-            coded_height,
-            frame_count: 0,
-        })
+        Ok(Self { encoder, gbm, width, height, coded_width, coded_height, frame_count: 0 })
     }
 
     fn encode(
@@ -690,25 +666,17 @@ impl StandardVideoEncoder for VaapiH264Encoder {
         metadata: Option<PacketMetadata>,
     ) -> Result<Vec<EncodedPacket>, String> {
         if frame.pixel_format == PixelFormat::Rgba8 {
-            return Err(
-                "VA-API H.264 encoder requires NV12 or I420 input; \
+            return Err("VA-API H.264 encoder requires NV12 or I420 input; \
                  insert a video::pixel_convert node upstream"
-                    .into(),
-            );
+                .into());
         }
 
         // Create a GBM frame and upload the raw video data.
         let mut gbm_frame = Arc::clone(&self.gbm)
             .new_frame(
                 nv12_fourcc(),
-                CrosResolution {
-                    width: self.width,
-                    height: self.height,
-                },
-                CrosResolution {
-                    width: self.coded_width,
-                    height: self.coded_height,
-                },
+                CrosResolution { width: self.width, height: self.height },
+                CrosResolution { width: self.coded_width, height: self.coded_height },
                 GbmUsage::Encode,
             )
             .map_err(|e| format!("failed to allocate GBM frame for encoding: {e}"))?;
@@ -732,16 +700,9 @@ impl StandardVideoEncoder for VaapiH264Encoder {
 
         let frame_layout = FrameLayout {
             format: (nv12_fourcc(), 0), // DRM_FORMAT_MOD_LINEAR
-            size: CrosResolution {
-                width: self.coded_width,
-                height: self.coded_height,
-            },
+            size: CrosResolution { width: self.coded_width, height: self.coded_height },
             planes: vec![
-                PlaneLayout {
-                    buffer_index: 0,
-                    offset: 0,
-                    stride: y_stride,
-                },
+                PlaneLayout { buffer_index: 0, offset: 0, stride: y_stride },
                 PlaneLayout {
                     buffer_index: 0,
                     offset: uv_offset,
@@ -768,7 +729,7 @@ impl StandardVideoEncoder for VaapiH264Encoder {
                         data: Bytes::from(coded.bitstream),
                         metadata: metadata.clone(),
                     });
-                }
+                },
                 Ok(None) => break,
                 Err(e) => return Err(format!("VA-API H.264 encoder poll error: {e}")),
             }
@@ -778,9 +739,7 @@ impl StandardVideoEncoder for VaapiH264Encoder {
     }
 
     fn flush_encoder(&mut self) -> Result<Vec<EncodedPacket>, String> {
-        self.encoder
-            .drain()
-            .map_err(|e| format!("VA-API H.264 encoder drain error: {e}"))?;
+        self.encoder.drain().map_err(|e| format!("VA-API H.264 encoder drain error: {e}"))?;
 
         let mut packets = Vec::new();
         loop {
@@ -788,7 +747,7 @@ impl StandardVideoEncoder for VaapiH264Encoder {
                 Ok(Some(coded)) => {
                     packets
                         .push(EncodedPacket { data: Bytes::from(coded.bitstream), metadata: None });
-                }
+                },
                 Ok(None) => break,
                 Err(e) => return Err(format!("VA-API H.264 encoder poll error: {e}")),
             }
@@ -821,10 +780,7 @@ pub fn register_vaapi_h264_nodes(registry: &mut NodeRegistry) {
         },
         serde_json::to_value(schema_for!(VaapiH264DecoderConfig))
             .expect("VaapiH264DecoderConfig schema should serialize to JSON"),
-        StaticPins {
-            inputs: default_decoder.input_pins(),
-            outputs: default_decoder.output_pins(),
-        },
+        StaticPins { inputs: default_decoder.input_pins(), outputs: default_decoder.output_pins() },
         vec![
             "video".to_string(),
             "codecs".to_string(),
@@ -848,10 +804,7 @@ pub fn register_vaapi_h264_nodes(registry: &mut NodeRegistry) {
         },
         serde_json::to_value(schema_for!(VaapiH264EncoderConfig))
             .expect("VaapiH264EncoderConfig schema should serialize to JSON"),
-        StaticPins {
-            inputs: default_encoder.input_pins(),
-            outputs: default_encoder.output_pins(),
-        },
+        StaticPins { inputs: default_encoder.input_pins(), outputs: default_encoder.output_pins() },
         vec![
             "video".to_string(),
             "codecs".to_string(),
@@ -1054,7 +1007,7 @@ mod tests {
                     assert_eq!(frame.height, 64);
                     assert_eq!(frame.pixel_format, PixelFormat::Nv12);
                     assert!(!frame.data().is_empty(), "Decoded frame should have data");
-                }
+                },
                 _ => panic!("Expected Video packet from VA-API H.264 decoder"),
             }
         }
