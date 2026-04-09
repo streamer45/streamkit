@@ -150,8 +150,8 @@ jobs:
           BINDGEN_EXTRA_CLANG_ARGS: "-I/usr/lib/llvm-18/lib/clang/18/include"
         run: |
           cargo test --locked -p streamkit-nodes --features gpu
-          cargo test --locked -p streamkit-engine --features gpu
           cargo test --locked -p streamkit-nodes --features nvcodec
+          cargo test --locked -p streamkit-engine --features gpu
 
   build:
     name: Build
