@@ -152,6 +152,9 @@ svt_av1 = ["streamkit-nodes/svt_av1"]
 svt_av1_static = ["streamkit-nodes/svt_av1_static"]
 dav1d = ["streamkit-nodes/dav1d"]
 dav1d_static = ["streamkit-nodes/dav1d_static"]
+vulkan_video = ["streamkit-nodes/vulkan_video"]
+vaapi = ["streamkit-nodes/vaapi"]
+nvcodec = ["streamkit-nodes/nvcodec"]
 
 [dev-dependencies]
 tokio-test = "0.4.5"

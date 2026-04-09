@@ -11,6 +11,8 @@ tokio_console_features := "--features tokio-console"
 # Optional extra features to enable in skit builds (e.g. "svt_av1").
 # Usage: just extra_features="--features svt_av1" skit
 #    or: just extra_features="--features svt_av1" build-skit
+# HW codecs: vulkan_video (H.264 Vulkan Video), vaapi (AV1 VA-API), nvcodec (AV1 NVENC/NVDEC)
+#    e.g.: just extra_features="--features vulkan_video,nvcodec" skit
 extra_features := ""
 
 # sherpa-onnx version for Kokoro TTS plugin (must match sherpa-rs version)
