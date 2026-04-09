@@ -19,8 +19,6 @@ client:
   input:
     type: text
     placeholder: "Enter text to synthesize"
-  output:
-    type: none
 nodes:
   http_input:
     kind: streamkit::http_input
