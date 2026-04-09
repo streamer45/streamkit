@@ -209,12 +209,9 @@ impl ProcessorNode for ParamBridgeNode {
             let params = match &self.config.mode {
                 MappingMode::Auto => auto_map(&packet),
                 MappingMode::Template => {
-                    let text = match extract_text(&packet) {
-                        Some(t) => t,
-                        None => {
-                            tracing::debug!(packet_type = %packet_type_label(&packet), "param_bridge template: unsupported packet type, skipping");
-                            continue;
-                        },
+                    let Some(text) = extract_text(&packet) else {
+                        tracing::debug!(packet_type = %packet_type_label(&packet), "param_bridge template: unsupported packet type, skipping");
+                        continue;
                     };
                     self.config.template.as_ref().map(|tmpl| apply_template(tmpl, &text))
                 },
@@ -247,7 +244,32 @@ impl ProcessorNode for ParamBridgeNode {
     }
 }
 
+pub fn register(registry: &mut streamkit_core::NodeRegistry) {
+    use schemars::schema_for;
+
+    let schema = match serde_json::to_value(schema_for!(ParamBridgeConfig)) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to serialize ParamBridgeConfig schema");
+            return;
+        },
+    };
+
+    registry.register_dynamic_with_description(
+        "core::param_bridge",
+        |params| Ok(Box::new(ParamBridgeNode::new(params)?)),
+        schema,
+        vec!["core".to_string(), "control".to_string()],
+        false,
+        "Bridges data-plane packets to control-plane UpdateParams messages. \
+         Accepts any packet type and sends a mapped UpdateParams to a configured \
+         target node, enabling cross-node control within the pipeline graph. \
+         Supports auto, template, and raw mapping modes.",
+    );
+}
+
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use std::sync::Arc;
 
@@ -333,12 +355,9 @@ mod tests {
 
     #[test]
     fn auto_map_returns_none_for_unsupported() {
-        let pkt = Packet::Text("".into());
-        // Text is supported, but let's test an actual unsupported type.
         // Binary is unsupported in auto mode.
-        let binary_pkt =
-            Packet::Binary { data: bytes::Bytes::new(), content_type: None, metadata: None };
-        assert!(auto_map(&binary_pkt).is_none());
+        let pkt = Packet::Binary { data: bytes::Bytes::new(), content_type: None, metadata: None };
+        assert!(auto_map(&pkt).is_none());
     }
 
     // ── apply_template ──────────────────────────────────────────────
@@ -483,28 +502,4 @@ mod tests {
         let params = json!({"target_node": "foo", "unknown_field": true});
         assert!(ParamBridgeNode::new(Some(&params)).is_err());
     }
-}
-
-pub fn register(registry: &mut streamkit_core::NodeRegistry) {
-    use schemars::schema_for;
-
-    let schema = match serde_json::to_value(schema_for!(ParamBridgeConfig)) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to serialize ParamBridgeConfig schema");
-            return;
-        },
-    };
-
-    registry.register_dynamic_with_description(
-        "core::param_bridge",
-        |params| Ok(Box::new(ParamBridgeNode::new(params)?)),
-        schema,
-        vec!["core".to_string(), "control".to_string()],
-        false,
-        "Bridges data-plane packets to control-plane UpdateParams messages. \
-         Accepts any packet type and sends a mapped UpdateParams to a configured \
-         target node, enabling cross-node control within the pipeline graph. \
-         Supports auto, template, and raw mapping modes.",
-    );
 }
