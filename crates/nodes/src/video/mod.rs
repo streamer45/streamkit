@@ -128,7 +128,8 @@ pub mod pixel_convert;
     feature = "av1",
     feature = "svt_av1",
     feature = "openh264",
-    feature = "nvcodec"
+    feature = "nvcodec",
+    feature = "vaapi"
 ))]
 pub(crate) mod encoder_trait;
 
