@@ -209,7 +209,13 @@ impl ProcessorNode for ParamBridgeNode {
             let params = match &self.config.mode {
                 MappingMode::Auto => auto_map(&packet),
                 MappingMode::Template => {
-                    let text = extract_text(&packet).unwrap_or_default();
+                    let text = match extract_text(&packet) {
+                        Some(t) => t,
+                        None => {
+                            tracing::debug!(packet_type = %packet_type_label(&packet), "param_bridge template: unsupported packet type, skipping");
+                            continue;
+                        },
+                    };
                     self.config.template.as_ref().map(|tmpl| apply_template(tmpl, &text))
                 },
                 MappingMode::Raw => raw_payload(&packet),
@@ -238,6 +244,244 @@ impl ProcessorNode for ParamBridgeNode {
         state_helpers::emit_stopped(&context.state_tx, &node_id, "input_closed");
         tracing::info!(node = %node_id, "param_bridge stopped");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use serde_json::json;
+    use streamkit_core::types::{
+        CustomEncoding, CustomPacketData, TranscriptionData, TranscriptionSegment,
+    };
+
+    // ── extract_text ────────────────────────────────────────────────
+
+    #[test]
+    fn extract_text_from_transcription() {
+        let pkt = Packet::Transcription(Arc::new(TranscriptionData {
+            text: "hello world".into(),
+            segments: vec![],
+            language: None,
+            metadata: None,
+        }));
+        assert_eq!(extract_text(&pkt), Some("hello world".into()));
+    }
+
+    #[test]
+    fn extract_text_from_text_packet() {
+        let pkt = Packet::Text("some text".into());
+        assert_eq!(extract_text(&pkt), Some("some text".into()));
+    }
+
+    #[test]
+    fn extract_text_from_empty_transcription() {
+        let pkt = Packet::Transcription(Arc::new(TranscriptionData {
+            text: String::new(),
+            segments: vec![],
+            language: None,
+            metadata: None,
+        }));
+        assert_eq!(extract_text(&pkt), Some(String::new()));
+    }
+
+    #[test]
+    fn extract_text_returns_none_for_custom() {
+        let pkt = Packet::Custom(Arc::new(CustomPacketData {
+            type_id: "test".into(),
+            encoding: CustomEncoding::Json,
+            data: json!({"key": "value"}),
+            metadata: None,
+        }));
+        assert_eq!(extract_text(&pkt), None);
+    }
+
+    // ── auto_map ────────────────────────────────────────────────────
+
+    #[test]
+    fn auto_map_transcription() {
+        let pkt = Packet::Transcription(Arc::new(TranscriptionData {
+            text: "hi".into(),
+            segments: vec![],
+            language: None,
+            metadata: None,
+        }));
+        let result = auto_map(&pkt).unwrap();
+        assert_eq!(result, json!({ "properties": { "text": "hi" } }));
+    }
+
+    #[test]
+    fn auto_map_text() {
+        let pkt = Packet::Text("hello".into());
+        let result = auto_map(&pkt).unwrap();
+        assert_eq!(result, json!({ "properties": { "text": "hello" } }));
+    }
+
+    #[test]
+    fn auto_map_custom_forwards_data() {
+        let data = json!({"props": {"color": "red"}});
+        let pkt = Packet::Custom(Arc::new(CustomPacketData {
+            type_id: "test".into(),
+            encoding: CustomEncoding::Json,
+            data: data.clone(),
+            metadata: None,
+        }));
+        assert_eq!(auto_map(&pkt).unwrap(), data);
+    }
+
+    #[test]
+    fn auto_map_returns_none_for_unsupported() {
+        let pkt = Packet::Text("".into());
+        // Text is supported, but let's test an actual unsupported type.
+        // Binary is unsupported in auto mode.
+        let binary_pkt =
+            Packet::Binary { data: bytes::Bytes::new(), content_type: None, metadata: None };
+        assert!(auto_map(&binary_pkt).is_none());
+    }
+
+    // ── apply_template ──────────────────────────────────────────────
+
+    #[test]
+    fn apply_template_string_replacement() {
+        let tmpl = json!("prefix: {{ text }}");
+        let result = apply_template(&tmpl, "hello");
+        assert_eq!(result, json!("prefix: hello"));
+    }
+
+    #[test]
+    fn apply_template_nested_object() {
+        let tmpl = json!({
+            "properties": {
+                "text": "{{ text }}",
+                "visible": true
+            }
+        });
+        let result = apply_template(&tmpl, "subtitle line");
+        assert_eq!(
+            result,
+            json!({
+                "properties": {
+                    "text": "subtitle line",
+                    "visible": true
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn apply_template_array() {
+        let tmpl = json!(["{{ text }}", "static"]);
+        let result = apply_template(&tmpl, "dynamic");
+        assert_eq!(result, json!(["dynamic", "static"]));
+    }
+
+    #[test]
+    fn apply_template_no_placeholder() {
+        let tmpl = json!({"key": "no placeholder here"});
+        let result = apply_template(&tmpl, "ignored");
+        assert_eq!(result, json!({"key": "no placeholder here"}));
+    }
+
+    #[test]
+    fn apply_template_empty_text() {
+        let tmpl = json!("{{ text }}");
+        let result = apply_template(&tmpl, "");
+        assert_eq!(result, json!(""));
+    }
+
+    #[test]
+    fn apply_template_preserves_non_string_values() {
+        let tmpl = json!({"count": 42, "flag": true, "text": "{{ text }}"});
+        let result = apply_template(&tmpl, "hello");
+        assert_eq!(result, json!({"count": 42, "flag": true, "text": "hello"}));
+    }
+
+    // ── raw_payload ─────────────────────────────────────────────────
+
+    #[test]
+    fn raw_payload_custom() {
+        let data = json!({"properties": {"text": "direct"}});
+        let pkt = Packet::Custom(Arc::new(CustomPacketData {
+            type_id: "test".into(),
+            encoding: CustomEncoding::Json,
+            data: data.clone(),
+            metadata: None,
+        }));
+        assert_eq!(raw_payload(&pkt).unwrap(), data);
+    }
+
+    #[test]
+    fn raw_payload_text() {
+        let pkt = Packet::Text("raw text".into());
+        assert_eq!(raw_payload(&pkt).unwrap(), json!({"text": "raw text"}));
+    }
+
+    #[test]
+    fn raw_payload_transcription() {
+        let pkt = Packet::Transcription(Arc::new(TranscriptionData {
+            text: "hello".into(),
+            segments: vec![TranscriptionSegment {
+                text: "hello".into(),
+                start_time_ms: 0,
+                end_time_ms: 1000,
+                confidence: Some(0.95),
+            }],
+            language: Some("en".into()),
+            metadata: None,
+        }));
+        let result = raw_payload(&pkt).unwrap();
+        assert_eq!(result["text"], "hello");
+        assert_eq!(result["language"], "en");
+    }
+
+    #[test]
+    fn raw_payload_returns_none_for_unsupported() {
+        let pkt = Packet::Binary { data: bytes::Bytes::new(), content_type: None, metadata: None };
+        assert!(raw_payload(&pkt).is_none());
+    }
+
+    // ── ParamBridgeNode::new (config validation) ────────────────────
+
+    #[test]
+    fn config_requires_params() {
+        assert!(ParamBridgeNode::new(None).is_err());
+    }
+
+    #[test]
+    fn config_requires_target_node() {
+        let params = json!({"mode": "auto"});
+        assert!(ParamBridgeNode::new(Some(&params)).is_err());
+    }
+
+    #[test]
+    fn config_template_mode_requires_template() {
+        let params = json!({"target_node": "foo", "mode": "template"});
+        assert!(ParamBridgeNode::new(Some(&params)).is_err());
+    }
+
+    #[test]
+    fn config_template_mode_with_template_ok() {
+        let params = json!({
+            "target_node": "sub",
+            "mode": "template",
+            "template": {"properties": {"text": "{{ text }}"}}
+        });
+        assert!(ParamBridgeNode::new(Some(&params)).is_ok());
+    }
+
+    #[test]
+    fn config_auto_mode_defaults() {
+        let params = json!({"target_node": "target"});
+        let node = ParamBridgeNode::new(Some(&params)).unwrap();
+        assert!(matches!(node.config.mode, MappingMode::Auto));
+    }
+
+    #[test]
+    fn config_rejects_unknown_fields() {
+        let params = json!({"target_node": "foo", "unknown_field": true});
+        assert!(ParamBridgeNode::new(Some(&params)).is_err());
     }
 }
 
