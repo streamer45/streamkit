@@ -18,8 +18,6 @@ client:
   input:
     type: file_upload
     accept: "audio/opus"
-  output:
-    type: none
 nodes:
   http_input:
     kind: streamkit::http_input
