@@ -213,8 +213,7 @@ impl ProcessorNode for NvAv1DecoderNode {
                 // Record decode duration once per input packet (after the
                 // entire decode + drain cycle), matching the AV1 CPU decoder
                 // pattern in av1.rs.
-                decode_duration_histogram
-                    .record(decode_start_time.elapsed().as_secs_f64(), &[]);
+                decode_duration_histogram.record(decode_start_time.elapsed().as_secs_f64(), &[]);
             }
 
             // Flush remaining frames.
