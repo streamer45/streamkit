@@ -143,6 +143,7 @@ jobs:
         run: |
           cargo test --locked -p streamkit-nodes --features gpu
           cargo test --locked -p streamkit-engine --features gpu
+          cargo test --locked -p streamkit-nodes --features nvcodec
 
   build:
     name: Build
