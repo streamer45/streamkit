@@ -818,6 +818,7 @@ mod tests {
             hw_accel: HwAccelMode::ForceCpu,
             cuda_device: None,
             bitrate: 2_000_000,
+            framerate: 30,
             keyframe_interval: None,
         });
         assert!(result.is_err(), "ForceCpu should be rejected by NV encoder");
