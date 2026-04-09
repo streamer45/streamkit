@@ -208,10 +208,11 @@ impl ProcessorNode for VulkanVideoH264DecoderNode {
                 let pts = metadata.as_ref().and_then(|m| m.timestamp_us);
 
                 let decode_start = Instant::now();
-                let decoded = decoder.decode(vk_video::EncodedInputChunk { data: &data, pts });
+                let decode_result =
+                    decoder.decode(vk_video::EncodedInputChunk { data: &data, pts });
                 decode_duration_histogram.record(decode_start.elapsed().as_secs_f64(), &[]);
 
-                match decoded {
+                match decode_result {
                     Ok(frames) => {
                         for output_frame in frames {
                             match raw_frame_to_video_frame(
@@ -514,7 +515,7 @@ impl ProcessorNode for VulkanVideoH264EncoderNode {
                         dims.1,
                     );
 
-                    let dev = match init_vulkan_encode_device(&device) {
+                    let dev = match init_vulkan_encode_device(device.as_ref()) {
                         Ok(d) => d,
                         Err(err) => {
                             let _ = result_tx.blocking_send(Err(err));
@@ -522,8 +523,9 @@ impl ProcessorNode for VulkanVideoH264EncoderNode {
                         },
                     };
 
-                    let max_bitrate =
-                        u64::from(config.max_bitrate.unwrap_or(config.bitrate.saturating_mul(4)));
+                    let max_bitrate = u64::from(
+                        config.max_bitrate.unwrap_or_else(|| config.bitrate.saturating_mul(4)),
+                    );
 
                     let output_params = match dev.encoder_output_parameters_high_quality(
                         vk_video::parameters::RateControl::VariableBitrate {
@@ -567,7 +569,10 @@ impl ProcessorNode for VulkanVideoH264EncoderNode {
                     current_dimensions = Some(dims);
                 }
 
-                let enc = encoder.as_mut().expect("encoder should be initialised");
+                let Some(enc) = encoder.as_mut() else {
+                    let _ = result_tx.blocking_send(Err("encoder not initialised".to_string()));
+                    return;
+                };
 
                 // Convert I420 → NV12 if necessary.
                 let nv12_data = match frame.pixel_format {
@@ -698,7 +703,7 @@ struct EncoderOutput {
 
 /// Initialise (or reuse) the Vulkan device for encoding.
 fn init_vulkan_encode_device(
-    existing: &Option<Arc<vk_video::VulkanDevice>>,
+    existing: Option<&Arc<vk_video::VulkanDevice>>,
 ) -> Result<Arc<vk_video::VulkanDevice>, String> {
     if let Some(dev) = existing {
         return Ok(Arc::clone(dev));
@@ -812,4 +817,629 @@ pub fn register_vulkan_video_nodes(registry: &mut NodeRegistry) {
          bitrate. Requires a GPU with Vulkan Video encode support. Use \
          video::openh264::encoder for CPU-only fallback.",
     );
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_macros)]
+mod tests {
+    use super::*;
+    use crate::test_utils::{
+        assert_state_initializing, assert_state_running, assert_state_stopped, create_test_context,
+        create_test_video_frame,
+    };
+    use std::collections::HashMap;
+    use streamkit_core::types::Packet;
+    use tokio::sync::mpsc;
+
+    // ── Vulkan Video availability helper ────────────────────────────────
+    //
+    // Integration tests that require a Vulkan Video capable GPU use this
+    // helper.  On machines without the right hardware/drivers the tests
+    // print a message and pass (skip) instead of failing.
+
+    /// Try to create a Vulkan Video device.  Returns `true` if both encode
+    /// and decode are available.
+    fn vulkan_video_available() -> bool {
+        let Ok(instance) = vk_video::VulkanInstance::new() else {
+            return false;
+        };
+        let Ok(adapter) =
+            instance.create_adapter(&vk_video::parameters::VulkanAdapterDescriptor::default())
+        else {
+            return false;
+        };
+        let Ok(device) =
+            adapter.create_device(&vk_video::parameters::VulkanDeviceDescriptor::default())
+        else {
+            return false;
+        };
+        device.supports_decoding() && device.supports_encoding()
+    }
+
+    /// Like [`vulkan_video_available`] but only checks for decode support.
+    fn vulkan_decode_available() -> bool {
+        let Ok(instance) = vk_video::VulkanInstance::new() else {
+            return false;
+        };
+        let Ok(adapter) =
+            instance.create_adapter(&vk_video::parameters::VulkanAdapterDescriptor::default())
+        else {
+            return false;
+        };
+        let Ok(device) =
+            adapter.create_device(&vk_video::parameters::VulkanDeviceDescriptor::default())
+        else {
+            return false;
+        };
+        device.supports_decoding()
+    }
+
+    /// Like [`vulkan_video_available`] but only checks for encode support.
+    fn vulkan_encode_available() -> bool {
+        let Ok(instance) = vk_video::VulkanInstance::new() else {
+            return false;
+        };
+        let Ok(adapter) =
+            instance.create_adapter(&vk_video::parameters::VulkanAdapterDescriptor::default())
+        else {
+            return false;
+        };
+        let Ok(device) =
+            adapter.create_device(&vk_video::parameters::VulkanDeviceDescriptor::default())
+        else {
+            return false;
+        };
+        device.supports_encoding()
+    }
+
+    macro_rules! skip_without_vulkan_encode {
+        () => {
+            if !vulkan_encode_available() {
+                eprintln!("SKIPPED: no Vulkan Video encode support on this machine");
+                return;
+            }
+        };
+    }
+
+    macro_rules! skip_without_vulkan_decode {
+        () => {
+            if !vulkan_decode_available() {
+                eprintln!("SKIPPED: no Vulkan Video decode support on this machine");
+                return;
+            }
+        };
+    }
+
+    macro_rules! skip_without_vulkan_video {
+        () => {
+            if !vulkan_video_available() {
+                eprintln!("SKIPPED: no Vulkan Video encode+decode support on this machine");
+                return;
+            }
+        };
+    }
+
+    // ── Config validation tests (no GPU needed) ─────────────────────────
+
+    #[test]
+    fn test_decoder_rejects_force_cpu() {
+        let result = VulkanVideoH264DecoderNode::new(VulkanVideoH264DecoderConfig {
+            hw_accel: HwAccelMode::ForceCpu,
+        });
+        assert!(result.is_err(), "ForceCpu should be rejected for HW-only decoder");
+    }
+
+    #[test]
+    fn test_decoder_accepts_auto() {
+        let result = VulkanVideoH264DecoderNode::new(VulkanVideoH264DecoderConfig {
+            hw_accel: HwAccelMode::Auto,
+        });
+        assert!(result.is_ok(), "Auto should be accepted");
+    }
+
+    #[test]
+    fn test_decoder_accepts_force_hw() {
+        let result = VulkanVideoH264DecoderNode::new(VulkanVideoH264DecoderConfig {
+            hw_accel: HwAccelMode::ForceHw,
+        });
+        assert!(result.is_ok(), "ForceHw should be accepted");
+    }
+
+    #[test]
+    fn test_encoder_rejects_force_cpu() {
+        let result = VulkanVideoH264EncoderNode::new(VulkanVideoH264EncoderConfig {
+            hw_accel: HwAccelMode::ForceCpu,
+            ..Default::default()
+        });
+        assert!(result.is_err(), "ForceCpu should be rejected for HW-only encoder");
+    }
+
+    #[test]
+    fn test_encoder_rejects_zero_bitrate() {
+        let result = VulkanVideoH264EncoderNode::new(VulkanVideoH264EncoderConfig {
+            bitrate: 0,
+            ..Default::default()
+        });
+        assert!(result.is_err(), "bitrate=0 should be rejected");
+    }
+
+    #[test]
+    fn test_encoder_rejects_zero_framerate() {
+        let result = VulkanVideoH264EncoderNode::new(VulkanVideoH264EncoderConfig {
+            framerate: 0,
+            ..Default::default()
+        });
+        assert!(result.is_err(), "framerate=0 should be rejected");
+    }
+
+    #[test]
+    fn test_encoder_accepts_valid_config() {
+        let result = VulkanVideoH264EncoderNode::new(VulkanVideoH264EncoderConfig {
+            hw_accel: HwAccelMode::Auto,
+            bitrate: 2_000_000,
+            max_bitrate: None,
+            framerate: 30,
+        });
+        assert!(result.is_ok(), "valid config should be accepted");
+    }
+
+    #[test]
+    fn test_encoder_accepts_custom_max_bitrate() {
+        let result = VulkanVideoH264EncoderNode::new(VulkanVideoH264EncoderConfig {
+            hw_accel: HwAccelMode::Auto,
+            bitrate: 2_000_000,
+            max_bitrate: Some(8_000_000),
+            framerate: 60,
+        });
+        assert!(result.is_ok(), "custom max_bitrate config should be accepted");
+    }
+
+    // ── Pin configuration tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_decoder_pin_config() {
+        let node =
+            VulkanVideoH264DecoderNode::new(VulkanVideoH264DecoderConfig::default()).unwrap();
+
+        let inputs = node.input_pins();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].name, "in");
+        assert!(matches!(inputs[0].cardinality, PinCardinality::One));
+        assert!(matches!(
+            &inputs[0].accepts_types[0],
+            PacketType::EncodedVideo(fmt) if fmt.codec == VideoCodec::H264
+        ));
+
+        let outputs = node.output_pins();
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].name, "out");
+        assert!(matches!(outputs[0].cardinality, PinCardinality::Broadcast));
+        assert!(matches!(
+            &outputs[0].produces_type,
+            PacketType::RawVideo(fmt) if fmt.pixel_format == PixelFormat::Nv12
+        ));
+    }
+
+    #[test]
+    fn test_encoder_pin_config() {
+        let node =
+            VulkanVideoH264EncoderNode::new(VulkanVideoH264EncoderConfig::default()).unwrap();
+
+        let inputs = node.input_pins();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].name, "in");
+        assert_eq!(inputs[0].accepts_types.len(), 2, "should accept NV12 and I420");
+
+        let outputs = node.output_pins();
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].name, "out");
+        assert!(matches!(
+            &outputs[0].produces_type,
+            PacketType::EncodedVideo(fmt) if fmt.codec == VideoCodec::H264
+        ));
+    }
+
+    #[test]
+    fn test_encoder_content_type() {
+        let node =
+            VulkanVideoH264EncoderNode::new(VulkanVideoH264EncoderConfig::default()).unwrap();
+        assert_eq!(
+            node.content_type().as_deref(),
+            Some(H264_CONTENT_TYPE),
+            "Encoder should report video/h264 content type"
+        );
+    }
+
+    // ── Integration tests (require Vulkan Video GPU) ────────────────────
+
+    #[tokio::test]
+    async fn test_vulkan_video_encode_nv12() {
+        skip_without_vulkan_encode!();
+
+        let (input_tx, input_rx) = mpsc::channel(10);
+        let mut inputs = HashMap::new();
+        inputs.insert("in".to_string(), input_rx);
+
+        let (context, sender, mut state_rx) = create_test_context(inputs, 10);
+        let encoder =
+            VulkanVideoH264EncoderNode::new(VulkanVideoH264EncoderConfig::default()).unwrap();
+
+        let handle = tokio::spawn(async move { Box::new(encoder).run(context).await });
+
+        assert_state_initializing(&mut state_rx).await;
+        assert_state_running(&mut state_rx).await;
+
+        for i in 0_u64..5 {
+            let mut frame = create_test_video_frame(64, 64, PixelFormat::Nv12, 16);
+            frame.metadata = Some(PacketMetadata {
+                timestamp_us: Some(33_333 * i),
+                duration_us: Some(33_333),
+                sequence: Some(i),
+                keyframe: Some(i == 0),
+            });
+            input_tx.send(Packet::Video(frame)).await.unwrap();
+        }
+        drop(input_tx);
+
+        assert_state_stopped(&mut state_rx).await;
+        handle.await.unwrap().unwrap();
+
+        let packets = sender.get_packets_for_pin("out").await;
+        assert!(!packets.is_empty(), "Vulkan Video encoder should produce packets");
+
+        for (i, packet) in packets.iter().enumerate() {
+            match packet {
+                Packet::Binary { data, content_type, metadata, .. } => {
+                    assert!(!data.is_empty(), "Encoded packet {i} should have data");
+                    assert_eq!(
+                        content_type.as_deref(),
+                        Some(H264_CONTENT_TYPE),
+                        "Content type should be video/h264"
+                    );
+                    assert!(metadata.is_some(), "Encoded packet {i} should have metadata");
+                    let meta = metadata.as_ref().unwrap();
+                    assert!(
+                        meta.keyframe.is_some(),
+                        "Encoded packet {i} should have keyframe flag"
+                    );
+                },
+                _ => panic!("Expected Binary packet from Vulkan Video encoder, got {packet:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_vulkan_video_encode_i420() {
+        skip_without_vulkan_encode!();
+
+        let (input_tx, input_rx) = mpsc::channel(10);
+        let mut inputs = HashMap::new();
+        inputs.insert("in".to_string(), input_rx);
+
+        let (context, sender, mut state_rx) = create_test_context(inputs, 10);
+        let encoder =
+            VulkanVideoH264EncoderNode::new(VulkanVideoH264EncoderConfig::default()).unwrap();
+
+        let handle = tokio::spawn(async move { Box::new(encoder).run(context).await });
+
+        assert_state_initializing(&mut state_rx).await;
+        assert_state_running(&mut state_rx).await;
+
+        for i in 0_u64..3 {
+            let mut frame = create_test_video_frame(64, 64, PixelFormat::I420, 16);
+            frame.metadata = Some(PacketMetadata {
+                timestamp_us: Some(33_333 * i),
+                duration_us: Some(33_333),
+                sequence: Some(i),
+                keyframe: Some(true),
+            });
+            input_tx.send(Packet::Video(frame)).await.unwrap();
+        }
+        drop(input_tx);
+
+        assert_state_stopped(&mut state_rx).await;
+        handle.await.unwrap().unwrap();
+
+        let packets = sender.get_packets_for_pin("out").await;
+        assert!(!packets.is_empty(), "Vulkan Video encoder should produce packets from I420 input");
+    }
+
+    #[tokio::test]
+    async fn test_vulkan_video_encode_metadata_without_input_metadata() {
+        skip_without_vulkan_encode!();
+
+        let (input_tx, input_rx) = mpsc::channel(10);
+        let mut inputs = HashMap::new();
+        inputs.insert("in".to_string(), input_rx);
+
+        let (context, sender, mut state_rx) = create_test_context(inputs, 10);
+        let encoder =
+            VulkanVideoH264EncoderNode::new(VulkanVideoH264EncoderConfig::default()).unwrap();
+
+        let handle = tokio::spawn(async move { Box::new(encoder).run(context).await });
+
+        assert_state_initializing(&mut state_rx).await;
+        assert_state_running(&mut state_rx).await;
+
+        // Send frames with NO metadata to verify keyframe flag is still propagated.
+        for _ in 0..3 {
+            let frame = create_test_video_frame(64, 64, PixelFormat::Nv12, 16);
+            // frame.metadata is None by default from create_test_video_frame
+            input_tx.send(Packet::Video(frame)).await.unwrap();
+        }
+        drop(input_tx);
+
+        assert_state_stopped(&mut state_rx).await;
+        handle.await.unwrap().unwrap();
+
+        let packets = sender.get_packets_for_pin("out").await;
+        assert!(!packets.is_empty(), "Encoder should produce packets even without input metadata");
+
+        for (i, packet) in packets.iter().enumerate() {
+            match packet {
+                Packet::Binary { metadata, .. } => {
+                    assert!(
+                        metadata.is_some(),
+                        "Packet {i} should have metadata even when input had None"
+                    );
+                    let meta = metadata.as_ref().unwrap();
+                    assert!(
+                        meta.keyframe.is_some(),
+                        "Packet {i} should always have keyframe flag set"
+                    );
+                },
+                _ => panic!("Expected Binary packet"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_vulkan_video_roundtrip_encode_decode() {
+        skip_without_vulkan_video!();
+
+        // ── Step 1: Encode NV12 frames to H.264 ─────────────────────────
+        let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
+        let mut enc_inputs = HashMap::new();
+        enc_inputs.insert("in".to_string(), enc_input_rx);
+
+        let (enc_context, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 10);
+        let encoder =
+            VulkanVideoH264EncoderNode::new(VulkanVideoH264EncoderConfig::default()).unwrap();
+
+        let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
+
+        assert_state_initializing(&mut enc_state_rx).await;
+        assert_state_running(&mut enc_state_rx).await;
+
+        let frame_count = 5_u64;
+        let width = 64_u32;
+        let height = 64_u32;
+
+        for i in 0..frame_count {
+            let mut frame = create_test_video_frame(width, height, PixelFormat::Nv12, 16);
+            frame.metadata = Some(PacketMetadata {
+                timestamp_us: Some(33_333 * i),
+                duration_us: Some(33_333),
+                sequence: Some(i),
+                keyframe: Some(i == 0),
+            });
+            enc_input_tx.send(Packet::Video(frame)).await.unwrap();
+        }
+        drop(enc_input_tx);
+
+        assert_state_stopped(&mut enc_state_rx).await;
+        enc_handle.await.unwrap().unwrap();
+
+        let encoded_packets = enc_sender.get_packets_for_pin("out").await;
+        assert!(!encoded_packets.is_empty(), "Encoder should produce packets");
+
+        // ── Step 2: Decode the H.264 packets back to NV12 ───────────────
+        let (dec_input_tx, dec_input_rx) = mpsc::channel(10);
+        let mut dec_inputs = HashMap::new();
+        dec_inputs.insert("in".to_string(), dec_input_rx);
+
+        let (dec_context, dec_sender, mut dec_state_rx) = create_test_context(dec_inputs, 10);
+        let decoder =
+            VulkanVideoH264DecoderNode::new(VulkanVideoH264DecoderConfig::default()).unwrap();
+
+        let dec_handle = tokio::spawn(async move { Box::new(decoder).run(dec_context).await });
+
+        assert_state_initializing(&mut dec_state_rx).await;
+        assert_state_running(&mut dec_state_rx).await;
+
+        // Feed encoded packets to the decoder.
+        for packet in encoded_packets {
+            dec_input_tx.send(packet).await.unwrap();
+        }
+        drop(dec_input_tx);
+
+        assert_state_stopped(&mut dec_state_rx).await;
+        dec_handle.await.unwrap().unwrap();
+
+        let decoded_packets = dec_sender.get_packets_for_pin("out").await;
+        assert!(!decoded_packets.is_empty(), "Decoder should produce frames from roundtrip data");
+
+        // Verify decoded frames are NV12 with the right dimensions.
+        for (i, packet) in decoded_packets.iter().enumerate() {
+            match packet {
+                Packet::Video(frame) => {
+                    assert_eq!(
+                        frame.pixel_format,
+                        PixelFormat::Nv12,
+                        "Decoded frame {i} should be NV12"
+                    );
+                    assert_eq!(frame.width, width, "Decoded frame {i} width mismatch");
+                    assert_eq!(frame.height, height, "Decoded frame {i} height mismatch");
+                    assert!(
+                        !frame.data.as_slice().is_empty(),
+                        "Decoded frame {i} should have data"
+                    );
+                },
+                _ => panic!("Expected Video packet from decoder, got {packet:?}"),
+            }
+        }
+    }
+
+    // ── I420→NV12 conversion unit test ──────────────────────────────────
+
+    #[test]
+    fn test_i420_to_nv12_conversion() {
+        let width = 4_u32;
+        let height = 4_u32;
+        let frame = create_test_video_frame(width, height, PixelFormat::I420, 0);
+
+        // Manually fill planes with known values for verification.
+        let layout = frame.layout();
+        let planes = layout.planes();
+
+        // Build a frame with identifiable plane content.
+        let mut data = vec![0u8; layout.total_bytes()];
+        // Y plane: fill with 100
+        for row in 0..height as usize {
+            for col in 0..width as usize {
+                data[planes[0].offset + row * planes[0].stride + col] = 100;
+            }
+        }
+        // U plane: fill with 50
+        let chroma_w = width as usize / 2;
+        let chroma_h = height as usize / 2;
+        for row in 0..chroma_h {
+            for col in 0..chroma_w {
+                data[planes[1].offset + row * planes[1].stride + col] = 50;
+            }
+        }
+        // V plane: fill with 200
+        for row in 0..chroma_h {
+            for col in 0..chroma_w {
+                data[planes[2].offset + row * planes[2].stride + col] = 200;
+            }
+        }
+
+        let test_frame = VideoFrame::new(width, height, PixelFormat::I420, data)
+            .expect("test frame should be valid");
+
+        let nv12 = i420_to_nv12(&test_frame);
+
+        let y_size = (width * height) as usize;
+        let uv_size = width as usize * (height as usize / 2);
+        assert_eq!(nv12.len(), y_size + uv_size, "NV12 buffer size mismatch");
+
+        // Verify Y plane was copied correctly.
+        for (i, &byte) in nv12.iter().enumerate().take(y_size) {
+            assert_eq!(byte, 100, "Y plane byte {i} mismatch");
+        }
+
+        // Verify UV plane has interleaved U and V values.
+        for row in 0..chroma_h {
+            for col in 0..chroma_w {
+                let uv_offset = y_size + row * width as usize + col * 2;
+                assert_eq!(nv12[uv_offset], 50, "U value at row={row} col={col} mismatch");
+                assert_eq!(nv12[uv_offset + 1], 200, "V value at row={row} col={col} mismatch");
+            }
+        }
+    }
+
+    // ── Standalone decode test (requires encode+decode to produce input) ─
+
+    #[tokio::test]
+    async fn test_vulkan_video_decode_produces_frames() {
+        // We need both encode (to generate H.264 data) and decode capabilities.
+        // Use skip_without_vulkan_decode for the decode-specific skip message,
+        // but we also need encode to produce test data.
+        skip_without_vulkan_decode!();
+        skip_without_vulkan_encode!();
+
+        // First encode a few frames to get valid H.264 data.
+        let (enc_tx, enc_rx) = mpsc::channel(10);
+        let mut enc_inputs = HashMap::new();
+        enc_inputs.insert("in".to_string(), enc_rx);
+
+        let (enc_ctx, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 10);
+        let encoder =
+            VulkanVideoH264EncoderNode::new(VulkanVideoH264EncoderConfig::default()).unwrap();
+        let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_ctx).await });
+
+        assert_state_initializing(&mut enc_state_rx).await;
+        assert_state_running(&mut enc_state_rx).await;
+
+        for i in 0_u64..5 {
+            let mut frame = create_test_video_frame(64, 64, PixelFormat::Nv12, 16);
+            frame.metadata = Some(PacketMetadata {
+                timestamp_us: Some(33_333 * i),
+                duration_us: Some(33_333),
+                sequence: Some(i),
+                keyframe: Some(i == 0),
+            });
+            enc_tx.send(Packet::Video(frame)).await.unwrap();
+        }
+        drop(enc_tx);
+
+        assert_state_stopped(&mut enc_state_rx).await;
+        enc_handle.await.unwrap().unwrap();
+
+        let encoded_packets = enc_sender.get_packets_for_pin("out").await;
+        assert!(!encoded_packets.is_empty(), "Need encoded data to test decoder");
+
+        // Now decode.
+        let (dec_tx, dec_rx) = mpsc::channel(10);
+        let mut dec_inputs = HashMap::new();
+        dec_inputs.insert("in".to_string(), dec_rx);
+
+        let (dec_ctx, dec_sender, mut dec_state_rx) = create_test_context(dec_inputs, 10);
+        let decoder =
+            VulkanVideoH264DecoderNode::new(VulkanVideoH264DecoderConfig::default()).unwrap();
+        let dec_handle = tokio::spawn(async move { Box::new(decoder).run(dec_ctx).await });
+
+        assert_state_initializing(&mut dec_state_rx).await;
+        assert_state_running(&mut dec_state_rx).await;
+
+        for packet in encoded_packets {
+            dec_tx.send(packet).await.unwrap();
+        }
+        drop(dec_tx);
+
+        assert_state_stopped(&mut dec_state_rx).await;
+        dec_handle.await.unwrap().unwrap();
+
+        let decoded_packets = dec_sender.get_packets_for_pin("out").await;
+        assert!(!decoded_packets.is_empty(), "Decoder should produce NV12 frames");
+
+        for (i, packet) in decoded_packets.iter().enumerate() {
+            match packet {
+                Packet::Video(frame) => {
+                    assert_eq!(
+                        frame.pixel_format,
+                        PixelFormat::Nv12,
+                        "Decoded frame {i} should be NV12"
+                    );
+                    assert_eq!(frame.width, 64, "Decoded frame {i} width mismatch");
+                    assert_eq!(frame.height, 64, "Decoded frame {i} height mismatch");
+                },
+                _ => panic!("Expected Video packet from decoder"),
+            }
+        }
+    }
+
+    // ── Registration test ───────────────────────────────────────────────
+
+    #[test]
+    fn test_node_registration() {
+        let mut registry = NodeRegistry::new();
+        register_vulkan_video_nodes(&mut registry);
+
+        // Verify both nodes are registered by trying to create them with
+        // default config.
+        assert!(
+            registry.create_node("video::vulkan_video::h264_decoder", None).is_ok(),
+            "decoder should be registered"
+        );
+        assert!(
+            registry.create_node("video::vulkan_video::h264_encoder", None).is_ok(),
+            "encoder should be registered"
+        );
+    }
 }
