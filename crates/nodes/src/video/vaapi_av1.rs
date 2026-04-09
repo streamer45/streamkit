@@ -178,7 +178,9 @@ fn read_nv12_from_mapping(
     let h = height as usize;
     let y_size = w * h;
     let uv_h = h.div_ceil(2);
-    let uv_size = w * uv_h;
+    // NV12 UV row width: interleaved U/V pairs, matching VideoLayout::packed.
+    let chroma_w = w.div_ceil(2) * 2;
+    let uv_size = chroma_w * uv_h;
     let mut data = vec![0u8; y_size + uv_size];
 
     // Y plane.
@@ -200,16 +202,17 @@ fn read_nv12_from_mapping(
 
     // UV plane (interleaved).
     if planes.len() > 1 {
-        let uv_stride = plane_pitches.get(1).copied().unwrap_or(w);
-        if uv_stride == w {
+        let uv_stride = plane_pitches.get(1).copied().unwrap_or(chroma_w);
+        if uv_stride == chroma_w {
             let copy_len = uv_size.min(planes[1].len());
             data[y_size..y_size + copy_len].copy_from_slice(&planes[1][..copy_len]);
         } else {
             for row in 0..uv_h {
-                let dst_off = y_size + row * w;
+                let dst_off = y_size + row * chroma_w;
                 let src_off = row * uv_stride;
-                if src_off + w <= planes[1].len() && dst_off + w <= data.len() {
-                    data[dst_off..dst_off + w].copy_from_slice(&planes[1][src_off..src_off + w]);
+                if src_off + chroma_w <= planes[1].len() && dst_off + chroma_w <= data.len() {
+                    data[dst_off..dst_off + chroma_w]
+                        .copy_from_slice(&planes[1][src_off..src_off + chroma_w]);
                 }
             }
         }
@@ -240,7 +243,10 @@ fn write_nv12_to_mapping(
     match frame.pixel_format {
         PixelFormat::Nv12 => {
             let y_size = w * h;
-            let uv_size = w * h.div_ceil(2);
+            // NV12 UV row width: interleaved U/V pairs, matching VideoLayout::packed.
+            let chroma_w = w.div_ceil(2) * 2;
+            let uv_h = h.div_ceil(2);
+            let uv_size = chroma_w * uv_h;
 
             // Y plane.
             let y_stride = plane_pitches.first().copied().unwrap_or(w);
@@ -262,19 +268,19 @@ fn write_nv12_to_mapping(
 
             // UV plane.
             if planes.len() > 1 {
-                let uv_stride = plane_pitches.get(1).copied().unwrap_or(w);
+                let uv_stride = plane_pitches.get(1).copied().unwrap_or(chroma_w);
                 let mut uv_plane = planes[1].borrow_mut();
                 let src_uv = &src[y_size..];
-                if uv_stride == w {
+                if uv_stride == chroma_w {
                     let n = uv_size.min(uv_plane.len()).min(src_uv.len());
                     uv_plane[..n].copy_from_slice(&src_uv[..n]);
                 } else {
-                    let uv_h = h.div_ceil(2);
                     for row in 0..uv_h {
-                        let s = row * w;
+                        let s = row * chroma_w;
                         let d = row * uv_stride;
-                        if s + w <= src_uv.len() && d + w <= uv_plane.len() {
-                            uv_plane[d..d + w].copy_from_slice(&src_uv[s..s + w]);
+                        if s + chroma_w <= src_uv.len() && d + chroma_w <= uv_plane.len() {
+                            uv_plane[d..d + chroma_w]
+                                .copy_from_slice(&src_uv[s..s + chroma_w]);
                         }
                     }
                 }
@@ -1082,4 +1088,688 @@ pub fn register_vaapi_av1_nodes(registry: &mut NodeRegistry) {
          hardware acceleration. Uses constant-quality (CQP) rate control. Requires a \
          VA-API capable GPU with AV1 encode support (Intel Arc+, AMD).",
     );
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_macros)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    // -----------------------------------------------------------------------
+    // Mock mapping types for unit-testing read/write helpers without a GPU.
+    // -----------------------------------------------------------------------
+
+    struct MockReadMapping<'a> {
+        planes: Vec<&'a [u8]>,
+    }
+
+    impl<'a> ReadMapping<'a> for MockReadMapping<'a> {
+        fn get(&self) -> Vec<&[u8]> {
+            self.planes.clone()
+        }
+    }
+
+    struct MockWriteMapping<'a> {
+        planes: Vec<RefCell<&'a mut [u8]>>,
+    }
+
+    impl<'a> WriteMapping<'a> for MockWriteMapping<'a> {
+        fn get(&self) -> Vec<RefCell<&'a mut [u8]>> {
+            // Re-borrow each plane to return fresh RefCells.
+            // SAFETY: this is only used in single-threaded tests where
+            // the returned RefCells do not outlive `self`.
+            self.planes
+                .iter()
+                .map(|cell| {
+                    let ptr = cell.borrow_mut().as_mut_ptr();
+                    let len = cell.borrow().len();
+                    RefCell::new(unsafe { std::slice::from_raw_parts_mut(ptr, len) })
+                })
+                .collect()
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // align_up_u32
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_align_up_u32_already_aligned() {
+        assert_eq!(align_up_u32(64, 64), 64);
+        assert_eq!(align_up_u32(128, 64), 128);
+    }
+
+    #[test]
+    fn test_align_up_u32_needs_alignment() {
+        assert_eq!(align_up_u32(65, 64), 128);
+        assert_eq!(align_up_u32(1, 64), 64);
+        assert_eq!(align_up_u32(100, 64), 128);
+    }
+
+    #[test]
+    fn test_align_up_u32_alignment_one() {
+        assert_eq!(align_up_u32(42, 1), 42);
+    }
+
+    // -----------------------------------------------------------------------
+    // read_nv12_from_mapping — buffer size and content
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_read_nv12_even_dimensions() {
+        let w: u32 = 64;
+        let h: u32 = 48;
+        let y_size = (w * h) as usize;
+        let uv_h = h as usize / 2;
+        let chroma_w = w as usize; // even width: chroma_w == w
+        let uv_size = chroma_w * uv_h;
+
+        let y_plane = vec![0xAA_u8; y_size];
+        let uv_plane = vec![0x80_u8; uv_size];
+        let mapping = MockReadMapping { planes: vec![&y_plane, &uv_plane] };
+        let pitches = [w as usize, chroma_w];
+
+        let data = read_nv12_from_mapping(&mapping, w, h, &pitches);
+
+        let layout = streamkit_core::types::VideoLayout::packed(w, h, PixelFormat::Nv12);
+        assert_eq!(
+            data.len(),
+            layout.total_bytes(),
+            "output buffer size must match VideoLayout::packed"
+        );
+        assert!(data[..y_size].iter().all(|&b| b == 0xAA), "Y plane data mismatch");
+        assert!(data[y_size..].iter().all(|&b| b == 0x80), "UV plane data mismatch");
+    }
+
+    #[test]
+    fn test_read_nv12_odd_width() {
+        // Odd width exercises the chroma_w = (w+1)/2*2 formula.
+        let w: u32 = 641;
+        let h: u32 = 480;
+        let y_size = (w * h) as usize;
+        let chroma_w = (w as usize + 1) / 2 * 2; // 642
+        let uv_h = h as usize / 2;
+        let uv_size = chroma_w * uv_h;
+
+        let y_plane = vec![0x10_u8; y_size];
+        let uv_plane = vec![0x80_u8; uv_size];
+        let mapping = MockReadMapping { planes: vec![&y_plane, &uv_plane] };
+        let pitches = [w as usize, chroma_w];
+
+        let data = read_nv12_from_mapping(&mapping, w, h, &pitches);
+
+        let layout = streamkit_core::types::VideoLayout::packed(w, h, PixelFormat::Nv12);
+        assert_eq!(
+            data.len(),
+            layout.total_bytes(),
+            "odd-width output buffer must match VideoLayout::packed (chroma_w={chroma_w})"
+        );
+    }
+
+    #[test]
+    fn test_read_nv12_odd_height() {
+        let w: u32 = 64;
+        let h: u32 = 49; // odd height
+        let y_size = (w * h) as usize;
+        let chroma_w = w as usize;
+        let uv_h = (h as usize + 1) / 2; // 25
+        let uv_size = chroma_w * uv_h;
+
+        let y_plane = vec![0x10_u8; y_size];
+        let uv_plane = vec![0x80_u8; uv_size];
+        let mapping = MockReadMapping { planes: vec![&y_plane, &uv_plane] };
+        let pitches = [w as usize, chroma_w];
+
+        let data = read_nv12_from_mapping(&mapping, w, h, &pitches);
+
+        let layout = streamkit_core::types::VideoLayout::packed(w, h, PixelFormat::Nv12);
+        assert_eq!(
+            data.len(),
+            layout.total_bytes(),
+            "odd-height output buffer must match VideoLayout::packed"
+        );
+    }
+
+    #[test]
+    fn test_read_nv12_with_stride() {
+        // Simulate a GBM surface with stride > width (e.g. 128-byte aligned).
+        let w: u32 = 100;
+        let h: u32 = 4;
+        let y_stride = 128_usize; // padded stride
+        let uv_stride = 128_usize;
+        let uv_h = 2_usize;
+        let chroma_w = (w as usize + 1) / 2 * 2; // 100
+
+        // Build Y plane with stride padding.
+        let mut y_plane = vec![0u8; y_stride * h as usize];
+        for row in 0..h as usize {
+            for col in 0..w as usize {
+                y_plane[row * y_stride + col] = 0xAA;
+            }
+        }
+
+        // Build UV plane with stride padding.
+        let mut uv_plane = vec![0u8; uv_stride * uv_h];
+        for row in 0..uv_h {
+            for col in 0..chroma_w {
+                uv_plane[row * uv_stride + col] = 0x80;
+            }
+        }
+
+        let mapping = MockReadMapping { planes: vec![&y_plane, &uv_plane] };
+        let pitches = [y_stride, uv_stride];
+
+        let data = read_nv12_from_mapping(&mapping, w, h, &pitches);
+
+        let layout = streamkit_core::types::VideoLayout::packed(w, h, PixelFormat::Nv12);
+        assert_eq!(data.len(), layout.total_bytes());
+
+        // Verify Y data is correctly de-strided.
+        let y_size = w as usize * h as usize;
+        assert!(data[..y_size].iter().all(|&b| b == 0xAA));
+        // Verify UV data is correctly de-strided.
+        assert!(data[y_size..].iter().all(|&b| b == 0x80));
+    }
+
+    // -----------------------------------------------------------------------
+    // read → VideoFrame::with_metadata roundtrip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_read_nv12_produces_valid_video_frame() {
+        // The key invariant: read_nv12_from_mapping output must be accepted by
+        // VideoFrame::with_metadata, which validates against VideoLayout::packed.
+        for &(w, h) in &[(64, 48), (641, 480), (1920, 1080), (1921, 1081)] {
+            let y_size = (w * h) as usize;
+            let chroma_w = (w as usize + 1) / 2 * 2;
+            let uv_h = (h as usize + 1) / 2;
+            let uv_size = chroma_w * uv_h;
+
+            let y_plane = vec![0x10_u8; y_size];
+            let uv_plane = vec![0x80_u8; uv_size];
+            let mapping = MockReadMapping { planes: vec![&y_plane, &uv_plane] };
+            let pitches = [w as usize, chroma_w];
+
+            let data = read_nv12_from_mapping(&mapping, w, h, &pitches);
+            let result = VideoFrame::with_metadata(w, h, PixelFormat::Nv12, data, None);
+            assert!(
+                result.is_ok(),
+                "VideoFrame::with_metadata failed for {w}x{h}: {:?}",
+                result.err()
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // write_nv12_to_mapping — NV12 source
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_write_nv12_even_dimensions() {
+        let w: u32 = 64;
+        let h: u32 = 48;
+        let frame = crate::test_utils::create_test_video_frame(w, h, PixelFormat::Nv12, 0xAA);
+
+        let y_size = (w * h) as usize;
+        let chroma_w = (w as usize + 1) / 2 * 2;
+        let uv_h = (h as usize + 1) / 2;
+
+        let mut y_buf = vec![0u8; y_size];
+        let mut uv_buf = vec![0u8; chroma_w * uv_h];
+
+        let mapping = MockWriteMapping {
+            planes: vec![RefCell::new(&mut y_buf), RefCell::new(&mut uv_buf)],
+        };
+        let pitches = [w as usize, chroma_w];
+
+        let result = write_nv12_to_mapping(&mapping, &frame, &pitches);
+        assert!(result.is_ok(), "write_nv12_to_mapping failed: {:?}", result.err());
+
+        // Y plane should be filled with 0xAA.
+        assert!(y_buf.iter().all(|&b| b == 0xAA), "Y plane should contain frame data");
+    }
+
+    #[test]
+    fn test_write_nv12_odd_width() {
+        let w: u32 = 641;
+        let h: u32 = 480;
+        let frame = crate::test_utils::create_test_video_frame(w, h, PixelFormat::Nv12, 0x10);
+
+        let y_size = (w * h) as usize;
+        let chroma_w = (w as usize + 1) / 2 * 2; // 642
+        let uv_h = (h as usize + 1) / 2;
+
+        let mut y_buf = vec![0u8; y_size];
+        let mut uv_buf = vec![0u8; chroma_w * uv_h];
+
+        let mapping = MockWriteMapping {
+            planes: vec![RefCell::new(&mut y_buf), RefCell::new(&mut uv_buf)],
+        };
+        let pitches = [w as usize, chroma_w];
+
+        let result = write_nv12_to_mapping(&mapping, &frame, &pitches);
+        assert!(
+            result.is_ok(),
+            "write_nv12_to_mapping should handle odd width {w}: {:?}",
+            result.err()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // write_nv12_to_mapping — I420 → NV12 conversion
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_write_i420_to_nv12_conversion() {
+        let w: u32 = 64;
+        let h: u32 = 48;
+        let frame = crate::test_utils::create_test_video_frame(w, h, PixelFormat::I420, 0x10);
+
+        let y_size = (w * h) as usize;
+        let chroma_w = (w as usize + 1) / 2 * 2;
+        let uv_h = (h as usize + 1) / 2;
+
+        let mut y_buf = vec![0u8; y_size];
+        let mut uv_buf = vec![0u8; chroma_w * uv_h];
+
+        let mapping = MockWriteMapping {
+            planes: vec![RefCell::new(&mut y_buf), RefCell::new(&mut uv_buf)],
+        };
+        let pitches = [w as usize, chroma_w];
+
+        let result = write_nv12_to_mapping(&mapping, &frame, &pitches);
+        assert!(result.is_ok(), "I420→NV12 conversion failed: {:?}", result.err());
+
+        // Y plane should have the fill value.
+        assert!(y_buf.iter().all(|&b| b == 0x10), "Y plane should contain I420 luma data");
+
+        // UV plane should have interleaved U/V values (128 for neutral chroma
+        // from create_test_video_frame).
+        let uv_w = w.div_ceil(2) as usize;
+        for row in 0..uv_h {
+            for col in 0..uv_w {
+                let idx = row * chroma_w + col * 2;
+                assert_eq!(uv_buf[idx], 128, "U value at row={row} col={col}");
+                assert_eq!(uv_buf[idx + 1], 128, "V value at row={row} col={col}");
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // write_nv12_to_mapping — unsupported pixel format
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_write_unsupported_format_returns_error() {
+        let w: u32 = 64;
+        let h: u32 = 48;
+        let frame = crate::test_utils::create_test_video_frame(w, h, PixelFormat::Rgba8, 0xFF);
+
+        let mut y_buf = vec![0u8; (w * h) as usize];
+        let mut uv_buf = vec![0u8; (w as usize) * (h as usize / 2)];
+
+        let mapping = MockWriteMapping {
+            planes: vec![RefCell::new(&mut y_buf), RefCell::new(&mut uv_buf)],
+        };
+        let pitches = [w as usize, w as usize];
+
+        let result = write_nv12_to_mapping(&mapping, &frame, &pitches);
+        assert!(result.is_err(), "RGBA8 input should be rejected");
+        assert!(
+            result.unwrap_err().contains("requires NV12 or I420"),
+            "error message should mention supported formats"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // NV12 read→write roundtrip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_nv12_read_write_roundtrip() {
+        // Verify that data read from a mapping can be written back and
+        // produces identical plane content.
+        for &(w, h) in &[(64, 48), (640, 480), (641, 481)] {
+            let y_size = (w * h) as usize;
+            let chroma_w = (w as usize + 1) / 2 * 2;
+            let uv_h = (h as usize + 1) / 2;
+            let uv_size = chroma_w * uv_h;
+
+            // Create source planes with deterministic data.
+            let y_src: Vec<u8> = (0..y_size).map(|i| (i % 256) as u8).collect();
+            let uv_src: Vec<u8> = (0..uv_size).map(|i| ((i + 128) % 256) as u8).collect();
+
+            // Read from mapping.
+            let read_mapping = MockReadMapping { planes: vec![&y_src, &uv_src] };
+            let pitches = [w as usize, chroma_w];
+            let data = read_nv12_from_mapping(&read_mapping, w, h, &pitches);
+
+            // Create a VideoFrame from the read data.
+            let frame =
+                VideoFrame::with_metadata(w, h, PixelFormat::Nv12, data, None).unwrap();
+
+            // Write back to a new mapping.
+            let mut y_dst = vec![0u8; y_size];
+            let mut uv_dst = vec![0u8; uv_size];
+            let write_mapping = MockWriteMapping {
+                planes: vec![RefCell::new(&mut y_dst), RefCell::new(&mut uv_dst)],
+            };
+            write_nv12_to_mapping(&write_mapping, &frame, &pitches).unwrap();
+
+            assert_eq!(y_dst, y_src, "Y plane roundtrip failed for {w}x{h}");
+            assert_eq!(uv_dst, uv_src, "UV plane roundtrip failed for {w}x{h}");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_render_device
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_resolve_render_device_with_configured() {
+        let configured = "/dev/dri/renderD129".to_string();
+        let result = resolve_render_device(Some(&configured));
+        assert_eq!(result, "/dev/dri/renderD129");
+    }
+
+    #[test]
+    fn test_resolve_render_device_fallback() {
+        // Without a configured device and without real hardware, falls back
+        // to default or auto-detected device.
+        let result = resolve_render_device(None);
+        assert!(!result.is_empty(), "should return a non-empty device path");
+    }
+
+    // -----------------------------------------------------------------------
+    // GPU integration tests — encode/decode roundtrip
+    //
+    // These require a VA-API capable GPU. They are compiled with the `vaapi`
+    // feature but skip at runtime if no VA-API device is available.
+    // -----------------------------------------------------------------------
+
+    /// Check whether a usable VA-API display can be opened.
+    fn vaapi_available() -> bool {
+        let path = resolve_render_device(None);
+        libva::Display::open_drm_display(std::path::Path::new(&path)).is_ok()
+    }
+
+    /// Encoder + Decoder roundtrip: encode 5 NV12 frames, decode them back,
+    /// verify dimensions and pixel format.
+    #[tokio::test]
+    async fn test_vaapi_av1_encode_decode_roundtrip() {
+        if !vaapi_available() {
+            eprintln!("SKIP: no VA-API device available");
+            return;
+        }
+
+        use crate::test_utils::{
+            assert_state_initializing, assert_state_running, assert_state_stopped,
+            create_test_context, create_test_video_frame,
+        };
+        use std::borrow::Cow;
+        use std::collections::HashMap;
+
+        // --- Encode ---
+        let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
+        let mut enc_inputs = HashMap::new();
+        enc_inputs.insert("in".to_string(), enc_input_rx);
+
+        let (enc_context, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 10);
+        let encoder_config = VaapiAv1EncoderConfig {
+            render_device: None,
+            hw_accel: HwAccelMode::Auto,
+            quality: 200, // fast, lower quality for test speed
+            framerate: 30,
+            low_power: false,
+        };
+        let encoder = VaapiAv1EncoderNode::new(encoder_config).unwrap();
+        let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
+
+        assert_state_initializing(&mut enc_state_rx).await;
+        assert_state_running(&mut enc_state_rx).await;
+
+        for index in 0_u64..5 {
+            let mut frame = create_test_video_frame(64, 64, PixelFormat::Nv12, 16);
+            frame.metadata = Some(PacketMetadata {
+                timestamp_us: Some(1_000 + 33_333 * index),
+                duration_us: Some(33_333),
+                sequence: Some(index),
+                keyframe: Some(true),
+            });
+            enc_input_tx.send(Packet::Video(frame)).await.unwrap();
+        }
+        drop(enc_input_tx);
+
+        assert_state_stopped(&mut enc_state_rx).await;
+        enc_handle.await.unwrap().unwrap();
+
+        let encoded_packets = enc_sender.get_packets_for_pin("out").await;
+        assert!(!encoded_packets.is_empty(), "VA-API AV1 encoder produced no packets");
+
+        // --- Decode ---
+        let (dec_input_tx, dec_input_rx) = mpsc::channel(10);
+        let mut dec_inputs = HashMap::new();
+        dec_inputs.insert("in".to_string(), dec_input_rx);
+
+        let (dec_context, dec_sender, mut dec_state_rx) = create_test_context(dec_inputs, 10);
+        let decoder = VaapiAv1DecoderNode::new(VaapiAv1DecoderConfig::default()).unwrap();
+        let dec_handle = tokio::spawn(async move { Box::new(decoder).run(dec_context).await });
+
+        assert_state_initializing(&mut dec_state_rx).await;
+        assert_state_running(&mut dec_state_rx).await;
+
+        for packet in encoded_packets {
+            if let Packet::Binary { data, metadata, .. } = packet {
+                dec_input_tx
+                    .send(Packet::Binary {
+                        data,
+                        content_type: Some(Cow::Borrowed(AV1_CONTENT_TYPE)),
+                        metadata,
+                    })
+                    .await
+                    .unwrap();
+            }
+        }
+        drop(dec_input_tx);
+
+        assert_state_stopped(&mut dec_state_rx).await;
+        dec_handle.await.unwrap().unwrap();
+
+        let decoded_packets = dec_sender.get_packets_for_pin("out").await;
+        assert!(
+            !decoded_packets.is_empty(),
+            "VA-API AV1 decoder produced no frames"
+        );
+
+        for packet in decoded_packets {
+            match packet {
+                Packet::Video(frame) => {
+                    assert_eq!(frame.width, 64);
+                    assert_eq!(frame.height, 64);
+                    assert_eq!(frame.pixel_format, PixelFormat::Nv12);
+                    assert!(!frame.data().is_empty(), "Decoded frame should have data");
+                },
+                _ => panic!("Expected Video packet from VA-API AV1 decoder"),
+            }
+        }
+    }
+
+    /// Verify decoded frames preserve metadata from input packets.
+    #[tokio::test]
+    async fn test_vaapi_av1_metadata_propagation() {
+        if !vaapi_available() {
+            eprintln!("SKIP: no VA-API device available");
+            return;
+        }
+
+        use crate::test_utils::{
+            assert_state_initializing, assert_state_running, assert_state_stopped,
+            create_test_context, create_test_video_frame,
+        };
+        use std::borrow::Cow;
+        use std::collections::HashMap;
+
+        // --- Encode ---
+        let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
+        let mut enc_inputs = HashMap::new();
+        enc_inputs.insert("in".to_string(), enc_input_rx);
+
+        let (enc_context, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 10);
+        let encoder = VaapiAv1EncoderNode::new(VaapiAv1EncoderConfig {
+            render_device: None,
+            hw_accel: HwAccelMode::Auto,
+            quality: 200,
+            framerate: 30,
+            low_power: false,
+        })
+        .unwrap();
+        let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
+
+        assert_state_initializing(&mut enc_state_rx).await;
+        assert_state_running(&mut enc_state_rx).await;
+
+        let timestamps: Vec<u64> = vec![1_000, 34_333, 67_666];
+        for (i, &ts) in timestamps.iter().enumerate() {
+            let mut frame = create_test_video_frame(64, 64, PixelFormat::Nv12, 16);
+            frame.metadata = Some(PacketMetadata {
+                timestamp_us: Some(ts),
+                duration_us: Some(33_333),
+                sequence: Some(i as u64),
+                keyframe: Some(true),
+            });
+            enc_input_tx.send(Packet::Video(frame)).await.unwrap();
+        }
+        drop(enc_input_tx);
+
+        assert_state_stopped(&mut enc_state_rx).await;
+        enc_handle.await.unwrap().unwrap();
+
+        let encoded_packets = enc_sender.get_packets_for_pin("out").await;
+        assert!(!encoded_packets.is_empty());
+
+        // --- Decode and verify metadata ---
+        let (dec_input_tx, dec_input_rx) = mpsc::channel(10);
+        let mut dec_inputs = HashMap::new();
+        dec_inputs.insert("in".to_string(), dec_input_rx);
+
+        let (dec_context, dec_sender, mut dec_state_rx) = create_test_context(dec_inputs, 10);
+        let decoder = VaapiAv1DecoderNode::new(VaapiAv1DecoderConfig::default()).unwrap();
+        let dec_handle = tokio::spawn(async move { Box::new(decoder).run(dec_context).await });
+
+        assert_state_initializing(&mut dec_state_rx).await;
+        assert_state_running(&mut dec_state_rx).await;
+
+        for packet in encoded_packets {
+            if let Packet::Binary { data, metadata, .. } = packet {
+                dec_input_tx
+                    .send(Packet::Binary {
+                        data,
+                        content_type: Some(Cow::Borrowed(AV1_CONTENT_TYPE)),
+                        metadata,
+                    })
+                    .await
+                    .unwrap();
+            }
+        }
+        drop(dec_input_tx);
+
+        assert_state_stopped(&mut dec_state_rx).await;
+        dec_handle.await.unwrap().unwrap();
+
+        let decoded_packets = dec_sender.get_packets_for_pin("out").await;
+        assert!(!decoded_packets.is_empty(), "Decoder should produce at least one frame");
+
+        for (i, packet) in decoded_packets.iter().enumerate() {
+            match packet {
+                Packet::Video(frame) => {
+                    assert!(
+                        frame.metadata.is_some(),
+                        "Decoded frame {i} should have metadata"
+                    );
+                },
+                _ => panic!("Expected Video packet from VA-API AV1 decoder"),
+            }
+        }
+    }
+
+    /// Encode I420 input frames and verify the encoder accepts them
+    /// (exercises the I420→NV12 conversion path).
+    #[tokio::test]
+    async fn test_vaapi_av1_encode_i420_input() {
+        if !vaapi_available() {
+            eprintln!("SKIP: no VA-API device available");
+            return;
+        }
+
+        use crate::test_utils::{
+            assert_state_initializing, assert_state_running, assert_state_stopped,
+            create_test_context, create_test_video_frame,
+        };
+        use std::collections::HashMap;
+
+        let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
+        let mut enc_inputs = HashMap::new();
+        enc_inputs.insert("in".to_string(), enc_input_rx);
+
+        let (enc_context, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 10);
+        let encoder = VaapiAv1EncoderNode::new(VaapiAv1EncoderConfig {
+            render_device: None,
+            hw_accel: HwAccelMode::Auto,
+            quality: 200,
+            framerate: 30,
+            low_power: false,
+        })
+        .unwrap();
+        let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
+
+        assert_state_initializing(&mut enc_state_rx).await;
+        assert_state_running(&mut enc_state_rx).await;
+
+        for index in 0_u64..3 {
+            let mut frame = create_test_video_frame(64, 64, PixelFormat::I420, 16);
+            frame.metadata = Some(PacketMetadata {
+                timestamp_us: Some(33_333 * index),
+                duration_us: Some(33_333),
+                sequence: Some(index),
+                keyframe: Some(true),
+            });
+            enc_input_tx.send(Packet::Video(frame)).await.unwrap();
+        }
+        drop(enc_input_tx);
+
+        assert_state_stopped(&mut enc_state_rx).await;
+        enc_handle.await.unwrap().unwrap();
+
+        let encoded_packets = enc_sender.get_packets_for_pin("out").await;
+        assert!(
+            !encoded_packets.is_empty(),
+            "VA-API AV1 encoder should accept I420 input and produce packets"
+        );
+    }
+
+    /// Verify ForceCpu mode returns an error (VA-API is HW-only).
+    #[test]
+    fn test_vaapi_force_cpu_returns_error() {
+        let decoder_config = VaapiAv1DecoderConfig {
+            render_device: None,
+            hw_accel: HwAccelMode::ForceCpu,
+        };
+        let result = VaapiAv1DecoderNode::new(decoder_config);
+        assert!(result.is_err(), "ForceCpu should be rejected for VA-API decoder");
+
+        let encoder_config = VaapiAv1EncoderConfig {
+            render_device: None,
+            hw_accel: HwAccelMode::ForceCpu,
+            quality: DEFAULT_QUALITY,
+            framerate: DEFAULT_FRAMERATE,
+            low_power: false,
+        };
+        let result = VaapiAv1EncoderNode::new(encoder_config);
+        assert!(result.is_err(), "ForceCpu should be rejected for VA-API encoder");
+    }
 }
