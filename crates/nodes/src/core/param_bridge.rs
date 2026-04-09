@@ -26,6 +26,7 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use streamkit_core::control::NodeControlMessage;
 use streamkit_core::telemetry::TelemetryEmitter;
 use streamkit_core::types::{Packet, PacketType};
 use streamkit_core::{
@@ -227,6 +228,13 @@ impl ProcessorNode for ParamBridgeNode {
             context.telemetry_tx.clone(),
         );
 
+        // Take control_rx out of context so we can select on it alongside
+        // recv_with_cancellation (which borrows context immutably).
+        let mut control_rx = {
+            let (_, rx) = tokio::sync::mpsc::channel(1);
+            std::mem::replace(&mut context.control_rx, rx)
+        };
+
         let mut input_rx = context.take_input("in")?;
         state_helpers::emit_running(&context.state_tx, &node_id);
 
@@ -249,6 +257,16 @@ impl ProcessorNode for ParamBridgeNode {
         loop {
             tokio::select! {
                 biased;
+
+                Some(ctrl) = control_rx.recv() => {
+                    match ctrl {
+                        NodeControlMessage::Shutdown => {
+                            tracing::info!(node = %node_id, "param_bridge received shutdown");
+                            break;
+                        },
+                        NodeControlMessage::UpdateParams(_) | NodeControlMessage::Start => {},
+                    }
+                }
 
                 packet = context.recv_with_cancellation(&mut input_rx) => {
                     let Some(packet) = packet else {
