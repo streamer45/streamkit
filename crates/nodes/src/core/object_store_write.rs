@@ -411,7 +411,7 @@ impl ProcessorNode for ObjectStoreWriteNode {
         let mut chunks_written: u64 = 0;
 
         while let Some(packet) = context.recv_with_cancellation(&mut input_rx).await {
-            if let Packet::Binary { data, .. } = packet {
+            if let Packet::Binary { data, content_type, metadata } = packet {
                 stats_tracker.received();
                 packet_count += 1;
                 total_bytes += data.len() as u64;
@@ -441,7 +441,7 @@ impl ProcessorNode for ObjectStoreWriteNode {
 
                 // Forward the packet downstream when in passthrough mode.
                 if self.config.passthrough {
-                    let forwarded = Packet::Binary { data, content_type: None, metadata: None };
+                    let forwarded = Packet::Binary { data, content_type, metadata };
                     if context.output_sender.send("out", forwarded).await.is_err() {
                         tracing::debug!(%node_name, "Output channel closed, stopping node");
                         break;
