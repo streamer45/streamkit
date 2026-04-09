@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Streams SMPTE color bars encoded with NVIDIA NVENC AV1 (GPU-accelerated)
+# over MoQ.
+#
+# Requires: skit built with --features nvcodec
+#           NVIDIA GPU with NVENC AV1 support (Ada Lovelace / RTX 40+)
+#           System packages: nvidia-cuda-toolkit, libclang-dev
+
+name: NVENC AV1 Color Bars (MoQ Stream)
+description: Continuously generates SMPTE color bars and streams via MoQ using NVIDIA NVENC AV1 HW encoder
+mode: dynamic
+client:
+  gateway_path: /moq/video
+  watch:
+    broadcast: output
+    audio: false
+    video: true
+
+nodes:
+  colorbars:
+    kind: video::colorbars
+    params:
+      width: 1280
+      height: 720
+      fps: 30
+      pixel_format: nv12
+      draw_time: true
+
+  nv_av1_encoder:
+    kind: video::nv::av1_encoder
+    params:
+      bitrate: 2000000
+      framerate: 30
+    needs: colorbars
+
+  moq_peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/video
+      output_broadcast: output
+      allow_reconnect: true
+      video_codec: av1
+    needs:
+      in: nv_av1_encoder
