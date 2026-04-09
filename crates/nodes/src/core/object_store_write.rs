@@ -373,7 +373,22 @@ impl ProcessorNode for ObjectStoreWriteNode {
                 .finish()
         };
 
-        tracing::info!(%node_name, "S3 operator created, opening writer");
+        tracing::info!(%node_name, "S3 operator created, verifying bucket access");
+
+        // ── Verify bucket exists and is accessible ────────────────────────
+        // Stat the root path — this issues a lightweight HEAD request to the
+        // bucket, catching "NoSuchBucket" or permission errors at init time
+        // rather than after streaming data for minutes.
+        operator.stat("/").await.map_err(|e| {
+            let msg = format!(
+                "S3 bucket '{}' is not accessible at '{}': {e}",
+                self.config.bucket, self.config.endpoint
+            );
+            state_helpers::emit_failed(&context.state_tx, &node_name, &msg);
+            StreamKitError::Runtime(msg)
+        })?;
+
+        tracing::info!(%node_name, "Bucket verified, opening writer");
 
         // ── Open writer (multipart upload) ───────────────────────────────
         let writer_future = operator.writer_with(&self.config.key).chunk(self.config.chunk_size);
