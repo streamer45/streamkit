@@ -737,9 +737,11 @@ fn i420_to_nv12(frame: &VideoFrame) -> Vec<u8> {
     let h = frame.height as usize;
     let layout = frame.layout();
 
+    let chroma_w = w.div_ceil(2);
+    let chroma_h = h.div_ceil(2);
+    let uv_row_bytes = chroma_w * 2;
     let y_size = w * h;
-    let uv_size = w * (h / 2);
-    let mut nv12 = vec![0u8; y_size + uv_size];
+    let mut nv12 = vec![0u8; y_size + uv_row_bytes * chroma_h];
 
     let src = frame.data.as_slice();
     let planes = layout.planes();
@@ -756,12 +758,10 @@ fn i420_to_nv12(frame: &VideoFrame) -> Vec<u8> {
     }
 
     // Interleave U and V into NV12 UV plane.
-    let chroma_h = h / 2;
-    let chroma_w = w / 2;
     for row in 0..chroma_h {
         let u_src_start = u_plane.offset + row * u_plane.stride;
         let v_src_start = v_plane.offset + row * v_plane.stride;
-        let dst_start = y_size + row * w;
+        let dst_start = y_size + row * uv_row_bytes;
         for col in 0..chroma_w {
             nv12[dst_start + col * 2] = src[u_src_start + col];
             nv12[dst_start + col * 2 + 1] = src[v_src_start + col];

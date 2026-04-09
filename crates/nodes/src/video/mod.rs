@@ -84,7 +84,12 @@ pub const H264_CONTENT_TYPE: &str = "video/h264";
 )]
 #[serde(rename_all = "lowercase")]
 pub enum HwAccelMode {
-    /// Auto-detect: use HW if available, fall back to CPU otherwise.
+    /// Auto-detect: attempt hardware acceleration.
+    ///
+    /// For HW-only nodes (Vulkan Video, VA-API, NVENC/NVDEC) this behaves
+    /// identically to `ForceHw` — the node will fail if the required
+    /// hardware is unavailable.  CPU fallback is achieved by selecting a
+    /// different (software) node at the pipeline level.
     #[default]
     Auto,
     /// Force HW acceleration — fail if unavailable.
@@ -631,4 +636,13 @@ pub fn register_video_nodes(registry: &mut NodeRegistry, constraints: &GlobalNod
 
     #[cfg(feature = "dav1d")]
     dav1d::register_dav1d_nodes(registry);
+
+    #[cfg(feature = "vulkan_video")]
+    vulkan_video::register_vulkan_video_nodes(registry);
+
+    #[cfg(feature = "vaapi")]
+    vaapi_av1::register_vaapi_av1_nodes(registry);
+
+    #[cfg(feature = "nvcodec")]
+    nv_av1::register_nv_av1_nodes(registry);
 }

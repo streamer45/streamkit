@@ -747,14 +747,6 @@ pub struct VaapiAv1EncoderConfig {
     pub hw_accel: HwAccelMode,
 }
 
-const fn default_quality() -> u32 {
-    DEFAULT_QUALITY
-}
-
-const fn default_framerate() -> u32 {
-    DEFAULT_FRAMERATE
-}
-
 impl Default for VaapiAv1EncoderConfig {
     fn default() -> Self {
         Self {
@@ -1803,5 +1795,22 @@ mod tests {
         let json = r#"{"quality":128,"unknown_key":"oops"}"#;
         let result: Result<VaapiAv1EncoderConfig, _> = serde_json::from_str(json);
         assert!(result.is_err(), "Unknown fields should be rejected");
+    }
+
+    // ── Registration test ────────────────────────────────────────────────
+
+    #[test]
+    fn test_node_registration() {
+        let mut registry = NodeRegistry::new();
+        register_vaapi_av1_nodes(&mut registry);
+
+        assert!(
+            registry.create_node("video::vaapi::av1_decoder", None).is_ok(),
+            "VA-API AV1 decoder should be registered"
+        );
+        assert!(
+            registry.create_node("video::vaapi::av1_encoder", None).is_ok(),
+            "VA-API AV1 encoder should be registered"
+        );
     }
 }

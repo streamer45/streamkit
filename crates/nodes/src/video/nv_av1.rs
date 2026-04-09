@@ -1182,4 +1182,21 @@ mod tests {
             }
         }
     }
+
+    // ── Registration test ────────────────────────────────────────────────
+
+    #[test]
+    fn test_node_registration() {
+        let mut registry = NodeRegistry::new();
+        register_nv_av1_nodes(&mut registry);
+
+        assert!(
+            registry.create_node("video::nv::av1_decoder", None).is_ok(),
+            "NV AV1 decoder should be registered"
+        );
+        assert!(
+            registry.create_node("video::nv::av1_encoder", None).is_ok(),
+            "NV AV1 encoder should be registered"
+        );
+    }
 }
