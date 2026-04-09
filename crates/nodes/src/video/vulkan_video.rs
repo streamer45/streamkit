@@ -52,7 +52,7 @@ use super::H264_CONTENT_TYPE;
 
 /// Configuration for the Vulkan Video H.264 decoder node.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct VulkanVideoH264DecoderConfig {
     /// Hardware acceleration mode.
     pub hw_accel: HwAccelMode,
@@ -365,7 +365,7 @@ fn raw_frame_to_video_frame(
 
 /// Configuration for the Vulkan Video H.264 encoder node.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct VulkanVideoH264EncoderConfig {
     /// Hardware acceleration mode.
     pub hw_accel: HwAccelMode,
@@ -996,6 +996,22 @@ mod tests {
             framerate: 60,
         });
         assert!(result.is_ok(), "custom max_bitrate config should be accepted");
+    }
+
+    // ── deny_unknown_fields tests ─────────────────────────────────────
+
+    #[test]
+    fn test_deny_unknown_fields_decoder() {
+        let json = r#"{"hw_accel":"auto","bogus_field":42}"#;
+        let result: Result<VulkanVideoH264DecoderConfig, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "Unknown fields should be rejected");
+    }
+
+    #[test]
+    fn test_deny_unknown_fields_encoder() {
+        let json = r#"{"bitrate":1000000,"unknown_key":"oops"}"#;
+        let result: Result<VulkanVideoH264EncoderConfig, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "Unknown fields should be rejected");
     }
 
     // ── Pin configuration tests ─────────────────────────────────────────
