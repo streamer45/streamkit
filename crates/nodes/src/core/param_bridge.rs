@@ -152,8 +152,8 @@ fn auto_map(packet: &Packet) -> Option<JsonValue> {
 fn apply_template(template: &JsonValue, text: &str) -> JsonValue {
     match template {
         JsonValue::String(s) => {
-            let replaced = s.replace("{{ text }}", text);
-            JsonValue::String(replaced.replace("{{text}}", text))
+            let normalized = s.replace("{{ text }}", "{{text}}");
+            JsonValue::String(normalized.replace("{{text}}", text))
         },
         JsonValue::Array(arr) => {
             JsonValue::Array(arr.iter().map(|v| apply_template(v, text)).collect())
@@ -492,6 +492,15 @@ mod tests {
         let tmpl = json!({"count": 42, "flag": true, "text": "{{ text }}"});
         let result = apply_template(&tmpl, "hello");
         assert_eq!(result, json!({"count": 42, "flag": true, "text": "hello"}));
+    }
+
+    #[test]
+    fn apply_template_text_containing_placeholder_literal() {
+        // Regression: if substituted text contains "{{text}}", the second
+        // replace pass must NOT re-replace it.
+        let tmpl = json!("{{ text }}");
+        let result = apply_template(&tmpl, "contains {{text}} marker");
+        assert_eq!(result, json!("contains {{text}} marker"));
     }
 
     // ── raw_payload ─────────────────────────────────────────────────
