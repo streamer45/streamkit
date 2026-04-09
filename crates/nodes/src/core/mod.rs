@@ -10,6 +10,8 @@ pub mod bytes_output;
 pub mod file_read;
 pub mod file_write;
 pub mod json_serialize;
+#[cfg(feature = "object_store")]
+pub mod object_store_write;
 pub mod pacer;
 mod passthrough;
 #[cfg(feature = "script")]
@@ -190,4 +192,23 @@ pub fn register_core_nodes(registry: &mut NodeRegistry, constraints: &GlobalNode
 
     // --- Register TelemetryOut Node ---
     telemetry_out::register(registry);
+
+    // --- Register ObjectStoreWriteNode ---
+    #[cfg(feature = "object_store")]
+    {
+        use schemars::schema_for;
+
+        let factory = object_store_write::ObjectStoreWriteNode::factory();
+        registry.register_dynamic_with_description(
+            "core::object_store_writer",
+            move |params| (factory)(params),
+            serde_json::to_value(schema_for!(object_store_write::ObjectStoreWriteConfig))
+                .expect("ObjectStoreWriteConfig schema should serialize to JSON"),
+            vec!["core".to_string(), "io".to_string(), "object_store".to_string()],
+            false,
+            "Streams binary data to S3-compatible object storage (AWS S3, GCS, Azure, MinIO, RustFS, etc.). \
+             Uses multipart upload for bounded memory usage. \
+             Credentials can be provided via config or environment variables.",
+        );
+    }
 }

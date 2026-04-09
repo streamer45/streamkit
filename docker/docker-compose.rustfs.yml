@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# RustFS — lightweight S3-compatible object storage for local development
+# and integration testing.
+#
+# Usage:
+#   docker compose -f docker/docker-compose.rustfs.yml up -d
+#
+# S3 API:   http://localhost:9000
+# Console:  http://localhost:9001
+# Credentials: rustfsadmin / rustfsadmin
+#
+# Configure StreamKit to use it:
+#   export SK_S3_ACCESS_KEY=rustfsadmin
+#   export SK_S3_SECRET_KEY=rustfsadmin
+#
+# Create a bucket (via the console or any S3 client):
+#   aws --endpoint-url http://localhost:9000 s3 mb s3://streamkit-output
+#   aws --endpoint-url http://localhost:9000 s3 mb s3://streamkit-archive
+
+services:
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: rustfs-server
+    ports:
+      - "9000:9000"  # S3 API
+      - "9001:9001"  # Console
+    environment:
+      - RUSTFS_VOLUMES=/data
+      - RUSTFS_ADDRESS=0.0.0.0:9000
+      - RUSTFS_CONSOLE_ADDRESS=0.0.0.0:9001
+      - RUSTFS_CONSOLE_ENABLE=true
+      - RUSTFS_ACCESS_KEY=rustfsadmin
+      - RUSTFS_SECRET_KEY=rustfsadmin
+    volumes:
+      - rustfs_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "sh", "-c", "curl -f http://127.0.0.1:9000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  rustfs_data:

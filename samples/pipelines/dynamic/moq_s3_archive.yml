@@ -1,0 +1,86 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# MoQ broadcast with S3 archive.
+#
+# Receives audio from a WebTransport publisher via MoQ, applies gain,
+# broadcasts back via MoQ (primary output for live monitoring), and
+# simultaneously muxes to OGG and archives to S3-compatible object
+# storage (secondary output).
+#
+# The opus_encoder output pin uses Broadcast cardinality, so the same
+# encoded packets feed both the MoQ peer and the OGG muxer → S3 branch
+# without any extra splitter node.
+#
+# Requires:
+#   - S3-compatible endpoint (e.g. RustFS via docker/docker-compose.rustfs.yml)
+#   - Set SK_S3_ACCESS_KEY and SK_S3_SECRET_KEY env vars
+
+name: MoQ Broadcast + S3 Archive
+description: |
+  Accepts Opus audio via MoQ, broadcasts back via MoQ for live monitoring,
+  and simultaneously archives the stream to S3-compatible object storage.
+mode: dynamic
+client:
+  gateway_path: /moq/s3-archive
+  publish:
+    broadcast: input
+    tracks:
+      - kind: audio
+        source: microphone
+  watch:
+    broadcast: output
+    audio: true
+    video: false
+
+nodes:
+  # ── MoQ input/output (primary live broadcast) ──────────────────────
+  moq_peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/s3-archive
+      input_broadcasts:
+        - input
+      output_broadcast: output
+      allow_reconnect: true
+    needs: opus_encoder
+
+  # ── Audio path: decode → gain → encode ─────────────────────────────
+  opus_decoder:
+    kind: audio::opus::decoder
+    needs:
+      in: moq_peer.audio/data
+
+  gain:
+    kind: audio::gain
+    params:
+      gain: 1.0
+    needs: opus_decoder
+
+  opus_encoder:
+    kind: audio::opus::encoder
+    needs: gain
+
+  # ── S3 archive branch (secondary output) ───────────────────────────
+  # Taps the same encoded Opus stream and muxes into OGG for archival.
+  ogg_muxer:
+    kind: containers::ogg::muxer
+    params:
+      channels: 1
+    needs: opus_encoder
+
+  s3_writer:
+    kind: core::object_store_writer
+    params:
+      endpoint: "http://localhost:9000"
+      bucket: "streamkit-archive"
+      # NOTE: Static key — every session overwrites the previous recording.
+      # A future enhancement could support template variables (e.g.
+      # "recordings/{session_id}.ogg") for true multi-session archival.
+      key: "recordings/live-session.ogg"
+      region: "us-east-1"
+      access_key_id_env: "SK_S3_ACCESS_KEY"
+      secret_key_env: "SK_S3_SECRET_KEY"
+      content_type: "audio/ogg"
+    needs: ogg_muxer
