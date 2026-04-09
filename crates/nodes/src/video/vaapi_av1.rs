@@ -235,8 +235,7 @@ pub(super) fn write_nv12_to_va_surface(
                 let s = row * chroma_row_bytes;
                 let d = uv_offset + row * uv_pitch;
                 if s + chroma_row_bytes <= src_uv.len() && d + chroma_row_bytes <= dest.len() {
-                    dest[d..d + chroma_row_bytes]
-                        .copy_from_slice(&src_uv[s..s + chroma_row_bytes]);
+                    dest[d..d + chroma_row_bytes].copy_from_slice(&src_uv[s..s + chroma_row_bytes]);
                 }
             }
         },
