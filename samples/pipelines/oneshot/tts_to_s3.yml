@@ -5,7 +5,12 @@
 # Demonstrates the object store writer node with TTS output.
 #
 # Synthesizes speech from text using Kokoro TTS, encodes to Opus/OGG,
-# and uploads the result to S3-compatible object storage.
+# uploads it to S3-compatible object storage, and returns the result to
+# the client via HTTP.
+#
+# The s3_writer node uses passthrough mode so it sits inline in the linear
+# pipeline: ogg_muxer → s3_writer → http_output.  Oneshot pipelines do not
+# support fan-out, so every node must have at most one downstream consumer.
 #
 # Requires:
 #   - kokoro native plugin (just install-plugin kokoro)
@@ -13,14 +18,14 @@
 #   - Set SK_S3_ACCESS_KEY and SK_S3_SECRET_KEY env vars
 
 name: TTS to S3 (Kokoro)
-description: Synthesizes speech from text and uploads the OGG result to S3-compatible storage
+description: Synthesizes speech from text, uploads OGG audio to S3, and returns the result
 mode: oneshot
 client:
   input:
     type: text
     placeholder: "Enter text to synthesize"
   output:
-    type: none
+    type: audio
 nodes:
   http_input:
     kind: streamkit::http_input
@@ -57,14 +62,24 @@ nodes:
       channels: 1
     needs: opus_encoder
 
+  # S3 upload (passthrough: data flows through to http_output)
   s3_writer:
     kind: core::object_store_writer
     params:
       endpoint: "http://localhost:9000"
       bucket: "streamkit-output"
+      # NOTE: Static key — every run overwrites the previous file.
+      # A future enhancement could support template variables for unique keys.
       key: "tts/output.ogg"
       region: "us-east-1"
       access_key_id_env: "SK_S3_ACCESS_KEY"
       secret_key_env: "SK_S3_SECRET_KEY"
       content_type: "audio/ogg"
+      passthrough: true
     needs: ogg_muxer
+
+  http_output:
+    kind: streamkit::http_output
+    params:
+      content_type: "audio/ogg"
+    needs: s3_writer

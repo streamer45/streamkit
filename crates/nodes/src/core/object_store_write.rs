@@ -4,12 +4,20 @@
 
 //! Object store write node — streams binary data to S3-compatible object storage.
 //!
-//! Uses [Apache OpenDAL](https://opendal.apache.org/) to support S3, GCS,
-//! Azure Blob, MinIO, RustFS, and other compatible backends.
+//! Uses [Apache OpenDAL](https://opendal.apache.org/) to support S3, MinIO,
+//! RustFS, and other S3-compatible backends.  (Only the `services-s3` feature
+//! is compiled; GCS / Azure would require additional OpenDAL features.)
 //!
 //! Incoming [`Packet::Binary`] packets are buffered up to `chunk_size` and
 //! written via OpenDAL's multipart [`Writer`](opendal::Writer), keeping memory
 //! bounded regardless of the total upload size.
+//!
+//! ## Passthrough mode
+//!
+//! When `passthrough` is enabled (default: `false`), the node also forwards
+//! every incoming packet to its `"out"` pin, allowing it to sit inline in a
+//! linear pipeline (e.g. `muxer → s3_writer → http_output`).  This is
+//! required for oneshot pipelines which do not support fan-out.
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -26,6 +34,11 @@ use streamkit_core::{
 
 /// Default buffer/chunk size: 5 MiB (the S3 minimum multipart part size).
 const DEFAULT_CHUNK_SIZE: usize = 5 * 1024 * 1024;
+
+/// S3 minimum multipart part size (5 MiB).  Intermediate parts smaller than
+/// this will be rejected with `EntityTooSmall`; only the final part may be
+/// smaller.
+const S3_MIN_PART_SIZE: usize = 5 * 1024 * 1024;
 
 const fn default_chunk_size() -> usize {
     DEFAULT_CHUNK_SIZE
@@ -67,7 +80,7 @@ pub struct ObjectStoreWriteConfig {
     /// Access key ID.
     ///
     /// If omitted, the node falls back to `access_key_id_env`.
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub access_key_id: Option<String>,
 
     /// Environment variable name containing the access key ID.
@@ -79,7 +92,7 @@ pub struct ObjectStoreWriteConfig {
     /// Secret access key.
     ///
     /// If omitted, the node falls back to `secret_key_env`.
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub secret_access_key: Option<String>,
 
     /// Environment variable name containing the secret access key.
@@ -93,13 +106,22 @@ pub struct ObjectStoreWriteConfig {
     /// This controls the multipart upload part size.  S3 requires a minimum
     /// part size of 5 MiB (except the last part).
     #[serde(default = "default_chunk_size")]
-    #[schemars(range(min = 1))]
+    #[schemars(range(min = 5_242_880))]
     pub chunk_size: usize,
 
     /// Optional MIME content type for the uploaded object
     /// (e.g. `audio/ogg`, `video/mp4`).
     #[serde(default)]
     pub content_type: Option<String>,
+
+    /// When `true`, the node forwards every incoming packet to its `"out"`
+    /// pin in addition to writing it to object storage.  This allows the
+    /// node to sit inline in a linear pipeline (required for oneshot mode
+    /// which does not support fan-out).
+    ///
+    /// Default: `false` (pure sink — no output pin).
+    #[serde(default)]
+    pub passthrough: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -128,14 +150,12 @@ fn resolve_credential(
                 return Ok(val);
             },
             Ok(_) => {
-                return Err(StreamKitError::Configuration(format!(
-                    "Environment variable '{env}' for {label} is empty"
-                )));
+                // Env var exists but is empty — fall through to literal.
+                tracing::debug!("Env var '{env}' for {label} is empty, trying literal fallback");
             },
             Err(_) => {
-                return Err(StreamKitError::Configuration(format!(
-                    "Environment variable '{env}' for {label} is not set"
-                )));
+                // Env var not set — fall through to literal.
+                tracing::debug!("Env var '{env}' for {label} is not set, trying literal fallback");
             },
         }
     }
@@ -240,6 +260,7 @@ impl ObjectStoreWriteNode {
                     secret_key_env: None,
                     chunk_size: default_chunk_size(),
                     content_type: None,
+                    passthrough: false,
                 }
             } else {
                 config_helpers::parse_config_required(params)?
@@ -268,6 +289,14 @@ impl ObjectStoreWriteNode {
                 ));
             }
 
+            if config.chunk_size < S3_MIN_PART_SIZE && params.is_some() {
+                return Err(StreamKitError::Configuration(format!(
+                    "chunk_size ({}) is below the S3 minimum multipart part size ({} bytes / 5 MiB). \
+                     Intermediate parts smaller than 5 MiB will be rejected by S3 with EntityTooSmall.",
+                    config.chunk_size, S3_MIN_PART_SIZE,
+                )));
+            }
+
             Ok(Box::new(Self { config }))
         })
     }
@@ -288,8 +317,16 @@ impl ProcessorNode for ObjectStoreWriteNode {
     }
 
     fn output_pins(&self) -> Vec<OutputPin> {
-        // Sink — no outputs.
-        vec![]
+        if self.config.passthrough {
+            vec![OutputPin {
+                name: "out".to_string(),
+                produces_type: PacketType::Passthrough,
+                cardinality: PinCardinality::Broadcast,
+            }]
+        } else {
+            // Pure sink — no outputs.
+            vec![]
+        }
     }
 
     async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
@@ -348,7 +385,22 @@ impl ProcessorNode for ObjectStoreWriteNode {
                 .finish()
         };
 
-        tracing::info!(%node_name, "S3 operator created, opening writer");
+        tracing::info!(%node_name, "S3 operator created, verifying bucket access");
+
+        // ── Verify bucket exists and is accessible ────────────────────────
+        // Stat the root path — this issues a lightweight HEAD request to the
+        // bucket, catching "NoSuchBucket" or permission errors at init time
+        // rather than after streaming data for minutes.
+        operator.stat("/").await.map_err(|e| {
+            let msg = format!(
+                "S3 bucket '{}' is not accessible at '{}': {e}",
+                self.config.bucket, self.config.endpoint
+            );
+            state_helpers::emit_failed(&context.state_tx, &node_name, &msg);
+            StreamKitError::Runtime(msg)
+        })?;
+
+        tracing::info!(%node_name, "Bucket verified, opening writer");
 
         // ── Open writer (multipart upload) ───────────────────────────────
         let writer_future = operator.writer_with(&self.config.key).chunk(self.config.chunk_size);
@@ -384,9 +436,12 @@ impl ProcessorNode for ObjectStoreWriteNode {
         let mut total_bytes: u64 = 0;
         let mut buffer = Vec::with_capacity(self.config.chunk_size);
         let mut chunks_written: u64 = 0;
+        // Tracks whether the downstream output channel has closed (passthrough
+        // mode only).  When true we stop forwarding but keep writing to S3.
+        let mut output_closed = false;
 
         while let Some(packet) = context.recv_with_cancellation(&mut input_rx).await {
-            if let Packet::Binary { data, .. } = packet {
+            if let Packet::Binary { data, content_type, metadata } = packet {
                 stats_tracker.received();
                 packet_count += 1;
                 total_bytes += data.len() as u64;
@@ -414,6 +469,23 @@ impl ProcessorNode for ObjectStoreWriteNode {
                     );
                 }
 
+                // Forward the packet downstream when in passthrough mode.
+                if self.config.passthrough && !output_closed {
+                    let forwarded = Packet::Binary { data, content_type, metadata };
+                    if context.output_sender.send("out", forwarded).await.is_err() {
+                        // Downstream closed but we keep writing to S3 so the
+                        // archive is complete.  Skip further send attempts.
+                        tracing::info!(
+                            %node_name,
+                            "Output channel closed; continuing S3 write without forwarding"
+                        );
+                        output_closed = true;
+                    }
+                }
+
+                // Consistent with file_write.rs: report a "sent" stat for
+                // every packet consumed, even in pure-sink mode where there
+                // is no downstream receiver.
                 stats_tracker.sent();
                 stats_tracker.maybe_send();
             } else {
@@ -458,7 +530,7 @@ impl ProcessorNode for ObjectStoreWriteNode {
         }
 
         // Upload committed successfully — disarm the abort guard.
-        guard.disarm();
+        let _ = guard.disarm();
 
         stats_tracker.force_send();
         tracing::info!(
@@ -488,9 +560,9 @@ mod tests {
     use streamkit_core::NodeStatsUpdate;
     use tokio::sync::mpsc;
 
-    /// Verify pin definitions for the object store write node.
+    /// Verify pin definitions for the object store write node (sink mode).
     #[test]
-    fn test_pin_definitions() {
+    fn test_pin_definitions_sink() {
         let node = ObjectStoreWriteNode {
             config: ObjectStoreWriteConfig {
                 endpoint: String::new(),
@@ -503,6 +575,7 @@ mod tests {
                 secret_key_env: None,
                 chunk_size: default_chunk_size(),
                 content_type: None,
+                passthrough: false,
             },
         };
 
@@ -513,6 +586,35 @@ mod tests {
 
         let outputs = node.output_pins();
         assert!(outputs.is_empty(), "Sink node should have no output pins");
+    }
+
+    /// Verify pin definitions for passthrough mode.
+    #[test]
+    fn test_pin_definitions_passthrough() {
+        let node = ObjectStoreWriteNode {
+            config: ObjectStoreWriteConfig {
+                endpoint: String::new(),
+                bucket: String::new(),
+                key: String::new(),
+                region: default_region(),
+                access_key_id: None,
+                access_key_id_env: None,
+                secret_access_key: None,
+                secret_key_env: None,
+                chunk_size: default_chunk_size(),
+                content_type: None,
+                passthrough: true,
+            },
+        };
+
+        let inputs = node.input_pins();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].name, "in");
+
+        let outputs = node.output_pins();
+        assert_eq!(outputs.len(), 1, "Passthrough mode should have one output pin");
+        assert_eq!(outputs[0].name, "out");
+        assert_eq!(outputs[0].produces_type, PacketType::Passthrough);
     }
 
     /// Verify factory rejects zero chunk_size.
@@ -532,6 +634,25 @@ mod tests {
             Ok(_) => panic!("Expected error for zero chunk_size"),
         };
         assert!(err.contains("chunk_size"), "Error should mention chunk_size: {err}");
+    }
+
+    /// Verify factory rejects chunk_size below S3 minimum (5 MiB).
+    #[test]
+    fn test_factory_rejects_sub_5mib_chunk_size() {
+        let factory = ObjectStoreWriteNode::factory();
+        let params = serde_json::json!({
+            "endpoint": "http://localhost:9000",
+            "bucket": "test",
+            "key": "test.bin",
+            "chunk_size": 1024,
+        });
+        let result = factory(Some(&params));
+        assert!(result.is_err());
+        let err = match result {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("Expected error for sub-5MiB chunk_size"),
+        };
+        assert!(err.contains("5 MiB"), "Error should mention 5 MiB minimum: {err}");
     }
 
     /// Stub lookup that never finds any variable.
@@ -568,6 +689,15 @@ mod tests {
 
     #[test]
     fn test_resolve_credential_env_empty() {
+        // Env var is empty — should fall through to literal.
+        let lookup = |_: &str| Ok(String::new());
+        let result = resolve_credential(Some("ANY_VAR"), Some("fallback"), "test", lookup);
+        assert_eq!(result.unwrap(), "fallback");
+    }
+
+    #[test]
+    fn test_resolve_credential_env_empty_no_literal() {
+        // Env var is empty and no literal — should error.
         let lookup = |_: &str| Ok(String::new());
         let result = resolve_credential(Some("ANY_VAR"), None, "test", lookup);
         assert!(result.is_err());
@@ -575,6 +705,14 @@ mod tests {
 
     #[test]
     fn test_resolve_credential_env_not_set() {
+        // Env var not set — should fall through to literal.
+        let result = resolve_credential(Some("MISSING"), Some("fallback"), "test", no_env);
+        assert_eq!(result.unwrap(), "fallback");
+    }
+
+    #[test]
+    fn test_resolve_credential_env_not_set_no_literal() {
+        // Env var not set and no literal — should error.
         let result = resolve_credential(Some("MISSING"), None, "test", no_env);
         assert!(result.is_err());
     }
@@ -675,6 +813,7 @@ mod tests {
             secret_key_env: None,
             chunk_size: default_chunk_size(),
             content_type: None,
+            passthrough: false,
         };
         let node = Box::new(ObjectStoreWriteNode { config });
 
