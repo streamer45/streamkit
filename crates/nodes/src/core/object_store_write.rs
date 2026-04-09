@@ -106,7 +106,7 @@ pub struct ObjectStoreWriteConfig {
     /// This controls the multipart upload part size.  S3 requires a minimum
     /// part size of 5 MiB (except the last part).
     #[serde(default = "default_chunk_size")]
-    #[schemars(range(min = 5242880))]
+    #[schemars(range(min = 5_242_880))]
     pub chunk_size: usize,
 
     /// Optional MIME content type for the uploaded object
