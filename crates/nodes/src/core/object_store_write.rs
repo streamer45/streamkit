@@ -106,7 +106,7 @@ pub struct ObjectStoreWriteConfig {
     /// This controls the multipart upload part size.  S3 requires a minimum
     /// part size of 5 MiB (except the last part).
     #[serde(default = "default_chunk_size")]
-    #[schemars(range(min = 1))]
+    #[schemars(range(min = 5242880))]
     pub chunk_size: usize,
 
     /// Optional MIME content type for the uploaded object
@@ -290,13 +290,11 @@ impl ObjectStoreWriteNode {
             }
 
             if config.chunk_size < S3_MIN_PART_SIZE && params.is_some() {
-                tracing::warn!(
-                    chunk_size = config.chunk_size,
-                    min = S3_MIN_PART_SIZE,
-                    "chunk_size is below the S3 minimum multipart part size (5 MiB). \
-                     Intermediate parts smaller than 5 MiB will be rejected by S3. \
-                     Only the final part may be smaller."
-                );
+                return Err(StreamKitError::Configuration(format!(
+                    "chunk_size ({}) is below the S3 minimum multipart part size ({} bytes / 5 MiB). \
+                     Intermediate parts smaller than 5 MiB will be rejected by S3 with EntityTooSmall.",
+                    config.chunk_size, S3_MIN_PART_SIZE,
+                )));
             }
 
             Ok(Box::new(Self { config }))
@@ -636,6 +634,28 @@ mod tests {
             Ok(_) => panic!("Expected error for zero chunk_size"),
         };
         assert!(err.contains("chunk_size"), "Error should mention chunk_size: {err}");
+    }
+
+    /// Verify factory rejects chunk_size below S3 minimum (5 MiB).
+    #[test]
+    fn test_factory_rejects_sub_5mib_chunk_size() {
+        let factory = ObjectStoreWriteNode::factory();
+        let params = serde_json::json!({
+            "endpoint": "http://localhost:9000",
+            "bucket": "test",
+            "key": "test.bin",
+            "chunk_size": 1024,
+        });
+        let result = factory(Some(&params));
+        assert!(result.is_err());
+        let err = match result {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("Expected error for sub-5MiB chunk_size"),
+        };
+        assert!(
+            err.contains("5 MiB"),
+            "Error should mention 5 MiB minimum: {err}"
+        );
     }
 
     /// Stub lookup that never finds any variable.

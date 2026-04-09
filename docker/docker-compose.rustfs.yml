@@ -22,7 +22,7 @@
 
 services:
   rustfs:
-    image: rustfs/rustfs:latest
+    image: rustfs/rustfs:1.0.0-alpha.90
     container_name: rustfs-server
     ports:
       - "9000:9000"  # S3 API
