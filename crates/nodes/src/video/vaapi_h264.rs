@@ -624,6 +624,46 @@ impl StandardVideoEncoder for VaapiH264Encoder {
         let coded_width = align_up_u32(width, H264_MB_SIZE);
         let coded_height = align_up_u32(height, H264_MB_SIZE);
 
+        // Auto-detect the correct entrypoint.  Modern Intel GPUs (Gen 9+ /
+        // Skylake onwards) only expose the low-power fixed-function encoder
+        // (`VAEntrypointEncSliceLP`), while older hardware and some AMD
+        // drivers use `VAEntrypointEncSlice`.  Query the driver and pick
+        // whichever is available, preferring the config value when set.
+        let low_power = {
+            use libva::VAEntrypoint::{VAEntrypointEncSlice, VAEntrypointEncSliceLP};
+            use libva::VAProfile::VAProfileH264Main;
+
+            let entrypoints = display
+                .query_config_entrypoints(VAProfileH264Main)
+                .map_err(|e| format!("failed to query H.264 entrypoints: {e}"))?;
+
+            let has_lp = entrypoints.contains(&VAEntrypointEncSliceLP);
+            let has_full = entrypoints.contains(&VAEntrypointEncSlice);
+
+            if !has_lp && !has_full {
+                return Err(
+                    "VA-API driver does not support H.264 encoding (no EncSlice entrypoint)".into(),
+                );
+            }
+
+            // Prefer the user's explicit config; otherwise auto-detect.
+            if config.low_power {
+                if !has_lp {
+                    return Err(
+                        "low_power=true requested but VAEntrypointEncSliceLP is not supported"
+                            .into(),
+                    );
+                }
+                true
+            } else if has_lp && !has_full {
+                // Driver only supports low-power (common on modern Intel).
+                tracing::info!("auto-selecting low-power H.264 encoder (VAEntrypointEncSliceLP)");
+                true
+            } else {
+                false
+            }
+        };
+
         let cros_config = CrosH264EncoderConfig {
             resolution: CrosResolution { width: coded_width, height: coded_height },
             profile: H264Profile::Main,
@@ -642,7 +682,7 @@ impl StandardVideoEncoder for VaapiH264Encoder {
             cros_config,
             nv12_fourcc(),
             CrosResolution { width: coded_width, height: coded_height },
-            config.low_power,
+            low_power,
             BlockingMode::Blocking,
         )
         .map_err(|e| format!("failed to create VA-API H.264 encoder: {e}"))?;
