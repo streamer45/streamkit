@@ -35,13 +35,18 @@ use streamkit_core::{
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MappingMode {
-    /// Smart per-packet-type mapping:
-    /// - `Transcription` → `{ "properties": { "text": "<text>" } }`
-    /// - `Text` → `{ "properties": { "text": "<text>" } }`
-    /// - `Custom` → forward `custom.data` as-is
+    /// Smart per-packet-type mapping.
+    ///
+    /// `Transcription` and `Text` packets are wrapped in
+    /// `{ "properties": { "text": "..." } }` — a shape that targets Slint
+    /// plugin nodes out of the box.  `Custom` packets forward their `data`
+    /// field as-is (assumed to already be the correct `UpdateParams` shape).
+    ///
+    /// If you need a different output shape (e.g. targeting a compositor's
+    /// `text_overlays`), use `template` mode instead.
     #[default]
     Auto,
-    /// User-provided JSON template with `{{ field }}` placeholders.
+    /// User-provided JSON template with `{{ text }}` placeholders.
     Template,
     /// Forward the extracted payload as-is (no transformation).
     Raw,
@@ -59,10 +64,23 @@ pub struct ParamBridgeConfig {
     pub mode: MappingMode,
 
     /// JSON template used when `mode` is `template`.
-    /// Placeholders like `{{ text }}` are replaced with values extracted
-    /// from the incoming packet (currently supports `{{ text }}`).
+    ///
+    /// Placeholders like `{{ text }}` (or `{{text}}`) are replaced with values
+    /// extracted from the incoming packet.
+    ///
+    /// Currently only `{{ text }}` is supported.  Future extensions could add
+    /// `{{ language }}`, `{{ confidence }}`, or arbitrary field paths.
     #[serde(default)]
     pub template: Option<JsonValue>,
+
+    /// Optional debounce window in milliseconds.
+    ///
+    /// When set, rapid `UpdateParams` messages are coalesced: only the most
+    /// recent value is sent after the window expires.  This is useful for
+    /// targets like subtitles where intermediate transcription segments are
+    /// superseded by newer ones.
+    #[serde(default)]
+    pub debounce_ms: Option<u64>,
 }
 
 pub struct ParamBridgeNode {
@@ -125,10 +143,18 @@ fn auto_map(packet: &Packet) -> Option<JsonValue> {
     }
 }
 
-/// Replace `{{ text }}` placeholders in a JSON value tree.
+/// Replace `{{ text }}` (and `{{text}}`) placeholders in a JSON value tree.
+///
+/// Currently only the `text` placeholder is supported.  To add more fields
+/// (e.g. `{{ language }}`, `{{ confidence }}`), extend the replacement list
+/// here and extract the additional values in [`extract_text`] or a new
+/// dedicated extraction helper.
 fn apply_template(template: &JsonValue, text: &str) -> JsonValue {
     match template {
-        JsonValue::String(s) => JsonValue::String(s.replace("{{ text }}", text)),
+        JsonValue::String(s) => {
+            let replaced = s.replace("{{ text }}", text);
+            JsonValue::String(replaced.replace("{{text}}", text))
+        },
         JsonValue::Array(arr) => {
             JsonValue::Array(arr.iter().map(|v| apply_template(v, text)).collect())
         },
@@ -187,55 +213,78 @@ impl ProcessorNode for ParamBridgeNode {
             state_helpers::emit_failed(
                 &context.state_tx,
                 &node_id,
-                "engine_control_tx not available",
+                "engine_control_tx not available (oneshot pipeline?)",
             );
             return Err(StreamKitError::Runtime(
-                "param_bridge requires engine_control_tx (only available in dynamic pipelines)"
-                    .to_string(),
+                "engine_control_tx not available (oneshot pipeline?)".to_string(),
             ));
         }
 
         let mut input_rx = context.take_input("in")?;
         state_helpers::emit_running(&context.state_tx, &node_id);
 
+        let debounce = self.config.debounce_ms.map(tokio::time::Duration::from_millis);
+
         tracing::info!(
             node = %node_id,
             target_node = %target,
             mode = ?self.config.mode,
+            debounce_ms = ?self.config.debounce_ms,
             "param_bridge started"
         );
 
-        while let Some(packet) = context.recv_with_cancellation(&mut input_rx).await {
-            let params = match &self.config.mode {
-                MappingMode::Auto => auto_map(&packet),
-                MappingMode::Template => {
-                    let Some(text) = extract_text(&packet) else {
-                        tracing::debug!(packet_type = %packet_type_label(&packet), "param_bridge template: unsupported packet type, skipping");
+        // When debouncing is enabled we store the most recent params and only
+        // send after the window elapses without a new packet arriving.
+        let mut pending_params: Option<JsonValue> = None;
+        let sleep = tokio::time::sleep(tokio::time::Duration::MAX);
+        tokio::pin!(sleep);
+
+        loop {
+            tokio::select! {
+                biased;
+
+                packet = context.recv_with_cancellation(&mut input_rx) => {
+                    let Some(packet) = packet else {
+                        break;
+                    };
+
+                    let params = match &self.config.mode {
+                        MappingMode::Auto => auto_map(&packet),
+                        MappingMode::Template => {
+                            let Some(text) = extract_text(&packet) else {
+                                tracing::debug!(packet_type = %packet_type_label(&packet), "param_bridge template: unsupported packet type, skipping");
+                                continue;
+                            };
+                            self.config.template.as_ref().map(|tmpl| apply_template(tmpl, &text))
+                        },
+                        MappingMode::Raw => raw_payload(&packet),
+                    };
+
+                    let Some(params) = params else {
                         continue;
                     };
-                    self.config.template.as_ref().map(|tmpl| apply_template(tmpl, &text))
-                },
-                MappingMode::Raw => raw_payload(&packet),
-            };
 
-            let Some(params) = params else {
-                continue;
-            };
+                    if let Some(d) = debounce {
+                        pending_params = Some(params);
+                        sleep.as_mut().reset(tokio::time::Instant::now() + d);
+                    } else {
+                        Self::send_params(&context, &node_id, target, params).await;
+                    }
+                }
 
-            tracing::debug!(
-                node = %node_id,
-                target_node = %target,
-                "param_bridge sending UpdateParams"
-            );
-
-            if let Err(e) = context.tune_sibling(target, params).await {
-                tracing::warn!(
-                    node = %node_id,
-                    target_node = %target,
-                    error = %e,
-                    "param_bridge failed to send UpdateParams"
-                );
+                () = &mut sleep, if pending_params.is_some() => {
+                    if let Some(params) = pending_params.take() {
+                        Self::send_params(&context, &node_id, target, params).await;
+                    }
+                    // Reset sleep to far future so it doesn't fire again.
+                    sleep.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_secs(86400));
+                }
             }
+        }
+
+        // Flush any pending debounced params before shutting down.
+        if let Some(params) = pending_params.take() {
+            Self::send_params(&context, &node_id, target, params).await;
         }
 
         state_helpers::emit_stopped(&context.state_tx, &node_id, "input_closed");
@@ -244,8 +293,28 @@ impl ProcessorNode for ParamBridgeNode {
     }
 }
 
+impl ParamBridgeNode {
+    async fn send_params(context: &NodeContext, node_id: &str, target: &str, params: JsonValue) {
+        tracing::debug!(
+            node = %node_id,
+            target_node = %target,
+            "param_bridge sending UpdateParams"
+        );
+
+        if let Err(e) = context.tune_sibling(target, params).await {
+            tracing::warn!(
+                node = %node_id,
+                target_node = %target,
+                error = %e,
+                "param_bridge failed to send UpdateParams"
+            );
+        }
+    }
+}
+
 pub fn register(registry: &mut streamkit_core::NodeRegistry) {
     use schemars::schema_for;
+    use streamkit_core::registry::StaticPins;
 
     let schema = match serde_json::to_value(schema_for!(ParamBridgeConfig)) {
         Ok(v) => v,
@@ -255,10 +324,11 @@ pub fn register(registry: &mut streamkit_core::NodeRegistry) {
         },
     };
 
-    registry.register_dynamic_with_description(
+    registry.register_static_with_description(
         "core::param_bridge",
         |params| Ok(Box::new(ParamBridgeNode::new(params)?)),
         schema,
+        StaticPins { inputs: ParamBridgeNode::input_pins(), outputs: vec![] },
         vec!["core".to_string(), "control".to_string()],
         false,
         "Bridges data-plane packets to control-plane UpdateParams messages. \
@@ -365,6 +435,13 @@ mod tests {
     #[test]
     fn apply_template_string_replacement() {
         let tmpl = json!("prefix: {{ text }}");
+        let result = apply_template(&tmpl, "hello");
+        assert_eq!(result, json!("prefix: hello"));
+    }
+
+    #[test]
+    fn apply_template_no_whitespace_placeholder() {
+        let tmpl = json!("prefix: {{text}}");
         let result = apply_template(&tmpl, "hello");
         assert_eq!(result, json!("prefix: hello"));
     }
@@ -501,5 +578,12 @@ mod tests {
     fn config_rejects_unknown_fields() {
         let params = json!({"target_node": "foo", "unknown_field": true});
         assert!(ParamBridgeNode::new(Some(&params)).is_err());
+    }
+
+    #[test]
+    fn config_debounce_ms() {
+        let params = json!({"target_node": "t", "debounce_ms": 100});
+        let node = ParamBridgeNode::new(Some(&params)).unwrap();
+        assert_eq!(node.config.debounce_ms, Some(100));
     }
 }

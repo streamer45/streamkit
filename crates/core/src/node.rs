@@ -367,23 +367,24 @@ impl NodeContext {
     ///
     /// # Errors
     ///
-    /// Returns an error string if the engine control channel is unavailable
-    /// (oneshot pipeline) or closed (engine shut down).
+    /// Returns a [`StreamKitError::Runtime`] if the engine control channel is
+    /// unavailable (oneshot pipeline) or closed (engine shut down).
     pub async fn tune_sibling(
         &self,
         target_node_id: &str,
         params: serde_json::Value,
-    ) -> Result<(), String> {
-        let tx = self
-            .engine_control_tx
-            .as_ref()
-            .ok_or_else(|| "engine_control_tx not available (oneshot pipeline?)".to_string())?;
+    ) -> Result<(), StreamKitError> {
+        let tx = self.engine_control_tx.as_ref().ok_or_else(|| {
+            StreamKitError::Runtime(
+                "engine_control_tx not available (oneshot pipeline?)".to_string(),
+            )
+        })?;
         tx.send(crate::control::EngineControlMessage::TuneNode {
             node_id: target_node_id.to_string(),
             message: crate::control::NodeControlMessage::UpdateParams(params),
         })
         .await
-        .map_err(|_| "Engine control channel closed".to_string())
+        .map_err(|_| StreamKitError::Runtime("engine control channel closed".to_string()))
     }
 
     /// Receives a packet from the given receiver, respecting the cancellation token if present.

@@ -10,7 +10,7 @@
 #   param_bridge → UpdateParams → slint subtitle → compositor layer
 #
 # Requires:
-#   - plugin::native::whisper loaded (with a model, e.g. base.en)
+#   - plugin::native::whisper loaded (with a model, e.g. tiny.en)
 #   - plugin::native::slint loaded
 #   just build-plugin-native-whisper && just build-plugin-native-slint && just copy-plugins-native
 
@@ -69,14 +69,14 @@ nodes:
   resampler:
     kind: audio::resampler
     params:
-      sample_rate: 16000
-      channels: 1
+      target_sample_rate: 16000
     needs: opus_decoder
 
   whisper:
     kind: plugin::native::whisper
     params:
-      model: base.en
+      model_path: models/ggml-tiny.en-q5_1.bin
+      language: en
     needs: resampler
 
   # --- Subtitle rendering (Slint) ---
@@ -101,6 +101,7 @@ nodes:
         properties:
           text: "{{ text }}"
           visible: true
+      debounce_ms: 100
     needs:
       in: whisper
     connection_mode: best_effort
