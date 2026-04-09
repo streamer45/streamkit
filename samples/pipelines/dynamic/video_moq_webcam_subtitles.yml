@@ -6,12 +6,15 @@
 # transcription rendered as a Slint subtitle overlay.
 #
 # Data flow (subtitles):
-#   mic → opus_decoder → resampler → whisper → stt_tap → [best_effort] →
+#   mic → opus_decoder → resampler → whisper → [best_effort] →
 #   param_bridge → UpdateParams → slint subtitle → compositor layer
+#
+#   whisper → [best_effort] → telemetry_out (stream view)
 #
 # Requires:
 #   - plugin::native::whisper loaded (with a model, e.g. tiny.en)
 #   - plugin::native::slint loaded
+#   - Silero VAD model: models/silero_vad.onnx
 #   just build-plugin-native-whisper && just build-plugin-native-slint && just copy-plugins-native
 
 name: Webcam PiP + Live Subtitles (MoQ)
@@ -77,14 +80,23 @@ nodes:
     params:
       model_path: models/ggml-tiny.en-q5_1.bin
       language: en
+      vad_model_path: models/silero_vad.onnx
+      vad_threshold: 0.4
+      min_silence_duration_ms: 600
+      max_segment_duration_secs: 30.0
+      emit_vad_events: true
+      n_threads: 0
     needs: resampler
 
-  # Tap whisper output so transcriptions appear in the stream view telemetry.
-  stt_tap:
-    kind: core::telemetry_tap
+  # Surface STT results in the stream view telemetry timeline.
+  stt_telemetry:
+    kind: core::telemetry_out
     params:
       packet_types: ["Transcription"]
-    needs: whisper
+      max_events_per_sec: 20
+    needs:
+      node: whisper
+      mode: best_effort
 
   # --- Subtitle rendering (Slint) ---
 
@@ -110,7 +122,7 @@ nodes:
           show: true
       debounce_ms: 100
     needs:
-      in: stt_tap
+      in: whisper
     connection_mode: best_effort
 
   # --- Video decode + compositing ---
