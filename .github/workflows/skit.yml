@@ -123,11 +123,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libvpx-dev nasm cmake pkg-config libopus-dev
-          # CUDA headers needed by shiguredo_nvcodec (nvcodec feature).
-          # Only install if not already present.
-          if [ ! -f /usr/local/cuda/include/cuda.h ]; then
-            sudo apt-get install -y nvidia-cuda-toolkit
-          fi
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -150,6 +145,9 @@ jobs:
           # Ubuntu's nvidia-cuda-toolkit installs headers to /usr/include, not
           # /usr/local/cuda/include.  Tell shiguredo_nvcodec where to find them.
           CUDA_INCLUDE_PATH: /usr/include
+          # bindgen (used by shiguredo_nvcodec) needs the clang builtin include
+          # path so it can find stddef.h and other compiler-provided headers.
+          BINDGEN_EXTRA_CLANG_ARGS: "-I/usr/lib/llvm-18/lib/clang/18/include"
         run: |
           cargo test --locked -p streamkit-nodes --features gpu
           cargo test --locked -p streamkit-engine --features gpu
