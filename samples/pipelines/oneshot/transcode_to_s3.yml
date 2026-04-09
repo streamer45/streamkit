@@ -21,7 +21,7 @@ mode: oneshot
 client:
   input:
     type: file_upload
-    accept: "audio/opus"
+    accept: "audio/ogg"
   output:
     type: audio
 nodes:

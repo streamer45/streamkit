@@ -4,8 +4,9 @@
 
 //! Object store write node — streams binary data to S3-compatible object storage.
 //!
-//! Uses [Apache OpenDAL](https://opendal.apache.org/) to support S3, GCS,
-//! Azure Blob, MinIO, RustFS, and other compatible backends.
+//! Uses [Apache OpenDAL](https://opendal.apache.org/) to support S3, MinIO,
+//! RustFS, and other S3-compatible backends.  (Only the `services-s3` feature
+//! is compiled; GCS / Azure would require additional OpenDAL features.)
 //!
 //! Incoming [`Packet::Binary`] packets are buffered up to `chunk_size` and
 //! written via OpenDAL's multipart [`Writer`](opendal::Writer), keeping memory
@@ -74,7 +75,7 @@ pub struct ObjectStoreWriteConfig {
     /// Access key ID.
     ///
     /// If omitted, the node falls back to `access_key_id_env`.
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub access_key_id: Option<String>,
 
     /// Environment variable name containing the access key ID.
@@ -86,7 +87,7 @@ pub struct ObjectStoreWriteConfig {
     /// Secret access key.
     ///
     /// If omitted, the node falls back to `secret_key_env`.
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub secret_access_key: Option<String>,
 
     /// Environment variable name containing the secret access key.
@@ -144,14 +145,16 @@ fn resolve_credential(
                 return Ok(val);
             },
             Ok(_) => {
-                return Err(StreamKitError::Configuration(format!(
-                    "Environment variable '{env}' for {label} is empty"
-                )));
+                // Env var exists but is empty — fall through to literal.
+                tracing::debug!(
+                    "Env var '{env}' for {label} is empty, trying literal fallback"
+                );
             },
             Err(_) => {
-                return Err(StreamKitError::Configuration(format!(
-                    "Environment variable '{env}' for {label} is not set"
-                )));
+                // Env var not set — fall through to literal.
+                tracing::debug!(
+                    "Env var '{env}' for {label} is not set, trying literal fallback"
+                );
             },
         }
     }
@@ -283,6 +286,17 @@ impl ObjectStoreWriteNode {
                 return Err(StreamKitError::Configuration(
                     "chunk_size must be greater than 0".to_string(),
                 ));
+            }
+
+            const S3_MIN_PART_SIZE: usize = 5 * 1024 * 1024;
+            if config.chunk_size < S3_MIN_PART_SIZE && params.is_some() {
+                tracing::warn!(
+                    chunk_size = config.chunk_size,
+                    min = S3_MIN_PART_SIZE,
+                    "chunk_size is below the S3 minimum multipart part size (5 MiB). \
+                     Intermediate parts smaller than 5 MiB will be rejected by S3. \
+                     Only the final part may be smaller."
+                );
             }
 
             Ok(Box::new(Self { config }))
@@ -424,6 +438,9 @@ impl ProcessorNode for ObjectStoreWriteNode {
         let mut total_bytes: u64 = 0;
         let mut buffer = Vec::with_capacity(self.config.chunk_size);
         let mut chunks_written: u64 = 0;
+        // Tracks whether the downstream output channel has closed (passthrough
+        // mode only).  When true we stop forwarding but keep writing to S3.
+        let mut output_closed = false;
 
         while let Some(packet) = context.recv_with_cancellation(&mut input_rx).await {
             if let Packet::Binary { data, content_type, metadata } = packet {
@@ -455,14 +472,22 @@ impl ProcessorNode for ObjectStoreWriteNode {
                 }
 
                 // Forward the packet downstream when in passthrough mode.
-                if self.config.passthrough {
+                if self.config.passthrough && !output_closed {
                     let forwarded = Packet::Binary { data, content_type, metadata };
                     if context.output_sender.send("out", forwarded).await.is_err() {
-                        tracing::debug!(%node_name, "Output channel closed, stopping node");
-                        break;
+                        // Downstream closed but we keep writing to S3 so the
+                        // archive is complete.  Skip further send attempts.
+                        tracing::info!(
+                            %node_name,
+                            "Output channel closed; continuing S3 write without forwarding"
+                        );
+                        output_closed = true;
                     }
                 }
 
+                // Consistent with file_write.rs: report a "sent" stat for
+                // every packet consumed, even in pure-sink mode where there
+                // is no downstream receiver.
                 stats_tracker.sent();
                 stats_tracker.maybe_send();
             } else {
@@ -507,7 +532,7 @@ impl ProcessorNode for ObjectStoreWriteNode {
         }
 
         // Upload committed successfully — disarm the abort guard.
-        guard.disarm();
+        let _ = guard.disarm();
 
         stats_tracker.force_send();
         tracing::info!(
@@ -647,6 +672,15 @@ mod tests {
 
     #[test]
     fn test_resolve_credential_env_empty() {
+        // Env var is empty — should fall through to literal.
+        let lookup = |_: &str| Ok(String::new());
+        let result = resolve_credential(Some("ANY_VAR"), Some("fallback"), "test", lookup);
+        assert_eq!(result.unwrap(), "fallback");
+    }
+
+    #[test]
+    fn test_resolve_credential_env_empty_no_literal() {
+        // Env var is empty and no literal — should error.
         let lookup = |_: &str| Ok(String::new());
         let result = resolve_credential(Some("ANY_VAR"), None, "test", lookup);
         assert!(result.is_err());
@@ -654,6 +688,14 @@ mod tests {
 
     #[test]
     fn test_resolve_credential_env_not_set() {
+        // Env var not set — should fall through to literal.
+        let result = resolve_credential(Some("MISSING"), Some("fallback"), "test", no_env);
+        assert_eq!(result.unwrap(), "fallback");
+    }
+
+    #[test]
+    fn test_resolve_credential_env_not_set_no_literal() {
+        // Env var not set and no literal — should error.
         let result = resolve_credential(Some("MISSING"), None, "test", no_env);
         assert!(result.is_err());
     }

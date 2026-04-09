@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -50,12 +50,16 @@ async function isS3Available(): Promise<boolean> {
  */
 function ensureBucket(): void {
   try {
-    execSync(`aws --endpoint-url ${S3_ENDPOINT} s3api head-bucket --bucket ${S3_BUCKET}`, {
-      env: awsEnv,
-      stdio: 'ignore',
-    });
+    execFileSync(
+      'aws',
+      ['--endpoint-url', S3_ENDPOINT, 's3api', 'head-bucket', '--bucket', S3_BUCKET],
+      {
+        env: awsEnv,
+        stdio: 'ignore',
+      }
+    );
   } catch {
-    execSync(`aws --endpoint-url ${S3_ENDPOINT} s3 mb s3://${S3_BUCKET}`, {
+    execFileSync('aws', ['--endpoint-url', S3_ENDPOINT, 's3', 'mb', `s3://${S3_BUCKET}`], {
       env: awsEnv,
       stdio: 'ignore',
     });
@@ -67,8 +71,20 @@ function ensureBucket(): void {
  */
 function getS3ObjectSize(): number {
   try {
-    const output = execSync(
-      `aws --endpoint-url ${S3_ENDPOINT} s3api head-object --bucket ${S3_BUCKET} --key ${S3_KEY} --output json`,
+    const output = execFileSync(
+      'aws',
+      [
+        '--endpoint-url',
+        S3_ENDPOINT,
+        's3api',
+        'head-object',
+        '--bucket',
+        S3_BUCKET,
+        '--key',
+        S3_KEY,
+        '--output',
+        'json',
+      ],
       { env: awsEnv, encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }
     );
     const parsed = JSON.parse(output) as { ContentLength?: number };
@@ -83,10 +99,14 @@ function getS3ObjectSize(): number {
  */
 function deleteS3Object(): void {
   try {
-    execSync(`aws --endpoint-url ${S3_ENDPOINT} s3 rm s3://${S3_BUCKET}/${S3_KEY}`, {
-      env: awsEnv,
-      stdio: 'ignore',
-    });
+    execFileSync(
+      'aws',
+      ['--endpoint-url', S3_ENDPOINT, 's3', 'rm', `s3://${S3_BUCKET}/${S3_KEY}`],
+      {
+        env: awsEnv,
+        stdio: 'ignore',
+      }
+    );
   } catch {
     // Ignore cleanup errors
   }
