@@ -312,7 +312,7 @@ fn write_nv12_to_mapping(
 
             // UV plane — interleave U and V from I420 into NV12 UV.
             if planes.len() > 1 {
-                let uv_stride = plane_pitches.get(1).copied().unwrap_or(w);
+                let uv_stride = plane_pitches.get(1).copied().unwrap_or(uv_w * 2);
                 let mut uv_plane = planes[1].borrow_mut();
                 for row in 0..uv_h {
                     for col in 0..uv_w {
@@ -344,13 +344,13 @@ fn write_nv12_to_mapping(
 
 /// Configuration for the VA-API AV1 hardware decoder node.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
 pub struct VaapiAv1DecoderConfig {
     /// Path to the DRM render device (e.g. `/dev/dri/renderD128`).
     /// When `None`, auto-detects the first VA-API capable device.
     pub render_device: Option<String>,
 
     /// Hardware acceleration mode.
-    #[serde(default)]
     pub hw_accel: HwAccelMode,
 }
 
@@ -498,33 +498,31 @@ fn vaapi_av1_decode_loop(
     result_tx: &mpsc::Sender<Result<VideoFrame, String>>,
     duration_histogram: &opentelemetry::metrics::Histogram<f64>,
 ) {
-    // ── Open VA display + GBM device ─────────────────────────────────────
-    let (_display, gbm, path) = match open_va_and_gbm(render_device) {
-        Ok(v) => v,
+    // ── Open GBM device + VA display ──────────────────────────────────
+    let path = resolve_render_device(render_device);
+
+    let gbm = match GbmDevice::open(&path) {
+        Ok(g) => g,
         Err(e) => {
-            let _ = result_tx.blocking_send(Err(e));
+            let _ =
+                result_tx.blocking_send(Err(format!("failed to open GBM device on {path}: {e}")));
+            return;
+        },
+    };
+
+    let display = match libva::Display::open_drm_display(&path) {
+        Ok(d) => d,
+        Err(e) => {
+            let _ =
+                result_tx.blocking_send(Err(format!("failed to open VA display on {path}: {e}")));
             return;
         },
     };
     tracing::info!(device = %path, "VA-API AV1 decoder opened display");
 
     // ── Create stateless decoder ─────────────────────────────────────────
-    //
-    // Re-open the display for the decoder because `StatelessDecoder` takes
-    // ownership via `Rc` and we need a separate `Rc` for the GBM device's
-    // surface imports.
-    let decoder_display = match libva::Display::open_drm_display(&path) {
-        Ok(d) => d,
-        Err(e) => {
-            let _ = result_tx.blocking_send(Err(format!(
-                "failed to open VA display for decoder on {path}: {e}"
-            )));
-            return;
-        },
-    };
-
     let mut decoder = match StatelessDecoder::<Av1, VaapiDecBackend<GbmVideoFrame>>::new_vaapi(
-        decoder_display,
+        display,
         BlockingMode::Blocking,
     ) {
         Ok(d) => d,
@@ -722,6 +720,7 @@ fn drain_decoder_events(
 
 /// Configuration for the VA-API AV1 hardware encoder node.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
 pub struct VaapiAv1EncoderConfig {
     /// Path to the DRM render device (e.g. `/dev/dri/renderD128`).
     /// When `None`, auto-detects the first VA-API capable device.
@@ -733,22 +732,18 @@ pub struct VaapiAv1EncoderConfig {
     ///
     /// Note: VA-API AV1 encoding via cros-codecs currently supports only the
     /// `ConstantQuality` rate control mode, not `ConstantBitrate`.
-    #[serde(default = "default_quality")]
     pub quality: u32,
 
     /// Target framerate in frames per second (used for rate control hints).
-    #[serde(default = "default_framerate")]
     pub framerate: u32,
 
     /// Use low-power encoding mode if the driver supports it.
     /// Low-power mode uses the GPU's fixed-function encoder (if available)
     /// rather than shader-based encoding, typically offering lower latency
     /// at reduced quality flexibility.
-    #[serde(default)]
     pub low_power: bool,
 
     /// Hardware acceleration mode.
-    #[serde(default)]
     pub hw_accel: HwAccelMode,
 }
 
@@ -1396,6 +1391,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_write_i420_to_nv12_odd_width() {
+        // Odd width exercises the UV stride fallback path — the fix ensures
+        // the fallback uses `uv_w * 2` instead of `w` so rows don't misalign.
+        let w: u32 = 641;
+        let h: u32 = 480;
+        let frame = crate::test_utils::create_test_video_frame(w, h, PixelFormat::I420, 0x10);
+
+        let y_size = (w * h) as usize;
+        let uv_w = w.div_ceil(2) as usize; // 321
+        let chroma_w = uv_w * 2; // 642
+        let uv_h = (h as usize + 1) / 2;
+
+        let mut y_buf = vec![0u8; y_size];
+        let mut uv_buf = vec![0u8; chroma_w * uv_h];
+
+        let mapping =
+            MockWriteMapping { planes: vec![RefCell::new(&mut y_buf), RefCell::new(&mut uv_buf)] };
+        // Deliberately omit pitches to exercise the fallback.
+        let pitches: [usize; 0] = [];
+
+        let result = write_nv12_to_mapping(&mapping, &frame, &pitches);
+        assert!(result.is_ok(), "I420→NV12 odd-width conversion failed: {:?}", result.err());
+
+        // Verify UV interleaving on the last row to catch misalignment.
+        let last_row = uv_h - 1;
+        for col in 0..uv_w {
+            let idx = last_row * chroma_w + col * 2;
+            assert_eq!(uv_buf[idx], 128, "U at last row col={col}");
+            assert_eq!(uv_buf[idx + 1], 128, "V at last row col={col}");
+        }
+    }
+
     // -----------------------------------------------------------------------
     // write_nv12_to_mapping — unsupported pixel format
     // -----------------------------------------------------------------------
@@ -1757,5 +1785,23 @@ mod tests {
         };
         let result = VaapiAv1EncoderNode::new(encoder_config);
         assert!(result.is_err(), "ForceCpu should be rejected for VA-API encoder");
+    }
+
+    // -----------------------------------------------------------------------
+    // deny_unknown_fields
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_deny_unknown_fields_decoder() {
+        let json = r#"{"render_device":null,"hw_accel":"auto","bogus":1}"#;
+        let result: Result<VaapiAv1DecoderConfig, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "Unknown fields should be rejected");
+    }
+
+    #[test]
+    fn test_deny_unknown_fields_encoder() {
+        let json = r#"{"quality":128,"unknown_key":"oops"}"#;
+        let result: Result<VaapiAv1EncoderConfig, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "Unknown fields should be rejected");
     }
 }
