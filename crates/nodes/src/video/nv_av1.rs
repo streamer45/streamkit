@@ -188,9 +188,6 @@ impl ProcessorNode for NvAv1DecoderNode {
                 loop {
                     match decoder.next_frame() {
                         Ok(Some(nv_frame)) => {
-                            decode_duration_histogram
-                                .record(decode_start_time.elapsed().as_secs_f64(), &[]);
-
                             match copy_nvdec_frame(&nv_frame, metadata.clone(), video_pool.as_ref())
                             {
                                 Ok(frame) => {
@@ -212,6 +209,12 @@ impl ProcessorNode for NvAv1DecoderNode {
                         },
                     }
                 }
+
+                // Record decode duration once per input packet (after the
+                // entire decode + drain cycle), matching the AV1 CPU decoder
+                // pattern in av1.rs.
+                decode_duration_histogram
+                    .record(decode_start_time.elapsed().as_secs_f64(), &[]);
             }
 
             // Flush remaining frames.
