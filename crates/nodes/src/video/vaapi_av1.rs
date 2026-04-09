@@ -950,20 +950,27 @@ impl StandardVideoEncoder for VaapiAv1Encoder {
         let is_keyframe = metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(false);
         let timestamp = metadata.as_ref().and_then(|m| m.timestamp_us).unwrap_or(self.frame_count);
 
+        // Use actual GBM plane offsets instead of computing them manually.
+        // Different drivers may place the UV plane at an offset that differs
+        // from `y_stride * coded_height` (e.g. with extra padding rows).
+        let offsets = gbm_frame.get_plane_offset();
+
         let frame_layout = FrameLayout {
             format: (nv12_fourcc(), 0), // DRM_FORMAT_MOD_LINEAR
             size: CrosResolution { width: self.coded_width, height: self.coded_height },
             planes: vec![
                 PlaneLayout {
                     buffer_index: 0,
-                    offset: 0,
-                    stride: pitches.first().copied().unwrap_or(self.width as usize),
+                    offset: offsets.first().copied().unwrap_or(0),
+                    stride: pitches.first().copied().unwrap_or(self.coded_width as usize),
                 },
                 PlaneLayout {
                     buffer_index: 0,
-                    offset: pitches.first().copied().unwrap_or(self.width as usize)
-                        * self.coded_height as usize,
-                    stride: pitches.get(1).copied().unwrap_or(self.width as usize),
+                    offset: offsets.get(1).copied().unwrap_or(
+                        pitches.first().copied().unwrap_or(self.coded_width as usize)
+                            * self.coded_height as usize,
+                    ),
+                    stride: pitches.get(1).copied().unwrap_or(self.coded_width as usize),
                 },
             ],
         };

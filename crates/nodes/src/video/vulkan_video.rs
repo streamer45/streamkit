@@ -635,6 +635,14 @@ impl ProcessorNode for VulkanVideoH264EncoderNode {
                     },
                 }
             }
+
+            // Note: vk-video 0.3.0's BytesEncoder has no flush() method
+            // (unlike BytesDecoder which does).  The encoder operates
+            // frame-at-a-time without B-frame reordering, so no frames
+            // should be buffered internally.  If a future vk-video version
+            // adds flush(), it should be called here — matching the
+            // decoder's flush at line ~245 and the pattern in
+            // encoder_trait::spawn_standard_encode_task.
         });
 
         // ── State transition ─────────────────────────────────────────────

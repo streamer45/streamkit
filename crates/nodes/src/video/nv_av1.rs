@@ -92,6 +92,13 @@ impl NvAv1DecoderNode {
                     .to_string(),
             ));
         }
+        if config.cuda_device.is_some_and(|d| d > i32::MAX as u32) {
+            return Err(StreamKitError::Configuration(format!(
+                "cuda_device {} exceeds maximum CUDA device index ({})",
+                config.cuda_device.unwrap_or(0),
+                i32::MAX,
+            )));
+        }
         Ok(Self { config })
     }
 }
@@ -423,6 +430,13 @@ impl NvAv1EncoderNode {
                  use the CPU AV1 encoder (video::av1::encoder) for ForceCpu mode"
                     .to_string(),
             ));
+        }
+        if config.cuda_device.is_some_and(|d| d > i32::MAX as u32) {
+            return Err(StreamKitError::Configuration(format!(
+                "cuda_device {} exceeds maximum CUDA device index ({})",
+                config.cuda_device.unwrap_or(0),
+                i32::MAX,
+            )));
         }
         Ok(Self { config })
     }
@@ -828,6 +842,22 @@ mod tests {
     fn default_configs_accepted() {
         assert!(NvAv1DecoderNode::new(NvAv1DecoderConfig::default()).is_ok());
         assert!(NvAv1EncoderNode::new(NvAv1EncoderConfig::default()).is_ok());
+    }
+
+    #[test]
+    fn rejects_cuda_device_exceeding_i32_max() {
+        let bad_device = i32::MAX as u32 + 1;
+        let dec_result = NvAv1DecoderNode::new(NvAv1DecoderConfig {
+            cuda_device: Some(bad_device),
+            ..NvAv1DecoderConfig::default()
+        });
+        assert!(dec_result.is_err(), "cuda_device > i32::MAX should be rejected by decoder");
+
+        let enc_result = NvAv1EncoderNode::new(NvAv1EncoderConfig {
+            cuda_device: Some(bad_device),
+            ..NvAv1EncoderConfig::default()
+        });
+        assert!(enc_result.is_err(), "cuda_device > i32::MAX should be rejected by encoder");
     }
 
     #[test]
