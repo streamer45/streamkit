@@ -226,13 +226,17 @@ pub(super) fn write_nv12_to_va_surface(
                 }
             }
             // UV plane (already interleaved in NV12).
-            let uv_h = h / 2;
+            // Use ceiling division to handle odd dimensions, matching
+            // VideoLayout::packed which uses `(width + 1) / 2`.
+            let uv_h = (h + 1) / 2;
+            let chroma_row_bytes = ((w + 1) / 2) * 2;
             let src_uv = &src[w * h..];
             for row in 0..uv_h {
-                let s = row * w;
+                let s = row * chroma_row_bytes;
+                let copy_w = chroma_row_bytes.min(w);
                 let d = uv_offset + row * uv_pitch;
-                if s + w <= src_uv.len() && d + w <= dest.len() {
-                    dest[d..d + w].copy_from_slice(&src_uv[s..s + w]);
+                if s + copy_w <= src_uv.len() && d + copy_w <= dest.len() {
+                    dest[d..d + copy_w].copy_from_slice(&src_uv[s..s + copy_w]);
                 }
             }
         },
@@ -246,8 +250,10 @@ pub(super) fn write_nv12_to_va_surface(
                 }
             }
             // I420 → NV12: interleave U and V into a single UV plane.
-            let uv_w = w / 2;
-            let uv_h = h / 2;
+            // Use ceiling division to handle odd dimensions correctly,
+            // matching VideoLayout::packed and i420_to_nv12_buffer.
+            let uv_w = (w + 1) / 2;
+            let uv_h = (h + 1) / 2;
             let u_start = w * h;
             let v_start = u_start + uv_w * uv_h;
             for row in 0..uv_h {
