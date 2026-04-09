@@ -90,7 +90,7 @@ nodes:
       slint_file: samples/slint/system/subtitle.slint
       properties:
         text: ""
-        visible: true
+        show: true
 
   subtitle_bridge:
     kind: core::param_bridge
@@ -100,7 +100,7 @@ nodes:
       template:
         properties:
           text: "{{ text }}"
-          visible: true
+          show: true
       debounce_ms: 100
     needs:
       in: whisper

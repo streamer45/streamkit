@@ -8,11 +8,11 @@
 // word-wrapped text and a fade-in animation on updates.
 //
 // Properties updated at runtime via param_bridge → UpdateParams:
-//   text, visible
+//   text, show
 
 export component Subtitle inherits Window {
     in property <string> text: "";
-    in property <bool> visible: true;
+    in property <bool> show: true;
 
     width: 1280px;
     height: 120px;
@@ -23,7 +23,7 @@ export component Subtitle inherits Window {
         width: 100%;
         height: 100%;
         background: transparent;
-        opacity: root.visible ? 1.0 : 0.0;
+        opacity: root.show ? 1.0 : 0.0;
         animate opacity { duration: 300ms; easing: ease-in-out; }
 
         // Dark backdrop.
