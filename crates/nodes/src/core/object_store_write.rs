@@ -652,10 +652,7 @@ mod tests {
             Err(e) => e.to_string(),
             Ok(_) => panic!("Expected error for sub-5MiB chunk_size"),
         };
-        assert!(
-            err.contains("5 MiB"),
-            "Error should mention 5 MiB minimum: {err}"
-        );
+        assert!(err.contains("5 MiB"), "Error should mention 5 MiB minimum: {err}");
     }
 
     /// Stub lookup that never finds any variable.
