@@ -168,6 +168,11 @@ fn apply_template(template: &JsonValue, text: &str) -> JsonValue {
 }
 
 /// Extract the raw JSON payload from a packet (for raw mode).
+///
+/// **Note:** `Transcription` packets serialize the full `TranscriptionData`
+/// struct (including per-segment timing and confidence).  For transcriptions
+/// with many segments this can produce a non-trivial JSON tree — prefer
+/// `auto` or `template` mode for the subtitle use case.
 fn raw_payload(packet: &Packet) -> Option<JsonValue> {
     match packet {
         Packet::Custom(c) => Some(c.data.clone()),
@@ -229,7 +234,10 @@ impl ProcessorNode for ParamBridgeNode {
         );
 
         // Take control_rx out of context so we can select on it alongside
-        // recv_with_cancellation (which borrows context immutably).
+        // recv_with_cancellation (which borrows context immutably).  The
+        // dummy channel is a one-time allocation that is never read —
+        // other nodes avoid this because they don't use
+        // recv_with_cancellation.
         let mut control_rx = {
             let (_, rx) = tokio::sync::mpsc::channel(1);
             std::mem::replace(&mut context.control_rx, rx)
@@ -248,9 +256,15 @@ impl ProcessorNode for ParamBridgeNode {
             "param_bridge started"
         );
 
-        // When debouncing is enabled we store the most recent params and only
-        // send after the window elapses without a new packet arriving.
-        let mut pending_params: Option<JsonValue> = None;
+        // When debouncing is enabled we store the most recent params (and the
+        // pre-mapping text preview for telemetry) and only send after the
+        // window elapses without a new packet arriving.
+        let mut pending_params: Option<(JsonValue, Option<String>)> = None;
+
+        // Dedup: skip UpdateParams that are identical to the last-sent value.
+        // This avoids redundant Slint re-renders when Whisper emits duplicate
+        // segments during VAD boundary refinement.
+        let mut last_sent: Option<JsonValue> = None;
         let sleep = tokio::time::sleep(tokio::time::Duration::MAX);
         tokio::pin!(sleep);
 
@@ -273,14 +287,18 @@ impl ProcessorNode for ParamBridgeNode {
                         break;
                     };
 
+                    // Extract text preview for telemetry — done before mapping
+                    // so it's independent of the target-specific JSON shape.
+                    let text_preview = extract_text(&packet);
+
                     let params = match &self.config.mode {
                         MappingMode::Auto => auto_map(&packet),
                         MappingMode::Template => {
-                            let Some(text) = extract_text(&packet) else {
+                            let Some(ref text) = text_preview else {
                                 tracing::debug!(packet_type = %packet_type_label(&packet), "param_bridge template: unsupported packet type, skipping");
                                 continue;
                             };
-                            self.config.template.as_ref().map(|tmpl| apply_template(tmpl, &text))
+                            self.config.template.as_ref().map(|tmpl| apply_template(tmpl, text))
                         },
                         MappingMode::Raw => raw_payload(&packet),
                     };
@@ -290,26 +308,38 @@ impl ProcessorNode for ParamBridgeNode {
                     };
 
                     if let Some(d) = debounce {
-                        pending_params = Some(params);
+                        pending_params = Some((params, text_preview));
                         sleep.as_mut().reset(tokio::time::Instant::now() + d);
                     } else {
-                        Self::send_params(&context, &telemetry, &node_id, target, params).await;
+                        // Dedup: skip if identical to last sent params.
+                        if last_sent.as_ref() == Some(&params) {
+                            continue;
+                        }
+                        last_sent = Some(params.clone());
+                        Self::send_params(&context, &telemetry, &node_id, target, params, text_preview.as_deref()).await;
                     }
                 }
 
                 () = &mut sleep, if pending_params.is_some() => {
-                    if let Some(params) = pending_params.take() {
-                        Self::send_params(&context, &telemetry, &node_id, target, params).await;
+                    if let Some((params, text_preview)) = pending_params.take() {
+                        // Dedup: skip if identical to last sent params.
+                        if last_sent.as_ref() != Some(&params) {
+                            last_sent = Some(params.clone());
+                            Self::send_params(&context, &telemetry, &node_id, target, params, text_preview.as_deref()).await;
+                        }
                     }
                     // Reset sleep to far future so it doesn't fire again.
-                    sleep.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_secs(86400));
+                    // Cannot use Duration::MAX — Instant + Duration::MAX overflows.
+                    sleep.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_secs(365 * 24 * 3600));
                 }
             }
         }
 
         // Flush any pending debounced params before shutting down.
-        if let Some(params) = pending_params.take() {
-            Self::send_params(&context, &telemetry, &node_id, target, params).await;
+        if let Some((params, text_preview)) = pending_params.take() {
+            if last_sent.as_ref() != Some(&params) {
+                Self::send_params(&context, &telemetry, &node_id, target, params, text_preview.as_deref()).await;
+            }
         }
 
         state_helpers::emit_stopped(&context.state_tx, &node_id, "input_closed");
@@ -325,6 +355,7 @@ impl ParamBridgeNode {
         node_id: &str,
         target: &str,
         params: JsonValue,
+        text_preview: Option<&str>,
     ) {
         tracing::debug!(
             node = %node_id,
@@ -333,11 +364,8 @@ impl ParamBridgeNode {
         );
 
         // Emit telemetry so the stream view can display forwarded text.
-        let text_preview = params
-            .get("properties")
-            .and_then(|p| p.get("text"))
-            .and_then(|t| t.as_str())
-            .or_else(|| params.get("text").and_then(|t| t.as_str()));
+        // text_preview is extracted from the packet before mapping, so it
+        // works regardless of the target node's expected JSON shape.
         if let Some(text) = text_preview {
             telemetry.emit(
                 "stt.result",
