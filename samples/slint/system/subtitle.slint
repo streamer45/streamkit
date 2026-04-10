@@ -4,9 +4,11 @@
 
 // Subtitle overlay for real-time transcription display.
 //
-// Renders a semi-transparent panel at the bottom of the frame with
-// word-wrapped text.  Fades in with a subtle slide-up when text arrives;
-// fades out when text is cleared or `show` is set to false.
+// Renders a semi-transparent dark panel at the bottom of the frame.
+// The text fades in with a slight upward slide when transcription
+// arrives, and fades out when text is cleared.  The backdrop itself
+// appears/disappears instantly — the transition emphasis is on the
+// text content.
 //
 // Properties updated at runtime via param_bridge → UpdateParams:
 //   text, show
@@ -22,28 +24,25 @@ export component Subtitle inherits Window {
     height: 120px;
     background: transparent;
 
-    // Outer container — fades the entire subtitle panel in/out.
     Rectangle {
         width: 100%;
         height: 100%;
         background: transparent;
-        opacity: root.active ? 1.0 : 0.0;
-        animate opacity { duration: 400ms; easing: ease-in-out; }
 
-        // Dark backdrop with slide-up transition.
+        // Dark backdrop — appears/disappears with the panel (no animation).
         Rectangle {
             x: 40px;
-            y: root.active ? 10px : 30px;
+            y: 10px;
             width: root.width - 80px;
             height: root.height - 20px;
             background: #000000cc;
             border-radius: 8px;
-            animate y { duration: 400ms; easing: ease-out; }
+            opacity: root.active ? 1.0 : 0.0;
 
-            // Subtitle text with word wrap.
+            // Subtitle text — fades in with a slight slide-up.
             Text {
                 x: 20px;
-                y: 10px;
+                y: root.active ? 10px : 20px;
                 width: parent.width - 40px;
                 height: parent.height - 20px;
                 text: root.text;
@@ -53,6 +52,9 @@ export component Subtitle inherits Window {
                 wrap: word-wrap;
                 vertical-alignment: center;
                 horizontal-alignment: center;
+                opacity: root.active ? 1.0 : 0.0;
+                animate opacity { duration: 400ms; easing: ease-in-out; }
+                animate y { duration: 400ms; easing: ease-out; }
             }
         }
     }

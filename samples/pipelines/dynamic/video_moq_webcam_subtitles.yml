@@ -121,8 +121,9 @@ nodes:
           text: "{{ text }}"
       debounce_ms: 100
     needs:
-      in: whisper
-    connection_mode: best_effort
+      in:
+        node: whisper
+        mode: best_effort
 
   # --- Video decode + compositing ---
 
