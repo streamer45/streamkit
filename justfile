@@ -723,6 +723,43 @@ upload-sensevoice-plugin: build-plugin-native-sensevoice
     @curl -X POST -F "plugin=@{{plugins_target_dir}}/release/libsensevoice.so" \
         http://127.0.0.1:4545/api/v1/plugins
 
+# Build native Parakeet TDT STT plugin
+[working-directory: 'plugins/native/parakeet']
+build-plugin-native-parakeet:
+    @echo "Building native Parakeet TDT STT plugin..."
+    @CARGO_TARGET_DIR={{plugins_target_dir}} cargo build --release
+
+# Upload Parakeet plugin to running server
+[working-directory: 'plugins/native/parakeet']
+upload-parakeet-plugin: build-plugin-native-parakeet
+    @echo "Uploading Parakeet plugin to server..."
+    @curl -X POST -F "plugin=@{{plugins_target_dir}}/release/libparakeet.so" \
+        http://127.0.0.1:4545/api/v1/plugins
+
+# Download Parakeet TDT models
+download-parakeet-models:
+    @echo "Downloading Parakeet TDT models..."
+    @mkdir -p models
+    @if [ -f models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2 ]; then \
+        echo "✓ Parakeet TDT archive already exists"; \
+    else \
+        echo "Downloading sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2 (~660MB)..." && \
+        curl -L -o models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2 \
+            https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/main/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2 && \
+        echo "✓ Parakeet TDT archive downloaded"; \
+    fi
+    @if [ -d models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8 ]; then \
+        echo "✓ Parakeet TDT models already extracted"; \
+    else \
+        echo "Extracting models..." && \
+        cd models && tar xf sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2 && \
+        echo "✓ Parakeet TDT models ready at models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8 (English)"; \
+    fi
+
+# Setup Parakeet (install dependencies + download models)
+setup-parakeet: install-sherpa-onnx download-parakeet-models download-silero-vad
+    @echo "✓ Parakeet TDT STT setup complete!"
+
 # Download pre-converted NLLB models from Hugging Face
 download-nllb-models:
     @echo "Downloading pre-converted NLLB-200 models from Hugging Face..."
@@ -1042,7 +1079,7 @@ copy-plugins-native:
 
     # Official native plugins (shared target dir).
     # For most plugins the lib stem matches the plugin id.
-    for name in whisper kokoro piper matcha vad sensevoice nllb helsinki supertonic slint; do
+    for name in whisper kokoro piper matcha vad sensevoice nllb helsinki supertonic slint parakeet; do
         copy_plugin "$name" "$name" "$PLUGINS_TARGET"
     done
 
