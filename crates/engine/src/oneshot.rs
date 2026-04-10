@@ -384,6 +384,13 @@ impl Engine {
             for _ in 0..max_steps {
                 steps += 1;
                 if let Some(def) = definition.nodes.get(cursor) {
+                    // Skip synthetic oneshot nodes — they are not in the
+                    // registry and are handled separately by the engine.
+                    if def.kind == "streamkit::http_input"
+                        || def.kind == "streamkit::http_output"
+                    {
+                        break;
+                    }
                     let temp = registry.create_node(&def.kind, def.params.as_ref())?;
                     if let Some(ct) = temp.content_type() {
                         found = Some(ct);
