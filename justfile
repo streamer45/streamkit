@@ -829,6 +829,9 @@ download-models: download-whisper-models download-silero-vad download-kokoro-mod
     @echo "Optional: To download Pocket TTS models (gated; requires HF_TOKEN):"
     @echo "  just download-pocket-tts-models"
     @echo ""
+    @echo "Optional: To download Parakeet TDT models (~660MB, CC-BY-4.0):"
+    @echo "  just download-parakeet-models"
+    @echo ""
     @du -sh models/
 
 # Setup VAD (install dependencies + download models)
@@ -1016,7 +1019,7 @@ install-plugin name: (build-plugin-native name)
     fi
 
 # Build all native plugin examples
-build-plugins-native: build-plugin-native-gain build-plugin-native-whisper build-plugin-native-kokoro build-plugin-native-piper build-plugin-native-matcha build-plugin-native-pocket-tts build-plugin-native-sensevoice build-plugin-native-nllb build-plugin-native-vad build-plugin-native-helsinki build-plugin-native-supertonic build-plugin-native-slint build-plugin-native-aac-encoder
+build-plugins-native: build-plugin-native-gain build-plugin-native-whisper build-plugin-native-kokoro build-plugin-native-piper build-plugin-native-matcha build-plugin-native-pocket-tts build-plugin-native-sensevoice build-plugin-native-nllb build-plugin-native-vad build-plugin-native-helsinki build-plugin-native-supertonic build-plugin-native-slint build-plugin-native-aac-encoder build-plugin-native-parakeet
 
 ## Combined
 

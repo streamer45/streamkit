@@ -14,7 +14,7 @@ models:
   name: Parakeet TDT 0.6B v2 (English, INT8)
   default: true
   source: huggingface
-  repo_id: streamkit/parakeet-models
+  repo_id: csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8
   revision: main
   files:
   - sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2
@@ -26,7 +26,7 @@ models:
   name: Silero VAD (v6.2)
   default: true
   source: huggingface
-  repo_id: streamkit/parakeet-models
+  repo_id: streamkit/sensevoice-models
   revision: main
   files:
   - silero_vad.onnx
