@@ -338,7 +338,15 @@ impl ProcessorNode for ParamBridgeNode {
         // Flush any pending debounced params before shutting down.
         if let Some((params, text_preview)) = pending_params.take() {
             if last_sent.as_ref() != Some(&params) {
-                Self::send_params(&context, &telemetry, &node_id, target, params, text_preview.as_deref()).await;
+                Self::send_params(
+                    &context,
+                    &telemetry,
+                    &node_id,
+                    target,
+                    params,
+                    text_preview.as_deref(),
+                )
+                .await;
             }
         }
 
