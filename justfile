@@ -723,6 +723,39 @@ upload-sensevoice-plugin: build-plugin-native-sensevoice
     @curl -X POST -F "plugin=@{{plugins_target_dir}}/release/libsensevoice.so" \
         http://127.0.0.1:4545/api/v1/plugins
 
+# Build native Parakeet TDT STT plugin
+[working-directory: 'plugins/native/parakeet']
+build-plugin-native-parakeet:
+    @echo "Building native Parakeet TDT STT plugin..."
+    @CARGO_TARGET_DIR={{plugins_target_dir}} cargo build --release
+
+# Upload Parakeet plugin to running server
+[working-directory: 'plugins/native/parakeet']
+upload-parakeet-plugin: build-plugin-native-parakeet
+    @echo "Uploading Parakeet plugin to server..."
+    @curl -X POST -F "plugin=@{{plugins_target_dir}}/release/libparakeet.so" \
+        http://127.0.0.1:4545/api/v1/plugins
+
+# Download Parakeet TDT models
+download-parakeet-models:
+    @echo "Downloading Parakeet TDT models (~631MB)..."
+    @mkdir -p models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8
+    @HF_BASE="https://huggingface.co/streamkit/parakeet-models/resolve/main" && \
+    MODEL_DIR="models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8" && \
+    for f in encoder.int8.onnx decoder.int8.onnx joiner.int8.onnx tokens.txt; do \
+        if [ -f "$MODEL_DIR/$f" ]; then \
+            echo "✓ $f already exists"; \
+        else \
+            echo "Downloading $f..." && \
+            curl -L -o "$MODEL_DIR/$f" "$HF_BASE/$f" || exit 1; \
+        fi; \
+    done && \
+    echo "✓ Parakeet TDT models ready at $MODEL_DIR (English)"
+
+# Setup Parakeet (install dependencies + download models)
+setup-parakeet: install-sherpa-onnx download-parakeet-models download-silero-vad
+    @echo "✓ Parakeet TDT STT setup complete!"
+
 # Download pre-converted NLLB models from Hugging Face
 download-nllb-models:
     @echo "Downloading pre-converted NLLB-200 models from Hugging Face..."
@@ -791,6 +824,9 @@ download-models: download-whisper-models download-silero-vad download-kokoro-mod
     @echo ""
     @echo "Optional: To download Pocket TTS models (gated; requires HF_TOKEN):"
     @echo "  just download-pocket-tts-models"
+    @echo ""
+    @echo "Optional: To download Parakeet TDT models (~660MB, CC-BY-4.0):"
+    @echo "  just download-parakeet-models"
     @echo ""
     @du -sh models/
 
@@ -979,7 +1015,7 @@ install-plugin name: (build-plugin-native name)
     fi
 
 # Build all native plugin examples
-build-plugins-native: build-plugin-native-gain build-plugin-native-whisper build-plugin-native-kokoro build-plugin-native-piper build-plugin-native-matcha build-plugin-native-pocket-tts build-plugin-native-sensevoice build-plugin-native-nllb build-plugin-native-vad build-plugin-native-helsinki build-plugin-native-supertonic build-plugin-native-slint build-plugin-native-aac-encoder
+build-plugins-native: build-plugin-native-gain build-plugin-native-whisper build-plugin-native-kokoro build-plugin-native-piper build-plugin-native-matcha build-plugin-native-pocket-tts build-plugin-native-sensevoice build-plugin-native-nllb build-plugin-native-vad build-plugin-native-helsinki build-plugin-native-supertonic build-plugin-native-slint build-plugin-native-aac-encoder build-plugin-native-parakeet
 
 ## Combined
 
@@ -1042,7 +1078,7 @@ copy-plugins-native:
 
     # Official native plugins (shared target dir).
     # For most plugins the lib stem matches the plugin id.
-    for name in whisper kokoro piper matcha vad sensevoice nllb helsinki supertonic slint; do
+    for name in whisper kokoro piper matcha vad sensevoice nllb helsinki supertonic slint parakeet; do
         copy_plugin "$name" "$name" "$PLUGINS_TARGET"
     done
 
