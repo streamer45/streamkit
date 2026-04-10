@@ -119,7 +119,6 @@ nodes:
       template:
         properties:
           text: "{{ text }}"
-          show: true
       debounce_ms: 100
     needs:
       in: whisper
