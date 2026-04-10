@@ -738,23 +738,19 @@ upload-parakeet-plugin: build-plugin-native-parakeet
 
 # Download Parakeet TDT models
 download-parakeet-models:
-    @echo "Downloading Parakeet TDT models..."
-    @mkdir -p models
-    @if [ -f models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2 ]; then \
-        echo "✓ Parakeet TDT archive already exists"; \
-    else \
-        echo "Downloading sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2 (~660MB)..." && \
-        curl -L -o models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2 \
-            https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/main/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2 && \
-        echo "✓ Parakeet TDT archive downloaded"; \
-    fi
-    @if [ -d models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8 ]; then \
-        echo "✓ Parakeet TDT models already extracted"; \
-    else \
-        echo "Extracting models..." && \
-        cd models && tar xf sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2 && \
-        echo "✓ Parakeet TDT models ready at models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8 (English)"; \
-    fi
+    @echo "Downloading Parakeet TDT models (~631MB)..."
+    @mkdir -p models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8
+    @HF_BASE="https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/main" && \
+    MODEL_DIR="models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8" && \
+    for f in encoder.int8.onnx decoder.int8.onnx joiner.int8.onnx tokens.txt; do \
+        if [ -f "$MODEL_DIR/$f" ]; then \
+            echo "✓ $f already exists"; \
+        else \
+            echo "Downloading $f..." && \
+            curl -L -o "$MODEL_DIR/$f" "$HF_BASE/$f" || exit 1; \
+        fi; \
+    done && \
+    echo "✓ Parakeet TDT models ready at $MODEL_DIR (English)"
 
 # Setup Parakeet (install dependencies + download models)
 setup-parakeet: install-sherpa-onnx download-parakeet-models download-silero-vad

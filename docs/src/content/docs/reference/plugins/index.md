@@ -14,12 +14,13 @@ curl http://localhost:4545/api/v1/plugins
 curl http://localhost:4545/api/v1/schema/nodes | jq '.[] | select(.kind | startswith("plugin::"))'
 ```
 
-## Official plugins (10)
+## Official plugins (11)
 
 - [`plugin::native::helsinki`](./plugin-native-helsinki/) (original kind: `helsinki`)
 - [`plugin::native::kokoro`](./plugin-native-kokoro/) (original kind: `kokoro`)
 - [`plugin::native::matcha`](./plugin-native-matcha/) (original kind: `matcha`)
 - [`plugin::native::nllb`](./plugin-native-nllb/) (original kind: `nllb`)
+- [`plugin::native::parakeet`](./plugin-native-parakeet/) (original kind: `parakeet`)
 - [`plugin::native::piper`](./plugin-native-piper/) (original kind: `piper`)
 - [`plugin::native::pocket-tts`](./plugin-native-pocket-tts/) (original kind: `pocket-tts`)
 - [`plugin::native::sensevoice`](./plugin-native-sensevoice/) (original kind: `sensevoice`)
