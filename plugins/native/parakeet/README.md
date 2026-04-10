@@ -180,7 +180,7 @@ just download-parakeet-models
 ## Model Attribution
 
 - **Parakeet TDT Model**: [NVIDIA NeMo](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2)
-- **sherpa-onnx Export**: [csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8](https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8)
+- **Models**: [streamkit/parakeet-models](https://huggingface.co/streamkit/parakeet-models) (hosted from [csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8](https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8))
 - **Silero VAD**: [snakers4/silero-vad](https://github.com/snakers4/silero-vad) (MIT)
 - **License**: CC-BY-4.0
 

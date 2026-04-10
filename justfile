@@ -740,7 +740,7 @@ upload-parakeet-plugin: build-plugin-native-parakeet
 download-parakeet-models:
     @echo "Downloading Parakeet TDT models (~631MB)..."
     @mkdir -p models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8
-    @HF_BASE="https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/main" && \
+    @HF_BASE="https://huggingface.co/streamkit/parakeet-models/resolve/main" && \
     MODEL_DIR="models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8" && \
     for f in encoder.int8.onnx decoder.int8.onnx joiner.int8.onnx tokens.txt; do \
         if [ -f "$MODEL_DIR/$f" ]; then \
