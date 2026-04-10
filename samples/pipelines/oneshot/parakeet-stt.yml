@@ -1,0 +1,41 @@
+name: Speech-to-Text (Parakeet TDT)
+description: Fast English speech transcription using NVIDIA Parakeet TDT (~10x faster than Whisper on CPU)
+mode: oneshot
+client:
+  input:
+    type: file_upload
+    accept: "audio/opus"
+    asset_tags:
+      - speech
+  output:
+    type: transcription
+steps:
+  - kind: streamkit::http_input
+
+  - kind: containers::ogg::demuxer
+
+  - kind: audio::opus::decoder
+
+  - kind: audio::resampler
+    params:
+      chunk_frames: 960
+      output_frame_size: 960
+      target_sample_rate: 16000
+
+  - kind: plugin::native::parakeet
+    params:
+      model_dir: models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8
+      num_threads: 4
+      use_vad: true
+      vad_model_path: models/silero_vad.onnx
+      vad_threshold: 0.5
+      min_silence_duration_ms: 700
+
+  - kind: core::json_serialize
+    params:
+      pretty: false
+      newline_delimited: true
+
+  - kind: streamkit::http_output
+    params:
+      content_type: application/json

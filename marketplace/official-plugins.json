@@ -144,6 +144,59 @@
       ]
     },
     {
+      "id": "parakeet",
+      "name": "Parakeet TDT",
+      "version": "0.1.0",
+      "node_kind": "parakeet",
+      "kind": "native",
+      "entrypoint": "libparakeet.so",
+      "artifact": "target/plugins/release/libparakeet.so",
+      "description": "Fast speech-to-text using NVIDIA Parakeet TDT via sherpa-onnx",
+      "license": "MPL-2.0",
+      "homepage": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2",
+      "models": [
+        {
+          "id": "parakeet-tdt-0.6b-v2-int8",
+          "name": "Parakeet TDT 0.6B v2 (English, INT8)",
+          "default": true,
+          "source": "huggingface",
+          "repo_id": "streamkit/parakeet-models",
+          "revision": "main",
+          "files": [
+            "encoder.int8.onnx",
+            "decoder.int8.onnx",
+            "joiner.int8.onnx",
+            "tokens.txt"
+          ],
+          "expected_size_bytes": 661190513,
+          "license": "CC-BY-4.0",
+          "license_url": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2",
+          "file_checksums": {
+            "encoder.int8.onnx": "a32b12d17bbbc309d0686fbbcc2987b5e9b8333a7da83fa6b089f0a2acd651ab",
+            "decoder.int8.onnx": "b6bb64963457237b900e496ee9994b59294526439fbcc1fecf705b31a15c6b4e",
+            "joiner.int8.onnx": "7946164367946e7f9f29a122407c3252b680dbae9a51343eb2488d057c3c43d2",
+            "tokens.txt": "ec182b70dd42113aff6c5372c75cac58c952443eb22322f57bbd7f53977d497d"
+          }
+        },
+        {
+          "id": "silero-vad",
+          "name": "Silero VAD (v6.2)",
+          "default": true,
+          "source": "huggingface",
+          "repo_id": "streamkit/parakeet-models",
+          "revision": "main",
+          "files": [
+            "silero_vad.onnx"
+          ],
+          "expected_size_bytes": 2327524,
+          "license": "MIT",
+          "license_url": "https://github.com/snakers4/silero-vad/blob/master/LICENSE",
+          "sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
+        }
+      ],
+      "repo": "https://github.com/streamer45/streamkit"
+    },
+    {
       "id": "piper",
       "name": "Piper",
       "version": "0.2.0",

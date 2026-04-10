@@ -73,7 +73,6 @@ impl PluginRuntime {
     pub fn new(config: PluginRuntimeConfig) -> Result<Self> {
         let mut engine_config = Config::new();
         engine_config.wasm_component_model(true);
-        engine_config.async_support(true);
         engine_config.wasm_simd(config.enable_simd);
         engine_config.wasm_threads(config.enable_threads);
 

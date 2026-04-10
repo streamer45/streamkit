@@ -22,9 +22,18 @@ use tracing::{debug, info, warn};
 
 use crate::{
     marketplace::PluginKind,
+    plugin_assets::read_local_plugin_manifest,
     plugin_paths,
     plugin_records::{active_dir as plugin_active_dir, namespaced_kind as active_namespaced_kind},
 };
+
+/// Sentinel substring used in conflict-detection errors to distinguish
+/// expected dedup skips from genuine failures.  Referenced by both the
+/// producer (`load_native_plugin` / `check_kind_conflict`) and the
+/// consumer (`load_native_dir_plugins`).
+const ERR_ALREADY_LOADED: &str = "already loaded";
+const ERR_ALREADY_REGISTERED: &str = "already registered";
+
 /// The type of plugin
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -192,55 +201,180 @@ impl UnifiedPluginManager {
         })
     }
 
-    /// Load all native plugins from the native directory.
+    /// Unified native plugin loader.
     ///
-    /// Scans the top-level directory for `.so`/`.dylib`/`.dll` files (flat
-    /// layout) and also one level of subdirectories (bundle layout, e.g.
-    /// `native/slint/libslint.so`).
-    fn load_native_plugins_from_dir(&mut self) -> Result<Vec<PluginSummary>> {
+    /// Discovers native plugins from two sources, loaded in priority order:
+    ///
+    /// 1. **Active records** (`.plugins/active/*.json`) — marketplace-installed
+    ///    bundles whose entrypoints live under `.plugins/bundles/`.
+    /// 2. **Directory bundles** (`.plugins/native/<id>/`) — local directory
+    ///    layout where each subdirectory contains a `plugin.yml` manifest and
+    ///    the plugin library.
+    ///
+    /// A plugin kind that was already loaded by an earlier source is skipped so
+    /// that marketplace versions always take precedence.
+    ///
+    /// Errors reading plugin directories are logged but do not propagate;
+    /// callers cannot distinguish "no plugins found" from "directory unreadable"
+    /// except via the `warn!` log output.
+    fn load_all_native_plugins(&mut self) -> Vec<PluginSummary> {
         let mut summaries = Vec::new();
 
-        info!("Loading native plugins...");
+        info!("Loading native plugins (unified)...");
 
+        // Phase 1: active records (marketplace-installed bundles).
+        summaries.extend(self.load_active_plugin_records());
+
+        // Phase 2: directory bundles from the native directory.
+        // Bare library files are warned about and skipped.
+        // Plugins already loaded in phase 1 are automatically skipped
+        // (load_native_plugin checks the map).
+        summaries.extend(self.load_native_dir_plugins());
+
+        summaries
+    }
+
+    /// Phase 1: load marketplace-managed plugins from active records.
+    fn load_active_plugin_records(&mut self) -> Vec<PluginSummary> {
+        let active_dir = plugin_active_dir(&self.plugin_base_dir);
+        if !active_dir.exists() {
+            return Vec::new();
+        }
+
+        let base_real = std::fs::canonicalize(&self.plugin_base_dir).ok();
+        let entries = match std::fs::read_dir(&active_dir) {
+            Ok(entries) => entries,
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    dir = %active_dir.display(),
+                    "Failed to read active plugins directory"
+                );
+                return Vec::new();
+            },
+        };
+
+        let mut summaries = Vec::new();
+        for entry in entries {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(err) => {
+                    warn!(error = %err, "Failed to read active plugin entry");
+                    continue;
+                },
+            };
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            if let Some(summary) = self.load_active_plugin_record(&path, base_real.as_deref()) {
+                info!(
+                    plugin = %summary.kind,
+                    source = "active-record",
+                    "Loaded marketplace plugin"
+                );
+                summaries.push(summary);
+            }
+        }
+        summaries
+    }
+
+    /// Phase 2: scan the native directory for directory bundles, loading
+    /// plugins from subdirectories of `.plugins/native/<id>/`.
+    fn load_native_dir_plugins(&mut self) -> Vec<PluginSummary> {
         let mut lib_paths: Vec<std::path::PathBuf> = Vec::new();
 
-        for entry in std::fs::read_dir(&self.native_directory).with_context(|| {
-            format!("failed to read native plugin directory {}", self.native_directory.display())
-        })? {
-            let entry = entry?;
-            let path = entry.path();
-
-            if path.is_dir() {
-                // Scan one level of subdirectories for plugin bundles.
-                if let Ok(sub_entries) = std::fs::read_dir(&path) {
-                    for sub_entry in sub_entries.flatten() {
-                        let sub_path = sub_entry.path();
-                        if Self::is_native_lib(&sub_path) {
-                            lib_paths.push(sub_path);
+        match std::fs::read_dir(&self.native_directory) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if !path.is_dir() {
+                        // Warn about bare library files that will be ignored.
+                        if Self::is_native_lib(&path) {
+                            warn!(
+                                file = ?path,
+                                "Bare plugin file found in native directory; \
+                                 move it into a subdirectory (e.g. .plugins/native/<id>/)"
+                            );
+                        }
+                        continue;
+                    }
+                    // Scan one level of subdirectories for plugin libraries.
+                    if let Ok(sub_entries) = std::fs::read_dir(&path) {
+                        for sub_entry in sub_entries.flatten() {
+                            let sub_path = sub_entry.path();
+                            if Self::is_native_lib(&sub_path) {
+                                lib_paths.push(sub_path);
+                            }
                         }
                     }
                 }
-                continue;
-            }
-
-            if Self::is_native_lib(&path) {
-                lib_paths.push(path);
-            }
+            },
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    dir = %self.native_directory.display(),
+                    "Failed to read native plugins directory"
+                );
+            },
         }
 
+        // Sort for deterministic load order when multiple bundles provide
+        // the same plugin kind.
+        lib_paths.sort();
+
+        // Skip any plugin whose kind is already loaded (from active records
+        // or an earlier library in this phase).
+        let mut summaries = Vec::new();
         for path in lib_paths {
             match self.load_native_plugin(&path) {
                 Ok(summary) => {
-                    info!(plugin = %summary.kind, file = ?path, plugin_type = ?summary.plugin_type, "Loaded plugin from disk");
+                    info!(
+                        plugin = %summary.kind,
+                        file = ?path,
+                        "Loaded native plugin from directory bundle"
+                    );
                     summaries.push(summary);
                 },
                 Err(err) => {
-                    warn!(error = %err, file = ?path, "Failed to load native plugin from disk");
+                    // Uses the shared sentinel constants ERR_ALREADY_LOADED /
+                    // ERR_ALREADY_REGISTERED produced by check_kind_conflict.
+                    // A pre-check is not feasible because the plugin kind is
+                    // only known after dlopen (LoadedNativePlugin::load).
+                    let msg = err.to_string();
+                    if msg.contains(ERR_ALREADY_LOADED) || msg.contains(ERR_ALREADY_REGISTERED) {
+                        // Read both versions from manifests so operators can
+                        // spot outdated marketplace installs vs patched locals.
+                        let local_manifest = read_local_plugin_manifest(&path);
+                        let local_version =
+                            local_manifest.as_ref().map_or("unknown", |m| m.version.as_str());
+                        let (loaded_kind, loaded_version) = local_manifest
+                            .as_ref()
+                            .and_then(|m| {
+                                let kind =
+                                    streamkit_plugin_native::namespaced_kind(&m.node_kind).ok()?;
+                                let ver = self
+                                    .plugins
+                                    .get(&kind)
+                                    .and_then(|p| p.version.as_deref())
+                                    .unwrap_or("unknown");
+                                Some((kind, ver.to_owned()))
+                            })
+                            .unwrap_or_else(|| ("unknown".into(), "unknown".into()));
+                        warn!(
+                            file = ?path,
+                            plugin = %loaded_kind,
+                            loaded_version = %loaded_version,
+                            skipped_version = %local_version,
+                            "Skipping local plugin (already loaded by higher-priority source)"
+                        );
+                    } else {
+                        warn!(error = %err, file = ?path, "Failed to load native plugin from disk");
+                    }
                 },
             }
         }
-
-        Ok(summaries)
+        summaries
     }
 
     /// Returns `true` if the path looks like a native plugin library.
@@ -272,33 +406,6 @@ impl UnifiedPluginManager {
                 Err(err) => {
                     warn!(error = %err, file = ?path, "Failed to load WASM plugin from disk");
                 },
-            }
-        }
-
-        Ok(summaries)
-    }
-
-    /// Load marketplace-managed plugins using active records.
-    fn load_active_plugins_from_dir(&mut self) -> Result<Vec<PluginSummary>> {
-        let active_dir = plugin_active_dir(&self.plugin_base_dir);
-        if !active_dir.exists() {
-            return Ok(Vec::new());
-        }
-
-        let base_real = std::fs::canonicalize(&self.plugin_base_dir).ok();
-        let mut summaries = Vec::new();
-
-        for entry in std::fs::read_dir(&active_dir).with_context(|| {
-            format!("failed to read active plugins dir {}", active_dir.display())
-        })? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-                continue;
-            }
-
-            if let Some(summary) = self.load_active_plugin_record(&path, base_real.as_deref()) {
-                summaries.push(summary);
             }
         }
 
@@ -407,16 +514,17 @@ impl UnifiedPluginManager {
         Some(entrypoint_path)
     }
 
-    /// Loads all existing plugins from both WASM and native directories.
-    /// Native plugins are loaded first as they are faster to initialize.
+    /// Loads all existing plugins from both native and WASM directories.
+    ///
+    /// Native plugins (including marketplace-installed bundles) are loaded
+    /// first via the unified loader, then WASM plugins.
     ///
     /// # Errors
     ///
-    /// Returns an error if the plugin directories cannot be read.
+    /// Returns an error if the WASM plugin directory cannot be read.
     /// Individual plugin load failures are logged but do not prevent other plugins from loading.
     pub fn load_existing(&mut self) -> Result<Vec<PluginSummary>> {
-        let mut summaries = self.load_active_plugins_from_dir()?;
-        summaries.extend(self.load_native_plugins_from_dir()?);
+        let mut summaries = self.load_all_native_plugins();
         summaries.extend(self.load_wasm_plugins_from_dir()?);
         Ok(summaries)
     }
@@ -681,22 +789,7 @@ impl UnifiedPluginManager {
             .with_context(|| format!("invalid plugin kind '{original_kind}'"))?;
         let categories = metadata.categories.clone();
 
-        if self.plugins.contains_key(&kind) {
-            return Err(anyhow!(
-                "A plugin providing node '{original_kind}' (registered as '{kind}') is already loaded"
-            ));
-        }
-
-        // Ensure we don't override an existing node definition
-        {
-            let registry =
-                self.engine.registry.read().map_err(|e| anyhow!("Registry lock poisoned: {e}"))?;
-            if registry.contains(&kind) {
-                return Err(anyhow!(
-                    "Node kind '{kind}' is already registered; refusing to overwrite it with a plugin"
-                ));
-            }
-        }
+        self.check_kind_conflict(&kind, &original_kind)?;
 
         // Register with the engine's node registry
         {
@@ -777,6 +870,8 @@ impl UnifiedPluginManager {
                     "Failed to remove plugin file during unload"
                 );
             }
+
+            self.try_remove_empty_plugin_dir(&file_path);
         }
 
         Ok(summary)
@@ -806,6 +901,77 @@ impl UnifiedPluginManager {
         self.plugins_loaded_gauge.record(native_count, &[KeyValue::new("plugin_type", "native")]);
     }
 
+    /// Remove the parent directory of a plugin file if it is a now-empty
+    /// subdirectory inside the native plugins dir (directory-bundle layout).
+    fn try_remove_empty_plugin_dir(&self, file_path: &Path) {
+        if let Some(parent) = file_path.parent() {
+            if parent != self.native_directory && parent.starts_with(&self.native_directory) {
+                let is_empty =
+                    parent.read_dir().map(|mut entries| entries.next().is_none()).unwrap_or(false);
+                if is_empty {
+                    let _ = std::fs::remove_dir(parent);
+                }
+            }
+        }
+    }
+
+    /// Checks whether the given plugin kind conflicts with an already-loaded
+    /// plugin or an already-registered node kind.
+    ///
+    /// Error messages intentionally contain `ERR_ALREADY_LOADED` /
+    /// `ERR_ALREADY_REGISTERED` so that `load_native_dir_plugins` can
+    /// distinguish expected dedup skips from genuine failures.
+    fn check_kind_conflict(&self, kind: &str, original_kind: &str) -> Result<()> {
+        if self.plugins.contains_key(kind) {
+            return Err(anyhow!(
+                "A plugin providing node '{original_kind}' (registered as '{kind}') is {ERR_ALREADY_LOADED}"
+            ));
+        }
+
+        {
+            let registry =
+                self.engine.registry.read().map_err(|e| anyhow!("Registry lock poisoned: {e}"))?;
+            if registry.contains(kind) {
+                return Err(anyhow!(
+                    "Node kind '{kind}' is {ERR_ALREADY_REGISTERED}; refusing to overwrite it with a plugin"
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Probes a native plugin library to discover its kind and checks for
+    /// conflicts with already-loaded plugins, without registering anything.
+    ///
+    /// Used by the upload path to detect kind conflicts *before* moving the
+    /// uploaded file to its final location, preventing accidental overwriting
+    /// of an existing plugin's library.
+    fn check_native_upload_conflict(&self, probe_path: &Path) -> Result<()> {
+        // Set executable permissions so dlopen can load the probe file.
+        // load_from_written_path sets permissions again on the final path
+        // after the move — the two calls operate on different files.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(probe_path)?.permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(probe_path, perms)?;
+        }
+
+        let plugin = LoadedNativePlugin::load(probe_path)
+            .with_context(|| format!("failed to probe native plugin {}", probe_path.display()))?;
+        let metadata = plugin.metadata();
+        let original_kind = metadata.kind.clone();
+        let kind = streamkit_plugin_native::namespaced_kind(&original_kind)
+            .with_context(|| format!("invalid plugin kind '{original_kind}'"))?;
+        // Close the library before the file is moved and re-opened from the
+        // final path.
+        drop(plugin);
+
+        self.check_kind_conflict(&kind, &original_kind)
+    }
+
     /// Saves raw plugin bytes into the managed directory and loads the resulting plugin.
     /// Automatically detects plugin type based on file extension.
     ///
@@ -816,14 +982,55 @@ impl UnifiedPluginManager {
     /// - The plugin file cannot be written to disk
     /// - The plugin fails to load after being written
     /// - On Unix systems, setting executable permissions fails
-    #[allow(dead_code)] // Useful for non-streaming callers; HTTP uses `load_from_temp_file`.
+    #[allow(dead_code)] // Public API for non-streaming callers; HTTP handler uses load_from_temp_file.
     pub fn load_from_bytes(&mut self, file_name: &str, bytes: &[u8]) -> Result<PluginSummary> {
         let (target_path, plugin_type) = self.validate_plugin_upload_target(file_name)?;
 
-        std::fs::write(&target_path, bytes)
-            .with_context(|| format!("failed to write plugin file {}", target_path.display()))?;
+        // Track whether we actually placed a file at target_path so the error
+        // handler only cleans up files *we* created, not a pre-existing plugin.
+        let mut file_placed = false;
 
-        self.load_from_written_path(plugin_type, target_path)
+        let result = (|| {
+            if plugin_type == PluginType::Native {
+                // Write to a temporary file first, probe for kind conflicts,
+                // then move to the final location.  This mirrors the pattern
+                // used by load_from_temp_file and prevents overwriting an
+                // existing plugin's library when the kind is already loaded.
+                let tmp_path = target_path.with_extension("tmp");
+                std::fs::write(&tmp_path, bytes).with_context(|| {
+                    format!("failed to write temp plugin file {}", tmp_path.display())
+                })?;
+
+                if let Err(e) = self.check_native_upload_conflict(&tmp_path) {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    return Err(e);
+                }
+
+                std::fs::rename(&tmp_path, &target_path).map_err(|e| {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    anyhow!(
+                        "failed to move temp plugin file from {} to {}: {e}",
+                        tmp_path.display(),
+                        target_path.display()
+                    )
+                })?;
+            } else {
+                std::fs::write(&target_path, bytes).with_context(|| {
+                    format!("failed to write plugin file {}", target_path.display())
+                })?;
+            }
+            file_placed = true;
+
+            self.load_from_written_path(plugin_type, target_path.clone())
+        })();
+
+        if result.is_err() {
+            if file_placed {
+                let _ = std::fs::remove_file(&target_path);
+            }
+            self.try_remove_empty_plugin_dir(&target_path);
+        }
+        result
     }
 
     /// Moves an already-written plugin file into the managed directory and loads it.
@@ -845,37 +1052,87 @@ impl UnifiedPluginManager {
     ) -> Result<PluginSummary> {
         let (target_path, plugin_type) = self.validate_plugin_upload_target(file_name)?;
 
-        let meta = std::fs::metadata(temp_path)
-            .with_context(|| format!("failed to stat temp plugin file {}", temp_path.display()))?;
-        if !meta.is_file() {
-            return Err(anyhow!("temp plugin path is not a file: {}", temp_path.display()));
-        }
+        // Track whether we actually placed a file at target_path so the error
+        // handler only cleans up files *we* created, not a pre-existing plugin.
+        let mut file_placed = false;
 
-        // Prefer atomic move; fall back to copy+remove for cross-device temp dirs.
-        if let Err(e) = std::fs::rename(temp_path, &target_path) {
-            debug!(
-                error = %e,
-                from = %temp_path.display(),
-                to = %target_path.display(),
-                "rename failed; falling back to copy+remove"
-            );
-            std::fs::copy(temp_path, &target_path).with_context(|| {
-                format!(
-                    "failed to copy temp plugin file from {} to {}",
-                    temp_path.display(),
-                    target_path.display()
-                )
+        let result = (|| {
+            let meta = std::fs::metadata(temp_path).with_context(|| {
+                format!("failed to stat temp plugin file {}", temp_path.display())
             })?;
-            let _ = std::fs::remove_file(temp_path);
-        }
+            if !meta.is_file() {
+                return Err(anyhow!("temp plugin path is not a file: {}", temp_path.display()));
+            }
 
-        match self.load_from_written_path(plugin_type, target_path.clone()) {
-            Ok(summary) => Ok(summary),
-            Err(e) => {
+            if plugin_type == PluginType::Native {
+                // Move the temp file into the plugin subdirectory *before*
+                // probing.  The original temp file may live on a noexec mount
+                // (e.g. /tmp), which would cause dlopen to fail even though
+                // .plugins/native/ is fine.  Using a .tmp extension keeps it
+                // separate from the final target so a pre-existing plugin is
+                // never overwritten until the probe passes.
+                let probe_path = target_path.with_extension("tmp");
+                if let Err(e) = std::fs::rename(temp_path, &probe_path) {
+                    debug!(
+                        error = %e,
+                        from = %temp_path.display(),
+                        to = %probe_path.display(),
+                        "rename to probe path failed; falling back to copy+remove"
+                    );
+                    std::fs::copy(temp_path, &probe_path).with_context(|| {
+                        format!(
+                            "failed to copy temp plugin file from {} to {}",
+                            temp_path.display(),
+                            probe_path.display()
+                        )
+                    })?;
+                    let _ = std::fs::remove_file(temp_path);
+                }
+
+                if let Err(e) = self.check_native_upload_conflict(&probe_path) {
+                    let _ = std::fs::remove_file(&probe_path);
+                    return Err(e);
+                }
+
+                std::fs::rename(&probe_path, &target_path).map_err(|e| {
+                    let _ = std::fs::remove_file(&probe_path);
+                    anyhow!(
+                        "failed to move probe file from {} to {}: {e}",
+                        probe_path.display(),
+                        target_path.display()
+                    )
+                })?;
+            } else {
+                // WASM plugins don't need dlopen probing; move directly.
+                if let Err(e) = std::fs::rename(temp_path, &target_path) {
+                    debug!(
+                        error = %e,
+                        from = %temp_path.display(),
+                        to = %target_path.display(),
+                        "rename failed; falling back to copy+remove"
+                    );
+                    std::fs::copy(temp_path, &target_path).with_context(|| {
+                        format!(
+                            "failed to copy temp plugin file from {} to {}",
+                            temp_path.display(),
+                            target_path.display()
+                        )
+                    })?;
+                    let _ = std::fs::remove_file(temp_path);
+                }
+            }
+            file_placed = true;
+
+            self.load_from_written_path(plugin_type, target_path.clone())
+        })();
+
+        if result.is_err() {
+            if file_placed {
                 let _ = std::fs::remove_file(&target_path);
-                Err(e)
-            },
+            }
+            self.try_remove_empty_plugin_dir(&target_path);
         }
+        result
     }
 
     fn validate_plugin_upload_target(&self, file_name: &str) -> Result<(PathBuf, PluginType)> {
@@ -909,7 +1166,24 @@ impl UnifiedPluginManager {
         let (target_path, plugin_type) = match extension {
             Some("wasm") => (self.wasm_directory.join(sanitized), PluginType::Wasm),
             Some("so" | "dylib" | "dll") => {
-                (self.native_directory.join(sanitized), PluginType::Native)
+                // Place native plugins inside a subdirectory derived from the
+                // library stem (e.g. `libgain.so` → `native/gain/libgain.so`).
+                let stem = Path::new(sanitized)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.strip_prefix("lib").unwrap_or(s))
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(sanitized);
+                if stem == "." || stem == ".." {
+                    return Err(anyhow!(
+                        "Cannot derive a valid plugin directory name from '{sanitized}'"
+                    ));
+                }
+                let subdir = self.native_directory.join(stem);
+                std::fs::create_dir_all(&subdir).with_context(|| {
+                    format!("failed to create native plugin directory {}", subdir.display())
+                })?;
+                (subdir.join(sanitized), PluginType::Native)
             },
             _ => {
                 return Err(anyhow!(

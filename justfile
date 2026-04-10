@@ -723,6 +723,39 @@ upload-sensevoice-plugin: build-plugin-native-sensevoice
     @curl -X POST -F "plugin=@{{plugins_target_dir}}/release/libsensevoice.so" \
         http://127.0.0.1:4545/api/v1/plugins
 
+# Build native Parakeet TDT STT plugin
+[working-directory: 'plugins/native/parakeet']
+build-plugin-native-parakeet:
+    @echo "Building native Parakeet TDT STT plugin..."
+    @CARGO_TARGET_DIR={{plugins_target_dir}} cargo build --release
+
+# Upload Parakeet plugin to running server
+[working-directory: 'plugins/native/parakeet']
+upload-parakeet-plugin: build-plugin-native-parakeet
+    @echo "Uploading Parakeet plugin to server..."
+    @curl -X POST -F "plugin=@{{plugins_target_dir}}/release/libparakeet.so" \
+        http://127.0.0.1:4545/api/v1/plugins
+
+# Download Parakeet TDT models
+download-parakeet-models:
+    @echo "Downloading Parakeet TDT models (~631MB)..."
+    @mkdir -p models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8
+    @HF_BASE="https://huggingface.co/streamkit/parakeet-models/resolve/main" && \
+    MODEL_DIR="models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8" && \
+    for f in encoder.int8.onnx decoder.int8.onnx joiner.int8.onnx tokens.txt; do \
+        if [ -f "$MODEL_DIR/$f" ]; then \
+            echo "✓ $f already exists"; \
+        else \
+            echo "Downloading $f..." && \
+            curl -L -o "$MODEL_DIR/$f" "$HF_BASE/$f" || exit 1; \
+        fi; \
+    done && \
+    echo "✓ Parakeet TDT models ready at $MODEL_DIR (English)"
+
+# Setup Parakeet (install dependencies + download models)
+setup-parakeet: install-sherpa-onnx download-parakeet-models download-silero-vad
+    @echo "✓ Parakeet TDT STT setup complete!"
+
 # Download pre-converted NLLB models from Hugging Face
 download-nllb-models:
     @echo "Downloading pre-converted NLLB-200 models from Hugging Face..."
@@ -791,6 +824,9 @@ download-models: download-whisper-models download-silero-vad download-kokoro-mod
     @echo ""
     @echo "Optional: To download Pocket TTS models (gated; requires HF_TOKEN):"
     @echo "  just download-pocket-tts-models"
+    @echo ""
+    @echo "Optional: To download Parakeet TDT models (~660MB, CC-BY-4.0):"
+    @echo "  just download-parakeet-models"
     @echo ""
     @du -sh models/
 
@@ -979,7 +1015,7 @@ install-plugin name: (build-plugin-native name)
     fi
 
 # Build all native plugin examples
-build-plugins-native: build-plugin-native-gain build-plugin-native-whisper build-plugin-native-kokoro build-plugin-native-piper build-plugin-native-matcha build-plugin-native-pocket-tts build-plugin-native-sensevoice build-plugin-native-nllb build-plugin-native-vad build-plugin-native-helsinki build-plugin-native-supertonic build-plugin-native-slint build-plugin-native-aac-encoder
+build-plugins-native: build-plugin-native-gain build-plugin-native-whisper build-plugin-native-kokoro build-plugin-native-piper build-plugin-native-matcha build-plugin-native-pocket-tts build-plugin-native-sensevoice build-plugin-native-nllb build-plugin-native-vad build-plugin-native-helsinki build-plugin-native-supertonic build-plugin-native-slint build-plugin-native-aac-encoder build-plugin-native-parakeet
 
 ## Combined
 
@@ -1011,41 +1047,45 @@ copy-plugins-native:
 
     PLUGINS_TARGET="{{plugins_target_dir}}"
 
-    # Examples (gain-native has its own target dir, not shared)
-    cp examples/plugins/gain-native/target/release/libgain_plugin_native.* .plugins/native/ 2>/dev/null || true
+    # Helper: copy a built plugin into the directory-per-plugin layout.
+    #   copy_plugin <plugin-id> <lib-stem> <source-dir>
+    # Creates .plugins/native/<plugin-id>/ with the .so and plugin.yml.
+    copy_plugin() {
+        local id="$1" stem="$2" src_dir="$3"
+        local dest=".plugins/native/$id"
+        mkdir -p "$dest"
 
-    # Official native plugins (shared target dir)
-    for name in whisper kokoro piper matcha vad sensevoice nllb helsinki supertonic slint; do
         for f in \
-            "$PLUGINS_TARGET"/release/lib"$name".so \
-            "$PLUGINS_TARGET"/release/lib"$name".so.* \
-            "$PLUGINS_TARGET"/release/lib"$name".dylib \
-            "$PLUGINS_TARGET"/release/"$name".dll
+            "$src_dir"/release/lib"$stem".so \
+            "$src_dir"/release/lib"$stem".so.* \
+            "$src_dir"/release/lib"$stem".dylib \
+            "$src_dir"/release/"$stem".dll
         do
             if [[ -f "$f" ]]; then
-                cp -f "$f" .plugins/native/
+                cp -f "$f" "$dest/"
             fi
         done
-        # Copy plugin.yml manifest alongside the .so so asset types can be
+
+        # Copy plugin.yml into the bundle directory so asset types can be
         # discovered at runtime (see plugin_assets::read_local_plugin_manifest).
-        if [[ -f "plugins/native/$name/plugin.yml" ]]; then
-            cp -f "plugins/native/$name/plugin.yml" ".plugins/native/${name}.plugin.yml"
+        if [[ -f "plugins/native/$id/plugin.yml" ]]; then
+            cp -f "plugins/native/$id/plugin.yml" "$dest/plugin.yml"
         fi
+    }
+
+    # Examples (gain-native has its own target dir, not shared)
+    copy_plugin "gain-native" "gain_plugin_native" "examples/plugins/gain-native/target"
+
+    # Official native plugins (shared target dir).
+    # For most plugins the lib stem matches the plugin id.
+    for name in whisper kokoro piper matcha vad sensevoice nllb helsinki supertonic slint parakeet; do
+        copy_plugin "$name" "$name" "$PLUGINS_TARGET"
     done
-    for f in \
-        "$PLUGINS_TARGET"/release/libpocket_tts.so \
-        "$PLUGINS_TARGET"/release/libpocket_tts.so.* \
-        "$PLUGINS_TARGET"/release/libpocket_tts.dylib \
-        "$PLUGINS_TARGET"/release/pocket_tts.dll
-    do
-        if [[ -f "$f" ]]; then
-            cp -f "$f" .plugins/native/
-        fi
-    done
-    # Copy pocket-tts plugin.yml for consistency with the main loop above.
-    if [[ -f "plugins/native/pocket-tts/plugin.yml" ]]; then
-        cp -f "plugins/native/pocket-tts/plugin.yml" ".plugins/native/pocket-tts.plugin.yml"
-    fi
+
+    # Plugins whose lib stem differs from the plugin id.
+    copy_plugin "pocket-tts"   "pocket_tts"   "$PLUGINS_TARGET"
+    copy_plugin "aac-encoder"  "aac_encoder"  "$PLUGINS_TARGET"
+
     echo "✓ Native plugins copied to .plugins/native/"
 
 # --- License Headers (REUSE) ---
