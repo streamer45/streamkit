@@ -2,26 +2,28 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-# Live subtitle demo: webcam PiP over colorbars with real-time Whisper
+# Live subtitle demo: webcam PiP over colorbars with real-time Parakeet
 # transcription rendered as a Slint subtitle overlay.
 #
 # Data flow (subtitles):
-#   mic → opus_decoder → resampler → whisper → [best_effort] →
+#   mic → opus_decoder → resampler → parakeet → [best_effort] →
 #   param_bridge → UpdateParams → slint subtitle → compositor layer
 #
-#   whisper → [best_effort] → telemetry_out (stream view)
+#   parakeet → [best_effort] → telemetry_out (stream view)
 #
 # Requires:
-#   - plugin::native::whisper loaded (with a model, e.g. tiny.en)
+#   - plugin::native::parakeet loaded (with Parakeet TDT model)
 #   - plugin::native::slint loaded
 #   - Silero VAD model: models/silero_vad.onnx
-#   just build-plugin-native-whisper && just build-plugin-native-slint && just copy-plugins-native
+#   just build-plugin-native-parakeet && just build-plugin-native-slint && just copy-plugins-native
+#   just download-parakeet-models
 
 name: Webcam PiP + Live Subtitles (MoQ)
 description: >-
   Composites the user's webcam as picture-in-picture over colorbars with
-  real-time Whisper transcription displayed as subtitles via a Slint overlay.
-  Demonstrates the param_bridge node for cross-node control messaging.
+  real-time Parakeet TDT transcription displayed as subtitles via a Slint
+  overlay.  Demonstrates the param_bridge node for cross-node control
+  messaging.  ~10x faster than Whisper on CPU.
 mode: dynamic
 client:
   gateway_path: /moq/video
@@ -75,17 +77,15 @@ nodes:
       target_sample_rate: 16000
     needs: opus_decoder
 
-  whisper:
-    kind: plugin::native::whisper
+  parakeet:
+    kind: plugin::native::parakeet
     params:
-      model_path: models/ggml-tiny.en-q5_1.bin
-      language: en
+      model_dir: models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8
+      num_threads: 4
+      use_vad: true
       vad_model_path: models/silero_vad.onnx
-      vad_threshold: 0.4
-      min_silence_duration_ms: 600
-      max_segment_duration_secs: 30.0
-      emit_vad_events: true
-      n_threads: 0
+      vad_threshold: 0.5
+      min_silence_duration_ms: 700
     needs: resampler
 
   # Surface STT results in the stream view telemetry timeline.
@@ -95,7 +95,7 @@ nodes:
       packet_types: ["Transcription"]
       max_events_per_sec: 20
     needs:
-      node: whisper
+      node: parakeet
       mode: best_effort
 
   # --- Subtitle rendering (Slint) ---
@@ -122,7 +122,7 @@ nodes:
       debounce_ms: 100
     needs:
       in:
-        node: whisper
+        node: parakeet
         mode: best_effort
 
   # --- Video decode + compositing ---
