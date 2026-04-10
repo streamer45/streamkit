@@ -141,7 +141,7 @@ impl SileroVAD {
 
     /// Update speech threshold
     #[allow(dead_code)]
-    pub const fn set_threshold(&mut self, threshold: f32) {
+    pub fn set_threshold(&mut self, threshold: f32) {
         self.threshold = threshold.clamp(0.0, 1.0);
     }
 

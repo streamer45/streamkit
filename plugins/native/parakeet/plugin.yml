@@ -33,7 +33,7 @@ models:
   name: Silero VAD (v6.2)
   default: true
   source: huggingface
-  repo_id: streamkit/sensevoice-models
+  repo_id: streamkit/parakeet-models
   revision: main
   files:
   - silero_vad.onnx

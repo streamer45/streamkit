@@ -379,8 +379,7 @@ impl NativeProcessorNode for ParakeetNode {
     }
 
     fn update_params(&mut self, _params: Option<serde_json::Value>) -> Result<(), String> {
-        // Per-instance parameters (VAD threshold) can be updated
-        // Model-level parameters (model_dir, threads) would require reloading
+        // Runtime parameter updates not yet implemented.
         Ok(())
     }
 
