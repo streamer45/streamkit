@@ -22,6 +22,8 @@ fn create_test_engine() -> DynamicEngine {
     drop(control_tx);
     drop(query_tx);
 
+    let (nc_tx, nc_rx) = mpsc::channel(32);
+
     let meter = opentelemetry::global::meter("test");
     DynamicEngine {
         registry: std::sync::Arc::new(std::sync::RwLock::new(NodeRegistry::new())),
@@ -58,6 +60,12 @@ fn create_test_engine() -> DynamicEngine {
         node_state_gauge: meter.u64_gauge("test.state").build(),
         runtime_schemas: HashMap::new(),
         runtime_schema_subscribers: Vec::new(),
+        node_created_tx: nc_tx,
+        node_created_rx: nc_rx,
+        pending_connections: Vec::new(),
+        pending_tunes: Vec::new(),
+        next_creation_id: 0,
+        active_creations: std::collections::HashMap::new(),
     }
 }
 
@@ -268,6 +276,19 @@ async fn test_activation_blocked_by_failed_node() {
         source_rx.try_recv().is_err(),
         "source node should NOT receive Start when a node has Failed"
     );
+}
+
+/// Source node should NOT receive Start while any node is still Creating.
+#[tokio::test]
+async fn test_activation_blocked_by_creating_node() {
+    let mut engine = create_test_engine();
+    let mut source_rx = add_source_node(&mut engine, "source", NodeState::Ready);
+    add_processor_node(&mut engine, "slow_node", NodeState::Creating);
+
+    engine.check_and_activate_pipeline();
+
+    let msg = source_rx.try_recv();
+    assert!(msg.is_err(), "source node should NOT receive Start while a node is still Creating");
 }
 
 /// Source node should NOT receive Start when a downstream node has Stopped.

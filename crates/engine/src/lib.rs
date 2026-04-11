@@ -176,6 +176,9 @@ impl Engine {
             "Starting Dynamic Engine actor"
         );
 
+        // Internal channel for background node creation results.
+        let (nc_tx, nc_rx) = mpsc::channel(64);
+
         let meter = global::meter("skit_engine");
         let dynamic_engine = DynamicEngine {
             registry: Arc::clone(&self.registry),
@@ -236,6 +239,12 @@ impl Engine {
                 .u64_gauge("node.state")
                 .with_description("Node state (1=running, 0=stopped/failed)")
                 .build(),
+            node_created_tx: nc_tx,
+            node_created_rx: nc_rx,
+            pending_connections: Vec::new(),
+            pending_tunes: Vec::new(),
+            next_creation_id: 0,
+            active_creations: std::collections::HashMap::new(),
         };
 
         let engine_task = tokio::spawn(dynamic_engine.run());

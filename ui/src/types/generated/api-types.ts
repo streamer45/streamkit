@@ -101,7 +101,7 @@ bidirectional: boolean, };
 
 export type StopReason = "completed" | "input_closed" | "output_closed" | "shutdown" | "no_inputs" | "unknown";
 
-export type NodeState = "Initializing" | "Ready" | "Running" | { "Recovering": { reason: string, details: JsonValue, } } | { "Degraded": { reason: string, details: JsonValue, } } | { "Failed": { reason: string, } } | { "Stopped": { reason: StopReason, } };
+export type NodeState = "Creating" | "Initializing" | "Ready" | "Running" | { "Recovering": { reason: string, details: JsonValue, } } | { "Degraded": { reason: string, details: JsonValue, } } | { "Failed": { reason: string, } } | { "Stopped": { reason: StopReason, } };
 
 export type NodeStats = { 
 /**

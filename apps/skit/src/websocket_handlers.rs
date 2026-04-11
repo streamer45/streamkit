@@ -519,6 +519,11 @@ async fn handle_add_node(
 
     {
         let mut pipeline = session.pipeline.lock().await;
+        if pipeline.nodes.contains_key(&node_id) {
+            return Some(ResponsePayload::Error {
+                message: format!("Node '{node_id}' already exists in the pipeline"),
+            });
+        }
         pipeline.nodes.insert(
             node_id.clone(),
             streamkit_api::Node { kind: kind.clone(), params: params.clone(), state: None },
@@ -1223,6 +1228,33 @@ async fn handle_apply_batch(
             message: "Permission denied: you do not own this session".to_string(),
         });
     }
+
+    // Pre-validate duplicate node_ids against the pipeline model.
+    // Simulate the batch's Add/Remove sequence so that Remove→Add for
+    // the same ID within the batch is allowed, but duplicate Adds
+    // (without intervening Remove) are rejected before any mutation.
+    {
+        let pipeline = session.pipeline.lock().await;
+        let mut live_ids: std::collections::HashSet<&str> =
+            pipeline.nodes.keys().map(String::as_str).collect();
+        for op in &operations {
+            match op {
+                streamkit_api::BatchOperation::AddNode { node_id, .. } => {
+                    if !live_ids.insert(node_id.as_str()) {
+                        return Some(ResponsePayload::Error {
+                            message: format!(
+                                "Batch rejected: node '{node_id}' already exists in the pipeline"
+                            ),
+                        });
+                    }
+                },
+                streamkit_api::BatchOperation::RemoveNode { node_id } => {
+                    live_ids.remove(node_id.as_str());
+                },
+                _ => {},
+            }
+        }
+    } // Pipeline lock released after pre-validation
 
     // Validate permissions for all operations
     for op in &operations {
