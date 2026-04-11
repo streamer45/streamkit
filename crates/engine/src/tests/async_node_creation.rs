@@ -990,11 +990,7 @@ async fn test_tune_node_queued_while_creating() {
     let mut registry = NodeRegistry::new();
     registry.register_dynamic(
         "test::tune_tracking_slow",
-        TuneTrackingSlowNode::factory(
-            Duration::from_secs(1),
-            created.clone(),
-            tune_count.clone(),
-        ),
+        TuneTrackingSlowNode::factory(Duration::from_secs(1), created.clone(), tune_count.clone()),
         serde_json::json!({}),
         vec!["test".to_string()],
         false,
