@@ -659,7 +659,9 @@ impl ProcessorNode for VulkanVideoH264EncoderNode {
             // adds flush(), it should be called here — matching the
             // decoder's flush at line ~245 and the pattern in
             // encoder_trait::spawn_standard_encode_task.
-            tracing::info!("VulkanVideoH264EncoderNode encode task finished after {frames_encoded} frame(s)");
+            tracing::info!(
+                "VulkanVideoH264EncoderNode encode task finished after {frames_encoded} frame(s)"
+            );
         });
 
         // ── State transition ─────────────────────────────────────────────
