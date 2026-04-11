@@ -78,6 +78,15 @@ opt-level = 3
 [profile.dev.package.maybe-rayon]
 opt-level = 3
 
+# Fast development profiling — no LTO, incremental compilation.
+# Inherits dev's per-package overrides (rav1e, rav1d at opt-level 3) and
+# incremental compilation.  Uses opt-level 2 so profiles are meaningful
+# (inlining, vectorisation) while skipping the expensive LTO link step.
+# First build populates the cache; subsequent rebuilds are incremental.
+[profile.dev-profiling]
+inherits = "dev"
+opt-level = 2
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 # missing_debug_implementations = "warn"
