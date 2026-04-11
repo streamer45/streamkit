@@ -96,6 +96,20 @@
       ]
     },
     {
+      "id": "parakeet",
+      "name": "Parakeet TDT",
+      "description": "Fast speech-to-text using NVIDIA Parakeet TDT via sherpa-onnx",
+      "latest": "0.1.0",
+      "versions": [
+        {
+          "version": "0.1.0",
+          "manifest_url": "https://streamkit.dev/registry/plugins/parakeet/0.1.0/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/parakeet/0.1.0/manifest.minisig",
+          "published_at": "2026-04-10"
+        }
+      ]
+    },
+    {
       "id": "piper",
       "name": "Piper",
       "description": "Text-to-speech using Piper VITS models",
