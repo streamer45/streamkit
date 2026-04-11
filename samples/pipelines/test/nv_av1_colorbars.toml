@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Expected output metadata for nv_av1_colorbars.yml
+# Requires: skit built with --features nvcodec + NVIDIA GPU
+
+requires_node = "video::nv::av1_encoder"
+output_extension = ".webm"
+codec_name = "av1"
+width = 320
+height = 240
+container_format = "matroska,webm"
+pix_fmt = "yuv420p"
