@@ -24,7 +24,7 @@ steps:
 
   - kind: plugin::native::parakeet
     params:
-      model_dir: models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8
+      model_dir: models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8
       num_threads: 4
       use_vad: true
       vad_model_path: models/silero_vad.onnx

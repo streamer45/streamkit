@@ -1,6 +1,6 @@
 id: slint
 name: Slint
-version: 0.2.0
+version: 0.3.0
 node_kind: slint
 kind: native
 entrypoint: libslint.so

@@ -522,9 +522,7 @@ dependencies = [
 name = "parakeet-plugin-native"
 version = "0.1.0"
 dependencies = [
- "cc",
  "ndarray",
- "once_cell",
  "ort",
  "serde",
  "serde_json",

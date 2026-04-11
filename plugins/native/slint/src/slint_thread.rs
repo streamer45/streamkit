@@ -125,6 +125,19 @@ pub fn send_work(item: SlintWorkItem) -> Result<(), String> {
 
 // ── Slint thread main loop ──────────────────────────────────────────────────
 
+/// A property pair discovered at registration: a source property
+/// `{name}` and its corresponding `prev-{name}`.  When the source
+/// property changes in an `UpdateConfig`, the old value is
+/// automatically written to the prev property.
+struct TrackedProp {
+    /// Source property name (snake_case), e.g. `"text"`.
+    source: String,
+    /// Prev property name (snake_case), e.g. `"prev_text"`.
+    prev: String,
+    /// Type-appropriate default when the source has no prior value.
+    default_value: serde_json::Value,
+}
+
 /// Entry point for the shared Slint thread.
 ///
 /// Processes work items from all plugin instances.  The platform backend is
@@ -149,12 +162,15 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
         /// resolution for crisper text and vector graphics.
         original_width: u32,
         original_height: u32,
-        /// Text crossfade revision counter.  `Some(n)` when the `.slint`
-        /// component opts in by declaring `prev-text` (string) and
-        /// `revision` (number) properties.  On each `text` change the
-        /// old value is stashed as `prev_text` and the counter is
-        /// bumped, allowing the component to crossfade between layers.
-        crossfade_revision: Option<i64>,
+        /// Properties tracked for automatic previous-value injection.
+        /// Populated at registration when the component declares a
+        /// `prev-{name}` property alongside `{name}` with a matching
+        /// type (opt-in by the `.slint` author).
+        tracked_props: Vec<TrackedProp>,
+        /// Auto-incrementing revision counter.  `Some(n)` when the
+        /// component declares a `revision` (number) property; bumped
+        /// whenever at least one tracked property changes value.
+        revision: Option<i64>,
     }
 
     let mut instances: HashMap<NodeId, InstanceState> = HashMap::new();
@@ -171,30 +187,26 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
                         let properties =
                             discover_properties(&instance.definition, &instance.component);
 
-                        // Detect whether the component opts into text
-                        // crossfade by declaring both `prev-text` (string)
-                        // and `revision` (number) properties.
-                        let crossfade_revision = {
-                            let has_prev_text = instance
-                                .definition
-                                .properties()
-                                .any(|(name, vt)| name == "prev-text" && vt == ValueType::String);
-                            let has_revision = instance
-                                .definition
-                                .properties()
-                                .any(|(name, _vt)| name == "revision");
-                            if has_prev_text && has_revision {
-                                Some(0i64)
-                            } else {
-                                None
-                            }
+                        // Discover `prev-{name}` property pairs for
+                        // automatic old-value injection (opt-in).
+                        let tracked_props =
+                            discover_tracked_props(&instance.definition);
+                        let revision = if instance
+                            .definition
+                            .properties()
+                            .any(|(n, _)| n == "revision")
+                        {
+                            Some(0i64)
+                        } else {
+                            None
                         };
 
                         tracing::info!(
                             node_id = %node_id,
                             slint_file = %config.slint_file,
                             discovered_properties = properties.len(),
-                            crossfade = crossfade_revision.is_some(),
+                            tracked_pairs = tracked_props.len(),
+                            has_revision = revision.is_some(),
                             "Created Slint instance",
                         );
                         let _ = result_tx.send(SlintThreadResult::InitOk { properties });
@@ -209,7 +221,8 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
                                 cached_frame: None,
                                 cached_keyframe_idx: None,
                                 dirty: true,
-                                crossfade_revision,
+                                tracked_props,
+                                revision,
                             },
                         );
                     },
@@ -285,28 +298,47 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
             },
             SlintWorkItem::UpdateConfig { node_id, mut config } => {
                 if let Some(state) = instances.get_mut(&node_id) {
-                    // Text crossfade: when the component opts in (by
-                    // declaring `prev-text` and `revision`) and the
-                    // `text` property changed, stash the old value and
-                    // bump the revision so the two text layers in the
-                    // `.slint` component can crossfade.
-                    if let Some(rev) = state.crossfade_revision {
-                        let new_text = config.properties.get("text");
-                        let old_text = state.config.properties.get("text");
-                        if new_text.is_some() && new_text != old_text {
-                            let prev = old_text
+                    // Auto-inject previous values for tracked `prev-{name}`
+                    // properties and bump the revision counter when at
+                    // least one tracked property changed.
+                    let mut any_changed = false;
+                    for tp in &state.tracked_props {
+                        let new_val = config.properties.get(&tp.source);
+                        let old_val = state.config.properties.get(&tp.source);
+                        if new_val.is_some() && new_val != old_val {
+                            let prev = old_val
                                 .cloned()
-                                .unwrap_or_else(|| serde_json::Value::String(String::new()));
-                            let next_rev = rev + 1;
-                            config
-                                .properties
-                                .insert("prev_text".to_string(), prev);
-                            config
-                                .properties
-                                .insert("revision".to_string(), serde_json::json!(next_rev));
-                            state.crossfade_revision = Some(next_rev);
+                                .unwrap_or_else(|| tp.default_value.clone());
+                            tracing::debug!(
+                                node_id = %node_id,
+                                property = %tp.source,
+                                prev = %prev,
+                                new = %new_val.unwrap_or(&serde_json::Value::Null),
+                                "Tracked property changed, injecting prev value",
+                            );
+                            config.properties.insert(tp.prev.clone(), prev);
+                            any_changed = true;
                         }
                     }
+                    if any_changed {
+                        if let Some(rev) = &mut state.revision {
+                            *rev += 1;
+                            tracing::debug!(
+                                node_id = %node_id,
+                                revision = *rev,
+                                "Bumped revision counter",
+                            );
+                            config.properties.insert(
+                                "revision".to_string(),
+                                serde_json::json!(*rev),
+                            );
+                        }
+                    }
+                    tracing::debug!(
+                        node_id = %node_id,
+                        properties = ?config.properties.keys().collect::<Vec<_>>(),
+                        "UpdateConfig applied",
+                    );
                     state.config = config;
                     state.dirty = true;
                 }
@@ -531,6 +563,36 @@ fn discover_properties(
         .collect()
 }
 
+/// Discover `prev-{name}` / `{name}` property pairs for automatic
+/// previous-value injection.
+///
+/// A pair is tracked when the component declares both `{name}` and
+/// `prev-{name}` with the same `ValueType`.  Only JSON-representable
+/// types (string, number, bool) are supported.  Property names are
+/// returned in snake_case to match the StreamKit config convention.
+fn discover_tracked_props(definition: &ComponentDefinition) -> Vec<TrackedProp> {
+    let prop_map: HashMap<String, ValueType> = definition.properties().collect();
+    let mut tracked = Vec::new();
+    for (name, vt) in &prop_map {
+        if let Some(source) = name.strip_prefix("prev-") {
+            if prop_map.get(source) == Some(vt) {
+                let default_value = match vt {
+                    ValueType::String => serde_json::Value::String(String::new()),
+                    ValueType::Number => serde_json::json!(0),
+                    ValueType::Bool => serde_json::Value::Bool(false),
+                    _ => continue,
+                };
+                tracked.push(TrackedProp {
+                    source: source.replace('-', "_"),
+                    prev: name.replace('-', "_"),
+                    default_value,
+                });
+            }
+        }
+    }
+    tracked
+}
+
 /// Render a single frame from the Slint instance, returning raw RGBA8 data.
 ///
 /// Applies property keyframe cycling.  Timer/animation pumping is handled
@@ -568,11 +630,28 @@ fn render_slint_frame(instance: &mut SlintInstance, config: &SlintConfig) -> Vec
 // ── Private helpers ─────────────────────────────────────────────────────────
 
 /// Map JSON property values to Slint `Value` and set them on the component.
+///
+/// `revision` is always set **last** so that any properties it drives
+/// (e.g. crossfade layer selection via `use-a: Math.mod(revision, 2)`)
+/// see up-to-date data values (`text`, `prev-text`, etc.) rather than
+/// stale ones.  Without this ordering, HashMap iteration might set
+/// `revision` before `text`, creating a one-frame flash of old content.
 fn set_properties(component: &ComponentInstance, properties: &HashMap<String, serde_json::Value>) {
+    let mut deferred_revision = None;
     for (key, json_val) in properties {
+        if key == "revision" {
+            deferred_revision = Some(json_val);
+            continue;
+        }
         let slint_val = json_to_slint_value(json_val);
         if let Err(e) = component.set_property(key, slint_val) {
             tracing::warn!(property = %key, error = %e, "Failed to set Slint property");
+        }
+    }
+    if let Some(json_val) = deferred_revision {
+        let slint_val = json_to_slint_value(json_val);
+        if let Err(e) = component.set_property("revision", slint_val) {
+            tracing::warn!(property = "revision", error = %e, "Failed to set Slint property");
         }
     }
 }

@@ -736,12 +736,12 @@ upload-parakeet-plugin: build-plugin-native-parakeet
     @curl -X POST -F "plugin=@{{plugins_target_dir}}/release/libparakeet.so" \
         http://127.0.0.1:4545/api/v1/plugins
 
-# Download Parakeet TDT models
+# Download Parakeet TDT v3 models (25 languages, INT8)
 download-parakeet-models:
-    @echo "Downloading Parakeet TDT models (~631MB)..."
-    @mkdir -p models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8
+    @echo "Downloading Parakeet TDT v3 models (~671MB)..."
+    @mkdir -p models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8
     @HF_BASE="https://huggingface.co/streamkit/parakeet-models/resolve/main" && \
-    MODEL_DIR="models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8" && \
+    MODEL_DIR="models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8" && \
     for f in encoder.int8.onnx decoder.int8.onnx joiner.int8.onnx tokens.txt; do \
         if [ -f "$MODEL_DIR/$f" ]; then \
             echo "✓ $f already exists"; \
@@ -750,7 +750,7 @@ download-parakeet-models:
             curl -L -o "$MODEL_DIR/$f" "$HF_BASE/$f" || exit 1; \
         fi; \
     done && \
-    echo "✓ Parakeet TDT models ready at $MODEL_DIR (English)"
+    echo "✓ Parakeet TDT v3 models ready at $MODEL_DIR (25 languages)"
 
 # Setup Parakeet (install dependencies + download models)
 setup-parakeet: install-sherpa-onnx download-parakeet-models download-silero-vad

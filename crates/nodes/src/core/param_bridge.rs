@@ -145,25 +145,69 @@ fn auto_map(packet: &Packet) -> Option<JsonValue> {
     }
 }
 
-/// Replace `{{ text }}` (and `{{text}}`) placeholders in a JSON value tree.
+/// Replace `{{ field }}` placeholders in a JSON value tree using values
+/// from a context object.
 ///
-/// Currently only the `text` placeholder is supported.  To add more fields
-/// (e.g. `{{ language }}`, `{{ confidence }}`), extend the replacement list
-/// here and extract the additional values in [`extract_text`] or a new
-/// dedicated extraction helper.
-fn apply_template(template: &JsonValue, text: &str) -> JsonValue {
+/// When a string value consists entirely of a single placeholder
+/// (e.g. `"{{ is_speech }}"`) the raw JSON value from the context is
+/// substituted — preserving booleans, numbers, and nulls.  When the
+/// placeholder appears inside a longer string (e.g.
+/// `"Hello {{ name }}"`) the context value is stringified.
+///
+/// Transcription and Text packets produce a context with a single
+/// `text` key.  Custom packets use their full JSON `.data` object.
+fn apply_template(template: &JsonValue, ctx: &JsonValue) -> JsonValue {
     match template {
         JsonValue::String(s) => {
-            let normalized = s.replace("{{ text }}", "{{text}}");
-            JsonValue::String(normalized.replace("{{text}}", text))
+            // Fast path: check if the entire string is a single {{ field }}.
+            let trimmed = s.trim();
+            if let Some(field) = parse_sole_placeholder(trimmed) {
+                if let Some(val) = lookup_ctx(ctx, field) {
+                    return val.clone();
+                }
+            }
+            // General path: replace all {{ field }} occurrences as strings.
+            let mut result = s.clone();
+            // Replace both `{{ field }}` and `{{field}}` forms.
+            while let Some(start) = result.find("{{") {
+                let Some(end) = result[start..].find("}}") else { break };
+                let end = start + end + 2;
+                let field = result[start + 2..end - 2].trim();
+                let replacement = lookup_ctx(ctx, field).map_or_else(String::new, |v| match v {
+                    JsonValue::String(s) => s.clone(),
+                    other => other.to_string(),
+                });
+                result.replace_range(start..end, &replacement);
+            }
+            JsonValue::String(result)
         },
         JsonValue::Array(arr) => {
-            JsonValue::Array(arr.iter().map(|v| apply_template(v, text)).collect())
+            JsonValue::Array(arr.iter().map(|v| apply_template(v, ctx)).collect())
         },
         JsonValue::Object(map) => JsonValue::Object(
-            map.iter().map(|(k, v)| (k.clone(), apply_template(v, text))).collect(),
+            map.iter().map(|(k, v)| (k.clone(), apply_template(v, ctx))).collect(),
         ),
         other => other.clone(),
+    }
+}
+
+/// If the string is exactly `{{ field }}` (or `{{field}}`), return the
+/// field name; otherwise `None`.
+fn parse_sole_placeholder(s: &str) -> Option<&str> {
+    let s = s.strip_prefix("{{")?;
+    let s = s.strip_suffix("}}")?;
+    // Ensure there are no nested braces.
+    if s.contains("{{") || s.contains("}}") {
+        return None;
+    }
+    Some(s.trim())
+}
+
+/// Look up a field name in a JSON context value.
+fn lookup_ctx<'a>(ctx: &'a JsonValue, field: &str) -> Option<&'a JsonValue> {
+    match ctx {
+        JsonValue::Object(map) => map.get(field),
+        _ => None,
     }
 }
 
@@ -294,11 +338,18 @@ impl ProcessorNode for ParamBridgeNode {
                     let params = match &self.config.mode {
                         MappingMode::Auto => auto_map(&packet),
                         MappingMode::Template => {
-                            let Some(ref text) = text_preview else {
+                            // Build a context object for template substitution.
+                            // Text-bearing packets get a `{ "text": "..." }`
+                            // context; Custom packets use their full JSON data.
+                            let ctx = if let Some(ref text) = text_preview {
+                                serde_json::json!({ "text": text })
+                            } else if let Packet::Custom(c) = &packet {
+                                c.data.clone()
+                            } else {
                                 tracing::debug!(packet_type = %packet_type_label(&packet), "param_bridge template: unsupported packet type, skipping");
                                 continue;
                             };
-                            self.config.template.as_ref().map(|tmpl| apply_template(tmpl, text))
+                            self.config.template.as_ref().map(|tmpl| apply_template(tmpl, &ctx))
                         },
                         MappingMode::Raw => raw_payload(&packet),
                     };
@@ -515,17 +566,22 @@ mod tests {
 
     // ── apply_template ──────────────────────────────────────────────
 
+    /// Helper: build a text-only context for template tests.
+    fn text_ctx(s: &str) -> JsonValue {
+        json!({ "text": s })
+    }
+
     #[test]
     fn apply_template_string_replacement() {
         let tmpl = json!("prefix: {{ text }}");
-        let result = apply_template(&tmpl, "hello");
+        let result = apply_template(&tmpl, &text_ctx("hello"));
         assert_eq!(result, json!("prefix: hello"));
     }
 
     #[test]
     fn apply_template_no_whitespace_placeholder() {
         let tmpl = json!("prefix: {{text}}");
-        let result = apply_template(&tmpl, "hello");
+        let result = apply_template(&tmpl, &text_ctx("hello"));
         assert_eq!(result, json!("prefix: hello"));
     }
 
@@ -537,7 +593,7 @@ mod tests {
                 "visible": true
             }
         });
-        let result = apply_template(&tmpl, "subtitle line");
+        let result = apply_template(&tmpl, &text_ctx("subtitle line"));
         assert_eq!(
             result,
             json!({
@@ -552,28 +608,28 @@ mod tests {
     #[test]
     fn apply_template_array() {
         let tmpl = json!(["{{ text }}", "static"]);
-        let result = apply_template(&tmpl, "dynamic");
+        let result = apply_template(&tmpl, &text_ctx("dynamic"));
         assert_eq!(result, json!(["dynamic", "static"]));
     }
 
     #[test]
     fn apply_template_no_placeholder() {
         let tmpl = json!({"key": "no placeholder here"});
-        let result = apply_template(&tmpl, "ignored");
+        let result = apply_template(&tmpl, &text_ctx("ignored"));
         assert_eq!(result, json!({"key": "no placeholder here"}));
     }
 
     #[test]
     fn apply_template_empty_text() {
         let tmpl = json!("{{ text }}");
-        let result = apply_template(&tmpl, "");
+        let result = apply_template(&tmpl, &text_ctx(""));
         assert_eq!(result, json!(""));
     }
 
     #[test]
     fn apply_template_preserves_non_string_values() {
         let tmpl = json!({"count": 42, "flag": true, "text": "{{ text }}"});
-        let result = apply_template(&tmpl, "hello");
+        let result = apply_template(&tmpl, &text_ctx("hello"));
         assert_eq!(result, json!({"count": 42, "flag": true, "text": "hello"}));
     }
 
@@ -582,8 +638,23 @@ mod tests {
         // Regression: if substituted text contains "{{text}}", the second
         // replace pass must NOT re-replace it.
         let tmpl = json!("{{ text }}");
-        let result = apply_template(&tmpl, "contains {{text}} marker");
+        let result = apply_template(&tmpl, &text_ctx("contains {{text}} marker"));
         assert_eq!(result, json!("contains {{text}} marker"));
+    }
+
+    #[test]
+    fn apply_template_sole_placeholder_preserves_type() {
+        // When a placeholder is the entire value, the raw JSON type is kept.
+        let ctx = json!({ "is_speech": true, "score": 42 });
+        assert_eq!(apply_template(&json!("{{ is_speech }}"), &ctx), json!(true));
+        assert_eq!(apply_template(&json!("{{ score }}"), &ctx), json!(42));
+    }
+
+    #[test]
+    fn apply_template_custom_fields_in_object() {
+        let tmpl = json!({ "properties": { "speaking": "{{ is_speech }}" } });
+        let ctx = json!({ "is_speech": true });
+        assert_eq!(apply_template(&tmpl, &ctx), json!({ "properties": { "speaking": true } }));
     }
 
     // ── raw_payload ─────────────────────────────────────────────────

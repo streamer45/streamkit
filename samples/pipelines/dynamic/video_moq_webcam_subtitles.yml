@@ -7,15 +7,19 @@
 #
 # Data flow (subtitles):
 #   mic → opus_decoder → resampler → parakeet → [best_effort] →
-#   param_bridge → UpdateParams → slint subtitle → compositor layer
+#   subtitle_bridge → UpdateParams(text) → slint subtitle → compositor
+#
+# Data flow (speaking indicator):
+#   resampler → vad → [best_effort] →
+#   vad_bridge → UpdateParams(speaking) → slint subtitle
 #
 #   parakeet → [best_effort] → telemetry_out (stream view)
 #
 # Requires:
 #   - plugin::native::parakeet loaded (with Parakeet TDT model)
+#   - plugin::native::vad loaded (with TEN-VAD or Silero model)
 #   - plugin::native::slint loaded
-#   - Silero VAD model: models/silero_vad.onnx
-#   just build-plugin-native-parakeet && just build-plugin-native-slint && just copy-plugins-native
+#   just build-plugin-native-parakeet && just build-plugin-native-vad && just build-plugin-native-slint && just copy-plugins-native
 #   just download-parakeet-models
 
 name: Webcam PiP + Live Subtitles (MoQ)
@@ -80,7 +84,7 @@ nodes:
   parakeet:
     kind: plugin::native::parakeet
     params:
-      model_dir: models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8
+      model_dir: models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8
       num_threads: 4
       use_vad: true
       vad_model_path: models/silero_vad.onnx
@@ -98,6 +102,30 @@ nodes:
       node: parakeet
       mode: best_effort
 
+  # --- Real-time VAD → speaking indicator ---
+
+  vad:
+    kind: plugin::native::vad
+    params:
+      output_mode: events
+      threshold: 0.5
+      min_silence_duration_s: 0.3
+      min_speech_duration_s: 0.15
+    needs: resampler
+
+  vad_bridge:
+    kind: core::param_bridge
+    params:
+      target_node: subtitles
+      mode: template
+      template:
+        properties:
+          speaking: "{{ is_speech }}"
+    needs:
+      in:
+        node: vad
+        mode: best_effort
+
   # --- Subtitle rendering (Slint) ---
 
   subtitles:
@@ -110,6 +138,7 @@ nodes:
       properties:
         text: ""
         show: true
+        speaking: false
 
   subtitle_bridge:
     kind: core::param_bridge
