@@ -115,27 +115,52 @@ pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
     }
 
     if drain_pending {
-        // Wait for the codec task to finish producing all results before
-        // draining.  Without this, the drain loop interleaves with the
-        // (potentially slow) blocking encode task, and downstream nodes
-        // may close their channels before all results are forwarded —
-        // causing zero-byte output on fast pipelines.
+        // Drain results concurrently with the codec task.  We must keep
+        // reading from `result_rx` while the codec task is still running
+        // because the codec task uses `blocking_send()` on a bounded
+        // channel (capacity 32).  If we awaited the codec task first
+        // (without draining), the channel would fill up and the codec
+        // task would block forever — a deadlock.
+        //
+        // Once the codec task finishes, `result_tx` is dropped, so
+        // `result_rx.recv()` will eventually return `None` and we exit
+        // the drain loop naturally with all results forwarded.
         tracing::debug!("{label} waiting for codec task to finish before drain");
-        if !finish_codec_task(codec_task, label).await {
-            let mut drained = 0u64;
-            while let Some(maybe_result) = result_rx.recv().await {
-                match maybe_result {
-                    Ok(item) => {
-                        drained += 1;
-                        if forward_one(to_packet(item), context, counter, stats).await {
+        let mut codec_task = codec_task;
+        let mut codec_done = false;
+        let mut drained = 0u64;
+        loop {
+            tokio::select! {
+                biased;
+                // Drain results first (biased) to keep the channel
+                // flowing and unblock the codec task's blocking_send().
+                maybe_result = result_rx.recv() => {
+                    match maybe_result {
+                        Some(Ok(item)) => {
+                            drained += 1;
+                            if forward_one(to_packet(item), context, counter, stats).await {
+                                break;
+                            }
+                        }
+                        Some(Err(err)) => handle_error(&err, counter, stats, label),
+                        None => break,  // channel closed — codec task dropped result_tx
+                    }
+                }
+                res = &mut codec_task, if !codec_done => {
+                    codec_done = true;
+                    if let Err(e) = res {
+                        if e.is_panic() {
+                            tracing::error!("{label} codec task panicked: {e:?}");
                             break;
                         }
-                    },
-                    Err(err) => handle_error(&err, counter, stats, label),
+                    }
+                    // Codec task finished — result_tx is dropped.
+                    // Continue draining any buffered results in result_rx
+                    // until recv() returns None.
                 }
             }
-            tracing::debug!("{label} drain complete: forwarded {drained} result(s)");
         }
+        tracing::debug!("{label} drain complete: forwarded {drained} result(s)");
     } else {
         // Abort before awaiting: the codec task may be blocked on
         // `result_tx.blocking_send()` with a full channel since nobody
