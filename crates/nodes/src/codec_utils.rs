@@ -137,6 +137,11 @@ pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
             tracing::debug!("{label} drain complete: forwarded {drained} result(s)");
         }
     } else {
+        // Abort before awaiting: the codec task may be blocked on
+        // `result_tx.blocking_send()` with a full channel since nobody
+        // is draining `result_rx` anymore (output closed or channel
+        // dropped).  Without the abort this would deadlock.
+        codec_task.abort();
         finish_codec_task(codec_task, label).await;
     }
 }
