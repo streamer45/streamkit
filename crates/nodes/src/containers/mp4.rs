@@ -1191,6 +1191,23 @@ fn accumulate_audio_sample(
     seg.pending_payloads.push(data);
 }
 
+/// Check the keyframe gate for video frames.
+///
+/// Returns `true` if the frame should be processed, `false` if it should be
+/// skipped (still waiting for the first keyframe).
+fn check_video_keyframe_gate(is_keyframe: bool, video_keyframe_seen: &mut bool) -> bool {
+    if *video_keyframe_seen {
+        return true;
+    }
+    if !is_keyframe {
+        tracing::debug!("Mp4MuxerNode: skipping non-keyframe video (waiting for first keyframe)");
+        return false;
+    }
+    tracing::debug!("Mp4MuxerNode: first video keyframe received");
+    *video_keyframe_seen = true;
+    true
+}
+
 /// Run the muxer in fragmented MP4 (fMP4) streaming mode.
 ///
 /// Each batch of samples is turned into a media segment (moof + mdat) and
@@ -1256,16 +1273,8 @@ async fn run_stream_mode(
             },
             MuxFrame::Video(data, metadata) => {
                 let is_keyframe = metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(false);
-
-                if !video_keyframe_seen && !is_keyframe {
-                    tracing::debug!(
-                        "Mp4MuxerNode: skipping non-keyframe video (waiting for first keyframe)"
-                    );
+                if !check_video_keyframe_gate(is_keyframe, &mut video_keyframe_seen) {
                     continue;
-                }
-                if !video_keyframe_seen {
-                    tracing::debug!("Mp4MuxerNode: first video keyframe received");
-                    video_keyframe_seen = true;
                 }
 
                 packet_count += 1;
