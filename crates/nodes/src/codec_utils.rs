@@ -118,10 +118,9 @@ pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
 
     codec_task.abort();
     match codec_task.await {
-        Ok(()) => {},
         Err(e) if e.is_panic() => {
             tracing::error!("{label} codec task panicked: {e:?}");
         },
-        Err(_) => {},
+        _ => {},
     }
 }

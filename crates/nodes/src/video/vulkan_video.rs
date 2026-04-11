@@ -601,7 +601,11 @@ impl ProcessorNode for VulkanVideoH264EncoderNode {
                     },
                 };
 
-                let force_keyframe = metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(false);
+                // The first frame MUST be an IDR so that downstream
+                // muxers (MP4 in particular gates on the first keyframe)
+                // and players can initialise correctly.
+                let force_keyframe = frames_encoded == 0
+                    || metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(false);
 
                 let input_frame = vk_video::InputFrame {
                     data: vk_video::RawFrameData {
