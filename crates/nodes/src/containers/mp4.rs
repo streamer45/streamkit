@@ -1157,6 +1157,40 @@ fn accumulate_video_sample(
     seg.pending_payloads.push(data);
 }
 
+/// Accumulate a single audio frame into the pending segment state.
+fn accumulate_audio_sample(
+    data: Bytes,
+    metadata: Option<&PacketMetadata>,
+    audio_codec: AudioCodec,
+    audio_timescale: NonZeroU32,
+    audio_sample_entry: &SampleEntry,
+    seg: &mut Fmp4SegmentState,
+) {
+    let duration_us = metadata
+        .and_then(|m| m.duration_us)
+        .unwrap_or_else(|| audio_codec.default_frame_duration_us());
+    let duration_ticks = us_to_ticks(duration_us, audio_timescale.get());
+
+    let data_size = data.len();
+    let entry = if seg.audio_sample_entry_sent {
+        None
+    } else {
+        seg.audio_sample_entry_sent = true;
+        Some(audio_sample_entry.clone())
+    };
+    seg.pending_samples.push(Sample {
+        track_kind: TrackKind::Audio,
+        timescale: audio_timescale,
+        sample_entry: entry,
+        duration: duration_ticks,
+        keyframe: true, // audio frames are always keyframes
+        composition_time_offset: None,
+        data_offset: 0, // placeholder; partition_samples_by_track recomputes
+        data_size,
+    });
+    seg.pending_payloads.push(data);
+}
+
 /// Run the muxer in fragmented MP4 (fMP4) streaming mode.
 ///
 /// Each batch of samples is turned into a media segment (moof + mdat) and
@@ -1250,31 +1284,14 @@ async fn run_stream_mode(
             MuxFrame::Audio(data, metadata) => {
                 packet_count += 1;
                 stats_tracker.received();
-
-                let duration_us = metadata
-                    .as_ref()
-                    .and_then(|m| m.duration_us)
-                    .unwrap_or_else(|| session.audio_codec.default_frame_duration_us());
-                let duration_ticks = us_to_ticks(duration_us, audio_timescale.get());
-
-                let data_size = data.len();
-                let entry = if seg.audio_sample_entry_sent {
-                    None
-                } else {
-                    seg.audio_sample_entry_sent = true;
-                    Some(audio_sample_entry.clone())
-                };
-                seg.pending_samples.push(Sample {
-                    track_kind: TrackKind::Audio,
-                    timescale: audio_timescale,
-                    sample_entry: entry,
-                    duration: duration_ticks,
-                    keyframe: true, // audio frames are always keyframes
-                    composition_time_offset: None,
-                    data_offset: 0, // placeholder; partition_samples_by_track recomputes
-                    data_size,
-                });
-                seg.pending_payloads.push(data);
+                accumulate_audio_sample(
+                    data,
+                    metadata.as_ref(),
+                    session.audio_codec,
+                    audio_timescale,
+                    &audio_sample_entry,
+                    &mut seg,
+                );
             },
         }
 
