@@ -1580,10 +1580,7 @@ impl DynamicEngine {
                 );
 
                 // Broadcast Failed (reads prev state before inserting).
-                self.broadcast_state_update(
-                    &node_id,
-                    NodeState::Failed { reason: e.to_string() },
-                );
+                self.broadcast_state_update(&node_id, NodeState::Failed { reason: e.to_string() });
 
                 // Drain pending connections referencing this node.
                 self.pending_connections
@@ -1748,7 +1745,12 @@ impl DynamicEngine {
                     };
 
                     let _ = tx
-                        .send(NodeCreatedEvent { node_id: spawn_node_id, kind, creation_id, result })
+                        .send(NodeCreatedEvent {
+                            node_id: spawn_node_id,
+                            kind,
+                            creation_id,
+                            result,
+                        })
                         .await;
                 });
             },
