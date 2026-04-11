@@ -4,9 +4,9 @@
 
 //! Headless pipeline validation test harness.
 //!
-//! Discovers all `.yml` files in `samples/pipelines/test/`, loads the companion
-//! `.toml` expectations file, runs the pipeline against a live `skit` server,
-//! and validates the output with `ffprobe`.
+//! Discovers all `pipeline.yml` files under `samples/pipelines/test/<name>/`,
+//! loads the sibling `expected.toml`, runs the pipeline against a live `skit`
+//! server, and validates the output with `ffprobe`.
 //!
 //! # Usage
 //!
@@ -48,17 +48,18 @@ fn available_nodes() -> &'static HashSet<String> {
     })
 }
 
-/// The main test function called by `datatest-stable` for each `.yml` file.
+/// The main test function called by `datatest-stable` for each `pipeline.yml`.
 ///
-/// For each pipeline YAML, it:
-/// 1. Loads the companion `.toml` expectations file
+/// For each test directory it:
+/// 1. Loads the sibling `expected.toml`
 /// 2. Checks if the required node kind is available (skips if not)
 /// 3. POSTs the pipeline to the server
 /// 4. Saves the response to a temp file
 /// 5. Validates the output with `ffprobe`
 fn validate_pipeline(path: &Path, yaml: String) -> datatest_stable::Result<()> {
-    // Load companion expectations file.
-    let expected_path = path.with_extension("toml");
+    // Load sibling expectations file from the same directory.
+    let test_dir = path.parent().expect("pipeline.yml must be inside a test directory");
+    let expected_path = test_dir.join("expected.toml");
     let expected_toml = std::fs::read_to_string(&expected_path).map_err(|e| {
         format!(
             "Missing expectations file '{}': {e}\n\
@@ -86,29 +87,22 @@ fn validate_pipeline(path: &Path, yaml: String) -> datatest_stable::Result<()> {
         }
     }
 
+    let test_name = test_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+
     // Run the pipeline.
-    let output = run_pipeline(base_url(), &yaml, &expected.output_extension).map_err(|e| {
-        format!(
-            "Pipeline '{}' failed: {e}",
-            path.file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default()
-        )
-    })?;
+    let output = run_pipeline(base_url(), &yaml, &expected.output_extension)
+        .map_err(|e| format!("Pipeline '{test_name}' failed: {e}"))?;
 
     // Validate with ffprobe.
-    validate_output(output.path(), &expected).map_err(|e| {
-        format!(
-            "Validation failed for '{}': {e}",
-            path.file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default()
-        )
-    })?;
+    validate_output(output.path(), &expected)
+        .map_err(|e| format!("Validation failed for '{test_name}': {e}"))?;
 
     Ok(())
 }
 
 datatest_stable::harness! {
-    { test = validate_pipeline, root = "../../samples/pipelines/test", pattern = r"\.yml$" },
+    { test = validate_pipeline, root = "../../samples/pipelines/test", pattern = r"pipeline\.yml$" },
 }
