@@ -97,6 +97,7 @@ jobs:
                   '--target', os.environ.get('GITHUB_SHA', 'HEAD'),
                   '--title', release_name,
                   '--notes', f'Plugin bundle for {name} v{version}.',
+                  '--latest=false',
                   bundle,
               ]
               if is_prerelease:
