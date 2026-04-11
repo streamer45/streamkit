@@ -149,12 +149,15 @@ jobs:
 
       - name: Start skit server
         run: |
-          SK_SERVER__ADDRESS=127.0.0.1:4545 ./target/debug/skit &
+          # Use a non-default port to avoid conflicts with any persistent skit
+          # instance that may be running on the self-hosted runner.
+          SKIT_PORT=4546
+          SK_SERVER__ADDRESS=127.0.0.1:${SKIT_PORT} ./target/debug/skit &
           # Wait for the server to be healthy
           HEALTHY=0
           for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:4545/healthz > /dev/null 2>&1; then
-              echo "skit is healthy"
+            if curl -sf http://127.0.0.1:${SKIT_PORT}/healthz > /dev/null 2>&1; then
+              echo "skit is healthy on port ${SKIT_PORT}"
               HEALTHY=1
               break
             fi
@@ -168,7 +171,7 @@ jobs:
       - name: Run pipeline validation tests (all codecs including GPU)
         run: |
           cd tests/pipeline-validation
-          PIPELINE_TEST_URL=http://127.0.0.1:4545 cargo test --test validate
+          PIPELINE_TEST_URL=http://127.0.0.1:4546 cargo test --test validate
 
   e2e:
     name: Playwright E2E
