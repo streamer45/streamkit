@@ -104,12 +104,19 @@ build-skit-native:
     @echo "Building skit (target-cpu=native)..."
     @RUSTFLAGS="-C target-cpu=native" cargo build --release {{moq_features}} {{extra_features}} -p streamkit-server --bin skit
 
-# Build the skit with profiling support
+# Build skit for quick dev profiling (no LTO, incremental, fast rebuild)
+# Uses opt-level 2 for meaningful profiles without the LTO link overhead.
+# Frame pointers are required by pprof's frame-pointer unwinder.
+build-skit-profiling-dev:
+    @echo "Building skit for dev profiling (opt-level 2, no LTO, frame pointers)..."
+    @RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile dev-profiling {{moq_features}} {{profiling_features}} -p streamkit-server --bin skit
+
+# Build skit with release profiling support (production-accurate)
 # Uses release-lto profile for thin LTO (eliminates UB-check overhead and enables
 # cross-crate SIMD inlining), frame pointers for fast stack unwinding (required by
 # pprof frame-pointer feature), and target-cpu=native so profiles reflect host-tuned codegen.
 build-skit-profiling:
-    @echo "Building skit with profiling support (release-lto + frame pointers + native CPU)..."
+    @echo "Building skit with release profiling support (release-lto + frame pointers + native CPU)..."
     @RUSTFLAGS="-C force-frame-pointers=yes -C target-cpu=native" cargo build --profile release-lto {{moq_features}} {{profiling_features}} -p streamkit-server --bin skit
 
 # Start the skit server
@@ -117,12 +124,20 @@ skit *args='': check-ui-dist
     @echo "Starting skit..."
     @cargo run {{moq_features}} {{extra_features}} -p streamkit-server --bin skit -- {{args}}
 
-# Start the skit server with profiling support (CPU + heap)
+# Start skit with dev profiling support (CPU + heap, no LTO, fast rebuild)
+# Use this for quick iteration: profiles are representative enough to find
+# bottlenecks without the compile-time cost of release-lto.
+skit-profiling-dev *args='':
+    @echo "Starting skit with dev profiling (opt-level 2, no LTO, frame pointers)..."
+    @echo "Note: Profiles reflect opt-level 2 without LTO — faster build, slightly less accurate than release"
+    @RUSTFLAGS="-C force-frame-pointers=yes" cargo run --profile dev-profiling {{moq_features}} {{profiling_features}} -p streamkit-server --bin skit -- {{args}}
+
+# Start skit with release profiling support (CPU + heap, production-accurate)
 # Uses release-lto profile for thin LTO (eliminates UB-check overhead and enables
 # cross-crate SIMD inlining), frame pointers for fast stack unwinding (required by
 # pprof frame-pointer feature), and target-cpu=native so profiles reflect host-tuned codegen.
 skit-profiling *args='':
-    @echo "Starting skit with profiling support (release-lto + CPU + heap, frame pointers + native CPU)..."
+    @echo "Starting skit with release profiling support (release-lto + CPU + heap, frame pointers + native CPU)..."
     @echo "Note: Heap profiling configuration is embedded in the binary"
     @RUSTFLAGS="-C force-frame-pointers=yes -C target-cpu=native" cargo run --profile release-lto {{moq_features}} {{profiling_features}} -p streamkit-server --bin skit -- {{args}}
 
@@ -355,17 +370,19 @@ fix-plugins:
     @echo "✓ All native plugins fixed"
 
 # --- Profiling ---
-# Note: Profiling requires server to be running with --features profiling
-# Start server with: just skit-profiling serve
+# Two modes: dev (fast iteration) and release (production-accurate).
+#   Dev:     just skit-profiling-dev serve   (opt-level 2, no LTO, incremental)
+#   Release: just skit-profiling serve       (release-lto, target-cpu=native)
+# Both enable CPU + heap profiling via the same HTTP endpoints below.
 
 # Fetch a CPU profile from running skit server (requires Go with pprof installed)
 # Duration in seconds (default: 30), format: flamegraph or protobuf (default: protobuf)
 profile-fetch duration='30' format='protobuf' output='profile.pb':
     @echo "Fetching {{duration}}s CPU profile in {{format}} format..."
-    @echo "Note: Server must be running with profiling enabled (just skit-profiling serve)"
+    @echo "Note: Server must be running with profiling enabled (just skit-profiling-dev serve or just skit-profiling serve)"
     @curl -s "http://127.0.0.1:4545/api/v1/profile/cpu?duration_secs={{duration}}&format={{format}}" -o {{output}} || (echo "❌ Failed to fetch profile. Is the server running with profiling enabled?" && exit 1)
     @if [ ! -s {{output}} ] || grep -q "501 Not Implemented" {{output}} 2>/dev/null; then \
-        echo "❌ Profiling not enabled. Start server with: just skit-profiling serve"; \
+        echo "❌ Profiling not enabled. Start server with: just skit-profiling-dev serve (fast) or just skit-profiling serve (release)"; \
         rm -f {{output}}; \
         exit 1; \
     fi
@@ -395,10 +412,10 @@ profile-top duration='30':
 # Fetch a heap profile from running skit server (requires Go with pprof installed)
 heap-profile-fetch output='heap.pb.gz':
     @echo "Fetching heap profile..."
-    @echo "Note: Server must be running with profiling enabled (just skit-profiling serve)"
+    @echo "Note: Server must be running with profiling enabled (just skit-profiling-dev serve or just skit-profiling serve)"
     @curl -s "http://127.0.0.1:4545/api/v1/profile/heap" -o {{output}} || (echo "❌ Failed to fetch heap profile. Is the server running with profiling enabled?" && exit 1)
     @if [ ! -s {{output}} ] || grep -q "501 Not Implemented" {{output}} 2>/dev/null; then \
-        echo "❌ Heap profiling not enabled. Start server with: just skit-profiling serve"; \
+        echo "❌ Heap profiling not enabled. Start server with: just skit-profiling-dev serve (fast) or just skit-profiling serve (release)"; \
         rm -f {{output}}; \
         exit 1; \
     fi
