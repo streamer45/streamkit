@@ -173,6 +173,15 @@ pub fn run_pipeline(
         .bytes()
         .map_err(|e| format!("Failed to read response body: {e}"))?;
 
+    if bytes.is_empty() {
+        return Err(
+            "Pipeline returned HTTP 200 but the response body is empty. \
+             This usually means the encoder failed to produce output \
+             (e.g. the GPU does not support the required codec via this API)."
+                .to_string(),
+        );
+    }
+
     tmp.write_all(&bytes)
         .map_err(|e| format!("Failed to write output to temp file: {e}"))?;
 
@@ -187,8 +196,16 @@ pub fn run_pipeline(
 /// Runs `ffprobe` against the output file and checks codec, resolution,
 /// container format, and audio properties against the [`Expected`] values.
 pub fn validate_output(output_path: &Path, expected: &Expected) -> Result<(), String> {
-    let probe = ffprobe::ffprobe(output_path)
-        .map_err(|e| format!("ffprobe failed on {}: {e}", output_path.display()))?;
+    let file_size = std::fs::metadata(output_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+
+    let probe = ffprobe::ffprobe(output_path).map_err(|e| {
+        format!(
+            "ffprobe failed on {} ({file_size} bytes): {e}",
+            output_path.display()
+        )
+    })?;
 
     // Check container format.
     let format_name = &probe.format.format_name;

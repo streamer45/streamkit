@@ -154,7 +154,7 @@ jobs:
           # Use a non-default port to avoid conflicts with any persistent skit
           # instance that may be running on the self-hosted runner.
           SKIT_PORT=4546
-          SK_SERVER__ADDRESS=127.0.0.1:${SKIT_PORT} ./target/debug/skit &
+          SK_SERVER__ADDRESS=127.0.0.1:${SKIT_PORT} ./target/debug/skit > /tmp/skit-gpu.log 2>&1 &
           echo $! > /tmp/skit-gpu.pid
           # Wait for the server to be healthy
           HEALTHY=0
@@ -174,7 +174,15 @@ jobs:
       - name: Run pipeline validation tests (all codecs including GPU)
         run: |
           cd tests/pipeline-validation
-          PIPELINE_TEST_URL=http://127.0.0.1:4546 cargo test --test validate
+          PIPELINE_TEST_URL=http://127.0.0.1:4546 cargo test --test validate -- --test-threads=1
+
+      - name: Show skit server logs
+        if: always()
+        run: |
+          if [ -f /tmp/skit-gpu.log ]; then
+            echo "=== skit server logs (last 100 lines) ==="
+            tail -100 /tmp/skit-gpu.log
+          fi
 
       - name: Stop skit server
         if: always()
@@ -183,6 +191,7 @@ jobs:
             kill "$(cat /tmp/skit-gpu.pid)" 2>/dev/null || true
             rm -f /tmp/skit-gpu.pid
           fi
+          rm -f /tmp/skit-gpu.log
 
   e2e:
     name: Playwright E2E
