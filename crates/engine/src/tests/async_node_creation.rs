@@ -79,6 +79,64 @@ impl ProcessorNode for SlowTestNode {
     }
 }
 
+/// A slow node that records every `UpdateParams` message it receives.
+/// Used to verify that TuneNode messages sent while the node is Creating
+/// are queued and replayed after initialization.
+struct TuneTrackingSlowNode {
+    tune_count: Arc<AtomicU32>,
+}
+
+impl TuneTrackingSlowNode {
+    fn factory(
+        delay: Duration,
+        created: Arc<AtomicBool>,
+        tune_count: Arc<AtomicU32>,
+    ) -> impl Fn(Option<&serde_json::Value>) -> Result<Box<dyn ProcessorNode>, StreamKitError>
+           + Send
+           + Sync
+           + 'static {
+        move |_params| {
+            std::thread::sleep(delay);
+            created.store(true, Ordering::SeqCst);
+            Ok(Box::new(Self { tune_count: tune_count.clone() }) as Box<dyn ProcessorNode>)
+        }
+    }
+}
+
+#[streamkit_core::async_trait]
+impl ProcessorNode for TuneTrackingSlowNode {
+    fn input_pins(&self) -> Vec<streamkit_core::InputPin> {
+        vec![streamkit_core::InputPin {
+            name: "in".to_string(),
+            accepts_types: vec![streamkit_core::types::PacketType::Any],
+            cardinality: streamkit_core::PinCardinality::One,
+        }]
+    }
+
+    fn output_pins(&self) -> Vec<streamkit_core::OutputPin> {
+        vec![streamkit_core::OutputPin {
+            name: "out".to_string(),
+            produces_type: streamkit_core::types::PacketType::Binary,
+            cardinality: streamkit_core::PinCardinality::Broadcast,
+        }]
+    }
+
+    async fn run(
+        self: Box<Self>,
+        mut context: streamkit_core::NodeContext,
+    ) -> Result<(), StreamKitError> {
+        loop {
+            match context.control_rx.recv().await {
+                Some(streamkit_core::control::NodeControlMessage::Shutdown) | None => return Ok(()),
+                Some(streamkit_core::control::NodeControlMessage::UpdateParams(_)) => {
+                    self.tune_count.fetch_add(1, Ordering::SeqCst);
+                },
+                Some(streamkit_core::control::NodeControlMessage::Start) => {},
+            }
+        }
+    }
+}
+
 /// A simple source node (no inputs) that stays alive until shutdown.
 struct SimpleSourceNode;
 
@@ -914,6 +972,89 @@ async fn test_connect_one_realized_one_creating() {
     })
     .await;
     assert!(both_done, "both nodes should be initialized after deferred connection is replayed");
+
+    handle.shutdown_and_wait().await.expect("shutdown");
+}
+
+// ---------------------------------------------------------------------------
+// Test 11: TuneNode messages sent while a node is Creating are queued and
+//          replayed after initialization completes.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[allow(clippy::expect_used)]
+async fn test_tune_node_queued_while_creating() {
+    let created = Arc::new(AtomicBool::new(false));
+    let tune_count = Arc::new(AtomicU32::new(0));
+
+    let mut registry = NodeRegistry::new();
+    registry.register_dynamic(
+        "test::tune_tracking_slow",
+        TuneTrackingSlowNode::factory(
+            Duration::from_secs(1),
+            created.clone(),
+            tune_count.clone(),
+        ),
+        serde_json::json!({}),
+        vec!["test".to_string()],
+        false,
+    );
+
+    let (_engine, handle) = build_engine(registry);
+
+    // Add the slow node.
+    handle
+        .send_control(EngineControlMessage::AddNode {
+            node_id: "tracked".to_string(),
+            kind: "test::tune_tracking_slow".to_string(),
+            params: None,
+        })
+        .await
+        .expect("add tracked");
+
+    // Verify it's still Creating (constructor sleeps 1s).
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!created.load(Ordering::SeqCst), "node should still be creating");
+
+    // Send two TuneNode messages while the node is Creating.
+    handle
+        .send_control(EngineControlMessage::TuneNode {
+            node_id: "tracked".to_string(),
+            message: streamkit_core::control::NodeControlMessage::UpdateParams(
+                serde_json::json!({"gain": 0.5}),
+            ),
+        })
+        .await
+        .expect("tune 1");
+
+    handle
+        .send_control(EngineControlMessage::TuneNode {
+            node_id: "tracked".to_string(),
+            message: streamkit_core::control::NodeControlMessage::UpdateParams(
+                serde_json::json!({"gain": 0.8}),
+            ),
+        })
+        .await
+        .expect("tune 2");
+
+    // Wait for the node to finish creation and initialization.
+    let initialized = wait_for_states(&handle, Duration::from_secs(5), |states| {
+        states.get("tracked").is_some_and(|s| {
+            matches!(s, NodeState::Ready | NodeState::Running | NodeState::Initializing)
+        })
+    })
+    .await;
+    assert!(initialized, "node should be initialized");
+
+    // Give a moment for the queued tunes to be replayed and processed.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Both UpdateParams messages should have been delivered.
+    assert_eq!(
+        tune_count.load(Ordering::SeqCst),
+        2,
+        "node should have received both queued TuneNode messages"
+    );
 
     handle.shutdown_and_wait().await.expect("shutdown");
 }
