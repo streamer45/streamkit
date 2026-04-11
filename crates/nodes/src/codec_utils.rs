@@ -126,7 +126,7 @@ pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
                             if forward_one(to_packet(item), context, counter, stats).await {
                                 break;
                             }
-                        }
+                        },
                         Err(err) => handle_error(&err, counter, stats, label),
                     }
                 }
