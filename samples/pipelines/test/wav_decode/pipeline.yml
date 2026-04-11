@@ -26,14 +26,12 @@ nodes:
 
   opus_encoder:
     kind: audio::opus::encoder
-    params:
-      channels: 2
     needs: wav_demuxer
 
   ogg_muxer:
     kind: containers::ogg::muxer
     params:
-      channels: 2
+      channels: 1
       chunk_size: 65536
     needs: opus_encoder
 

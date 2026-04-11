@@ -30,8 +30,6 @@ nodes:
 
   opus_encoder:
     kind: audio::opus::encoder
-    params:
-      channels: 2
     needs: opus_decoder
 
   mp4_muxer:
@@ -39,7 +37,7 @@ nodes:
     params:
       mode: file
       sample_rate: 48000
-      channels: 2
+      channels: 1
     needs: opus_encoder
 
   http_output:

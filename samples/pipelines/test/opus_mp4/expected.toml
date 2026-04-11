@@ -6,5 +6,5 @@ output_extension = ".mp4"
 container_format = "mov,mp4,m4a,3gp,3g2,mj2"
 audio_codec = "opus"
 sample_rate = 48000
-channels = 2
+channels = 1
 input_file = "../fixtures/test_tone.ogg"
