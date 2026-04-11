@@ -26,6 +26,8 @@ nodes:
 
   opus_encoder:
     kind: audio::opus::encoder
+    params:
+      channels: 2
     needs: wav_demuxer
 
   ogg_muxer:

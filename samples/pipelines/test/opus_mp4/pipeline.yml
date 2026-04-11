@@ -30,6 +30,8 @@ nodes:
 
   opus_encoder:
     kind: audio::opus::encoder
+    params:
+      channels: 2
     needs: opus_decoder
 
   mp4_muxer:

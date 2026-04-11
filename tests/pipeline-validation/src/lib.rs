@@ -141,7 +141,7 @@ pub fn run_pipeline(
             .to_string();
         let part = reqwest::blocking::multipart::Part::bytes(file_bytes)
             .file_name(file_name);
-        form = form.part("file", part);
+        form = form.part("media", part);
     }
 
     let client = reqwest::blocking::Client::builder()
