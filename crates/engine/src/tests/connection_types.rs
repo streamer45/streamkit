@@ -21,6 +21,8 @@ fn create_test_engine() -> DynamicEngine {
     drop(control_tx);
     drop(query_tx);
 
+    let (node_created_tx, node_created_rx) = mpsc::channel(32);
+
     let meter = opentelemetry::global::meter("test");
     DynamicEngine {
         registry: std::sync::Arc::new(std::sync::RwLock::new(NodeRegistry::new())),
@@ -57,6 +59,10 @@ fn create_test_engine() -> DynamicEngine {
         node_state_gauge: meter.u64_gauge("test.state").build(),
         runtime_schemas: HashMap::new(),
         runtime_schema_subscribers: Vec::new(),
+        node_created_tx,
+        node_created_rx,
+        pending_connections: Vec::new(),
+        cancelled_creations: std::collections::HashSet::new(),
     }
 }
 

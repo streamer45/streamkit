@@ -12,6 +12,8 @@
 //! Nodes transition through these states during their lifecycle:
 //!
 //! ```text
+//!      Creating
+//!          ↓
 //!     Initializing
 //!          ↓
 //!        Ready ──────────┐
@@ -89,6 +91,8 @@ impl From<String> for StopReason {
 /// Nodes transition through these states during their lifecycle:
 ///
 /// ```text
+///      Creating
+///          ↓
 ///     Initializing
 ///          ↓
 ///        Ready ──────────┐
@@ -105,6 +109,8 @@ impl From<String> for StopReason {
 /// ```
 ///
 /// ### Valid Transitions:
+/// - `Creating` → `Initializing` (node factory completed successfully)
+/// - `Creating` → `Failed` (node factory returned an error)
 /// - `Initializing` → `Ready` (source nodes) or `Running` (processing nodes)
 /// - `Ready` → `Running` (when pipeline is ready)
 /// - `Running` → `Recovering` (temporary issues, will retry)
@@ -120,6 +126,11 @@ impl From<String> for StopReason {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub enum NodeState {
+    /// Node is being created by the factory (e.g., loading ONNX models via FFI).
+    /// This state is set immediately when `AddNode` is received, before the
+    /// (potentially slow) constructor runs in a background task.
+    Creating,
+
     /// Node is starting up and performing initialization.
     /// Examples: Opening connections, loading resources, validating configuration.
     Initializing,
@@ -217,6 +228,12 @@ pub mod state_helpers {
     #[inline]
     pub fn emit_state(state_tx: &mpsc::Sender<NodeStateUpdate>, node_id: &str, state: NodeState) {
         let _ = state_tx.try_send(NodeStateUpdate::new(node_id.to_string(), state));
+    }
+
+    /// Emits a Creating state.
+    #[inline]
+    pub fn emit_creating(state_tx: &mpsc::Sender<NodeStateUpdate>, node_id: &str) {
+        emit_state(state_tx, node_id, NodeState::Creating);
     }
 
     /// Emits an Initializing state.

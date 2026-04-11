@@ -16,7 +16,7 @@ use crate::{
     graph_builder,
 };
 use opentelemetry::KeyValue;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use streamkit_core::control::{EngineControlMessage, NodeControlMessage};
 use streamkit_core::error::StreamKitError;
@@ -48,6 +48,24 @@ struct NodeChannels {
     stats: mpsc::Sender<NodeStatsUpdate>,
     telemetry: mpsc::Sender<TelemetryEvent>,
     view_data: mpsc::Sender<NodeViewDataUpdate>,
+}
+
+/// Result of a background node creation task, sent back to the actor loop.
+pub struct NodeCreatedEvent {
+    node_id: String,
+    kind: String,
+    result: Result<Box<dyn streamkit_core::ProcessorNode>, StreamKitError>,
+}
+
+/// A connection request deferred because one or both endpoints are still in
+/// `Creating` state and not yet present in `live_nodes`.
+#[derive(Debug)]
+pub struct PendingConnection {
+    from_node: String,
+    from_pin: String,
+    to_node: String,
+    to_pin: String,
+    mode: crate::dynamic_messages::ConnectionMode,
 }
 
 /// The state for the long-running, dynamic engine actor (Control Plane).
@@ -124,10 +142,21 @@ pub struct DynamicEngine {
     pub(super) node_packets_errored_counter: opentelemetry::metrics::Counter<u64>,
     // Node state metric (1=running, 0=not running)
     pub(super) node_state_gauge: opentelemetry::metrics::Gauge<u64>,
+    /// Sender half of the internal channel for background node creation results.
+    /// Cloned into each spawned creation task.
+    pub(super) node_created_tx: mpsc::Sender<NodeCreatedEvent>,
+    /// Receiver half — polled in the actor `select!` loop.
+    pub(super) node_created_rx: mpsc::Receiver<NodeCreatedEvent>,
+    /// Connections deferred because one or both endpoints are still `Creating`.
+    pub(super) pending_connections: Vec<PendingConnection>,
+    /// Node IDs whose creation was cancelled (via `RemoveNode` while `Creating`).
+    /// When `NodeCreated` arrives for a cancelled ID, the result is discarded.
+    pub(super) cancelled_creations: HashSet<String>,
 }
 impl DynamicEngine {
     const fn node_state_name(state: &NodeState) -> &'static str {
         match state {
+            NodeState::Creating => "creating",
             NodeState::Initializing => "initializing",
             NodeState::Ready => "ready",
             NodeState::Running => "running",
@@ -156,9 +185,12 @@ impl DynamicEngine {
         loop {
             tokio::select! {
                 Some(control_msg) = self.control_rx.recv() => {
-                    if !self.handle_engine_control(control_msg, &channels).await {
+                    if !self.handle_engine_control(control_msg).await {
                         break; // Shutdown requested
                     }
+                },
+                Some(created) = self.node_created_rx.recv() => {
+                    self.handle_node_created(created, &channels).await;
                 },
                 Some(query_msg) = self.query_rx.recv() => {
                     self.handle_query(query_msg).await;
@@ -1472,58 +1504,253 @@ impl DynamicEngine {
         self.nodes_active_gauge.record(self.live_nodes.len() as u64, &[]);
     }
 
+    /// Handles a completed background node creation.
+    ///
+    /// On success: initializes the node, then flushes any pending connections
+    /// whose endpoints are now both realized.
+    /// On failure: transitions the node to `Failed`, drains pending connections
+    /// referencing the failed node.
+    async fn handle_node_created(&mut self, event: NodeCreatedEvent, channels: &NodeChannels) {
+        let NodeCreatedEvent { node_id, kind, result } = event;
+
+        // If the node was cancelled (RemoveNode arrived while Creating),
+        // discard the result silently.
+        if self.cancelled_creations.remove(&node_id) {
+            tracing::info!(
+                node = %node_id,
+                "Discarding creation result for cancelled node"
+            );
+            // Drain pending connections referencing this node.
+            self.pending_connections.retain(|pc| pc.from_node != node_id && pc.to_node != node_id);
+            return;
+        }
+
+        match result {
+            Ok(node) => {
+                tracing::info!(node = %node_id, kind = %kind, "Node created successfully, initializing");
+                if let Err(e) = self.initialize_node(node, &node_id, &kind, channels).await {
+                    tracing::error!(
+                        node_id = %node_id,
+                        kind = %kind,
+                        error = %e,
+                        "Failed to initialize node after async creation"
+                    );
+                    self.node_states
+                        .insert(node_id.clone(), NodeState::Failed { reason: e.to_string() });
+
+                    // Broadcast the Failed state to subscribers.
+                    let update = NodeStateUpdate::new(
+                        node_id.clone(),
+                        NodeState::Failed { reason: e.to_string() },
+                    );
+                    self.broadcast_state_update(&update);
+
+                    // Drain pending connections referencing this node.
+                    self.pending_connections
+                        .retain(|pc| pc.from_node != node_id && pc.to_node != node_id);
+                    return;
+                }
+
+                // Flush pending connections where both endpoints are now realized.
+                self.flush_pending_connections().await;
+            },
+            Err(e) => {
+                tracing::error!(
+                    node_id = %node_id,
+                    kind = %kind,
+                    error = %e,
+                    "Background node creation failed"
+                );
+                self.node_states
+                    .insert(node_id.clone(), NodeState::Failed { reason: e.to_string() });
+
+                // Broadcast the Failed state to subscribers.
+                let update = NodeStateUpdate::new(
+                    node_id.clone(),
+                    NodeState::Failed { reason: e.to_string() },
+                );
+                self.broadcast_state_update(&update);
+
+                // Drain pending connections referencing this node.
+                self.pending_connections
+                    .retain(|pc| pc.from_node != node_id && pc.to_node != node_id);
+            },
+        }
+    }
+
+    /// Broadcast a state update to all subscribers (used when the actor itself
+    /// synthesizes a state transition, e.g. `Creating → Failed`).
+    fn broadcast_state_update(&mut self, update: &NodeStateUpdate) {
+        let state_name = Self::node_state_name(&update.state);
+        self.node_state_transitions_counter.add(
+            1,
+            &[KeyValue::new("node_id", update.node_id.clone()), KeyValue::new("state", state_name)],
+        );
+        self.node_state_gauge.record(
+            1,
+            &[KeyValue::new("node_id", update.node_id.clone()), KeyValue::new("state", state_name)],
+        );
+
+        self.state_subscribers.retain(|subscriber| match subscriber.try_send(update.clone()) {
+            Ok(()) => true,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                let subscriber = subscriber.clone();
+                let update = update.clone();
+                tokio::spawn(async move {
+                    let _ = subscriber.send(update).await;
+                });
+                true
+            },
+            Err(mpsc::error::TrySendError::Closed(_)) => false,
+        });
+    }
+
+    /// Execute any pending connections whose both endpoints are now realized
+    /// (i.e., present in `live_nodes`).
+    async fn flush_pending_connections(&mut self) {
+        // Drain the vec, keeping connections that still have unrealized endpoints.
+        let pending = std::mem::take(&mut self.pending_connections);
+        let mut still_pending = Vec::new();
+
+        for pc in pending {
+            let from_realized = self.live_nodes.contains_key(&pc.from_node);
+            let to_realized = self.live_nodes.contains_key(&pc.to_node);
+
+            if from_realized && to_realized {
+                tracing::info!(
+                    "Replaying deferred connection {}.{} -> {}.{}",
+                    pc.from_node,
+                    pc.from_pin,
+                    pc.to_node,
+                    pc.to_pin
+                );
+                self.connect_nodes(pc.from_node, pc.from_pin, pc.to_node, pc.to_pin, pc.mode).await;
+                self.check_and_activate_pipeline();
+            } else {
+                still_pending.push(pc);
+            }
+        }
+
+        self.pending_connections = still_pending;
+    }
+
+    /// Returns `true` if the node is in `Creating` state (not yet in `live_nodes`).
+    fn is_node_creating(&self, node_id: &str) -> bool {
+        matches!(self.node_states.get(node_id), Some(NodeState::Creating))
+    }
+
     /// Handles a single control message sent to the engine.
     /// Returns true if the engine should continue running, false if it should shut down.
     #[allow(clippy::cognitive_complexity)]
-    async fn handle_engine_control(
-        &mut self,
-        msg: EngineControlMessage,
-        channels: &NodeChannels,
-    ) -> bool {
+    async fn handle_engine_control(&mut self, msg: EngineControlMessage) -> bool {
         match msg {
             EngineControlMessage::AddNode { node_id, kind, params } => {
                 self.engine_operations_counter.add(1, &[KeyValue::new("operation", "add_node")]);
-                tracing::info!(name = %node_id, kind = %kind, "Adding node to graph");
-                let node_result = {
-                    let registry = match self.registry.read() {
-                        Ok(guard) => guard,
-                        Err(err) => {
-                            tracing::error!(error = %err, "Registry lock poisoned while adding node");
-                            return true;
-                        },
-                    };
-                    registry.create_node(&kind, params.as_ref())
-                };
+                tracing::info!(name = %node_id, kind = %kind, "Adding node to graph (async)");
 
-                match node_result {
-                    Ok(node) => {
-                        self.node_kinds.insert(node_id.clone(), kind.clone());
-                        if let Err(e) = self.initialize_node(node, &node_id, &kind, channels).await
-                        {
-                            tracing::error!(
-                                node_id = %node_id,
-                                kind = %kind,
-                                error = %e,
-                                "Failed to initialize node"
-                            );
-                        }
-                    },
-                    Err(e) => tracing::error!("Failed to create node '{}': {}", node_id, e),
+                // Reject duplicate node IDs — the node already exists in
+                // node_states (either Creating or fully initialized).
+                if self.node_states.contains_key(&node_id) {
+                    tracing::error!(
+                        node_id = %node_id,
+                        kind = %kind,
+                        "Cannot add node: a node with this ID already exists"
+                    );
+                    return true;
                 }
+
+                // Record state and kind immediately so the actor loop
+                // continues processing the next message without blocking.
+                self.node_states.insert(node_id.clone(), NodeState::Creating);
+                self.node_kinds.insert(node_id.clone(), kind.clone());
+
+                // Broadcast Creating state to subscribers.
+                let update = NodeStateUpdate::new(node_id.clone(), NodeState::Creating);
+                self.broadcast_state_update(&update);
+
+                // Spawn background creation: `create_node` may invoke FFI
+                // that blocks for 10-20+ seconds (ONNX model loading).
+                let registry = Arc::clone(&self.registry);
+                let tx = self.node_created_tx.clone();
+                let spawn_node_id = node_id;
+                let spawn_kind = kind.clone();
+                tokio::spawn(async move {
+                    let result = tokio::task::spawn_blocking(move || {
+                        let guard = match registry.read() {
+                            Ok(g) => g,
+                            Err(err) => {
+                                return Err(StreamKitError::Runtime(format!(
+                                    "Registry lock poisoned: {err}"
+                                )));
+                            },
+                        };
+                        guard.create_node(&spawn_kind, params.as_ref())
+                    })
+                    .await;
+
+                    let result = match result {
+                        Ok(inner) => inner,
+                        Err(join_err) => Err(StreamKitError::Runtime(format!(
+                            "Node creation task panicked: {join_err}"
+                        ))),
+                    };
+
+                    let _ =
+                        tx.send(NodeCreatedEvent { node_id: spawn_node_id, kind, result }).await;
+                });
             },
             EngineControlMessage::RemoveNode { node_id } => {
                 self.engine_operations_counter.add(1, &[KeyValue::new("operation", "remove_node")]);
                 tracing::info!(name = %node_id, "Removing node from graph");
-                // Delegate shutdown to helper function
-                self.shutdown_node(&node_id).await;
+
+                if self.is_node_creating(&node_id) {
+                    // Node is still being created in the background.
+                    // Track the ID so we discard the NodeCreated result
+                    // when it arrives.
+                    tracing::info!(
+                        node_id = %node_id,
+                        "Node is still Creating — marking for cancellation"
+                    );
+                    self.cancelled_creations.insert(node_id.clone());
+                    self.node_states.remove(&node_id);
+                    self.node_kinds.remove(&node_id);
+                    // Drain pending connections referencing this node.
+                    self.pending_connections
+                        .retain(|pc| pc.from_node != node_id && pc.to_node != node_id);
+                } else {
+                    // Normal shutdown for a fully initialized node.
+                    self.shutdown_node(&node_id).await;
+                }
             },
             EngineControlMessage::Connect { from_node, from_pin, to_node, to_pin, mode } => {
                 self.engine_operations_counter.add(1, &[KeyValue::new("operation", "connect")]);
-                // Delegate connection logic
-                self.connect_nodes(from_node, from_pin, to_node, to_pin, mode).await;
 
-                // Check if pipeline is ready to activate after connection is established
-                self.check_and_activate_pipeline();
+                // If either endpoint is still Creating, defer the connection.
+                let from_creating = self.is_node_creating(&from_node);
+                let to_creating = self.is_node_creating(&to_node);
+
+                if from_creating || to_creating {
+                    tracing::info!(
+                        "Deferring connection {}.{} -> {}.{} (from_creating={}, to_creating={})",
+                        from_node,
+                        from_pin,
+                        to_node,
+                        to_pin,
+                        from_creating,
+                        to_creating
+                    );
+                    self.pending_connections.push(PendingConnection {
+                        from_node,
+                        from_pin,
+                        to_node,
+                        to_pin,
+                        mode,
+                    });
+                } else {
+                    // Both endpoints are realized — connect immediately.
+                    self.connect_nodes(from_node, from_pin, to_node, to_pin, mode).await;
+                    self.check_and_activate_pipeline();
+                }
             },
             EngineControlMessage::Disconnect { from_node, from_pin, to_node, to_pin } => {
                 self.engine_operations_counter.add(1, &[KeyValue::new("operation", "disconnect")]);
@@ -1544,6 +1771,19 @@ impl DynamicEngine {
             },
             EngineControlMessage::Shutdown => {
                 tracing::info!("Received shutdown signal, stopping all nodes");
+
+                // Step 0: Clean up nodes still in Creating state.
+                // Mark all as cancelled so NodeCreated results are discarded.
+                let creating_ids: Vec<String> = self
+                    .node_states
+                    .iter()
+                    .filter(|(_, state)| matches!(state, NodeState::Creating))
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                for id in creating_ids {
+                    self.cancelled_creations.insert(id);
+                }
+                self.pending_connections.clear();
 
                 // Step 1: Close all input channels so nodes blocked on recv() will exit
                 // This ensures nodes that don't check control_rx will still shut down
