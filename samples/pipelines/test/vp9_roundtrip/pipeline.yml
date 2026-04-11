@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Test pipeline: VP9 encode → decode → re-encode roundtrip (30 frames).
+# Exercises: colorbars → vp9 encoder → vp9 decoder → vp9 re-encoder → webm muxer
+# Used by headless pipeline validation tests.
+
+name: Test — VP9 Encode/Decode Roundtrip
+description: VP9 roundtrip via encode → decode → re-encode
+mode: oneshot
+client:
+  input:
+    type: none
+  output:
+    type: video
+
+nodes:
+  colorbars:
+    kind: video::colorbars
+    params:
+      width: 320
+      height: 240
+      fps: 30
+      frame_count: 30
+      pixel_format: nv12
+      draw_time: true
+      draw_time_use_pts: true
+
+  vp9_encoder:
+    kind: video::vp9::encoder
+    needs: colorbars
+
+  vp9_decoder:
+    kind: video::vp9::decoder
+    needs: vp9_encoder
+
+  vp9_reencoder:
+    kind: video::vp9::encoder
+    needs: vp9_decoder
+
+  webm_muxer:
+    kind: containers::webm::muxer
+    params:
+      video_width: 320
+      video_height: 240
+      streaming_mode: live
+    needs: vp9_reencoder
+
+  pacer:
+    kind: core::pacer
+    needs: webm_muxer
+
+  http_output:
+    kind: streamkit::http_output
+    params:
+      content_type: 'video/webm; codecs="vp9"'
+    needs: pacer

@@ -92,8 +92,12 @@ fn validate_pipeline(path: &Path, yaml: String) -> datatest_stable::Result<()> {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
 
+    // Resolve the input file path (if any) relative to the test directory.
+    let input_file = expected.input_file.as_ref().map(|rel| test_dir.join(rel));
+    let input_ref = input_file.as_deref();
+
     // Run the pipeline.
-    let output = run_pipeline(base_url(), &yaml, &expected.output_extension)
+    let output = run_pipeline(base_url(), &yaml, &expected.output_extension, input_ref)
         .map_err(|e| format!("Pipeline '{test_name}' failed: {e}"))?;
 
     // Validate with ffprobe.

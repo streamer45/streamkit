@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+requires_node = "audio::mp3::decoder"
+output_extension = ".ogg"
+container_format = "ogg"
+audio_codec = "opus"
+sample_rate = 48000
+channels = 2
+input_file = "../fixtures/test_tone.mp3"
