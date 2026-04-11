@@ -89,6 +89,14 @@ fn build_avc1_sample_entry(width: u16, height: u16, codec_private: Option<&[u8]>
         parse_avcc_codec_private,
     );
 
+    // For High profile and above (anything other than Baseline 66,
+    // Main 77, Extended 88), the avcC box requires chroma_format and
+    // bit-depth fields.  Default to 4:2:0 / 8-bit which matches NV12.
+    let needs_chroma_fields = !matches!(profile, 66 | 77 | 88);
+    let chroma_format = if needs_chroma_fields { Some(Uint::new(1)) } else { None };
+    let bit_depth_luma_minus8 = if needs_chroma_fields { Some(Uint::new(0)) } else { None };
+    let bit_depth_chroma_minus8 = if needs_chroma_fields { Some(Uint::new(0)) } else { None };
+
     SampleEntry::Avc1(Avc1Box {
         visual: VisualSampleEntryFields {
             data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
@@ -107,9 +115,9 @@ fn build_avc1_sample_entry(width: u16, height: u16, codec_private: Option<&[u8]>
             length_size_minus_one: Uint::new(3),
             sps_list,
             pps_list,
-            chroma_format: None,
-            bit_depth_luma_minus8: None,
-            bit_depth_chroma_minus8: None,
+            chroma_format,
+            bit_depth_luma_minus8,
+            bit_depth_chroma_minus8,
             sps_ext_list: vec![],
         },
         unknown_boxes: vec![],
@@ -296,6 +304,15 @@ fn rebuild_avc1_entry_from_params(
         .filter(|sps| sps.len() >= 4)
         .map_or((66, 0, 31), |sps| (sps[1], sps[2], sps[3]));
 
+    // For High profile and above (anything other than Baseline 66,
+    // Main 77, Extended 88), the avcC box requires chroma_format and
+    // bit-depth fields.  Default to 4:2:0 / 8-bit which matches NV12
+    // input — the standard output of HW encoders.
+    let needs_chroma_fields = !matches!(profile, 66 | 77 | 88);
+    let chroma_format = if needs_chroma_fields { Some(Uint::new(1)) } else { None };
+    let bit_depth_luma_minus8 = if needs_chroma_fields { Some(Uint::new(0)) } else { None };
+    let bit_depth_chroma_minus8 = if needs_chroma_fields { Some(Uint::new(0)) } else { None };
+
     SampleEntry::Avc1(Avc1Box {
         visual: VisualSampleEntryFields {
             data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
@@ -314,9 +331,9 @@ fn rebuild_avc1_entry_from_params(
             length_size_minus_one: Uint::new(3),
             sps_list,
             pps_list,
-            chroma_format: None,
-            bit_depth_luma_minus8: None,
-            bit_depth_chroma_minus8: None,
+            chroma_format,
+            bit_depth_luma_minus8,
+            bit_depth_chroma_minus8,
             sps_ext_list: vec![],
         },
         unknown_boxes: vec![],
