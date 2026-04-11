@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+output_extension = ".webm"
+codec_name = "vp9"
+width = 320
+height = 240
+container_format = "matroska,webm"
+pix_fmt = "yuv420p"

@@ -1389,6 +1389,18 @@ e2e-external url filter='':
     @echo "Running E2E tests against {{url}}..."
     @cd e2e && E2E_BASE_URL={{url}} bun run test:only {{ if filter != "" { "--grep '" + filter + "'" } else { "" } }}
 
+# Run headless pipeline validation tests (no browser required).
+# Requires a running skit server — pass its URL as an argument.
+# Each .yml in samples/pipelines/test/ becomes a test case; a companion
+# .toml sidecar declares the expected ffprobe output.
+#
+# Usage:
+#   just test-pipelines http://localhost:4545
+#   just test-pipelines http://localhost:4545 vp9   # filter by name
+test-pipelines url filter='':
+    @echo "Running headless pipeline validation tests against {{url}}..."
+    @cd tests/pipeline-validation && PIPELINE_TEST_URL={{url}} cargo test --test validate {{ if filter != "" { "-- " + filter } else { "" } }}
+
 # Show E2E test report
 [working-directory: 'e2e']
 e2e-report:

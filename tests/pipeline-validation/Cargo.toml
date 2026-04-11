@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+[package]
+name = "pipeline-validation"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Headless pipeline validation tests for StreamKit"
+
+# No library crate — this package only contains integration tests.
+[lib]
+name = "pipeline_validation"
+path = "src/lib.rs"
+
+[[test]]
+name = "validate"
+path = "tests/validate.rs"
+harness = false
+
+[dependencies]
+ffprobe = "0.4"
+reqwest = { version = "0.12", features = ["blocking", "multipart", "json"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+tempfile = "3"
+
+[dev-dependencies]
+datatest-stable = "0.3.3"

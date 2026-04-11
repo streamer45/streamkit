@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Test pipeline: Opus encode/decode roundtrip via Ogg container.
+# Exercises: ogg demuxer → opus decoder → opus encoder → ogg muxer
+# Used by headless pipeline validation tests.
+
+name: Test — Opus Roundtrip (Ogg)
+description: Decodes uploaded Ogg/Opus, re-encodes to Opus, muxes into Ogg
+mode: oneshot
+client:
+  input:
+    type: file_upload
+    accept: "audio/opus"
+  output:
+    type: audio
+
+nodes:
+  http_input:
+    kind: streamkit::http_input
+
+  ogg_demuxer:
+    kind: containers::ogg::demuxer
+    needs: http_input
+
+  opus_decoder:
+    kind: audio::opus::decoder
+    needs: ogg_demuxer
+
+  opus_encoder:
+    kind: audio::opus::encoder
+    needs: opus_decoder
+
+  ogg_muxer:
+    kind: containers::ogg::muxer
+    params:
+      channels: 1
+      chunk_size: 65536
+    needs: opus_encoder
+
+  http_output:
+    kind: streamkit::http_output
+    needs: ogg_muxer

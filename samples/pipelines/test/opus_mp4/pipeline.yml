@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Test pipeline: Opus in MP4 container.
+# Exercises: ogg demuxer → opus decoder → opus encoder → mp4 muxer (file mode)
+# Used by headless pipeline validation tests.
+
+name: Test — Opus in MP4
+description: Decodes uploaded Ogg/Opus, re-encodes to Opus, muxes into MP4
+mode: oneshot
+client:
+  input:
+    type: file_upload
+    accept: "audio/opus"
+  output:
+    type: audio
+
+nodes:
+  http_input:
+    kind: streamkit::http_input
+
+  ogg_demuxer:
+    kind: containers::ogg::demuxer
+    needs: http_input
+
+  opus_decoder:
+    kind: audio::opus::decoder
+    needs: ogg_demuxer
+
+  opus_encoder:
+    kind: audio::opus::encoder
+    needs: opus_decoder
+
+  mp4_muxer:
+    kind: containers::mp4::muxer
+    params:
+      mode: file
+      sample_rate: 48000
+      channels: 1
+    needs: opus_encoder
+
+  http_output:
+    kind: streamkit::http_output
+    params:
+      content_type: 'audio/mp4; codecs="opus"'
+    needs: mp4_muxer
