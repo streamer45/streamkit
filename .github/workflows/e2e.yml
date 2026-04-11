@@ -71,13 +71,19 @@ jobs:
         run: |
           SK_SERVER__ADDRESS=127.0.0.1:4545 ./target/debug/skit &
           # Wait for the server to be healthy
+          HEALTHY=0
           for i in $(seq 1 30); do
             if curl -sf http://127.0.0.1:4545/healthz > /dev/null 2>&1; then
               echo "skit is healthy"
+              HEALTHY=1
               break
             fi
             sleep 1
           done
+          if [ "$HEALTHY" -ne 1 ]; then
+            echo "ERROR: skit did not become healthy within 30s"
+            exit 1
+          fi
 
       - name: Run pipeline validation tests (SW codecs only)
         run: |
