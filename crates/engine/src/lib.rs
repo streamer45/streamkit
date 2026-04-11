@@ -242,7 +242,8 @@ impl Engine {
             node_created_tx: nc_tx,
             node_created_rx: nc_rx,
             pending_connections: Vec::new(),
-            cancelled_creations: std::collections::HashSet::new(),
+            next_creation_id: 0,
+            active_creations: std::collections::HashMap::new(),
         };
 
         let engine_task = tokio::spawn(dynamic_engine.run());

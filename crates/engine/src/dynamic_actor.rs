@@ -16,7 +16,7 @@ use crate::{
     graph_builder,
 };
 use opentelemetry::KeyValue;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use streamkit_core::control::{EngineControlMessage, NodeControlMessage};
 use streamkit_core::error::StreamKitError;
@@ -54,6 +54,7 @@ struct NodeChannels {
 pub struct NodeCreatedEvent {
     node_id: String,
     kind: String,
+    creation_id: u64,
     result: Result<Box<dyn streamkit_core::ProcessorNode>, StreamKitError>,
 }
 
@@ -149,9 +150,14 @@ pub struct DynamicEngine {
     pub(super) node_created_rx: mpsc::Receiver<NodeCreatedEvent>,
     /// Connections deferred because one or both endpoints are still `Creating`.
     pub(super) pending_connections: Vec<PendingConnection>,
-    /// Node IDs whose creation was cancelled (via `RemoveNode` while `Creating`).
-    /// When `NodeCreated` arrives for a cancelled ID, the result is discarded.
-    pub(super) cancelled_creations: HashSet<String>,
+    /// Monotonically increasing counter used to tag each spawned creation task.
+    /// Lets `handle_node_created` distinguish stale results (from a previous
+    /// Remove → re-Add cycle) from the current active creation.
+    pub(super) next_creation_id: u64,
+    /// Maps node_id → creation_id for nodes currently in `Creating` state.
+    /// When `NodeCreated` arrives, its `creation_id` must match the active
+    /// entry; otherwise the result is stale and discarded.
+    pub(super) active_creations: HashMap<String, u64>,
 }
 impl DynamicEngine {
     const fn node_state_name(state: &NodeState) -> &'static str {
@@ -1511,23 +1517,37 @@ impl DynamicEngine {
     /// On failure: transitions the node to `Failed`, drains pending connections
     /// referencing the failed node.
     async fn handle_node_created(&mut self, event: NodeCreatedEvent, channels: &NodeChannels) {
-        let NodeCreatedEvent { node_id, kind, result } = event;
+        let NodeCreatedEvent { node_id, kind, creation_id, result } = event;
 
-        // If the node was cancelled (RemoveNode arrived while Creating),
-        // discard the result silently.
-        if self.cancelled_creations.remove(&node_id) {
-            tracing::info!(
-                node = %node_id,
-                "Discarding creation result for cancelled node"
-            );
-            // Drain pending connections referencing this node.
-            self.pending_connections.retain(|pc| pc.from_node != node_id && pc.to_node != node_id);
-            return;
+        // Check whether this creation result is still the active one.
+        // A mismatch means either:
+        //   - RemoveNode was called while Creating (entry removed), or
+        //   - Remove → re-Add happened and a newer creation superseded this one.
+        // In both cases, discard the stale result.
+        match self.active_creations.get(&node_id) {
+            Some(&active_id) if active_id == creation_id => {
+                // This is the current active creation — remove the tracking
+                // entry and proceed with initialization.
+                self.active_creations.remove(&node_id);
+            },
+            _ => {
+                tracing::info!(
+                    node = %node_id,
+                    creation_id,
+                    "Discarding stale/cancelled creation result"
+                );
+                return;
+            },
         }
 
         match result {
             Ok(node) => {
                 tracing::info!(node = %node_id, kind = %kind, "Node created successfully, initializing");
+
+                // Zero the Creating gauge before initialize_node overwrites
+                // node_states with Initializing.
+                self.zero_state_gauge(&node_id, &NodeState::Creating);
+
                 if let Err(e) = self.initialize_node(node, &node_id, &kind, channels).await {
                     tracing::error!(
                         node_id = %node_id,
@@ -1535,15 +1555,12 @@ impl DynamicEngine {
                         error = %e,
                         "Failed to initialize node after async creation"
                     );
-                    self.node_states
-                        .insert(node_id.clone(), NodeState::Failed { reason: e.to_string() });
 
-                    // Broadcast the Failed state to subscribers.
-                    let update = NodeStateUpdate::new(
-                        node_id.clone(),
+                    // Broadcast Failed (reads prev state before inserting).
+                    self.broadcast_state_update(
+                        &node_id,
                         NodeState::Failed { reason: e.to_string() },
                     );
-                    self.broadcast_state_update(&update);
 
                     // Drain pending connections referencing this node.
                     self.pending_connections
@@ -1561,15 +1578,12 @@ impl DynamicEngine {
                     error = %e,
                     "Background node creation failed"
                 );
-                self.node_states
-                    .insert(node_id.clone(), NodeState::Failed { reason: e.to_string() });
 
-                // Broadcast the Failed state to subscribers.
-                let update = NodeStateUpdate::new(
-                    node_id.clone(),
+                // Broadcast Failed (reads prev state before inserting).
+                self.broadcast_state_update(
+                    &node_id,
                     NodeState::Failed { reason: e.to_string() },
                 );
-                self.broadcast_state_update(&update);
 
                 // Drain pending connections referencing this node.
                 self.pending_connections
@@ -1578,35 +1592,51 @@ impl DynamicEngine {
         }
     }
 
+    /// Zero-out the gauge for a specific state (one-hot pattern helper).
+    fn zero_state_gauge(&self, node_id: &str, state: &NodeState) {
+        let state_name = Self::node_state_name(state);
+        self.node_state_gauge.record(
+            0,
+            &[KeyValue::new("node_id", node_id.to_owned()), KeyValue::new("state", state_name)],
+        );
+    }
+
     /// Broadcast a state update to all subscribers (used when the actor itself
     /// synthesizes a state transition, e.g. `Creating → Failed`).
-    fn broadcast_state_update(&mut self, update: &NodeStateUpdate) {
-        let state_name = Self::node_state_name(&update.state);
+    ///
+    /// Reads the previous state from `node_states` **before** inserting the
+    /// new one, so the one-hot gauge zeroing is correct.
+    fn broadcast_state_update(&mut self, node_id: &str, new_state: NodeState) {
+        let state_name = Self::node_state_name(&new_state);
         self.node_state_transitions_counter.add(
             1,
-            &[KeyValue::new("node_id", update.node_id.clone()), KeyValue::new("state", state_name)],
+            &[KeyValue::new("node_id", node_id.to_owned()), KeyValue::new("state", state_name)],
         );
 
         // Zero-out the previous state's gauge series (one-hot pattern),
         // mirroring the logic in `handle_state_update`.
-        let prev_state = self.node_states.get(&update.node_id);
-        if let Some(prev_state) = prev_state {
+        if let Some(prev_state) = self.node_states.get(node_id) {
             let prev_state_name = Self::node_state_name(prev_state);
             if prev_state_name != state_name {
                 self.node_state_gauge.record(
                     0,
                     &[
-                        KeyValue::new("node_id", update.node_id.clone()),
+                        KeyValue::new("node_id", node_id.to_owned()),
                         KeyValue::new("state", prev_state_name),
                     ],
                 );
             }
         }
+
+        // Insert the new state AFTER reading the previous one.
+        self.node_states.insert(node_id.to_owned(), new_state.clone());
+
         self.node_state_gauge.record(
             1,
-            &[KeyValue::new("node_id", update.node_id.clone()), KeyValue::new("state", state_name)],
+            &[KeyValue::new("node_id", node_id.to_owned()), KeyValue::new("state", state_name)],
         );
 
+        let update = NodeStateUpdate::new(node_id.to_owned(), new_state);
         self.state_subscribers.retain(|subscriber| match subscriber.try_send(update.clone()) {
             Ok(()) => true,
             Err(mpsc::error::TrySendError::Full(_)) => {
@@ -1675,20 +1705,20 @@ impl DynamicEngine {
                     return true;
                 }
 
-                // Record state and kind immediately so the actor loop
-                // continues processing the next message without blocking.
-                self.node_states.insert(node_id.clone(), NodeState::Creating);
+                // Assign a unique creation ID so handle_node_created can
+                // distinguish stale results from a previous Remove → re-Add
+                // cycle.
+                let creation_id = self.next_creation_id;
+                self.next_creation_id += 1;
+                self.active_creations.insert(node_id.clone(), creation_id);
+
+                // Record kind immediately so the actor loop continues
+                // processing the next message without blocking.
                 self.node_kinds.insert(node_id.clone(), kind.clone());
 
-                // Clear any stale cancellation for this ID left over from a
-                // previous Remove → re-Add cycle.  Without this, the new
-                // creation result would be mistakenly discarded in
-                // `handle_node_created`.
-                self.cancelled_creations.remove(&node_id);
-
-                // Broadcast Creating state to subscribers.
-                let update = NodeStateUpdate::new(node_id.clone(), NodeState::Creating);
-                self.broadcast_state_update(&update);
+                // Insert Creating state and broadcast to subscribers.
+                // broadcast_state_update handles gauge + node_states insert.
+                self.broadcast_state_update(&node_id, NodeState::Creating);
 
                 // Spawn background creation: `create_node` may invoke FFI
                 // that blocks for 10-20+ seconds (ONNX model loading).
@@ -1717,8 +1747,9 @@ impl DynamicEngine {
                         ))),
                     };
 
-                    let _ =
-                        tx.send(NodeCreatedEvent { node_id: spawn_node_id, kind, result }).await;
+                    let _ = tx
+                        .send(NodeCreatedEvent { node_id: spawn_node_id, kind, creation_id, result })
+                        .await;
                 });
             },
             EngineControlMessage::RemoveNode { node_id } => {
@@ -1727,13 +1758,14 @@ impl DynamicEngine {
 
                 if self.is_node_creating(&node_id) {
                     // Node is still being created in the background.
-                    // Track the ID so we discard the NodeCreated result
-                    // when it arrives.
+                    // Remove the active_creations entry so that when the
+                    // background task completes, handle_node_created finds
+                    // no matching entry and discards the result.
                     tracing::info!(
                         node_id = %node_id,
-                        "Node is still Creating — marking for cancellation"
+                        "Node is still Creating — cancelling"
                     );
-                    self.cancelled_creations.insert(node_id.clone());
+                    self.active_creations.remove(&node_id);
                     self.node_states.remove(&node_id);
                     self.node_kinds.remove(&node_id);
                     // Drain pending connections referencing this node.
@@ -1805,16 +1837,9 @@ impl DynamicEngine {
                 tracing::info!("Received shutdown signal, stopping all nodes");
 
                 // Step 0: Clean up nodes still in Creating state.
-                // Mark all as cancelled so NodeCreated results are discarded.
-                let creating_ids: Vec<String> = self
-                    .node_states
-                    .iter()
-                    .filter(|(_, state)| matches!(state, NodeState::Creating))
-                    .map(|(id, _)| id.clone())
-                    .collect();
-                for id in creating_ids {
-                    self.cancelled_creations.insert(id);
-                }
+                // Clear all active_creations so any background results
+                // that arrive after shutdown are discarded.
+                self.active_creations.clear();
                 self.pending_connections.clear();
 
                 // Step 1: Close all input channels so nodes blocked on recv() will exit
