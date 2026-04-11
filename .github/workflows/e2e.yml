@@ -153,6 +153,7 @@ jobs:
           # instance that may be running on the self-hosted runner.
           SKIT_PORT=4546
           SK_SERVER__ADDRESS=127.0.0.1:${SKIT_PORT} ./target/debug/skit &
+          echo $! > /tmp/skit-gpu.pid
           # Wait for the server to be healthy
           HEALTHY=0
           for i in $(seq 1 30); do
@@ -175,7 +176,11 @@ jobs:
 
       - name: Stop skit server
         if: always()
-        run: pkill -f 'skit.*4546' || true
+        run: |
+          if [ -f /tmp/skit-gpu.pid ]; then
+            kill "$(cat /tmp/skit-gpu.pid)" 2>/dev/null || true
+            rm -f /tmp/skit-gpu.pid
+          fi
 
   e2e:
     name: Playwright E2E
