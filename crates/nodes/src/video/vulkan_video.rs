@@ -500,9 +500,7 @@ impl ProcessorNode for VulkanVideoH264EncoderNode {
         // is ready.
         let pre_init_device = tokio::task::spawn_blocking(|| init_vulkan_encode_device(None))
             .await
-            .map_err(|e| {
-                StreamKitError::Runtime(format!("Vulkan device init task panicked: {e}"))
-            })?
+            .map_err(|e| StreamKitError::Runtime(format!("Vulkan device init task panicked: {e}")))?
             .map_err(StreamKitError::Runtime)?;
 
         // ── Blocking encode task ─────────────────────────────────────────
