@@ -4,20 +4,37 @@
 
 // Subtitle overlay for real-time transcription display.
 //
-// Renders a semi-transparent dark panel at the bottom of the frame.
-// The text fades in with a slight upward slide when transcription
-// arrives, and fades out when text is cleared.  The backdrop itself
-// appears/disappears instantly — the transition emphasis is on the
-// text content.
+// Renders a dark floating panel near the bottom of the frame with
+// staggered entrance animations.  Two overlapping text layers
+// alternate based on a revision counter, producing a smooth crossfade
+// whenever the transcription text changes.  The Slint plugin detects
+// that `prev-text` and `revision` are declared and auto-manages them:
+// on each `text` change the old value is stashed in `prev-text` and
+// `revision` is bumped.
 //
 // Properties updated at runtime via param_bridge → UpdateParams:
 //   text, show
+// Properties auto-managed by the Slint plugin for crossfade:
+//   prev-text, revision
 
 export component Subtitle inherits Window {
     in property <string> text: "";
+    in property <string> prev-text: "";
+    in property <int> revision: 0;
     in property <bool> show: true;
 
-    // Active when show is true and there is text to display.
+    // Which text layer is "current" (alternates on each revision bump).
+    property <bool> use-a: Math.mod(revision, 2) == 0;
+
+    // Per-layer text and visibility.  The active layer shows `text`
+    // (the new value); the outgoing layer shows `prev-text` (the old
+    // value) so it remains readable during its fade-out.
+    property <string> a-text: use-a ? text : prev-text;
+    property <string> b-text: !use-a ? text : prev-text;
+    property <bool> a-on: show && a-text != "" && use-a;
+    property <bool> b-on: show && b-text != "" && !use-a;
+
+    // Panel visible whenever the current text is non-empty.
     property <bool> active: show && text != "";
 
     width: 1280px;
@@ -29,32 +46,74 @@ export component Subtitle inherits Window {
         height: 100%;
         background: transparent;
 
-        // Dark backdrop — appears/disappears with the panel (no animation).
+        // Backdrop panel — fades and slides up.
         Rectangle {
-            x: 40px;
-            y: 10px;
-            width: root.width - 80px;
-            height: root.height - 20px;
-            background: #000000cc;
-            border-radius: 8px;
+            x: 60px;
+            y: root.active ? 14px : 22px;
+            width: root.width - 120px;
+            height: root.height - 28px;
+            border-radius: 12px;
+            background: #0c1018e0;
             opacity: root.active ? 1.0 : 0.0;
+            border-width: 1px;
+            border-color: root.active ? #ffffff0e : #ffffff00;
 
-            // Subtitle text — fades in with a slight slide-up.
+            animate opacity { duration: 280ms; easing: ease-out; }
+            animate y       { duration: 380ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+            animate border-color { duration: 280ms; easing: ease-out; }
+
+            // Accent highlight — expands outward from center on entry.
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: 0px;
+                width:   root.active ? parent.width * 0.35 : parent.width * 0.10;
+                height:  2px;
+                border-radius: 1px;
+                background: #58a6ff60;
+                opacity: root.active ? 1.0 : 0.0;
+
+                animate width   { duration: 500ms; delay: 80ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+                animate opacity { duration: 300ms; easing: ease-out; }
+            }
+
+            // Text layer A — visible on even revisions.
             Text {
-                x: 20px;
-                y: root.active ? 10px : 20px;
-                width: parent.width - 40px;
-                height: parent.height - 20px;
-                text: root.text;
-                color: #ffffffee;
+                x: 32px;
+                y: root.a-on ? 0px : 4px;
+                width:  parent.width - 64px;
+                height: parent.height;
+                text: root.a-text;
+                color: #ffffffea;
                 font-size: 24px;
                 font-weight: 600;
                 wrap: word-wrap;
                 vertical-alignment: center;
                 horizontal-alignment: center;
-                opacity: root.active ? 1.0 : 0.0;
-                animate opacity { duration: 400ms; easing: ease-in-out; }
-                animate y { duration: 400ms; easing: ease-out; }
+                letter-spacing: 0.3px;
+                opacity: root.a-on ? 1.0 : 0.0;
+
+                animate opacity { duration: 200ms; easing: ease-in-out; }
+                animate y       { duration: 280ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+            }
+
+            // Text layer B — visible on odd revisions.
+            Text {
+                x: 32px;
+                y: root.b-on ? 0px : 4px;
+                width:  parent.width - 64px;
+                height: parent.height;
+                text: root.b-text;
+                color: #ffffffea;
+                font-size: 24px;
+                font-weight: 600;
+                wrap: word-wrap;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+                letter-spacing: 0.3px;
+                opacity: root.b-on ? 1.0 : 0.0;
+
+                animate opacity { duration: 200ms; easing: ease-in-out; }
+                animate y       { duration: 280ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
             }
         }
     }

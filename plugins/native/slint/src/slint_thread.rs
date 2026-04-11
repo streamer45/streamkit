@@ -149,6 +149,12 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
         /// resolution for crisper text and vector graphics.
         original_width: u32,
         original_height: u32,
+        /// Text crossfade revision counter.  `Some(n)` when the `.slint`
+        /// component opts in by declaring `prev-text` (string) and
+        /// `revision` (number) properties.  On each `text` change the
+        /// old value is stashed as `prev_text` and the counter is
+        /// bumped, allowing the component to crossfade between layers.
+        crossfade_revision: Option<i64>,
     }
 
     let mut instances: HashMap<NodeId, InstanceState> = HashMap::new();
@@ -165,10 +171,30 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
                         let properties =
                             discover_properties(&instance.definition, &instance.component);
 
+                        // Detect whether the component opts into text
+                        // crossfade by declaring both `prev-text` (string)
+                        // and `revision` (number) properties.
+                        let crossfade_revision = {
+                            let has_prev_text = instance
+                                .definition
+                                .properties()
+                                .any(|(name, vt)| name == "prev-text" && vt == ValueType::String);
+                            let has_revision = instance
+                                .definition
+                                .properties()
+                                .any(|(name, _vt)| name == "revision");
+                            if has_prev_text && has_revision {
+                                Some(0i64)
+                            } else {
+                                None
+                            }
+                        };
+
                         tracing::info!(
                             node_id = %node_id,
                             slint_file = %config.slint_file,
                             discovered_properties = properties.len(),
+                            crossfade = crossfade_revision.is_some(),
                             "Created Slint instance",
                         );
                         let _ = result_tx.send(SlintThreadResult::InitOk { properties });
@@ -183,6 +209,7 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
                                 cached_frame: None,
                                 cached_keyframe_idx: None,
                                 dirty: true,
+                                crossfade_revision,
                             },
                         );
                     },
@@ -256,8 +283,30 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
                     }
                 }
             },
-            SlintWorkItem::UpdateConfig { node_id, config } => {
+            SlintWorkItem::UpdateConfig { node_id, mut config } => {
                 if let Some(state) = instances.get_mut(&node_id) {
+                    // Text crossfade: when the component opts in (by
+                    // declaring `prev-text` and `revision`) and the
+                    // `text` property changed, stash the old value and
+                    // bump the revision so the two text layers in the
+                    // `.slint` component can crossfade.
+                    if let Some(rev) = state.crossfade_revision {
+                        let new_text = config.properties.get("text");
+                        let old_text = state.config.properties.get("text");
+                        if new_text.is_some() && new_text != old_text {
+                            let prev = old_text
+                                .cloned()
+                                .unwrap_or_else(|| serde_json::Value::String(String::new()));
+                            let next_rev = rev + 1;
+                            config
+                                .properties
+                                .insert("prev_text".to_string(), prev);
+                            config
+                                .properties
+                                .insert("revision".to_string(), serde_json::json!(next_rev));
+                            state.crossfade_revision = Some(next_rev);
+                        }
+                    }
                     state.config = config;
                     state.dirty = true;
                 }

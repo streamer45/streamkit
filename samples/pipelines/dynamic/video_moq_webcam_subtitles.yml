@@ -138,6 +138,7 @@ nodes:
       width: 1280
       height: 720
       num_inputs: 3
+      output_format: nv12
       layers:
         in_0:
           opacity: 1.0
@@ -168,17 +169,11 @@ nodes:
 
   # --- Encode + output ---
 
-  pixel_convert:
-    kind: video::pixel_convert
-    params:
-      output_format: nv12
-    needs: compositor
-
   vp9_encoder:
     kind: video::vp9::encoder
     params:
       keyframe_interval: 30
-    needs: pixel_convert
+    needs: compositor
 
   # --- Audio loopback ---
 
