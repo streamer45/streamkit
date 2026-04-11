@@ -1768,6 +1768,8 @@ impl DynamicEngine {
                         "Node is still Creating — cancelling"
                     );
                     self.active_creations.remove(&node_id);
+                    // Zero the gauge before removing state (mirrors shutdown_node).
+                    self.zero_state_gauge(&node_id, &NodeState::Creating);
                     self.node_states.remove(&node_id);
                     self.node_kinds.remove(&node_id);
                     // Drain pending connections referencing this node.
