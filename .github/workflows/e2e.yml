@@ -137,15 +137,17 @@ jobs:
             sudo ldconfig
           fi
 
-      - name: Build skit (with GPU + SVT-AV1 + dav1d)
+      - name: Build skit (with GPU + HW codecs + SVT-AV1 + dav1d)
         env:
           VPX_LIB_DIR: /usr/lib/x86_64-linux-gnu
           VPX_INCLUDE_DIR: /usr/include
           VPX_VERSION: "1.13.0"
+          CUDA_INCLUDE_PATH: /usr/include
+          # bindgen (used by shiguredo_nvcodec) needs the clang builtin include
+          # path so it can find stddef.h and other compiler-provided headers.
+          BINDGEN_EXTRA_CLANG_ARGS: "-I/usr/lib/llvm-18/lib/clang/18/include"
         run: |
-          # NOTE: add "nvcodec vulkan_video" features once PR #279 merges to
-          # enable NVENC AV1 and Vulkan Video H.264 pipeline tests.
-          cargo build -p streamkit-server --bin skit --features "gpu svt_av1 dav1d_static"
+          cargo build -p streamkit-server --bin skit --features "gpu nvcodec vulkan_video svt_av1 dav1d_static"
 
       - name: Start skit server
         run: |
