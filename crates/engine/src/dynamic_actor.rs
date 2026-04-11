@@ -641,7 +641,10 @@ impl DynamicEngine {
         }
 
         // 3. Initialize State and Stats
-        self.node_states.insert(node_id.to_string(), NodeState::Initializing);
+        // Use broadcast_state_update so the gauge transition (e.g.
+        // Creating → Initializing) zeroes the previous gauge and sets
+        // the new one atomically — no window where no gauge reads 1.
+        self.broadcast_state_update(node_id, NodeState::Initializing);
         self.node_stats.insert(node_id.to_string(), NodeStats::default());
 
         // 4. Setup pin management channel.
@@ -1544,10 +1547,9 @@ impl DynamicEngine {
             Ok(node) => {
                 tracing::info!(node = %node_id, kind = %kind, "Node created successfully, initializing");
 
-                // Zero the Creating gauge before initialize_node overwrites
-                // node_states with Initializing.
-                self.zero_state_gauge(&node_id, &NodeState::Creating);
-
+                // initialize_node calls broadcast_state_update(Initializing)
+                // which reads Creating as the previous state and zeroes its
+                // gauge before setting Initializing to 1 — no gap.
                 if let Err(e) = self.initialize_node(node, &node_id, &kind, channels).await {
                     tracing::error!(
                         node_id = %node_id,
@@ -1783,6 +1785,25 @@ impl DynamicEngine {
             EngineControlMessage::Connect { from_node, from_pin, to_node, to_pin, mode } => {
                 self.engine_operations_counter.add(1, &[KeyValue::new("operation", "connect")]);
 
+                // Both endpoints must at least exist in node_states
+                // (Creating or fully initialized). If either is completely
+                // unknown, the connection would be deferred forever.
+                let from_exists = self.node_states.contains_key(&from_node);
+                let to_exists = self.node_states.contains_key(&to_node);
+                if !from_exists || !to_exists {
+                    tracing::error!(
+                        "Cannot connect {}.{} -> {}.{}: endpoint(s) not found \
+                         (from_exists={}, to_exists={})",
+                        from_node,
+                        from_pin,
+                        to_node,
+                        to_pin,
+                        from_exists,
+                        to_exists
+                    );
+                    return true;
+                }
+
                 // If either endpoint is still Creating, defer the connection.
                 let from_creating = self.is_node_creating(&from_node);
                 let to_creating = self.is_node_creating(&to_node);
@@ -1833,6 +1854,11 @@ impl DynamicEngine {
                             node_id
                         );
                     }
+                } else if self.is_node_creating(&node_id) {
+                    tracing::warn!(
+                        "Could not tune node '{}': still in Creating state (not yet initialized)",
+                        node_id
+                    );
                 } else {
                     tracing::warn!("Could not tune non-existent node '{}'", node_id);
                 }

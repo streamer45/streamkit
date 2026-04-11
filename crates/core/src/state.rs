@@ -230,12 +230,6 @@ pub mod state_helpers {
         let _ = state_tx.try_send(NodeStateUpdate::new(node_id.to_string(), state));
     }
 
-    /// Emits a Creating state.
-    #[inline]
-    pub fn emit_creating(state_tx: &mpsc::Sender<NodeStateUpdate>, node_id: &str) {
-        emit_state(state_tx, node_id, NodeState::Creating);
-    }
-
     /// Emits an Initializing state.
     #[inline]
     pub fn emit_initializing(state_tx: &mpsc::Sender<NodeStateUpdate>, node_id: &str) {
