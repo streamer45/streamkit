@@ -138,254 +138,244 @@ struct TrackedProp {
     default_value: serde_json::Value,
 }
 
+/// Per-instance state living on the shared Slint thread.
+struct InstanceState {
+    instance: SlintInstance,
+    config: SlintConfig,
+    result_tx: std::sync::mpsc::SyncSender<SlintThreadResult>,
+    /// Cached straight-alpha RGBA8 output from the last render.
+    cached_frame: Option<Vec<u8>>,
+    /// Keyframe index that produced `cached_frame`.
+    cached_keyframe_idx: Option<usize>,
+    /// Set by `UpdateConfig` to force a re-render on the next frame.
+    dirty: bool,
+    /// Original configured dimensions from init.  Used to compute
+    /// the DPI scale factor when upstream resize hints request
+    /// different physical dimensions — content is rendered at the
+    /// original logical proportions but at higher physical
+    /// resolution for crisper text and vector graphics.
+    original_width: u32,
+    original_height: u32,
+    /// Properties tracked for automatic previous-value injection.
+    /// Populated at registration when the component declares a
+    /// `prev-{name}` property alongside `{name}` with a matching
+    /// type (opt-in by the `.slint` author).
+    tracked_props: Vec<TrackedProp>,
+    /// Auto-incrementing revision counter.  `Some(n)` when the
+    /// component declares a `revision` (number) property; bumped
+    /// whenever at least one tracked property changes value.
+    revision: Option<i64>,
+}
+
 /// Entry point for the shared Slint thread.
 ///
 /// Processes work items from all plugin instances.  The platform backend is
 /// set once on this thread; all `SlintInstance` values live here.
 #[allow(clippy::needless_pass_by_value)]
 fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
-    /// Per-instance state living on the shared thread.
-    struct InstanceState {
-        instance: SlintInstance,
-        config: SlintConfig,
-        result_tx: std::sync::mpsc::SyncSender<SlintThreadResult>,
-        /// Cached straight-alpha RGBA8 output from the last render.
-        cached_frame: Option<Vec<u8>>,
-        /// Keyframe index that produced `cached_frame`.
-        cached_keyframe_idx: Option<usize>,
-        /// Set by `UpdateConfig` to force a re-render on the next frame.
-        dirty: bool,
-        /// Original configured dimensions from init.  Used to compute
-        /// the DPI scale factor when upstream resize hints request
-        /// different physical dimensions — content is rendered at the
-        /// original logical proportions but at higher physical
-        /// resolution for crisper text and vector graphics.
-        original_width: u32,
-        original_height: u32,
-        /// Properties tracked for automatic previous-value injection.
-        /// Populated at registration when the component declares a
-        /// `prev-{name}` property alongside `{name}` with a matching
-        /// type (opt-in by the `.slint` author).
-        tracked_props: Vec<TrackedProp>,
-        /// Auto-incrementing revision counter.  `Some(n)` when the
-        /// component declares a `revision` (number) property; bumped
-        /// whenever at least one tracked property changes value.
-        revision: Option<i64>,
-    }
-
     let mut instances: HashMap<NodeId, InstanceState> = HashMap::new();
     let mut platform_set = false;
 
     while let Ok(work) = work_rx.recv() {
         match work {
             SlintWorkItem::Register { node_id, config, result_tx } => {
-                match create_slint_instance(&config, &mut platform_set) {
-                    Ok(instance) => {
-                        // Discover publicly declared properties from the compiled
-                        // component.  Only types the UI can render as controls
-                        // (bool, number, string) are included.
-                        let properties =
-                            discover_properties(&instance.definition, &instance.component);
-
-                        // Discover `prev-{name}` property pairs for
-                        // automatic old-value injection (opt-in).
-                        let tracked_props = discover_tracked_props(&instance.definition);
-                        let revision =
-                            if instance.definition.properties().any(|(n, _)| n == "revision") {
-                                Some(0i64)
-                            } else {
-                                None
-                            };
-
-                        tracing::info!(
-                            node_id = %node_id,
-                            slint_file = %config.slint_file,
-                            discovered_properties = properties.len(),
-                            tracked_pairs = tracked_props.len(),
-                            has_revision = revision.is_some(),
-                            "Created Slint instance",
-                        );
-                        let _ = result_tx.send(SlintThreadResult::InitOk { properties });
-                        instances.insert(
-                            node_id,
-                            InstanceState {
-                                instance,
-                                original_width: config.width,
-                                original_height: config.height,
-                                config,
-                                result_tx,
-                                cached_frame: None,
-                                cached_keyframe_idx: None,
-                                dirty: true,
-                                tracked_props,
-                                revision,
-                            },
-                        );
-                    },
-                    Err(e) => {
-                        tracing::error!(
-                            node_id = %node_id,
-                            error = %e,
-                            "Failed to create Slint instance",
-                        );
-                        let _ = result_tx.send(SlintThreadResult::InitErr(e));
-                    },
-                }
+                handle_register(&mut instances, &mut platform_set, node_id, config, result_tx);
             },
             SlintWorkItem::Render { node_id } => {
-                if let Some(state) = instances.get_mut(&node_id) {
-                    // Pump Slint timers/animations (process-global) so Timer
-                    // callbacks and CSS-like transitions advance even when the
-                    // frame is served from cache.  This call is idempotent and
-                    // wall-clock-based, so running it N times per tick cycle
-                    // (once per instance) is harmless.
-                    slint::platform::update_timers_and_animations();
-
-                    let rgba_data = if state.config.static_ui {
-                        // ── Static UI path: cache the rendered frame ────────
-                        let kf_idx = if state.config.property_keyframes.is_empty() {
-                            None
-                        } else {
-                            let interval = state.config.keyframe_interval.max(1);
-                            Some(
-                                (state.instance.frame_counter / interval) as usize
-                                    % state.config.property_keyframes.len(),
-                            )
-                        };
-
-                        let need_render = state.dirty
-                            || state.cached_keyframe_idx != kf_idx
-                            || state.cached_frame.is_none();
-
-                        if need_render {
-                            let data = render_slint_frame(&mut state.instance, &state.config);
-                            state.cached_frame = Some(data);
-                            state.cached_keyframe_idx = kf_idx;
-                            state.dirty = false;
-                        } else {
-                            // Advance frame counter so keyframe boundaries
-                            // are detected at the right time.
-                            state.instance.frame_counter =
-                                state.instance.frame_counter.wrapping_add(1);
-                        }
-                        // Clone from cache — avoids a redundant allocation
-                        // compared to cloning before storing.
-                        state.cached_frame.clone().unwrap_or_default()
-                    } else {
-                        // ── Dynamic UI path: always re-render ───────────────
-                        render_slint_frame(&mut state.instance, &state.config)
-                    };
-
-                    // Use try_send to avoid blocking: if the consumer is slow,
-                    // drop the frame rather than stalling the shared thread.
-                    match state.result_tx.try_send(SlintThreadResult::Frame { rgba_data }) {
-                        Ok(()) => {},
-                        Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                            tracing::debug!(
-                                node_id = %node_id,
-                                "Result channel full, dropping frame",
-                            );
-                        },
-                        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                            instances.remove(&node_id);
-                        },
-                    }
-                }
+                handle_render(&mut instances, &node_id);
             },
-            SlintWorkItem::UpdateConfig { node_id, mut config } => {
+            SlintWorkItem::UpdateConfig { node_id, config } => {
                 if let Some(state) = instances.get_mut(&node_id) {
-                    // Auto-inject previous values for tracked `prev-{name}`
-                    // properties and bump the revision counter when at
-                    // least one tracked property changed.
-                    let mut any_changed = false;
-                    for tp in &state.tracked_props {
-                        let new_val = config.properties.get(&tp.source);
-                        let old_val = state.config.properties.get(&tp.source);
-                        if new_val.is_some() && new_val != old_val {
-                            let prev = old_val.cloned().unwrap_or_else(|| tp.default_value.clone());
-                            tracing::debug!(
-                                node_id = %node_id,
-                                property = %tp.source,
-                                prev = %prev,
-                                new = %new_val.unwrap_or(&serde_json::Value::Null),
-                                "Tracked property changed, injecting prev value",
-                            );
-                            config.properties.insert(tp.prev.clone(), prev);
-                            any_changed = true;
-                        }
-                    }
-                    if any_changed {
-                        if let Some(rev) = &mut state.revision {
-                            *rev += 1;
-                            tracing::debug!(
-                                node_id = %node_id,
-                                revision = *rev,
-                                "Bumped revision counter",
-                            );
-                            config
-                                .properties
-                                .insert("revision".to_string(), serde_json::json!(*rev));
-                        }
-                    }
-                    tracing::debug!(
-                        node_id = %node_id,
-                        properties = ?config.properties.keys().collect::<Vec<_>>(),
-                        "UpdateConfig applied",
-                    );
-                    state.config = config;
-                    state.dirty = true;
+                    state.apply_config_update(&node_id, config);
                 }
             },
             SlintWorkItem::Resize { node_id, width, height } => {
                 if let Some(state) = instances.get_mut(&node_id) {
-                    if state.instance.width != width || state.instance.height != height {
-                        state.instance.width = width;
-                        state.instance.height = height;
-                        state.config.width = width;
-                        state.config.height = height;
-
-                        // Compute DPI scale factor so content renders at
-                        // original logical proportions but higher physical
-                        // resolution.  Text and vector graphics benefit
-                        // from crisper rendering without changing apparent
-                        // size.  `min()` picks the axis that limits
-                        // scaling (letterbox logic).
-                        #[allow(clippy::cast_precision_loss)]
-                        let scale = f32::min(
-                            width as f32 / state.original_width.max(1) as f32,
-                            height as f32 / state.original_height.max(1) as f32,
-                        )
-                        .max(0.1);
-
-                        // Notify Slint of the new scale factor, then set
-                        // the physical size.  Order matters: scale must be
-                        // applied first so Slint computes correct logical
-                        // coordinates from the physical dimensions.
-                        state.instance.component.window().dispatch_event(
-                            slint::platform::WindowEvent::ScaleFactorChanged {
-                                scale_factor: scale,
-                            },
-                        );
-                        state.instance.window.set_size(PhysicalSize::new(width, height));
-
-                        let pixel_count = (width as usize) * (height as usize);
-                        state.instance.buffer =
-                            vec![PremultipliedRgbaColor::default(); pixel_count];
-                        state.cached_frame = None;
-                        state.dirty = true;
-                        tracing::info!(
-                            node_id = %node_id,
-                            width, height,
-                            scale_factor = %scale,
-                            "Resized Slint instance via upstream hint",
-                        );
-                    }
+                    state.apply_resize(&node_id, width, height);
                 }
             },
             SlintWorkItem::Unregister { node_id } => {
                 instances.remove(&node_id);
             },
         }
+    }
+}
+
+/// Handle a `Register` work item: compile the `.slint` file, discover
+/// properties, and insert the instance into the map.
+fn handle_register(
+    instances: &mut HashMap<NodeId, InstanceState>,
+    platform_set: &mut bool,
+    node_id: NodeId,
+    config: SlintConfig,
+    result_tx: std::sync::mpsc::SyncSender<SlintThreadResult>,
+) {
+    match create_slint_instance(&config, platform_set) {
+        Ok(instance) => {
+            let properties = discover_properties(&instance.definition, &instance.component);
+            let tracked_props = discover_tracked_props(&instance.definition);
+            let revision = if instance.definition.properties().any(|(n, _)| n == "revision") {
+                Some(0i64)
+            } else {
+                None
+            };
+
+            tracing::info!(
+                node_id = %node_id,
+                slint_file = %config.slint_file,
+                discovered_properties = properties.len(),
+                tracked_pairs = tracked_props.len(),
+                has_revision = revision.is_some(),
+                "Created Slint instance",
+            );
+            let _ = result_tx.send(SlintThreadResult::InitOk { properties });
+            instances.insert(
+                node_id,
+                InstanceState {
+                    instance,
+                    original_width: config.width,
+                    original_height: config.height,
+                    config,
+                    result_tx,
+                    cached_frame: None,
+                    cached_keyframe_idx: None,
+                    dirty: true,
+                    tracked_props,
+                    revision,
+                },
+            );
+        },
+        Err(e) => {
+            tracing::error!(node_id = %node_id, error = %e, "Failed to create Slint instance");
+            let _ = result_tx.send(SlintThreadResult::InitErr(e));
+        },
+    }
+}
+
+/// Handle a `Render` work item: produce a frame (from cache or fresh render)
+/// and send it back on the result channel.
+fn handle_render(instances: &mut HashMap<NodeId, InstanceState>, node_id: &NodeId) {
+    let Some(state) = instances.get_mut(node_id) else { return };
+
+    // Pump Slint timers/animations (process-global) so Timer callbacks
+    // and CSS-like transitions advance even when the frame is served
+    // from cache.
+    slint::platform::update_timers_and_animations();
+
+    let rgba_data = if state.config.static_ui {
+        // ── Static UI path: cache the rendered frame ────────
+        let kf_idx = if state.config.property_keyframes.is_empty() {
+            None
+        } else {
+            let interval = state.config.keyframe_interval.max(1);
+            Some(
+                (state.instance.frame_counter / interval) as usize
+                    % state.config.property_keyframes.len(),
+            )
+        };
+
+        let need_render =
+            state.dirty || state.cached_keyframe_idx != kf_idx || state.cached_frame.is_none();
+
+        if need_render {
+            let data = render_slint_frame(&mut state.instance, &state.config);
+            state.cached_frame = Some(data);
+            state.cached_keyframe_idx = kf_idx;
+            state.dirty = false;
+        } else {
+            state.instance.frame_counter = state.instance.frame_counter.wrapping_add(1);
+        }
+        state.cached_frame.clone().unwrap_or_default()
+    } else {
+        // ── Dynamic UI path: always re-render ───────────────
+        render_slint_frame(&mut state.instance, &state.config)
+    };
+
+    match state.result_tx.try_send(SlintThreadResult::Frame { rgba_data }) {
+        Ok(()) => {},
+        Err(std::sync::mpsc::TrySendError::Full(_)) => {
+            tracing::debug!(node_id = %node_id, "Result channel full, dropping frame");
+        },
+        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+            instances.remove(node_id);
+        },
+    }
+}
+
+impl InstanceState {
+    /// Apply an `UpdateConfig`: inject previous values for tracked
+    /// properties, bump the revision counter, and mark the instance dirty.
+    fn apply_config_update(&mut self, node_id: &NodeId, mut config: SlintConfig) {
+        let mut any_changed = false;
+        for tp in &self.tracked_props {
+            let new_val = config.properties.get(&tp.source);
+            let old_val = self.config.properties.get(&tp.source);
+            if new_val.is_some() && new_val != old_val {
+                let prev = old_val.cloned().unwrap_or_else(|| tp.default_value.clone());
+                tracing::debug!(
+                    node_id = %node_id,
+                    property = %tp.source,
+                    prev = %prev,
+                    new = %new_val.unwrap_or(&serde_json::Value::Null),
+                    "Tracked property changed, injecting prev value",
+                );
+                config.properties.insert(tp.prev.clone(), prev);
+                any_changed = true;
+            }
+        }
+        if any_changed {
+            if let Some(rev) = &mut self.revision {
+                *rev += 1;
+                tracing::debug!(node_id = %node_id, revision = *rev, "Bumped revision counter");
+                config.properties.insert("revision".to_string(), serde_json::json!(*rev));
+            }
+        }
+        tracing::debug!(
+            node_id = %node_id,
+            properties = ?config.properties.keys().collect::<Vec<_>>(),
+            "UpdateConfig applied",
+        );
+        self.config = config;
+        self.dirty = true;
+    }
+
+    /// Apply a resize: update dimensions, recompute the DPI scale factor,
+    /// and reallocate the rendering buffer.
+    fn apply_resize(&mut self, node_id: &NodeId, width: u32, height: u32) {
+        if self.instance.width == width && self.instance.height == height {
+            return;
+        }
+        self.instance.width = width;
+        self.instance.height = height;
+        self.config.width = width;
+        self.config.height = height;
+
+        // Compute DPI scale factor so content renders at original logical
+        // proportions but higher physical resolution.
+        #[allow(clippy::cast_precision_loss)]
+        let scale = f32::min(
+            width as f32 / self.original_width.max(1) as f32,
+            height as f32 / self.original_height.max(1) as f32,
+        )
+        .max(0.1);
+
+        // Scale must be applied first so Slint computes correct logical
+        // coordinates from the physical dimensions.
+        self.instance.component.window().dispatch_event(
+            slint::platform::WindowEvent::ScaleFactorChanged { scale_factor: scale },
+        );
+        self.instance.window.set_size(PhysicalSize::new(width, height));
+
+        let pixel_count = (width as usize) * (height as usize);
+        self.instance.buffer = vec![PremultipliedRgbaColor::default(); pixel_count];
+        self.cached_frame = None;
+        self.dirty = true;
+        tracing::info!(
+            node_id = %node_id,
+            width, height,
+            scale_factor = %scale,
+            "Resized Slint instance via upstream hint",
+        );
     }
 }
 
