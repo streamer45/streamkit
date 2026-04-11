@@ -491,6 +491,14 @@ impl ParakeetNode {
             unsafe { CStr::from_ptr(result.text).to_string_lossy().into_owned() }
         };
 
+        // Extract detected language from the FFI result (v3 model supports 25 languages).
+        let language = if result.lang.is_null() {
+            None
+        } else {
+            let lang = unsafe { CStr::from_ptr(result.lang).to_string_lossy().into_owned() };
+            if lang.is_empty() { None } else { Some(lang) }
+        };
+
         // Cleanup
         unsafe {
             ffi::SherpaOnnxDestroyOfflineRecognizerResult(result_ptr);
@@ -513,7 +521,7 @@ impl ParakeetNode {
                 &Packet::Transcription(std::sync::Arc::new(TranscriptionData {
                     text: segment.text.clone(),
                     segments: vec![segment],
-                    language: Some("en".to_string()),
+                    language,
                     metadata: None,
                 })),
             )?;

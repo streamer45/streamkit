@@ -167,9 +167,15 @@ fn apply_template(template: &JsonValue, ctx: &JsonValue) -> JsonValue {
                 }
             }
             // General path: replace all {{ field }} occurrences as strings.
+            // We track a cursor to advance past each replacement so that
+            // placeholders inside substituted text are never re-scanned
+            // (prevents infinite loops when replacement contains `{{ … }}`).
             let mut result = s.clone();
-            // Replace both `{{ field }}` and `{{field}}` forms.
-            while let Some(start) = result.find("{{") {
+            let mut cursor = 0;
+            while cursor < result.len() {
+                let Some(start) = result[cursor..].find("{{").map(|i| cursor + i) else {
+                    break;
+                };
                 let Some(end) = result[start..].find("}}") else { break };
                 let end = start + end + 2;
                 let field = result[start + 2..end - 2].trim();
@@ -177,7 +183,9 @@ fn apply_template(template: &JsonValue, ctx: &JsonValue) -> JsonValue {
                     JsonValue::String(s) => s.clone(),
                     other => other.to_string(),
                 });
+                let replacement_len = replacement.len();
                 result.replace_range(start..end, &replacement);
+                cursor = start + replacement_len;
             }
             JsonValue::String(result)
         },
@@ -635,11 +643,21 @@ mod tests {
 
     #[test]
     fn apply_template_text_containing_placeholder_literal() {
-        // Regression: if substituted text contains "{{text}}", the second
-        // replace pass must NOT re-replace it.
+        // Regression: if substituted text contains "{{text}}", the replacement
+        // must NOT re-scan it (would cause infinite loop / double-replace).
         let tmpl = json!("{{ text }}");
         let result = apply_template(&tmpl, &text_ctx("contains {{text}} marker"));
         assert_eq!(result, json!("contains {{text}} marker"));
+    }
+
+    #[test]
+    fn apply_template_no_infinite_loop_on_replacement_with_placeholder() {
+        // Regression: the general replacement path (not sole-placeholder fast
+        // path) must advance past each replacement to avoid re-scanning
+        // substituted text that itself contains {{ field }} patterns.
+        let tmpl = json!("Say: {{ text }}!");
+        let result = apply_template(&tmpl, &text_ctx("hello {{text}} world"));
+        assert_eq!(result, json!("Say: hello {{text}} world!"));
     }
 
     #[test]
