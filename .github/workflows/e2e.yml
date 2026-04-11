@@ -154,7 +154,7 @@ jobs:
           # Use a non-default port to avoid conflicts with any persistent skit
           # instance that may be running on the self-hosted runner.
           SKIT_PORT=4546
-          SK_SERVER__ADDRESS=127.0.0.1:${SKIT_PORT} ./target/debug/skit > /tmp/skit-gpu.log 2>&1 &
+          RUST_LOG=info,streamkit_nodes::codec_utils=debug,streamkit_nodes::video::vulkan_video=debug,streamkit_nodes::core::bytes_output=debug SK_SERVER__ADDRESS=127.0.0.1:${SKIT_PORT} ./target/debug/skit > /tmp/skit-gpu.log 2>&1 &
           echo $! > /tmp/skit-gpu.pid
           # Wait for the server to be healthy
           HEALTHY=0
@@ -180,8 +180,8 @@ jobs:
         if: always()
         run: |
           if [ -f /tmp/skit-gpu.log ]; then
-            echo "=== skit server logs (last 100 lines) ==="
-            tail -100 /tmp/skit-gpu.log
+            echo "=== skit server logs (last 500 lines) ==="
+            tail -500 /tmp/skit-gpu.log
           fi
 
       - name: Stop skit server

@@ -512,6 +512,7 @@ impl ProcessorNode for VulkanVideoH264EncoderNode {
             let mut encoder: Option<vk_video::BytesEncoder> = None;
             let mut device: Option<Arc<vk_video::VulkanDevice>> = Some(pre_init_device);
             let mut current_dimensions: Option<(u32, u32)> = None;
+            let mut frames_encoded: u64 = 0;
 
             while let Some((frame, metadata)) = encode_rx.blocking_recv() {
                 if result_tx.is_closed() {
@@ -617,6 +618,7 @@ impl ProcessorNode for VulkanVideoH264EncoderNode {
 
                 match result {
                     Ok(encoded_chunk) => {
+                        frames_encoded += 1;
                         // Always propagate the keyframe flag, even when
                         // the input had no metadata.  Without this,
                         // downstream RTMP/MoQ transport cannot detect
@@ -639,6 +641,7 @@ impl ProcessorNode for VulkanVideoH264EncoderNode {
                             metadata: out_meta,
                         };
                         if result_tx.blocking_send(Ok(output)).is_err() {
+                            tracing::debug!("VulkanVideoH264EncoderNode result channel closed after {frames_encoded} frame(s)");
                             return;
                         }
                     },
@@ -656,6 +659,7 @@ impl ProcessorNode for VulkanVideoH264EncoderNode {
             // adds flush(), it should be called here — matching the
             // decoder's flush at line ~245 and the pattern in
             // encoder_trait::spawn_standard_encode_task.
+            tracing::info!("VulkanVideoH264EncoderNode encode task finished after {frames_encoded} frame(s)");
         });
 
         // ── State transition ─────────────────────────────────────────────

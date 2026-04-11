@@ -96,10 +96,13 @@ pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
                 }
             }
             _ = &mut *input_task => {
+                tracing::debug!("{label} input task completed, draining codec results");
                 drop(codec_tx);
+                let mut drained = 0u64;
                 while let Some(maybe_result) = result_rx.recv().await {
                     match maybe_result {
                         Ok(item) => {
+                            drained += 1;
                             if forward_one(to_packet(item), context, counter, stats).await {
                                 break;
                             }
@@ -107,11 +110,18 @@ pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
                         Err(err) => handle_error(&err, counter, stats, label),
                     }
                 }
+                tracing::debug!("{label} drain complete: forwarded {drained} result(s)");
                 break;
             }
         }
     }
 
     codec_task.abort();
-    let _ = codec_task.await;
+    match codec_task.await {
+        Ok(()) => {},
+        Err(e) if e.is_panic() => {
+            tracing::error!("{label} codec task panicked: {e:?}");
+        },
+        Err(_) => {},
+    }
 }
