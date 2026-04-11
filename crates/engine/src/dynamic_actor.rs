@@ -1698,8 +1698,9 @@ impl DynamicEngine {
     /// Replay any deferred `TuneNode` messages for a node that has just been
     /// initialized and is now present in `live_nodes`.
     async fn flush_pending_tunes(&mut self, node_id: &str) {
-        let (for_node, rest): (Vec<_>, Vec<_>) =
-            std::mem::take(&mut self.pending_tunes).into_iter().partition(|pt| pt.node_id == node_id);
+        let (for_node, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_tunes)
+            .into_iter()
+            .partition(|pt| pt.node_id == node_id);
 
         self.pending_tunes = rest;
 
@@ -1896,10 +1897,7 @@ impl DynamicEngine {
                         );
                     }
                 } else if self.is_node_creating(&node_id) {
-                    tracing::info!(
-                        "Deferring TuneNode for '{}': still in Creating state",
-                        node_id
-                    );
+                    tracing::info!("Deferring TuneNode for '{}': still in Creating state", node_id);
                     self.pending_tunes.push(PendingTune { node_id, message });
                 } else {
                     tracing::warn!("Could not tune non-existent node '{}'", node_id);
