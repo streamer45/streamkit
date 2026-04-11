@@ -13,14 +13,14 @@
 #   resampler → vad → [best_effort] →
 #   vad_bridge → UpdateParams(speaking) → slint subtitle
 #
-#   parakeet → [best_effort] → telemetry_out (stream view)
+#   (param_bridge also emits stt.result telemetry for stream view)
 #
 # Requires:
 #   - plugin::native::parakeet loaded (with Parakeet TDT model)
-#   - plugin::native::vad loaded (with TEN-VAD or Silero model)
+#   - plugin::native::vad loaded (with TEN-VAD model)
 #   - plugin::native::slint loaded
 #   just build-plugin-native-parakeet && just build-plugin-native-vad && just build-plugin-native-slint && just copy-plugins-native
-#   just download-parakeet-models
+#   just download-parakeet-models && just download-silero-vad && just download-tenvad-models
 
 name: Webcam PiP + Live Subtitles (MoQ)
 description: >-
@@ -91,16 +91,6 @@ nodes:
       vad_threshold: 0.5
       min_silence_duration_ms: 700
     needs: resampler
-
-  # Surface STT results in the stream view telemetry timeline.
-  stt_telemetry:
-    kind: core::telemetry_out
-    params:
-      packet_types: ["Transcription"]
-      max_events_per_sec: 20
-    needs:
-      node: parakeet
-      mode: best_effort
 
   # --- Real-time VAD → speaking indicator ---
 
