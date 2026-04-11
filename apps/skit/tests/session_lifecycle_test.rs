@@ -575,9 +575,8 @@ async fn test_session_destroy_shuts_down_pipeline() {
                                 | streamkit_core::NodeState::Initializing
                                 | streamkit_core::NodeState::Ready
                                 | streamkit_core::NodeState::Running
-                                | streamkit_core::NodeState::Failed { .. }
                         ),
-                        "Node '{}' should be in a valid lifecycle state, got: {:?}",
+                        "Node '{}' should be creating/initializing/ready/running, got: {:?}",
                         node_id,
                         state
                     );
