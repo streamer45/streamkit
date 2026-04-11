@@ -69,6 +69,8 @@ pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
         tracing::warn!("{label} codec error: {err}");
     }
 
+    let mut drain_pending = false;
+
     loop {
         tokio::select! {
             maybe_result = result_rx.recv() => {
@@ -96,8 +98,26 @@ pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
                 }
             }
             _ = &mut *input_task => {
-                tracing::debug!("{label} input task completed, draining codec results");
+                tracing::debug!("{label} input task completed, starting drain");
                 drop(codec_tx);
+                drain_pending = true;
+                break;
+            }
+        }
+    }
+
+    if drain_pending {
+        // Wait for the codec task to finish producing all results before
+        // draining.  Without this, the drain loop interleaves with the
+        // (potentially slow) blocking encode task, and downstream nodes
+        // may close their channels before all results are forwarded —
+        // causing zero-byte output on fast pipelines.
+        tracing::debug!("{label} waiting for codec task to finish before drain");
+        match codec_task.await {
+            Err(e) if e.is_panic() => {
+                tracing::error!("{label} codec task panicked: {e:?}");
+            },
+            _ => {
                 let mut drained = 0u64;
                 while let Some(maybe_result) = result_rx.recv().await {
                     match maybe_result {
@@ -111,16 +131,15 @@ pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
                     }
                 }
                 tracing::debug!("{label} drain complete: forwarded {drained} result(s)");
-                break;
-            }
+            },
         }
-    }
-
-    codec_task.abort();
-    match codec_task.await {
-        Err(e) if e.is_panic() => {
-            tracing::error!("{label} codec task panicked: {e:?}");
-        },
-        _ => {},
+    } else {
+        codec_task.abort();
+        match codec_task.await {
+            Err(e) if e.is_panic() => {
+                tracing::error!("{label} codec task panicked: {e:?}");
+            },
+            _ => {},
+        }
     }
 }
