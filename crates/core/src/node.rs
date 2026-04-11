@@ -356,8 +356,22 @@ impl NodeContext {
     pub async fn recv_with_cancellation(&self, rx: &mut mpsc::Receiver<Packet>) -> Option<Packet> {
         if let Some(token) = &self.cancellation_token {
             tokio::select! {
-                () = token.cancelled() => None,
-                packet = rx.recv() => packet,
+                () = token.cancelled() => {
+                    tracing::debug!(
+                        node = %self.output_sender.node_name(),
+                        "recv_with_cancellation: cancelled by token"
+                    );
+                    None
+                }
+                packet = rx.recv() => {
+                    if packet.is_none() {
+                        tracing::debug!(
+                            node = %self.output_sender.node_name(),
+                            "recv_with_cancellation: input channel closed"
+                        );
+                    }
+                    packet
+                }
             }
         } else {
             rx.recv().await

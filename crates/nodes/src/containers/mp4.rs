@@ -1166,8 +1166,12 @@ async fn run_stream_mode(
 
                 if !video_keyframe_seen {
                     if is_keyframe {
+                        tracing::debug!("Mp4MuxerNode: first video keyframe received");
                         video_keyframe_seen = true;
                     } else {
+                        tracing::debug!(
+                            "Mp4MuxerNode: skipping non-keyframe video (waiting for first keyframe, is_keyframe={is_keyframe})"
+                        );
                         continue;
                     }
                 }

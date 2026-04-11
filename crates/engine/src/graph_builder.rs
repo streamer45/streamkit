@@ -400,6 +400,20 @@ pub async fn wire_and_spawn_graph(
                 let result = node.run(context).await;
                 let duration = start_time.elapsed();
 
+                match &result {
+                    Ok(()) => tracing::debug!(
+                        node_id = %name,
+                        ?duration,
+                        "node task completed successfully",
+                    ),
+                    Err(e) => tracing::warn!(
+                        node_id = %name,
+                        ?duration,
+                        error = %e,
+                        "node task failed",
+                    ),
+                }
+
                 let meter = global::meter("skit_engine");
                 let histogram = meter
                     .f64_histogram("node.execution.duration")
