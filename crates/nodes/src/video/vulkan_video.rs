@@ -491,13 +491,28 @@ impl ProcessorNode for VulkanVideoH264EncoderNode {
         let (result_tx, mut result_rx) =
             mpsc::channel::<Result<EncoderOutput, String>>(get_codec_channel_capacity());
 
+        // ── Pre-initialise Vulkan device ─────────────────────────────────
+        // Eagerly create the Vulkan device so the blocking encode task can
+        // start processing frames immediately.  Without this, device
+        // creation (~500 ms on some GPUs) blocks the encode loop and
+        // causes short/fast pipelines (e.g. colorbars with 30 frames) to
+        // produce zero output — the input stream closes before the encoder
+        // is ready.
+        let pre_init_device = tokio::task::spawn_blocking(|| init_vulkan_encode_device(None))
+            .await
+            .map_err(|e| {
+                StreamKitError::Runtime(format!("Vulkan device init task panicked: {e}"))
+            })?
+            .map_err(StreamKitError::Runtime)?;
+
         // ── Blocking encode task ─────────────────────────────────────────
         let config = self.config.clone();
         let encode_task = tokio::task::spawn_blocking(move || {
-            // Encoder and device are lazily initialised on the first frame
-            // so we know the actual resolution.
+            // The BytesEncoder is lazily created on the first frame (so we
+            // know the actual resolution), but the Vulkan device is already
+            // initialised above to avoid blocking frame reception.
             let mut encoder: Option<vk_video::BytesEncoder> = None;
-            let mut device: Option<Arc<vk_video::VulkanDevice>> = None;
+            let mut device: Option<Arc<vk_video::VulkanDevice>> = Some(pre_init_device);
             let mut current_dimensions: Option<(u32, u32)> = None;
 
             while let Some((frame, metadata)) = encode_rx.blocking_recv() {
