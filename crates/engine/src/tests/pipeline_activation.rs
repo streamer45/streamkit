@@ -63,6 +63,7 @@ fn create_test_engine() -> DynamicEngine {
         node_created_tx: nc_tx,
         node_created_rx: nc_rx,
         pending_connections: Vec::new(),
+        pending_tunes: Vec::new(),
         next_creation_id: 0,
         active_creations: std::collections::HashMap::new(),
     }

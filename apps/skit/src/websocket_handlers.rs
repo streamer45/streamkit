@@ -519,6 +519,11 @@ async fn handle_add_node(
 
     {
         let mut pipeline = session.pipeline.lock().await;
+        if pipeline.nodes.contains_key(&node_id) {
+            return Some(ResponsePayload::Error {
+                message: format!("Node '{node_id}' already exists in the pipeline"),
+            });
+        }
         pipeline.nodes.insert(
             node_id.clone(),
             streamkit_api::Node { kind: kind.clone(), params: params.clone(), state: None },

@@ -69,6 +69,15 @@ pub struct PendingConnection {
     mode: crate::dynamic_messages::ConnectionMode,
 }
 
+/// A `TuneNode` message deferred because the target node is still in
+/// `Creating` state. Replayed once the node finishes initialization and
+/// enters `live_nodes`.
+#[derive(Debug)]
+pub struct PendingTune {
+    node_id: String,
+    message: NodeControlMessage,
+}
+
 /// The state for the long-running, dynamic engine actor (Control Plane).
 pub struct DynamicEngine {
     pub(super) registry: Arc<RwLock<NodeRegistry>>,
@@ -150,6 +159,8 @@ pub struct DynamicEngine {
     pub(super) node_created_rx: mpsc::Receiver<NodeCreatedEvent>,
     /// Connections deferred because one or both endpoints are still `Creating`.
     pub(super) pending_connections: Vec<PendingConnection>,
+    /// TuneNode messages deferred because the target node is still `Creating`.
+    pub(super) pending_tunes: Vec<PendingTune>,
     /// Monotonically increasing counter used to tag each spawned creation task.
     /// Lets `handle_node_created` distinguish stale results (from a previous
     /// Remove → re-Add cycle) from the current active creation.
@@ -1564,14 +1575,18 @@ impl DynamicEngine {
                         NodeState::Failed { reason: e.to_string() },
                     );
 
-                    // Drain pending connections referencing this node.
+                    // Drain pending connections and tunes referencing this node.
                     self.pending_connections
                         .retain(|pc| pc.from_node != node_id && pc.to_node != node_id);
+                    self.pending_tunes.retain(|pt| pt.node_id != node_id);
                     return;
                 }
 
                 // Flush pending connections where both endpoints are now realized.
                 self.flush_pending_connections().await;
+
+                // Replay any TuneNode messages that arrived while Creating.
+                self.flush_pending_tunes(&node_id).await;
             },
             Err(e) => {
                 tracing::error!(
@@ -1584,9 +1599,10 @@ impl DynamicEngine {
                 // Broadcast Failed (reads prev state before inserting).
                 self.broadcast_state_update(&node_id, NodeState::Failed { reason: e.to_string() });
 
-                // Drain pending connections referencing this node.
+                // Drain pending connections and tunes referencing this node.
                 self.pending_connections
                     .retain(|pc| pc.from_node != node_id && pc.to_node != node_id);
+                self.pending_tunes.retain(|pt| pt.node_id != node_id);
             },
         }
     }
@@ -1677,6 +1693,30 @@ impl DynamicEngine {
         }
 
         self.pending_connections = still_pending;
+    }
+
+    /// Replay any deferred `TuneNode` messages for a node that has just been
+    /// initialized and is now present in `live_nodes`.
+    async fn flush_pending_tunes(&mut self, node_id: &str) {
+        let (for_node, rest): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.pending_tunes).into_iter().partition(|pt| pt.node_id == node_id);
+
+        self.pending_tunes = rest;
+
+        for pt in for_node {
+            if let Some(node) = self.live_nodes.get(&pt.node_id) {
+                tracing::info!(
+                    node_id = %pt.node_id,
+                    "Replaying deferred TuneNode message"
+                );
+                if node.control_tx.send(pt.message).await.is_err() {
+                    tracing::warn!(
+                        "Could not replay TuneNode for '{}': node may have shut down",
+                        pt.node_id
+                    );
+                }
+            }
+        }
     }
 
     /// Returns `true` if the node is in `Creating` state (not yet in `live_nodes`).
@@ -1774,9 +1814,10 @@ impl DynamicEngine {
                     self.zero_state_gauge(&node_id, &NodeState::Creating);
                     self.node_states.remove(&node_id);
                     self.node_kinds.remove(&node_id);
-                    // Drain pending connections referencing this node.
+                    // Drain pending connections and tunes referencing this node.
                     self.pending_connections
                         .retain(|pc| pc.from_node != node_id && pc.to_node != node_id);
+                    self.pending_tunes.retain(|pt| pt.node_id != node_id);
                 } else {
                     // Normal shutdown for a fully initialized node.
                     self.shutdown_node(&node_id).await;
@@ -1855,10 +1896,11 @@ impl DynamicEngine {
                         );
                     }
                 } else if self.is_node_creating(&node_id) {
-                    tracing::warn!(
-                        "Could not tune node '{}': still in Creating state (not yet initialized)",
+                    tracing::info!(
+                        "Deferring TuneNode for '{}': still in Creating state",
                         node_id
                     );
+                    self.pending_tunes.push(PendingTune { node_id, message });
                 } else {
                     tracing::warn!("Could not tune non-existent node '{}'", node_id);
                 }
@@ -1871,6 +1913,7 @@ impl DynamicEngine {
                 // that arrive after shutdown are discarded.
                 self.active_creations.clear();
                 self.pending_connections.clear();
+                self.pending_tunes.clear();
 
                 // Step 1: Close all input channels so nodes blocked on recv() will exit
                 // This ensures nodes that don't check control_rx will still shut down
