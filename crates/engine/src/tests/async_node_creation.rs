@@ -25,9 +25,7 @@ use streamkit_core::{NodeRegistry, ProcessorNode, StreamKitError};
 /// A node whose constructor sleeps for a configurable duration, simulating
 /// heavy FFI work (e.g., ONNX model loading). Uses `std::thread::sleep`
 /// because the constructor runs inside `spawn_blocking`.
-struct SlowTestNode {
-    _delay: Duration,
-}
+struct SlowTestNode;
 
 impl SlowTestNode {
     fn factory(
@@ -40,7 +38,7 @@ impl SlowTestNode {
         move |_params| {
             std::thread::sleep(delay);
             created.store(true, Ordering::SeqCst);
-            Ok(Box::new(Self { _delay: delay }) as Box<dyn ProcessorNode>)
+            Ok(Box::new(Self) as Box<dyn ProcessorNode>)
         }
     }
 }

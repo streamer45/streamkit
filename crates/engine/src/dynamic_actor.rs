@@ -1575,6 +1575,9 @@ impl DynamicEngine {
                         NodeState::Failed { reason: e.to_string() },
                     );
 
+                    // Clean up node_kinds (mirrors RemoveNode-while-Creating).
+                    self.node_kinds.remove(&node_id);
+
                     // Drain pending connections and tunes referencing this node.
                     self.pending_connections
                         .retain(|pc| pc.from_node != node_id && pc.to_node != node_id);
@@ -1598,6 +1601,9 @@ impl DynamicEngine {
 
                 // Broadcast Failed (reads prev state before inserting).
                 self.broadcast_state_update(&node_id, NodeState::Failed { reason: e.to_string() });
+
+                // Clean up node_kinds (mirrors RemoveNode-while-Creating).
+                self.node_kinds.remove(&node_id);
 
                 // Drain pending connections and tunes referencing this node.
                 self.pending_connections

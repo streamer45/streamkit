@@ -1229,6 +1229,33 @@ async fn handle_apply_batch(
         });
     }
 
+    // Pre-validate duplicate node_ids against the pipeline model.
+    // Simulate the batch's Add/Remove sequence so that Remove→Add for
+    // the same ID within the batch is allowed, but duplicate Adds
+    // (without intervening Remove) are rejected before any mutation.
+    {
+        let pipeline = session.pipeline.lock().await;
+        let mut live_ids: std::collections::HashSet<&str> =
+            pipeline.nodes.keys().map(String::as_str).collect();
+        for op in &operations {
+            match op {
+                streamkit_api::BatchOperation::AddNode { node_id, .. } => {
+                    if !live_ids.insert(node_id.as_str()) {
+                        return Some(ResponsePayload::Error {
+                            message: format!(
+                                "Batch rejected: node '{node_id}' already exists in the pipeline"
+                            ),
+                        });
+                    }
+                },
+                streamkit_api::BatchOperation::RemoveNode { node_id } => {
+                    live_ids.remove(node_id.as_str());
+                },
+                _ => {},
+            }
+        }
+    } // Pipeline lock released after pre-validation
+
     // Validate permissions for all operations
     for op in &operations {
         if let streamkit_api::BatchOperation::AddNode { kind, params, .. } = op {
