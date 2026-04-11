@@ -173,6 +173,10 @@ jobs:
           cd tests/pipeline-validation
           PIPELINE_TEST_URL=http://127.0.0.1:4546 cargo test --test validate
 
+      - name: Stop skit server
+        if: always()
+        run: pkill -f 'skit.*4546' || true
+
   e2e:
     name: Playwright E2E
     runs-on: ubuntu-22.04
