@@ -189,17 +189,13 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
 
                         // Discover `prev-{name}` property pairs for
                         // automatic old-value injection (opt-in).
-                        let tracked_props =
-                            discover_tracked_props(&instance.definition);
-                        let revision = if instance
-                            .definition
-                            .properties()
-                            .any(|(n, _)| n == "revision")
-                        {
-                            Some(0i64)
-                        } else {
-                            None
-                        };
+                        let tracked_props = discover_tracked_props(&instance.definition);
+                        let revision =
+                            if instance.definition.properties().any(|(n, _)| n == "revision") {
+                                Some(0i64)
+                            } else {
+                                None
+                            };
 
                         tracing::info!(
                             node_id = %node_id,
@@ -306,9 +302,7 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
                         let new_val = config.properties.get(&tp.source);
                         let old_val = state.config.properties.get(&tp.source);
                         if new_val.is_some() && new_val != old_val {
-                            let prev = old_val
-                                .cloned()
-                                .unwrap_or_else(|| tp.default_value.clone());
+                            let prev = old_val.cloned().unwrap_or_else(|| tp.default_value.clone());
                             tracing::debug!(
                                 node_id = %node_id,
                                 property = %tp.source,
@@ -328,10 +322,9 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
                                 revision = *rev,
                                 "Bumped revision counter",
                             );
-                            config.properties.insert(
-                                "revision".to_string(),
-                                serde_json::json!(*rev),
-                            );
+                            config
+                                .properties
+                                .insert("revision".to_string(), serde_json::json!(*rev));
                         }
                     }
                     tracing::debug!(
