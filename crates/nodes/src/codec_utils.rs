@@ -16,6 +16,18 @@ use streamkit_core::types::Packet;
 use streamkit_core::NodeContext;
 use tokio::sync::mpsc;
 
+/// Await a codec task and log if it panicked.  Returns `true` when the
+/// task panicked (caller should skip draining).
+async fn finish_codec_task(codec_task: tokio::task::JoinHandle<()>, label: &str) -> bool {
+    match codec_task.await {
+        Err(e) if e.is_panic() => {
+            tracing::error!("{label} codec task panicked: {e:?}");
+            true
+        },
+        _ => false,
+    }
+}
+
 /// Shared select-loop that forwards codec results to the output sender.
 ///
 /// Handles three concurrent events:
@@ -87,10 +99,6 @@ pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
             Some(control_msg) = context.control_rx.recv() => {
                 if matches!(control_msg, streamkit_core::control::NodeControlMessage::Shutdown) {
                     tracing::info!("{label} received shutdown signal");
-                    // NOTE: Dropping codec_tx first signals the codec thread to
-                    // exit/flush, then aborting ensures it doesn't linger.
-                    // Because we break out here, flushed results are never sent
-                    // downstream.  Data loss on explicit shutdown is acceptable.
                     input_task.abort();
                     drop(codec_tx);
                     codec_task.abort();
@@ -113,33 +121,22 @@ pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
         // may close their channels before all results are forwarded —
         // causing zero-byte output on fast pipelines.
         tracing::debug!("{label} waiting for codec task to finish before drain");
-        match codec_task.await {
-            Err(e) if e.is_panic() => {
-                tracing::error!("{label} codec task panicked: {e:?}");
-            },
-            _ => {
-                let mut drained = 0u64;
-                while let Some(maybe_result) = result_rx.recv().await {
-                    match maybe_result {
-                        Ok(item) => {
-                            drained += 1;
-                            if forward_one(to_packet(item), context, counter, stats).await {
-                                break;
-                            }
-                        },
-                        Err(err) => handle_error(&err, counter, stats, label),
-                    }
+        if !finish_codec_task(codec_task, label).await {
+            let mut drained = 0u64;
+            while let Some(maybe_result) = result_rx.recv().await {
+                match maybe_result {
+                    Ok(item) => {
+                        drained += 1;
+                        if forward_one(to_packet(item), context, counter, stats).await {
+                            break;
+                        }
+                    },
+                    Err(err) => handle_error(&err, counter, stats, label),
                 }
-                tracing::debug!("{label} drain complete: forwarded {drained} result(s)");
-            },
+            }
+            tracing::debug!("{label} drain complete: forwarded {drained} result(s)");
         }
     } else {
-        codec_task.abort();
-        match codec_task.await {
-            Err(e) if e.is_panic() => {
-                tracing::error!("{label} codec task panicked: {e:?}");
-            },
-            _ => {},
-        }
+        finish_codec_task(codec_task, label).await;
     }
 }

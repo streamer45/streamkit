@@ -1164,16 +1164,15 @@ async fn run_stream_mode(
             MuxFrame::Video(data, metadata) => {
                 let is_keyframe = metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(false);
 
+                if !video_keyframe_seen && !is_keyframe {
+                    tracing::debug!(
+                        "Mp4MuxerNode: skipping non-keyframe video (waiting for first keyframe)"
+                    );
+                    continue;
+                }
                 if !video_keyframe_seen {
-                    if is_keyframe {
-                        tracing::debug!("Mp4MuxerNode: first video keyframe received");
-                        video_keyframe_seen = true;
-                    } else {
-                        tracing::debug!(
-                            "Mp4MuxerNode: skipping non-keyframe video (waiting for first keyframe, is_keyframe={is_keyframe})"
-                        );
-                        continue;
-                    }
+                    tracing::debug!("Mp4MuxerNode: first video keyframe received");
+                    video_keyframe_seen = true;
                 }
 
                 packet_count += 1;
