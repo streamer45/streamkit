@@ -1098,6 +1098,65 @@ fn partition_samples_by_track(
 // Stream (fMP4) mode
 // ---------------------------------------------------------------------------
 
+/// Accumulate a single video frame into the pending segment state.
+///
+/// Handles Annex B → AVCC conversion for H.264, sample-entry tracking,
+/// and duration calculation.
+#[allow(clippy::too_many_arguments)]
+fn accumulate_video_sample(
+    data: &Bytes,
+    metadata: Option<&PacketMetadata>,
+    is_keyframe: bool,
+    is_h264: bool,
+    config: &Mp4MuxerConfig,
+    video_timescale: NonZeroU32,
+    video_sample_entry: &mut SampleEntry,
+    seg: &mut Fmp4SegmentState,
+) {
+    // Convert Annex B → AVCC for H.264 streams so the mdat
+    // contains length-prefixed NAL units matching the avc1 box.
+    let data = if is_h264 {
+        let conv = convert_annexb_to_avcc(data);
+        // On the first keyframe, update the sample entry with
+        // real SPS/PPS so the init segment (moov) describes the
+        // actual stream parameters instead of placeholders.
+        if !conv.sps_list.is_empty() && !seg.video_sample_entry_sent {
+            *video_sample_entry = rebuild_avc1_entry_from_params(
+                config.video_width,
+                config.video_height,
+                conv.sps_list,
+                conv.pps_list,
+            );
+        }
+        conv.data
+    } else {
+        data.clone()
+    };
+
+    let duration_us =
+        metadata.as_ref().and_then(|m| m.duration_us).unwrap_or(DEFAULT_VIDEO_FRAME_DURATION_US);
+    let duration_ticks = us_to_ticks(duration_us, video_timescale.get());
+
+    let data_size = data.len();
+    let entry = if seg.video_sample_entry_sent {
+        None
+    } else {
+        seg.video_sample_entry_sent = true;
+        Some(video_sample_entry.clone())
+    };
+    seg.pending_samples.push(Sample {
+        track_kind: TrackKind::Video,
+        timescale: video_timescale,
+        sample_entry: entry,
+        duration: duration_ticks,
+        keyframe: is_keyframe,
+        composition_time_offset: None,
+        data_offset: 0, // placeholder; partition_samples_by_track recomputes
+        data_size,
+    });
+    seg.pending_payloads.push(data);
+}
+
 /// Run the muxer in fragmented MP4 (fMP4) streaming mode.
 ///
 /// Each batch of samples is turned into a media segment (moof + mdat) and
@@ -1177,51 +1236,16 @@ async fn run_stream_mode(
 
                 packet_count += 1;
                 stats_tracker.received();
-
-                // Convert Annex B → AVCC for H.264 streams so the mdat
-                // contains length-prefixed NAL units matching the avc1 box.
-                let data = if is_h264 {
-                    let conv = convert_annexb_to_avcc(&data);
-                    // On the first keyframe, update the sample entry with
-                    // real SPS/PPS so the init segment (moov) describes the
-                    // actual stream parameters instead of placeholders.
-                    if !conv.sps_list.is_empty() && !seg.video_sample_entry_sent {
-                        video_sample_entry = rebuild_avc1_entry_from_params(
-                            session.config.video_width,
-                            session.config.video_height,
-                            conv.sps_list,
-                            conv.pps_list,
-                        );
-                    }
-                    conv.data
-                } else {
-                    data
-                };
-
-                let duration_us = metadata
-                    .as_ref()
-                    .and_then(|m| m.duration_us)
-                    .unwrap_or(DEFAULT_VIDEO_FRAME_DURATION_US);
-                let duration_ticks = us_to_ticks(duration_us, video_timescale.get());
-
-                let data_size = data.len();
-                let entry = if seg.video_sample_entry_sent {
-                    None
-                } else {
-                    seg.video_sample_entry_sent = true;
-                    Some(video_sample_entry.clone())
-                };
-                seg.pending_samples.push(Sample {
-                    track_kind: TrackKind::Video,
-                    timescale: video_timescale,
-                    sample_entry: entry,
-                    duration: duration_ticks,
-                    keyframe: is_keyframe,
-                    composition_time_offset: None,
-                    data_offset: 0, // placeholder; partition_samples_by_track recomputes
-                    data_size,
-                });
-                seg.pending_payloads.push(data);
+                accumulate_video_sample(
+                    &data,
+                    metadata.as_ref(),
+                    is_keyframe,
+                    is_h264,
+                    session.config,
+                    video_timescale,
+                    &mut video_sample_entry,
+                    &mut seg,
+                );
             },
             MuxFrame::Audio(data, metadata) => {
                 packet_count += 1;
