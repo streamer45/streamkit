@@ -1586,6 +1586,22 @@ impl DynamicEngine {
             1,
             &[KeyValue::new("node_id", update.node_id.clone()), KeyValue::new("state", state_name)],
         );
+
+        // Zero-out the previous state's gauge series (one-hot pattern),
+        // mirroring the logic in `handle_state_update`.
+        let prev_state = self.node_states.get(&update.node_id);
+        if let Some(prev_state) = prev_state {
+            let prev_state_name = Self::node_state_name(prev_state);
+            if prev_state_name != state_name {
+                self.node_state_gauge.record(
+                    0,
+                    &[
+                        KeyValue::new("node_id", update.node_id.clone()),
+                        KeyValue::new("state", prev_state_name),
+                    ],
+                );
+            }
+        }
         self.node_state_gauge.record(
             1,
             &[KeyValue::new("node_id", update.node_id.clone()), KeyValue::new("state", state_name)],
@@ -1663,6 +1679,12 @@ impl DynamicEngine {
                 // continues processing the next message without blocking.
                 self.node_states.insert(node_id.clone(), NodeState::Creating);
                 self.node_kinds.insert(node_id.clone(), kind.clone());
+
+                // Clear any stale cancellation for this ID left over from a
+                // previous Remove → re-Add cycle.  Without this, the new
+                // creation result would be mistakenly discarded in
+                // `handle_node_created`.
+                self.cancelled_creations.remove(&node_id);
 
                 // Broadcast Creating state to subscribers.
                 let update = NodeStateUpdate::new(node_id.clone(), NodeState::Creating);
@@ -1754,7 +1776,17 @@ impl DynamicEngine {
             },
             EngineControlMessage::Disconnect { from_node, from_pin, to_node, to_pin } => {
                 self.engine_operations_counter.add(1, &[KeyValue::new("operation", "disconnect")]);
-                // Delegate disconnection logic
+
+                // Also remove any matching deferred connection so it isn't
+                // replayed later by `flush_pending_connections`.
+                self.pending_connections.retain(|pc| {
+                    !(pc.from_node == from_node
+                        && pc.from_pin == from_pin
+                        && pc.to_node == to_node
+                        && pc.to_pin == to_pin)
+                });
+
+                // Delegate disconnection logic for realized connections.
                 self.disconnect_nodes(from_node, from_pin, to_node, to_pin).await;
             },
             EngineControlMessage::TuneNode { node_id, message } => {

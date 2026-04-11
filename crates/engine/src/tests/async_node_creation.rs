@@ -785,9 +785,15 @@ async fn test_remove_then_readd_same_id() {
     tokio::time::sleep(Duration::from_millis(1200)).await;
     assert!(created_v1.load(Ordering::SeqCst), "v1 constructor runs to completion");
 
-    // The node should be the v2 version (kind = test::fast_v2).
+    // The node should be the v2 version — verify it's not in Creating or
+    // Failed state (it should be fully initialized).
     let states = handle.get_node_states().await.expect("get states");
     assert!(states.contains_key("node"), "node should exist");
+    let state = states.get("node").expect("node state");
+    assert!(
+        !matches!(state, NodeState::Creating | NodeState::Failed { .. }),
+        "v2 node should be initialized, not Creating/Failed, got: {state:?}"
+    );
 
     handle.shutdown_and_wait().await.expect("shutdown");
 }
