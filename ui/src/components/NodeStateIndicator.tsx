@@ -152,6 +152,7 @@ function renderSlowPinsSummary(
 function getStateColor(state: NodeState): string {
   if (typeof state === 'string') {
     switch (state) {
+      case 'Creating':
       case 'Initializing':
         return 'var(--sk-status-initializing)';
       case 'Running':
@@ -201,6 +202,8 @@ function getStateLabel(state: NodeState): string {
 function getStateDescription(state: NodeState): string {
   if (typeof state === 'string') {
     switch (state) {
+      case 'Creating':
+        return 'Node is being created (loading resources)';
       case 'Initializing':
         return 'Node is starting up and performing initialization';
       case 'Running':

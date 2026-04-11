@@ -5,6 +5,8 @@
 //! Unit tests for the engine crate.
 
 #[cfg(feature = "dynamic")]
+mod async_node_creation;
+#[cfg(feature = "dynamic")]
 mod connection_types;
 #[cfg(feature = "dynamic")]
 mod dynamic_initialize;
