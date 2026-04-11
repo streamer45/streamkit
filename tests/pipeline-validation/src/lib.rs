@@ -115,7 +115,7 @@ pub fn get_available_nodes(base_url: &str) -> Result<HashSet<String>, String> {
 /// Posts the pipeline YAML as a multipart form to `/api/v1/process` and
 /// saves the streamed response body to a temporary file.
 ///
-/// If `input_file` is `Some`, the file is attached as the `file` part of the
+/// If `input_file` is `Some`, the file is attached as the `media` part of the
 /// multipart form (for pipelines that expect `client.input.type: file_upload`).
 ///
 /// Returns the path to the output file on success.
