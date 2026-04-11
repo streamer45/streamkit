@@ -90,6 +90,86 @@ jobs:
           cd tests/pipeline-validation
           PIPELINE_TEST_URL=http://127.0.0.1:4545 cargo test --test validate
 
+  pipeline-validation-gpu:
+    name: Pipeline Validation (GPU)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+
+      - name: Build UI
+        working-directory: ./ui
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92.0"
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm cmake ninja-build yasm meson ffmpeg libopus-dev pkg-config
+
+      - name: Build and install SVT-AV1 from source (v4.1.0)
+        run: |
+          cd /tmp
+          if pkg-config --atleast-version=2.0.0 SvtAv1Enc 2>/dev/null; then
+            echo "SVT-AV1 already installed, skipping build"
+          else
+            rm -rf SVT-AV1
+            git clone --depth 1 --branch v4.1.0 https://gitlab.com/AOMediaCodec/SVT-AV1.git
+            cd SVT-AV1
+            cmake -S . -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_INSTALL_PREFIX=/usr/local
+            cmake --build build -j"$(nproc)"
+            sudo cmake --install build
+            sudo ldconfig
+          fi
+
+      - name: Build skit (with GPU + SVT-AV1 + dav1d)
+        env:
+          VPX_LIB_DIR: /usr/lib/x86_64-linux-gnu
+          VPX_INCLUDE_DIR: /usr/include
+          VPX_VERSION: "1.13.0"
+        run: |
+          # NOTE: add "nvcodec vulkan_video" features once PR #279 merges to
+          # enable NVENC AV1 and Vulkan Video H.264 pipeline tests.
+          cargo build -p streamkit-server --bin skit --features "gpu svt_av1 dav1d_static"
+
+      - name: Start skit server
+        run: |
+          SK_SERVER__ADDRESS=127.0.0.1:4545 ./target/debug/skit &
+          # Wait for the server to be healthy
+          HEALTHY=0
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:4545/healthz > /dev/null 2>&1; then
+              echo "skit is healthy"
+              HEALTHY=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$HEALTHY" -ne 1 ]; then
+            echo "ERROR: skit did not become healthy within 30s"
+            exit 1
+          fi
+
+      - name: Run pipeline validation tests (all codecs including GPU)
+        run: |
+          cd tests/pipeline-validation
+          PIPELINE_TEST_URL=http://127.0.0.1:4545 cargo test --test validate
+
   e2e:
     name: Playwright E2E
     runs-on: ubuntu-22.04
