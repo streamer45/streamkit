@@ -142,6 +142,15 @@ precedence = "override"
 SPDX-FileCopyrightText = "© Mermaid contributors"
 SPDX-License-Identifier = "MIT"
 
+# Vendored cros-codecs (BSD-3-Clause, ChromiumOS Authors)
+# Patched locally to add GbmUsage::Linear for Tiger Lake VA-API support.
+# Remove this annotation when the upstream crate ships the fix.
+[[annotations]]
+path = "vendor/cros-codecs/**"
+precedence = "override"
+SPDX-FileCopyrightText = "© 2022 The ChromiumOS Authors"
+SPDX-License-Identifier = "BSD-3-Clause"
+
 # LibriSpeech audio samples (CC-BY-4.0)
 [[annotations]]
 path = "samples/audio/system/speech_2m.*"
