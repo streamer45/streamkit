@@ -1092,9 +1092,10 @@ impl StandardVideoEncoder for VaapiAv1Encoder {
         loop {
             match self.encoder.poll() {
                 Ok(Some(coded)) => {
+                    let out_meta = merge_av1_keyframe_metadata(metadata.clone(), &coded.bitstream);
                     packets.push(EncodedPacket {
                         data: Bytes::from(coded.bitstream),
-                        metadata: metadata.clone(),
+                        metadata: out_meta,
                     });
                 },
                 Ok(None) => break,
@@ -1112,8 +1113,11 @@ impl StandardVideoEncoder for VaapiAv1Encoder {
         loop {
             match self.encoder.poll() {
                 Ok(Some(coded)) => {
-                    packets
-                        .push(EncodedPacket { data: Bytes::from(coded.bitstream), metadata: None });
+                    let out_meta = merge_av1_keyframe_metadata(None, &coded.bitstream);
+                    packets.push(EncodedPacket {
+                        data: Bytes::from(coded.bitstream),
+                        metadata: out_meta,
+                    });
                 },
                 Ok(None) => break,
                 Err(e) => return Err(format!("VA-API AV1 encoder poll error: {e}")),
@@ -1126,6 +1130,114 @@ impl StandardVideoEncoder for VaapiAv1Encoder {
     fn flush_on_dimension_change() -> bool {
         true
     }
+}
+
+// ---------------------------------------------------------------------------
+// Keyframe detection
+// ---------------------------------------------------------------------------
+
+/// Detect whether an AV1 bitstream produced by the encoder contains a
+/// keyframe by scanning for a Frame OBU with `frame_type == KEY_FRAME`.
+///
+/// AV1 OBU header format (§ 5.3.1):
+///   byte 0: `obu_forbidden_bit(1) | obu_type(4) | extension_flag(1) | has_size_field(1) | reserved(1)`
+///
+/// OBU types of interest:
+///   - 6 = `OBU_FRAME` (contains frame header + tile group)
+///   - 3 = `OBU_FRAME_HEADER`
+///
+/// Frame header first byte (§ 5.9.2):
+///   `show_existing_frame(1) | frame_type(2) | ...`
+///   frame_type 0 = KEY_FRAME
+fn av1_bitstream_is_keyframe(bitstream: &[u8]) -> bool {
+    let mut pos = 0;
+    while pos < bitstream.len() {
+        let header_byte = bitstream[pos];
+        let obu_type = (header_byte >> 3) & 0x0F;
+        let extension_flag = (header_byte >> 2) & 1;
+        let has_size_field = (header_byte >> 1) & 1;
+        pos += 1;
+
+        // Skip extension header if present.
+        if extension_flag == 1 {
+            if pos >= bitstream.len() {
+                break;
+            }
+            pos += 1;
+        }
+
+        // Read OBU size (LEB128) if has_size_field is set.
+        let obu_size = if has_size_field == 1 {
+            let mut size: u64 = 0;
+            let mut shift = 0;
+            loop {
+                if pos >= bitstream.len() {
+                    return false;
+                }
+                let b = bitstream[pos];
+                pos += 1;
+                size |= u64::from(b & 0x7F) << shift;
+                if b & 0x80 == 0 {
+                    break;
+                }
+                shift += 7;
+                if shift >= 56 {
+                    return false; // malformed LEB128
+                }
+            }
+            Some(size as usize)
+        } else {
+            None
+        };
+
+        // OBU_FRAME (6) or OBU_FRAME_HEADER (3): check frame_type.
+        if obu_type == 6 || obu_type == 3 {
+            if pos < bitstream.len() {
+                let frame_byte = bitstream[pos];
+                let show_existing_frame = (frame_byte >> 7) & 1;
+                if show_existing_frame == 0 {
+                    let frame_type = (frame_byte >> 5) & 0x03;
+                    // frame_type 0 = KEY_FRAME
+                    return frame_type == 0;
+                }
+            }
+            return false;
+        }
+
+        // Skip over this OBU's payload.
+        if let Some(size) = obu_size {
+            pos += size;
+        } else {
+            // Without size field, we can't skip — assume rest is one OBU.
+            break;
+        }
+    }
+    false
+}
+
+/// Build output metadata with the keyframe flag set from encoder output.
+///
+/// Uses bitstream-level detection because cros-codecs'
+/// `CodedBitstreamBuffer.metadata.force_keyframe` only reflects the
+/// *caller's* request — not encoder-initiated periodic keyframes from
+/// the `LowDelay` prediction structure.
+fn merge_av1_keyframe_metadata(
+    metadata: Option<PacketMetadata>,
+    bitstream: &[u8],
+) -> Option<PacketMetadata> {
+    let is_keyframe = av1_bitstream_is_keyframe(bitstream);
+    Some(match metadata {
+        Some(mut m) => {
+            m.keyframe = Some(is_keyframe);
+            m
+        },
+        None => PacketMetadata {
+            timestamp_us: None,
+            duration_us: None,
+            sequence: None,
+            keyframe: Some(is_keyframe),
+        },
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1922,5 +2034,85 @@ mod tests {
             registry.create_node("video::vaapi::av1_encoder", None).is_ok(),
             "VA-API AV1 encoder should be registered"
         );
+    }
+
+    // ── Keyframe detection unit tests ────────────────────────────────
+
+    #[test]
+    fn test_av1_keyframe_detection_key_frame() {
+        // Minimal AV1 bitstream: Temporal Delimiter OBU + Sequence Header
+        // OBU + Frame OBU with frame_type = KEY_FRAME (0).
+        //
+        // OBU header byte: obu_type(4) << 3 | has_size_field(1) << 1
+        // Temporal Delimiter (type 2): 0b_0_0010_0_1_0 = 0x12
+        // Sequence Header  (type 1): 0b_0_0001_0_1_0 = 0x0A
+        // Frame OBU        (type 6): 0b_0_0110_0_1_0 = 0x32
+
+        let bitstream: Vec<u8> = vec![
+            0x12,
+            0x00, // Temporal Delimiter OBU, size=0
+            0x0A,
+            0x01,
+            0x00, // Sequence Header OBU, size=1, dummy payload
+            0x32,
+            0x02,          // Frame OBU, size=2
+            0b_0_00_00000, // show_existing_frame=0, frame_type=0 (KEY_FRAME), ...
+            0x00,          // dummy tile data
+        ];
+        assert!(av1_bitstream_is_keyframe(&bitstream));
+    }
+
+    #[test]
+    fn test_av1_keyframe_detection_inter_frame() {
+        // Frame OBU with frame_type = INTER_FRAME (1).
+        let bitstream: Vec<u8> = vec![
+            0x32,
+            0x02,          // Frame OBU, size=2
+            0b_0_01_00000, // show_existing_frame=0, frame_type=1 (INTER_FRAME)
+            0x00,
+        ];
+        assert!(!av1_bitstream_is_keyframe(&bitstream));
+    }
+
+    #[test]
+    fn test_av1_keyframe_detection_empty() {
+        assert!(!av1_bitstream_is_keyframe(&[]));
+    }
+
+    #[test]
+    fn test_av1_keyframe_detection_show_existing_frame() {
+        // Frame OBU with show_existing_frame=1 — not a keyframe.
+        let bitstream: Vec<u8> = vec![
+            0x32,
+            0x02,          // Frame OBU, size=2
+            0b_1_00_00000, // show_existing_frame=1
+            0x00,
+        ];
+        assert!(!av1_bitstream_is_keyframe(&bitstream));
+    }
+
+    #[test]
+    fn test_merge_av1_keyframe_metadata_with_existing() {
+        let meta = PacketMetadata {
+            timestamp_us: Some(42_000),
+            duration_us: Some(33_333),
+            sequence: Some(7),
+            keyframe: None,
+        };
+        // KEY_FRAME bitstream
+        let bitstream: Vec<u8> = vec![0x32, 0x02, 0b_0_00_00000, 0x00];
+        let result = merge_av1_keyframe_metadata(Some(meta), &bitstream).unwrap();
+        assert_eq!(result.keyframe, Some(true));
+        assert_eq!(result.timestamp_us, Some(42_000));
+        assert_eq!(result.sequence, Some(7));
+    }
+
+    #[test]
+    fn test_merge_av1_keyframe_metadata_without_existing() {
+        // INTER_FRAME bitstream
+        let bitstream: Vec<u8> = vec![0x32, 0x02, 0b_0_01_00000, 0x00];
+        let result = merge_av1_keyframe_metadata(None, &bitstream).unwrap();
+        assert_eq!(result.keyframe, Some(false));
+        assert!(result.timestamp_us.is_none());
     }
 }

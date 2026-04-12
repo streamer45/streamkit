@@ -762,9 +762,10 @@ impl StandardVideoEncoder for VaapiH264Encoder {
         loop {
             match self.encoder.poll() {
                 Ok(Some(coded)) => {
+                    let out_meta = merge_h264_keyframe_metadata(metadata.clone(), &coded.bitstream);
                     packets.push(EncodedPacket {
                         data: Bytes::from(coded.bitstream),
-                        metadata: metadata.clone(),
+                        metadata: out_meta,
                     });
                 },
                 Ok(None) => break,
@@ -782,8 +783,11 @@ impl StandardVideoEncoder for VaapiH264Encoder {
         loop {
             match self.encoder.poll() {
                 Ok(Some(coded)) => {
-                    packets
-                        .push(EncodedPacket { data: Bytes::from(coded.bitstream), metadata: None });
+                    let out_meta = merge_h264_keyframe_metadata(None, &coded.bitstream);
+                    packets.push(EncodedPacket {
+                        data: Bytes::from(coded.bitstream),
+                        metadata: out_meta,
+                    });
                 },
                 Ok(None) => break,
                 Err(e) => return Err(format!("VA-API H.264 encoder poll error: {e}")),
@@ -796,6 +800,77 @@ impl StandardVideoEncoder for VaapiH264Encoder {
     fn flush_on_dimension_change() -> bool {
         true
     }
+}
+
+// ---------------------------------------------------------------------------
+// Keyframe detection
+// ---------------------------------------------------------------------------
+
+/// Detect whether an H.264 Annex B bitstream contains an IDR (keyframe)
+/// NAL unit.
+///
+/// Scans for Annex B start codes (`00 00 01` or `00 00 00 01`) and checks
+/// whether any NAL unit has `nal_unit_type == 5` (IDR slice).  This is the
+/// standard way to identify keyframes in H.264 elementary streams.
+fn h264_bitstream_is_idr(bitstream: &[u8]) -> bool {
+    let len = bitstream.len();
+    let mut i = 0;
+    while i + 2 < len {
+        // Look for 3-byte start code 00 00 01.
+        if bitstream[i] == 0 && bitstream[i + 1] == 0 && bitstream[i + 2] == 1 {
+            let nal_pos = i + 3;
+            if nal_pos < len {
+                let nal_type = bitstream[nal_pos] & 0x1F;
+                if nal_type == 5 {
+                    return true; // IDR slice
+                }
+            }
+            i = nal_pos;
+        // Also handle 4-byte start code 00 00 00 01.
+        } else if i + 3 < len
+            && bitstream[i] == 0
+            && bitstream[i + 1] == 0
+            && bitstream[i + 2] == 0
+            && bitstream[i + 3] == 1
+        {
+            let nal_pos = i + 4;
+            if nal_pos < len {
+                let nal_type = bitstream[nal_pos] & 0x1F;
+                if nal_type == 5 {
+                    return true; // IDR slice
+                }
+            }
+            i = nal_pos;
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
+/// Build output metadata with the keyframe flag set from encoder output.
+///
+/// Uses bitstream-level detection because cros-codecs'
+/// `CodedBitstreamBuffer.metadata.force_keyframe` only reflects the
+/// *caller's* request — not encoder-initiated periodic keyframes from
+/// the `LowDelay` prediction structure.
+fn merge_h264_keyframe_metadata(
+    metadata: Option<PacketMetadata>,
+    bitstream: &[u8],
+) -> Option<PacketMetadata> {
+    let is_keyframe = h264_bitstream_is_idr(bitstream);
+    Some(match metadata {
+        Some(mut m) => {
+            m.keyframe = Some(is_keyframe);
+            m
+        },
+        None => PacketMetadata {
+            timestamp_us: None,
+            duration_us: None,
+            sequence: None,
+            keyframe: Some(is_keyframe),
+        },
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1048,5 +1123,84 @@ mod tests {
                 _ => panic!("Expected Video packet from VA-API H.264 decoder"),
             }
         }
+    }
+
+    // ── Keyframe detection unit tests ────────────────────────────────
+
+    #[test]
+    fn test_h264_idr_detection_with_4byte_start_code() {
+        // Annex B bitstream with 4-byte start code + IDR NAL (type 5).
+        // NAL header byte: forbidden_zero_bit(1)=0, nal_ref_idc(2)=3, nal_type(5)=5
+        // → 0b_0_11_00101 = 0x65
+        let bitstream: Vec<u8> = vec![
+            0x00, 0x00, 0x00, 0x01, 0x65, // IDR slice NAL
+            0xAA, 0xBB, // dummy slice data
+        ];
+        assert!(h264_bitstream_is_idr(&bitstream));
+    }
+
+    #[test]
+    fn test_h264_idr_detection_with_3byte_start_code() {
+        // Annex B bitstream with 3-byte start code + IDR NAL (type 5).
+        let bitstream: Vec<u8> = vec![
+            0x00, 0x00, 0x01, 0x65, // IDR slice NAL
+            0xAA, // dummy data
+        ];
+        assert!(h264_bitstream_is_idr(&bitstream));
+    }
+
+    #[test]
+    fn test_h264_non_idr_detection() {
+        // Non-IDR slice NAL (type 1).
+        // NAL header: nal_ref_idc=2, nal_type=1 → 0b_0_10_00001 = 0x41
+        let bitstream: Vec<u8> = vec![
+            0x00, 0x00, 0x00, 0x01, 0x41, // Non-IDR slice NAL
+            0xCC,
+        ];
+        assert!(!h264_bitstream_is_idr(&bitstream));
+    }
+
+    #[test]
+    fn test_h264_idr_with_sps_pps_prefix() {
+        // Typical encoder output: SPS (type 7) + PPS (type 8) + IDR (type 5).
+        let bitstream: Vec<u8> = vec![
+            0x00, 0x00, 0x00, 0x01, 0x67, // SPS NAL (type 7)
+            0x42, 0x00, 0x1E, // dummy SPS data
+            0x00, 0x00, 0x00, 0x01, 0x68, // PPS NAL (type 8)
+            0xCE, 0x38, 0x80, // dummy PPS data
+            0x00, 0x00, 0x00, 0x01, 0x65, // IDR slice NAL (type 5)
+            0x88, 0x80, // dummy slice data
+        ];
+        assert!(h264_bitstream_is_idr(&bitstream));
+    }
+
+    #[test]
+    fn test_h264_idr_detection_empty() {
+        assert!(!h264_bitstream_is_idr(&[]));
+    }
+
+    #[test]
+    fn test_merge_h264_keyframe_metadata_with_existing() {
+        let meta = PacketMetadata {
+            timestamp_us: Some(100_000),
+            duration_us: Some(33_333),
+            sequence: Some(3),
+            keyframe: None,
+        };
+        // IDR bitstream
+        let bitstream: Vec<u8> = vec![0x00, 0x00, 0x00, 0x01, 0x65, 0xAA];
+        let result = merge_h264_keyframe_metadata(Some(meta), &bitstream).unwrap();
+        assert_eq!(result.keyframe, Some(true));
+        assert_eq!(result.timestamp_us, Some(100_000));
+        assert_eq!(result.sequence, Some(3));
+    }
+
+    #[test]
+    fn test_merge_h264_keyframe_metadata_without_existing() {
+        // Non-IDR bitstream
+        let bitstream: Vec<u8> = vec![0x00, 0x00, 0x00, 0x01, 0x41, 0xBB];
+        let result = merge_h264_keyframe_metadata(None, &bitstream).unwrap();
+        assert_eq!(result.keyframe, Some(false));
+        assert!(result.timestamp_us.is_none());
     }
 }

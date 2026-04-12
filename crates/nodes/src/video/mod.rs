@@ -82,7 +82,7 @@ pub const H264_CONTENT_TYPE: &str = "video/h264";
 #[derive(
     Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum HwAccelMode {
     /// Auto-detect: attempt hardware acceleration.
     ///
