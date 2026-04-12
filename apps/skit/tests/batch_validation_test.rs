@@ -11,6 +11,7 @@
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use streamkit_api::{
     BatchOperation, MessageType, Request, RequestPayload, Response, ResponsePayload,
@@ -20,15 +21,14 @@ use tokio::net::TcpListener;
 use tokio::time::{timeout, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 
+// Type aliases to reduce verbosity of the fully-expanded WebSocket stream types.
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type WsWriter = futures_util::stream::SplitSink<WsStream, WsMessage>;
+type WsReader = futures_util::stream::SplitStream<WsStream>;
+
 /// Helper to read messages from WebSocket, skipping events until we get a response with matching correlation_id
-async fn read_response(
-    read: &mut futures_util::stream::SplitStream<
-        tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-        >,
-    >,
-    expected_correlation_id: &str,
-) -> Response {
+async fn read_response(read: &mut WsReader, expected_correlation_id: &str) -> Response {
     loop {
         let message = timeout(Duration::from_secs(5), read.next())
             .await
@@ -54,6 +54,12 @@ async fn read_response(
 }
 
 async fn start_test_server() -> Option<(SocketAddr, tokio::task::JoinHandle<()>)> {
+    start_test_server_with_config(Config::default()).await
+}
+
+async fn start_test_server_with_config(
+    config: Config,
+) -> Option<(SocketAddr, tokio::task::JoinHandle<()>)> {
     let listener = match TcpListener::bind("127.0.0.1:0").await {
         Ok(listener) => listener,
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return None,
@@ -62,7 +68,7 @@ async fn start_test_server() -> Option<(SocketAddr, tokio::task::JoinHandle<()>)
     let addr = listener.local_addr().unwrap();
 
     let server_handle = tokio::spawn(async move {
-        let (app, _state) = streamkit_server::server::create_app(Config::default(), None);
+        let (app, _state) = streamkit_server::server::create_app(config, None);
         axum::serve(listener, app.into_make_service()).await.unwrap();
     });
 
@@ -72,22 +78,7 @@ async fn start_test_server() -> Option<(SocketAddr, tokio::task::JoinHandle<()>)
 }
 
 /// Helper: connect to WS, create a session, and return (write, read, session_id).
-async fn setup_session(
-    addr: SocketAddr,
-) -> (
-    futures_util::stream::SplitSink<
-        tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-        >,
-        WsMessage,
-    >,
-    futures_util::stream::SplitStream<
-        tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-        >,
-    >,
-    String,
-) {
+async fn setup_session(addr: SocketAddr) -> (WsWriter, WsReader, String) {
     let ws_url = format!("ws://{}/api/v1/control", addr);
     let (ws_stream, _) = connect_async(&ws_url).await.expect("Failed to connect to WebSocket");
     let (mut write, mut read) = ws_stream.split();
@@ -114,17 +105,8 @@ async fn setup_session(
 
 /// Helper: send a ValidateBatch request and return the response payload.
 async fn send_validate_batch(
-    write: &mut futures_util::stream::SplitSink<
-        tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-        >,
-        WsMessage,
-    >,
-    read: &mut futures_util::stream::SplitStream<
-        tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-        >,
-    >,
+    write: &mut WsWriter,
+    read: &mut WsReader,
     session_id: &str,
     operations: Vec<BatchOperation>,
     correlation_id: &str,
@@ -142,17 +124,8 @@ async fn send_validate_batch(
 
 /// Helper: send an ApplyBatch request and return the response payload.
 async fn send_apply_batch(
-    write: &mut futures_util::stream::SplitSink<
-        tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-        >,
-        WsMessage,
-    >,
-    read: &mut futures_util::stream::SplitStream<
-        tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-        >,
-    >,
+    write: &mut WsWriter,
+    read: &mut WsReader,
     session_id: &str,
     operations: Vec<BatchOperation>,
     correlation_id: &str,
@@ -166,6 +139,23 @@ async fn send_apply_batch(
     write.send(WsMessage::Text(serde_json::to_string(&request).unwrap().into())).await.unwrap();
 
     read_response(read, correlation_id).await.payload
+}
+
+/// Build a Config whose default role has an empty plugin allowlist, so
+/// `plugin::*` nodes are rejected.
+fn config_with_no_plugins_allowed() -> Config {
+    use streamkit_server::{Permissions, PermissionsConfig};
+
+    let mut restricted = Permissions::admin();
+    restricted.allowed_plugins = Vec::new(); // deny all plugins
+
+    let mut roles = HashMap::new();
+    roles.insert("admin".to_string(), restricted);
+
+    Config {
+        permissions: PermissionsConfig { roles, ..PermissionsConfig::default() },
+        ..Config::default()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -246,25 +236,15 @@ async fn test_validate_batch_rejects_http_output_node() {
 async fn test_validate_batch_rejects_disallowed_plugin() {
     let _ = tracing_subscriber::fmt::try_init();
 
-    let Some((addr, _server_handle)) = start_test_server().await else {
+    let Some((addr, _server_handle)) =
+        start_test_server_with_config(config_with_no_plugins_allowed()).await
+    else {
         eprintln!("Skipping: local TCP bind not permitted");
         return;
     };
 
-    // Default config has no auth, so the default role (admin) allows all plugins.
-    // We need to use a role that restricts plugins. The default "user" role allows
-    // "plugin::*", so let's configure a restrictive role via a custom config.
-    // However, with no auth enabled, the server uses admin perms by default.
-    //
-    // Instead, we test via ValidateBatch with the default server — the admin role
-    // allows all plugins, but the oneshot check should still work. For the plugin
-    // allowlist test we verify the code path exists and doesn't crash with a
-    // non-plugin node, and separately test the error message format by using
-    // handle_validate_batch directly in a unit test below.
-
     let (mut write, mut read, session_id) = setup_session(addr).await;
 
-    // A plugin node that IS allowed (admin allows all plugins) — should pass.
     let payload = send_validate_batch(
         &mut write,
         &mut read,
@@ -274,15 +254,18 @@ async fn test_validate_batch_rejects_disallowed_plugin() {
             kind: "plugin::native::whisper".to_string(),
             params: None,
         }],
-        "validate-allowed-plugin",
+        "validate-disallowed-plugin",
     )
     .await;
 
     match payload {
-        ResponsePayload::ValidationResult { errors } => {
-            assert!(errors.is_empty(), "Expected no validation errors for allowed plugin");
+        ResponsePayload::Error { message } => {
+            assert!(
+                message.contains("plugin") && message.contains("not allowed"),
+                "Expected plugin not-allowed error, got: {message}"
+            );
         },
-        other => panic!("Expected ValidationResult for allowed plugin, got: {:?}", other),
+        other => panic!("Expected Error for disallowed plugin, got: {:?}", other),
     }
 }
 
@@ -315,6 +298,85 @@ async fn test_validate_batch_allows_valid_node() {
             assert!(errors.is_empty(), "Expected no validation errors for valid node");
         },
         other => panic!("Expected ValidationResult for valid node, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_validate_batch_rejects_nonexistent_session() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let Some((addr, _server_handle)) = start_test_server().await else {
+        eprintln!("Skipping: local TCP bind not permitted");
+        return;
+    };
+
+    let ws_url = format!("ws://{}/api/v1/control", addr);
+    let (ws_stream, _) = connect_async(&ws_url).await.expect("Failed to connect to WebSocket");
+    let (mut write, mut read) = ws_stream.split();
+
+    let payload = send_validate_batch(
+        &mut write,
+        &mut read,
+        "nonexistent-session-id",
+        vec![BatchOperation::AddNode {
+            node_id: "gain1".to_string(),
+            kind: "audio::gain".to_string(),
+            params: None,
+        }],
+        "validate-no-session",
+    )
+    .await;
+
+    match payload {
+        ResponsePayload::Error { message } => {
+            assert!(
+                message.contains("not found"),
+                "Expected session not-found error, got: {message}"
+            );
+        },
+        other => panic!("Expected Error for nonexistent session, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_validate_batch_rejects_mixed_with_oneshot_node() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let Some((addr, _server_handle)) = start_test_server().await else {
+        eprintln!("Skipping: local TCP bind not permitted");
+        return;
+    };
+
+    let (mut write, mut read, session_id) = setup_session(addr).await;
+
+    let payload = send_validate_batch(
+        &mut write,
+        &mut read,
+        &session_id,
+        vec![
+            BatchOperation::AddNode {
+                node_id: "gain1".to_string(),
+                kind: "audio::gain".to_string(),
+                params: Some(json!({"gain": 1.0})),
+            },
+            BatchOperation::AddNode {
+                node_id: "http_in".to_string(),
+                kind: "streamkit::http_input".to_string(),
+                params: None,
+            },
+        ],
+        "validate-mixed",
+    )
+    .await;
+
+    match payload {
+        ResponsePayload::Error { message } => {
+            assert!(
+                message.contains("oneshot-only"),
+                "Expected oneshot-only error in mixed batch, got: {message}"
+            );
+        },
+        other => panic!("Expected Error for mixed batch with oneshot node, got: {:?}", other),
     }
 }
 
@@ -393,6 +455,43 @@ async fn test_apply_batch_rejects_http_output_node() {
 }
 
 #[tokio::test]
+async fn test_apply_batch_rejects_disallowed_plugin() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let Some((addr, _server_handle)) =
+        start_test_server_with_config(config_with_no_plugins_allowed()).await
+    else {
+        eprintln!("Skipping: local TCP bind not permitted");
+        return;
+    };
+
+    let (mut write, mut read, session_id) = setup_session(addr).await;
+
+    let payload = send_apply_batch(
+        &mut write,
+        &mut read,
+        &session_id,
+        vec![BatchOperation::AddNode {
+            node_id: "p1".to_string(),
+            kind: "plugin::native::whisper".to_string(),
+            params: None,
+        }],
+        "apply-disallowed-plugin",
+    )
+    .await;
+
+    match payload {
+        ResponsePayload::Error { message } => {
+            assert!(
+                message.contains("plugin") && message.contains("not allowed"),
+                "Expected plugin not-allowed error, got: {message}"
+            );
+        },
+        other => panic!("Expected Error for disallowed plugin in apply, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
 async fn test_apply_batch_allows_valid_node() {
     let _ = tracing_subscriber::fmt::try_init();
 
@@ -428,12 +527,8 @@ async fn test_apply_batch_allows_valid_node() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Mixed batch: oneshot nodes among valid ones should still be rejected
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
-async fn test_validate_batch_rejects_mixed_with_oneshot_node() {
+async fn test_apply_batch_rejects_mixed_with_oneshot_node() {
     let _ = tracing_subscriber::fmt::try_init();
 
     let Some((addr, _server_handle)) = start_test_server().await else {
@@ -443,7 +538,7 @@ async fn test_validate_batch_rejects_mixed_with_oneshot_node() {
 
     let (mut write, mut read, session_id) = setup_session(addr).await;
 
-    let payload = send_validate_batch(
+    let payload = send_apply_batch(
         &mut write,
         &mut read,
         &session_id,
@@ -459,7 +554,7 @@ async fn test_validate_batch_rejects_mixed_with_oneshot_node() {
                 params: None,
             },
         ],
-        "validate-mixed",
+        "apply-mixed",
     )
     .await;
 
@@ -470,6 +565,8 @@ async fn test_validate_batch_rejects_mixed_with_oneshot_node() {
                 "Expected oneshot-only error in mixed batch, got: {message}"
             );
         },
-        other => panic!("Expected Error for mixed batch with oneshot node, got: {:?}", other),
+        other => {
+            panic!("Expected Error for mixed batch with oneshot node in apply, got: {:?}", other)
+        },
     }
 }
