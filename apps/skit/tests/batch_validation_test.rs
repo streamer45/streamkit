@@ -217,7 +217,8 @@ async fn test_validate_batch_rejects_http_input_node() {
             assert_eq!(errors.len(), 1, "Expected exactly one validation error");
             assert!(
                 errors[0].message.contains("oneshot-only"),
-                "Expected oneshot-only error, got: {}", errors[0].message
+                "Expected oneshot-only error, got: {}",
+                errors[0].message
             );
             assert_eq!(errors[0].node_id.as_deref(), Some("http_in"));
         },
@@ -254,7 +255,8 @@ async fn test_validate_batch_rejects_http_output_node() {
             assert_eq!(errors.len(), 1, "Expected exactly one validation error");
             assert!(
                 errors[0].message.contains("oneshot-only"),
-                "Expected oneshot-only error, got: {}", errors[0].message
+                "Expected oneshot-only error, got: {}",
+                errors[0].message
             );
             assert_eq!(errors[0].node_id.as_deref(), Some("http_out"));
         },
@@ -293,7 +295,8 @@ async fn test_validate_batch_rejects_disallowed_plugin() {
             assert_eq!(errors.len(), 1, "Expected exactly one validation error");
             assert!(
                 errors[0].message.contains("plugin") && errors[0].message.contains("not allowed"),
-                "Expected plugin not-allowed error, got: {}", errors[0].message
+                "Expected plugin not-allowed error, got: {}",
+                errors[0].message
             );
             assert_eq!(errors[0].node_id.as_deref(), Some("p1"));
         },
@@ -403,14 +406,21 @@ async fn test_validate_batch_rejects_mixed_with_oneshot_node() {
 
     match payload {
         ResponsePayload::ValidationResult { errors } => {
-            assert_eq!(errors.len(), 1, "Expected exactly one validation error for the oneshot node");
+            assert_eq!(
+                errors.len(),
+                1,
+                "Expected exactly one validation error for the oneshot node"
+            );
             assert!(
                 errors[0].message.contains("oneshot-only"),
-                "Expected oneshot-only error in mixed batch, got: {}", errors[0].message
+                "Expected oneshot-only error in mixed batch, got: {}",
+                errors[0].message
             );
             assert_eq!(errors[0].node_id.as_deref(), Some("http_in"));
         },
-        other => panic!("Expected ValidationResult for mixed batch with oneshot node, got: {:?}", other),
+        other => {
+            panic!("Expected ValidationResult for mixed batch with oneshot node, got: {:?}", other)
+        },
     }
 }
 
@@ -448,10 +458,7 @@ async fn test_validate_batch_rejects_duplicate_node_id() {
 
     match payload {
         ResponsePayload::ValidationResult { errors } => {
-            assert!(
-                !errors.is_empty(),
-                "Expected at least one error for duplicate node_id"
-            );
+            assert!(!errors.is_empty(), "Expected at least one error for duplicate node_id");
             assert!(
                 errors.iter().any(|e| e.message.contains("already exists")),
                 "Expected duplicate node_id error, got: {:?}",
@@ -558,10 +565,9 @@ async fn test_validate_batch_rejects_cross_role_ownership() {
                 "Expected ownership/permission error, got: {message}"
             );
         },
-        other => panic!(
-            "Expected Error for cross-role ownership in ValidateBatch, got: {:?}",
-            other
-        ),
+        other => {
+            panic!("Expected Error for cross-role ownership in ValidateBatch, got: {:?}", other)
+        },
     }
 }
 
@@ -789,10 +795,7 @@ async fn test_apply_batch_rejects_nonexistent_session() {
                 "Expected session not-found error, got: {message}"
             );
         },
-        other => panic!(
-            "Expected Error for nonexistent session in ApplyBatch, got: {:?}",
-            other
-        ),
+        other => panic!("Expected Error for nonexistent session in ApplyBatch, got: {:?}", other),
     }
 }
 
@@ -847,9 +850,6 @@ async fn test_apply_batch_rejects_cross_role_ownership() {
                 "Expected ownership/permission error, got: {message}"
             );
         },
-        other => panic!(
-            "Expected Error for cross-role ownership in ApplyBatch, got: {:?}",
-            other
-        ),
+        other => panic!("Expected Error for cross-role ownership in ApplyBatch, got: {:?}", other),
     }
 }

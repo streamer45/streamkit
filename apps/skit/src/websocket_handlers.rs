@@ -13,8 +13,8 @@ use crate::session::Session;
 use crate::state::{AppState, BroadcastEvent};
 use opentelemetry::global;
 use streamkit_api::{
-    Event as ApiEvent, EventPayload, MessageType, RequestPayload, ResponsePayload,
-    ValidationError, ValidationErrorType,
+    Event as ApiEvent, EventPayload, MessageType, RequestPayload, ResponsePayload, ValidationError,
+    ValidationErrorType,
 };
 use streamkit_core::control::{EngineControlMessage, NodeControlMessage};
 use streamkit_core::registry::NodeDefinition;
@@ -1164,14 +1164,8 @@ async fn handle_validate_batch(
 
     // Pre-validate duplicate node_ids against the pipeline model, mirroring
     // the same simulation that handle_apply_batch performs.
-    let mut live_ids: std::collections::HashSet<String> = session
-        .pipeline
-        .lock()
-        .await
-        .nodes
-        .keys()
-        .cloned()
-        .collect();
+    let mut live_ids: std::collections::HashSet<String> =
+        session.pipeline.lock().await.nodes.keys().cloned().collect();
     for op in operations {
         match op {
             streamkit_api::BatchOperation::AddNode { node_id, .. } => {
