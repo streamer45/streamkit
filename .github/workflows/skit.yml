@@ -122,7 +122,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libvpx-dev nasm cmake pkg-config libopus-dev
+          sudo apt-get install -y libvpx-dev nasm cmake pkg-config libopus-dev libva-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -151,6 +151,7 @@ jobs:
         run: |
           cargo test --locked -p streamkit-nodes --features gpu
           cargo test --locked -p streamkit-nodes --features nvcodec
+          cargo test --locked -p streamkit-nodes --features vaapi
           cargo test --locked -p streamkit-engine --features gpu
 
   build:
