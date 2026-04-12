@@ -145,10 +145,13 @@ impl NativeProcessorNode for AacEncoderNode {
                     }),
                 ],
             )
-            .output("out", PacketType::EncodedAudio(EncodedAudioFormat {
-                codec: AudioCodec::Aac,
-                codec_private: None,
-            }))
+            .output(
+                "out",
+                PacketType::EncodedAudio(EncodedAudioFormat {
+                    codec: AudioCodec::Aac,
+                    codec_private: None,
+                }),
+            )
             .param_schema(serde_json::json!({
                 "type": "object",
                 "properties": {
