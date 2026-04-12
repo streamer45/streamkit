@@ -259,9 +259,13 @@ pub(super) fn write_nv12_to_mapping(
                     for row in 0..h {
                         let s = row * w;
                         let d = row * y_stride;
-                        if s + w <= src.len() && d + w <= y_plane.len() {
-                            y_plane[d..d + w].copy_from_slice(&src[s..s + w]);
+                        if s + w > src.len() || d + w > y_plane.len() {
+                            return Err(format!(
+                                "NV12 Y row copy out of bounds: src[{}..{}] (len {}), dest[{}..{}] (len {})",
+                                s, s + w, src.len(), d, d + w, y_plane.len()
+                            ));
                         }
+                        y_plane[d..d + w].copy_from_slice(&src[s..s + w]);
                     }
                 }
             }
@@ -278,9 +282,13 @@ pub(super) fn write_nv12_to_mapping(
                     for row in 0..uv_h {
                         let s = row * chroma_w;
                         let d = row * uv_stride;
-                        if s + chroma_w <= src_uv.len() && d + chroma_w <= uv_plane.len() {
-                            uv_plane[d..d + chroma_w].copy_from_slice(&src_uv[s..s + chroma_w]);
+                        if s + chroma_w > src_uv.len() || d + chroma_w > uv_plane.len() {
+                            return Err(format!(
+                                "NV12 UV row copy out of bounds: src[{}..{}] (len {}), dest[{}..{}] (len {})",
+                                s, s + chroma_w, src_uv.len(), d, d + chroma_w, uv_plane.len()
+                            ));
                         }
+                        uv_plane[d..d + chroma_w].copy_from_slice(&src_uv[s..s + chroma_w]);
                     }
                 }
             }
@@ -303,9 +311,13 @@ pub(super) fn write_nv12_to_mapping(
                     for row in 0..h {
                         let s = row * w;
                         let d = row * y_stride;
-                        if s + w <= src.len() && d + w <= y_plane.len() {
-                            y_plane[d..d + w].copy_from_slice(&src[s..s + w]);
+                        if s + w > src.len() || d + w > y_plane.len() {
+                            return Err(format!(
+                                "I420 Y row copy out of bounds: src[{}..{}] (len {}), dest[{}..{}] (len {})",
+                                s, s + w, src.len(), d, d + w, y_plane.len()
+                            ));
                         }
+                        y_plane[d..d + w].copy_from_slice(&src[s..s + w]);
                     }
                 }
             }
@@ -319,10 +331,17 @@ pub(super) fn write_nv12_to_mapping(
                         let u_idx = y_size + row * uv_w + col;
                         let v_idx = y_size + u_plane_size + row * uv_w + col;
                         let dst_idx = row * uv_stride + col * 2;
-                        if u_idx < src.len() && v_idx < src.len() && dst_idx + 1 < uv_plane.len() {
-                            uv_plane[dst_idx] = src[u_idx];
-                            uv_plane[dst_idx + 1] = src[v_idx];
+                        if u_idx >= src.len() || v_idx >= src.len() || dst_idx + 1 >= uv_plane.len()
+                        {
+                            return Err(format!(
+                                "I420 UV interleave out of bounds: u_idx={u_idx}, v_idx={v_idx} \
+                                 (src len {}), dst_idx={dst_idx} (dest len {})",
+                                src.len(),
+                                uv_plane.len()
+                            ));
                         }
+                        uv_plane[dst_idx] = src[u_idx];
+                        uv_plane[dst_idx + 1] = src[v_idx];
                     }
                 }
             }
@@ -1911,6 +1930,128 @@ mod tests {
             !encoded_packets.is_empty(),
             "VA-API AV1 encoder should accept I420 input and produce packets"
         );
+    }
+
+    /// Verify that encoding at a non-superblock-aligned resolution (e.g.
+    /// 1280×720, which aligns to coded 1280×768) and decoding back produces
+    /// frames with the original display resolution, NOT the coded resolution.
+    ///
+    /// This catches the issue described in #292: if `cros-codecs` does not set
+    /// `render_and_frame_size_different=1` with the original display resolution
+    /// in the AV1 sequence header, decoded output will include visible black
+    /// padding bars from the superblock alignment.
+    #[tokio::test]
+    async fn test_vaapi_av1_resolution_padding_not_leaked() {
+        if !vaapi_available() {
+            eprintln!("SKIP: no VA-API device available");
+            return;
+        }
+
+        use crate::test_utils::{
+            assert_state_initializing, assert_state_running, assert_state_stopped,
+            create_test_context, create_test_video_frame,
+        };
+        use std::borrow::Cow;
+        use std::collections::HashMap;
+
+        let display_w: u32 = 1280;
+        let display_h: u32 = 720;
+        let coded_h = align_up_u32(display_h, AV1_SB_SIZE); // 768
+
+        assert_ne!(
+            display_h, coded_h,
+            "test requires a height that needs superblock alignment padding"
+        );
+
+        // --- Encode ---
+        let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
+        let mut enc_inputs = HashMap::new();
+        enc_inputs.insert("in".to_string(), enc_input_rx);
+
+        let (enc_context, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 10);
+        let encoder = VaapiAv1EncoderNode::new(VaapiAv1EncoderConfig {
+            render_device: None,
+            hw_accel: HwAccelMode::Auto,
+            quality: 200,
+            framerate: 30,
+            low_power: false,
+        })
+        .unwrap();
+        let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
+
+        assert_state_initializing(&mut enc_state_rx).await;
+        assert_state_running(&mut enc_state_rx).await;
+
+        // Send a single solid-color NV12 frame at 1280×720.
+        let mut frame = create_test_video_frame(display_w, display_h, PixelFormat::Nv12, 0x40);
+        frame.metadata = Some(PacketMetadata {
+            timestamp_us: Some(0),
+            duration_us: Some(33_333),
+            sequence: Some(0),
+            keyframe: Some(true),
+        });
+        enc_input_tx.send(Packet::Video(frame)).await.unwrap();
+        drop(enc_input_tx);
+
+        assert_state_stopped(&mut enc_state_rx).await;
+        enc_handle.await.unwrap().unwrap();
+
+        let encoded_packets = enc_sender.get_packets_for_pin("out").await;
+        assert!(!encoded_packets.is_empty(), "VA-API AV1 encoder produced no packets");
+
+        // --- Decode ---
+        let (dec_input_tx, dec_input_rx) = mpsc::channel(10);
+        let mut dec_inputs = HashMap::new();
+        dec_inputs.insert("in".to_string(), dec_input_rx);
+
+        let (dec_context, dec_sender, mut dec_state_rx) = create_test_context(dec_inputs, 10);
+        let decoder = VaapiAv1DecoderNode::new(VaapiAv1DecoderConfig::default()).unwrap();
+        let dec_handle = tokio::spawn(async move { Box::new(decoder).run(dec_context).await });
+
+        assert_state_initializing(&mut dec_state_rx).await;
+        assert_state_running(&mut dec_state_rx).await;
+
+        for packet in encoded_packets {
+            if let Packet::Binary { data, metadata, .. } = packet {
+                dec_input_tx
+                    .send(Packet::Binary {
+                        data,
+                        content_type: Some(Cow::Borrowed(AV1_CONTENT_TYPE)),
+                        metadata,
+                    })
+                    .await
+                    .unwrap();
+            }
+        }
+        drop(dec_input_tx);
+
+        assert_state_stopped(&mut dec_state_rx).await;
+        dec_handle.await.unwrap().unwrap();
+
+        let decoded_packets = dec_sender.get_packets_for_pin("out").await;
+        assert!(!decoded_packets.is_empty(), "VA-API AV1 decoder produced no frames");
+
+        for (i, packet) in decoded_packets.iter().enumerate() {
+            match packet {
+                Packet::Video(frame) => {
+                    assert_eq!(
+                        frame.width, display_w,
+                        "decoded frame {i} width should be display width {display_w}, got {}",
+                        frame.width
+                    );
+                    assert_eq!(
+                        frame.height, display_h,
+                        "decoded frame {i} height should be display height {display_h}, \
+                         got {} (coded_height={coded_h}). This indicates the AV1 sequence \
+                         header is missing render_and_frame_size_different=1 with the \
+                         original display resolution — see issue #292.",
+                        frame.height
+                    );
+                    assert_eq!(frame.pixel_format, PixelFormat::Nv12);
+                },
+                _ => panic!("Expected Video packet from VA-API AV1 decoder"),
+            }
+        }
     }
 
     /// Verify ForceCpu mode returns an error (VA-API is HW-only).
