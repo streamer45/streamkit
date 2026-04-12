@@ -249,21 +249,13 @@ async fn stream_field_to_file(
 ) -> Result<usize, AssetsError> {
     use tokio::fs::OpenOptions;
 
-    let open_result = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(file_path)
-        .await;
+    let open_result = OpenOptions::new().create_new(true).write(true).open(file_path).await;
 
     let mut file = match open_result {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             return Err(AssetsError::FileExists(
-                file_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown")
-                    .to_string(),
+                file_path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string(),
             ));
         },
         Err(e) => return Err(AssetsError::IoError(format!("Failed to create file: {e}"))),
@@ -279,9 +271,9 @@ async fn stream_field_to_file(
                     if total_bytes > max_size {
                         return Err(AssetsError::FileTooLarge(max_size));
                     }
-                    file.write_all(&chunk).await.map_err(|e| {
-                        AssetsError::IoError(format!("Failed to write file: {e}"))
-                    })?;
+                    file.write_all(&chunk)
+                        .await
+                        .map_err(|e| AssetsError::IoError(format!("Failed to write file: {e}")))?;
                 },
                 Ok(None) => break,
                 Err(e) => {
@@ -295,9 +287,9 @@ async fn stream_field_to_file(
         // Flush pending writes — tokio::fs::File::write_all returns as soon as
         // data is copied to an internal buffer and a blocking write is spawned,
         // so the last write may still be in-flight when the File is dropped.
-        file.flush().await.map_err(|e| {
-            AssetsError::IoError(format!("Failed to flush file: {e}"))
-        })?;
+        file.flush()
+            .await
+            .map_err(|e| AssetsError::IoError(format!("Failed to flush file: {e}")))?;
 
         Ok(total_bytes)
     }
