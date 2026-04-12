@@ -77,8 +77,8 @@ pub async fn handle_request_payload(
         RequestPayload::GetPipeline { session_id } => {
             handle_get_pipeline(session_id, app_state, perms, role_name).await
         },
-        RequestPayload::ValidateBatch { session_id: _, operations } => {
-            Some(handle_validate_batch(&operations, app_state, perms))
+        RequestPayload::ValidateBatch { session_id, operations } => {
+            Some(handle_validate_batch(session_id, &operations, app_state, perms, role_name).await)
         },
         RequestPayload::ApplyBatch { session_id, operations } => {
             handle_apply_batch(session_id, operations, app_state, perms, role_name).await
@@ -1120,15 +1120,34 @@ async fn handle_get_pipeline(
     Some(ResponsePayload::Pipeline { pipeline: Box::new(api_pipeline) })
 }
 
-fn handle_validate_batch(
+async fn handle_validate_batch(
+    session_id: String,
     operations: &[streamkit_api::BatchOperation],
     app_state: &AppState,
     perms: &Permissions,
+    role_name: &str,
 ) -> ResponsePayload {
     // Validate that user has permission for modify_sessions
     if !perms.modify_sessions {
         return ResponsePayload::Error {
             message: "Permission denied: cannot modify sessions".to_string(),
+        };
+    }
+
+    // Verify session exists
+    let session = {
+        let session_manager = app_state.session_manager.lock().await;
+        session_manager.get_session_by_name_or_id(&session_id)
+    };
+
+    let Some(session) = session else {
+        return ResponsePayload::Error { message: format!("Session '{session_id}' not found") };
+    };
+
+    // Check ownership
+    if !can_access_session(&session, role_name, perms) {
+        return ResponsePayload::Error {
+            message: "Permission denied: you do not own this session".to_string(),
         };
     }
 
