@@ -62,9 +62,9 @@ use cros_codecs::encoder::{
     FrameMetadata as CrosFrameMetadata, PredictionStructure, RateControl, Tunings, VideoEncoder,
 };
 use cros_codecs::libva;
-use cros_codecs::video_frame::gbm_video_frame::{GbmUsage, GbmVideoFrame};
-use cros_codecs::video_frame::VideoFrame as CrosVideoFrame;
-use cros_codecs::{FrameLayout, PlaneLayout, Resolution as CrosResolution};
+use cros_codecs::video_frame::gbm_video_frame::{GbmDevice, GbmUsage, GbmVideoFrame};
+use cros_codecs::video_frame::{ReadMapping, VideoFrame as CrosVideoFrame, WriteMapping};
+use cros_codecs::{Fourcc as CrosFourcc, FrameLayout, PlaneLayout, Resolution as CrosResolution};
 
 use super::encoder_trait::{self, EncodedPacket, EncoderNodeRunner, StandardVideoEncoder};
 use super::HwAccelMode;
