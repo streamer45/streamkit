@@ -575,14 +575,13 @@ fn vaapi_av1_decode_loop(
             let cw = coded_width;
             let ch = coded_height;
             let mut alloc_cb = move || {
+                let res = CrosResolution { width: cw, height: ch };
                 gbm_ref
                     .clone()
-                    .new_frame(
-                        nv12_fourcc(),
-                        CrosResolution { width: cw, height: ch },
-                        CrosResolution { width: cw, height: ch },
-                        GbmUsage::Decode,
-                    )
+                    .new_frame(nv12_fourcc(), res.clone(), res.clone(), GbmUsage::Decode)
+                    .or_else(|_| {
+                        gbm_ref.clone().new_frame(nv12_fourcc(), res.clone(), res, GbmUsage::Linear)
+                    })
                     .ok()
             };
 
@@ -912,31 +911,46 @@ impl StandardVideoEncoder for VaapiAv1Encoder {
         let coded_width = align_up_u32(width, AV1_SB_SIZE);
         let coded_height = align_up_u32(height, AV1_SB_SIZE);
 
-        // Probe GBM encoder buffer support.  Some drivers (Mesa iris on
-        // Intel Tiger Lake with Mesa 23.x) do not support the
-        // GBM_BO_USE_HW_VIDEO_ENCODER flag for NV12.  In that case, fall
-        // back to GBM_BO_USE_HW_VIDEO_DECODER which is universally
-        // supported and still produces a valid NV12 buffer the encoder
-        // can read.
+        // Probe GBM encoder buffer support.
+        //
+        // Three-level fallback:
+        //   1. GBM_BO_USE_HW_VIDEO_ENCODER  — optimal tiling for the encoder HW
+        //   2. GBM_BO_USE_HW_VIDEO_DECODER  — decoder-tiled, still HW-friendly
+        //   3. GBM_BO_USE_LINEAR            — universally supported, no tiling
+        //
+        // Mesa iris on Intel Tiger Lake (Mesa ≤ 23.x) rejects both HW_VIDEO
+        // flags for NV12 contiguous allocation; only LINEAR succeeds.
         let gbm_usage = {
             let probe_res = CrosResolution { width: coded_width, height: coded_height };
-            match Arc::clone(&gbm).new_frame(
-                nv12_fourcc(),
-                probe_res.clone(),
-                probe_res,
-                GbmUsage::Encode,
-            ) {
-                Ok(_) => {
-                    tracing::debug!("GBM encoder buffer allocation OK");
-                    GbmUsage::Encode
-                },
-                Err(_) => {
-                    tracing::warn!(
-                        "GBM_BO_USE_HW_VIDEO_ENCODER unsupported on this driver; \
-                         falling back to GBM_BO_USE_HW_VIDEO_DECODER for encoder input buffers"
-                    );
-                    GbmUsage::Decode
-                },
+            let try_alloc = |usage: GbmUsage| {
+                Arc::clone(&gbm).new_frame(
+                    nv12_fourcc(),
+                    probe_res.clone(),
+                    probe_res.clone(),
+                    usage,
+                )
+            };
+
+            if try_alloc(GbmUsage::Encode).is_ok() {
+                tracing::debug!("GBM encoder buffer allocation OK (HW_VIDEO_ENCODER)");
+                GbmUsage::Encode
+            } else if try_alloc(GbmUsage::Decode).is_ok() {
+                tracing::warn!(
+                    "GBM_BO_USE_HW_VIDEO_ENCODER unsupported on this driver; \
+                     falling back to GBM_BO_USE_HW_VIDEO_DECODER for encoder input buffers"
+                );
+                GbmUsage::Decode
+            } else if try_alloc(GbmUsage::Linear).is_ok() {
+                tracing::warn!(
+                    "GBM HW_VIDEO_ENCODER and HW_VIDEO_DECODER both unsupported; \
+                     falling back to GBM_BO_USE_LINEAR for encoder input buffers"
+                );
+                GbmUsage::Linear
+            } else {
+                return Err(format!(
+                    "GBM cannot allocate NV12 {coded_width}×{coded_height} buffers \
+                     with any supported usage flag (tried Encode, Decode, Linear)"
+                ));
             }
         };
 
