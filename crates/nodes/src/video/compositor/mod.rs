@@ -800,7 +800,7 @@ impl ProcessorNode for CompositorNode {
                         },
                         NodeControlMessage::UpdateParams(ref params) => {
                             // Extract transient sync metadata before
-                            // deserialization strips unknown fields.
+                            // apply_update_params strips these fields.
                             // Always overwrite (not conditionally set) so that
                             // non-stamped UpdateParams clears stale values.
                             self.config_sender = params.get("_sender")
@@ -1320,9 +1320,15 @@ impl CompositorNode {
         limits: &GlobalCompositorConfig,
         image_overlays: &mut Arc<[Arc<DecodedOverlay>]>,
         text_overlays: &mut Arc<[Arc<DecodedOverlay>]>,
-        params: serde_json::Value,
+        mut params: serde_json::Value,
         stats_tracker: &mut NodeStatsTracker,
     ) {
+        // Strip transient sync metadata (`_sender`, `_rev`) before
+        // deserializing.  The metadata has already been read by the
+        // caller for echo suppression — see the `UpdateParams` arm
+        // in the run loop.
+        streamkit_core::control::strip_sync_metadata(&mut params);
+
         match serde_json::from_value::<CompositorConfig>(params) {
             Ok(new_config) => {
                 // Resource limits are enforced by the server-level

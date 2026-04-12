@@ -44,6 +44,67 @@ pub enum ConnectionMode {
     BestEffort,
 }
 
+/// Strip transient sync metadata (`_sender`, `_rev`) from a params JSON value.
+///
+/// The UI injects these fields for causal-consistency echo suppression.
+/// Node config structs that use `#[serde(deny_unknown_fields)]` will reject
+/// them during deserialization, so they must be stripped before calling
+/// `serde_json::from_value`.
+///
+/// Nodes that need the metadata for echo suppression (e.g. the compositor)
+/// should read `_sender`/`_rev` from the raw params *before* calling this
+/// function.
+pub fn strip_sync_metadata(params: &mut serde_json::Value) {
+    if let Some(obj) = params.as_object_mut() {
+        obj.remove("_sender");
+        obj.remove("_rev");
+    }
+}
+
+#[cfg(test)]
+mod strip_sync_metadata_tests {
+    use super::*;
+
+    /// Regression test: `_sender` and `_rev` must be removed so that
+    /// node config structs with `deny_unknown_fields` can deserialize
+    /// successfully.
+    #[test]
+    fn strips_sender_and_rev() {
+        let mut params = serde_json::json!({
+            "_sender": "client-abc",
+            "_rev": 7,
+            "width": 1920,
+            "height": 1080
+        });
+
+        strip_sync_metadata(&mut params);
+
+        let obj = params.as_object().unwrap();
+        assert!(!obj.contains_key("_sender"), "_sender should be stripped");
+        assert!(!obj.contains_key("_rev"), "_rev should be stripped");
+        assert_eq!(obj.get("width").unwrap(), 1920);
+        assert_eq!(obj.get("height").unwrap(), 1080);
+    }
+
+    #[test]
+    fn no_op_without_metadata() {
+        let mut params = serde_json::json!({ "width": 1280 });
+
+        strip_sync_metadata(&mut params);
+
+        let obj = params.as_object().unwrap();
+        assert_eq!(obj.len(), 1);
+        assert_eq!(obj.get("width").unwrap(), 1280);
+    }
+
+    #[test]
+    fn no_op_on_non_object() {
+        let mut params = serde_json::json!(42);
+        strip_sync_metadata(&mut params);
+        assert_eq!(params, serde_json::json!(42));
+    }
+}
+
 /// A message sent to the central Engine actor to modify the pipeline graph itself.
 #[derive(Debug)]
 pub enum EngineControlMessage {
