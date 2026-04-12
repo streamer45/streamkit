@@ -1411,8 +1411,6 @@ dependencies = [
 [[package]]
 name = "cros-codecs"
 version = "0.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80f7441b4f31c17b6b6b7f57f6c202944aad11d0ab23739a9ff88d8d34dec621"
 dependencies = [
  "anyhow",
  "byteorder",

@@ -110,3 +110,12 @@ cast_sign_loss = "warn"
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
 doc_markdown = "allow"
+
+# ---------------------------------------------------------------------------
+# Patched cros-codecs: adds GbmUsage::Linear for drivers where neither
+# GBM_BO_USE_HW_VIDEO_DECODER nor GBM_BO_USE_HW_VIDEO_ENCODER is supported
+# (e.g. Mesa iris on Intel Tiger Lake with Mesa 23.x).
+# Remove this patch once upstream cros-codecs ships the Linear variant.
+# ---------------------------------------------------------------------------
+[patch.crates-io]
+cros-codecs = { path = "vendor/cros-codecs" }
