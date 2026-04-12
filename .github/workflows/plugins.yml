@@ -91,6 +91,10 @@ jobs:
           sudo make install
           sudo ldconfig
 
+      - name: Refresh linker cache (CTranslate2 from cache)
+        if: matrix.group == 'nllb' && steps.cache-ct2.outputs.cache-hit == 'true'
+        run: sudo ldconfig
+
       # --- Rust toolchain & caches ---
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master

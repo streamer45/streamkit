@@ -74,7 +74,8 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       needs.changes.outputs.ci == 'true' ||
-      needs.changes.outputs.plugins == 'true'
+      needs.changes.outputs.plugins == 'true' ||
+      needs.changes.outputs.rust == 'true'
     uses: ./.github/workflows/plugins.yml
 
   e2e:
