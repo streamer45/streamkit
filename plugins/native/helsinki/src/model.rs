@@ -365,8 +365,7 @@ pub fn get_or_load_translator(
 
 fn validate_tokenizer(tokenizer: &Tokenizer, cfg: &Config) -> Result<(), String> {
     let text = "tokenizer self-check";
-    let enc =
-        tokenizer.encode(text, true).map_err(|e| format!("Tokenizer encode failed: {e}"))?;
+    let enc = tokenizer.encode(text, true).map_err(|e| format!("Tokenizer encode failed: {e}"))?;
 
     let ids = enc.get_ids();
     if ids.is_empty() {
@@ -375,21 +374,21 @@ fn validate_tokenizer(tokenizer: &Tokenizer, cfg: &Config) -> Result<(), String>
 
     // Ensure the tokenizer understands the model's special-token ids by round-tripping them.
     let specials = [cfg.eos_token_id, cfg.pad_token_id, cfg.decoder_start_token_id];
-    let decoded = tokenizer
-        .decode(&specials, false)
-        .map_err(|e| format!("Tokenizer decode failed: {e}"))?;
+    let decoded =
+        tokenizer.decode(&specials, false).map_err(|e| format!("Tokenizer decode failed: {e}"))?;
 
     if decoded.trim().is_empty() {
         return Err("Tokenizer appears incompatible with model ids (decoded specials empty). \
-             Please regenerate tokenizer.json via: just download-helsinki-models".to_string());
+             Please regenerate tokenizer.json via: just download-helsinki-models"
+            .to_string());
     }
 
     Ok(())
 }
 
 fn validate_tokenizer_json(path: &Path) -> Result<(), String> {
-    let raw = std::fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read tokenizer.json: {e}"))?;
+    let raw =
+        std::fs::read_to_string(path).map_err(|e| format!("Failed to read tokenizer.json: {e}"))?;
     let json: JsonValue =
         serde_json::from_str(&raw).map_err(|e| format!("Failed to parse tokenizer.json: {e}"))?;
 

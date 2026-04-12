@@ -79,9 +79,8 @@ pub fn translate(
 
         // Get last token logits (shape: [batch, seq_len, vocab])
         let seq_len = logits.dim(1).map_err(|e| format!("Failed to get dim: {e}"))?;
-        let last_logits = logits
-            .i((.., seq_len - 1, ..))
-            .map_err(|e| format!("Failed to slice logits: {e}"))?;
+        let last_logits =
+            logits.i((.., seq_len - 1, ..)).map_err(|e| format!("Failed to slice logits: {e}"))?;
 
         // Greedy sampling: take argmax
         let next_token = last_logits

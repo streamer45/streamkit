@@ -46,7 +46,8 @@ fn preview_for_log(text: &str, max_chars: usize) -> String {
 }
 
 fn canonicalize_model_dir(model_dir: &str) -> String {
-    std::fs::canonicalize(model_dir).map_or_else(|_| model_dir.to_string(), |path| path.to_string_lossy().to_string())
+    std::fs::canonicalize(model_dir)
+        .map_or_else(|_| model_dir.to_string(), |path| path.to_string_lossy().to_string())
 }
 
 fn warmup_translate(
