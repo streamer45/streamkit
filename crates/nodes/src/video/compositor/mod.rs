@@ -1320,18 +1320,9 @@ impl CompositorNode {
         limits: &GlobalCompositorConfig,
         image_overlays: &mut Arc<[Arc<DecodedOverlay>]>,
         text_overlays: &mut Arc<[Arc<DecodedOverlay>]>,
-        mut params: serde_json::Value,
+        params: serde_json::Value,
         stats_tracker: &mut NodeStatsTracker,
     ) {
-        // Strip transient sync metadata injected by the UI (`_sender`,
-        // `_rev`) before deserializing.  `CompositorConfig` uses
-        // `deny_unknown_fields` so these would otherwise cause a
-        // deserialization error.
-        if let Some(obj) = params.as_object_mut() {
-            obj.remove("_sender");
-            obj.remove("_rev");
-        }
-
         match serde_json::from_value::<CompositorConfig>(params) {
             Ok(new_config) => {
                 // Resource limits are enforced by the server-level
