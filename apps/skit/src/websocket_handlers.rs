@@ -14,6 +14,7 @@ use crate::state::{AppState, BroadcastEvent};
 use opentelemetry::global;
 use streamkit_api::{
     Event as ApiEvent, EventPayload, MessageType, RequestPayload, ResponsePayload,
+    ValidationError, ValidationErrorType,
 };
 use streamkit_core::control::{EngineControlMessage, NodeControlMessage};
 use streamkit_core::registry::NodeDefinition;
@@ -1158,19 +1159,62 @@ async fn handle_validate_batch(
         };
     }
 
+    // Collect all validation errors so the caller sees every problem at once.
+    let mut errors: Vec<ValidationError> = Vec::new();
+
+    // Pre-validate duplicate node_ids against the pipeline model, mirroring
+    // the same simulation that handle_apply_batch performs.
+    let mut live_ids: std::collections::HashSet<String> = session
+        .pipeline
+        .lock()
+        .await
+        .nodes
+        .keys()
+        .cloned()
+        .collect();
+    for op in operations {
+        match op {
+            streamkit_api::BatchOperation::AddNode { node_id, .. } => {
+                if !live_ids.insert(node_id.clone()) {
+                    errors.push(ValidationError {
+                        error_type: ValidationErrorType::Error,
+                        message: format!(
+                            "Batch rejected: node '{node_id}' already exists in the pipeline"
+                        ),
+                        node_id: Some(node_id.clone()),
+                        connection_id: None,
+                    });
+                }
+            },
+            streamkit_api::BatchOperation::RemoveNode { node_id } => {
+                live_ids.remove(node_id.as_str());
+            },
+            _ => {},
+        }
+    }
+
     // Validate all AddNode operations against permission and security rules.
     for op in operations {
-        if let streamkit_api::BatchOperation::AddNode { kind, params, .. } = op {
+        if let streamkit_api::BatchOperation::AddNode { node_id, kind, params, .. } = op {
             if let Some(message) =
                 validate_add_node_op(kind, params.as_ref(), perms, &app_state.config.security)
             {
-                return ResponsePayload::Error { message };
+                errors.push(ValidationError {
+                    error_type: ValidationErrorType::Error,
+                    message,
+                    node_id: Some(node_id.clone()),
+                    connection_id: None,
+                });
             }
         }
     }
 
-    info!(operation_count = operations.len(), "Validated batch operations");
-    ResponsePayload::ValidationResult { errors: Vec::new() }
+    info!(
+        operation_count = operations.len(),
+        error_count = errors.len(),
+        "Validated batch operations"
+    );
+    ResponsePayload::ValidationResult { errors }
 }
 
 #[allow(clippy::significant_drop_tightening)]

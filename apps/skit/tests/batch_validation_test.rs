@@ -19,7 +19,10 @@ use streamkit_api::{
 use streamkit_server::Config;
 use tokio::net::TcpListener;
 use tokio::time::{timeout, Duration};
-use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{client::IntoClientRequest, Message as WsMessage},
+};
 
 // Type aliases to reduce verbosity of the fully-expanded WebSocket stream types.
 type WsStream =
@@ -158,6 +161,29 @@ fn config_with_no_plugins_allowed() -> Config {
     }
 }
 
+/// Build a Config with a trusted role header so tests can select roles per connection.
+fn config_with_role_header() -> Config {
+    use streamkit_server::PermissionsConfig;
+
+    Config {
+        permissions: PermissionsConfig {
+            role_header: Some("x-role".to_string()),
+            ..PermissionsConfig::default()
+        },
+        ..Config::default()
+    }
+}
+
+/// Connect to the WS control endpoint with a custom role header.
+async fn connect_with_role(addr: SocketAddr, role: &str) -> (WsWriter, WsReader) {
+    let mut request = format!("ws://{addr}/api/v1/control")
+        .into_client_request()
+        .expect("Failed to build WS request");
+    request.headers_mut().insert("x-role", role.parse().unwrap());
+    let (ws_stream, _) = connect_async(request).await.expect("Failed to connect to WebSocket");
+    ws_stream.split()
+}
+
 // ---------------------------------------------------------------------------
 // ValidateBatch tests
 // ---------------------------------------------------------------------------
@@ -187,13 +213,15 @@ async fn test_validate_batch_rejects_http_input_node() {
     .await;
 
     match payload {
-        ResponsePayload::Error { message } => {
+        ResponsePayload::ValidationResult { errors } => {
+            assert_eq!(errors.len(), 1, "Expected exactly one validation error");
             assert!(
-                message.contains("oneshot-only"),
-                "Expected oneshot-only error, got: {message}"
+                errors[0].message.contains("oneshot-only"),
+                "Expected oneshot-only error, got: {}", errors[0].message
             );
+            assert_eq!(errors[0].node_id.as_deref(), Some("http_in"));
         },
-        other => panic!("Expected Error for http_input, got: {:?}", other),
+        other => panic!("Expected ValidationResult for http_input, got: {:?}", other),
     }
 }
 
@@ -222,13 +250,15 @@ async fn test_validate_batch_rejects_http_output_node() {
     .await;
 
     match payload {
-        ResponsePayload::Error { message } => {
+        ResponsePayload::ValidationResult { errors } => {
+            assert_eq!(errors.len(), 1, "Expected exactly one validation error");
             assert!(
-                message.contains("oneshot-only"),
-                "Expected oneshot-only error, got: {message}"
+                errors[0].message.contains("oneshot-only"),
+                "Expected oneshot-only error, got: {}", errors[0].message
             );
+            assert_eq!(errors[0].node_id.as_deref(), Some("http_out"));
         },
-        other => panic!("Expected Error for http_output, got: {:?}", other),
+        other => panic!("Expected ValidationResult for http_output, got: {:?}", other),
     }
 }
 
@@ -259,13 +289,15 @@ async fn test_validate_batch_rejects_disallowed_plugin() {
     .await;
 
     match payload {
-        ResponsePayload::Error { message } => {
+        ResponsePayload::ValidationResult { errors } => {
+            assert_eq!(errors.len(), 1, "Expected exactly one validation error");
             assert!(
-                message.contains("plugin") && message.contains("not allowed"),
-                "Expected plugin not-allowed error, got: {message}"
+                errors[0].message.contains("plugin") && errors[0].message.contains("not allowed"),
+                "Expected plugin not-allowed error, got: {}", errors[0].message
             );
+            assert_eq!(errors[0].node_id.as_deref(), Some("p1"));
         },
-        other => panic!("Expected Error for disallowed plugin, got: {:?}", other),
+        other => panic!("Expected ValidationResult for disallowed plugin, got: {:?}", other),
     }
 }
 
@@ -370,13 +402,166 @@ async fn test_validate_batch_rejects_mixed_with_oneshot_node() {
     .await;
 
     match payload {
-        ResponsePayload::Error { message } => {
+        ResponsePayload::ValidationResult { errors } => {
+            assert_eq!(errors.len(), 1, "Expected exactly one validation error for the oneshot node");
             assert!(
-                message.contains("oneshot-only"),
-                "Expected oneshot-only error in mixed batch, got: {message}"
+                errors[0].message.contains("oneshot-only"),
+                "Expected oneshot-only error in mixed batch, got: {}", errors[0].message
+            );
+            assert_eq!(errors[0].node_id.as_deref(), Some("http_in"));
+        },
+        other => panic!("Expected ValidationResult for mixed batch with oneshot node, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_validate_batch_rejects_duplicate_node_id() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let Some((addr, _server_handle)) = start_test_server().await else {
+        eprintln!("Skipping: local TCP bind not permitted");
+        return;
+    };
+
+    let (mut write, mut read, session_id) = setup_session(addr).await;
+
+    // Two AddNode ops with the same node_id should trigger a duplicate error.
+    let payload = send_validate_batch(
+        &mut write,
+        &mut read,
+        &session_id,
+        vec![
+            BatchOperation::AddNode {
+                node_id: "dup1".to_string(),
+                kind: "audio::gain".to_string(),
+                params: None,
+            },
+            BatchOperation::AddNode {
+                node_id: "dup1".to_string(),
+                kind: "audio::gain".to_string(),
+                params: None,
+            },
+        ],
+        "validate-dup-node-id",
+    )
+    .await;
+
+    match payload {
+        ResponsePayload::ValidationResult { errors } => {
+            assert!(
+                !errors.is_empty(),
+                "Expected at least one error for duplicate node_id"
+            );
+            assert!(
+                errors.iter().any(|e| e.message.contains("already exists")),
+                "Expected duplicate node_id error, got: {:?}",
+                errors.iter().map(|e| &e.message).collect::<Vec<_>>()
             );
         },
-        other => panic!("Expected Error for mixed batch with oneshot node, got: {:?}", other),
+        other => panic!("Expected ValidationResult for duplicate node_id, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_validate_batch_reports_all_errors() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let Some((addr, _server_handle)) = start_test_server().await else {
+        eprintln!("Skipping: local TCP bind not permitted");
+        return;
+    };
+
+    let (mut write, mut read, session_id) = setup_session(addr).await;
+
+    // Two invalid nodes — both errors should be reported, not just the first.
+    let payload = send_validate_batch(
+        &mut write,
+        &mut read,
+        &session_id,
+        vec![
+            BatchOperation::AddNode {
+                node_id: "http_in".to_string(),
+                kind: "streamkit::http_input".to_string(),
+                params: None,
+            },
+            BatchOperation::AddNode {
+                node_id: "http_out".to_string(),
+                kind: "streamkit::http_output".to_string(),
+                params: None,
+            },
+        ],
+        "validate-all-errors",
+    )
+    .await;
+
+    match payload {
+        ResponsePayload::ValidationResult { errors } => {
+            assert_eq!(errors.len(), 2, "Expected two validation errors, got {}", errors.len());
+            assert!(
+                errors.iter().all(|e| e.message.contains("oneshot-only")),
+                "Expected both errors to be oneshot-only, got: {:?}",
+                errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+            );
+        },
+        other => panic!("Expected ValidationResult with two errors, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_validate_batch_rejects_cross_role_ownership() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let Some((addr, _server_handle)) =
+        start_test_server_with_config(config_with_role_header()).await
+    else {
+        eprintln!("Skipping: local TCP bind not permitted");
+        return;
+    };
+
+    // Connect as "admin" and create a session.
+    let (mut admin_write, mut admin_read) = connect_with_role(addr, "admin").await;
+    let create_request = Request {
+        message_type: MessageType::Request,
+        correlation_id: Some("admin-create".to_string()),
+        payload: RequestPayload::CreateSession { name: Some("admin-session".to_string()) },
+    };
+    admin_write
+        .send(WsMessage::Text(serde_json::to_string(&create_request).unwrap().into()))
+        .await
+        .unwrap();
+    let response = read_response(&mut admin_read, "admin-create").await;
+    let session_id = match response.payload {
+        ResponsePayload::SessionCreated { session_id, .. } => session_id,
+        other => panic!("Expected SessionCreated, got: {:?}", other),
+    };
+
+    // Connect as "user" (access_all_sessions = false) and try to validate on
+    // the admin's session.
+    let (mut user_write, mut user_read) = connect_with_role(addr, "user").await;
+    let payload = send_validate_batch(
+        &mut user_write,
+        &mut user_read,
+        &session_id,
+        vec![BatchOperation::AddNode {
+            node_id: "gain1".to_string(),
+            kind: "audio::gain".to_string(),
+            params: None,
+        }],
+        "user-validate-admin-session",
+    )
+    .await;
+
+    match payload {
+        ResponsePayload::Error { message } => {
+            assert!(
+                message.contains("Permission denied") || message.contains("not found"),
+                "Expected ownership/permission error, got: {message}"
+            );
+        },
+        other => panic!(
+            "Expected Error for cross-role ownership in ValidateBatch, got: {:?}",
+            other
+        ),
     }
 }
 
@@ -568,5 +753,103 @@ async fn test_apply_batch_rejects_mixed_with_oneshot_node() {
         other => {
             panic!("Expected Error for mixed batch with oneshot node in apply, got: {:?}", other)
         },
+    }
+}
+
+#[tokio::test]
+async fn test_apply_batch_rejects_nonexistent_session() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let Some((addr, _server_handle)) = start_test_server().await else {
+        eprintln!("Skipping: local TCP bind not permitted");
+        return;
+    };
+
+    let ws_url = format!("ws://{}/api/v1/control", addr);
+    let (ws_stream, _) = connect_async(&ws_url).await.expect("Failed to connect to WebSocket");
+    let (mut write, mut read) = ws_stream.split();
+
+    let payload = send_apply_batch(
+        &mut write,
+        &mut read,
+        "nonexistent-session-id",
+        vec![BatchOperation::AddNode {
+            node_id: "gain1".to_string(),
+            kind: "audio::gain".to_string(),
+            params: None,
+        }],
+        "apply-nonexistent-session",
+    )
+    .await;
+
+    match payload {
+        ResponsePayload::Error { message } => {
+            assert!(
+                message.contains("not found"),
+                "Expected session not-found error, got: {message}"
+            );
+        },
+        other => panic!(
+            "Expected Error for nonexistent session in ApplyBatch, got: {:?}",
+            other
+        ),
+    }
+}
+
+#[tokio::test]
+async fn test_apply_batch_rejects_cross_role_ownership() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let Some((addr, _server_handle)) =
+        start_test_server_with_config(config_with_role_header()).await
+    else {
+        eprintln!("Skipping: local TCP bind not permitted");
+        return;
+    };
+
+    // Connect as "admin" and create a session.
+    let (mut admin_write, mut admin_read) = connect_with_role(addr, "admin").await;
+    let create_request = Request {
+        message_type: MessageType::Request,
+        correlation_id: Some("admin-create".to_string()),
+        payload: RequestPayload::CreateSession { name: Some("admin-session".to_string()) },
+    };
+    admin_write
+        .send(WsMessage::Text(serde_json::to_string(&create_request).unwrap().into()))
+        .await
+        .unwrap();
+    let response = read_response(&mut admin_read, "admin-create").await;
+    let session_id = match response.payload {
+        ResponsePayload::SessionCreated { session_id, .. } => session_id,
+        other => panic!("Expected SessionCreated, got: {:?}", other),
+    };
+
+    // Connect as "user" (access_all_sessions = false) and try to apply on
+    // the admin's session.
+    let (mut user_write, mut user_read) = connect_with_role(addr, "user").await;
+    let payload = send_apply_batch(
+        &mut user_write,
+        &mut user_read,
+        &session_id,
+        vec![BatchOperation::AddNode {
+            node_id: "gain1".to_string(),
+            kind: "audio::gain".to_string(),
+            params: None,
+        }],
+        "user-apply-admin-session",
+    )
+    .await;
+
+    match payload {
+        ResponsePayload::Error { message } => {
+            assert!(
+                message.contains("Permission denied") || message.contains("not found"),
+                "Expected ownership/permission error, got: {message}"
+            );
+        },
+        other => panic!(
+            "Expected Error for cross-role ownership in ApplyBatch, got: {:?}",
+            other
+        ),
     }
 }
