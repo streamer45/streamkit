@@ -277,6 +277,14 @@ async fn write_upload_stream_to_disk(
         }
     }
 
+    // Flush pending writes — tokio::fs::File::write_all returns as soon as
+    // data is copied to an internal buffer and a blocking write is spawned,
+    // so the last write may still be in-flight when the File is dropped.
+    if let Err(e) = file.flush().await {
+        let _ = fs::remove_file(file_path).await;
+        return Err(AssetsError::IoError(format!("Failed to flush file: {e}")));
+    }
+
     // Create default license file (best-effort).
     let license_path = file_path.with_extension(format!("{extension}.license"));
     // REUSE-IgnoreStart
@@ -708,6 +716,14 @@ async fn write_image_upload_to_disk(
                 )));
             },
         }
+    }
+
+    // Flush pending writes — tokio::fs::File::write_all returns as soon as
+    // data is copied to an internal buffer and a blocking write is spawned,
+    // so the last write may still be in-flight when the File is dropped.
+    if let Err(e) = file.flush().await {
+        let _ = fs::remove_file(file_path).await;
+        return Err(AssetsError::IoError(format!("Failed to flush file: {e}")));
     }
 
     Ok(total_bytes)
@@ -1251,6 +1267,14 @@ async fn write_font_upload_to_disk(
                 )));
             },
         }
+    }
+
+    // Flush pending writes — tokio::fs::File::write_all returns as soon as
+    // data is copied to an internal buffer and a blocking write is spawned,
+    // so the last write may still be in-flight when the File is dropped.
+    if let Err(e) = file.flush().await {
+        let _ = fs::remove_file(file_path).await;
+        return Err(AssetsError::IoError(format!("Failed to flush file: {e}")));
     }
 
     // Create default license file (best-effort).
