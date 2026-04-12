@@ -380,7 +380,8 @@ pub async fn wire_and_spawn_graph(
             audio_pool: audio_pool.clone(),
             video_pool: video_pool.clone(),
             pipeline_mode: streamkit_core::PipelineMode::Oneshot,
-            view_data_tx: None, // Stateless pipelines don't emit view data
+            view_data_tx: None,      // Stateless pipelines don't emit view data
+            engine_control_tx: None, // Stateless pipelines don't support cross-node control
         };
 
         tracing::debug!("Starting task for node '{}'", name);

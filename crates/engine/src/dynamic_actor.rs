@@ -152,6 +152,10 @@ pub struct DynamicEngine {
     pub(super) node_packets_errored_counter: opentelemetry::metrics::Counter<u64>,
     // Node state metric (1=running, 0=not running)
     pub(super) node_state_gauge: opentelemetry::metrics::Gauge<u64>,
+    /// Clone of the engine's own control sender, handed to every node via
+    /// [`NodeContext::engine_control_tx`] so that nodes can emit
+    /// [`EngineControlMessage::TuneNode`] to sibling nodes.
+    pub(super) engine_control_tx: mpsc::Sender<EngineControlMessage>,
     /// Sender half of the internal channel for background node creation results.
     /// Cloned into each spawned creation task.
     pub(super) node_created_tx: mpsc::Sender<NodeCreatedEvent>,
@@ -691,6 +695,7 @@ impl DynamicEngine {
             video_pool: Some(self.video_pool.clone()),
             pipeline_mode: streamkit_core::PipelineMode::Dynamic,
             view_data_tx: Some(channels.view_data.clone()),
+            engine_control_tx: Some(self.engine_control_tx.clone()),
         };
 
         // 5. Spawn Node

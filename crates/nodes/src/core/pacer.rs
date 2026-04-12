@@ -507,6 +507,7 @@ mod tests {
             video_pool: None,
             pipeline_mode: streamkit_core::PipelineMode::Dynamic,
             view_data_tx: None,
+            engine_control_tx: None,
         };
 
         // Create node with very fast speed to minimize test time

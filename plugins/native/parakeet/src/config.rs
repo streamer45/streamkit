@@ -38,10 +38,15 @@ pub struct ParakeetConfig {
     /// Maximum segment duration before forcing transcription (seconds)
     #[serde(default = "default_max_segment_duration_secs")]
     pub max_segment_duration_secs: f32,
+
+    /// Minimum speech duration to transcribe (milliseconds).
+    /// Segments shorter than this are discarded as noise.
+    #[serde(default = "default_min_speech_duration_ms")]
+    pub min_speech_duration_ms: u64,
 }
 
 fn default_model_dir() -> String {
-    "models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8".to_string()
+    "models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8".to_string()
 }
 
 const fn default_num_threads() -> i32 {
@@ -72,6 +77,10 @@ const fn default_max_segment_duration_secs() -> f32 {
     30.0
 }
 
+const fn default_min_speech_duration_ms() -> u64 {
+    300
+}
+
 impl Default for ParakeetConfig {
     fn default() -> Self {
         Self {
@@ -83,6 +92,7 @@ impl Default for ParakeetConfig {
             vad_threshold: default_vad_threshold(),
             min_silence_duration_ms: default_min_silence_duration_ms(),
             max_segment_duration_secs: default_max_segment_duration_secs(),
+            min_speech_duration_ms: default_min_speech_duration_ms(),
         }
     }
 }

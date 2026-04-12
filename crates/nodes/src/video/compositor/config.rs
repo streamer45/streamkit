@@ -150,6 +150,13 @@ pub struct TextOverlayConfig {
     /// When omitted, the default system font (DejaVu Sans) is used.
     #[serde(default)]
     pub font_name: Option<String>,
+    /// Enable word wrapping within the overlay's bounding rectangle.
+    ///
+    /// When `true`, text is wrapped at the width specified by
+    /// `transform.rect.width`.  When `false` (the default), text only
+    /// breaks on explicit newlines — matching the historical behaviour.
+    #[serde(default)]
+    pub word_wrap: bool,
 }
 
 pub(crate) const fn default_opacity() -> f32 {

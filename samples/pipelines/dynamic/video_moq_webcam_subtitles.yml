@@ -1,0 +1,201 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Live subtitle demo: webcam PiP over colorbars with real-time Parakeet
+# transcription rendered as a Slint subtitle overlay.
+#
+# Data flow (subtitles):
+#   mic → opus_decoder → resampler → parakeet → [best_effort] →
+#   subtitle_bridge → UpdateParams(text) → slint subtitle → compositor
+#
+# Data flow (speaking indicator):
+#   resampler → vad → [best_effort] →
+#   vad_bridge → UpdateParams(speaking) → slint subtitle
+#
+#   (param_bridge also emits stt.result telemetry for stream view)
+#
+# Requires:
+#   - plugin::native::parakeet loaded (with Parakeet TDT model)
+#   - plugin::native::vad loaded (with TEN-VAD model)
+#   - plugin::native::slint loaded
+#   just build-plugin-native-parakeet && just build-plugin-native-vad && just build-plugin-native-slint && just copy-plugins-native
+#   just download-parakeet-models && just download-silero-vad && just download-tenvad-models
+
+name: Webcam PiP + Live Subtitles (MoQ)
+description: >-
+  Composites the user's webcam as picture-in-picture over colorbars with
+  real-time Parakeet TDT transcription displayed as subtitles via a Slint
+  overlay.  Demonstrates the param_bridge node for cross-node control
+  messaging.  ~10x faster than Whisper on CPU.
+mode: dynamic
+client:
+  gateway_path: /moq/video
+  publish:
+    broadcast: input
+    tracks:
+      - kind: audio
+        source: microphone
+      - kind: video
+        source: camera
+  watch:
+    broadcast: output
+    audio: true
+    video: true
+
+nodes:
+  # --- Background ---
+
+  colorbars_bg:
+    kind: video::colorbars
+    params:
+      width: 1280
+      height: 720
+      fps: 30
+      pixel_format: rgba8
+
+  # --- MoQ transport (publish + subscribe) ---
+
+  moq_peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/video
+      input_broadcasts:
+        - input
+      output_broadcast: output
+      allow_reconnect: true
+    needs:
+      in: opus_encoder
+      in_1: vp9_encoder
+
+  # --- Audio → STT path ---
+
+  opus_decoder:
+    kind: audio::opus::decoder
+    needs:
+      in: moq_peer.audio/data
+
+  resampler:
+    kind: audio::resampler
+    params:
+      target_sample_rate: 16000
+    needs: opus_decoder
+
+  parakeet:
+    kind: plugin::native::parakeet
+    params:
+      model_dir: models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8
+      num_threads: 4
+      use_vad: true
+      vad_model_path: models/silero_vad.onnx
+      vad_threshold: 0.5
+      min_silence_duration_ms: 700
+    needs: resampler
+
+  # --- Real-time VAD → speaking indicator ---
+
+  vad:
+    kind: plugin::native::vad
+    params:
+      output_mode: events
+      threshold: 0.5
+      min_silence_duration_s: 0.3
+      min_speech_duration_s: 0.15
+    needs: resampler
+
+  vad_bridge:
+    kind: core::param_bridge
+    params:
+      target_node: subtitles
+      mode: template
+      template:
+        properties:
+          speaking: "{{ is_speech }}"
+    needs:
+      in:
+        node: vad
+        mode: best_effort
+
+  # --- Subtitle rendering (Slint) ---
+
+  subtitles:
+    kind: plugin::native::slint
+    params:
+      width: 1280
+      height: 120
+      fps: 30
+      slint_file: samples/slint/system/subtitle.slint
+      properties:
+        text: ""
+        show: true
+        speaking: false
+
+  subtitle_bridge:
+    kind: core::param_bridge
+    params:
+      target_node: subtitles
+      mode: template
+      template:
+        properties:
+          text: "{{ text }}"
+      debounce_ms: 100
+    needs:
+      in:
+        node: parakeet
+        mode: best_effort
+
+  # --- Video decode + compositing ---
+
+  vp9_decoder:
+    kind: video::vp9::decoder
+    needs:
+      in: moq_peer.video/hd
+
+  compositor:
+    kind: video::compositor
+    params:
+      width: 1280
+      height: 720
+      num_inputs: 3
+      output_format: nv12
+      layers:
+        in_0:
+          opacity: 1.0
+          z_index: 0
+        in_1:
+          rect:
+            x: 880
+            y: 20
+            width: 380
+            height: 285
+          opacity: 0.9
+          z_index: 1
+          crop_zoom: 2.2
+          crop_x: 0.5
+          crop_y: 0.5
+        in_2:
+          rect:
+            x: 0
+            y: 600
+            width: 1280
+            height: 120
+          opacity: 1.0
+          z_index: 2
+    needs:
+      - colorbars_bg
+      - vp9_decoder
+      - subtitles
+
+  # --- Encode + output ---
+
+  vp9_encoder:
+    kind: video::vp9::encoder
+    params:
+      keyframe_interval: 30
+    needs: compositor
+
+  # --- Audio loopback ---
+
+  opus_encoder:
+    kind: audio::opus::encoder
+    needs: opus_decoder

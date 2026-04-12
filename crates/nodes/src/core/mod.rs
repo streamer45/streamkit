@@ -13,6 +13,7 @@ pub mod json_serialize;
 #[cfg(feature = "object_store")]
 pub mod object_store_write;
 pub mod pacer;
+pub mod param_bridge;
 mod passthrough;
 #[cfg(feature = "script")]
 pub mod script;
@@ -192,6 +193,9 @@ pub fn register_core_nodes(registry: &mut NodeRegistry, constraints: &GlobalNode
 
     // --- Register TelemetryOut Node ---
     telemetry_out::register(registry);
+
+    // --- Register ParamBridge Node ---
+    param_bridge::register(registry);
 
     // --- Register ObjectStoreWriteNode ---
     #[cfg(feature = "object_store")]

@@ -133,6 +133,7 @@ impl VadNode {
     ) -> Result<(), String> {
         let data = serde_json::json!({
             "event_type": event_type,
+            "is_speech": event_type == "speech_start",
             "timestamp_ms": timestamp_ms,
             "duration_ms": duration_ms
         });
