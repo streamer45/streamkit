@@ -17,9 +17,8 @@ pub fn translate(
     text: &str,
     config: &HelsinkiConfig,
 ) -> Result<String, String> {
-    let mut translator = translator
-        .lock()
-        .map_err(|e| format!("Failed to lock translator: {}", e))?;
+    let mut translator =
+        translator.lock().map_err(|e| format!("Failed to lock translator: {}", e))?;
 
     // Reset KV cache for new sequence
     translator.model.reset_kv_cache();

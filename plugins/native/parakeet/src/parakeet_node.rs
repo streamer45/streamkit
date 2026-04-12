@@ -496,7 +496,11 @@ impl ParakeetNode {
             None
         } else {
             let lang = unsafe { CStr::from_ptr(result.lang).to_string_lossy().into_owned() };
-            if lang.is_empty() { None } else { Some(lang) }
+            if lang.is_empty() {
+                None
+            } else {
+                Some(lang)
+            }
         };
 
         // Cleanup
@@ -637,10 +641,7 @@ unsafe fn create_recognizer(
                 model: empty_cstr.as_ptr(),
             },
         },
-        lm_config: ffi::SherpaOnnxOfflineLMConfig {
-            model: empty_cstr.as_ptr(),
-            scale: 0.0,
-        },
+        lm_config: ffi::SherpaOnnxOfflineLMConfig { model: empty_cstr.as_ptr(), scale: 0.0 },
         decoding_method: decoding_method_cstr.as_ptr(),
         max_active_paths: 4,
         hotwords_file: empty_cstr.as_ptr(),
