@@ -15,129 +15,59 @@ env:
   SHERPA_ONNX_VERSION: "1.12.17"
 
 jobs:
-  # Format check for all plugins (no native deps required)
-  format:
-    name: Format Check
+  lint:
+    name: Lint (${{ matrix.group }})
     runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.92.0"
-          components: rustfmt
-
-      - name: Check formatting - VAD
-        working-directory: plugins/native/vad
-        run: cargo fmt -- --check
-
-      - name: Check formatting - Whisper
-        working-directory: plugins/native/whisper
-        run: cargo fmt -- --check
-
-      - name: Check formatting - Kokoro
-        working-directory: plugins/native/kokoro
-        run: cargo fmt -- --check
-
-      - name: Check formatting - Piper
-        working-directory: plugins/native/piper
-        run: cargo fmt -- --check
-
-      - name: Check formatting - Matcha
-        working-directory: plugins/native/matcha
-        run: cargo fmt -- --check
-
-      - name: Check formatting - SenseVoice
-        working-directory: plugins/native/sensevoice
-        run: cargo fmt -- --check
-
-      - name: Check formatting - NLLB
-        working-directory: plugins/native/nllb
-        run: cargo fmt -- --check
-
-      - name: Check formatting - Slint
-        working-directory: plugins/native/slint
-        run: cargo fmt -- --check
-
-  # Lint plugins that can build without pre-installed native libraries
-  lint-simple:
-    name: Lint (Simple Plugins)
-    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Plugins with no heavy native dependencies
+          - group: simple
+            plugins: "slint supertonic whisper helsinki pocket-tts aac-encoder"
+            apt_extra: "libfontconfig1-dev libfdk-aac-dev"
+          # Plugins that link against sherpa-onnx
+          - group: sherpa
+            plugins: "vad kokoro piper matcha sensevoice parakeet"
+            apt_extra: "wget"
+          # NLLB requires CTranslate2
+          - group: nllb
+            plugins: "nllb"
+            apt_extra: "libopenblas-dev"
     steps:
       - uses: actions/checkout@v5
 
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libclang-dev libfontconfig1-dev
+          sudo apt-get install -y cmake pkg-config libclang-dev ${{ matrix.apt_extra }}
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+      # --- sherpa-onnx (sherpa group only) ---
+      - name: Cache sherpa-onnx
+        if: matrix.group == 'sherpa'
+        id: cache-sherpa
+        uses: actions/cache@v4
         with:
-          toolchain: "1.92.0"
-          components: clippy
+          path: /usr/local/lib/libsherpa*
+          key: sherpa-onnx-${{ env.SHERPA_ONNX_VERSION }}-${{ runner.os }}
 
-      - uses: mozilla-actions/sccache-action@v0.0.9
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            plugins/native/vad
-            plugins/native/slint
-          cache-on-failure: true
-
-      - name: Clippy - VAD
-        working-directory: plugins/native/vad
-        run: cargo clippy -- -D warnings
-
-      - name: Clippy - Slint
-        working-directory: plugins/native/slint
-        run: cargo clippy -- -D warnings
-
-  # Lint Whisper plugin (builds whisper.cpp from source)
-  lint-whisper:
-    name: Lint (Whisper)
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install system dependencies
+      - name: Install sherpa-onnx
+        if: matrix.group == 'sherpa' && steps.cache-sherpa.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libclang-dev
+          cd /tmp
+          wget https://github.com/k2-fsa/sherpa-onnx/releases/download/v${SHERPA_ONNX_VERSION}/sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared.tar.bz2
+          tar xf sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared.tar.bz2
+          sudo cp -r sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared/lib/* /usr/local/lib/
+          sudo cp -r sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared/include/* /usr/local/include/
+          sudo ldconfig
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.92.0"
-          components: clippy
+      - name: Refresh linker cache (sherpa-onnx from cache)
+        if: matrix.group == 'sherpa' && steps.cache-sherpa.outputs.cache-hit == 'true'
+        run: sudo ldconfig
 
-      - uses: mozilla-actions/sccache-action@v0.0.9
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            plugins/native/whisper
-          cache-on-failure: true
-
-      - name: Clippy - Whisper
-        working-directory: plugins/native/whisper
-        run: cargo clippy -- -D warnings
-
-  # Lint NLLB plugin (requires CTranslate2)
-  lint-nllb:
-    name: Lint (NLLB)
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libclang-dev libopenblas-dev
-
+      # --- CTranslate2 (nllb group only) ---
       - name: Cache CTranslate2
+        if: matrix.group == 'nllb'
         id: cache-ct2
         uses: actions/cache@v4
         with:
@@ -145,7 +75,7 @@ jobs:
           key: ctranslate2-4.5.0-openmp-comp-${{ runner.os }}
 
       - name: Build CTranslate2
-        if: steps.cache-ct2.outputs.cache-hit != 'true'
+        if: matrix.group == 'nllb' && steps.cache-ct2.outputs.cache-hit != 'true'
         run: |
           git clone --depth 1 --recurse-submodules --branch v4.5.0 https://github.com/OpenNMT/CTranslate2.git
           cd CTranslate2
@@ -161,82 +91,44 @@ jobs:
           sudo make install
           sudo ldconfig
 
+      # --- Rust toolchain & caches ---
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.92.0"
-          components: clippy
+          components: rustfmt, clippy
 
       - uses: mozilla-actions/sccache-action@v0.0.9
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            plugins/native/nllb
-          cache-on-failure: true
-
-      - name: Clippy - NLLB
-        working-directory: plugins/native/nllb
-        run: cargo clippy -- -D warnings
-
-  # Lint sherpa-onnx based plugins (Kokoro, Piper, Matcha, SenseVoice)
-  lint-sherpa:
-    name: Lint (Sherpa-ONNX Plugins)
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install system dependencies
+      - name: Build workspace list for cache
+        id: cache-ws
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libclang-dev wget
-
-      - name: Cache sherpa-onnx
-        id: cache-sherpa
-        uses: actions/cache@v4
-        with:
-          path: /usr/local/lib/libsherpa*
-          key: sherpa-onnx-${{ env.SHERPA_ONNX_VERSION }}-${{ runner.os }}
-
-      - name: Install sherpa-onnx
-        if: steps.cache-sherpa.outputs.cache-hit != 'true'
-        run: |
-          cd /tmp
-          wget https://github.com/k2-fsa/sherpa-onnx/releases/download/v${SHERPA_ONNX_VERSION}/sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared.tar.bz2
-          tar xf sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared.tar.bz2
-          sudo cp -r sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared/lib/* /usr/local/lib/
-          sudo cp -r sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared/include/* /usr/local/include/
-          sudo ldconfig
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.92.0"
-          components: clippy
-
-      - uses: mozilla-actions/sccache-action@v0.0.9
+          {
+            echo "list<<EOF"
+            for plugin in ${{ matrix.plugins }}; do
+              echo "plugins/native/${plugin} -> ../../../target/plugins"
+            done
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            plugins/native/kokoro
-            plugins/native/piper
-            plugins/native/matcha
-            plugins/native/sensevoice
+          workspaces: ${{ steps.cache-ws.outputs.list }}
           cache-on-failure: true
 
-      - name: Clippy - Kokoro
-        working-directory: plugins/native/kokoro
-        run: cargo clippy -- -D warnings
+      # --- Lint ---
+      - name: Format check
+        run: |
+          for plugin in ${{ matrix.plugins }}; do
+            echo "::group::fmt — ${plugin}"
+            (cd "plugins/native/${plugin}" && cargo fmt -- --check)
+            echo "::endgroup::"
+          done
 
-      - name: Clippy - Piper
-        working-directory: plugins/native/piper
-        run: cargo clippy -- -D warnings
-
-      - name: Clippy - Matcha
-        working-directory: plugins/native/matcha
-        run: cargo clippy -- -D warnings
-
-      - name: Clippy - SenseVoice
-        working-directory: plugins/native/sensevoice
-        run: cargo clippy -- -D warnings
+      - name: Clippy
+        run: |
+          for plugin in ${{ matrix.plugins }}; do
+            echo "::group::clippy — ${plugin}"
+            (cd "plugins/native/${plugin}" && CARGO_TARGET_DIR="${{ github.workspace }}/target/plugins" cargo clippy -- -D warnings)
+            echo "::endgroup::"
+          done
