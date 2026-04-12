@@ -1135,9 +1135,25 @@ fn handle_validate_batch(
     // Basic validation: check that all referenced node types are allowed
     for op in operations {
         if let streamkit_api::BatchOperation::AddNode { kind, params, .. } = op {
+            // Reject oneshot-only marker nodes on the dynamic control plane.
+            if kind == "streamkit::http_input" || kind == "streamkit::http_output" {
+                return ResponsePayload::Error {
+                    message: format!(
+                        "Node type '{kind}' is oneshot-only and cannot be used in dynamic sessions"
+                    ),
+                };
+            }
+
             if !perms.is_node_allowed(kind) {
                 return ResponsePayload::Error {
                     message: format!("Permission denied: node type '{kind}' not allowed"),
+                };
+            }
+
+            // If this is a plugin node, enforce the plugin allowlist too.
+            if kind.starts_with("plugin::") && !perms.is_plugin_allowed(kind) {
+                return ResponsePayload::Error {
+                    message: format!("Permission denied: plugin '{kind}' not allowed"),
                 };
             }
 
@@ -1259,9 +1275,25 @@ async fn handle_apply_batch(
     // Validate permissions for all operations
     for op in &operations {
         if let streamkit_api::BatchOperation::AddNode { kind, params, .. } = op {
+            // Reject oneshot-only marker nodes on the dynamic control plane.
+            if kind == "streamkit::http_input" || kind == "streamkit::http_output" {
+                return Some(ResponsePayload::Error {
+                    message: format!(
+                        "Node type '{kind}' is oneshot-only and cannot be used in dynamic sessions"
+                    ),
+                });
+            }
+
             if !perms.is_node_allowed(kind) {
                 return Some(ResponsePayload::Error {
                     message: format!("Permission denied: node type '{kind}' not allowed"),
+                });
+            }
+
+            // If this is a plugin node, enforce the plugin allowlist too.
+            if kind.starts_with("plugin::") && !perms.is_plugin_allowed(kind) {
+                return Some(ResponsePayload::Error {
+                    message: format!("Permission denied: plugin '{kind}' not allowed"),
                 });
             }
 
