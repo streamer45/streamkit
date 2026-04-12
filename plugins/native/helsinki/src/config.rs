@@ -126,7 +126,7 @@ impl HelsinkiConfig {
     }
 
     /// Check if the model directory matches the expected language pair.
-    pub fn check_model_language_match(&self) -> Result<(), String> {
+    pub fn check_model_language_match(&self) {
         let model_dir_lower = self.model_dir.to_lowercase();
 
         // Expected pattern: opus-mt-{src}-{tgt}
@@ -141,8 +141,6 @@ impl HelsinkiConfig {
                 expected_suffix
             );
         }
-
-        Ok(())
     }
 }
 

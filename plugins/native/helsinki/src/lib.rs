@@ -46,9 +46,7 @@ fn preview_for_log(text: &str, max_chars: usize) -> String {
 }
 
 fn canonicalize_model_dir(model_dir: &str) -> String {
-    std::fs::canonicalize(model_dir)
-        .map(|path| path.to_string_lossy().to_string())
-        .unwrap_or_else(|_| model_dir.to_string())
+    std::fs::canonicalize(model_dir).map_or_else(|_| model_dir.to_string(), |path| path.to_string_lossy().to_string())
 }
 
 fn warmup_translate(
@@ -155,7 +153,7 @@ impl NativeProcessorNode for HelsinkiPlugin {
 
         let mut config: HelsinkiConfig = if let Some(p) = params {
             serde_json::from_value(p).map_err(|e| {
-                let error_msg = format!("Invalid config: {}", e);
+                let error_msg = format!("Invalid config: {e}");
                 plugin_error!(logger, "{}", error_msg);
                 error_msg
             })?
@@ -181,9 +179,7 @@ impl NativeProcessorNode for HelsinkiPlugin {
         }
 
         // Warn if model directory doesn't match language pair
-        if let Err(e) = config.check_model_language_match() {
-            plugin_error!(logger, "{}", e);
-        }
+        config.check_model_language_match();
 
         plugin_info!(
             logger,
@@ -211,7 +207,7 @@ impl NativeProcessorNode for HelsinkiPlugin {
         let text: String = match &packet {
             Packet::Text(t) => t.as_ref().to_string(),
             Packet::Transcription(t) => t.text.clone(),
-            _ => return Err(format!("Expected Text or Transcription packet, got {:?}", packet)),
+            _ => return Err(format!("Expected Text or Transcription packet, got {packet:?}")),
         };
 
         // Skip empty text
@@ -249,7 +245,7 @@ impl NativeProcessorNode for HelsinkiPlugin {
     fn update_params(&mut self, params: Option<Value>) -> Result<(), String> {
         if let Some(p) = params {
             let mut new_config: HelsinkiConfig =
-                serde_json::from_value(p).map_err(|e| format!("Invalid config: {}", e))?;
+                serde_json::from_value(p).map_err(|e| format!("Invalid config: {e}"))?;
 
             new_config.validate()?;
 

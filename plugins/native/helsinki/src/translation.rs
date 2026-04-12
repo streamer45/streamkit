@@ -18,7 +18,7 @@ pub fn translate(
     config: &HelsinkiConfig,
 ) -> Result<String, String> {
     let mut translator =
-        translator.lock().map_err(|e| format!("Failed to lock translator: {}", e))?;
+        translator.lock().map_err(|e| format!("Failed to lock translator: {e}"))?;
 
     // Reset KV cache for new sequence
     translator.model.reset_kv_cache();
@@ -27,7 +27,7 @@ pub fn translate(
     let encoding = translator
         .source_tokenizer
         .encode(text, false)
-        .map_err(|e| format!("Tokenization failed: {}", e))?;
+        .map_err(|e| format!("Tokenization failed: {e}"))?;
 
     let mut input_ids: Vec<u32> = encoding.get_ids().to_vec();
     if input_ids.is_empty() {
@@ -41,16 +41,16 @@ pub fn translate(
 
     // Convert to tensor
     let input_tensor = Tensor::new(&input_ids[..], &translator.device)
-        .map_err(|e| format!("Failed to create input tensor: {}", e))?
+        .map_err(|e| format!("Failed to create input tensor: {e}"))?
         .unsqueeze(0)
-        .map_err(|e| format!("Failed to unsqueeze input: {}", e))?;
+        .map_err(|e| format!("Failed to unsqueeze input: {e}"))?;
 
     // Run encoder
     let encoder_output = translator
         .model
         .encoder()
         .forward(&input_tensor, 0)
-        .map_err(|e| format!("Encoder forward failed: {}", e))?;
+        .map_err(|e| format!("Encoder forward failed: {e}"))?;
 
     // Autoregressive decoding
     let decoder_start_token_id = translator.config.decoder_start_token_id;
@@ -67,30 +67,30 @@ pub fn translate(
             .last()
             .ok_or_else(|| "Internal error: decoder_input is empty".to_string())?;
         let decoder_tensor = Tensor::new(&[input_token], &translator.device)
-            .map_err(|e| format!("Failed to create decoder tensor: {}", e))?
+            .map_err(|e| format!("Failed to create decoder tensor: {e}"))?
             .unsqueeze(0)
-            .map_err(|e| format!("Failed to unsqueeze decoder input: {}", e))?;
+            .map_err(|e| format!("Failed to unsqueeze decoder input: {e}"))?;
 
         // Run decoder
         let logits = translator
             .model
             .decode(&decoder_tensor, &encoder_output, step)
-            .map_err(|e| format!("Decoder forward failed: {}", e))?;
+            .map_err(|e| format!("Decoder forward failed: {e}"))?;
 
         // Get last token logits (shape: [batch, seq_len, vocab])
-        let seq_len = logits.dim(1).map_err(|e| format!("Failed to get dim: {}", e))?;
+        let seq_len = logits.dim(1).map_err(|e| format!("Failed to get dim: {e}"))?;
         let last_logits = logits
             .i((.., seq_len - 1, ..))
-            .map_err(|e| format!("Failed to slice logits: {}", e))?;
+            .map_err(|e| format!("Failed to slice logits: {e}"))?;
 
         // Greedy sampling: take argmax
         let next_token = last_logits
             .argmax(D::Minus1)
-            .map_err(|e| format!("Argmax failed: {}", e))?
+            .map_err(|e| format!("Argmax failed: {e}"))?
             .squeeze(0)
-            .map_err(|e| format!("Squeeze failed: {}", e))?
+            .map_err(|e| format!("Squeeze failed: {e}"))?
             .to_scalar::<u32>()
-            .map_err(|e| format!("to_scalar failed: {}", e))?;
+            .map_err(|e| format!("to_scalar failed: {e}"))?;
 
         // Check for EOS
         if next_token == eos_token_id || next_token == pad_token_id {
@@ -110,7 +110,8 @@ pub fn translate(
     let decoded = translator
         .target_tokenizer
         .decode(&output_ids, true)
-        .map_err(|e| format!("Decoding failed: {}", e))?;
+        .map_err(|e| format!("Decoding failed: {e}"))?;
+    drop(translator);
 
     Ok(decoded.trim().to_string())
 }

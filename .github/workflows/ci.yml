@@ -103,11 +103,12 @@ jobs:
     name: All Checks Passed
     if: always()
     runs-on: ubuntu-22.04
-    needs: [skit, ui, plugins, e2e, reuse]
+    needs: [changes, skit, ui, plugins, e2e, reuse]
     steps:
       - name: Verify results
         run: |
           results=(
+            "${{ needs.changes.result }}"
             "${{ needs.skit.result }}"
             "${{ needs.ui.result }}"
             "${{ needs.plugins.result }}"
