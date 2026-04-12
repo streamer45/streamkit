@@ -51,6 +51,7 @@ use tokio::sync::mpsc;
 
 // cros-codecs high-level APIs.
 use cros_codecs::backend::vaapi::decoder::VaapiBackend as VaapiDecBackend;
+use cros_codecs::backend::vaapi::encoder::VaapiBackend as VaapiEncBackend;
 use cros_codecs::codec::av1::parser::Profile as Av1Profile;
 use cros_codecs::decoder::stateless::av1::Av1;
 use cros_codecs::decoder::stateless::{DecodeError, StatelessDecoder, StatelessVideoDecoder};
@@ -61,11 +62,9 @@ use cros_codecs::encoder::{
     FrameMetadata as CrosFrameMetadata, PredictionStructure, RateControl, Tunings, VideoEncoder,
 };
 use cros_codecs::libva;
-use cros_codecs::video_frame::gbm_video_frame::{
-    GbmDevice, GbmExternalBufferDescriptor, GbmUsage, GbmVideoFrame,
-};
-use cros_codecs::video_frame::{ReadMapping, VideoFrame as CrosVideoFrame, WriteMapping};
-use cros_codecs::{Fourcc as CrosFourcc, FrameLayout, PlaneLayout, Resolution as CrosResolution};
+use cros_codecs::video_frame::gbm_video_frame::{GbmUsage, GbmVideoFrame};
+use cros_codecs::video_frame::VideoFrame as CrosVideoFrame;
+use cros_codecs::{FrameLayout, PlaneLayout, Resolution as CrosResolution};
 
 use super::encoder_trait::{self, EncodedPacket, EncoderNodeRunner, StandardVideoEncoder};
 use super::HwAccelMode;
@@ -1011,15 +1010,24 @@ impl StandardVideoEncoder for VaapiAv1Encoder {
             },
         };
 
-        let encoder = CrosVaapiAv1Encoder::new_vaapi(
+        // Construct the VA-API encoder backend directly instead of using
+        // `new_vaapi()`, which requires `V: VideoFrame`.  Our type alias
+        // uses `Surface<()>` (bypassing GBM allocation), so we replicate
+        // the profile mapping and backend construction inline.
+        let va_profile = libva::VAProfile::VAProfileAV1Profile0;
+        let coded_size = CrosResolution { width: coded_width, height: coded_height };
+        let backend = VaapiEncBackend::new(
             Rc::clone(&display),
-            cros_config,
+            va_profile,
             nv12_fourcc(),
-            CrosResolution { width: coded_width, height: coded_height },
+            coded_size,
+            libva::VA_RC_CQP,
             config.low_power,
-            BlockingMode::Blocking,
         )
-        .map_err(|e| format!("failed to create VA-API AV1 encoder: {e}"))?;
+        .map_err(|e| format!("failed to create VA-API AV1 encoder backend: {e}"))?;
+
+        let encoder = CrosVaapiAv1Encoder::new_av1(backend, cros_config, BlockingMode::Blocking)
+            .map_err(|e| format!("failed to create VA-API AV1 encoder: {e}"))?;
 
         tracing::info!(
             device = %path,
