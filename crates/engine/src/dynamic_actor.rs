@@ -1900,12 +1900,6 @@ impl DynamicEngine {
                 self.disconnect_nodes(from_node, from_pin, to_node, to_pin).await;
             },
             EngineControlMessage::TuneNode { node_id, message } => {
-                // Strip transient sync metadata (`_sender`, `_rev`) that
-                // the UI injects for causal-consistency tracking.  Node
-                // config structs use `deny_unknown_fields`, so these would
-                // cause deserialization errors if left in place.
-                let message = strip_transient_metadata(message);
-
                 if let Some(node) = self.live_nodes.get(&node_id) {
                     if node.control_tx.send(message).await.is_err() {
                         tracing::warn!(
@@ -2020,81 +2014,5 @@ impl DynamicEngine {
             },
         }
         true // Continue running
-    }
-}
-
-/// Strip transient sync metadata (`_sender`, `_rev`) from an
-/// [`UpdateParams`] message.  The UI injects these fields for
-/// causal-consistency echo suppression, but node config structs
-/// typically use `#[serde(deny_unknown_fields)]` and would reject
-/// the extra keys.  Stripping at the engine level keeps individual
-/// nodes unaware of the transport-level metadata.
-fn strip_transient_metadata(message: NodeControlMessage) -> NodeControlMessage {
-    match message {
-        NodeControlMessage::UpdateParams(mut params) => {
-            if let Some(obj) = params.as_object_mut() {
-                obj.remove("_sender");
-                obj.remove("_rev");
-            }
-            NodeControlMessage::UpdateParams(params)
-        },
-        other => other,
-    }
-}
-
-#[cfg(test)]
-mod strip_metadata_tests {
-    use super::*;
-
-    /// Regression test: the UI injects `_sender` and `_rev` into config
-    /// updates for causal-consistency tracking.  Node config structs use
-    /// `deny_unknown_fields`, so the engine must strip these before
-    /// dispatching `UpdateParams` to nodes.
-    #[test]
-    fn strips_sender_and_rev_from_update_params() {
-        let msg = NodeControlMessage::UpdateParams(serde_json::json!({
-            "_sender": "client-abc",
-            "_rev": 7,
-            "width": 1920,
-            "height": 1080
-        }));
-
-        let stripped = strip_transient_metadata(msg);
-
-        match stripped {
-            NodeControlMessage::UpdateParams(v) => {
-                let obj = v.as_object().unwrap();
-                assert!(!obj.contains_key("_sender"), "_sender should be stripped");
-                assert!(!obj.contains_key("_rev"), "_rev should be stripped");
-                assert_eq!(obj.get("width").unwrap(), 1920);
-                assert_eq!(obj.get("height").unwrap(), 1080);
-            },
-            _ => panic!("Expected UpdateParams"),
-        }
-    }
-
-    #[test]
-    fn leaves_non_update_params_unchanged() {
-        let msg = NodeControlMessage::Shutdown;
-        let result = strip_transient_metadata(msg);
-        assert!(matches!(result, NodeControlMessage::Shutdown));
-    }
-
-    #[test]
-    fn handles_update_params_without_metadata() {
-        let msg = NodeControlMessage::UpdateParams(serde_json::json!({
-            "width": 1280
-        }));
-
-        let stripped = strip_transient_metadata(msg);
-
-        match stripped {
-            NodeControlMessage::UpdateParams(v) => {
-                let obj = v.as_object().unwrap();
-                assert_eq!(obj.len(), 1);
-                assert_eq!(obj.get("width").unwrap(), 1280);
-            },
-            _ => panic!("Expected UpdateParams"),
-        }
     }
 }
