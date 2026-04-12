@@ -1066,12 +1066,23 @@ mod tests {
         libva::Display::open_drm_display(std::path::Path::new(&path)).is_ok()
     }
 
+    /// Check whether the VA-API driver supports H.264 *encoding*.
+    ///
+    /// NVIDIA's community `nvidia-vaapi-driver` only supports decode, so
+    /// encode tests must be skipped on NVIDIA GPUs to avoid false failures.
+    fn vaapi_h264_encode_available() -> bool {
+        if !vaapi_available() {
+            return false;
+        }
+        VaapiH264Encoder::new_encoder(64, 64, &VaapiH264EncoderConfig::default()).is_ok()
+    }
+
     /// Encoder + Decoder roundtrip: encode 5 NV12 frames, decode them back,
     /// verify dimensions and pixel format.
     #[tokio::test]
     async fn test_vaapi_h264_encode_decode_roundtrip() {
-        if !vaapi_available() {
-            eprintln!("SKIP: no VA-API device available");
+        if !vaapi_h264_encode_available() {
+            eprintln!("SKIP: no VA-API H.264 encode support available");
             return;
         }
 

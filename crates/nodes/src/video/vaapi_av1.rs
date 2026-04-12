@@ -1684,12 +1684,25 @@ mod tests {
         libva::Display::open_drm_display(std::path::Path::new(&path)).is_ok()
     }
 
+    /// Check whether the VA-API driver supports AV1 *encoding*.
+    ///
+    /// NVIDIA's community `nvidia-vaapi-driver` only supports decode, so
+    /// encode tests must be skipped on NVIDIA GPUs to avoid false failures.
+    fn vaapi_av1_encode_available() -> bool {
+        if !vaapi_available() {
+            return false;
+        }
+        // Try to create the encoder — this probes for AV1 encode entrypoints
+        // and will fail on drivers that only support decode (e.g. NVIDIA).
+        VaapiAv1Encoder::new_encoder(64, 64, &VaapiAv1EncoderConfig::default()).is_ok()
+    }
+
     /// Encoder + Decoder roundtrip: encode 5 NV12 frames, decode them back,
     /// verify dimensions and pixel format.
     #[tokio::test]
     async fn test_vaapi_av1_encode_decode_roundtrip() {
-        if !vaapi_available() {
-            eprintln!("SKIP: no VA-API device available");
+        if !vaapi_av1_encode_available() {
+            eprintln!("SKIP: no VA-API AV1 encode support available");
             return;
         }
 
@@ -1785,8 +1798,8 @@ mod tests {
     /// Verify decoded frames preserve metadata from input packets.
     #[tokio::test]
     async fn test_vaapi_av1_metadata_propagation() {
-        if !vaapi_available() {
-            eprintln!("SKIP: no VA-API device available");
+        if !vaapi_av1_encode_available() {
+            eprintln!("SKIP: no VA-API AV1 encode support available");
             return;
         }
 
@@ -1881,8 +1894,8 @@ mod tests {
     /// (exercises the I420→NV12 conversion path).
     #[tokio::test]
     async fn test_vaapi_av1_encode_i420_input() {
-        if !vaapi_available() {
-            eprintln!("SKIP: no VA-API device available");
+        if !vaapi_av1_encode_available() {
+            eprintln!("SKIP: no VA-API AV1 encode support available");
             return;
         }
 
@@ -1942,8 +1955,8 @@ mod tests {
     /// padding bars from the superblock alignment.
     #[tokio::test]
     async fn test_vaapi_av1_resolution_padding_not_leaked() {
-        if !vaapi_available() {
-            eprintln!("SKIP: no VA-API device available");
+        if !vaapi_av1_encode_available() {
+            eprintln!("SKIP: no VA-API AV1 encode support available");
             return;
         }
 
