@@ -180,20 +180,6 @@ impl<'a> Drop for GbmMapping<'a> {
     }
 }
 
-/// Manually-computed plane layout for `GbmUsage::Separated` frames.
-///
-/// When the GBM driver rejects the native pixel fourcc (e.g. NV12) with every
-/// usage flag, we allocate a single large R8/LINEAR buffer and lay out the
-/// planes ourselves.  The GBM BO metadata only knows about the R8 format, so
-/// we store the real per-plane pitches and offsets here.
-#[derive(Debug, Clone)]
-pub struct SeparatedLayout {
-    /// Per-plane pitch (bytes per row).
-    pub pitches: Vec<usize>,
-    /// Per-plane byte offset within the single BO.
-    pub offsets: Vec<usize>,
-}
-
 #[derive(Debug)]
 pub struct GbmVideoFrame {
     fourcc: Fourcc,
@@ -207,15 +193,10 @@ pub struct GbmVideoFrame {
     // to V4L2.
     #[cfg(feature = "v4l2")]
     export_handles: Vec<DmaBufHandle<File>>,
-    /// Present when the frame was allocated via `GbmUsage::Separated`.
-    separated_layout: Option<SeparatedLayout>,
 }
 
 impl GbmVideoFrame {
     fn get_plane_offset(&self) -> Vec<usize> {
-        if let Some(ref layout) = self.separated_layout {
-            return layout.offsets.clone();
-        }
         let mut ret: Vec<usize> = vec![];
         for plane_idx in 0..self.num_planes() {
             // SAFETY: This assumes self.bo contains valid GBM buffer objects.
@@ -282,15 +263,9 @@ pub struct GbmExternalBufferDescriptor {
     resolution: Resolution,
     pitches: Vec<usize>,
     offsets: Vec<usize>,
-    // We use proper File objects here to correctly manage the lifetimes of the exported FDs.
+    // We use a proper File object here to correctly manage the lifetimes of the exported FDs.
     // Otherwise we risk exhausting the FD limit on the machine for certain test vectors.
-    //
-    // For contiguous (single-BO) frames this contains one file.
-    // For separated (multi-BO) frames this contains one file per BO/plane.
-    export_files: Vec<File>,
-    /// Maps each plane to the index in `export_files` (and thus `objects[]`).
-    /// For contiguous frames every plane maps to object 0.
-    object_indices: Vec<u32>,
+    export_file: File,
 }
 
 #[cfg(feature = "vaapi")]
@@ -299,27 +274,22 @@ impl ExternalBufferDescriptor for GbmExternalBufferDescriptor {
     type DescriptorAttribute = VADRMPRIMESurfaceDescriptor;
 
     fn va_surface_attribute(&mut self) -> Self::DescriptorAttribute {
-        let num_objects = self.export_files.len() as u32;
-
-        let mut objects: [VADRMPRIMESurfaceDescriptorObject; 4] = Default::default();
-        for (i, file) in self.export_files.iter().enumerate() {
-            objects[i] = VADRMPRIMESurfaceDescriptorObject {
-                fd: file.as_raw_fd(),
-                size: file.metadata().unwrap().len() as u32,
+        let objects = [
+            VADRMPRIMESurfaceDescriptorObject {
+                fd: self.export_file.as_raw_fd(),
+                size: self.export_file.metadata().unwrap().len() as u32,
                 drm_format_modifier: self.modifier,
-            };
-        }
-
-        let mut object_index: [u32; 4] = [0; 4];
-        for (i, &idx) in self.object_indices.iter().enumerate().take(4) {
-            object_index[i] = idx;
-        }
+            },
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        ];
 
         let layers = [
             VADRMPRIMESurfaceDescriptorLayer {
                 drm_format: u32::from(self.fourcc),
                 num_planes: self.pitches.len() as u32,
-                object_index,
+                object_index: [0, 0, 0, 0],
                 offset: self
                     .offsets
                     .iter()
@@ -344,15 +314,16 @@ impl ExternalBufferDescriptor for GbmExternalBufferDescriptor {
             Default::default(),
         ];
         let resolution = self.resolution;
-        VADRMPRIMESurfaceDescriptor {
+        let ret = VADRMPRIMESurfaceDescriptor {
             fourcc: u32::from(self.fourcc),
             width: resolution.width,
             height: resolution.height,
-            num_objects,
+            num_objects: 1,
             objects,
             num_layers: 1,
             layers,
-        }
+        };
+        ret
     }
 }
 
@@ -390,9 +361,6 @@ impl VideoFrame for GbmVideoFrame {
     }
 
     fn get_plane_pitch(&self) -> Vec<usize> {
-        if let Some(ref layout) = self.separated_layout {
-            return layout.pitches.clone();
-        }
         let mut ret: Vec<usize> = vec![];
         for plane_idx in 0..self.num_planes() {
             // SAFETY: This assumes self.bo contains valid GBM buffer objects.
@@ -430,6 +398,12 @@ impl VideoFrame for GbmVideoFrame {
         if self.is_compressed() {
             return Err("Compressed buffer export to VA-API is not currently supported".to_string());
         }
+        if !self.is_contiguous() {
+            return Err(
+                "Exporting non-contiguous GBM buffers to VA-API is not currently supported"
+                    .to_string(),
+            );
+        }
 
         // TODO: Add more supported formats
         let rt_format = match self.decoded_format().unwrap() {
@@ -437,31 +411,15 @@ impl VideoFrame for GbmVideoFrame {
             _ => return Err("Format unsupported for VA-API export".to_string()),
         };
 
-        // SAFETY: gbm_bo_get_fd returns a new, owned FD every time it is called,
-        // so this should be safe as long as self.bo contains valid buffer objects.
-        let (export_files, object_indices, offsets) = if self.bo.len() == 1 {
-            // Contiguous: single BO backs all planes.
-            let file = unsafe { File::from_raw_fd(gbm_bo_get_fd(self.bo[0])) };
-            let num_planes = self.num_planes();
-            (vec![file], vec![0u32; num_planes], self.get_plane_offset())
-        } else {
-            // Separated: one BO per plane (used by GbmUsage::Separated).
-            // Each plane lives in its own BO, so the per-plane offset is 0.
-            let files: Vec<File> =
-                self.bo.iter().map(|bo| unsafe { File::from_raw_fd(gbm_bo_get_fd(*bo)) }).collect();
-            let indices: Vec<u32> = (0..files.len() as u32).collect();
-            let offsets = vec![0usize; files.len()];
-            (files, indices, offsets)
-        };
-
         let export_descriptor = vec![GbmExternalBufferDescriptor {
             fourcc: self.fourcc.clone(),
             modifier: self.get_modifier(),
             resolution: self.resolution(),
             pitches: self.get_plane_pitch(),
-            offsets,
-            export_files,
-            object_indices,
+            offsets: self.get_plane_offset(),
+            // SAFETY: gbm_bo_get_fd returns a new, owned FD every time it is called, so this should
+            // be safe as long as self.bo contains valid buffer objects.
+            export_file: unsafe { File::from_raw_fd(gbm_bo_get_fd(self.bo[0])) },
         }];
 
         let mut ret = display
@@ -498,16 +456,6 @@ unsafe impl Sync for GbmVideoFrame {}
 pub enum GbmUsage {
     Decode,
     Encode,
-    /// Use `GBM_BO_USE_LINEAR` for drivers where neither `HW_VIDEO_DECODER`
-    /// nor `HW_VIDEO_ENCODER` flags are supported (e.g. Mesa iris on Intel
-    /// Tiger Lake with Mesa 23.x).  Linear buffers are universally supported
-    /// but may be slower due to lack of tiling optimisations.
-    Linear,
-    /// Allocate each plane as a separate R8 buffer with `GBM_BO_USE_LINEAR`.
-    /// This bypasses the native NV12 GBM allocation entirely, which is
-    /// necessary on drivers where `gbm_bo_create` rejects the NV12 fourcc
-    /// with every usage flag (e.g. Mesa iris on Intel Tiger Lake).
-    Separated,
 }
 
 #[derive(Debug)]
@@ -548,7 +496,6 @@ impl GbmDevice {
             _device: Some(Arc::clone(&self)),
             #[cfg(feature = "v4l2")]
             export_handles: vec![],
-            separated_layout: None,
         };
 
         if ret.is_compressed() {
@@ -574,71 +521,6 @@ impl GbmDevice {
             }
 
             ret.bo.push(bo);
-        } else if usage == GbmUsage::Separated {
-            // Allocate a single flat R8/LINEAR buffer large enough to hold all
-            // planes and compute the NV12 (or similar) layout manually.  This
-            // bypasses the native fourcc entirely, which is needed on drivers
-            // where `gbm_bo_create` rejects the pixel fourcc (e.g. NV12) with
-            // every usage flag.
-            let vertical_subsampling = ret.get_vertical_subsampling();
-            let bytes_per_element = ret.get_bytes_per_element();
-            let horizontal_subsampling = ret.get_horizontal_subsampling();
-
-            // The R8 BO width must accommodate the widest row across all
-            // planes.  For NV12 that is max(Y_row=W, UV_row=W/2*2=W) = W.
-            let row_width = (0..ret.num_planes())
-                .map(|p| {
-                    align_up(coded_resolution.width as usize, horizontal_subsampling[p])
-                        / horizontal_subsampling[p]
-                        * bytes_per_element[p]
-                })
-                .max()
-                .unwrap_or(coded_resolution.width as usize);
-
-            // Total height = sum of per-plane heights.
-            let total_height: usize = (0..ret.num_planes())
-                .map(|p| {
-                    align_up(coded_resolution.height as usize, vertical_subsampling[p])
-                        / vertical_subsampling[p]
-                })
-                .sum();
-
-            // SAFETY: Same precondition as all other gbm_bo_create calls.
-            let bo = unsafe {
-                gbm_bo_create(
-                    self.device,
-                    row_width as u32,
-                    total_height as u32,
-                    DrmFourcc::R8 as u32,
-                    gbm_bo_flags::GBM_BO_USE_LINEAR as u32,
-                )
-            };
-            if bo.is_null() {
-                return Err(format!(
-                    "Error allocating separated R8 buffer ({}×{}) for format {}",
-                    row_width, total_height, fourcc,
-                ));
-            }
-
-            // The R8 BO's stride may be wider than `row_width` due to
-            // alignment; read it back from GBM.
-            let stride = unsafe { gbm_bo_get_stride_for_plane(bo, 0) as usize };
-
-            // Build per-plane pitches and offsets within the flat buffer.
-            let mut pitches = Vec::with_capacity(ret.num_planes());
-            let mut offsets = Vec::with_capacity(ret.num_planes());
-            let mut cursor: usize = 0;
-            for p in 0..ret.num_planes() {
-                pitches.push(stride);
-                offsets.push(cursor);
-                let plane_height =
-                    align_up(coded_resolution.height as usize, vertical_subsampling[p])
-                        / vertical_subsampling[p];
-                cursor += stride * plane_height;
-            }
-
-            ret.separated_layout = Some(SeparatedLayout { pitches, offsets });
-            ret.bo.push(bo);
         } else if ret.is_contiguous() {
             // These flags are not present in every system's GBM headers.
             const GBM_BO_USE_HW_VIDEO_DECODER: u32 = 1 << 13;
@@ -650,19 +532,17 @@ impl GbmDevice {
             // try to map it.
             // SAFETY: This should be safe because we would not instantiate a GbmDevice unless the
             // call to gbm_create_device was successful.
-            let flags = match usage {
-                GbmUsage::Decode => GBM_BO_USE_HW_VIDEO_DECODER,
-                GbmUsage::Encode => GBM_BO_USE_HW_VIDEO_ENCODER,
-                GbmUsage::Linear => gbm_bo_flags::GBM_BO_USE_LINEAR as u32,
-                GbmUsage::Separated => unreachable!(),
-            };
             let bo = unsafe {
                 gbm_bo_create(
                     self.device,
                     coded_resolution.width,
                     coded_resolution.height,
                     u32::from(fourcc),
-                    flags,
+                    if usage == GbmUsage::Decode {
+                        GBM_BO_USE_HW_VIDEO_DECODER
+                    } else {
+                        GBM_BO_USE_HW_VIDEO_ENCODER
+                    },
                 )
             };
             if bo.is_null() {
@@ -744,7 +624,6 @@ impl GbmDevice {
             bo: vec![],
             export_handles: vec![],
             _device: Some(Arc::clone(&self)),
-            separated_layout: None,
         };
 
         if strides.is_empty() || native_handle.is_empty() {
@@ -833,7 +712,6 @@ impl GbmDevice {
             fourcc: Fourcc::from(descriptor.fourcc),
             resolution: Resolution { width: descriptor.width, height: descriptor.height },
             bo: vec![],
-            separated_layout: None,
         };
 
         let buffers = [

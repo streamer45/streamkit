@@ -112,10 +112,10 @@ must_use_candidate = "allow"
 doc_markdown = "allow"
 
 # ---------------------------------------------------------------------------
-# Patched cros-codecs: adds GbmUsage::Linear for drivers where neither
-# GBM_BO_USE_HW_VIDEO_DECODER nor GBM_BO_USE_HW_VIDEO_ENCODER is supported
-# (e.g. Mesa iris on Intel Tiger Lake with Mesa 23.x).
-# Remove this patch once upstream cros-codecs ships the Linear variant.
+# Patched cros-codecs: adds display_resolution field to AV1 EncoderConfig
+# so the frame header signals render_width/render_height when the visible
+# area differs from the superblock-aligned coded dimensions (fixes #292).
+# Remove this patch once upstream cros-codecs ships display_resolution.
 # ---------------------------------------------------------------------------
 [patch.crates-io]
 cros-codecs = { path = "vendor/cros-codecs" }

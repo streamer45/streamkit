@@ -61,11 +61,9 @@ use cros_codecs::encoder::{
     FrameMetadata as CrosFrameMetadata, PredictionStructure, RateControl, Tunings, VideoEncoder,
 };
 use cros_codecs::libva;
-use cros_codecs::video_frame::gbm_video_frame::{
-    GbmDevice, GbmExternalBufferDescriptor, GbmUsage, GbmVideoFrame,
-};
-use cros_codecs::video_frame::{ReadMapping, VideoFrame as CrosVideoFrame, WriteMapping};
-use cros_codecs::{Fourcc as CrosFourcc, FrameLayout, PlaneLayout, Resolution as CrosResolution};
+use cros_codecs::video_frame::gbm_video_frame::{GbmDevice, GbmUsage, GbmVideoFrame};
+use cros_codecs::video_frame::{ReadMapping, VideoFrame as CrosVideoFrame};
+use cros_codecs::{FrameLayout, PlaneLayout, Resolution as CrosResolution};
 
 use super::encoder_trait::{self, EncodedPacket, EncoderNodeRunner, StandardVideoEncoder};
 use super::HwAccelMode;
@@ -161,6 +159,136 @@ pub(super) fn open_va_and_gbm(
     let gbm =
         GbmDevice::open(&path).map_err(|e| format!("failed to open GBM device on {path}: {e}"))?;
     Ok((display, gbm, path))
+}
+
+/// Open a VA display without a GBM device.
+///
+/// Used by encoder paths that pass VA surfaces directly to the encoder,
+/// bypassing GBM buffer allocation entirely.  This avoids the
+/// `GBM_BO_USE_HW_VIDEO_ENCODER` flag that Mesa's iris driver does not
+/// support for NV12 on some hardware (e.g. Intel Tiger Lake).
+pub(super) fn open_va_display(
+    render_device: Option<&String>,
+) -> Result<(Rc<libva::Display>, String), String> {
+    let path = resolve_render_device(render_device);
+    let display = libva::Display::open_drm_display(&path)
+        .map_err(|e| format!("failed to open VA display on {path}: {e}"))?;
+    Ok((display, path))
+}
+
+/// Write NV12 (or I420→NV12) data from a StreamKit [`VideoFrame`] into a VA
+/// surface using the VA-API Image API.
+///
+/// Uses `vaCreateImage` + `vaMapBuffer` to obtain a writable mapping, writes
+/// NV12 data respecting the driver's internal pitches/offsets, then drops the
+/// [`Image`] which flushes the data back via `vaPutImage`.
+///
+/// Returns `(pitches, offsets)` — the per-plane stride and byte-offset arrays
+/// from the `VAImage`, needed to build the [`FrameLayout`] for the encoder.
+pub(super) fn write_nv12_to_va_surface(
+    display: &Rc<libva::Display>,
+    surface: &libva::Surface<()>,
+    frame: &VideoFrame,
+) -> Result<([usize; 2], [usize; 2]), String> {
+    let nv12_fourcc_val: u32 = nv12_fourcc().into();
+    let image_fmts = display
+        .query_image_formats()
+        .map_err(|e| format!("failed to query VA image formats: {e}"))?;
+    let image_fmt = image_fmts
+        .into_iter()
+        .find(|f| f.fourcc == nv12_fourcc_val)
+        .ok_or("VA driver does not support NV12 image format")?;
+
+    let mut image = libva::Image::create_from(surface, image_fmt, surface.size(), surface.size())
+        .map_err(|e| format!("failed to create VA image for NV12 upload: {e}"))?;
+
+    let va_image = *image.image();
+    let y_pitch = va_image.pitches[0] as usize;
+    let uv_pitch = va_image.pitches[1] as usize;
+    let y_offset = va_image.offsets[0] as usize;
+    let uv_offset = va_image.offsets[1] as usize;
+
+    let dest = image.as_mut();
+    let src = frame.data.as_ref().as_ref();
+    let w = frame.width as usize;
+    let h = frame.height as usize;
+
+    match frame.pixel_format {
+        PixelFormat::Nv12 => {
+            // Y plane.
+            for row in 0..h {
+                let s = row * w;
+                let d = y_offset + row * y_pitch;
+                if s + w > src.len() || d + w > dest.len() {
+                    return Err(format!(
+                        "NV12 Y row copy out of bounds: src[{}..{}] (len {}), dest[{}..{}] (len {})",
+                        s, s + w, src.len(), d, d + w, dest.len()
+                    ));
+                }
+                dest[d..d + w].copy_from_slice(&src[s..s + w]);
+            }
+            // UV plane (already interleaved in NV12).
+            let uv_h = h.div_ceil(2);
+            let chroma_w = w.div_ceil(2) * 2;
+            let src_uv = &src[w * h..];
+            for row in 0..uv_h {
+                let s = row * chroma_w;
+                let d = uv_offset + row * uv_pitch;
+                if s + chroma_w > src_uv.len() || d + chroma_w > dest.len() {
+                    return Err(format!(
+                        "NV12 UV row copy out of bounds: src[{}..{}] (len {}), dest[{}..{}] (len {})",
+                        s, s + chroma_w, src_uv.len(), d, d + chroma_w, dest.len()
+                    ));
+                }
+                dest[d..d + chroma_w].copy_from_slice(&src_uv[s..s + chroma_w]);
+            }
+        },
+        PixelFormat::I420 => {
+            // Y plane — same as NV12.
+            for row in 0..h {
+                let s = row * w;
+                let d = y_offset + row * y_pitch;
+                if s + w > src.len() || d + w > dest.len() {
+                    return Err(format!(
+                        "I420 Y row copy out of bounds: src[{}..{}] (len {}), dest[{}..{}] (len {})",
+                        s, s + w, src.len(), d, d + w, dest.len()
+                    ));
+                }
+                dest[d..d + w].copy_from_slice(&src[s..s + w]);
+            }
+            // I420 → NV12: interleave U and V into a single UV plane.
+            let uv_w = w.div_ceil(2);
+            let uv_h = h.div_ceil(2);
+            let u_start = w * h;
+            let v_start = u_start + uv_w * uv_h;
+            for row in 0..uv_h {
+                for col in 0..uv_w {
+                    let u_idx = u_start + row * uv_w + col;
+                    let v_idx = v_start + row * uv_w + col;
+                    let d = uv_offset + row * uv_pitch + col * 2;
+                    if u_idx >= src.len() || v_idx >= src.len() || d + 1 >= dest.len() {
+                        return Err(format!(
+                            "I420 UV interleave out of bounds: u_idx={u_idx}, v_idx={v_idx} \
+                             (src len {}), dst_idx={d} (dest len {})",
+                            src.len(),
+                            dest.len()
+                        ));
+                    }
+                    dest[d] = src[u_idx];
+                    dest[d + 1] = src[v_idx];
+                }
+            }
+        },
+        other => {
+            drop(image);
+            return Err(format!("write_nv12_to_va_surface: unsupported pixel format {other:?}"));
+        },
+    }
+
+    // Drop `image` to flush data back to the surface via vaPutImage.
+    drop(image);
+
+    Ok(([y_pitch, uv_pitch], [y_offset, uv_offset]))
 }
 
 /// Copy NV12 plane data from a GBM read-mapping into a flat `Vec<u8>` suitable
@@ -576,26 +704,7 @@ fn vaapi_av1_decode_loop(
             let ch = coded_height;
             let mut alloc_cb = move || {
                 let res = CrosResolution { width: cw, height: ch };
-                gbm_ref
-                    .clone()
-                    .new_frame(nv12_fourcc(), res.clone(), res.clone(), GbmUsage::Decode)
-                    .or_else(|_| {
-                        gbm_ref.clone().new_frame(
-                            nv12_fourcc(),
-                            res.clone(),
-                            res.clone(),
-                            GbmUsage::Linear,
-                        )
-                    })
-                    .or_else(|_| {
-                        gbm_ref.clone().new_frame(
-                            nv12_fourcc(),
-                            res.clone(),
-                            res,
-                            GbmUsage::Separated,
-                        )
-                    })
-                    .ok()
+                gbm_ref.clone().new_frame(nv12_fourcc(), res.clone(), res, GbmUsage::Decode).ok()
             };
 
             let mut made_progress = false;
@@ -877,20 +986,17 @@ impl EncoderNodeRunner for VaapiAv1EncoderNode {
 // Encoder — internal codec wrapper
 // ---------------------------------------------------------------------------
 
-/// Type alias for the VA-API AV1 encoder using GBM-backed video frames.
+/// Type alias for the VA-API AV1 encoder using direct VA surfaces.
 ///
-/// The `GbmVideoFrame` handle satisfies the `VideoFrame` trait bound
-/// required by `StatelessEncoder::new_vaapi()`.  At runtime, GBM buffer
-/// allocation uses `GBM_BO_USE_HW_VIDEO_ENCODER` when supported, and
-/// falls back to `GBM_BO_USE_HW_VIDEO_DECODER` on drivers where the
-/// encoder flag is unsupported (e.g. Mesa iris on Intel Tiger Lake).
+/// Bypasses GBM buffer allocation entirely — input frames are uploaded to
+/// VA surfaces via the VA-API Image API and passed straight through to the
+/// encoder backend.  This avoids the `GBM_BO_USE_HW_VIDEO_ENCODER` flag
+/// which Mesa's iris driver does not support for NV12 on some hardware
+/// (e.g. Intel Tiger Lake with Mesa 23.x).
 type CrosVaapiAv1Encoder = StatelessEncoder<
     cros_codecs::encoder::av1::AV1,
-    GbmVideoFrame,
-    cros_codecs::backend::vaapi::encoder::VaapiBackend<
-        GbmExternalBufferDescriptor,
-        libva::Surface<GbmExternalBufferDescriptor>,
-    >,
+    libva::Surface<()>,
+    cros_codecs::backend::vaapi::encoder::VaapiBackend<(), libva::Surface<()>>,
 >;
 
 /// Internal encoder state wrapping the cros-codecs `StatelessEncoder`.
@@ -900,12 +1006,6 @@ type CrosVaapiAv1Encoder = StatelessEncoder<
 struct VaapiAv1Encoder {
     encoder: CrosVaapiAv1Encoder,
     display: Rc<libva::Display>,
-    gbm: Arc<GbmDevice>,
-    /// GBM buffer usage flag.  Defaults to `Encode` (optimal tiling for the
-    /// encoder HW), but falls back to `Decode` on drivers where
-    /// `GBM_BO_USE_HW_VIDEO_ENCODER` is unsupported (e.g. Mesa iris on
-    /// Intel Tiger Lake with Mesa 23.x).
-    gbm_usage: GbmUsage,
     width: u32,
     height: u32,
     coded_width: u32,
@@ -918,60 +1018,11 @@ impl StandardVideoEncoder for VaapiAv1Encoder {
     const CODEC_NAME: &'static str = "VA-API AV1";
 
     fn new_encoder(width: u32, height: u32, config: &Self::Config) -> Result<Self, String> {
-        let (display, gbm, path) = open_va_and_gbm(config.render_device.as_ref())?;
+        let (display, path) = open_va_display(config.render_device.as_ref())?;
         tracing::info!(device = %path, width, height, "VA-API AV1 encoder opening");
 
         let coded_width = align_up_u32(width, AV1_SB_SIZE);
         let coded_height = align_up_u32(height, AV1_SB_SIZE);
-
-        // Probe GBM encoder buffer support.
-        //
-        // Three-level fallback:
-        //   1. GBM_BO_USE_HW_VIDEO_ENCODER  — optimal tiling for the encoder HW
-        //   2. GBM_BO_USE_HW_VIDEO_DECODER  — decoder-tiled, still HW-friendly
-        //   3. GBM_BO_USE_LINEAR            — universally supported, no tiling
-        //
-        // Mesa iris on Intel Tiger Lake (Mesa ≤ 23.x) rejects both HW_VIDEO
-        // flags for NV12 contiguous allocation; only LINEAR succeeds.
-        let gbm_usage = {
-            let probe_res = CrosResolution { width: coded_width, height: coded_height };
-            let try_alloc = |usage: GbmUsage| {
-                Arc::clone(&gbm).new_frame(
-                    nv12_fourcc(),
-                    probe_res.clone(),
-                    probe_res.clone(),
-                    usage,
-                )
-            };
-
-            if try_alloc(GbmUsage::Encode).is_ok() {
-                tracing::debug!("GBM encoder buffer allocation OK (HW_VIDEO_ENCODER)");
-                GbmUsage::Encode
-            } else if try_alloc(GbmUsage::Decode).is_ok() {
-                tracing::warn!(
-                    "GBM_BO_USE_HW_VIDEO_ENCODER unsupported on this driver; \
-                     falling back to GBM_BO_USE_HW_VIDEO_DECODER for encoder input buffers"
-                );
-                GbmUsage::Decode
-            } else if try_alloc(GbmUsage::Linear).is_ok() {
-                tracing::warn!(
-                    "GBM HW_VIDEO_ENCODER and HW_VIDEO_DECODER both unsupported; \
-                     falling back to GBM_BO_USE_LINEAR for encoder input buffers"
-                );
-                GbmUsage::Linear
-            } else if try_alloc(GbmUsage::Separated).is_ok() {
-                tracing::warn!(
-                    "GBM rejects NV12 fourcc with all usage flags; \
-                     falling back to per-plane R8 allocation (GbmUsage::Separated)"
-                );
-                GbmUsage::Separated
-            } else {
-                return Err(format!(
-                    "GBM cannot allocate NV12 {coded_width}×{coded_height} buffers \
-                     with any supported usage flag (tried Encode, Decode, Linear, Separated)"
-                ));
-            }
-        };
 
         // Pass display_resolution so the AV1 frame header sets
         // render_width/render_height to the visible area, not the
@@ -1013,21 +1064,10 @@ impl StandardVideoEncoder for VaapiAv1Encoder {
             coded_width,
             coded_height,
             quality = config.quality,
-            gbm_usage = ?gbm_usage,
             "VA-API AV1 encoder created"
         );
 
-        Ok(Self {
-            encoder,
-            display,
-            gbm,
-            gbm_usage,
-            width,
-            height,
-            coded_width,
-            coded_height,
-            frame_count: 0,
-        })
+        Ok(Self { encoder, display, width, height, coded_width, coded_height, frame_count: 0 })
     }
 
     fn encode(
@@ -1041,33 +1081,36 @@ impl StandardVideoEncoder for VaapiAv1Encoder {
                 .into());
         }
 
-        // Allocate a GBM frame and write NV12 data into it.
-        let visible_res = CrosResolution { width: self.width, height: self.height };
-        let coded_res = CrosResolution { width: self.coded_width, height: self.coded_height };
-        let mut gbm_frame = Arc::clone(&self.gbm)
-            .new_frame(nv12_fourcc(), visible_res, coded_res, self.gbm_usage.clone())
-            .map_err(|e| format!("failed to allocate GBM frame for encoding: {e}"))?;
+        // Create a VA surface and upload NV12 data via the Image API.
+        // This bypasses GBM buffer allocation (GBM_BO_USE_HW_VIDEO_ENCODER),
+        // which Mesa's iris driver does not support for NV12 on all hardware.
+        let nv12_fourcc_val: u32 = nv12_fourcc().into();
+        let mut surfaces = self
+            .display
+            .create_surfaces(
+                libva::VA_RT_FORMAT_YUV420,
+                Some(nv12_fourcc_val),
+                self.coded_width,
+                self.coded_height,
+                Some(libva::UsageHint::USAGE_HINT_ENCODER),
+                vec![()],
+            )
+            .map_err(|e| format!("failed to create VA surface for encoding: {e}"))?;
+        let surface =
+            surfaces.pop().ok_or_else(|| "create_surfaces returned empty vec".to_string())?;
 
-        // Write NV12 (or I420→NV12) data into the GBM buffer.
-        let pitches = gbm_frame.get_plane_pitch();
-        {
-            let mapping = gbm_frame
-                .map_mut()
-                .map_err(|e| format!("failed to map GBM frame for writing: {e}"))?;
-            write_nv12_to_mapping(mapping.as_ref(), frame, &pitches)?;
-        }
+        // Write frame data into the VA surface.
+        let (pitches, offsets) = write_nv12_to_va_surface(&self.display, &surface, frame)?;
 
         let is_keyframe = metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(false);
         let timestamp = metadata.as_ref().and_then(|m| m.timestamp_us).unwrap_or(self.frame_count);
 
-        // Build the frame layout from the GBM buffer's pitches.
-        let plane_sizes = gbm_frame.get_plane_size();
         let frame_layout = FrameLayout {
-            format: (nv12_fourcc(), 0),
+            format: (nv12_fourcc(), 0), // DRM_FORMAT_MOD_LINEAR
             size: CrosResolution { width: self.coded_width, height: self.coded_height },
             planes: vec![
-                PlaneLayout { buffer_index: 0, offset: 0, stride: pitches[0] },
-                PlaneLayout { buffer_index: 0, offset: plane_sizes[0], stride: pitches[1] },
+                PlaneLayout { buffer_index: 0, offset: offsets[0], stride: pitches[0] },
+                PlaneLayout { buffer_index: 0, offset: offsets[1], stride: pitches[1] },
             ],
         };
 
@@ -1075,7 +1118,7 @@ impl StandardVideoEncoder for VaapiAv1Encoder {
             CrosFrameMetadata { timestamp, layout: frame_layout, force_keyframe: is_keyframe };
 
         self.encoder
-            .encode(cros_meta, gbm_frame)
+            .encode(cros_meta, surface)
             .map_err(|e| format!("VA-API AV1 encode error: {e}"))?;
 
         self.frame_count += 1;
