@@ -1,0 +1,173 @@
+// SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+//
+// SPDX-License-Identifier: MPL-2.0
+
+// Subtitle overlay for real-time transcription display.
+//
+// Crossfade: the Slint plugin's general-purpose previous-value
+// tracking detects the `prev-text` / `text` pair and automatically
+// injects the old value + bumps `revision` on each change.  The two
+// text layers alternate based on revision parity — purely reactive.
+//
+// Auto-fade: a Timer marks the subtitle as stale 5 s after the last
+// revision bump.  The panel stays visible while `speaking` is true
+// (driven by the pipeline VAD) even if stale, so it only fades when
+// the speaker actually goes silent AND no new text has arrived.
+//
+// Speaking indicator: driven by a pipeline VAD node via a second
+// param_bridge that sets `speaking` in real time.
+//
+// Properties updated at runtime via param_bridge → UpdateParams:
+//   text, show, speaking
+// Properties auto-managed by the Slint plugin (prev-value tracking):
+//   prev-text, revision
+
+export component Subtitle inherits Window {
+    // ── Pipeline-driven properties ─────────────────────────────
+    in property <string> text: "";
+    in property <string> prev-text: "";
+    in property <int> revision: 0;
+    in property <bool> show: true;
+    in property <bool> speaking: false;
+
+    // ── Crossfade state (reactive) ─────────────────────────────
+
+    property <bool> use-a: Math.mod(revision, 2) == 0;
+    property <string> a-text: use-a ? text : prev-text;
+    property <string> b-text: !use-a ? text : prev-text;
+
+    // ── Auto-fade after inactivity ─────────────────────────────
+    //
+    // `stale-revision` records the revision at which the fade timer
+    // last fired.  When it equals the current revision, the text is
+    // stale.  When revision bumps (new text), the mismatch restarts
+    // the timer naturally — no toggle hacks needed.
+
+    property <int> stale-revision: -1;
+    property <bool> has-text: show && text != "";
+    property <bool> stale: has-text && stale-revision == revision;
+
+    fade-timer := Timer {
+        interval: 5000ms;
+        running: root.has-text && !root.stale;
+        triggered => {
+            root.stale-revision = root.revision;
+        }
+    }
+
+    // ── Derived visibility ─────────────────────────────────────
+    //
+    // The backdrop bar is always visible (controlled by `show`).
+    // Text fades 5 s after the last transcription.  `speaking`
+    // only drives the visual indicators (dot / accent), NOT text
+    // visibility — otherwise stale text reappears when the VAD
+    // fires before the next transcription arrives.
+
+    property <bool> text-visible: has-text && !stale;
+    property <bool> a-on: text-visible && a-text != "" && use-a;
+    property <bool> b-on: text-visible && b-text != "" && !use-a;
+
+    width: 1280px;
+    height: 120px;
+    background: transparent;
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+
+        // Backdrop panel — always visible when `show` is true.
+        Rectangle {
+            x: 60px;
+            y: root.show ? 14px : 22px;
+            width: root.width - 120px;
+            height: root.height - 28px;
+            border-radius: 12px;
+            background: #0c1018e0;
+            opacity: root.show ? 1.0 : 0.0;
+            border-width: 1px;
+            border-color: root.speaking ? #ffffff1a : #ffffff0e;
+
+            animate opacity       { duration: 280ms; easing: ease-out; }
+            animate y             { duration: 380ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+            animate border-color  { duration: 200ms; easing: ease-out; }
+
+            // Speaking indicator — glow ring (behind dot).
+            Rectangle {
+                x: 6px;
+                y: (parent.height - 26px) / 2;
+                width: 26px;
+                height: 26px;
+                border-radius: 13px;
+                background: root.speaking ? #4ade8020 : transparent;
+
+                animate background { duration: 300ms; easing: ease-out; }
+            }
+
+            // Speaking indicator — solid dot.
+            Rectangle {
+                x: 12px;
+                y: (parent.height - 14px) / 2;
+                width: 14px;
+                height: 14px;
+                border-radius: 7px;
+                background: root.speaking ? #4ade80 : #ffffff20;
+
+                animate background { duration: 150ms; easing: ease-out; }
+            }
+
+            // Accent highlight — wider and brighter when speaking.
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: 0px;
+                width: root.speaking ? parent.width * 0.5 : parent.width * 0.3;
+                height: 2px;
+                border-radius: 1px;
+                background: root.speaking ? #58a6ffa0 : #58a6ff50;
+
+                animate width      { duration: 400ms; delay: 60ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+                animate background { duration: 250ms; easing: ease-out; }
+            }
+
+            // Text layer A — active on even revisions.
+            Text {
+                x: 38px;
+                y: root.a-on ? 0px : 8px;
+                width:  parent.width - 56px;
+                height: parent.height;
+                text: root.a-text;
+                color: #ffffffea;
+                font-size: 24px;
+                font-weight: 600;
+                wrap: word-wrap;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+                letter-spacing: 0.3px;
+                opacity: root.a-on ? 1.0 : 0.0;
+
+                animate opacity { duration: 180ms; easing: ease-in; }
+                animate y       { duration: 300ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+            }
+
+            // Text layer B — active on odd revisions.
+            Text {
+                x: 38px;
+                y: root.b-on ? 0px : 8px;
+                width:  parent.width - 56px;
+                height: parent.height;
+                text: root.b-text;
+                color: #ffffffea;
+                font-size: 24px;
+                font-weight: 600;
+                wrap: word-wrap;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+                letter-spacing: 0.3px;
+                opacity: root.b-on ? 1.0 : 0.0;
+
+                animate opacity { duration: 180ms; easing: ease-in; }
+                animate y       { duration: 300ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+            }
+        }
+    }
+}

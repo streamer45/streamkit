@@ -836,6 +836,14 @@ async fn write_upload_to_disk(
         }
     }
 
+    // Flush pending writes — tokio::fs::File::write_all returns as soon as
+    // data is copied to an internal buffer and a blocking write is spawned,
+    // so the last write may still be in-flight when the File is dropped.
+    if let Err(e) = file.flush().await {
+        let _ = fs::remove_file(file_path).await;
+        return Err(PluginAssetError::IoError(format!("Failed to flush file: {e}")));
+    }
+
     Ok(total_bytes)
 }
 

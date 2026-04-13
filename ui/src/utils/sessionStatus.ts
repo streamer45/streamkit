@@ -54,8 +54,8 @@ export function computeSessionStatus(nodeStates: Record<string, NodeState>): Ses
     return 'recovering';
   }
 
-  // Check for initializing
-  if (states.some((state) => state === 'Initializing')) {
+  // Check for creating or initializing
+  if (states.some((state) => state === 'Creating' || state === 'Initializing')) {
     return 'initializing';
   }
 

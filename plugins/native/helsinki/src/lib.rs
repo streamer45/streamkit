@@ -47,8 +47,7 @@ fn preview_for_log(text: &str, max_chars: usize) -> String {
 
 fn canonicalize_model_dir(model_dir: &str) -> String {
     std::fs::canonicalize(model_dir)
-        .map(|path| path.to_string_lossy().to_string())
-        .unwrap_or_else(|_| model_dir.to_string())
+        .map_or_else(|_| model_dir.to_string(), |path| path.to_string_lossy().to_string())
 }
 
 fn warmup_translate(
@@ -68,7 +67,7 @@ fn warmup_translate(
                 start.elapsed().as_millis(),
                 result.chars().count()
             );
-        }
+        },
         Err(e) => {
             plugin_warn!(
                 logger,
@@ -76,7 +75,7 @@ fn warmup_translate(
                 start.elapsed().as_millis(),
                 e
             );
-        }
+        },
     }
 }
 
@@ -151,15 +150,11 @@ impl NativeProcessorNode for HelsinkiPlugin {
     }
 
     fn new(params: Option<Value>, logger: Logger) -> Result<Self, String> {
-        plugin_info!(
-            logger,
-            "Helsinki plugin new() called with params: {:?}",
-            params
-        );
+        plugin_info!(logger, "Helsinki plugin new() called with params: {:?}", params);
 
         let mut config: HelsinkiConfig = if let Some(p) = params {
             serde_json::from_value(p).map_err(|e| {
-                let error_msg = format!("Invalid config: {}", e);
+                let error_msg = format!("Invalid config: {e}");
                 plugin_error!(logger, "{}", error_msg);
                 error_msg
             })?
@@ -185,9 +180,7 @@ impl NativeProcessorNode for HelsinkiPlugin {
         }
 
         // Warn if model directory doesn't match language pair
-        if let Err(e) = config.check_model_language_match() {
-            plugin_error!(logger, "{}", e);
-        }
+        config.check_model_language_match();
 
         plugin_info!(
             logger,
@@ -207,11 +200,7 @@ impl NativeProcessorNode for HelsinkiPlugin {
 
         plugin_info!(logger, "Helsinki plugin initialized successfully");
 
-        Ok(Self {
-            config,
-            translator,
-            logger,
-        })
+        Ok(Self { config, translator, logger })
     }
 
     fn process(&mut self, _pin: &str, packet: Packet, output: &OutputSender) -> Result<(), String> {
@@ -219,12 +208,7 @@ impl NativeProcessorNode for HelsinkiPlugin {
         let text: String = match &packet {
             Packet::Text(t) => t.as_ref().to_string(),
             Packet::Transcription(t) => t.text.clone(),
-            _ => {
-                return Err(format!(
-                    "Expected Text or Transcription packet, got {:?}",
-                    packet
-                ))
-            }
+            _ => return Err(format!("Expected Text or Transcription packet, got {packet:?}")),
         };
 
         // Skip empty text
@@ -261,8 +245,8 @@ impl NativeProcessorNode for HelsinkiPlugin {
 
     fn update_params(&mut self, params: Option<Value>) -> Result<(), String> {
         if let Some(p) = params {
-            let mut new_config: HelsinkiConfig = serde_json::from_value(p)
-                .map_err(|e| format!("Invalid config: {}", e))?;
+            let mut new_config: HelsinkiConfig =
+                serde_json::from_value(p).map_err(|e| format!("Invalid config: {e}"))?;
 
             new_config.validate()?;
 
@@ -283,10 +267,7 @@ impl NativeProcessorNode for HelsinkiPlugin {
                 || new_config.device_index != self.config.device_index;
 
             if needs_reload {
-                plugin_info!(
-                    self.logger,
-                    "Model parameters changed, reloading translator"
-                );
+                plugin_info!(self.logger, "Model parameters changed, reloading translator");
                 self.translator = get_or_load_translator(&new_config, &self.logger)?;
             }
 

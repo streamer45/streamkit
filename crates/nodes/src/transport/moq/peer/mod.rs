@@ -1820,7 +1820,21 @@ impl MoqPeerNode {
             },
             RouteOutcome::NoEntry(packet) => {
                 // No dynamic channel — fall through to the static output sender.
-                output_sender.send(output_pin, packet).await.is_ok()
+                match output_sender.send(output_pin, packet).await {
+                    Ok(()) => true,
+                    Err(streamkit_core::OutputSendError::PinNotFound { .. }) => {
+                        // The pin doesn't exist yet — the engine may still be
+                        // wiring up a dynamic output pin for this track.  Drop
+                        // the packet but keep the track processor alive so it
+                        // can deliver subsequent frames once the pin appears.
+                        tracing::debug!(
+                            output_pin,
+                            "Output pin not yet available, dropping packet"
+                        );
+                        true
+                    },
+                    Err(_) => false,
+                }
             },
         }
     }

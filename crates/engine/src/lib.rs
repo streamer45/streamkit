@@ -155,6 +155,7 @@ impl Engine {
     #[cfg(feature = "dynamic")]
     pub fn start_dynamic_actor(&self, config: DynamicEngineConfig) -> DynamicEngineHandle {
         let (control_tx, control_rx) = mpsc::channel(DEFAULT_ENGINE_CONTROL_CAPACITY);
+        let engine_control_tx = control_tx.clone();
         let (query_tx, query_rx) = mpsc::channel(DEFAULT_ENGINE_QUERY_CAPACITY);
 
         let node_input_capacity = config.node_input_capacity.unwrap_or(DEFAULT_NODE_INPUT_CAPACITY);
@@ -175,6 +176,9 @@ impl Engine {
             per_pin_control_capacity = DEFAULT_CONTROL_CAPACITY,
             "Starting Dynamic Engine actor"
         );
+
+        // Internal channel for background node creation results.
+        let (nc_tx, nc_rx) = mpsc::channel(64);
 
         let meter = global::meter("skit_engine");
         let dynamic_engine = DynamicEngine {
@@ -236,6 +240,13 @@ impl Engine {
                 .u64_gauge("node.state")
                 .with_description("Node state (1=running, 0=stopped/failed)")
                 .build(),
+            engine_control_tx,
+            node_created_tx: nc_tx,
+            node_created_rx: nc_rx,
+            pending_connections: Vec::new(),
+            pending_tunes: Vec::new(),
+            next_creation_id: 0,
+            active_creations: std::collections::HashMap::new(),
         };
 
         let engine_task = tokio::spawn(dynamic_engine.run());

@@ -545,9 +545,9 @@ pub fn rasterize_text_overlay(
     };
 
     let font_size = config.font_size.max(1) as f32;
-    // No word wrapping — text only breaks on explicit newlines.
-    // Passing 0 tells wrap_text_lines to split on '\n' only.
-    let wrap_width = 0;
+    // Word-wrap when enabled: use the overlay's bounding rect width.
+    // Otherwise only break on explicit newlines (wrap_width = 0).
+    let wrap_width = if config.word_wrap { config.transform.rect.width } else { 0 };
 
     // Measure actual text dimensions so the bitmap is large enough to hold
     // the full rendered string without clipping.  When a wrap width is set

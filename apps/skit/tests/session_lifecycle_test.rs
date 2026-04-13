@@ -458,19 +458,15 @@ async fn test_session_destroy_shuts_down_pipeline() {
 
     println!("✅ Session created: {}", session_id);
 
-    // Add a source node (silence generator)
+    // Add a source node (audio::gain is a registered core node with in/out pins)
     let add_source_request = Request {
         message_type: MessageType::Request,
         correlation_id: Some("add-source".to_string()),
         payload: RequestPayload::AddNode {
             session_id: session_id.clone(),
             node_id: "source".to_string(),
-            kind: "silence".to_string(),
-            params: Some(json!({
-                "duration_ms": 10000, // 10 seconds
-                "sample_rate": 48000,
-                "channels": 2
-            })),
+            kind: "audio::gain".to_string(),
+            params: Some(json!({"gain": 1.0})),
         },
     };
 
@@ -488,15 +484,15 @@ async fn test_session_destroy_shuts_down_pipeline() {
 
     println!("✅ Added source node");
 
-    // Add a gain node
+    // Add a second gain node
     let add_gain_request = Request {
         message_type: MessageType::Request,
         correlation_id: Some("add-gain".to_string()),
         payload: RequestPayload::AddNode {
             session_id: session_id.clone(),
             node_id: "gain".to_string(),
-            kind: "gain".to_string(),
-            params: Some(json!({"gain": 1.0})),
+            kind: "audio::gain".to_string(),
+            params: Some(json!({"gain": 0.5})),
         },
     };
 
@@ -562,18 +558,21 @@ async fn test_session_destroy_shuts_down_pipeline() {
         ResponsePayload::Pipeline { pipeline } => {
             assert_eq!(pipeline.nodes.len(), 2);
 
-            // Check that nodes are in Running state (not Failed or Stopped)
+            // Both nodes use "audio::gain" which is a registered built-in
+            // node type.  With async creation they may still be in
+            // Creating state, or have progressed to Initializing/Ready.
             for (node_id, node) in &pipeline.nodes {
                 if let Some(state) = &node.state {
                     println!("Node '{}' state: {:?}", node_id, state);
                     assert!(
                         matches!(
                             state,
-                            streamkit_core::NodeState::Initializing
+                            streamkit_core::NodeState::Creating
+                                | streamkit_core::NodeState::Initializing
                                 | streamkit_core::NodeState::Ready
                                 | streamkit_core::NodeState::Running
                         ),
-                        "Node '{}' should be initializing/ready/running, got: {:?}",
+                        "Node '{}' should be creating/initializing/ready/running, got: {:?}",
                         node_id,
                         state
                     );

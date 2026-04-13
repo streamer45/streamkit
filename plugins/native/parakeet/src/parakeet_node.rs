@@ -106,7 +106,7 @@ impl NativeProcessorNode for ParakeetNode {
                     "model_dir": {
                         "type": "string",
                         "description": "Path to Parakeet TDT model directory (contains encoder.int8.onnx, decoder.int8.onnx, joiner.int8.onnx, tokens.txt). IMPORTANT: Input audio must be 16kHz mono f32.",
-                        "default": "models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8"
+                        "default": "models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
                     },
                     "num_threads": {
                         "type": "integer",
@@ -151,6 +151,13 @@ impl NativeProcessorNode for ParakeetNode {
                         "default": 30.0,
                         "minimum": 5.0,
                         "maximum": 120.0
+                    },
+                    "min_speech_duration_ms": {
+                        "type": "integer",
+                        "description": "Minimum speech duration to transcribe (milliseconds). Shorter segments are discarded as noise.",
+                        "default": 300,
+                        "minimum": 0,
+                        "maximum": 5000
                     }
                 }
             }))
@@ -416,6 +423,24 @@ impl ParakeetNode {
         // Allow: Sample count / sample rate for duration calculation
         #[allow(clippy::cast_precision_loss)]
         let duration_secs = samples.len() as f32 / 16000.0;
+
+        // Skip segments shorter than the minimum speech duration —
+        // these are typically noise bursts that produce hallucinated
+        // output from the recognizer.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let duration_ms = (duration_secs * 1000.0) as u64;
+        if duration_ms < self.config.min_speech_duration_ms {
+            plugin_info!(
+                self.logger,
+                "Skipping short segment: {} samples ({:.2}s < {}ms minimum)",
+                samples.len(),
+                duration_secs,
+                self.config.min_speech_duration_ms
+            );
+            self.silence_frame_count = 0;
+            return Ok(());
+        }
+
         plugin_info!(
             self.logger,
             "Transcribing segment: {} samples ({:.2}s)",
@@ -466,6 +491,18 @@ impl ParakeetNode {
             unsafe { CStr::from_ptr(result.text).to_string_lossy().into_owned() }
         };
 
+        // Extract detected language from the FFI result (v3 model supports 25 languages).
+        let language = if result.lang.is_null() {
+            None
+        } else {
+            let lang = unsafe { CStr::from_ptr(result.lang).to_string_lossy().into_owned() };
+            if lang.is_empty() {
+                None
+            } else {
+                Some(lang)
+            }
+        };
+
         // Cleanup
         unsafe {
             ffi::SherpaOnnxDestroyOfflineRecognizerResult(result_ptr);
@@ -488,7 +525,7 @@ impl ParakeetNode {
                 &Packet::Transcription(std::sync::Arc::new(TranscriptionData {
                     text: segment.text.clone(),
                     segments: vec![segment],
-                    language: Some("en".to_string()),
+                    language,
                     metadata: None,
                 })),
             )?;
@@ -604,10 +641,7 @@ unsafe fn create_recognizer(
                 model: empty_cstr.as_ptr(),
             },
         },
-        lm_config: ffi::SherpaOnnxOfflineLMConfig {
-            model: empty_cstr.as_ptr(),
-            scale: 0.0,
-        },
+        lm_config: ffi::SherpaOnnxOfflineLMConfig { model: empty_cstr.as_ptr(), scale: 0.0 },
         decoding_method: decoding_method_cstr.as_ptr(),
         max_active_paths: 4,
         hotwords_file: empty_cstr.as_ptr(),

@@ -286,6 +286,7 @@ fn test_rasterize_text_overlay_produces_pixels() {
         color: [255, 255, 0, 255],
         font_size: 24,
         font_name: None,
+        word_wrap: false,
     };
     let overlay = rasterize_text_overlay(&cfg, 7680, 10_000);
     // Bitmap is sized to the measured text extent, not the config rect.
@@ -2232,6 +2233,7 @@ fn test_text_overlay_cache_reuses_arc_on_unchanged_config() {
         color: [255, 255, 255, 255],
         font_size: 24,
         font_name: None,
+        word_wrap: false,
     };
     let limits = GlobalCompositorConfig::default();
     let mut config =
@@ -2350,6 +2352,7 @@ fn test_text_overlay_cache_handles_length_changes() {
         color: [255, 255, 255, 255],
         font_size: 24,
         font_name: None,
+        word_wrap: false,
     };
     let limits = GlobalCompositorConfig::default();
     let mut stats = NodeStatsTracker::new("test".to_string(), None);
@@ -2509,6 +2512,7 @@ async fn test_compositor_output_format_runtime_change() {
         video_pool: None,
         pipeline_mode: streamkit_core::node::PipelineMode::Dynamic,
         view_data_tx: None,
+        engine_control_tx: None,
     };
 
     // Start with no output_format (RGBA8).
@@ -2884,4 +2888,80 @@ fn test_rebuild_svg_reuses_bitmap_when_unchanged() {
     // The width/height should be identical.
     assert_eq!(rebuilt[0].width, initial_arc.width);
     assert_eq!(rebuilt[0].height, initial_arc.height);
+}
+
+// ── Regression: transient sync metadata must not break deserialization ────
+
+/// `_sender` and `_rev` are injected by the UI for causal-consistency
+/// tracking.  `CompositorConfig` uses `deny_unknown_fields`, so
+/// `apply_update_params` strips these transient fields before
+/// deserialization via `strip_sync_metadata`.
+///
+/// Regression test for: compositor control completely broken when the UI
+/// stamps `_sender` / `_rev` into config updates.
+#[test]
+fn test_update_params_ignores_transient_sync_metadata() {
+    let limits = config::GlobalCompositorConfig::default();
+    let mut config = CompositorConfig::default();
+    let mut image_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(vec![]);
+    let mut text_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(vec![]);
+    let mut stats = NodeStatsTracker::new("test".to_string(), None);
+
+    let original_width = config.width;
+
+    // Params with transient metadata — must not cause deserialization failure.
+    let params = serde_json::json!({
+        "_sender": "client-abc123",
+        "_rev": 42,
+        "width": 1920,
+        "height": 1080
+    });
+
+    CompositorNode::apply_update_params(
+        &mut config,
+        &limits,
+        &mut image_overlays,
+        &mut text_overlays,
+        params,
+        &mut stats,
+    );
+
+    // Config should have been updated despite the extra metadata fields.
+    assert_ne!(config.width, original_width, "Config should have been updated");
+    assert_eq!(config.width, 1920);
+    assert_eq!(config.height, 1080);
+}
+
+/// Verify that truly unknown fields (not `_sender`/`_rev`) are still
+/// rejected by `deny_unknown_fields`.
+#[test]
+fn test_update_params_rejects_truly_unknown_fields() {
+    let limits = config::GlobalCompositorConfig::default();
+    let mut config = CompositorConfig::default();
+    let mut image_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(vec![]);
+    let mut text_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(vec![]);
+    let mut stats = NodeStatsTracker::new("test".to_string(), None);
+
+    let original_width = config.width;
+
+    // Params with a genuinely unknown field — should be rejected.
+    let params = serde_json::json!({
+        "width": 1920,
+        "totally_bogus_field": true
+    });
+
+    CompositorNode::apply_update_params(
+        &mut config,
+        &limits,
+        &mut image_overlays,
+        &mut text_overlays,
+        params,
+        &mut stats,
+    );
+
+    // Config should NOT have been updated — deserialization should fail.
+    assert_eq!(
+        config.width, original_width,
+        "Config must not change when unknown fields are present"
+    );
 }

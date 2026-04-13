@@ -238,56 +238,85 @@ async fn list_assets(
 }
 
 /// Stream an uploaded multipart field to disk with size enforcement.
-async fn write_upload_stream_to_disk(
+///
+/// On any error the partially-written file is removed before returning.
+/// Callers that need a REUSE license sidecar should create it after this
+/// function succeeds.
+async fn stream_field_to_file(
     mut field: axum::extract::multipart::Field<'_>,
     file_path: &std::path::Path,
-    extension: &str,
+    max_size: usize,
 ) -> Result<usize, AssetsError> {
     use tokio::fs::OpenOptions;
 
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(file_path)
-        .await
-        .map_err(|e| AssetsError::IoError(format!("Failed to create file: {e}")))?;
+    let open_result = OpenOptions::new().create_new(true).write(true).open(file_path).await;
 
-    let mut total_bytes: usize = 0;
-    loop {
-        match field.chunk().await {
-            Ok(Some(chunk)) => {
-                total_bytes = total_bytes.saturating_add(chunk.len());
-                if total_bytes > MAX_AUDIO_FILE_SIZE {
-                    let _ = fs::remove_file(file_path).await;
-                    return Err(AssetsError::FileTooLarge(MAX_AUDIO_FILE_SIZE));
-                }
+    let mut file = match open_result {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(AssetsError::FileExists(
+                file_path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string(),
+            ));
+        },
+        Err(e) => return Err(AssetsError::IoError(format!("Failed to create file: {e}"))),
+    };
 
-                if let Err(e) = file.write_all(&chunk).await {
-                    let _ = fs::remove_file(file_path).await;
-                    return Err(AssetsError::IoError(format!("Failed to write file: {e}")));
-                }
-            },
-            Ok(None) => break,
-            Err(e) => {
-                let _ = fs::remove_file(file_path).await;
-                return Err(AssetsError::InvalidRequest(format!(
-                    "Failed to read upload stream: {e}"
-                )));
-            },
+    // Inner block: any error triggers a single cleanup path below.
+    let result = async {
+        let mut total_bytes: usize = 0;
+        loop {
+            match field.chunk().await {
+                Ok(Some(chunk)) => {
+                    total_bytes = total_bytes.saturating_add(chunk.len());
+                    if total_bytes > max_size {
+                        return Err(AssetsError::FileTooLarge(max_size));
+                    }
+                    file.write_all(&chunk)
+                        .await
+                        .map_err(|e| AssetsError::IoError(format!("Failed to write file: {e}")))?;
+                },
+                Ok(None) => break,
+                Err(e) => {
+                    return Err(AssetsError::InvalidRequest(format!(
+                        "Failed to read upload stream: {e}"
+                    )));
+                },
+            }
+        }
+
+        // Flush pending writes — tokio::fs::File::write_all returns as soon as
+        // data is copied to an internal buffer and a blocking write is spawned,
+        // so the last write may still be in-flight when the File is dropped.
+        file.flush()
+            .await
+            .map_err(|e| AssetsError::IoError(format!("Failed to flush file: {e}")))?;
+
+        Ok(total_bytes)
+    }
+    .await;
+
+    if result.is_err() {
+        let _ = fs::remove_file(file_path).await;
+    }
+
+    result
+}
+
+/// Create a default REUSE license sidecar next to the uploaded file.
+fn create_license_sidecar(
+    file_path: &std::path::Path,
+    extension: &str,
+) -> impl std::future::Future<Output = ()> + Send + 'static {
+    let license_path = file_path.with_extension(format!("{extension}.license"));
+    async move {
+        // REUSE-IgnoreStart
+        let default_license =
+            "SPDX-FileCopyrightText: © 2025 User Upload\n\nSPDX-License-Identifier: CC0-1.0\n";
+        // REUSE-IgnoreEnd
+        if let Err(e) = fs::write(&license_path, default_license).await {
+            warn!("Failed to create license file: {}", e);
         }
     }
-
-    // Create default license file (best-effort).
-    let license_path = file_path.with_extension(format!("{extension}.license"));
-    // REUSE-IgnoreStart
-    let default_license =
-        "SPDX-FileCopyrightText: © 2025 User Upload\n\nSPDX-License-Identifier: CC0-1.0\n";
-    // REUSE-IgnoreEnd
-    if let Err(e) = fs::write(&license_path, default_license).await {
-        warn!("Failed to create license file: {}", e);
-    }
-
-    Ok(total_bytes)
 }
 
 /// Build AudioAsset response for uploaded file
@@ -332,7 +361,8 @@ async fn process_upload(
         return Err(AssetsError::FileExists(filename));
     }
 
-    let written_bytes = write_upload_stream_to_disk(field, &file_path, &extension).await?;
+    let written_bytes = stream_field_to_file(field, &file_path, MAX_AUDIO_FILE_SIZE).await?;
+    create_license_sidecar(&file_path, &extension).await;
 
     info!("Uploaded audio asset: {}", filename);
 
@@ -664,55 +694,6 @@ async fn list_image_assets(perms: &RolePermissions) -> Result<Vec<ImageAsset>, A
     Ok(all_assets)
 }
 
-/// Stream an uploaded multipart image field to disk with size enforcement.
-///
-/// Uses `create_new(true)` so the call fails atomically if the file already
-/// exists, avoiding the TOCTOU race of a separate `exists()` pre-check.
-async fn write_image_upload_to_disk(
-    mut field: axum::extract::multipart::Field<'_>,
-    file_path: &std::path::Path,
-) -> Result<usize, AssetsError> {
-    use tokio::fs::OpenOptions;
-
-    let mut file =
-        OpenOptions::new().create_new(true).write(true).open(file_path).await.map_err(|e| {
-            if e.kind() == std::io::ErrorKind::AlreadyExists {
-                AssetsError::FileExists(
-                    file_path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string(),
-                )
-            } else {
-                AssetsError::IoError(format!("Failed to create file: {e}"))
-            }
-        })?;
-
-    let mut total_bytes: usize = 0;
-    loop {
-        match field.chunk().await {
-            Ok(Some(chunk)) => {
-                total_bytes = total_bytes.saturating_add(chunk.len());
-                if total_bytes > MAX_IMAGE_FILE_SIZE {
-                    let _ = fs::remove_file(file_path).await;
-                    return Err(AssetsError::FileTooLarge(MAX_IMAGE_FILE_SIZE));
-                }
-
-                if let Err(e) = file.write_all(&chunk).await {
-                    let _ = fs::remove_file(file_path).await;
-                    return Err(AssetsError::IoError(format!("Failed to write file: {e}")));
-                }
-            },
-            Ok(None) => break,
-            Err(e) => {
-                let _ = fs::remove_file(file_path).await;
-                return Err(AssetsError::InvalidRequest(format!(
-                    "Failed to read upload stream: {e}"
-                )));
-            },
-        }
-    }
-
-    Ok(total_bytes)
-}
-
 /// Core image upload logic after permission check
 async fn process_image_upload(
     filename: String,
@@ -729,7 +710,7 @@ async fn process_image_upload(
 
     let file_path = user_dir.join(&filename);
 
-    let written_bytes = write_image_upload_to_disk(field, &file_path).await?;
+    let written_bytes = stream_field_to_file(field, &file_path, MAX_IMAGE_FILE_SIZE).await?;
 
     // SVG validation: parse with resvg to check validity and extract dimensions.
     // Skip raster decode path entirely for SVGs.
@@ -1209,63 +1190,6 @@ async fn list_font_assets(perms: &RolePermissions) -> Result<Vec<FontAsset>, Ass
     Ok(all_assets)
 }
 
-/// Stream an uploaded multipart font field to disk with size enforcement.
-async fn write_font_upload_to_disk(
-    mut field: axum::extract::multipart::Field<'_>,
-    file_path: &std::path::Path,
-    extension: &str,
-) -> Result<usize, AssetsError> {
-    use tokio::fs::OpenOptions;
-
-    let mut file =
-        OpenOptions::new().create_new(true).write(true).open(file_path).await.map_err(|e| {
-            if e.kind() == std::io::ErrorKind::AlreadyExists {
-                AssetsError::FileExists(
-                    file_path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string(),
-                )
-            } else {
-                AssetsError::IoError(format!("Failed to create file: {e}"))
-            }
-        })?;
-
-    let mut total_bytes: usize = 0;
-    loop {
-        match field.chunk().await {
-            Ok(Some(chunk)) => {
-                total_bytes = total_bytes.saturating_add(chunk.len());
-                if total_bytes > MAX_FONT_FILE_SIZE {
-                    let _ = fs::remove_file(file_path).await;
-                    return Err(AssetsError::FileTooLarge(MAX_FONT_FILE_SIZE));
-                }
-
-                if let Err(e) = file.write_all(&chunk).await {
-                    let _ = fs::remove_file(file_path).await;
-                    return Err(AssetsError::IoError(format!("Failed to write file: {e}")));
-                }
-            },
-            Ok(None) => break,
-            Err(e) => {
-                let _ = fs::remove_file(file_path).await;
-                return Err(AssetsError::InvalidRequest(format!(
-                    "Failed to read upload stream: {e}"
-                )));
-            },
-        }
-    }
-
-    // Create default license file (best-effort).
-    let license_path = file_path.with_extension(format!("{extension}.license"));
-    // REUSE-IgnoreStart
-    let default_license =
-        "SPDX-FileCopyrightText: © 2025 User Upload\n\nSPDX-License-Identifier: CC0-1.0\n";
-    // REUSE-IgnoreEnd
-    if let Err(e) = fs::write(&license_path, default_license).await {
-        warn!("Failed to create license file: {}", e);
-    }
-
-    Ok(total_bytes)
-}
-
 /// Core font upload logic after permission check
 async fn process_font_upload(
     filename: String,
@@ -1281,7 +1205,8 @@ async fn process_font_upload(
 
     let file_path = user_dir.join(&filename);
 
-    let written_bytes = write_font_upload_to_disk(field, &file_path, &extension).await?;
+    let written_bytes = stream_field_to_file(field, &file_path, MAX_FONT_FILE_SIZE).await?;
+    create_license_sidecar(&file_path, &extension).await;
 
     // Validate that the uploaded file is actually a font by checking magic bytes.
     let header = match fs::read(&file_path).await {
@@ -1306,7 +1231,7 @@ async fn process_font_upload(
 
     if !is_valid_font {
         let _ = fs::remove_file(&file_path).await;
-        // Also remove the license sidecar created by write_font_upload_to_disk.
+        // Also remove the license sidecar created by create_license_sidecar.
         let license_path = file_path.with_extension(format!("{extension}.license"));
         let _ = fs::remove_file(&license_path).await;
         return Err(AssetsError::InvalidFormat(

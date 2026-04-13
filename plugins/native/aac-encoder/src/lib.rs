@@ -102,7 +102,10 @@ impl AacEncoderNode {
         // 21.333… µs per frame; using integer arithmetic:
         //   timestamp = sequence * 1024 * 1_000_000 / 48_000
         //   duration  = next_timestamp − this_timestamp
-        let ts = |seq: u64| (seq as u128 * 1_024 * 1_000_000 / 48_000) as u64;
+        // Allow: the division by 48_000 keeps the result well within u64
+        // range for any realistic sequence count.
+        #[allow(clippy::cast_possible_truncation)]
+        let ts = |seq: u64| (u128::from(seq) * 1_024 * 1_000_000 / 48_000) as u64;
         let timestamp_us = ts(self.sequence);
         let duration_us = ts(self.sequence + 1) - timestamp_us;
 
@@ -145,10 +148,13 @@ impl NativeProcessorNode for AacEncoderNode {
                     }),
                 ],
             )
-            .output("out", PacketType::EncodedAudio(EncodedAudioFormat {
-                codec: AudioCodec::Aac,
-                codec_private: None,
-            }))
+            .output(
+                "out",
+                PacketType::EncodedAudio(EncodedAudioFormat {
+                    codec: AudioCodec::Aac,
+                    codec_private: None,
+                }),
+            )
             .param_schema(serde_json::json!({
                 "type": "object",
                 "properties": {
