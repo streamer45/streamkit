@@ -110,16 +110,10 @@ impl HelsinkiConfig {
 
         // Validate max_length
         if self.max_length < 32 {
-            return Err(format!(
-                "max_length must be at least 32, got {}",
-                self.max_length
-            ));
+            return Err(format!("max_length must be at least 32, got {}", self.max_length));
         }
         if self.max_length > 2048 {
-            return Err(format!(
-                "max_length must be at most 2048, got {}",
-                self.max_length
-            ));
+            return Err(format!("max_length must be at most 2048, got {}", self.max_length));
         }
 
         Ok(())
@@ -132,14 +126,11 @@ impl HelsinkiConfig {
     }
 
     /// Check if the model directory matches the expected language pair.
-    pub fn check_model_language_match(&self) -> Result<(), String> {
+    pub fn check_model_language_match(&self) {
         let model_dir_lower = self.model_dir.to_lowercase();
 
         // Expected pattern: opus-mt-{src}-{tgt}
-        let expected_suffix = format!(
-            "opus-mt-{}-{}",
-            self.source_language, self.target_language
-        );
+        let expected_suffix = format!("opus-mt-{}-{}", self.source_language, self.target_language);
 
         if !model_dir_lower.contains(&expected_suffix) {
             tracing::warn!(
@@ -150,8 +141,6 @@ impl HelsinkiConfig {
                 expected_suffix
             );
         }
-
-        Ok(())
     }
 }
 
@@ -186,10 +175,7 @@ mod tests {
 
     #[test]
     fn test_validate_invalid_language() {
-        let config = HelsinkiConfig {
-            source_language: "fr".to_string(),
-            ..Default::default()
-        };
+        let config = HelsinkiConfig { source_language: "fr".to_string(), ..Default::default() };
         assert!(config.validate().is_err());
     }
 }
