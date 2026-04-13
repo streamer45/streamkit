@@ -180,6 +180,20 @@ impl<'a> Drop for GbmMapping<'a> {
     }
 }
 
+/// Manually-computed plane layout for `GbmUsage::Separated` frames.
+///
+/// When the GBM driver rejects the native pixel fourcc (e.g. NV12) with every
+/// usage flag, we allocate a single large R8/LINEAR buffer and lay out the
+/// planes ourselves.  The GBM BO metadata only knows about the R8 format, so
+/// we store the real per-plane pitches and offsets here.
+#[derive(Debug, Clone)]
+pub struct SeparatedLayout {
+    /// Per-plane pitch (bytes per row).
+    pub pitches: Vec<usize>,
+    /// Per-plane byte offset within the single BO.
+    pub offsets: Vec<usize>,
+}
+
 #[derive(Debug)]
 pub struct GbmVideoFrame {
     fourcc: Fourcc,
@@ -193,10 +207,15 @@ pub struct GbmVideoFrame {
     // to V4L2.
     #[cfg(feature = "v4l2")]
     export_handles: Vec<DmaBufHandle<File>>,
+    /// Present when the frame was allocated via `GbmUsage::Separated`.
+    separated_layout: Option<SeparatedLayout>,
 }
 
 impl GbmVideoFrame {
     fn get_plane_offset(&self) -> Vec<usize> {
+        if let Some(ref layout) = self.separated_layout {
+            return layout.offsets.clone();
+        }
         let mut ret: Vec<usize> = vec![];
         for plane_idx in 0..self.num_planes() {
             // SAFETY: This assumes self.bo contains valid GBM buffer objects.
@@ -371,6 +390,9 @@ impl VideoFrame for GbmVideoFrame {
     }
 
     fn get_plane_pitch(&self) -> Vec<usize> {
+        if let Some(ref layout) = self.separated_layout {
+            return layout.pitches.clone();
+        }
         let mut ret: Vec<usize> = vec![];
         for plane_idx in 0..self.num_planes() {
             // SAFETY: This assumes self.bo contains valid GBM buffer objects.
@@ -526,6 +548,7 @@ impl GbmDevice {
             _device: Some(Arc::clone(&self)),
             #[cfg(feature = "v4l2")]
             export_handles: vec![],
+            separated_layout: None,
         };
 
         if ret.is_compressed() {
@@ -551,7 +574,72 @@ impl GbmDevice {
             }
 
             ret.bo.push(bo);
-        } else if ret.is_contiguous() && usage != GbmUsage::Separated {
+        } else if usage == GbmUsage::Separated {
+            // Allocate a single flat R8/LINEAR buffer large enough to hold all
+            // planes and compute the NV12 (or similar) layout manually.  This
+            // bypasses the native fourcc entirely, which is needed on drivers
+            // where `gbm_bo_create` rejects the pixel fourcc (e.g. NV12) with
+            // every usage flag.
+            let vertical_subsampling = ret.get_vertical_subsampling();
+            let bytes_per_element = ret.get_bytes_per_element();
+            let horizontal_subsampling = ret.get_horizontal_subsampling();
+
+            // The R8 BO width must accommodate the widest row across all
+            // planes.  For NV12 that is max(Y_row=W, UV_row=W/2*2=W) = W.
+            let row_width = (0..ret.num_planes())
+                .map(|p| {
+                    align_up(coded_resolution.width as usize, horizontal_subsampling[p])
+                        / horizontal_subsampling[p]
+                        * bytes_per_element[p]
+                })
+                .max()
+                .unwrap_or(coded_resolution.width as usize);
+
+            // Total height = sum of per-plane heights.
+            let total_height: usize = (0..ret.num_planes())
+                .map(|p| {
+                    align_up(coded_resolution.height as usize, vertical_subsampling[p])
+                        / vertical_subsampling[p]
+                })
+                .sum();
+
+            // SAFETY: Same precondition as all other gbm_bo_create calls.
+            let bo = unsafe {
+                gbm_bo_create(
+                    self.device,
+                    row_width as u32,
+                    total_height as u32,
+                    DrmFourcc::R8 as u32,
+                    gbm_bo_flags::GBM_BO_USE_LINEAR as u32,
+                )
+            };
+            if bo.is_null() {
+                return Err(format!(
+                    "Error allocating separated R8 buffer ({}×{}) for format {}",
+                    row_width, total_height, fourcc,
+                ));
+            }
+
+            // The R8 BO's stride may be wider than `row_width` due to
+            // alignment; read it back from GBM.
+            let stride = unsafe { gbm_bo_get_stride_for_plane(bo, 0) as usize };
+
+            // Build per-plane pitches and offsets within the flat buffer.
+            let mut pitches = Vec::with_capacity(ret.num_planes());
+            let mut offsets = Vec::with_capacity(ret.num_planes());
+            let mut cursor: usize = 0;
+            for p in 0..ret.num_planes() {
+                pitches.push(stride);
+                offsets.push(cursor);
+                let plane_height =
+                    align_up(coded_resolution.height as usize, vertical_subsampling[p])
+                        / vertical_subsampling[p];
+                cursor += stride * plane_height;
+            }
+
+            ret.separated_layout = Some(SeparatedLayout { pitches, offsets });
+            ret.bo.push(bo);
+        } else if ret.is_contiguous() {
             // These flags are not present in every system's GBM headers.
             const GBM_BO_USE_HW_VIDEO_DECODER: u32 = 1 << 13;
             const GBM_BO_USE_HW_VIDEO_ENCODER: u32 = 1 << 14;
@@ -656,6 +744,7 @@ impl GbmDevice {
             bo: vec![],
             export_handles: vec![],
             _device: Some(Arc::clone(&self)),
+            separated_layout: None,
         };
 
         if strides.is_empty() || native_handle.is_empty() {
@@ -744,6 +833,7 @@ impl GbmDevice {
             fourcc: Fourcc::from(descriptor.fourcc),
             resolution: Resolution { width: descriptor.width, height: descriptor.height },
             bo: vec![],
+            separated_layout: None,
         };
 
         let buffers = [
