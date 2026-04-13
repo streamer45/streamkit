@@ -19,6 +19,7 @@ jobs:
     name: Detect Changes
     runs-on: ubuntu-22.04
     permissions:
+      contents: read
       pull-requests: read
     outputs:
       ci: ${{ steps.filter.outputs.ci }}
@@ -44,6 +45,7 @@ jobs:
               - 'rust-toolchain.toml'
               - 'clippy.toml'
               - 'rustfmt.toml'
+              - '.cargo/config.toml'
             ui:
               - 'ui/**'
             plugins:
