@@ -23,6 +23,7 @@ Two pipeline modes:
 
 ```
 apps/skit/           Server binary — HTTP/WS handlers, config, auth, plugin management
+apps/skit-cli/       CLI client binary (streamkit-client)
 crates/core/         Shared traits and types — ProcessorNode, Pin, Packet, NodeRegistry
 crates/engine/       Pipeline executor — graph_builder, oneshot engine, dynamic actor
 crates/nodes/        All built-in processing nodes (audio, video, transport, core, containers)

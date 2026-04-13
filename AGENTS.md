@@ -23,6 +23,7 @@ the full architecture.
 | Directory | Purpose |
 |-----------|---------|
 | `apps/skit/` | Server binary — HTTP/WS handlers, config, auth, plugins |
+| `apps/skit-cli/` | CLI client binary (`streamkit-client`) |
 | `crates/core/` | Shared traits/types — `ProcessorNode`, `Pin`, `Packet`, `NodeRegistry` |
 | `crates/engine/` | Pipeline executor — graph builder, oneshot engine, dynamic actor |
 | `crates/nodes/` | Built-in nodes: `audio::`, `video::`, `transport::`, `core::`, `containers::` |
