@@ -15,6 +15,10 @@ pub struct EncoderConfig {
     pub profile: Profile,
     pub bit_depth: BitDepth,
     pub resolution: Resolution,
+    /// Display resolution (visible area) when it differs from coded resolution.
+    /// Used to set `render_width`/`render_height` in the AV1 frame header so
+    /// decoders crop superblock-alignment padding instead of showing black bars.
+    pub display_resolution: Option<Resolution>,
     pub pred_structure: PredictionStructure,
     /// Initial tunings values
     pub initial_tunings: Tunings,
@@ -27,6 +31,7 @@ impl Default for EncoderConfig {
             profile: Profile::Profile0,
             bit_depth: BitDepth::Depth8,
             resolution: Resolution { width: 320, height: 240 },
+            display_resolution: None,
             pred_structure: PredictionStructure::LowDelay { limit: 1024 },
             initial_tunings: Default::default(),
         }

@@ -973,10 +973,20 @@ impl StandardVideoEncoder for VaapiAv1Encoder {
             }
         };
 
+        // Pass display_resolution so the AV1 frame header sets
+        // render_width/render_height to the visible area, not the
+        // superblock-aligned coded dimensions (fixes #292).
+        let display_res = if width != coded_width || height != coded_height {
+            Some(CrosResolution { width, height })
+        } else {
+            None
+        };
+
         let cros_config = CrosEncoderConfig {
             profile: Av1Profile::Profile0,
             bit_depth: cros_codecs::codec::av1::parser::BitDepth::Depth8,
             resolution: CrosResolution { width: coded_width, height: coded_height },
+            display_resolution: display_res,
             pred_structure: PredictionStructure::LowDelay { limit: 1024 },
             initial_tunings: Tunings {
                 rate_control: RateControl::ConstantQuality(config.quality),

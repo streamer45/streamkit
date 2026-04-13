@@ -737,8 +737,11 @@ impl StandardVideoEncoder for VaapiH264Encoder {
             }
         };
 
+        // Pass the display resolution (not the macroblock-aligned coded
+        // resolution) so SpsBuilder::resolution() computes frame_crop offsets
+        // automatically, preventing visible padding bars (fixes #292).
         let cros_config = CrosH264EncoderConfig {
-            resolution: CrosResolution { width: coded_width, height: coded_height },
+            resolution: CrosResolution { width, height },
             profile: H264Profile::Main,
             level: H264Level::L4,
             pred_structure: PredictionStructure::LowDelay { limit: 1024 },

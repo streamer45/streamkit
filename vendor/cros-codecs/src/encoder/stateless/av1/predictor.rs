@@ -136,6 +136,14 @@ impl<Picture, Reference> LowDelayAV1<Picture, Reference> {
         let width = self.delegate.config.resolution.width;
         let height = self.delegate.config.resolution.height;
 
+        // Use display resolution for render_width/render_height when the
+        // visible area is smaller than the coded frame (superblock alignment
+        // padding).  This sets render_and_frame_size_different=1 in the frame
+        // header so decoders crop the padding instead of showing black bars.
+        let display = self.delegate.config.display_resolution.as_ref();
+        let render_width = display.map_or(width, |r| r.width);
+        let render_height = display.map_or(height, |r| r.height);
+
         // Superblock size
         let sb_size = if self.delegate.sequence.use_128x128_superblock { 128 } else { 64 };
 
@@ -213,8 +221,8 @@ impl<Picture, Reference> LowDelayAV1<Picture, Reference> {
             upscaled_width: width,
             frame_width: width,
             frame_height: height,
-            render_width: width,
-            render_height: height,
+            render_width,
+            render_height,
 
             ..Default::default()
         })
