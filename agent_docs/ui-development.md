@@ -11,7 +11,7 @@ and Bun.
 
 ## State Management
 
-StreamKit uses three complementary state layers:
+StreamKit uses four complementary state layers:
 
 | Layer | Tool | Purpose |
 |-------|------|---------|
