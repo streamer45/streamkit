@@ -34,6 +34,7 @@ sdks/plugin-sdk/     Plugin SDK for Rust, Go, and C (native + WASM targets)
 ui/                  React web UI — node graph editor, compositor canvas, views
 plugins/native/      Official ML plugins (Whisper, Kokoro, NLLB, SenseVoice, etc.)
 samples/             Example pipelines (dynamic/ and oneshot/), audio, images, fonts, Slint files
+tests/               Pipeline validation tests (oneshot pipeline smoke tests)
 e2e/                 Playwright end-to-end tests
 docs/                Astro + Starlight documentation site (sidebar in docs/astro.config.mjs)
 scripts/             Build, analysis, and marketplace tooling

@@ -33,6 +33,7 @@ the full architecture.
 | `ui/` | React 19 web UI (Vite + Bun) |
 | `plugins/native/` | Official ML plugins (Whisper, Kokoro, NLLB, etc.) |
 | `samples/` | Example pipelines (`dynamic/` and `oneshot/`), audio files, images, fonts, Slint files |
+| `tests/` | Pipeline validation tests (oneshot pipeline smoke tests) |
 | `e2e/` | Playwright end-to-end tests |
 | `docs/` | Astro + Starlight docs site (sidebar in `docs/astro.config.mjs`) |
 
