@@ -6,6 +6,7 @@ name: Plugins CI
 
 on:
   workflow_call:
+  # Allow standalone runs for debugging plugin builds without a full CI cycle.
   workflow_dispatch:
 
 env:
@@ -137,6 +138,8 @@ jobs:
         run: |
           for plugin in ${{ matrix.plugins }}; do
             echo "::group::clippy — ${plugin}"
+            # Shared target dir deduplicates common crate compilation across plugins in the group.
+            # If flaky clippy results appear, conflicting feature flags between plugins could be the cause.
             (cd "plugins/native/${plugin}" && CARGO_TARGET_DIR="${{ github.workspace }}/target/plugins" cargo clippy -- -D warnings)
             echo "::endgroup::"
           done
