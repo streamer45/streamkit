@@ -4,193 +4,87 @@ SPDX-FileCopyrightText: © 2025 StreamKit Contributors
 SPDX-License-Identifier: MPL-2.0
 -->
 
-# StreamKit agent notes
+# StreamKit Agent Notes
 
-These notes apply to coding agents (Claude/Codex/etc.) contributing to this repo.
+These notes apply to coding agents (Claude/Codex/Devin/etc.) contributing to
+this repo. Agent-assisted contributions are welcome, but should be **supervised**
+and **reviewed by a human** before merge.
 
-## Supervision requirement
+## What is StreamKit
 
-Agent-assisted contributions are welcome, but should be **supervised** and **reviewed by a human** before merge. Treat agent output as untrusted: verify correctness, security, licensing, and style.
+StreamKit is a self-hostable media processing server (Rust). A single binary
+(`skit`) runs pipelines as a node graph (DAG) — via a web UI, YAML, or
+WebSocket API. Two modes: **dynamic** (real-time, hot-reconfigurable) and
+**oneshot** (stateless batch processing). See `agent_docs/architecture.md` for
+the full architecture.
 
-## Project basics
+## Codebase Map
 
-- **Supported platform**: Linux x86_64 (for now).
-- **Primary server binary**: `skit` (crate: `streamkit-server`).
-- **Dev task runner**: `just` (see `justfile`).
-- **Docs**: Astro + Starlight in `docs/` (sidebar in `docs/astro.config.mjs`).
-- **UI tooling**: Bun-first. Use `bun install`, `bunx` (or `bun run` scripts) for UI work—avoid npm/pnpm.
+| Directory | Purpose |
+|-----------|---------|
+| `apps/skit/` | Server binary — HTTP/WS handlers, config, auth, plugins |
+| `crates/core/` | Shared traits/types — `ProcessorNode`, `Pin`, `Packet`, `NodeRegistry` |
+| `crates/engine/` | Pipeline executor — graph builder, oneshot engine, dynamic actor |
+| `crates/nodes/` | Built-in nodes: `audio::`, `video::`, `transport::`, `core::`, `containers::` |
+| `crates/api/` | YAML pipeline parsing, WebSocket protocol, TS type generation |
+| `crates/plugin-{native,wasm}/` | Plugin host adapters (FFI and WASM) |
+| `sdks/plugin-sdk/` | Plugin SDKs for Rust, Go, and C |
+| `ui/` | React 19 web UI (Vite + Bun) |
+| `plugins/native/` | Official ML plugins (Whisper, Kokoro, NLLB, etc.) |
+| `samples/pipelines/` | Example YAML pipelines (`dynamic/` and `oneshot/`) |
+| `e2e/` | Playwright end-to-end tests |
+| `docs/` | Astro + Starlight docs site (sidebar in `docs/astro.config.mjs`) |
 
-## Workflow expectations
+## Tech Stack
+
+- **Rust 1.92** (pinned in `rust-toolchain.toml`), tokio, axum, wgpu
+- **UI:** React 19, TypeScript, Zustand, Jotai, React Query, Radix UI, React Flow
+- **Build/tooling:** `just` (task runner), Bun (UI), sccache (Rust build cache)
+- **Testing:** `cargo test` (Rust), Vitest (UI), Playwright (E2E)
+- **Platform:** Linux x86_64
+
+## Workflow
 
 - Keep PRs focused and minimal.
-- Run `just test` and `just lint` when making code changes (or explain why you couldn't).
-- Follow `CONTRIBUTING.md` (DCO sign-off, Conventional Commits, SPDX headers where applicable).
-- **Linting discipline**: Do not blindly suppress lint warnings or errors with ignore/exception rules. Instead, consider refactoring or improving the code to address the underlying issue. If an exception is truly necessary, it **must** include a comment explaining the rationale.
+- Run `just test` and `just lint` before submitting (or explain why you couldn't).
+- Follow `CONTRIBUTING.md`: DCO sign-off (`git commit -s`), Conventional
+  Commits, SPDX license headers on all new files.
+- **Linting discipline**: Do not blindly suppress lint warnings with
+  ignore/exception rules. Refactor instead. If a suppression is truly necessary,
+  include a comment explaining the rationale.
+- **UI tooling**: Use `bun install` / `bunx` / `bun run` — never npm or pnpm.
 
-## Running E2E tests
+## Verification Commands
 
-End-to-end tests live in `e2e/` and use Playwright (Chromium, headless).
-
-1. **Build the UI** and **start the server** in one terminal:
-
-   ```bash
-   just build-ui && SK_SERVER__MOQ_GATEWAY_URL=http://127.0.0.1:4545/moq SK_SERVER__ADDRESS=127.0.0.1:4545 just skit
-   ```
-
-2. **Run the tests** in a second terminal:
-
-   ```bash
-   just e2e-external http://localhost:4545
-   ```
-
-### Headless-browser pitfalls
-
-- Playwright runs headless Chromium with a default 1280×720 viewport.
-  Elements rendered below the fold are **not visible** to
-  `IntersectionObserver`. If a test relies on an element being observed
-  (e.g. the `<canvas>` used by the MoQ video renderer), scroll it into
-  view first:
-
-  ```ts
-  const canvas = page.locator('canvas');
-  await canvas.scrollIntoViewIfNeeded();
-  ```
-
-- The `@moq/watch` `Video.Renderer` enables the `Video.Decoder` (and
-  therefore the `video/data` MoQ subscription) **only** when the canvas is
-  intersecting. Forgetting to scroll will result in a permanently black
-  canvas.
-
-## Render performance profiling
-
-StreamKit ships a two-layer profiling infrastructure for detecting render
-regressions — particularly **cascade re-renders** where a slider interaction
-(opacity, rotation) triggers expensive re-renders in unrelated memoized
-components (`UnifiedLayerList`, `OpacityControl`, `RotationControl`, etc.).
-
-### When to use this
-
-- **After touching compositor hooks or components** (`useCompositorLayers`,
-  `CompositorNode`, or any `React.memo`'d sub-component): run the perf tests
-  to verify you haven't broken memoization barriers.
-- **When optimising render performance**: use the baseline comparison to
-  measure before/after render counts and durations.
-- **In CI**: Layer 1 tests run automatically via `just perf-ui` and will fail
-  if render counts regress beyond the 2σ threshold stored in the baseline.
-
-### Layer 1 — Component-level regression tests (Vitest)
-
-Fast, deterministic tests that measure hook/component render counts in
-happy-dom. No browser required.
-
-```bash
-just perf-ui          # runs all *.perf.test.* files
-```
-
-Key files:
-
-| File | Purpose |
+| Task | Command |
 |------|---------|
-| `ui/src/test/perf/measure.ts` | `measureRenders()` (components) and `measureHookRenders()` (hooks) |
-| `ui/src/test/perf/compare.ts` | Baseline read/write, 2σ comparison, report formatting |
-| `ui/src/hooks/useCompositorLayers.render-perf.test.ts` | Cascade re-render regression tests |
-| `perf-baselines.json` (repo root) | Baseline snapshot — committed to track regressions over time |
+| All lints | `just lint` |
+| Rust lint only | `cargo fmt --all -- --check && cargo clippy --workspace -- -D warnings` |
+| UI lint only | `just lint-ui` (prettier + eslint + tsc) |
+| All tests | `just test` |
+| Rust tests | `cargo test --workspace` |
+| UI tests | `just test-ui` |
+| Perf regression tests | `just perf-ui` |
+| E2E tests | `just e2e-external http://localhost:4545` (requires running server) |
+| Unused code check | `just knip` |
+| Build everything | `just build` |
 
-**Cascade detection pattern**: the render-perf tests simulate rapid slider
-drags (20 ticks of opacity/rotation) and assert that total render count stays
-within a budget (currently ≤ 30). If callback references become unstable
-(e.g. `layers` array in deps instead of `selectedLayerKind`), React.memo
-barriers break and the render count will blow past the budget, failing the
-test.
+## Docker
 
-### Layer 2 — Interaction-level profiling (Playwright + React.Profiler)
+- Official images: `Dockerfile` (CPU) and `Dockerfile.gpu` (GPU) via `.github/workflows/docker.yml`.
+- Health endpoint: `/healthz` (also `/health`).
+- Images do not bundle ML models or plugins — mount them at runtime.
 
-Real-browser profiling for dev builds. Components wrapped with
-`React.Profiler` push metrics to `window.__PERF_DATA__` which Playwright
-tests can read via `page.evaluate()`.
+## Detailed Guides
 
-```bash
-just perf-e2e         # requires: just skit + just ui (dev server at :3045)
-```
+Read the relevant guide **before** starting work in that area:
 
-Key files:
-
-| File | Purpose |
-|------|---------|
-| `ui/src/perf/profiler.ts` | Dev-only `PerfProfiler` wrapper + `window.__PERF_DATA__` store |
-| `e2e/tests/perf-helpers.ts` | `capturePerfData()` / `resetPerfData()` Playwright utilities |
-| `e2e/tests/compositor-perf.spec.ts` | E2E test: creates PiP session, drags all sliders, asserts render budget |
-
-Use Layer 2 when you need real paint/layout timing or want to profile
-interactions end-to-end with actual browser rendering.
-
-### Ad-hoc profiling with React DevTools exports
-
-For investigating specific performance issues (e.g. "why does dragging this
-slider feel sluggish?"), capture a profile from the React DevTools Profiler
-and analyze it with the included script:
-
-1. Open React DevTools > Profiler tab, record the interaction, then **Export**
-   the profile as JSON.
-2. Run:
-
-```bash
-just analyze-profile profiling-data.json           # summary + top components
-just analyze-profile profiling-data.json --cascade  # re-render cascade trees
-just analyze-profile profiling-data.json --why      # prop-change analysis
-just analyze-profile profiling-data.json --commit 10  # single commit detail
-just analyze-profile profiling-data.json --filter "Compositor|VideoLayer"
-```
-
-The script (`scripts/analyze-react-profile.mjs`) parses the React DevTools
-profiling JSON (format v5), maps fiber IDs to component names, and reports:
-
-- **Top components** by total self-time across all commits
-- **Cascade trees** showing the full re-render chain for the heaviest commits
-- **Why analysis** identifying prop-driven re-renders (potential object-reference
-  instability) and cascade victims (components re-rendering only because a parent
-  did)
-- **Per-commit detail** with every component's self/actual time and trigger reason
-
-Use this to pinpoint memoization breaks, unstable object references, and
-unnecessary re-render cascades before diving into code.
-
-### Updating the baseline
-
-Run `just perf-ui` — the last test in the render-perf suite writes a fresh
-`perf-baselines.json` (gated behind `UPDATE_PERF_BASELINE=1`, which the
-`test:perf` script sets automatically). Regular `just test-ui` runs compare
-against the baseline but never overwrite it. Commit the updated baseline
-alongside your changes so future runs compare against the new numbers.
-
-## Docker notes
-
-- Official images are built from `Dockerfile` (CPU) and `Dockerfile.gpu` (GPU-tagged) via `.github/workflows/docker.yml`.
-- `/healthz` is the lightweight health endpoint (also `/health`).
-- Official images do not bundle ML models or plugins; they are expected to be mounted at runtime.
-
-## Adding an official plugin
-
-When making a plugin official and downloadable from the registry, update all of
-the following:
-
-- Plugin source under `plugins/native/<id>/` (crate metadata + README).
-- Plugin metadata in `plugins/native/<id>/plugin.yml` (id, version, entrypoint,
-  artifact path, models, licenses, homepage/repo).
-- Generate `marketplace/official-plugins.json` with
-  `scripts/marketplace/generate_official_plugins.py` and commit the result.
-- Build list in `scripts/marketplace/build_official_plugins.sh`.
-- Build prerequisites in `.github/workflows/release.yml` if new system deps are
-  required to compile or package the plugin.
-- Bundle/registry smoke check: run `scripts/marketplace/build_registry.py` and
-  `scripts/marketplace/verify_bundles.py` locally.
-- Portability table in `marketplace/PORTABILITY_REVIEW.md` (NEEDED deps,
-  RUNPATH/RPATH, recommendation).
-- Docs: add/update the plugin page under
-  `docs/src/content/docs/reference/plugins/` and list it in
-  `docs/src/content/docs/reference/plugins/index.md` if applicable.
-- Runtime shared libs: if the plugin needs bundled `.so` files, ensure the
-  bundle includes them and the entrypoint RUNPATH uses `$ORIGIN`, and update the
-  portability gate in `scripts/marketplace/verify_bundles.py` as needed.
-- **Human review required** before bundling any new third-party shared libraries
-  (licensing, security, size, and distro compatibility).
+| Guide | When to read |
+|-------|-------------|
+| [`agent_docs/architecture.md`](agent_docs/architecture.md) | Understanding crate relationships, data flow, key abstractions |
+| [`agent_docs/ui-development.md`](agent_docs/ui-development.md) | Working on React UI — state management, component patterns |
+| [`agent_docs/e2e-testing.md`](agent_docs/e2e-testing.md) | Running E2E tests, headless-browser pitfalls |
+| [`agent_docs/render-performance.md`](agent_docs/render-performance.md) | Compositor perf profiling, render regression testing |
+| [`agent_docs/adding-plugins.md`](agent_docs/adding-plugins.md) | Making a plugin official — full checklist |
+| [`agent_docs/common-pitfalls.md`](agent_docs/common-pitfalls.md) | Known mistakes agents make — read this first if unsure |
+| [`agent_docs/skills-setup.md`](agent_docs/skills-setup.md) | Install curated [skills.sh](https://skills.sh/) packages for React, Playwright, etc. |
