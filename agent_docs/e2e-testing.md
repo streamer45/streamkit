@@ -8,7 +8,19 @@ SPDX-License-Identifier: MPL-2.0
 
 End-to-end tests live in `e2e/` and use Playwright (Chromium, headless).
 
-## Setup
+## Prerequisites
+
+Before running E2E tests for the first time (or on a fresh checkout), install
+dependencies and Playwright browsers:
+
+```bash
+just install-e2e          # installs e2e/ Bun dependencies
+just install-playwright   # installs headless Chromium
+```
+
+See `e2e/README.md` for full details on prerequisites and options.
+
+## Running Tests
 
 1. **Build the UI** and **start the server** in one terminal:
 

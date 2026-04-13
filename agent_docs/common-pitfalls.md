@@ -9,16 +9,23 @@ SPDX-License-Identifier: MPL-2.0
 Known mistakes that coding agents frequently make in this codebase. Read this
 before starting work to avoid wasted effort and review cycles.
 
-## UI State: Always Use WebSocket-Driven State
+## UI State: Use WebSocket-Driven State (Jotai + Zustand)
 
 **Never** intermix REST fetches with WebSocket state for pipeline, node, or
-runtime data. The session store (`ui/src/stores/sessionStore.ts`) is kept
-current by WS event handlers in `ui/src/services/websocket.ts` and is the
-**only** race-free way to read pipeline state.
+runtime data.
+
+High-frequency per-node data (states, stats, view data, params) lives in
+**Jotai atoms** (`ui/src/stores/sessionAtoms.ts`). The WebSocket service
+batches updates via `requestAnimationFrame` and writes to Jotai first. A
+transitional Zustand write is kept for consumers not yet migrated.
+
+Pipeline structure and connections are managed in the **Zustand** session store
+(`ui/src/stores/sessionStore.ts`).
 
 REST snapshots can be stale relative to WS events (e.g., `RuntimeSchemasUpdated`
-arriving before or after a REST `fetchPipeline`). If you need pipeline data in a
-component, read it from the Zustand session store — never fetch it separately.
+arriving before or after a REST `fetchPipeline`). If you need node state/stats
+in a component, read from the Jotai atoms. For pipeline structure, read from the
+Zustand session store. Never fetch either separately via REST.
 
 ## Never Commit `perf-baselines.json` Changes
 

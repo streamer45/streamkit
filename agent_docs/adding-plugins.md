@@ -19,8 +19,8 @@ the following:
   required to compile or package the plugin.
 - Bundle/registry smoke check: run `scripts/marketplace/build_registry.py` and
   `scripts/marketplace/verify_bundles.py` locally.
-- Portability table in `marketplace/PORTABILITY_REVIEW.md` (NEEDED deps,
-  RUNPATH/RPATH, recommendation).
+- Portability review: run `scripts/marketplace/verify_bundles.py` which checks
+  NEEDED deps, RUNPATH/RPATH, and reports portability issues.
 - Docs: add/update the plugin page under
   `docs/src/content/docs/reference/plugins/` and list it in
   `docs/src/content/docs/reference/plugins/index.md` if applicable.

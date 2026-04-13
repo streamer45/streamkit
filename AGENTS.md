@@ -66,7 +66,7 @@ the full architecture.
 | UI tests | `just test-ui` |
 | Perf regression tests | `just perf-ui` |
 | E2E tests | `just e2e-external http://localhost:4545` (requires running server) |
-| Unused code check | `just knip` |
+| Unused code check | `just knip-ui` |
 | Build everything | `just build` |
 
 ## Docker

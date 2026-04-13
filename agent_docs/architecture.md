@@ -41,10 +41,14 @@ scripts/             Build, analysis, and marketplace tooling
 ## Crate Dependency Flow
 
 ```
-core  ←  api  ←  engine  ←  nodes  ←  server (apps/skit)
-  ↑                                       ↑
-  └── plugin-native / plugin-wasm ─────────┘
+server (apps/skit)  →  engine  →  nodes  →  core
+       ↓                  ↓
+      api ─────────────→ ↗        (api also depends on core)
+       ↓
+  plugin-native / plugin-wasm  →  core
 ```
+
+(Arrows point from dependent to dependency.)
 
 - **`streamkit-core`** defines the foundational abstractions: `ProcessorNode`
   trait, `NodeContext`, `Packet` (Audio/Video/Binary), `Pin` system
@@ -91,11 +95,18 @@ core  ←  api  ←  engine  ←  nodes  ←  server (apps/skit)
 
 The web UI (`ui/`) is a React 19 + TypeScript SPA:
 
-- **State management:** Zustand for global session state (`sessionStore.ts`),
-  Jotai for atomic UI state, React Query (`@tanstack/react-query`) for REST.
-- **WebSocket-driven:** The session store is kept current by WS event handlers
-  in `ui/src/services/websocket.ts`. This is the **source of truth** for
-  pipeline state, node states, stats, and runtime schemas.
+- **State management:** Two complementary layers driven by WebSocket events:
+  - **Jotai atoms** (`ui/src/stores/sessionAtoms.ts`) — primary store for
+    high-frequency per-node data (states, stats, view data, params). Per-node
+    atom families confine re-renders to the affected node's components.
+  - **Zustand** (`ui/src/stores/sessionStore.ts`) — pipeline structure and
+    connection management (low-frequency CRUD). Also receives node state/stats
+    writes for transitional compatibility (being migrated to Jotai).
+  - **React Query** (`@tanstack/react-query`) — REST API data (font/image/audio/
+    plugin assets, session list).
+- **WebSocket-driven:** The WS service (`ui/src/services/websocket.ts`) batches
+  high-frequency updates via `requestAnimationFrame` and writes to Jotai atoms
+  first, with a transitional Zustand write for consumers not yet migrated.
 - **Views:** Design (node graph editor + compositor canvas), Monitor (live
   metrics), Convert (oneshot pipelines), Stream (dynamic MoQ pipelines).
 - **Node graph:** Built on `@xyflow/react` (React Flow).

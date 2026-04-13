@@ -15,15 +15,18 @@ StreamKit uses three complementary state layers:
 
 | Layer | Tool | Purpose |
 |-------|------|---------|
-| **Global session state** | Zustand (`ui/src/stores/sessionStore.ts`) | Pipeline, node states, stats, runtime schemas |
+| **Per-node session data** | Jotai atoms (`ui/src/stores/sessionAtoms.ts`) | High-frequency node states, stats, view data, params — per-node atom families confine re-renders to affected components |
+| **Pipeline structure** | Zustand (`ui/src/stores/sessionStore.ts`) | Pipeline CRUD, connections, session lifecycle (low-frequency). Also receives node state/stats for transitional compat |
 | **Atomic UI state** | Jotai (`ui/src/stores/`, various atoms) | Local UI concerns (selections, toggles, form state) |
-| **Server state** | React Query (`@tanstack/react-query`) | REST API data (samples, marketplace, assets) |
+| **Server state** | React Query (`@tanstack/react-query`) | REST API data (font/image/audio/plugin assets, session list) |
 
 ### Critical Rule: WebSocket is Source of Truth
 
-The session store is kept current by WebSocket event handlers in
-`ui/src/services/websocket.ts`. This is the **only** race-free way to read
-pipeline state, node states, stats, and runtime schemas.
+The WebSocket service (`ui/src/services/websocket.ts`) batches high-frequency
+updates via `requestAnimationFrame` and writes to **Jotai atoms first**
+(`sessionAtoms.ts`), with a transitional Zustand write for consumers not yet
+migrated. For per-node data (states, stats, params), read from the Jotai atoms.
+For pipeline structure and connections, read from the Zustand session store.
 
 **Never** intermix REST fetches with WebSocket state for the same data. REST
 snapshots can be stale relative to WS events (e.g., `RuntimeSchemasUpdated`
