@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+
+SPDX-License-Identifier: MPL-2.0
+-->
+
 ---
 name: render-performance
 description: StreamKit render performance profiling infrastructure. Use when touching compositor hooks or components, optimizing render performance, or investigating cascade re-renders in React.memo'd components.

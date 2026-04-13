@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+
+SPDX-License-Identifier: MPL-2.0
+-->
+
 ---
 name: adding-plugins
 description: Checklist for making a StreamKit plugin official and downloadable from the registry. Use when adding a new native plugin or updating an existing one for marketplace distribution.
