@@ -74,8 +74,8 @@ the full architecture.
 
 - Official images: `Dockerfile` (CPU) and `Dockerfile.gpu` (GPU) via `.github/workflows/docker.yml`.
 - Health endpoint: `/healthz` (also `/health`).
-- Slim images do not bundle ML models or plugins — mount them at runtime.
-  Full images (with `-full` tag) include bundled models and plugins.
+- Standard images do not bundle ML models or plugins — mount them at runtime.
+  Demo images (`Dockerfile.demo`, tagged `-demo`) include bundled models and plugins.
 
 ## Detailed Guides
 
