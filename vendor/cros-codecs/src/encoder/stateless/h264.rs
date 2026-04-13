@@ -187,7 +187,7 @@ where
     Backend: StatelessH264EncoderBackend,
     Backend: StatelessEncoderBackendImport<Handle, Backend::Picture>,
 {
-    fn new_h264(backend: Backend, config: EncoderConfig, mode: BlockingMode) -> EncodeResult<Self> {
+    pub fn new_h264(backend: Backend, config: EncoderConfig, mode: BlockingMode) -> EncodeResult<Self> {
         let predictor: Box<dyn Predictor<_, _, _>> = match config.pred_structure {
             PredictionStructure::LowDelay { limit } => Box::new(LowDelayH264::new(config, limit)),
         };

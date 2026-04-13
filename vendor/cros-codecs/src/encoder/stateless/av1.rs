@@ -123,7 +123,7 @@ impl<Handle, Backend> StatelessEncoder<Handle, Backend>
 where
     Backend: StatelessAV1EncoderBackend,
 {
-    fn new_av1(backend: Backend, config: EncoderConfig, mode: BlockingMode) -> EncodeResult<Self> {
+    pub fn new_av1(backend: Backend, config: EncoderConfig, mode: BlockingMode) -> EncodeResult<Self> {
         let predictor: Box<dyn Predictor<_, _, _>> = match config.pred_structure {
             PredictionStructure::LowDelay { limit } => Box::new(LowDelayAV1::new(config, limit)),
         };
