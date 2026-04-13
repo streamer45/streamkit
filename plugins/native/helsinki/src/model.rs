@@ -9,9 +9,9 @@ use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use candle_core::{DType, Device};
+use candle_nn::Activation;
 use candle_nn::VarBuilder;
 use candle_transformers::models::marian::{Config, MTModel};
-use candle_nn::Activation;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use streamkit_plugin_sdk_native::prelude::*;
@@ -22,6 +22,8 @@ use crate::config::HelsinkiConfig;
 
 /// HuggingFace/Transformers config.json format for Marian models.
 /// Maps to Candle's Config struct with proper type conversions.
+// Allow: fields mirror the HuggingFace Transformers config.json schema.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Deserialize)]
 struct HfMarianConfig {
     vocab_size: usize,
@@ -52,18 +54,24 @@ struct HfMarianConfig {
     share_encoder_decoder_embeddings: bool,
 }
 
-fn default_max_position_embeddings() -> usize { 512 }
-fn default_true() -> bool { true }
-fn default_activation() -> String { "gelu".to_string() }
+const fn default_max_position_embeddings() -> usize {
+    512
+}
+const fn default_true() -> bool {
+    true
+}
+fn default_activation() -> String {
+    "gelu".to_string()
+}
 
 impl HfMarianConfig {
     /// Convert to Candle's Config struct.
     fn to_candle_config(&self) -> Config {
         let activation = match self.activation_function.as_str() {
             "swish" | "silu" => Activation::Silu,
-            "gelu" | "gelu_new" => Activation::Gelu,
             "relu" => Activation::Relu,
-            _ => Activation::Gelu, // Default to GELU for unknown activations
+            // Covers "gelu", "gelu_new", and any unknown activation function.
+            _ => Activation::Gelu,
         };
 
         Config {
@@ -138,10 +146,7 @@ fn is_gpu_available() -> bool {
 
     let available = check_cuda_available();
     GPU_AVAILABILITY.store(if available { 1 } else { 2 }, Ordering::Relaxed);
-    tracing::info!(
-        "[Helsinki Plugin] GPU availability check: available={}",
-        available
-    );
+    tracing::info!("[Helsinki Plugin] GPU availability check: available={}", available);
     available
 }
 
@@ -177,14 +182,15 @@ pub fn get_device(config: &HelsinkiConfig) -> Result<Device, String> {
         "cuda" => {
             #[cfg(feature = "cuda")]
             {
-                Device::new_cuda(config.device_index)
-                    .map_err(|e| format!("CUDA device {} not available: {}", config.device_index, e))
+                Device::new_cuda(config.device_index).map_err(|e| {
+                    format!("CUDA device {} not available: {}", config.device_index, e)
+                })
             }
             #[cfg(not(feature = "cuda"))]
             {
                 Err("CUDA support not compiled in. Rebuild with --features cuda".to_string())
             }
-        }
+        },
         "auto" => {
             #[cfg(feature = "cuda")]
             {
@@ -198,11 +204,8 @@ pub fn get_device(config: &HelsinkiConfig) -> Result<Device, String> {
             {
                 Ok(Device::Cpu)
             }
-        }
-        other => Err(format!(
-            "Invalid device '{}'. Use 'cpu', 'cuda', or 'auto'",
-            other
-        )),
+        },
+        other => Err(format!("Invalid device '{other}'. Use 'cpu', 'cuda', or 'auto'")),
     }
 }
 
@@ -213,9 +216,9 @@ fn load_config(model_dir: &str, source_lang: &str, target_lang: &str) -> Result<
     if config_path.exists() {
         // Load from file and convert to Candle format
         let config_str = std::fs::read_to_string(&config_path)
-            .map_err(|e| format!("Failed to read config.json: {}", e))?;
+            .map_err(|e| format!("Failed to read config.json: {e}"))?;
         let hf_config: HfMarianConfig = serde_json::from_str(&config_str)
-            .map_err(|e| format!("Failed to parse config.json: {}", e))?;
+            .map_err(|e| format!("Failed to parse config.json: {e}"))?;
 
         tracing::info!(
             "[Helsinki Plugin] Loaded config from file: vocab_size={}, d_model={}, encoder_layers={}, decoder_layers={}",
@@ -230,7 +233,9 @@ fn load_config(model_dir: &str, source_lang: &str, target_lang: &str) -> Result<
         // Use preset based on language pair
         tracing::warn!(
             "[Helsinki Plugin] config.json not found in {}, using preset for {}-{}",
-            model_dir, source_lang, target_lang
+            model_dir,
+            source_lang,
+            target_lang
         );
         match (source_lang, target_lang) {
             ("en", "es") => Ok(Config::opus_mt_en_es()),
@@ -240,8 +245,7 @@ fn load_config(model_dir: &str, source_lang: &str, target_lang: &str) -> Result<
             ("en", "hi") => Ok(Config::opus_mt_en_hi()),
             ("fr", "en") => Ok(Config::opus_mt_fr_en()),
             _ => Err(format!(
-                "No preset config for {}->{} and config.json not found in {}",
-                source_lang, target_lang, model_dir
+                "No preset config for {source_lang}->{target_lang} and config.json not found in {model_dir}"
             )),
         }
     }
@@ -261,7 +265,7 @@ fn load_weights(model_dir: &str, device: &Device) -> Result<VarBuilder<'static>,
     // Load safetensors with f32 dtype
     let vb = unsafe {
         VarBuilder::from_mmaped_safetensors(&[model_path], DType::F32, device)
-            .map_err(|e| format!("Failed to load model weights: {}", e))?
+            .map_err(|e| format!("Failed to load model weights: {e}"))?
     };
 
     Ok(vb)
@@ -277,24 +281,23 @@ fn load_tokenizers(model_dir: &str) -> Result<(Tokenizer, Tokenizer), String> {
         validate_tokenizer_json(&source_path)?;
         validate_tokenizer_json(&target_path)?;
         let source = Tokenizer::from_file(&source_path)
-            .map_err(|e| format!("Failed to load source_tokenizer.json: {}", e))?;
+            .map_err(|e| format!("Failed to load source_tokenizer.json: {e}"))?;
         let target = Tokenizer::from_file(&target_path)
-            .map_err(|e| format!("Failed to load target_tokenizer.json: {}", e))?;
+            .map_err(|e| format!("Failed to load target_tokenizer.json: {e}"))?;
         return Ok((source, target));
     }
 
     if shared_path.exists() {
         validate_tokenizer_json(&shared_path)?;
         let source = Tokenizer::from_file(&shared_path)
-            .map_err(|e| format!("Failed to load tokenizer.json: {}", e))?;
+            .map_err(|e| format!("Failed to load tokenizer.json: {e}"))?;
         let target = Tokenizer::from_file(&shared_path)
-            .map_err(|e| format!("Failed to load tokenizer.json: {}", e))?;
+            .map_err(|e| format!("Failed to load tokenizer.json: {e}"))?;
         return Ok((source, target));
     }
 
     Err(format!(
-        "Tokenizers not found in {}. Expected source_tokenizer.json + target_tokenizer.json (preferred) or tokenizer.json. Re-run: just download-helsinki-models",
-        model_dir
+        "Tokenizers not found in {model_dir}. Expected source_tokenizer.json + target_tokenizer.json (preferred) or tokenizer.json. Re-run: just download-helsinki-models"
     ))
 }
 
@@ -303,17 +306,11 @@ pub fn get_or_load_translator(
     config: &HelsinkiConfig,
     logger: &Logger,
 ) -> Result<Arc<Mutex<CachedTranslator>>, String> {
-    let cache_key = (
-        config.model_dir.clone(),
-        config.normalized_device(),
-        config.device_index,
-    );
+    let cache_key = (config.model_dir.clone(), config.normalized_device(), config.device_index);
 
     // Check cache first
     {
-        let cache = TRANSLATOR_CACHE
-            .lock()
-            .map_err(|e| format!("Cache lock failed: {}", e))?;
+        let cache = TRANSLATOR_CACHE.lock().map_err(|e| format!("Cache lock failed: {e}"))?;
 
         if let Some(entry) = cache.get(&cache_key) {
             plugin_info!(logger, "CACHE HIT: Reusing Helsinki translator");
@@ -321,18 +318,11 @@ pub fn get_or_load_translator(
         }
     }
 
-    plugin_warn!(
-        logger,
-        "CACHE MISS: Loading Helsinki model from {}",
-        config.model_dir
-    );
+    plugin_warn!(logger, "CACHE MISS: Loading Helsinki model from {}", config.model_dir);
 
     // Load model configuration
-    let model_config = load_config(
-        &config.model_dir,
-        &config.source_language,
-        &config.target_language,
-    )?;
+    let model_config =
+        load_config(&config.model_dir, &config.source_language, &config.target_language)?;
 
     // Initialize device
     let device = get_device(config)?;
@@ -342,8 +332,8 @@ pub fn get_or_load_translator(
     let vb = load_weights(&config.model_dir, &device)?;
 
     // Create model
-    let model = MTModel::new(&model_config, vb)
-        .map_err(|e| format!("Failed to create MTModel: {}", e))?;
+    let model =
+        MTModel::new(&model_config, vb).map_err(|e| format!("Failed to create MTModel: {e}"))?;
 
     // Load tokenizers
     let (source_tokenizer, target_tokenizer) = load_tokenizers(&config.model_dir)?;
@@ -365,16 +355,9 @@ pub fn get_or_load_translator(
 
     // Store in cache
     {
-        let mut cache = TRANSLATOR_CACHE
-            .lock()
-            .map_err(|e| format!("Cache lock failed: {}", e))?;
+        let mut cache = TRANSLATOR_CACHE.lock().map_err(|e| format!("Cache lock failed: {e}"))?;
 
-        cache.insert(
-            cache_key,
-            CachedTranslatorEntry {
-                translator: translator.clone(),
-            },
-        );
+        cache.insert(cache_key, CachedTranslatorEntry { translator: translator.clone() });
     }
 
     Ok(translator)
@@ -382,9 +365,7 @@ pub fn get_or_load_translator(
 
 fn validate_tokenizer(tokenizer: &Tokenizer, cfg: &Config) -> Result<(), String> {
     let text = "tokenizer self-check";
-    let enc = tokenizer
-        .encode(text, true)
-        .map_err(|e| format!("Tokenizer encode failed: {}", e))?;
+    let enc = tokenizer.encode(text, true).map_err(|e| format!("Tokenizer encode failed: {e}"))?;
 
     let ids = enc.get_ids();
     if ids.is_empty() {
@@ -393,31 +374,26 @@ fn validate_tokenizer(tokenizer: &Tokenizer, cfg: &Config) -> Result<(), String>
 
     // Ensure the tokenizer understands the model's special-token ids by round-tripping them.
     let specials = [cfg.eos_token_id, cfg.pad_token_id, cfg.decoder_start_token_id];
-    let decoded = tokenizer
-        .decode(&specials, false)
-        .map_err(|e| format!("Tokenizer decode failed: {}", e))?;
+    let decoded =
+        tokenizer.decode(&specials, false).map_err(|e| format!("Tokenizer decode failed: {e}"))?;
 
     if decoded.trim().is_empty() {
-        return Err(format!(
-            "Tokenizer appears incompatible with model ids (decoded specials empty). \
+        return Err("Tokenizer appears incompatible with model ids (decoded specials empty). \
              Please regenerate tokenizer.json via: just download-helsinki-models"
-        ));
+            .to_string());
     }
 
     Ok(())
 }
 
 fn validate_tokenizer_json(path: &Path) -> Result<(), String> {
-    let raw = std::fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read tokenizer.json: {}", e))?;
+    let raw =
+        std::fs::read_to_string(path).map_err(|e| format!("Failed to read tokenizer.json: {e}"))?;
     let json: JsonValue =
-        serde_json::from_str(&raw).map_err(|e| format!("Failed to parse tokenizer.json: {}", e))?;
+        serde_json::from_str(&raw).map_err(|e| format!("Failed to parse tokenizer.json: {e}"))?;
 
-    let model_type = json
-        .get("model")
-        .and_then(|m| m.get("type"))
-        .and_then(|t| t.as_str())
-        .unwrap_or("unknown");
+    let model_type =
+        json.get("model").and_then(|m| m.get("type")).and_then(|t| t.as_str()).unwrap_or("unknown");
 
     // MarianTokenizerFast should produce a SentencePiece/Unigram-based tokenizer.
     // A WordLevel tokenizer here is a known-bad fallback that yields garbage translations.

@@ -14,26 +14,117 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ---------- Change detection ----------
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      ci: ${{ steps.filter.outputs.ci }}
+      rust: ${{ steps.filter.outputs.rust }}
+      ui: ${{ steps.filter.outputs.ui }}
+      plugins: ${{ steps.filter.outputs.plugins }}
+      e2e: ${{ steps.filter.outputs.e2e }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            ci:
+              - '.github/**'
+            rust:
+              - 'crates/**'
+              - 'apps/**'
+              - 'sdks/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'deny.toml'
+              - 'rust-toolchain.toml'
+              - 'clippy.toml'
+              - 'rustfmt.toml'
+              - '.cargo/config.toml'
+            ui:
+              - 'ui/**'
+            plugins:
+              - 'plugins/native/**'
+            e2e:
+              - 'e2e/**'
+
+  # ---------- Sub-workflows ----------
   skit:
     name: Skit
+    needs: changes
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      needs.changes.outputs.ci == 'true' ||
+      needs.changes.outputs.rust == 'true' ||
+      needs.changes.outputs.ui == 'true'
     uses: ./.github/workflows/skit.yml
 
   ui:
     name: UI
+    needs: changes
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      needs.changes.outputs.ci == 'true' ||
+      needs.changes.outputs.ui == 'true'
     uses: ./.github/workflows/ui.yml
 
   plugins:
     name: Plugins
+    needs: changes
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      needs.changes.outputs.ci == 'true' ||
+      needs.changes.outputs.plugins == 'true' ||
+      needs.changes.outputs.rust == 'true'
     uses: ./.github/workflows/plugins.yml
 
   e2e:
     name: E2E
+    needs: changes
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      needs.changes.outputs.ci == 'true' ||
+      needs.changes.outputs.rust == 'true' ||
+      needs.changes.outputs.ui == 'true' ||
+      needs.changes.outputs.e2e == 'true'
     uses: ./.github/workflows/e2e.yml
 
+  # ---------- Always-run checks ----------
+  reuse:
+    name: REUSE Compliance
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: fsfe/reuse-action@v6
+
+  # ---------- Gate ----------
   all-checks:
     name: All Checks Passed
+    if: always()
     runs-on: ubuntu-22.04
-    needs: [skit, ui, plugins, e2e]
+    needs: [changes, skit, ui, plugins, e2e, reuse]
     steps:
-      - name: All checks passed
-        run: echo "All CI checks passed successfully!"
+      - name: Verify results
+        run: |
+          results=(
+            "${{ needs.changes.result }}"
+            "${{ needs.skit.result }}"
+            "${{ needs.ui.result }}"
+            "${{ needs.plugins.result }}"
+            "${{ needs.e2e.result }}"
+            "${{ needs.reuse.result }}"
+          )
+          for r in "${results[@]}"; do
+            if [[ "$r" == "failure" || "$r" == "cancelled" ]]; then
+              echo "::error::CI check failed or was cancelled ($r)"
+              exit 1
+            fi
+          done
+          echo "All checks passed or were appropriately skipped."

@@ -141,6 +141,8 @@ impl SileroVAD {
 
     /// Update speech threshold
     #[allow(dead_code)]
+    // Allow: f32::clamp is not const-stable, so this cannot be const fn.
+    #[allow(clippy::missing_const_for_fn)]
     pub fn set_threshold(&mut self, threshold: f32) {
         self.threshold = threshold.clamp(0.0, 1.0);
     }
