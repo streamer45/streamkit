@@ -27,5 +27,7 @@ the following:
 - Runtime shared libs: if the plugin needs bundled `.so` files, ensure the
   bundle includes them and the entrypoint RUNPATH uses `$ORIGIN`, and update the
   portability gate in `scripts/marketplace/verify_bundles.py` as needed.
+- **Models**: if the plugin relies on ML models, upload them to the StreamKit
+  Hugging Face repo so they remain accessible indefinitely (license permitting).
 - **Human review required** before bundling any new third-party shared libraries
   (licensing, security, size, and distro compatibility).

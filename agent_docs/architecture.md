@@ -33,7 +33,7 @@ crates/plugin-wasm/  Host-side WASM plugin runtime (wasmtime)
 sdks/plugin-sdk/     Plugin SDK for Rust, Go, and C (native + WASM targets)
 ui/                  React web UI — node graph editor, compositor canvas, views
 plugins/native/      Official ML plugins (Whisper, Kokoro, NLLB, SenseVoice, etc.)
-samples/pipelines/   Example YAML pipeline definitions (dynamic/ and oneshot/)
+samples/             Example pipelines (dynamic/ and oneshot/), audio, images, fonts, Slint files
 e2e/                 Playwright end-to-end tests
 docs/                Astro + Starlight documentation site (sidebar in docs/astro.config.mjs)
 scripts/             Build, analysis, and marketplace tooling

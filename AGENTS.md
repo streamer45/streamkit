@@ -32,13 +32,13 @@ the full architecture.
 | `sdks/plugin-sdk/` | Plugin SDKs for Rust, Go, and C |
 | `ui/` | React 19 web UI (Vite + Bun) |
 | `plugins/native/` | Official ML plugins (Whisper, Kokoro, NLLB, etc.) |
-| `samples/pipelines/` | Example YAML pipelines (`dynamic/` and `oneshot/`) |
+| `samples/` | Example pipelines (`dynamic/` and `oneshot/`), audio files, images, fonts, Slint files |
 | `e2e/` | Playwright end-to-end tests |
 | `docs/` | Astro + Starlight docs site (sidebar in `docs/astro.config.mjs`) |
 
 ## Tech Stack
 
-- **Rust 1.92** (pinned in `rust-toolchain.toml`), tokio, axum, wgpu
+- **Rust** (version pinned in `rust-toolchain.toml`), tokio, axum, wgpu
 - **UI:** React 19, TypeScript, Zustand, Jotai, React Query, Radix UI, React Flow
 - **Build/tooling:** `just` (task runner), Bun (UI), sccache (Rust build cache)
 - **Testing:** `cargo test` (Rust), Vitest (UI), Playwright (E2E)
@@ -74,7 +74,8 @@ the full architecture.
 
 - Official images: `Dockerfile` (CPU) and `Dockerfile.gpu` (GPU) via `.github/workflows/docker.yml`.
 - Health endpoint: `/healthz` (also `/health`).
-- Images do not bundle ML models or plugins — mount them at runtime.
+- Slim images do not bundle ML models or plugins — mount them at runtime.
+  Full images (with `-full` tag) include bundled models and plugins.
 
 ## Detailed Guides
 
