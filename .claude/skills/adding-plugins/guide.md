@@ -1,0 +1,1 @@
+../../../agent_docs/adding-plugins.md
