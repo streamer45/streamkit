@@ -309,7 +309,20 @@ fn vaapi_h264_decode_loop(
                     .clone()
                     .new_frame(nv12_fourcc(), res.clone(), res.clone(), GbmUsage::Decode)
                     .or_else(|_| {
-                        gbm_ref.clone().new_frame(nv12_fourcc(), res.clone(), res, GbmUsage::Linear)
+                        gbm_ref.clone().new_frame(
+                            nv12_fourcc(),
+                            res.clone(),
+                            res.clone(),
+                            GbmUsage::Linear,
+                        )
+                    })
+                    .or_else(|_| {
+                        gbm_ref.clone().new_frame(
+                            nv12_fourcc(),
+                            res.clone(),
+                            res,
+                            GbmUsage::Separated,
+                        )
                     })
                     .ok()
             };
@@ -670,10 +683,16 @@ impl StandardVideoEncoder for VaapiH264Encoder {
                      falling back to GBM_BO_USE_LINEAR for encoder input buffers"
                 );
                 GbmUsage::Linear
+            } else if try_alloc(GbmUsage::Separated).is_ok() {
+                tracing::warn!(
+                    "GBM rejects NV12 fourcc with all usage flags; \
+                     falling back to per-plane R8 allocation (GbmUsage::Separated)"
+                );
+                GbmUsage::Separated
             } else {
                 return Err(format!(
                     "GBM cannot allocate NV12 {coded_width}×{coded_height} buffers \
-                     with any supported usage flag (tried Encode, Decode, Linear)"
+                     with any supported usage flag (tried Encode, Decode, Linear, Separated)"
                 ));
             }
         };

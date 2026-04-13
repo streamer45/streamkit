@@ -263,9 +263,15 @@ pub struct GbmExternalBufferDescriptor {
     resolution: Resolution,
     pitches: Vec<usize>,
     offsets: Vec<usize>,
-    // We use a proper File object here to correctly manage the lifetimes of the exported FDs.
+    // We use proper File objects here to correctly manage the lifetimes of the exported FDs.
     // Otherwise we risk exhausting the FD limit on the machine for certain test vectors.
-    export_file: File,
+    //
+    // For contiguous (single-BO) frames this contains one file.
+    // For separated (multi-BO) frames this contains one file per BO/plane.
+    export_files: Vec<File>,
+    /// Maps each plane to the index in `export_files` (and thus `objects[]`).
+    /// For contiguous frames every plane maps to object 0.
+    object_indices: Vec<u32>,
 }
 
 #[cfg(feature = "vaapi")]
@@ -274,22 +280,27 @@ impl ExternalBufferDescriptor for GbmExternalBufferDescriptor {
     type DescriptorAttribute = VADRMPRIMESurfaceDescriptor;
 
     fn va_surface_attribute(&mut self) -> Self::DescriptorAttribute {
-        let objects = [
-            VADRMPRIMESurfaceDescriptorObject {
-                fd: self.export_file.as_raw_fd(),
-                size: self.export_file.metadata().unwrap().len() as u32,
+        let num_objects = self.export_files.len() as u32;
+
+        let mut objects: [VADRMPRIMESurfaceDescriptorObject; 4] = Default::default();
+        for (i, file) in self.export_files.iter().enumerate() {
+            objects[i] = VADRMPRIMESurfaceDescriptorObject {
+                fd: file.as_raw_fd(),
+                size: file.metadata().unwrap().len() as u32,
                 drm_format_modifier: self.modifier,
-            },
-            Default::default(),
-            Default::default(),
-            Default::default(),
-        ];
+            };
+        }
+
+        let mut object_index: [u32; 4] = [0; 4];
+        for (i, &idx) in self.object_indices.iter().enumerate().take(4) {
+            object_index[i] = idx;
+        }
 
         let layers = [
             VADRMPRIMESurfaceDescriptorLayer {
                 drm_format: u32::from(self.fourcc),
                 num_planes: self.pitches.len() as u32,
-                object_index: [0, 0, 0, 0],
+                object_index,
                 offset: self
                     .offsets
                     .iter()
@@ -314,16 +325,15 @@ impl ExternalBufferDescriptor for GbmExternalBufferDescriptor {
             Default::default(),
         ];
         let resolution = self.resolution;
-        let ret = VADRMPRIMESurfaceDescriptor {
+        VADRMPRIMESurfaceDescriptor {
             fourcc: u32::from(self.fourcc),
             width: resolution.width,
             height: resolution.height,
-            num_objects: 1,
+            num_objects,
             objects,
             num_layers: 1,
             layers,
-        };
-        ret
+        }
     }
 }
 
@@ -398,12 +408,6 @@ impl VideoFrame for GbmVideoFrame {
         if self.is_compressed() {
             return Err("Compressed buffer export to VA-API is not currently supported".to_string());
         }
-        if !self.is_contiguous() {
-            return Err(
-                "Exporting non-contiguous GBM buffers to VA-API is not currently supported"
-                    .to_string(),
-            );
-        }
 
         // TODO: Add more supported formats
         let rt_format = match self.decoded_format().unwrap() {
@@ -411,15 +415,31 @@ impl VideoFrame for GbmVideoFrame {
             _ => return Err("Format unsupported for VA-API export".to_string()),
         };
 
+        // SAFETY: gbm_bo_get_fd returns a new, owned FD every time it is called,
+        // so this should be safe as long as self.bo contains valid buffer objects.
+        let (export_files, object_indices, offsets) = if self.bo.len() == 1 {
+            // Contiguous: single BO backs all planes.
+            let file = unsafe { File::from_raw_fd(gbm_bo_get_fd(self.bo[0])) };
+            let num_planes = self.num_planes();
+            (vec![file], vec![0u32; num_planes], self.get_plane_offset())
+        } else {
+            // Separated: one BO per plane (used by GbmUsage::Separated).
+            // Each plane lives in its own BO, so the per-plane offset is 0.
+            let files: Vec<File> =
+                self.bo.iter().map(|bo| unsafe { File::from_raw_fd(gbm_bo_get_fd(*bo)) }).collect();
+            let indices: Vec<u32> = (0..files.len() as u32).collect();
+            let offsets = vec![0usize; files.len()];
+            (files, indices, offsets)
+        };
+
         let export_descriptor = vec![GbmExternalBufferDescriptor {
             fourcc: self.fourcc.clone(),
             modifier: self.get_modifier(),
             resolution: self.resolution(),
             pitches: self.get_plane_pitch(),
-            offsets: self.get_plane_offset(),
-            // SAFETY: gbm_bo_get_fd returns a new, owned FD every time it is called, so this should
-            // be safe as long as self.bo contains valid buffer objects.
-            export_file: unsafe { File::from_raw_fd(gbm_bo_get_fd(self.bo[0])) },
+            offsets,
+            export_files,
+            object_indices,
         }];
 
         let mut ret = display
@@ -461,6 +481,11 @@ pub enum GbmUsage {
     /// Tiger Lake with Mesa 23.x).  Linear buffers are universally supported
     /// but may be slower due to lack of tiling optimisations.
     Linear,
+    /// Allocate each plane as a separate R8 buffer with `GBM_BO_USE_LINEAR`.
+    /// This bypasses the native NV12 GBM allocation entirely, which is
+    /// necessary on drivers where `gbm_bo_create` rejects the NV12 fourcc
+    /// with every usage flag (e.g. Mesa iris on Intel Tiger Lake).
+    Separated,
 }
 
 #[derive(Debug)]
@@ -526,7 +551,7 @@ impl GbmDevice {
             }
 
             ret.bo.push(bo);
-        } else if ret.is_contiguous() {
+        } else if ret.is_contiguous() && usage != GbmUsage::Separated {
             // These flags are not present in every system's GBM headers.
             const GBM_BO_USE_HW_VIDEO_DECODER: u32 = 1 << 13;
             const GBM_BO_USE_HW_VIDEO_ENCODER: u32 = 1 << 14;
@@ -541,6 +566,7 @@ impl GbmDevice {
                 GbmUsage::Decode => GBM_BO_USE_HW_VIDEO_DECODER,
                 GbmUsage::Encode => GBM_BO_USE_HW_VIDEO_ENCODER,
                 GbmUsage::Linear => gbm_bo_flags::GBM_BO_USE_LINEAR as u32,
+                GbmUsage::Separated => unreachable!(),
             };
             let bo = unsafe {
                 gbm_bo_create(
