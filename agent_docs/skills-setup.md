@@ -55,19 +55,34 @@ npx skills add anthropics/skills --skill webapp-testing -y
 ## How Skills Work
 
 - Skills are stored in GitHub repositories as `SKILL.md` files
-- `npx skills add` clones the skill and symlinks it into your agent's config
-  directory (e.g., `.claude/skills/`, `.cursor/skills/`)
+- `npx skills add` clones the skill into your agent's config directory
 - Skills are agent-agnostic — they work with Claude Code, Cursor, Codex,
   Windsurf, and others
 - Use `npx skills list` to see installed skills
 - Use `npx skills update` to update to latest versions
 - Use `npx skills find <query>` to discover new skills
 
-## Creating Custom Skills
+### Important: Install Location
 
-StreamKit also maintains its own Devin-specific skills in `.agents/skills/` for
-testing workflows. If you need to create a new skill for the project, follow the
-existing pattern in that directory. For skills that should work across multiple
-agents, consider the `SKILL.md` format used by skills.sh.
+**Do not install skills into `.claude/skills/`** — that directory is
+repo-maintained and contains committed skills that symlink to `agent_docs/`.
+Running `npx skills add` there will mix vendored content into the tracked tree.
+
+Install user/third-party skills into a **personal** (non-tracked) location
+instead. For Claude Code, use `~/.claude/skills/` (user-level). For other
+agents, use the agent's per-user config directory.
+
+## Repo-Maintained Skills
+
+StreamKit maintains two sets of committed skills:
+
+- **`.claude/skills/`** — Agent Skills standard (`SKILL.md` + frontmatter).
+  Each skill is a thin wrapper that symlinks `guide.md` → `agent_docs/<name>.md`
+  so Claude Code gets progressive disclosure with zero duplication.
+- **`.agents/skills/`** — Devin-specific testing workflows (compositor UI,
+  stream views). Follow the existing pattern when adding new Devin skills.
+
+For skills that should work across multiple agents, use the `SKILL.md` format
+in `.claude/skills/` with a symlink to the canonical guide in `agent_docs/`.
 
 Learn more: [skills.sh documentation](https://skills.sh/docs)

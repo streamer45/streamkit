@@ -60,7 +60,7 @@ the full architecture.
 | Task | Command |
 |------|---------|
 | All lints | `just lint` |
-| Rust lint only | `cargo fmt --all -- --check && cargo clippy --workspace -- -D warnings` |
+| Rust lint only | `just lint-skit` (fmt + clippy with per-crate feature flags + license check) |
 | UI lint only | `just lint-ui` (prettier + eslint + tsc) |
 | All tests | `just test` |
 | Rust tests | `cargo test --workspace` |
