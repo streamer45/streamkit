@@ -51,6 +51,7 @@ use tokio::sync::mpsc;
 
 // cros-codecs high-level APIs.
 use cros_codecs::backend::vaapi::decoder::VaapiBackend as VaapiDecBackend;
+use cros_codecs::backend::vaapi::encoder::VaapiBackend as VaapiEncBackend;
 use cros_codecs::codec::h264::parser::Level as H264Level;
 use cros_codecs::codec::h264::parser::Profile as H264Profile;
 use cros_codecs::decoder::stateless::h264::H264;
@@ -675,15 +676,28 @@ impl StandardVideoEncoder for VaapiH264Encoder {
             },
         };
 
-        let encoder = CrosVaapiH264Encoder::new_vaapi(
+        // Construct the encoder backend directly instead of using
+        // `new_vaapi()`, which requires `V: VideoFrame`.  Our type alias
+        // uses `Surface<()>` (bypassing GBM allocation), so we replicate
+        // the profile mapping and backend construction inline.
+        let va_profile = libva::VAProfile::VAProfileH264Main;
+        let bitrate_control = match cros_config.initial_tunings.rate_control {
+            RateControl::ConstantBitrate(_) => libva::VA_RC_CBR,
+            RateControl::ConstantQuality(_) => libva::VA_RC_CQP,
+        };
+        let coded_size = CrosResolution { width: coded_width, height: coded_height };
+        let backend = VaapiEncBackend::new(
             Rc::clone(&display),
-            cros_config,
+            va_profile,
             nv12_fourcc(),
-            CrosResolution { width: coded_width, height: coded_height },
+            coded_size,
+            bitrate_control,
             low_power,
-            BlockingMode::Blocking,
         )
-        .map_err(|e| format!("failed to create VA-API H.264 encoder: {e}"))?;
+        .map_err(|e| format!("failed to create VA-API H.264 encoder backend: {e}"))?;
+
+        let encoder = CrosVaapiH264Encoder::new_h264(backend, cros_config, BlockingMode::Blocking)
+            .map_err(|e| format!("failed to create VA-API H.264 encoder: {e}"))?;
 
         tracing::info!(
             device = %path,
