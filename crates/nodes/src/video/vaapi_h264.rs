@@ -58,6 +58,7 @@ use cros_codecs::backend::vaapi::decoder::VaapiBackend as VaapiDecBackend;
 use cros_codecs::decoder::stateless::h264::H264;
 use cros_codecs::decoder::stateless::StatelessDecoder;
 use cros_codecs::decoder::BlockingMode;
+use cros_codecs::libva;
 use cros_codecs::video_frame::gbm_video_frame::GbmVideoFrame;
 
 // Custom VA-API H.264 encoder shim — drives libva directly, bypasses GBM.
