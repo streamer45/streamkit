@@ -25,12 +25,12 @@
 use std::rc::Rc;
 
 use cros_codecs::libva::{
-    self, BufferType, Context, Display, EncCodedBuffer, EncMiscParameter, EncMiscParameterFrameRate,
-    EncMiscParameterRateControl, EncPictureParameter, EncPictureParameterBufferH264,
-    EncSequenceParameter, EncSequenceParameterBufferH264, EncSliceParameter,
-    EncSliceParameterBufferH264, H264EncFrameCropOffsets, H264EncPicFields, H264EncSeqFields,
-    H264VuiFields, MappedCodedBuffer, Picture, PictureH264, RcFlags, Surface, UsageHint,
-    VAEntrypoint, VAProfile, VA_INVALID_ID, VA_PICTURE_H264_INVALID,
+    self, BufferType, Context, Display, EncCodedBuffer, EncMiscParameter,
+    EncMiscParameterFrameRate, EncMiscParameterRateControl, EncPictureParameter,
+    EncPictureParameterBufferH264, EncSequenceParameter, EncSequenceParameterBufferH264,
+    EncSliceParameter, EncSliceParameterBufferH264, H264EncFrameCropOffsets, H264EncPicFields,
+    H264EncSeqFields, H264VuiFields, MappedCodedBuffer, Picture, PictureH264, RcFlags, Surface,
+    UsageHint, VAEntrypoint, VAProfile, VA_INVALID_ID, VA_PICTURE_H264_INVALID,
     VA_PICTURE_H264_SHORT_TERM_REFERENCE, VA_RT_FORMAT_YUV420,
 };
 
@@ -254,11 +254,9 @@ impl VaH264Encoder {
         force_keyframe: bool,
     ) -> Result<Vec<u8>, String> {
         if frame.pixel_format == PixelFormat::Rgba8 {
-            return Err(
-                "VA-API H.264 encoder requires NV12 or I420 input; \
+            return Err("VA-API H.264 encoder requires NV12 or I420 input; \
                  insert a video::pixel_convert node upstream"
-                    .into(),
-            );
+                .into());
         }
 
         // Determine whether this frame is an IDR.
@@ -287,9 +285,8 @@ impl VaH264Encoder {
                 vec![()],
             )
             .map_err(|e| format!("failed to create input surface: {e}"))?;
-        let input_surface = input_surfaces
-            .pop()
-            .ok_or_else(|| "create_surfaces returned empty vec".to_string())?;
+        let input_surface =
+            input_surfaces.pop().ok_or_else(|| "create_surfaces returned empty vec".to_string())?;
 
         write_nv12_to_va_surface(&self.display, &input_surface, frame)?;
 
@@ -308,15 +305,12 @@ impl VaH264Encoder {
             self.build_pic_param(is_idr, &recon_surface, &coded_buf, frame_num as u16, poc);
         let slice_param = self.build_slice_param(is_i_frame, is_idr, poc, frame_num);
         let rc_param = self.build_rc_param();
-        let framerate_param =
-            BufferType::EncMiscParameter(EncMiscParameter::FrameRate(EncMiscParameterFrameRate::new(
-                self.framerate,
-                0,
-            )));
+        let framerate_param = BufferType::EncMiscParameter(EncMiscParameter::FrameRate(
+            EncMiscParameterFrameRate::new(self.framerate, 0),
+        ));
 
         // Create picture, attach buffers, and submit.
-        let mut picture =
-            Picture::new(self.frame_count, Rc::clone(&self.context), input_surface);
+        let mut picture = Picture::new(self.frame_count, Rc::clone(&self.context), input_surface);
 
         picture.add_buffer(
             self.context
@@ -344,15 +338,9 @@ impl VaH264Encoder {
                 .map_err(|e| format!("failed to create framerate param buffer: {e}"))?,
         );
 
-        let picture = picture
-            .begin()
-            .map_err(|e| format!("vaBeginPicture failed: {e}"))?;
-        let picture = picture
-            .render()
-            .map_err(|e| format!("vaRenderPicture failed: {e}"))?;
-        let picture = picture
-            .end()
-            .map_err(|e| format!("vaEndPicture failed: {e}"))?;
+        let picture = picture.begin().map_err(|e| format!("vaBeginPicture failed: {e}"))?;
+        let picture = picture.render().map_err(|e| format!("vaRenderPicture failed: {e}"))?;
+        let picture = picture.end().map_err(|e| format!("vaEndPicture failed: {e}"))?;
 
         // Sync and read coded output.
         let _synced = picture.sync().map_err(|(e, _)| format!("vaSyncSurface failed: {e}"))?;
@@ -366,11 +354,7 @@ impl VaH264Encoder {
         }
 
         // Update reference frame.
-        self.reference = Some(RefPic {
-            surface: recon_surface,
-            poc,
-            frame_num,
-        });
+        self.reference = Some(RefPic { surface: recon_surface, poc, frame_num });
 
         self.frame_count += 1;
 
@@ -408,9 +392,7 @@ impl VaH264Encoder {
                 .map_err(|e| format!("failed to replenish scratch surfaces: {e}"))?;
             self.scratch_surfaces = new_surfaces;
         }
-        self.scratch_surfaces
-            .pop()
-            .ok_or_else(|| "scratch surface pool exhausted".to_string())
+        self.scratch_surfaces.pop().ok_or_else(|| "scratch surface pool exhausted".to_string())
     }
 
     /// Build the sequence parameter buffer (SPS-derived fields).
@@ -440,15 +422,15 @@ impl VaH264Encoder {
 
         BufferType::EncSequenceParameter(EncSequenceParameter::H264(
             EncSequenceParameterBufferH264::new(
-                0,                       // seq_parameter_set_id
-                41,                      // level_idc (Level 4.1)
-                self.idr_period,         // intra_period
-                self.idr_period,         // intra_idr_period
-                0,                       // ip_period (no B frames)
-                0,                       // bits_per_second (CQP mode)
-                1,                       // max_num_ref_frames
-                self.width_in_mbs,       // picture_width_in_mbs
-                self.height_in_mbs,      // picture_height_in_mbs
+                0,                  // seq_parameter_set_id
+                41,                 // level_idc (Level 4.1)
+                self.idr_period,    // intra_period
+                self.idr_period,    // intra_idr_period
+                0,                  // ip_period (no B frames)
+                0,                  // bits_per_second (CQP mode)
+                1,                  // max_num_ref_frames
+                self.width_in_mbs,  // picture_width_in_mbs
+                self.height_in_mbs, // picture_height_in_mbs
                 &seq_fields,
                 0,                       // bit_depth_luma_minus8
                 0,                       // bit_depth_chroma_minus8
@@ -488,8 +470,7 @@ impl VaH264Encoder {
         );
 
         // Reference frames array (up to 16 slots).
-        let mut reference_frames: [PictureH264; 16] =
-            std::array::from_fn(|_| build_invalid_pic());
+        let mut reference_frames: [PictureH264; 16] = std::array::from_fn(|_| build_invalid_pic());
 
         if let Some(ref ref_pic) = self.reference {
             reference_frames[0] = PictureH264::new(
@@ -502,17 +483,17 @@ impl VaH264Encoder {
         }
 
         let pic_fields = H264EncPicFields::new(
-            u32::from(is_idr),     // idr_pic_flag
+            u32::from(is_idr),       // idr_pic_flag
             u32::from(is_reference), // reference_pic_flag
-            0,                     // entropy_coding_mode_flag (CAVLC)
-            0,                     // weighted_pred_flag
-            0,                     // weighted_bipred_idc
-            0,                     // constrained_intra_pred_flag
-            0,                     // transform_8x8_mode_flag
-            1,                     // deblocking_filter_control_present_flag
-            0,                     // redundant_pic_cnt_present_flag
-            0,                     // pic_order_present_flag
-            0,                     // pic_scaling_matrix_present_flag
+            0,                       // entropy_coding_mode_flag (CAVLC)
+            0,                       // weighted_pred_flag
+            0,                       // weighted_bipred_idc
+            0,                       // constrained_intra_pred_flag
+            0,                       // transform_8x8_mode_flag
+            1,                       // deblocking_filter_control_present_flag
+            0,                       // redundant_pic_cnt_present_flag
+            0,                       // pic_order_present_flag
+            0,                       // pic_scaling_matrix_present_flag
         );
 
         BufferType::EncPictureParameter(EncPictureParameter::H264(
@@ -520,15 +501,15 @@ impl VaH264Encoder {
                 curr_pic,
                 reference_frames,
                 coded_buf.id(),
-                0,                      // pic_parameter_set_id
-                0,                      // seq_parameter_set_id
-                0,                      // last_picture (not EOS)
-                frame_num,              // frame_num
-                self.qp as u8,          // pic_init_qp
-                0,                      // num_ref_idx_l0_active_minus1
-                0,                      // num_ref_idx_l1_active_minus1
-                0,                      // chroma_qp_index_offset
-                0,                      // second_chroma_qp_index_offset
+                0,             // pic_parameter_set_id
+                0,             // seq_parameter_set_id
+                0,             // last_picture (not EOS)
+                frame_num,     // frame_num
+                self.qp as u8, // pic_init_qp
+                0,             // num_ref_idx_l0_active_minus1
+                0,             // num_ref_idx_l1_active_minus1
+                0,             // chroma_qp_index_offset
+                0,             // second_chroma_qp_index_offset
                 &pic_fields,
             ),
         ))
@@ -545,8 +526,7 @@ impl VaH264Encoder {
         let slice_type = if is_i_frame { SLICE_TYPE_I } else { SLICE_TYPE_P };
 
         // Reference picture lists.
-        let mut ref_pic_list_0: [PictureH264; 32] =
-            std::array::from_fn(|_| build_invalid_pic());
+        let mut ref_pic_list_0: [PictureH264; 32] = std::array::from_fn(|_| build_invalid_pic());
         let mut num_ref_idx_l0_active_minus1: u8 = 0;
         let mut num_ref_idx_active_override_flag: u8 = 0;
 
@@ -564,57 +544,51 @@ impl VaH264Encoder {
             }
         }
 
-        let ref_pic_list_1: [PictureH264; 32] =
-            std::array::from_fn(|_| build_invalid_pic());
+        let ref_pic_list_1: [PictureH264; 32] = std::array::from_fn(|_| build_invalid_pic());
 
-        let idr_pic_id = if is_idr {
-            (self.frame_count / u64::from(self.idr_period)) as u16
-        } else {
-            0
-        };
+        let idr_pic_id =
+            if is_idr { (self.frame_count / u64::from(self.idr_period)) as u16 } else { 0 };
 
         // Compute slice_qp_delta so that pic_init_qp + slice_qp_delta = target QP.
         // Since we set pic_init_qp = self.qp, slice_qp_delta = 0.
         let slice_qp_delta: i8 = 0;
 
-        BufferType::EncSliceParameter(EncSliceParameter::H264(
-            EncSliceParameterBufferH264::new(
-                0,                              // macroblock_address (start of slice)
-                self.num_mbs,                   // num_macroblocks
-                VA_INVALID_ID,                  // macroblock_info (unused)
-                slice_type,
-                0,                              // pic_parameter_set_id
-                idr_pic_id,
-                poc,                            // pic_order_cnt_lsb
-                0,                              // delta_pic_order_cnt_bottom
-                [0i32; 2],                      // delta_pic_order_cnt
-                0,                              // direct_spatial_mv_pred_flag
-                num_ref_idx_active_override_flag,
-                num_ref_idx_l0_active_minus1,
-                0,                              // num_ref_idx_l1_active_minus1
-                ref_pic_list_0,
-                ref_pic_list_1,
-                0,                              // luma_log2_weight_denom
-                0,                              // chroma_log2_weight_denom
-                0,                              // luma_weight_l0_flag
-                [0i16; 32],                     // luma_weight_l0
-                [0i16; 32],                     // luma_offset_l0
-                0,                              // chroma_weight_l0_flag
-                [[0i16; 2]; 32],                // chroma_weight_l0
-                [[0i16; 2]; 32],                // chroma_offset_l0
-                0,                              // luma_weight_l1_flag
-                [0i16; 32],                     // luma_weight_l1
-                [0i16; 32],                     // luma_offset_l1
-                0,                              // chroma_weight_l1_flag
-                [[0i16; 2]; 32],                // chroma_weight_l1
-                [[0i16; 2]; 32],                // chroma_offset_l1
-                0,                              // cabac_init_idc (CAVLC)
-                slice_qp_delta,
-                0,                              // disable_deblocking_filter_idc (enabled)
-                0,                              // slice_alpha_c0_offset_div2
-                0,                              // slice_beta_offset_div2
-            ),
-        ))
+        BufferType::EncSliceParameter(EncSliceParameter::H264(EncSliceParameterBufferH264::new(
+            0,             // macroblock_address (start of slice)
+            self.num_mbs,  // num_macroblocks
+            VA_INVALID_ID, // macroblock_info (unused)
+            slice_type,
+            0, // pic_parameter_set_id
+            idr_pic_id,
+            poc,       // pic_order_cnt_lsb
+            0,         // delta_pic_order_cnt_bottom
+            [0i32; 2], // delta_pic_order_cnt
+            0,         // direct_spatial_mv_pred_flag
+            num_ref_idx_active_override_flag,
+            num_ref_idx_l0_active_minus1,
+            0, // num_ref_idx_l1_active_minus1
+            ref_pic_list_0,
+            ref_pic_list_1,
+            0,               // luma_log2_weight_denom
+            0,               // chroma_log2_weight_denom
+            0,               // luma_weight_l0_flag
+            [0i16; 32],      // luma_weight_l0
+            [0i16; 32],      // luma_offset_l0
+            0,               // chroma_weight_l0_flag
+            [[0i16; 2]; 32], // chroma_weight_l0
+            [[0i16; 2]; 32], // chroma_offset_l0
+            0,               // luma_weight_l1_flag
+            [0i16; 32],      // luma_weight_l1
+            [0i16; 32],      // luma_offset_l1
+            0,               // chroma_weight_l1_flag
+            [[0i16; 2]; 32], // chroma_weight_l1
+            [[0i16; 2]; 32], // chroma_offset_l1
+            0,               // cabac_init_idc (CAVLC)
+            slice_qp_delta,
+            0, // disable_deblocking_filter_idc (enabled)
+            0, // slice_alpha_c0_offset_div2
+            0, // slice_beta_offset_div2
+        )))
     }
 
     /// Build the rate-control miscellaneous parameter buffer (CQP mode).
@@ -633,17 +607,16 @@ impl VaH264Encoder {
 
         BufferType::EncMiscParameter(EncMiscParameter::RateControl(
             EncMiscParameterRateControl::new(
-                0,         // bits_per_second (CQP → 0)
-                100,       // target_percentage
-                1500,      // window_size (ms)
-                self.qp,   // initial_qp
-                MIN_QP,    // min_qp
-                0,         // basic_unit_size
-                rc_flags,
-                0,         // icq_quality_factor
-                MAX_QP,    // max_qp
-                0,         // quality_factor
-                0,         // target_frame_size
+                0,       // bits_per_second (CQP → 0)
+                100,     // target_percentage
+                1500,    // window_size (ms)
+                self.qp, // initial_qp
+                MIN_QP,  // min_qp
+                0,       // basic_unit_size
+                rc_flags, 0,      // icq_quality_factor
+                MAX_QP, // max_qp
+                0,      // quality_factor
+                0,      // target_frame_size
             ),
         ))
     }
@@ -700,15 +673,13 @@ fn resolve_low_power(display: &Display, requested: bool) -> Result<bool, String>
     let has_full = entrypoints.contains(&VAEntrypoint::VAEntrypointEncSlice);
 
     if !has_lp && !has_full {
-        return Err(
-            "VA-API driver does not support H.264 encoding (no EncSlice entrypoint)".into(),
-        );
+        return Err("VA-API driver does not support H.264 encoding (no EncSlice entrypoint)".into());
     }
 
     if requested {
         if !has_lp {
             return Err(
-                "low_power=true requested but VAEntrypointEncSliceLP is not supported".into(),
+                "low_power=true requested but VAEntrypointEncSliceLP is not supported".into()
             );
         }
         Ok(true)

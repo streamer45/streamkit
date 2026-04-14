@@ -71,9 +71,7 @@ use super::HwAccelMode;
 use super::H264_CONTENT_TYPE;
 
 // Re-use helpers from the VA-API AV1 module — codec-agnostic NV12 I/O routines.
-use super::vaapi_av1::{
-    nv12_fourcc, open_va_and_gbm, open_va_display, read_nv12_from_mapping,
-};
+use super::vaapi_av1::{nv12_fourcc, open_va_and_gbm, open_va_display, read_nv12_from_mapping};
 
 // ---------------------------------------------------------------------------
 // Constants
