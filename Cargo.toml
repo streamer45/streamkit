@@ -112,10 +112,10 @@ must_use_candidate = "allow"
 doc_markdown = "allow"
 
 # ---------------------------------------------------------------------------
-# Patched cros-codecs: adds display_resolution field to AV1 EncoderConfig
-# so the frame header signals render_width/render_height when the visible
-# area differs from the superblock-aligned coded dimensions (fixes #292).
-# Remove this patch once upstream cros-codecs ships display_resolution.
+# Patched cros-codecs: makes `fn new_h264` public so the H.264 encoder can
+# bypass GBM allocation (Image API path) on hardware where Mesa rejects NV12
+# GBM buffers (e.g. Tiger Lake).
+# Remove this patch once upstream cros-codecs makes new_h264 public.
 # ---------------------------------------------------------------------------
 [patch.crates-io]
 cros-codecs = { path = "vendor/cros-codecs" }

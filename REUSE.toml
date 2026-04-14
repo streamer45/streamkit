@@ -143,8 +143,8 @@ SPDX-FileCopyrightText = "© Mermaid contributors"
 SPDX-License-Identifier = "MIT"
 
 # Vendored cros-codecs (BSD-3-Clause, ChromiumOS Authors)
-# Patched locally to add GbmUsage::Linear for Tiger Lake VA-API support.
-# Remove this annotation when the upstream crate ships the fix.
+# Patched locally: makes `fn new_h264` public for the Image API encoder path.
+# Remove this annotation when upstream cros-codecs makes new_h264 public.
 [[annotations]]
 path = "vendor/cros-codecs/**"
 precedence = "override"
