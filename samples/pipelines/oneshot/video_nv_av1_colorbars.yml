@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Demonstrates the NVIDIA NVENC AV1 HW encoder:
+#   Generates SMPTE color bars (NV12), encodes to AV1 via NVENC
+#   (GPU-accelerated), muxes into a WebM container, and writes the result
+#   to HTTP output.
+#
+# Requires: skit built with --features nvcodec
+#           NVIDIA GPU with NVENC AV1 support (Ada Lovelace / RTX 40+)
+#           System packages: nvidia-cuda-toolkit, libclang-dev
+
+name: NVENC AV1 Encode (WebM Oneshot)
+description: Generates color bars, encodes to AV1 using NVIDIA NVENC HW encoder, and muxes into WebM (30 seconds)
+mode: oneshot
+client:
+  input:
+    type: none
+  output:
+    type: video
+
+nodes:
+  colorbars:
+    kind: video::colorbars
+    params:
+      width: 1280
+      height: 720
+      fps: 30
+      frame_count: 900  # 30 seconds at 30fps
+      pixel_format: nv12
+      draw_time: true
+      draw_time_use_pts: true
+
+  nv_av1_encoder:
+    kind: video::nv::av1_encoder
+    params:
+      bitrate: 2000000
+      framerate: 30
+    needs: colorbars
+
+  webm_muxer:
+    kind: containers::webm::muxer
+    params:
+      video_width: 1280
+      video_height: 720
+      streaming_mode: live
+    needs: nv_av1_encoder
+
+  pacer:
+    kind: core::pacer
+    needs: webm_muxer
+
+  http_output:
+    kind: streamkit::http_output
+    params:
+      content_type: 'video/webm; codecs="av1"'
+    needs: pacer

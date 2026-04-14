@@ -11,6 +11,8 @@ tokio_console_features := "--features tokio-console"
 # Optional extra features to enable in skit builds (e.g. "svt_av1").
 # Usage: just extra_features="--features svt_av1" skit
 #    or: just extra_features="--features svt_av1" build-skit
+# HW codecs: vulkan_video (H.264 Vulkan Video), vaapi (AV1 VA-API), nvcodec (AV1 NVENC/NVDEC)
+#    e.g.: just extra_features="--features vulkan_video,nvcodec" skit
 extra_features := ""
 
 # sherpa-onnx version for Kokoro TTS plugin (must match sherpa-rs version)
@@ -216,11 +218,12 @@ test-skit:
     @cargo test --workspace -- --skip gpu_tests::
     @cargo test -p streamkit-server --features "moq"
 
-# Run GPU compositor tests (requires a machine with a GPU)
+# Run GPU tests (requires a machine with a GPU)
 test-skit-gpu:
     @echo "Testing skit (GPU)..."
     @cargo test -p streamkit-nodes --features gpu
     @cargo test -p streamkit-engine --features gpu
+    @cargo test -p streamkit-nodes --features nvcodec
 
 # Lint and format check the skit code
 # Note: We exclude dhat-heap since it's mutually exclusive with profiling (both define global allocators)
@@ -1385,6 +1388,18 @@ e2e-auth-headed: build-ui install-e2e
 e2e-external url filter='':
     @echo "Running E2E tests against {{url}}..."
     @cd e2e && E2E_BASE_URL={{url}} bun run test:only {{ if filter != "" { "--grep '" + filter + "'" } else { "" } }}
+
+# Run headless pipeline validation tests (no browser required).
+# Requires a running skit server — pass its URL as an argument.
+# Each .yml in samples/pipelines/test/ becomes a test case; a companion
+# .toml sidecar declares the expected ffprobe output.
+#
+# Usage:
+#   just test-pipelines http://localhost:4545
+#   just test-pipelines http://localhost:4545 vp9   # filter by name
+test-pipelines url filter='':
+    @echo "Running headless pipeline validation tests against {{url}}..."
+    @cd tests/pipeline-validation && PIPELINE_TEST_URL={{url}} cargo test --test validate {{ if filter != "" { "-- " + filter } else { "" } }}
 
 # Show E2E test report
 [working-directory: 'e2e']

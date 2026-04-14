@@ -70,6 +70,34 @@ pub const AV1_CONTENT_TYPE: &str = "video/av1";
 /// MIME-style content type for H.264-encoded video packets.
 pub const H264_CONTENT_TYPE: &str = "video/h264";
 
+// ── Hardware acceleration mode ───────────────────────────────────────────────
+//
+// Shared across all HW-accelerated codec modules (Vulkan Video, VA-API, NVENC).
+
+/// Hardware acceleration mode for GPU codec nodes.
+///
+/// Mirrors the compositor's `gpu_mode` pattern: auto-detect by default,
+/// with explicit force options for testing and deployment.
+#[cfg(any(feature = "vulkan_video", feature = "vaapi", feature = "nvcodec"))]
+#[derive(
+    Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum HwAccelMode {
+    /// Auto-detect: attempt hardware acceleration.
+    ///
+    /// For HW-only nodes (Vulkan Video, VA-API, NVENC/NVDEC) this behaves
+    /// identically to `ForceHw` — the node will fail if the required
+    /// hardware is unavailable.  CPU fallback is achieved by selecting a
+    /// different (software) node at the pipeline level.
+    #[default]
+    Auto,
+    /// Force HW acceleration — fail if unavailable.
+    ForceHw,
+    /// Force CPU path — ignore available HW.
+    ForceCpu,
+}
+
 /// Parse a pixel format string into a [`PixelFormat`].
 ///
 /// Accepts `"i420"`, `"nv12"`, `"rgba8"`, or `"rgba"` (case-insensitive).
@@ -100,11 +128,80 @@ pub mod pixel_ops;
 #[cfg(feature = "compositor")]
 pub mod pixel_convert;
 
-#[cfg(any(feature = "vp9", feature = "av1", feature = "svt_av1", feature = "openh264"))]
+#[cfg(any(
+    feature = "vp9",
+    feature = "av1",
+    feature = "svt_av1",
+    feature = "openh264",
+    feature = "nvcodec",
+    feature = "vaapi"
+))]
 pub(crate) mod encoder_trait;
 
+// ── HW-accelerated codec modules ─────────────────────────────────────────────
+
+#[cfg(feature = "vulkan_video")]
+pub mod vulkan_video;
+
+#[cfg(feature = "vaapi")]
+pub mod vaapi_av1;
+
+#[cfg(feature = "vaapi")]
+pub mod vaapi_h264;
+
+#[cfg(feature = "vaapi")]
+mod vaapi_h264_enc;
+
+#[cfg(feature = "nvcodec")]
+pub mod nv_av1;
+
 // ── Shared I420→NV12 conversion helpers ──────────────────────────────────────
-//
+
+/// Convert an I420 [`VideoFrame`] into a contiguous NV12 byte buffer.
+///
+/// Copies the Y plane as-is, then interleaves the U and V planes into
+/// a single UV plane.  Used by HW encoders that need NV12 input from
+/// an I420 source frame.
+#[cfg(any(feature = "vulkan_video", feature = "nvcodec"))]
+pub(super) fn i420_frame_to_nv12_buffer(frame: &streamkit_core::types::VideoFrame) -> Vec<u8> {
+    let width = frame.width as usize;
+    let height = frame.height as usize;
+    let layout = frame.layout();
+    let planes = layout.planes();
+    let data = frame.data.as_slice();
+
+    let chroma_w = width.div_ceil(2);
+    let chroma_h = height.div_ceil(2);
+    let uv_row_bytes = chroma_w * 2;
+    let nv12_size = width * height + uv_row_bytes * chroma_h;
+    let mut nv12 = vec![0u8; nv12_size];
+
+    // Copy Y plane.
+    let y_plane = &planes[0];
+    for row in 0..height {
+        let src_start = y_plane.offset + row * y_plane.stride;
+        let dst_start = row * width;
+        nv12[dst_start..dst_start + width].copy_from_slice(&data[src_start..src_start + width]);
+    }
+
+    // Interleave U + V into NV12 UV plane.
+    let u_plane = &planes[1];
+    let v_plane = &planes[2];
+    let uv_offset = width * height;
+
+    for row in 0..chroma_h {
+        let u_src_start = u_plane.offset + row * u_plane.stride;
+        let v_src_start = v_plane.offset + row * v_plane.stride;
+        let dst_start = uv_offset + row * uv_row_bytes;
+        for col in 0..chroma_w {
+            nv12[dst_start + col * 2] = data[u_src_start + col];
+            nv12[dst_start + col * 2 + 1] = data[v_src_start + col];
+        }
+    }
+
+    nv12
+}
+
 // Used by both the rav1d decoder (av1.rs) and the C dav1d decoder (dav1d.rs).
 
 /// Raw plane pointers + strides for an I420 picture, abstracting over the
@@ -590,4 +687,16 @@ pub fn register_video_nodes(registry: &mut NodeRegistry, constraints: &GlobalNod
 
     #[cfg(feature = "dav1d")]
     dav1d::register_dav1d_nodes(registry);
+
+    #[cfg(feature = "vulkan_video")]
+    vulkan_video::register_vulkan_video_nodes(registry);
+
+    #[cfg(feature = "vaapi")]
+    vaapi_av1::register_vaapi_av1_nodes(registry);
+
+    #[cfg(feature = "vaapi")]
+    vaapi_h264::register_vaapi_h264_nodes(registry);
+
+    #[cfg(feature = "nvcodec")]
+    nv_av1::register_nv_av1_nodes(registry);
 }

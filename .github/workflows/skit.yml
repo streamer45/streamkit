@@ -120,7 +120,9 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm cmake pkg-config libopus-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvpx-dev nasm cmake pkg-config libopus-dev libva-dev libgbm-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -140,8 +142,16 @@ jobs:
           VPX_LIB_DIR: /usr/lib/x86_64-linux-gnu
           VPX_INCLUDE_DIR: /usr/include
           VPX_VERSION: "1.13.0"
+          # Ubuntu's nvidia-cuda-toolkit installs headers to /usr/include, not
+          # /usr/local/cuda/include.  Tell shiguredo_nvcodec where to find them.
+          CUDA_INCLUDE_PATH: /usr/include
+          # bindgen (used by shiguredo_nvcodec) needs the clang builtin include
+          # path so it can find stddef.h and other compiler-provided headers.
+          BINDGEN_EXTRA_CLANG_ARGS: "-I/usr/lib/llvm-18/lib/clang/18/include"
         run: |
           cargo test --locked -p streamkit-nodes --features gpu
+          cargo test --locked -p streamkit-nodes --features nvcodec
+          cargo test --locked -p streamkit-nodes --features vaapi
           cargo test --locked -p streamkit-engine --features gpu
 
   build:

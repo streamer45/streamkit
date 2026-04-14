@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Streams SMPTE color bars encoded with VA-API AV1 (GPU-accelerated) over MoQ.
+#
+# Requires: skit built with --features vaapi
+#           VA-API capable GPU with AV1 encode support (Intel Arc+, AMD)
+#           System packages: libva-dev, libgbm-dev
+
+name: VA-API AV1 Color Bars (MoQ Stream)
+description: Continuously generates SMPTE color bars and streams via MoQ using VA-API AV1 HW encoder
+mode: dynamic
+client:
+  gateway_path: /moq/video
+  watch:
+    broadcast: output
+    audio: false
+    video: true
+
+nodes:
+  colorbars:
+    kind: video::colorbars
+    params:
+      width: 1280
+      height: 720
+      fps: 30
+      pixel_format: nv12
+      draw_time: true
+
+  vaapi_av1_encoder:
+    kind: video::vaapi::av1_encoder
+    params:
+      quality: 128
+      framerate: 30
+    needs: colorbars
+
+  moq_peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/video
+      output_broadcast: output
+      allow_reconnect: true
+      video_codec: av1
+    needs:
+      in: vaapi_av1_encoder

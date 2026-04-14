@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Test pipeline: SVT-AV1 encode → dav1d decode → SVT-AV1 re-encode roundtrip.
+# Exercises: colorbars → svt_av1 encoder → dav1d decoder → svt_av1 re-encoder → webm muxer
+# Used by headless pipeline validation tests.
+#
+# Requires: skit built with --features "svt_av1 dav1d"
+
+name: Test — dav1d AV1 Decode Roundtrip
+description: AV1 roundtrip via SVT-AV1 encode → dav1d decode → SVT-AV1 re-encode
+mode: oneshot
+client:
+  input:
+    type: none
+  output:
+    type: video
+
+nodes:
+  colorbars:
+    kind: video::colorbars
+    params:
+      width: 320
+      height: 240
+      fps: 30
+      frame_count: 30
+      pixel_format: nv12
+      draw_time: true
+      draw_time_use_pts: true
+
+  svt_av1_encoder:
+    kind: video::svt_av1::encoder
+    params:
+      preset: 12
+      low_latency: true
+    needs: colorbars
+
+  dav1d_decoder:
+    kind: video::dav1d::decoder
+    needs: svt_av1_encoder
+
+  svt_av1_reencoder:
+    kind: video::svt_av1::encoder
+    params:
+      preset: 12
+      low_latency: true
+    needs: dav1d_decoder
+
+  webm_muxer:
+    kind: containers::webm::muxer
+    params:
+      video_width: 320
+      video_height: 240
+      streaming_mode: live
+    needs: svt_av1_reencoder
+
+  pacer:
+    kind: core::pacer
+    needs: webm_muxer
+
+  http_output:
+    kind: streamkit::http_output
+    params:
+      content_type: 'video/webm; codecs="av1"'
+    needs: pacer

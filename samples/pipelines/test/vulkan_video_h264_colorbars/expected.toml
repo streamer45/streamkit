@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Expected output metadata for vulkan_video_h264_colorbars.yml
+# Requires: skit built with --features vulkan_video + Vulkan-capable GPU
+
+requires_node = "video::vulkan_video::h264_encoder"
+output_extension = ".mp4"
+codec_name = "h264"
+width = 320
+height = 240
+container_format = "mov,mp4,m4a,3gp,3g2,mj2"
+pix_fmt = "yuv420p"

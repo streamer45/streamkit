@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Test pipeline: rav1e AV1 encoder → WebM (30 frames = 1 second at 30fps).
+# Exercises: colorbars → video::av1::encoder (rav1e, pure-Rust) → webm muxer
+# Used by headless pipeline validation tests.
+
+name: Test — rav1e AV1 Color Bars
+description: Short rav1e AV1/WebM colorbars for automated testing
+mode: oneshot
+client:
+  input:
+    type: none
+  output:
+    type: video
+
+nodes:
+  colorbars:
+    kind: video::colorbars
+    params:
+      width: 320
+      height: 240
+      fps: 30
+      frame_count: 30
+      pixel_format: nv12
+      draw_time: true
+      draw_time_use_pts: true
+
+  av1_encoder:
+    kind: video::av1::encoder
+    params:
+      speed: 10
+      low_latency: true
+    needs: colorbars
+
+  webm_muxer:
+    kind: containers::webm::muxer
+    params:
+      video_width: 320
+      video_height: 240
+      streaming_mode: live
+    needs: av1_encoder
+
+  pacer:
+    kind: core::pacer
+    needs: webm_muxer
+
+  http_output:
+    kind: streamkit::http_output
+    params:
+      content_type: 'video/webm; codecs="av1"'
+    needs: pacer

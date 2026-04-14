@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Streams SMPTE color bars encoded with Vulkan Video H.264 (GPU-accelerated)
+# over MoQ.
+#
+# Requires: skit built with --features vulkan_video
+#           Vulkan-capable GPU with H.264 encode support
+
+name: Vulkan Video H.264 Color Bars (MoQ Stream)
+description: Continuously generates SMPTE color bars and streams via MoQ using Vulkan Video H.264 HW encoder
+mode: dynamic
+client:
+  gateway_path: /moq/video
+  watch:
+    broadcast: output
+    audio: false
+    video: true
+
+nodes:
+  colorbars:
+    kind: video::colorbars
+    params:
+      width: 1280
+      height: 720
+      fps: 30
+      pixel_format: nv12
+      draw_time: true
+
+  vk_h264_encoder:
+    kind: video::vulkan_video::h264_encoder
+    params:
+      bitrate: 2000000
+      framerate: 30
+    needs: colorbars
+
+  moq_peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/video
+      output_broadcast: output
+      allow_reconnect: true
+      video_codec: h264
+    needs:
+      in: vk_h264_encoder

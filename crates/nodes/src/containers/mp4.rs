@@ -89,6 +89,14 @@ fn build_avc1_sample_entry(width: u16, height: u16, codec_private: Option<&[u8]>
         parse_avcc_codec_private,
     );
 
+    // For High profile and above (anything other than Baseline 66,
+    // Main 77, Extended 88), the avcC box requires chroma_format and
+    // bit-depth fields.  Default to 4:2:0 / 8-bit which matches NV12.
+    let needs_chroma_fields = !matches!(profile, 66 | 77 | 88);
+    let chroma_format = if needs_chroma_fields { Some(Uint::new(1)) } else { None };
+    let bit_depth_luma_minus8 = if needs_chroma_fields { Some(Uint::new(0)) } else { None };
+    let bit_depth_chroma_minus8 = if needs_chroma_fields { Some(Uint::new(0)) } else { None };
+
     SampleEntry::Avc1(Avc1Box {
         visual: VisualSampleEntryFields {
             data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
@@ -107,9 +115,9 @@ fn build_avc1_sample_entry(width: u16, height: u16, codec_private: Option<&[u8]>
             length_size_minus_one: Uint::new(3),
             sps_list,
             pps_list,
-            chroma_format: None,
-            bit_depth_luma_minus8: None,
-            bit_depth_chroma_minus8: None,
+            chroma_format,
+            bit_depth_luma_minus8,
+            bit_depth_chroma_minus8,
             sps_ext_list: vec![],
         },
         unknown_boxes: vec![],
@@ -296,6 +304,15 @@ fn rebuild_avc1_entry_from_params(
         .filter(|sps| sps.len() >= 4)
         .map_or((66, 0, 31), |sps| (sps[1], sps[2], sps[3]));
 
+    // For High profile and above (anything other than Baseline 66,
+    // Main 77, Extended 88), the avcC box requires chroma_format and
+    // bit-depth fields.  Default to 4:2:0 / 8-bit which matches NV12
+    // input — the standard output of HW encoders.
+    let needs_chroma_fields = !matches!(profile, 66 | 77 | 88);
+    let chroma_format = if needs_chroma_fields { Some(Uint::new(1)) } else { None };
+    let bit_depth_luma_minus8 = if needs_chroma_fields { Some(Uint::new(0)) } else { None };
+    let bit_depth_chroma_minus8 = if needs_chroma_fields { Some(Uint::new(0)) } else { None };
+
     SampleEntry::Avc1(Avc1Box {
         visual: VisualSampleEntryFields {
             data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
@@ -314,9 +331,9 @@ fn rebuild_avc1_entry_from_params(
             length_size_minus_one: Uint::new(3),
             sps_list,
             pps_list,
-            chroma_format: None,
-            bit_depth_luma_minus8: None,
-            bit_depth_chroma_minus8: None,
+            chroma_format,
+            bit_depth_luma_minus8,
+            bit_depth_chroma_minus8,
             sps_ext_list: vec![],
         },
         unknown_boxes: vec![],
@@ -1098,6 +1115,116 @@ fn partition_samples_by_track(
 // Stream (fMP4) mode
 // ---------------------------------------------------------------------------
 
+/// Accumulate a single video frame into the pending segment state.
+///
+/// Handles Annex B → AVCC conversion for H.264, sample-entry tracking,
+/// and duration calculation.
+#[allow(clippy::too_many_arguments)]
+fn accumulate_video_sample(
+    data: &Bytes,
+    metadata: Option<&PacketMetadata>,
+    is_keyframe: bool,
+    is_h264: bool,
+    config: &Mp4MuxerConfig,
+    video_timescale: NonZeroU32,
+    video_sample_entry: &mut SampleEntry,
+    seg: &mut Fmp4SegmentState,
+) {
+    // Convert Annex B → AVCC for H.264 streams so the mdat
+    // contains length-prefixed NAL units matching the avc1 box.
+    let data = if is_h264 {
+        let conv = convert_annexb_to_avcc(data);
+        // On the first keyframe, update the sample entry with
+        // real SPS/PPS so the init segment (moov) describes the
+        // actual stream parameters instead of placeholders.
+        if !conv.sps_list.is_empty() && !seg.video_sample_entry_sent {
+            *video_sample_entry = rebuild_avc1_entry_from_params(
+                config.video_width,
+                config.video_height,
+                conv.sps_list,
+                conv.pps_list,
+            );
+        }
+        conv.data
+    } else {
+        data.clone()
+    };
+
+    let duration_us =
+        metadata.as_ref().and_then(|m| m.duration_us).unwrap_or(DEFAULT_VIDEO_FRAME_DURATION_US);
+    let duration_ticks = us_to_ticks(duration_us, video_timescale.get());
+
+    let data_size = data.len();
+    let entry = if seg.video_sample_entry_sent {
+        None
+    } else {
+        seg.video_sample_entry_sent = true;
+        Some(video_sample_entry.clone())
+    };
+    seg.pending_samples.push(Sample {
+        track_kind: TrackKind::Video,
+        timescale: video_timescale,
+        sample_entry: entry,
+        duration: duration_ticks,
+        keyframe: is_keyframe,
+        composition_time_offset: None,
+        data_offset: 0, // placeholder; partition_samples_by_track recomputes
+        data_size,
+    });
+    seg.pending_payloads.push(data);
+}
+
+/// Accumulate a single audio frame into the pending segment state.
+fn accumulate_audio_sample(
+    data: Bytes,
+    metadata: Option<&PacketMetadata>,
+    audio_codec: AudioCodec,
+    audio_timescale: NonZeroU32,
+    audio_sample_entry: &SampleEntry,
+    seg: &mut Fmp4SegmentState,
+) {
+    let duration_us = metadata
+        .and_then(|m| m.duration_us)
+        .unwrap_or_else(|| audio_codec.default_frame_duration_us());
+    let duration_ticks = us_to_ticks(duration_us, audio_timescale.get());
+
+    let data_size = data.len();
+    let entry = if seg.audio_sample_entry_sent {
+        None
+    } else {
+        seg.audio_sample_entry_sent = true;
+        Some(audio_sample_entry.clone())
+    };
+    seg.pending_samples.push(Sample {
+        track_kind: TrackKind::Audio,
+        timescale: audio_timescale,
+        sample_entry: entry,
+        duration: duration_ticks,
+        keyframe: true, // audio frames are always keyframes
+        composition_time_offset: None,
+        data_offset: 0, // placeholder; partition_samples_by_track recomputes
+        data_size,
+    });
+    seg.pending_payloads.push(data);
+}
+
+/// Check the keyframe gate for video frames.
+///
+/// Returns `true` if the frame should be processed, `false` if it should be
+/// skipped (still waiting for the first keyframe).
+fn check_video_keyframe_gate(is_keyframe: bool, video_keyframe_seen: &mut bool) -> bool {
+    if *video_keyframe_seen {
+        return true;
+    }
+    if !is_keyframe {
+        tracing::debug!("Mp4MuxerNode: skipping non-keyframe video (waiting for first keyframe)");
+        return false;
+    }
+    tracing::debug!("Mp4MuxerNode: first video keyframe received");
+    *video_keyframe_seen = true;
+    true
+}
+
 /// Run the muxer in fragmented MP4 (fMP4) streaming mode.
 ///
 /// Each batch of samples is turned into a media segment (moof + mdat) and
@@ -1163,91 +1290,34 @@ async fn run_stream_mode(
             },
             MuxFrame::Video(data, metadata) => {
                 let is_keyframe = metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(false);
-
-                if !video_keyframe_seen {
-                    if is_keyframe {
-                        video_keyframe_seen = true;
-                    } else {
-                        continue;
-                    }
+                if !check_video_keyframe_gate(is_keyframe, &mut video_keyframe_seen) {
+                    continue;
                 }
 
                 packet_count += 1;
                 stats_tracker.received();
-
-                // Convert Annex B → AVCC for H.264 streams so the mdat
-                // contains length-prefixed NAL units matching the avc1 box.
-                let data = if is_h264 {
-                    let conv = convert_annexb_to_avcc(&data);
-                    // On the first keyframe, update the sample entry with
-                    // real SPS/PPS so the init segment (moov) describes the
-                    // actual stream parameters instead of placeholders.
-                    if !conv.sps_list.is_empty() && !seg.video_sample_entry_sent {
-                        video_sample_entry = rebuild_avc1_entry_from_params(
-                            session.config.video_width,
-                            session.config.video_height,
-                            conv.sps_list,
-                            conv.pps_list,
-                        );
-                    }
-                    conv.data
-                } else {
-                    data
-                };
-
-                let duration_us = metadata
-                    .as_ref()
-                    .and_then(|m| m.duration_us)
-                    .unwrap_or(DEFAULT_VIDEO_FRAME_DURATION_US);
-                let duration_ticks = us_to_ticks(duration_us, video_timescale.get());
-
-                let data_size = data.len();
-                let entry = if seg.video_sample_entry_sent {
-                    None
-                } else {
-                    seg.video_sample_entry_sent = true;
-                    Some(video_sample_entry.clone())
-                };
-                seg.pending_samples.push(Sample {
-                    track_kind: TrackKind::Video,
-                    timescale: video_timescale,
-                    sample_entry: entry,
-                    duration: duration_ticks,
-                    keyframe: is_keyframe,
-                    composition_time_offset: None,
-                    data_offset: 0, // placeholder; partition_samples_by_track recomputes
-                    data_size,
-                });
-                seg.pending_payloads.push(data);
+                accumulate_video_sample(
+                    &data,
+                    metadata.as_ref(),
+                    is_keyframe,
+                    is_h264,
+                    session.config,
+                    video_timescale,
+                    &mut video_sample_entry,
+                    &mut seg,
+                );
             },
             MuxFrame::Audio(data, metadata) => {
                 packet_count += 1;
                 stats_tracker.received();
-
-                let duration_us = metadata
-                    .as_ref()
-                    .and_then(|m| m.duration_us)
-                    .unwrap_or_else(|| session.audio_codec.default_frame_duration_us());
-                let duration_ticks = us_to_ticks(duration_us, audio_timescale.get());
-
-                let data_size = data.len();
-                let entry = if seg.audio_sample_entry_sent {
-                    None
-                } else {
-                    seg.audio_sample_entry_sent = true;
-                    Some(audio_sample_entry.clone())
-                };
-                seg.pending_samples.push(Sample {
-                    track_kind: TrackKind::Audio,
-                    timescale: audio_timescale,
-                    sample_entry: entry,
-                    duration: duration_ticks,
-                    keyframe: true, // audio frames are always keyframes
-                    composition_time_offset: None,
-                    data_offset: 0, // placeholder; partition_samples_by_track recomputes
-                    data_size,
-                });
-                seg.pending_payloads.push(data);
+                accumulate_audio_sample(
+                    data,
+                    metadata.as_ref(),
+                    session.audio_codec,
+                    audio_timescale,
+                    &audio_sample_entry,
+                    &mut seg,
+                );
             },
         }
 

@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Test pipeline: OpenH264/MP4 colorbars (30 frames = 1 second at 30fps).
+# Used by headless pipeline validation tests.
+
+name: Test — OpenH264 Color Bars
+description: Short H.264/MP4 colorbars for automated testing
+mode: oneshot
+client:
+  input:
+    type: none
+  output:
+    type: video
+
+nodes:
+  colorbars:
+    kind: video::colorbars
+    params:
+      width: 320
+      height: 240
+      fps: 30
+      frame_count: 30
+      pixel_format: nv12
+      draw_time: true
+      draw_time_use_pts: true
+
+  h264_encoder:
+    kind: video::openh264::encoder
+    params:
+      bitrate_kbps: 1000
+      max_frame_rate: 30.0
+    needs: colorbars
+
+  mp4_muxer:
+    kind: containers::mp4::muxer
+    params:
+      mode: stream
+      video_width: 320
+      video_height: 240
+    needs: h264_encoder
+
+  http_output:
+    kind: streamkit::http_output
+    params:
+      content_type: 'video/mp4; codecs="avc1.42c01f"'
+    needs: mp4_muxer
