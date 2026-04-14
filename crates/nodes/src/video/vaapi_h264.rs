@@ -59,8 +59,8 @@ use cros_codecs::decoder::stateless::h264::H264;
 use cros_codecs::decoder::stateless::{DecodeError, StatelessDecoder, StatelessVideoDecoder};
 use cros_codecs::decoder::{BlockingMode, DecodedHandle, DecoderEvent};
 use cros_codecs::libva;
-use cros_codecs::video_frame::gbm_video_frame::{GbmDevice, GbmUsage, GbmVideoFrame};
-use cros_codecs::video_frame::{ReadMapping, VideoFrame as CrosVideoFrame};
+use cros_codecs::video_frame::gbm_video_frame::{GbmUsage, GbmVideoFrame};
+
 use cros_codecs::Resolution as CrosResolution;
 
 // Custom VA-API H.264 encoder shim — drives libva directly, bypasses GBM.

@@ -432,19 +432,21 @@ impl VaH264Encoder {
                 self.width_in_mbs,  // picture_width_in_mbs
                 self.height_in_mbs, // picture_height_in_mbs
                 &seq_fields,
-                0,                       // bit_depth_luma_minus8
-                0,                       // bit_depth_chroma_minus8
-                0,                       // num_ref_frames_in_pic_order_cnt_cycle
-                0,                       // offset_for_non_ref_pic
-                0,                       // offset_for_top_to_bottom_field
-                [0i32; 256],             // offset_for_ref_frame
-                self.frame_crop.clone(), // frame_crop
-                Some(vui_fields),        // vui_fields
-                1,                       // aspect_ratio_idc (1:1 SAR)
-                1,                       // sar_width
-                1,                       // sar_height
-                1,                       // num_units_in_tick
-                self.framerate * 2,      // time_scale (2× framerate for field timing)
+                0,           // bit_depth_luma_minus8
+                0,           // bit_depth_chroma_minus8
+                0,           // num_ref_frames_in_pic_order_cnt_cycle
+                0,           // offset_for_non_ref_pic
+                0,           // offset_for_top_to_bottom_field
+                [0i32; 256], // offset_for_ref_frame
+                self.frame_crop
+                    .as_ref()
+                    .map(|c| H264EncFrameCropOffsets::new(c.left, c.right, c.top, c.bottom)), // frame_crop
+                Some(vui_fields),   // vui_fields
+                1,                  // aspect_ratio_idc (1:1 SAR)
+                1,                  // sar_width
+                1,                  // sar_height
+                1,                  // num_units_in_tick
+                self.framerate * 2, // time_scale (2× framerate for field timing)
             ),
         ))
     }
