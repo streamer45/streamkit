@@ -591,7 +591,7 @@ impl ProcessorNode for VulkanVideoH264EncoderNode {
                 // Convert I420 → NV12 if necessary.
                 let nv12_data = match frame.pixel_format {
                     PixelFormat::Nv12 => frame.data.as_slice().to_vec(),
-                    PixelFormat::I420 => i420_to_nv12(&frame),
+                    PixelFormat::I420 => super::i420_frame_to_nv12_buffer(&frame),
                     other => {
                         let _ = result_tx.blocking_send(Err(format!(
                             "VulkanVideoH264EncoderNode: unsupported pixel format {other:?}, \
@@ -759,48 +759,7 @@ fn init_vulkan_encode_device(
     Ok(device)
 }
 
-/// Convert an I420 `VideoFrame` to NV12 byte layout.
-///
-/// NV12 layout: Y plane (width × height) followed by interleaved UV plane
-/// (width × height/2).
-fn i420_to_nv12(frame: &VideoFrame) -> Vec<u8> {
-    let w = frame.width as usize;
-    let h = frame.height as usize;
-    let layout = frame.layout();
-
-    let chroma_w = w.div_ceil(2);
-    let chroma_h = h.div_ceil(2);
-    let uv_row_bytes = chroma_w * 2;
-    let y_size = w * h;
-    let mut nv12 = vec![0u8; y_size + uv_row_bytes * chroma_h];
-
-    let src = frame.data.as_slice();
-    let planes = layout.planes();
-
-    let y_plane = &planes[0];
-    let u_plane = &planes[1];
-    let v_plane = &planes[2];
-
-    // Copy Y plane.
-    for row in 0..h {
-        let src_start = y_plane.offset + row * y_plane.stride;
-        let dst_start = row * w;
-        nv12[dst_start..dst_start + w].copy_from_slice(&src[src_start..src_start + w]);
-    }
-
-    // Interleave U and V into NV12 UV plane.
-    for row in 0..chroma_h {
-        let u_src_start = u_plane.offset + row * u_plane.stride;
-        let v_src_start = v_plane.offset + row * v_plane.stride;
-        let dst_start = y_size + row * uv_row_bytes;
-        for col in 0..chroma_w {
-            nv12[dst_start + col * 2] = src[u_src_start + col];
-            nv12[dst_start + col * 2 + 1] = src[v_src_start + col];
-        }
-    }
-
-    nv12
-}
+// I420→NV12 conversion is now in super::i420_frame_to_nv12_buffer().
 
 // ---------------------------------------------------------------------------
 // Registration
@@ -1369,7 +1328,7 @@ mod tests {
         let test_frame = VideoFrame::new(width, height, PixelFormat::I420, data)
             .expect("test frame should be valid");
 
-        let nv12 = i420_to_nv12(&test_frame);
+        let nv12 = super::i420_frame_to_nv12_buffer(&test_frame);
 
         let y_size = (width * height) as usize;
         let uv_size = width as usize * (height as usize / 2);

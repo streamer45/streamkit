@@ -568,7 +568,7 @@ impl StandardVideoEncoder for NvAv1Encoder {
     ) -> Result<Vec<EncodedPacket>, String> {
         let nv12_data = match frame.pixel_format {
             PixelFormat::Nv12 => Cow::Borrowed(frame.data.as_slice()),
-            PixelFormat::I420 => Cow::Owned(i420_to_nv12_buffer(frame)),
+            PixelFormat::I420 => Cow::Owned(super::i420_frame_to_nv12_buffer(frame)),
             other => {
                 return Err(format!("NV-AV1 encoder expects NV12 or I420 input, got {other:?}"));
             },
@@ -622,47 +622,7 @@ impl NvAv1Encoder {
     }
 }
 
-/// Convert an I420 `VideoFrame` to a contiguous NV12 byte buffer suitable
-/// for `shiguredo_nvcodec::Encoder::encode()`.
-fn i420_to_nv12_buffer(frame: &VideoFrame) -> Vec<u8> {
-    let width = frame.width as usize;
-    let height = frame.height as usize;
-    let layout = frame.layout();
-    let planes = layout.planes();
-    let data = frame.data.as_slice();
-
-    // NV12 layout: Y plane (width * height) + UV plane (chroma_w*2 * chroma_h)
-    let chroma_w = width.div_ceil(2);
-    let chroma_h = height.div_ceil(2);
-    let uv_row_bytes = chroma_w * 2; // ceil(width/2) pairs of (U, V)
-    let nv12_size = width * height + uv_row_bytes * chroma_h;
-    let mut nv12 = vec![0u8; nv12_size];
-
-    // Copy Y plane.
-    let y_plane = &planes[0];
-    for row in 0..height {
-        let src_start = y_plane.offset + row * y_plane.stride;
-        let dst_start = row * width;
-        nv12[dst_start..dst_start + width].copy_from_slice(&data[src_start..src_start + width]);
-    }
-
-    // Interleave U + V into NV12 UV plane.
-    let u_plane = &planes[1];
-    let v_plane = &planes[2];
-    let uv_offset = width * height;
-
-    for row in 0..chroma_h {
-        let u_src_start = u_plane.offset + row * u_plane.stride;
-        let v_src_start = v_plane.offset + row * v_plane.stride;
-        let dst_start = uv_offset + row * uv_row_bytes;
-        for col in 0..chroma_w {
-            nv12[dst_start + col * 2] = data[u_src_start + col];
-            nv12[dst_start + col * 2 + 1] = data[v_src_start + col];
-        }
-    }
-
-    nv12
-}
+// I420→NV12 conversion is now in super::i420_frame_to_nv12_buffer().
 
 #[allow(clippy::missing_const_for_fn)] // map_or with closures is not yet stable in const fn
 fn merge_keyframe_metadata(
@@ -914,7 +874,7 @@ mod tests {
     fn i420_to_nv12_basic() {
         // Build a minimal 4×4 I420 frame and convert.
         let frame = create_test_video_frame(4, 4, PixelFormat::I420, 1);
-        let nv12 = i420_to_nv12_buffer(&frame);
+        let nv12 = super::i420_frame_to_nv12_buffer(&frame);
 
         // NV12 size: Y (4*4) + UV (ceil(4/2)*2 * ceil(4/2)) = 16 + 4*2 = 24
         let expected_size = 4 * 4 + 4 * 2;

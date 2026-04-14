@@ -156,7 +156,52 @@ mod vaapi_h264_enc;
 pub mod nv_av1;
 
 // ── Shared I420→NV12 conversion helpers ──────────────────────────────────────
-//
+
+/// Convert an I420 [`VideoFrame`] into a contiguous NV12 byte buffer.
+///
+/// Copies the Y plane as-is, then interleaves the U and V planes into
+/// a single UV plane.  Used by HW encoders that need NV12 input from
+/// an I420 source frame.
+#[cfg(any(feature = "vulkan_video", feature = "nvcodec"))]
+pub(super) fn i420_frame_to_nv12_buffer(frame: &streamkit_core::types::VideoFrame) -> Vec<u8> {
+    let width = frame.width as usize;
+    let height = frame.height as usize;
+    let layout = frame.layout();
+    let planes = layout.planes();
+    let data = frame.data.as_slice();
+
+    let chroma_w = width.div_ceil(2);
+    let chroma_h = height.div_ceil(2);
+    let uv_row_bytes = chroma_w * 2;
+    let nv12_size = width * height + uv_row_bytes * chroma_h;
+    let mut nv12 = vec![0u8; nv12_size];
+
+    // Copy Y plane.
+    let y_plane = &planes[0];
+    for row in 0..height {
+        let src_start = y_plane.offset + row * y_plane.stride;
+        let dst_start = row * width;
+        nv12[dst_start..dst_start + width].copy_from_slice(&data[src_start..src_start + width]);
+    }
+
+    // Interleave U + V into NV12 UV plane.
+    let u_plane = &planes[1];
+    let v_plane = &planes[2];
+    let uv_offset = width * height;
+
+    for row in 0..chroma_h {
+        let u_src_start = u_plane.offset + row * u_plane.stride;
+        let v_src_start = v_plane.offset + row * v_plane.stride;
+        let dst_start = uv_offset + row * uv_row_bytes;
+        for col in 0..chroma_w {
+            nv12[dst_start + col * 2] = data[u_src_start + col];
+            nv12[dst_start + col * 2 + 1] = data[v_src_start + col];
+        }
+    }
+
+    nv12
+}
+
 // Used by both the rav1d decoder (av1.rs) and the C dav1d decoder (dav1d.rs).
 
 /// Raw plane pointers + strides for an I420 picture, abstracting over the

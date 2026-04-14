@@ -36,10 +36,21 @@ fn base_url() -> &'static str {
 }
 
 /// Lazily resolved set of available node kinds on the server.
+///
+/// When `PIPELINE_REQUIRE_NODES=1` is set, failure to query the schema
+/// endpoint panics instead of returning an empty set — this prevents
+/// a broken server from silently skipping all HW-codec tests.
 fn available_nodes() -> &'static HashSet<String> {
     static NODES: OnceLock<HashSet<String>> = OnceLock::new();
     NODES.get_or_init(|| {
         get_available_nodes(base_url()).unwrap_or_else(|err| {
+            if std::env::var("PIPELINE_REQUIRE_NODES").as_deref() == Ok("1") {
+                panic!(
+                    "FATAL: Could not query available nodes: {err}\n  \
+                     PIPELINE_REQUIRE_NODES=1 requires a reachable server at {}",
+                    base_url()
+                );
+            }
             eprintln!("WARNING: Could not query available nodes: {err}");
             eprintln!("  HW codec tests will be skipped.");
             eprintln!("  Is skit running at {}?", base_url());
@@ -75,9 +86,23 @@ fn validate_pipeline(path: &Path, yaml: String) -> datatest_stable::Result<()> {
         )
     })?;
 
-    // Check if the required node is available (skip gracefully if not).
+    // Check if the required node is available.
+    //
+    // When `PIPELINE_REQUIRE_NODES=1` is set (typically in CI jobs that
+    // explicitly compile with the required features), a missing node is
+    // treated as a test failure instead of a silent skip.  This prevents
+    // registration regressions from producing false-green CI runs.
     if let Some(ref required) = expected.requires_node {
         if !available_nodes().contains(required.as_str()) {
+            if std::env::var("PIPELINE_REQUIRE_NODES").as_deref() == Ok("1") {
+                return Err(format!(
+                    "FAIL: '{}' requires node '{}' which is not available on this server \
+                     (PIPELINE_REQUIRE_NODES=1 — skipping is not allowed)",
+                    path.display(),
+                    required
+                )
+                .into());
+            }
             eprintln!(
                 "SKIP: '{}' requires node '{}' which is not available on this server",
                 path.display(),

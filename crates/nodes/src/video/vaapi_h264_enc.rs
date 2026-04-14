@@ -214,6 +214,10 @@ impl VaH264Encoder {
             None
         };
 
+        // IDR period: one keyframe every 1024 frames (~34 s at 30 fps).
+        // Not yet exposed in H264EncConfig; a reasonable default for
+        // low-latency streaming.  Callers can still force an IDR at any
+        // time via the `force_keyframe` parameter on `encode_frame`.
         let idr_period: u32 = 1024;
         let qp = config.quality.clamp(MIN_QP, MAX_QP);
 
@@ -273,7 +277,7 @@ impl VaH264Encoder {
         let poc = ((frame_num * 2) & 0xFFFF) as u16;
 
         // Create input surface and upload pixel data via Image API.
-        let nv12_fourcc: u32 = u32::from_ne_bytes(*b"NV12");
+        let nv12_fourcc: u32 = super::vaapi_av1::nv12_fourcc().into();
         let mut input_surfaces = self
             .display
             .create_surfaces(
@@ -375,7 +379,10 @@ impl VaH264Encoder {
             coded_data
         };
 
-        // Update reference frame.
+        // Update reference frame, returning the old surface to the pool.
+        if let Some(old_ref) = self.reference.take() {
+            self.scratch_surfaces.push(old_ref.surface);
+        }
         self.reference = Some(RefPic { surface: recon_surface, poc, frame_num });
 
         self.frame_count += 1;
@@ -646,15 +653,6 @@ impl VaH264Encoder {
     }
 
     /// Accessors for integration with the node layer.
-    pub fn display(&self) -> &Rc<Display> {
-        &self.display
-    }
-    pub fn width(&self) -> u32 {
-        self.width
-    }
-    pub fn height(&self) -> u32 {
-        self.height
-    }
     pub fn coded_width(&self) -> u32 {
         self.coded_width
     }

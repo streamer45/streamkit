@@ -126,7 +126,7 @@ impl VaapiH264DecoderNode {
         if matches!(config.hw_accel, HwAccelMode::ForceCpu) {
             return Err(StreamKitError::Configuration(
                 "VaapiH264DecoderNode only supports hardware decoding; \
-                 use video::h264::decoder for CPU decode"
+                 no CPU H.264 decoder is currently available"
                     .into(),
             ));
         }
@@ -500,7 +500,7 @@ impl VaapiH264EncoderNode {
         if matches!(config.hw_accel, HwAccelMode::ForceCpu) {
             return Err(StreamKitError::Configuration(
                 "VaapiH264EncoderNode only supports hardware encoding; \
-                 use video::h264::encoder for CPU encode"
+                 use video::openh264::encoder for CPU encode"
                     .into(),
             ));
         }

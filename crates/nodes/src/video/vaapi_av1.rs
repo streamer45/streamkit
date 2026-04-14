@@ -215,6 +215,15 @@ pub(super) fn write_nv12_to_va_surface(
     let w = frame.width as usize;
     let h = frame.height as usize;
 
+    // The NV12 and I420 branches below assume a packed layout (stride == width).
+    // StreamKit's VideoLayout::packed() guarantees this, but assert it so
+    // future layout changes are caught early.
+    debug_assert!(
+        frame.layout().planes()[0].stride == w,
+        "write_nv12_to_va_surface expects packed layout (Y stride {} != width {w})",
+        frame.layout().planes()[0].stride,
+    );
+
     match frame.pixel_format {
         PixelFormat::Nv12 => {
             // Y plane.
@@ -1353,20 +1362,34 @@ mod tests {
         }
     }
 
-    struct MockWriteMapping<'a> {
-        planes: Vec<RefCell<&'a mut [u8]>>,
+    struct MockWriteMapping {
+        /// Raw pointer + length pairs, one per plane.
+        ///
+        /// Mirrors the upstream `GbmMapping` pattern: pointers are stored
+        /// once and used to construct `&mut` slices in `get()`.
+        planes: Vec<(*mut u8, usize)>,
     }
 
-    impl<'a> WriteMapping<'a> for MockWriteMapping<'a> {
+    // SAFETY: Only used in single-threaded tests; the backing buffers
+    // outlive the mapping.
+    unsafe impl Send for MockWriteMapping {}
+    unsafe impl Sync for MockWriteMapping {}
+
+    impl MockWriteMapping {
+        fn new(slices: Vec<&mut [u8]>) -> Self {
+            Self { planes: slices.into_iter().map(|s| (s.as_mut_ptr(), s.len())).collect() }
+        }
+    }
+
+    impl<'a> WriteMapping<'a> for MockWriteMapping {
         fn get(&self) -> Vec<RefCell<&'a mut [u8]>> {
-            // Re-borrow each plane to return fresh RefCells.
-            // SAFETY: this is only used in single-threaded tests where
-            // the returned RefCells do not outlive `self`.
+            // SAFETY: Each call produces non-overlapping plane slices from
+            // pointers captured at construction time.  Callers must not
+            // hold references from a previous `get()` when calling again
+            // — the same contract the upstream `GbmMapping` relies on.
             self.planes
                 .iter()
-                .map(|cell| {
-                    let ptr = cell.borrow_mut().as_mut_ptr();
-                    let len = cell.borrow().len();
+                .map(|&(ptr, len)| {
                     RefCell::new(unsafe { std::slice::from_raw_parts_mut(ptr, len) })
                 })
                 .collect()
@@ -1561,8 +1584,7 @@ mod tests {
         let mut y_buf = vec![0u8; y_size];
         let mut uv_buf = vec![0u8; chroma_w * uv_h];
 
-        let mapping =
-            MockWriteMapping { planes: vec![RefCell::new(&mut y_buf), RefCell::new(&mut uv_buf)] };
+        let mapping = MockWriteMapping::new(vec![&mut y_buf, &mut uv_buf]);
         let pitches = [w as usize, chroma_w];
 
         let result = write_nv12_to_mapping(&mapping, &frame, &pitches);
@@ -1585,8 +1607,7 @@ mod tests {
         let mut y_buf = vec![0u8; y_size];
         let mut uv_buf = vec![0u8; chroma_w * uv_h];
 
-        let mapping =
-            MockWriteMapping { planes: vec![RefCell::new(&mut y_buf), RefCell::new(&mut uv_buf)] };
+        let mapping = MockWriteMapping::new(vec![&mut y_buf, &mut uv_buf]);
         let pitches = [w as usize, chroma_w];
 
         let result = write_nv12_to_mapping(&mapping, &frame, &pitches);
@@ -1614,8 +1635,7 @@ mod tests {
         let mut y_buf = vec![0u8; y_size];
         let mut uv_buf = vec![0u8; chroma_w * uv_h];
 
-        let mapping =
-            MockWriteMapping { planes: vec![RefCell::new(&mut y_buf), RefCell::new(&mut uv_buf)] };
+        let mapping = MockWriteMapping::new(vec![&mut y_buf, &mut uv_buf]);
         let pitches = [w as usize, chroma_w];
 
         let result = write_nv12_to_mapping(&mapping, &frame, &pitches);
@@ -1652,8 +1672,7 @@ mod tests {
         let mut y_buf = vec![0u8; y_size];
         let mut uv_buf = vec![0u8; chroma_w * uv_h];
 
-        let mapping =
-            MockWriteMapping { planes: vec![RefCell::new(&mut y_buf), RefCell::new(&mut uv_buf)] };
+        let mapping = MockWriteMapping::new(vec![&mut y_buf, &mut uv_buf]);
         // Deliberately omit pitches to exercise the fallback.
         let pitches: [usize; 0] = [];
 
@@ -1682,8 +1701,7 @@ mod tests {
         let mut y_buf = vec![0u8; (w * h) as usize];
         let mut uv_buf = vec![0u8; (w as usize) * (h as usize / 2)];
 
-        let mapping =
-            MockWriteMapping { planes: vec![RefCell::new(&mut y_buf), RefCell::new(&mut uv_buf)] };
+        let mapping = MockWriteMapping::new(vec![&mut y_buf, &mut uv_buf]);
         let pitches = [w as usize, w as usize];
 
         let result = write_nv12_to_mapping(&mapping, &frame, &pitches);
@@ -1723,9 +1741,7 @@ mod tests {
             // Write back to a new mapping.
             let mut y_dst = vec![0u8; y_size];
             let mut uv_dst = vec![0u8; uv_size];
-            let write_mapping = MockWriteMapping {
-                planes: vec![RefCell::new(&mut y_dst), RefCell::new(&mut uv_dst)],
-            };
+            let write_mapping = MockWriteMapping::new(vec![&mut y_dst, &mut uv_dst]);
             write_nv12_to_mapping(&write_mapping, &frame, &pitches).unwrap();
 
             assert_eq!(y_dst, y_src, "Y plane roundtrip failed for {w}x{h}");

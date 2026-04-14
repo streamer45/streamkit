@@ -88,7 +88,7 @@ jobs:
       - name: Run pipeline validation tests (SW codecs only)
         run: |
           cd tests/pipeline-validation
-          PIPELINE_TEST_URL=http://127.0.0.1:4545 cargo test --test validate
+          PIPELINE_REQUIRE_NODES=1 PIPELINE_TEST_URL=http://127.0.0.1:4545 cargo test --test validate
 
   pipeline-validation-gpu:
     name: Pipeline Validation (GPU)
@@ -174,7 +174,7 @@ jobs:
       - name: Run pipeline validation tests (all codecs including GPU)
         run: |
           cd tests/pipeline-validation
-          PIPELINE_TEST_URL=http://127.0.0.1:4546 cargo test --test validate -- --test-threads=1
+          PIPELINE_REQUIRE_NODES=1 PIPELINE_TEST_URL=http://127.0.0.1:4546 cargo test --test validate -- --test-threads=1
 
       - name: Show skit server logs
         if: always()
