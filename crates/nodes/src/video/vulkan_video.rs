@@ -504,13 +504,24 @@ impl ProcessorNode for VulkanVideoH264EncoderNode {
             .map_err(StreamKitError::Runtime)?;
 
         // ── Blocking encode task ─────────────────────────────────────────
+        // NOTE: This encoder does NOT use StandardVideoEncoder /
+        // spawn_standard_encode_task() because:
+        //  1. vk-video's BytesEncoder has no flush() method, which
+        //     StandardVideoEncoder::flush_encoder() requires.
+        //  2. The Vulkan device needs eager pre-initialisation (~500 ms on
+        //     some GPUs) before the encode loop starts — not supported by
+        //     spawn_standard_encode_task's lazy-create model.
+        //  3. Dimension changes re-use the pre-initialised device without
+        //     flushing (no frames are buffered internally).
+        // See encoder_trait.rs for the standard pattern used by VP9, AV1,
+        // NVENC, and VA-API encoders.
         let config = self.config.clone();
         let encode_task = tokio::task::spawn_blocking(move || {
             // The BytesEncoder is lazily created on the first frame (so we
             // know the actual resolution), but the Vulkan device is already
             // initialised above to avoid blocking frame reception.
             let mut encoder: Option<vk_video::BytesEncoder> = None;
-            let mut device: Option<Arc<vk_video::VulkanDevice>> = Some(pre_init_device);
+            let device: Arc<vk_video::VulkanDevice> = pre_init_device;
             let mut current_dimensions: Option<(u32, u32)> = None;
             let mut frames_encoded: u64 = 0;
 
@@ -529,19 +540,11 @@ impl ProcessorNode for VulkanVideoH264EncoderNode {
                         dims.1,
                     );
 
-                    let dev = match init_vulkan_encode_device(device.as_ref()) {
-                        Ok(d) => d,
-                        Err(err) => {
-                            let _ = result_tx.blocking_send(Err(err));
-                            return;
-                        },
-                    };
-
                     let max_bitrate = u64::from(
                         config.max_bitrate.unwrap_or_else(|| config.bitrate.saturating_mul(4)),
                     );
 
-                    let output_params = match dev.encoder_output_parameters_high_quality(
+                    let output_params = match device.encoder_output_parameters_high_quality(
                         vk_video::parameters::RateControl::VariableBitrate {
                             average_bitrate: u64::from(config.bitrate),
                             max_bitrate,
@@ -561,7 +564,7 @@ impl ProcessorNode for VulkanVideoH264EncoderNode {
                     let height = NonZeroU32::new(dims.1).unwrap_or(NonZeroU32::MIN);
 
                     let enc =
-                        match dev.create_bytes_encoder(vk_video::parameters::EncoderParameters {
+                        match device.create_bytes_encoder(vk_video::parameters::EncoderParameters {
                             input_parameters: vk_video::parameters::VideoParameters {
                                 width,
                                 height,
@@ -578,7 +581,6 @@ impl ProcessorNode for VulkanVideoH264EncoderNode {
                             },
                         };
 
-                    device = Some(dev);
                     encoder = Some(enc);
                     current_dimensions = Some(dims);
                 }

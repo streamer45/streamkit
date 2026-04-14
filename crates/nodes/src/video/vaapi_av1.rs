@@ -648,37 +648,24 @@ impl ProcessorNode for VaapiAv1DecoderNode {
 
 /// Blocking decode loop running inside `spawn_blocking`.
 ///
-/// Creates the VA-API display, GBM device, and cros-codecs `StatelessDecoder`,
-/// then processes input packets until the channel is closed.
+/// Opens the VA-API display and GBM device, creates the AV1
+/// `StatelessDecoder`, then delegates to the codec-agnostic
+/// [`vaapi_decode_loop_body`].
 fn vaapi_av1_decode_loop(
     render_device: Option<&String>,
     mut decode_rx: mpsc::Receiver<(Bytes, Option<PacketMetadata>)>,
     result_tx: &mpsc::Sender<Result<VideoFrame, String>>,
     duration_histogram: &opentelemetry::metrics::Histogram<f64>,
 ) {
-    // ── Open GBM device + VA display ──────────────────────────────────
-    let path = resolve_render_device(render_device);
-
-    let gbm = match GbmDevice::open(&path) {
-        Ok(g) => g,
+    let (display, gbm, path) = match open_va_and_gbm(render_device) {
+        Ok(v) => v,
         Err(e) => {
-            let _ =
-                result_tx.blocking_send(Err(format!("failed to open GBM device on {path}: {e}")));
-            return;
-        },
-    };
-
-    let display = match libva::Display::open_drm_display(&path) {
-        Ok(d) => d,
-        Err(e) => {
-            let _ =
-                result_tx.blocking_send(Err(format!("failed to open VA display on {path}: {e}")));
+            let _ = result_tx.blocking_send(Err(e));
             return;
         },
     };
     tracing::info!(device = %path, "VA-API AV1 decoder opened display");
 
-    // ── Create stateless decoder ─────────────────────────────────────────
     let mut decoder = match StatelessDecoder::<Av1, VaapiDecBackend<GbmVideoFrame>>::new_vaapi(
         display,
         BlockingMode::Blocking,
@@ -691,7 +678,40 @@ fn vaapi_av1_decode_loop(
         },
     };
 
-    // Stream resolution — updated on FormatChanged events.
+    vaapi_decode_loop_body(
+        "AV1",
+        &mut decoder,
+        &gbm,
+        &mut decode_rx,
+        result_tx,
+        duration_histogram,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Generic VA-API decode helpers (shared by AV1 + H.264)
+// ---------------------------------------------------------------------------
+
+/// Codec-agnostic VA-API blocking decode loop body.
+///
+/// Processes input packets from `decode_rx` through the provided
+/// `StatelessVideoDecoder`, converting decoded GBM frames to StreamKit
+/// [`VideoFrame`]s and sending them on `result_tx`.
+///
+/// Callers handle codec-specific display/GBM/decoder initialisation,
+/// then delegate here.  `codec_name` is embedded in log messages
+/// (e.g. `"AV1"`, `"H.264"`).
+pub(super) fn vaapi_decode_loop_body<D>(
+    codec_name: &str,
+    decoder: &mut D,
+    gbm: &Arc<GbmDevice>,
+    decode_rx: &mut mpsc::Receiver<(Bytes, Option<PacketMetadata>)>,
+    result_tx: &mpsc::Sender<Result<VideoFrame, String>>,
+    duration_histogram: &opentelemetry::metrics::Histogram<f64>,
+) where
+    D: StatelessVideoDecoder,
+    D::Handle: DecodedHandle<Frame = GbmVideoFrame>,
+{
     let mut coded_width: u32 = 0;
     let mut coded_height: u32 = 0;
 
@@ -710,7 +730,7 @@ fn vaapi_av1_decode_loop(
         let mut eagain_empty_retries: u32 = 0;
 
         while offset < bitstream.len() {
-            let gbm_ref = Arc::clone(&gbm);
+            let gbm_ref = Arc::clone(gbm);
             let cw = coded_width;
             let ch = coded_height;
             let mut alloc_cb = move || {
@@ -729,15 +749,17 @@ fn vaapi_av1_decode_loop(
                     // Process pending events / drain ready frames, then retry.
                 },
                 Err(e) => {
-                    tracing::error!(error = %e, "VA-API AV1 decode error");
-                    let _ = result_tx.blocking_send(Err(format!("VA-API AV1 decode error: {e}")));
+                    tracing::error!(error = %e, "VA-API {} decode error", codec_name);
+                    let _ = result_tx
+                        .blocking_send(Err(format!("VA-API {codec_name} decode error: {e}")));
                     break;
                 },
             }
 
             // Process all pending events (format changes + ready frames).
-            let (should_exit, had_events) = drain_decoder_events(
-                &mut decoder,
+            let (should_exit, had_events) = vaapi_drain_decoder_events(
+                codec_name,
+                decoder,
                 result_tx,
                 metadata.as_ref(),
                 &mut coded_width,
@@ -753,12 +775,14 @@ fn vaapi_av1_decode_loop(
                 eagain_empty_retries += 1;
                 if eagain_empty_retries > MAX_EAGAIN_EMPTY_RETRIES {
                     tracing::error!(
-                        "VA-API AV1 decoder stuck: no progress after {MAX_EAGAIN_EMPTY_RETRIES} retries"
+                        "VA-API {} decoder stuck: no progress after {} retries",
+                        codec_name,
+                        MAX_EAGAIN_EMPTY_RETRIES,
                     );
-                    let _ = result_tx.blocking_send(Err(
-                        "VA-API AV1 decoder stuck in CheckEvents/NotEnoughOutputBuffers loop"
-                            .to_string(),
-                    ));
+                    let _ = result_tx.blocking_send(Err(format!(
+                        "VA-API {codec_name} decoder stuck in \
+                         CheckEvents/NotEnoughOutputBuffers loop"
+                    )));
                     break;
                 }
                 // Progressive backoff to avoid a tight spin-loop.
@@ -778,23 +802,37 @@ fn vaapi_av1_decode_loop(
         return;
     }
     if let Err(e) = decoder.flush() {
-        tracing::warn!(error = %e, "VA-API AV1 decoder flush failed");
+        tracing::warn!(error = %e, "VA-API {} decoder flush failed", codec_name);
     }
-    drain_decoder_events(&mut decoder, result_tx, None, &mut coded_width, &mut coded_height);
+    vaapi_drain_decoder_events(
+        codec_name,
+        decoder,
+        result_tx,
+        None,
+        &mut coded_width,
+        &mut coded_height,
+    );
 }
 
-/// Drain all pending events from the decoder.
+/// Drain all pending events from a VA-API `StatelessVideoDecoder`.
 ///
 /// Returns `(should_exit, had_events)`:
 /// - `should_exit`: the result channel is closed and the caller should return.
 /// - `had_events`: at least one event (format change or frame) was processed.
-fn drain_decoder_events(
-    decoder: &mut StatelessDecoder<Av1, VaapiDecBackend<GbmVideoFrame>>,
+///
+/// Codec-agnostic — used by both AV1 and H.264 VA-API decoders.
+fn vaapi_drain_decoder_events<D>(
+    codec_name: &str,
+    decoder: &mut D,
     result_tx: &mpsc::Sender<Result<VideoFrame, String>>,
     metadata: Option<&PacketMetadata>,
     coded_width: &mut u32,
     coded_height: &mut u32,
-) -> (bool, bool) {
+) -> (bool, bool)
+where
+    D: StatelessVideoDecoder,
+    D::Handle: DecodedHandle<Frame = GbmVideoFrame>,
+{
     let mut had_events = false;
     while let Some(event) = decoder.next_event() {
         had_events = true;
@@ -810,13 +848,14 @@ fn drain_decoder_events(
                         display_height = dh,
                         coded_width = *coded_width,
                         coded_height = *coded_height,
-                        "VA-API AV1 decoder stream format changed"
+                        "VA-API {} decoder stream format changed",
+                        codec_name,
                     );
                 }
             },
             DecoderEvent::FrameReady(handle) => {
                 if let Err(e) = handle.sync() {
-                    tracing::error!(error = %e, "VA-API AV1 frame sync failed");
+                    tracing::error!(error = %e, "VA-API {} frame sync failed", codec_name);
                     continue;
                 }
 

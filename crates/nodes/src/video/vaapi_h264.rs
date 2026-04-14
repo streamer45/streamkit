@@ -56,12 +56,9 @@ use tokio::sync::mpsc;
 // cros-codecs — used only for the H.264 *decoder* (GBM path).
 use cros_codecs::backend::vaapi::decoder::VaapiBackend as VaapiDecBackend;
 use cros_codecs::decoder::stateless::h264::H264;
-use cros_codecs::decoder::stateless::{DecodeError, StatelessDecoder, StatelessVideoDecoder};
-use cros_codecs::decoder::{BlockingMode, DecodedHandle, DecoderEvent};
-use cros_codecs::libva;
-use cros_codecs::video_frame::gbm_video_frame::{GbmUsage, GbmVideoFrame};
-use cros_codecs::video_frame::{ReadMapping, VideoFrame as CrosVideoFrame};
-use cros_codecs::Resolution as CrosResolution;
+use cros_codecs::decoder::stateless::StatelessDecoder;
+use cros_codecs::decoder::BlockingMode;
+use cros_codecs::video_frame::gbm_video_frame::GbmVideoFrame;
 
 // Custom VA-API H.264 encoder shim — drives libva directly, bypasses GBM.
 use super::vaapi_h264_enc::{H264EncConfig, VaH264Encoder};
@@ -70,8 +67,10 @@ use super::encoder_trait::{self, EncodedPacket, EncoderNodeRunner, StandardVideo
 use super::HwAccelMode;
 use super::H264_CONTENT_TYPE;
 
-// Re-use helpers from the VA-API AV1 module — codec-agnostic NV12 I/O routines.
-use super::vaapi_av1::{nv12_fourcc, open_va_and_gbm, open_va_display, read_nv12_from_mapping};
+// Re-use helpers from the VA-API AV1 module — codec-agnostic VA-API routines.
+use super::vaapi_av1::{
+    nv12_fourcc, open_va_and_gbm, open_va_display, read_nv12_from_mapping, vaapi_decode_loop_body,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -79,14 +78,6 @@ use super::vaapi_av1::{nv12_fourcc, open_va_and_gbm, open_va_display, read_nv12_
 
 /// H.264 macroblock size — coded resolution must be aligned to this.
 const H264_MB_SIZE: u32 = 16;
-
-/// Maximum number of consecutive retries when the decoder returns
-/// `CheckEvents` or `NotEnoughOutputBuffers` without making progress.
-const MAX_EAGAIN_EMPTY_RETRIES: u32 = 1000;
-
-/// After this many retries, switch from `thread::yield_now()` to
-/// `thread::sleep(1ms)` to avoid a tight spin-loop.
-const EAGAIN_YIELD_THRESHOLD: u32 = 10;
 
 /// Default constant-quality parameter for H.264 (0–51 QP scale).
 const DEFAULT_QUALITY: u32 = 26;
@@ -246,15 +237,15 @@ impl ProcessorNode for VaapiH264DecoderNode {
 
 /// Blocking decode loop running inside `spawn_blocking`.
 ///
-/// Creates the VA-API display, GBM device, and cros-codecs `StatelessDecoder`,
-/// then processes input packets until the channel is closed.
+/// Opens the VA-API display and GBM device, creates the H.264
+/// `StatelessDecoder`, then delegates to the codec-agnostic
+/// [`vaapi_decode_loop_body`].
 fn vaapi_h264_decode_loop(
     render_device: Option<&String>,
     mut decode_rx: mpsc::Receiver<(Bytes, Option<PacketMetadata>)>,
     result_tx: &mpsc::Sender<Result<VideoFrame, String>>,
     duration_histogram: &opentelemetry::metrics::Histogram<f64>,
 ) {
-    // ── Open GBM device + VA display ──────────────────────────────────
     let (display, gbm, path) = match open_va_and_gbm(render_device) {
         Ok(v) => v,
         Err(e) => {
@@ -264,7 +255,6 @@ fn vaapi_h264_decode_loop(
     };
     tracing::info!(device = %path, "VA-API H.264 decoder opened display");
 
-    // ── Create stateless decoder ─────────────────────────────────────
     let mut decoder = match StatelessDecoder::<H264, VaapiDecBackend<GbmVideoFrame>>::new_vaapi(
         display,
         BlockingMode::Blocking,
@@ -277,176 +267,14 @@ fn vaapi_h264_decode_loop(
         },
     };
 
-    // Stream resolution — updated on FormatChanged events.
-    let mut coded_width: u32 = 0;
-    let mut coded_height: u32 = 0;
-
-    while let Some((data, metadata)) = decode_rx.blocking_recv() {
-        if result_tx.is_closed() {
-            return;
-        }
-
-        let decode_start = Instant::now();
-        let timestamp = metadata.as_ref().and_then(|m| m.timestamp_us).unwrap_or(0);
-
-        // Feed bitstream to the decoder.
-        let mut offset = 0usize;
-        let bitstream = data.as_ref();
-        let mut eagain_empty_retries: u32 = 0;
-
-        while offset < bitstream.len() {
-            let gbm_ref = Arc::clone(&gbm);
-            let cw = coded_width;
-            let ch = coded_height;
-            let mut alloc_cb = move || {
-                let res = CrosResolution { width: cw, height: ch };
-                gbm_ref.clone().new_frame(nv12_fourcc(), res.clone(), res, GbmUsage::Decode).ok()
-            };
-
-            let mut made_progress = false;
-
-            match decoder.decode(timestamp, &bitstream[offset..], &mut alloc_cb) {
-                Ok(bytes_consumed) => {
-                    offset += bytes_consumed;
-                    made_progress = true;
-                },
-                Err(DecodeError::CheckEvents | DecodeError::NotEnoughOutputBuffers(_)) => {
-                    // Process pending events / drain ready frames, then retry.
-                },
-                Err(e) => {
-                    tracing::error!(error = %e, "VA-API H.264 decode error");
-                    let _ = result_tx.blocking_send(Err(format!("VA-API H.264 decode error: {e}")));
-                    break;
-                },
-            }
-
-            // Process all pending events (format changes + ready frames).
-            let (should_exit, had_events) = drain_decoder_events(
-                &mut decoder,
-                result_tx,
-                metadata.as_ref(),
-                &mut coded_width,
-                &mut coded_height,
-            );
-            if should_exit {
-                return;
-            }
-
-            if made_progress || had_events {
-                eagain_empty_retries = 0;
-            } else {
-                eagain_empty_retries += 1;
-                if eagain_empty_retries > MAX_EAGAIN_EMPTY_RETRIES {
-                    tracing::error!(
-                        "VA-API H.264 decoder stuck: no progress after {MAX_EAGAIN_EMPTY_RETRIES} retries"
-                    );
-                    let _ = result_tx.blocking_send(Err(
-                        "VA-API H.264 decoder stuck in CheckEvents/NotEnoughOutputBuffers loop"
-                            .to_string(),
-                    ));
-                    break;
-                }
-                // Progressive backoff to avoid a tight spin-loop.
-                if eagain_empty_retries <= EAGAIN_YIELD_THRESHOLD {
-                    std::thread::yield_now();
-                } else {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-            }
-        }
-
-        duration_histogram.record(decode_start.elapsed().as_secs_f64(), &[]);
-    }
-
-    // Flush remaining frames from the decoder.
-    if result_tx.is_closed() {
-        return;
-    }
-    if let Err(e) = decoder.flush() {
-        tracing::warn!(error = %e, "VA-API H.264 decoder flush failed");
-    }
-    drain_decoder_events(&mut decoder, result_tx, None, &mut coded_width, &mut coded_height);
-}
-
-/// Drain all pending events from the decoder.
-///
-/// Returns `(should_exit, had_events)`:
-/// - `should_exit`: the result channel is closed and the caller should return.
-/// - `had_events`: at least one event (format change or frame) was processed.
-fn drain_decoder_events(
-    decoder: &mut StatelessDecoder<H264, VaapiDecBackend<GbmVideoFrame>>,
-    result_tx: &mpsc::Sender<Result<VideoFrame, String>>,
-    metadata: Option<&PacketMetadata>,
-    coded_width: &mut u32,
-    coded_height: &mut u32,
-) -> (bool, bool) {
-    let mut had_events = false;
-    while let Some(event) = decoder.next_event() {
-        had_events = true;
-        match event {
-            DecoderEvent::FormatChanged => {
-                if let Some(info) = decoder.stream_info() {
-                    let dw = info.display_resolution.width;
-                    let dh = info.display_resolution.height;
-                    *coded_width = info.coded_resolution.width;
-                    *coded_height = info.coded_resolution.height;
-                    tracing::info!(
-                        display_width = dw,
-                        display_height = dh,
-                        coded_width = *coded_width,
-                        coded_height = *coded_height,
-                        "VA-API H.264 decoder stream format changed"
-                    );
-                }
-            },
-            DecoderEvent::FrameReady(handle) => {
-                if let Err(e) = handle.sync() {
-                    tracing::error!(error = %e, "VA-API H.264 frame sync failed");
-                    continue;
-                }
-
-                let display_res = handle.display_resolution();
-                let frame_w = display_res.width;
-                let frame_h = display_res.height;
-
-                let gbm_frame = handle.video_frame();
-                let pitches = gbm_frame.get_plane_pitch();
-
-                // Extract NV12 data while the mapping is alive.
-                let nv12_data = {
-                    let mapping = match gbm_frame.map() {
-                        Ok(m) => m,
-                        Err(e) => {
-                            tracing::error!(error = %e, "failed to map decoded GBM frame");
-                            continue;
-                        },
-                    };
-                    read_nv12_from_mapping(mapping.as_ref(), frame_w, frame_h, &pitches)
-                };
-
-                match VideoFrame::with_metadata(
-                    frame_w,
-                    frame_h,
-                    PixelFormat::Nv12,
-                    nv12_data,
-                    metadata.cloned(),
-                ) {
-                    Ok(frame) => {
-                        if result_tx.blocking_send(Ok(frame)).is_err() {
-                            return (true, had_events);
-                        }
-                    },
-                    Err(e) => {
-                        tracing::error!(
-                            error = %e,
-                            "failed to construct VideoFrame from decoded data"
-                        );
-                    },
-                }
-            },
-        }
-    }
-    (false, had_events)
+    vaapi_decode_loop_body(
+        "H.264",
+        &mut decoder,
+        &gbm,
+        &mut decode_rx,
+        result_tx,
+        duration_histogram,
+    );
 }
 
 // ---------------------------------------------------------------------------
