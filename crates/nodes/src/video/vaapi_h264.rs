@@ -4,11 +4,16 @@
 
 //! VA-API HW-accelerated H.264 encoder and decoder nodes.
 //!
-//! Uses the [`cros-codecs`](https://crates.io/crates/cros-codecs) crate which
-//! provides high-level VA-API H.264 codec abstractions on Linux.  The cros-codecs
-//! `StatelessDecoder` and `StatelessEncoder` handle all H.264 bitstream parsing
-//! and VA-API parameter buffer construction internally — this module manages
-//! frame I/O and integrates with StreamKit's pipeline architecture.
+//! **Decoder** — uses the [`cros-codecs`](https://crates.io/crates/cros-codecs)
+//! `StatelessDecoder` with GBM-backed surfaces.  This works on all VA-API drivers
+//! because GBM allocation for *decoding* (`GBM_BO_USE_HW_VIDEO_DECODER`) is
+//! universally supported.
+//!
+//! **Encoder** — uses a custom VA-API shim ([`super::vaapi_h264_enc::VaH264Encoder`])
+//! that drives `libva` directly.  Input frames are uploaded via the VA-API Image
+//! API (`vaCreateImage`/`vaPutImage`) instead of GBM, which avoids the
+//! `GBM_BO_USE_HW_VIDEO_ENCODER` flag that Mesa's iris driver rejects for NV12
+//! on some hardware (e.g. Intel Tiger Lake with Mesa ≤ 23.x).
 //!
 //! # Nodes
 //!
@@ -29,7 +34,6 @@
 //! - **AMD**: H.264 encode + decode via Mesa RadeonSI VA-API.
 //! - **NVIDIA**: Decode only via community `nvidia-vaapi-driver` (no VA-API encoding).
 
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -49,33 +53,26 @@ use streamkit_core::{
 };
 use tokio::sync::mpsc;
 
-// cros-codecs high-level APIs.
+// cros-codecs — used only for the H.264 *decoder* (GBM path).
 use cros_codecs::backend::vaapi::decoder::VaapiBackend as VaapiDecBackend;
-use cros_codecs::backend::vaapi::encoder::VaapiBackend as VaapiEncBackend;
-use cros_codecs::codec::h264::parser::Level as H264Level;
-use cros_codecs::codec::h264::parser::Profile as H264Profile;
 use cros_codecs::decoder::stateless::h264::H264;
 use cros_codecs::decoder::stateless::{DecodeError, StatelessDecoder, StatelessVideoDecoder};
 use cros_codecs::decoder::{BlockingMode, DecodedHandle, DecoderEvent};
-use cros_codecs::encoder::h264::EncoderConfig as CrosH264EncoderConfig;
-use cros_codecs::encoder::stateless::StatelessEncoder;
-use cros_codecs::encoder::{
-    FrameMetadata as CrosFrameMetadata, PredictionStructure, RateControl, Tunings, VideoEncoder,
-};
 use cros_codecs::libva;
 use cros_codecs::video_frame::gbm_video_frame::{GbmDevice, GbmUsage, GbmVideoFrame};
 use cros_codecs::video_frame::{ReadMapping, VideoFrame as CrosVideoFrame};
-use cros_codecs::{FrameLayout, PlaneLayout, Resolution as CrosResolution};
+use cros_codecs::Resolution as CrosResolution;
+
+// Custom VA-API H.264 encoder shim — drives libva directly, bypasses GBM.
+use super::vaapi_h264_enc::{H264EncConfig, VaH264Encoder};
 
 use super::encoder_trait::{self, EncodedPacket, EncoderNodeRunner, StandardVideoEncoder};
 use super::HwAccelMode;
 use super::H264_CONTENT_TYPE;
 
-// Re-use helpers from the VA-API AV1 module — they are codec-agnostic NV12
-// I/O routines (VA surface upload, GBM mapping, render-device detection, etc.).
+// Re-use helpers from the VA-API AV1 module — codec-agnostic NV12 I/O routines.
 use super::vaapi_av1::{
-    align_up_u32, nv12_fourcc, open_va_and_gbm, open_va_display, read_nv12_from_mapping,
-    write_nv12_to_va_surface,
+    nv12_fourcc, open_va_and_gbm, open_va_display, read_nv12_from_mapping,
 };
 
 // ---------------------------------------------------------------------------
@@ -582,31 +579,15 @@ impl EncoderNodeRunner for VaapiH264EncoderNode {
 // Encoder — internal codec wrapper
 // ---------------------------------------------------------------------------
 
-/// Type alias for the VA-API H.264 encoder using direct VA surfaces.
+/// Internal encoder state wrapping the custom VA-API H.264 encoder shim.
 ///
-/// Bypasses GBM buffer allocation entirely — input frames are uploaded to
-/// VA surfaces via the VA-API Image API and passed straight through to the
-/// encoder backend.  This avoids the `GBM_BO_USE_HW_VIDEO_ENCODER` flag
-/// which Mesa's iris driver does not support for NV12 on some hardware
-/// (e.g. Intel Tiger Lake with Mesa 23.x).
-type CrosVaapiH264Encoder = StatelessEncoder<
-    cros_codecs::encoder::h264::H264,
-    libva::Surface<()>,
-    cros_codecs::backend::vaapi::encoder::VaapiBackend<(), libva::Surface<()>>,
->;
-
-/// Internal encoder state wrapping the cros-codecs `StatelessEncoder`.
+/// Uses [`VaH264Encoder`] which drives `libva` directly, bypassing GBM
+/// allocation entirely.  Input frames are uploaded via the VA-API Image API.
 ///
 /// `!Send` due to internal `Rc<libva::Display>` — lives entirely inside
 /// a `spawn_blocking` thread.
 struct VaapiH264Encoder {
-    encoder: CrosVaapiH264Encoder,
-    display: Rc<libva::Display>,
-    width: u32,
-    height: u32,
-    coded_width: u32,
-    coded_height: u32,
-    frame_count: u64,
+    encoder: VaH264Encoder,
 }
 
 impl StandardVideoEncoder for VaapiH264Encoder {
@@ -617,99 +598,27 @@ impl StandardVideoEncoder for VaapiH264Encoder {
         let (display, path) = open_va_display(config.render_device.as_ref())?;
         tracing::info!(device = %path, width, height, "VA-API H.264 encoder opening");
 
-        let coded_width = align_up_u32(width, H264_MB_SIZE);
-        let coded_height = align_up_u32(height, H264_MB_SIZE);
-
-        // Auto-detect the correct entrypoint.  Modern Intel GPUs (Gen 9+ /
-        // Skylake onwards) only expose the low-power fixed-function encoder
-        // (`VAEntrypointEncSliceLP`), while older hardware and some AMD
-        // drivers use `VAEntrypointEncSlice`.  Query the driver and pick
-        // whichever is available, preferring the config value when set.
-        let low_power = {
-            use libva::VAEntrypoint::{VAEntrypointEncSlice, VAEntrypointEncSliceLP};
-            use libva::VAProfile::VAProfileH264Main;
-
-            let entrypoints = display
-                .query_config_entrypoints(VAProfileH264Main)
-                .map_err(|e| format!("failed to query H.264 entrypoints: {e}"))?;
-
-            let has_lp = entrypoints.contains(&VAEntrypointEncSliceLP);
-            let has_full = entrypoints.contains(&VAEntrypointEncSlice);
-
-            if !has_lp && !has_full {
-                return Err(
-                    "VA-API driver does not support H.264 encoding (no EncSlice entrypoint)".into(),
-                );
-            }
-
-            // Prefer the user's explicit config; otherwise auto-detect.
-            if config.low_power {
-                if !has_lp {
-                    return Err(
-                        "low_power=true requested but VAEntrypointEncSliceLP is not supported"
-                            .into(),
-                    );
-                }
-                true
-            } else if has_lp && !has_full {
-                // Driver only supports low-power (common on modern Intel).
-                tracing::info!("auto-selecting low-power H.264 encoder (VAEntrypointEncSliceLP)");
-                true
-            } else {
-                false
-            }
+        let enc_config = H264EncConfig {
+            width,
+            height,
+            quality: config.quality,
+            framerate: config.framerate,
+            low_power: config.low_power,
         };
 
-        // Pass the display resolution (not the macroblock-aligned coded
-        // resolution) so SpsBuilder::resolution() computes frame_crop offsets
-        // automatically, preventing visible padding bars (fixes #292).
-        let cros_config = CrosH264EncoderConfig {
-            resolution: CrosResolution { width, height },
-            profile: H264Profile::Main,
-            level: H264Level::L4,
-            pred_structure: PredictionStructure::LowDelay { limit: 1024 },
-            initial_tunings: Tunings {
-                rate_control: RateControl::ConstantQuality(config.quality),
-                framerate: config.framerate,
-                min_quality: 0,
-                max_quality: 51,
-            },
-        };
-
-        // Construct the encoder backend directly instead of using
-        // `new_vaapi()`, which requires `V: VideoFrame`.  Our type alias
-        // uses `Surface<()>` (bypassing GBM allocation), so we replicate
-        // the profile mapping and backend construction inline.
-        let va_profile = libva::VAProfile::VAProfileH264Main;
-        let bitrate_control = match cros_config.initial_tunings.rate_control {
-            RateControl::ConstantBitrate(_) => libva::VA_RC_CBR,
-            RateControl::ConstantQuality(_) => libva::VA_RC_CQP,
-        };
-        let coded_size = CrosResolution { width: coded_width, height: coded_height };
-        let backend = VaapiEncBackend::new(
-            Rc::clone(&display),
-            va_profile,
-            nv12_fourcc(),
-            coded_size,
-            bitrate_control,
-            low_power,
-        )
-        .map_err(|e| format!("failed to create VA-API H.264 encoder backend: {e}"))?;
-
-        let encoder = CrosVaapiH264Encoder::new_h264(backend, cros_config, BlockingMode::Blocking)
-            .map_err(|e| format!("failed to create VA-API H.264 encoder: {e}"))?;
+        let encoder = VaH264Encoder::new(display, &enc_config)?;
 
         tracing::info!(
             device = %path,
             width,
             height,
-            coded_width,
-            coded_height,
+            coded_width = encoder.coded_width(),
+            coded_height = encoder.coded_height(),
             quality = config.quality,
             "VA-API H.264 encoder created"
         );
 
-        Ok(Self { encoder, display, width, height, coded_width, coded_height, frame_count: 0 })
+        Ok(Self { encoder })
     }
 
     fn encode(
@@ -717,92 +626,17 @@ impl StandardVideoEncoder for VaapiH264Encoder {
         frame: &VideoFrame,
         metadata: Option<PacketMetadata>,
     ) -> Result<Vec<EncodedPacket>, String> {
-        if frame.pixel_format == PixelFormat::Rgba8 {
-            return Err("VA-API H.264 encoder requires NV12 or I420 input; \
-                 insert a video::pixel_convert node upstream"
-                .into());
-        }
+        let force_keyframe = metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(false);
 
-        // Create a VA surface and upload NV12 data via the Image API.
-        // This bypasses GBM buffer allocation (GBM_BO_USE_HW_VIDEO_ENCODER),
-        // which Mesa's iris driver does not support for NV12 on all hardware.
-        let nv12_fourcc_val: u32 = nv12_fourcc().into();
-        let mut surfaces = self
-            .display
-            .create_surfaces(
-                libva::VA_RT_FORMAT_YUV420,
-                Some(nv12_fourcc_val),
-                self.coded_width,
-                self.coded_height,
-                Some(libva::UsageHint::USAGE_HINT_ENCODER),
-                vec![()],
-            )
-            .map_err(|e| format!("failed to create VA surface for encoding: {e}"))?;
-        let surface =
-            surfaces.pop().ok_or_else(|| "create_surfaces returned empty vec".to_string())?;
+        let bitstream = self.encoder.encode_frame(frame, force_keyframe)?;
 
-        // Write frame data into the VA surface.
-        let (pitches, offsets) = write_nv12_to_va_surface(&self.display, &surface, frame)?;
-
-        let is_keyframe = metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(false);
-        let timestamp = metadata.as_ref().and_then(|m| m.timestamp_us).unwrap_or(self.frame_count);
-
-        let frame_layout = FrameLayout {
-            format: (nv12_fourcc(), 0), // DRM_FORMAT_MOD_LINEAR
-            size: CrosResolution { width: self.coded_width, height: self.coded_height },
-            planes: vec![
-                PlaneLayout { buffer_index: 0, offset: offsets[0], stride: pitches[0] },
-                PlaneLayout { buffer_index: 0, offset: offsets[1], stride: pitches[1] },
-            ],
-        };
-
-        let cros_meta =
-            CrosFrameMetadata { timestamp, layout: frame_layout, force_keyframe: is_keyframe };
-
-        self.encoder
-            .encode(cros_meta, surface)
-            .map_err(|e| format!("VA-API H.264 encode error: {e}"))?;
-
-        self.frame_count += 1;
-
-        // Poll for all available encoded output.
-        let mut packets = Vec::new();
-        loop {
-            match self.encoder.poll() {
-                Ok(Some(coded)) => {
-                    let out_meta = merge_h264_keyframe_metadata(metadata.clone(), &coded.bitstream);
-                    packets.push(EncodedPacket {
-                        data: Bytes::from(coded.bitstream),
-                        metadata: out_meta,
-                    });
-                },
-                Ok(None) => break,
-                Err(e) => return Err(format!("VA-API H.264 encoder poll error: {e}")),
-            }
-        }
-
-        Ok(packets)
+        let out_meta = merge_h264_keyframe_metadata(metadata, &bitstream);
+        Ok(vec![EncodedPacket { data: Bytes::from(bitstream), metadata: out_meta }])
     }
 
     fn flush_encoder(&mut self) -> Result<Vec<EncodedPacket>, String> {
-        self.encoder.drain().map_err(|e| format!("VA-API H.264 encoder drain error: {e}"))?;
-
-        let mut packets = Vec::new();
-        loop {
-            match self.encoder.poll() {
-                Ok(Some(coded)) => {
-                    let out_meta = merge_h264_keyframe_metadata(None, &coded.bitstream);
-                    packets.push(EncodedPacket {
-                        data: Bytes::from(coded.bitstream),
-                        metadata: out_meta,
-                    });
-                },
-                Ok(None) => break,
-                Err(e) => return Err(format!("VA-API H.264 encoder poll error: {e}")),
-            }
-        }
-
-        Ok(packets)
+        self.encoder.flush()?;
+        Ok(Vec::new())
     }
 
     fn flush_on_dimension_change() -> bool {

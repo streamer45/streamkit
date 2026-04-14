@@ -149,6 +149,9 @@ pub mod vaapi_av1;
 #[cfg(feature = "vaapi")]
 pub mod vaapi_h264;
 
+#[cfg(feature = "vaapi")]
+mod vaapi_h264_enc;
+
 #[cfg(feature = "nvcodec")]
 pub mod nv_av1;
 
