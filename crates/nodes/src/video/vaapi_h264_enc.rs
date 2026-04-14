@@ -713,7 +713,14 @@ impl BitWriter {
         self.write_ue(mapped);
     }
 
-    /// Finish the NALU: add RBSP stop bit + trailing zero bits.
+    /// Finish the NALU: add RBSP stop bit + trailing zero bits, then
+    /// insert emulation-prevention bytes (H.264 Annex B, § 7.4.1).
+    ///
+    /// Within a NAL unit the byte sequences `00 00 00`, `00 00 01`,
+    /// `00 00 02` and `00 00 03` are forbidden.  Whenever two
+    /// consecutive zero bytes are followed by a byte in `0x00..=0x03`
+    /// we insert `0x03` (the *emulation-prevention three byte*) before
+    /// it so that start-code–like patterns never appear in the payload.
     fn finish(mut self) -> Vec<u8> {
         // RBSP stop bit.
         self.write_bit(true);
@@ -722,8 +729,31 @@ impl BitWriter {
             self.byte <<= 8 - self.bits;
             self.buf.push(self.byte);
         }
-        self.buf
+        escape_rbsp(&self.buf)
     }
+}
+
+/// Insert emulation-prevention bytes into a raw NALU payload.
+///
+/// Per H.264 Annex B (§ 7.4.1), any occurrence of `00 00 XX` where
+/// `XX` is `0x00`, `0x01`, `0x02`, or `0x03` must be escaped by
+/// inserting `0x03` before `XX`.
+fn escape_rbsp(raw: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(raw.len() + raw.len() / 16);
+    let mut zeros: u32 = 0;
+    for &b in raw {
+        if zeros >= 2 && b <= 0x03 {
+            out.push(0x03);
+            zeros = 0;
+        }
+        out.push(b);
+        if b == 0x00 {
+            zeros += 1;
+        } else {
+            zeros = 0;
+        }
+    }
+    out
 }
 
 impl VaH264Encoder {
@@ -1062,6 +1092,101 @@ mod tests {
         w.write_se(-1);
         let out = w.finish();
         assert_eq!(out[0], 0b011_1_0000);
+    }
+
+    #[test]
+    fn test_escape_rbsp_no_escaping_needed() {
+        // No forbidden sequences → output identical to input.
+        let input = vec![0x67, 0x42, 0xC0, 0x1F, 0xDA, 0x01, 0x10];
+        assert_eq!(escape_rbsp(&input), input);
+    }
+
+    #[test]
+    fn test_escape_rbsp_escapes_00_00_00() {
+        // 00 00 00 → 00 00 03 00
+        let input = vec![0xAA, 0x00, 0x00, 0x00, 0xBB];
+        assert_eq!(escape_rbsp(&input), vec![0xAA, 0x00, 0x00, 0x03, 0x00, 0xBB]);
+    }
+
+    #[test]
+    fn test_escape_rbsp_escapes_00_00_01() {
+        // 00 00 01 → 00 00 03 01
+        let input = vec![0xAA, 0x00, 0x00, 0x01, 0xBB];
+        assert_eq!(escape_rbsp(&input), vec![0xAA, 0x00, 0x00, 0x03, 0x01, 0xBB]);
+    }
+
+    #[test]
+    fn test_escape_rbsp_escapes_00_00_02() {
+        // 00 00 02 → 00 00 03 02
+        let input = vec![0xAA, 0x00, 0x00, 0x02, 0xBB];
+        assert_eq!(escape_rbsp(&input), vec![0xAA, 0x00, 0x00, 0x03, 0x02, 0xBB]);
+    }
+
+    #[test]
+    fn test_escape_rbsp_escapes_00_00_03() {
+        // 00 00 03 → 00 00 03 03
+        let input = vec![0xAA, 0x00, 0x00, 0x03, 0xBB];
+        assert_eq!(escape_rbsp(&input), vec![0xAA, 0x00, 0x00, 0x03, 0x03, 0xBB]);
+    }
+
+    #[test]
+    fn test_escape_rbsp_consecutive_zeros() {
+        // Four consecutive zeros: 00 00 00 00
+        // First 00 00 00 → 00 00 03 00, then the remaining 00 is just
+        // a single trailing zero (counter resets after insertion).
+        let input = vec![0x00, 0x00, 0x00, 0x00];
+        assert_eq!(escape_rbsp(&input), vec![0x00, 0x00, 0x03, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_escape_rbsp_five_consecutive_zeros() {
+        // 00 00 00 00 00
+        // After first escape: 00 00 03 00 00 | remaining 00
+        // Second pass picks up the trailing 00 00 00 → 00 00 03 00
+        let input = vec![0x00, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(escape_rbsp(&input), vec![0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00]);
+    }
+
+    #[test]
+    fn test_escape_rbsp_sequence_at_start() {
+        // Forbidden sequence right at the beginning.
+        let input = vec![0x00, 0x00, 0x01, 0xFF];
+        assert_eq!(escape_rbsp(&input), vec![0x00, 0x00, 0x03, 0x01, 0xFF]);
+    }
+
+    #[test]
+    fn test_escape_rbsp_sequence_at_end() {
+        // Forbidden sequence at the very end.
+        let input = vec![0xFF, 0x00, 0x00, 0x00];
+        assert_eq!(escape_rbsp(&input), vec![0xFF, 0x00, 0x00, 0x03, 0x00]);
+    }
+
+    #[test]
+    fn test_escape_rbsp_multiple_sequences() {
+        // Two separate forbidden sequences.
+        let input = vec![0x00, 0x00, 0x01, 0xFF, 0x00, 0x00, 0x03];
+        assert_eq!(escape_rbsp(&input), vec![0x00, 0x00, 0x03, 0x01, 0xFF, 0x00, 0x00, 0x03, 0x03]);
+    }
+
+    #[test]
+    fn test_escape_rbsp_more_than_two_leading_zeros() {
+        // Three zeros followed by 0x01: the first pair triggers escape,
+        // then the third zero + 0x01 does not (only one zero in the
+        // counter after reset).
+        let input = vec![0x00, 0x00, 0x00, 0x01];
+        assert_eq!(escape_rbsp(&input), vec![0x00, 0x00, 0x03, 0x00, 0x01]);
+    }
+
+    #[test]
+    fn test_escape_rbsp_empty_input() {
+        assert_eq!(escape_rbsp(&[]), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn test_escape_rbsp_no_false_positive_on_0x04() {
+        // 00 00 04 is NOT a forbidden sequence — must not be escaped.
+        let input = vec![0x00, 0x00, 0x04];
+        assert_eq!(escape_rbsp(&input), input);
     }
 
     #[test]
