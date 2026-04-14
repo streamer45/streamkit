@@ -874,7 +874,7 @@ mod tests {
     fn i420_to_nv12_basic() {
         // Build a minimal 4×4 I420 frame and convert.
         let frame = create_test_video_frame(4, 4, PixelFormat::I420, 1);
-        let nv12 = super::i420_frame_to_nv12_buffer(&frame);
+        let nv12 = crate::video::i420_frame_to_nv12_buffer(&frame);
 
         // NV12 size: Y (4*4) + UV (ceil(4/2)*2 * ceil(4/2)) = 16 + 4*2 = 24
         let expected_size = 4 * 4 + 4 * 2;

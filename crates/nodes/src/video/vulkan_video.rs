@@ -1328,7 +1328,7 @@ mod tests {
         let test_frame = VideoFrame::new(width, height, PixelFormat::I420, data)
             .expect("test frame should be valid");
 
-        let nv12 = super::i420_frame_to_nv12_buffer(&test_frame);
+        let nv12 = crate::video::i420_frame_to_nv12_buffer(&test_frame);
 
         let y_size = (width * height) as usize;
         let uv_size = width as usize * (height as usize / 2);
