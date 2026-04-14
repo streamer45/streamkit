@@ -348,10 +348,32 @@ impl VaH264Encoder {
         let mapped = MappedCodedBuffer::new(&coded_buf)
             .map_err(|e| format!("failed to map coded buffer: {e}"))?;
 
-        let mut bitstream = Vec::new();
+        let mut coded_data = Vec::new();
         for segment in mapped.segments() {
-            bitstream.extend_from_slice(segment.buf);
+            coded_data.extend_from_slice(segment.buf);
         }
+
+        // For IDR frames, ensure SPS/PPS NALUs are present in the bitstream.
+        // Some VA-API drivers (notably Intel iHD) do not auto-generate SPS/PPS
+        // in the coded output — the `cros-libva` crate does not expose packed
+        // header buffer types, so we cannot request them via the VA-API.
+        // Instead we generate the NALUs ourselves and prepend them.
+        let bitstream = if is_idr {
+            let has_sps_pps = bitstream_contains_sps_pps(&coded_data);
+            if has_sps_pps {
+                tracing::debug!("IDR frame already contains SPS/PPS from driver");
+                coded_data
+            } else {
+                tracing::debug!("IDR frame missing SPS/PPS — prepending generated NALUs");
+                let mut out = Vec::with_capacity(coded_data.len() + 128);
+                out.extend_from_slice(&self.build_sps_nalu());
+                out.extend_from_slice(&self.build_pps_nalu());
+                out.extend_from_slice(&coded_data);
+                out
+            }
+        } else {
+            coded_data
+        };
 
         // Update reference frame.
         self.reference = Some(RefPic { surface: recon_surface, poc, frame_num });
@@ -642,12 +664,283 @@ impl VaH264Encoder {
 }
 
 // ---------------------------------------------------------------------------
+// H.264 NALU generation (SPS / PPS)
+// ---------------------------------------------------------------------------
+
+/// Minimal bitstream writer for constructing H.264 NALUs with exp-Golomb
+/// coded fields.
+struct BitWriter {
+    buf: Vec<u8>,
+    byte: u8,
+    bits: u8,
+}
+
+impl BitWriter {
+    fn new() -> Self {
+        Self { buf: Vec::with_capacity(64), byte: 0, bits: 0 }
+    }
+
+    /// Write `n` bits from the low end of `val`.
+    fn write_bits(&mut self, val: u32, n: u8) {
+        for i in (0..n).rev() {
+            self.byte = (self.byte << 1) | (((val >> i) & 1) as u8);
+            self.bits += 1;
+            if self.bits == 8 {
+                self.buf.push(self.byte);
+                self.byte = 0;
+                self.bits = 0;
+            }
+        }
+    }
+
+    /// Write a single bit.
+    fn write_bit(&mut self, val: bool) {
+        self.write_bits(u32::from(val), 1);
+    }
+
+    /// Write an unsigned exp-Golomb code (ue(v)).
+    fn write_ue(&mut self, val: u32) {
+        let x = val + 1;
+        let len = 32 - x.leading_zeros(); // number of bits in x
+                                          // Leading zeros: len - 1
+        for _ in 0..len - 1 {
+            self.write_bit(false);
+        }
+        self.write_bits(x, len as u8);
+    }
+
+    /// Write a signed exp-Golomb code (se(v)).
+    fn write_se(&mut self, val: i32) {
+        let mapped = if val > 0 { (val as u32) * 2 - 1 } else { ((-val) as u32) * 2 };
+        self.write_ue(mapped);
+    }
+
+    /// Finish the NALU: add RBSP stop bit + trailing zero bits.
+    fn finish(mut self) -> Vec<u8> {
+        // RBSP stop bit.
+        self.write_bit(true);
+        // Pad remaining bits to byte boundary.
+        if self.bits > 0 {
+            self.byte <<= 8 - self.bits;
+            self.buf.push(self.byte);
+        }
+        self.buf
+    }
+}
+
+impl VaH264Encoder {
+    /// Generate a complete SPS NALU (Annex B start code + RBSP).
+    fn build_sps_nalu(&self) -> Vec<u8> {
+        let mut w = BitWriter::new();
+
+        // NAL header: forbidden_zero_bit(1), nal_ref_idc(2)=3, nal_unit_type(5)=7 (SPS)
+        w.write_bits(0x67, 8);
+
+        // profile_idc = 77 (Main)
+        w.write_bits(77, 8);
+
+        // constraint_set0..3_flags, reserved_zero_4bits
+        // constraint_set0_flag=0, constraint_set1_flag=1 (Main), set2=0, set3=0, reserved=0000
+        w.write_bits(0b0100_0000, 8);
+
+        // level_idc = 41
+        w.write_bits(41, 8);
+
+        // seq_parameter_set_id
+        w.write_ue(0);
+
+        // log2_max_frame_num_minus4
+        w.write_ue(self.log2_max_frame_num_minus4);
+
+        // pic_order_cnt_type = 0
+        w.write_ue(0);
+
+        // log2_max_pic_order_cnt_lsb_minus4
+        w.write_ue(self.log2_max_pic_order_cnt_lsb_minus4);
+
+        // max_num_ref_frames
+        w.write_ue(1);
+
+        // gaps_in_frame_num_value_allowed_flag
+        w.write_bit(false);
+
+        // pic_width_in_mbs_minus1
+        w.write_ue(u32::from(self.width_in_mbs) - 1);
+
+        // pic_height_in_map_units_minus1
+        w.write_ue(u32::from(self.height_in_mbs) - 1);
+
+        // frame_mbs_only_flag = 1
+        w.write_bit(true);
+
+        // (mb_adaptive_frame_field_flag omitted when frame_mbs_only_flag=1)
+
+        // direct_8x8_inference_flag = 1
+        w.write_bit(true);
+
+        // frame_cropping_flag + offsets
+        if let Some(ref crop) = self.frame_crop {
+            w.write_bit(true);
+            w.write_ue(crop.left);
+            w.write_ue(crop.right);
+            w.write_ue(crop.top);
+            w.write_ue(crop.bottom);
+        } else {
+            w.write_bit(false);
+        }
+
+        // vui_parameters_present_flag = 1
+        w.write_bit(true);
+
+        // --- VUI ---
+        // aspect_ratio_info_present_flag = 1
+        w.write_bit(true);
+        // aspect_ratio_idc = 1 (1:1 SAR)
+        w.write_bits(1, 8);
+
+        // overscan_info_present_flag = 0
+        w.write_bit(false);
+
+        // video_signal_type_present_flag = 0
+        w.write_bit(false);
+
+        // chroma_loc_info_present_flag = 0
+        w.write_bit(false);
+
+        // timing_info_present_flag = 1
+        w.write_bit(true);
+        // num_units_in_tick = 1
+        w.write_bits(1, 32);
+        // time_scale = framerate * 2
+        w.write_bits(self.framerate * 2, 32);
+        // fixed_frame_rate_flag = 0
+        w.write_bit(false);
+
+        // nal_hrd_parameters_present_flag = 0
+        w.write_bit(false);
+        // vcl_hrd_parameters_present_flag = 0
+        w.write_bit(false);
+
+        // pic_struct_present_flag = 0
+        w.write_bit(false);
+
+        // bitstream_restriction_flag = 0
+        w.write_bit(false);
+
+        // Build the NALU with Annex B start code.
+        let rbsp = w.finish();
+        let mut nalu = Vec::with_capacity(rbsp.len() + 4);
+        nalu.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        nalu.extend_from_slice(&rbsp);
+        nalu
+    }
+
+    /// Generate a complete PPS NALU (Annex B start code + RBSP).
+    fn build_pps_nalu(&self) -> Vec<u8> {
+        let mut w = BitWriter::new();
+
+        // NAL header: forbidden_zero_bit(1), nal_ref_idc(2)=3, nal_unit_type(5)=8 (PPS)
+        w.write_bits(0x68, 8);
+
+        // pic_parameter_set_id
+        w.write_ue(0);
+
+        // seq_parameter_set_id
+        w.write_ue(0);
+
+        // entropy_coding_mode_flag = 0 (CAVLC)
+        w.write_bit(false);
+
+        // bottom_field_pic_order_in_frame_present_flag = 0
+        w.write_bit(false);
+
+        // num_slice_groups_minus1 = 0
+        w.write_ue(0);
+
+        // num_ref_idx_l0_default_active_minus1 = 0
+        w.write_ue(0);
+
+        // num_ref_idx_l1_default_active_minus1 = 0
+        w.write_ue(0);
+
+        // weighted_pred_flag = 0
+        w.write_bit(false);
+
+        // weighted_bipred_idc = 0
+        w.write_bits(0, 2);
+
+        // pic_init_qp_minus26
+        w.write_se(self.qp as i32 - 26);
+
+        // pic_init_qs_minus26
+        w.write_se(0);
+
+        // chroma_qp_index_offset
+        w.write_se(0);
+
+        // deblocking_filter_control_present_flag = 1
+        w.write_bit(true);
+
+        // constrained_intra_pred_flag = 0
+        w.write_bit(false);
+
+        // redundant_pic_cnt_present_flag = 0
+        w.write_bit(false);
+
+        // Build the NALU with Annex B start code.
+        let rbsp = w.finish();
+        let mut nalu = Vec::with_capacity(rbsp.len() + 4);
+        nalu.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        nalu.extend_from_slice(&rbsp);
+        nalu
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Utility functions
 // ---------------------------------------------------------------------------
 
 /// Build an invalid `PictureH264` placeholder (fills unused reference slots).
 fn build_invalid_pic() -> PictureH264 {
     PictureH264::new(VA_INVALID_ID, 0, VA_PICTURE_H264_INVALID, 0, 0)
+}
+
+/// Check whether an Annex B bitstream contains both SPS and PPS NALUs.
+fn bitstream_contains_sps_pps(data: &[u8]) -> bool {
+    let mut has_sps = false;
+    let mut has_pps = false;
+    let len = data.len();
+    let mut i = 0;
+    while i + 2 < len {
+        let sc_len = if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
+            3
+        } else if i + 3 < len
+            && data[i] == 0
+            && data[i + 1] == 0
+            && data[i + 2] == 0
+            && data[i + 3] == 1
+        {
+            4
+        } else {
+            0
+        };
+        if sc_len > 0 {
+            let nal_pos = i + sc_len;
+            if nal_pos < len {
+                let nal_type = data[nal_pos] & 0x1F;
+                if nal_type == 7 {
+                    has_sps = true;
+                }
+                if nal_type == 8 {
+                    has_pps = true;
+                }
+            }
+            i = nal_pos;
+        } else {
+            i += 1;
+        }
+    }
+    has_sps && has_pps
 }
 
 /// Round `value` up to the next multiple of `alignment`.
@@ -718,5 +1011,84 @@ mod tests {
         assert_eq!(log2_ceil(5), 3);
         assert_eq!(log2_ceil(1024), 10);
         assert_eq!(log2_ceil(2048), 11);
+    }
+
+    #[test]
+    fn test_bitwriter_bits() {
+        let mut w = BitWriter::new();
+        w.write_bits(0b1010, 4);
+        w.write_bits(0b1100, 4);
+        let out = w.finish();
+        // 1010 1100 + stop bit 1 + 0000000 padding
+        assert_eq!(out[0], 0b1010_1100);
+        assert_eq!(out[1], 0b1000_0000);
+    }
+
+    #[test]
+    fn test_bitwriter_ue() {
+        // ue(0) = 1 (1 bit)
+        let mut w = BitWriter::new();
+        w.write_ue(0);
+        let out = w.finish();
+        assert_eq!(out[0], 0b1_1000000); // 1 + stop + pad
+
+        // ue(1) = 010 (3 bits)
+        let mut w = BitWriter::new();
+        w.write_ue(1);
+        let out = w.finish();
+        assert_eq!(out[0], 0b010_1_0000); // 010 + stop + pad
+
+        // ue(5) = 00110 (5 bits)
+        let mut w = BitWriter::new();
+        w.write_ue(5);
+        let out = w.finish();
+        assert_eq!(out[0], 0b00110_1_00); // 00110 + stop + pad
+    }
+
+    #[test]
+    fn test_bitwriter_se() {
+        // se(0) → ue(0) = 1
+        let mut w = BitWriter::new();
+        w.write_se(0);
+        let out = w.finish();
+        assert_eq!(out[0], 0b1_1000000);
+
+        // se(1) → ue(1) = 010
+        let mut w = BitWriter::new();
+        w.write_se(1);
+        let out = w.finish();
+        assert_eq!(out[0], 0b010_1_0000);
+
+        // se(-1) → ue(2) = 011
+        let mut w = BitWriter::new();
+        w.write_se(-1);
+        let out = w.finish();
+        assert_eq!(out[0], 0b011_1_0000);
+    }
+
+    #[test]
+    fn test_bitstream_contains_sps_pps() {
+        // Bitstream with SPS (type 7) and PPS (type 8).
+        let data = [
+            0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xc0, 0x1f, // SPS
+            0x00, 0x00, 0x00, 0x01, 0x68, 0xce, 0x38, 0x80, // PPS
+            0x00, 0x00, 0x00, 0x01, 0x65, 0x11, 0x22, 0x33, // IDR slice
+        ];
+        assert!(bitstream_contains_sps_pps(&data));
+
+        // Bitstream without SPS/PPS (only IDR slice).
+        let data_no_ps = [0x00, 0x00, 0x00, 0x01, 0x65, 0x11, 0x22, 0x33];
+        assert!(!bitstream_contains_sps_pps(&data_no_ps));
+
+        // 3-byte start codes.
+        let data_3byte = [
+            0x00, 0x00, 0x01, 0x67, 0x42, // SPS
+            0x00, 0x00, 0x01, 0x68, 0xce, // PPS
+        ];
+        assert!(bitstream_contains_sps_pps(&data_3byte));
+
+        // Only SPS, no PPS.
+        let data_sps_only = [0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xc0];
+        assert!(!bitstream_contains_sps_pps(&data_sps_only));
     }
 }
