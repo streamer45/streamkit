@@ -698,20 +698,40 @@ impl ScriptNode {
 
         tracing::debug!("JavaScript returned packet type: {}", packet_type);
 
-        // For MVP: only Text packets can be created from JavaScript
-        if packet_type.as_str() == "Text" {
-            let data: String = obj.get("data").map_err(|e| {
-                StreamKitError::Runtime(format!("Text packet must have 'data' field: {e}"))
-            })?;
-            Ok(Some(Packet::Text(data.into())))
-        } else {
-            // Other packet types: pass through the original packet unchanged
-            // Note: Any metadata modifications in JavaScript are lost (acceptable for MVP)
-            tracing::debug!(
-                "JavaScript returned {} packet - passing through original (metadata changes lost)",
-                packet_type
-            );
-            Ok(Some(original_packet.clone()))
+        match packet_type.as_str() {
+            "Text" => {
+                let data: String = obj.get("data").map_err(|e| {
+                    StreamKitError::Runtime(format!("Text packet must have 'data' field: {e}"))
+                })?;
+                Ok(Some(Packet::Text(data.into())))
+            },
+            "Custom" => {
+                let type_id: String = obj.get("type_id").map_err(|e| {
+                    StreamKitError::Runtime(format!("Custom packet must have 'type_id' field: {e}"))
+                })?;
+                let data_val: rquickjs::Value = obj.get("data").map_err(|e| {
+                    StreamKitError::Runtime(format!("Custom packet must have 'data' field: {e}"))
+                })?;
+                let data = js_value_to_json(&data_val).ok_or_else(|| {
+                    StreamKitError::Runtime(
+                        "Failed to convert Custom packet 'data' to JSON".to_string(),
+                    )
+                })?;
+                Ok(Some(Packet::Custom(Arc::new(streamkit_core::types::CustomPacketData {
+                    type_id,
+                    encoding: streamkit_core::types::CustomEncoding::Json,
+                    data,
+                    metadata: None,
+                }))))
+            },
+            _ => {
+                // Other packet types: pass through the original packet unchanged
+                tracing::debug!(
+                    "JavaScript returned {} packet - passing through original",
+                    packet_type
+                );
+                Ok(Some(original_packet.clone()))
+            },
         }
     }
 
@@ -1865,6 +1885,64 @@ mod tests {
                 );
             },
             _ => panic!("Expected Custom packet"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_custom_packet_creation_from_js() {
+        let config = create_test_config(
+            "function process(packet) {
+                if (packet.type === 'Transcription') {
+                    return {
+                        type: 'Custom',
+                        type_id: 'voice-control/compositor-update@1',
+                        data: {
+                            width: 1280,
+                            height: 720,
+                            layers: {
+                                in_0: { opacity: 1.0, z_index: 0 },
+                                in_1: { rect: { x: 0, y: 0, width: 1280, height: 720 }, opacity: 1.0 }
+                            }
+                        }
+                    };
+                }
+                return packet;
+            }",
+        );
+        let node = ScriptNode { config, global_config: None };
+
+        let runtime = rquickjs::AsyncRuntime::new().unwrap();
+        let context = rquickjs::AsyncContext::full(&runtime).await.unwrap();
+
+        node.validate_script(&context).await.unwrap();
+        node.initialize_web_apis(&context).await.unwrap();
+
+        let packet = Packet::Transcription(Arc::new(TranscriptionData {
+            text: "fullscreen".into(),
+            language: Some("en".into()),
+            segments: vec![TranscriptionSegment {
+                text: "fullscreen".into(),
+                start_time_ms: 0,
+                end_time_ms: 1000,
+                confidence: None,
+            }],
+            metadata: None,
+        }));
+        let mut stats = NodeStatsTracker::new("test".to_string(), None);
+
+        let result =
+            node.process_packet(&context, packet, Duration::from_secs(1), &mut stats).await;
+
+        assert!(result.is_some(), "Expected a packet, got None");
+        match result.unwrap() {
+            Packet::Custom(custom) => {
+                assert_eq!(custom.type_id, "voice-control/compositor-update@1");
+                assert_eq!(custom.encoding, CustomEncoding::Json);
+                assert_eq!(custom.data["width"], 1280);
+                assert_eq!(custom.data["height"], 720);
+                assert_eq!(custom.data["layers"]["in_1"]["rect"]["x"], 0);
+            },
+            other => panic!("Expected Custom packet, got {other:?}"),
         }
     }
 
