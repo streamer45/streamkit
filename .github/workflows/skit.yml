@@ -114,7 +114,12 @@ jobs:
 
   test-gpu:
     name: Test (GPU)
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # Skip for fork PRs — self-hosted runners must not execute untrusted code.
+    # NOTE: we check `github.event.pull_request == null` instead of
+    # `github.event_name != 'pull_request'` because this workflow is invoked
+    # via `workflow_call`, which sets event_name to "workflow_call" regardless
+    # of the original trigger, making the event_name check always true.
+    if: github.event.pull_request == null || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v5
