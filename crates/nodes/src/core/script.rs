@@ -630,6 +630,11 @@ impl ScriptNode {
                             StreamKitError::Runtime(format!("Failed to set sequence: {e}"))
                         })?;
                     }
+                    if let Some(kf) = meta.keyframe {
+                        js_meta.set("keyframe", kf).map_err(|e| {
+                            StreamKitError::Runtime(format!("Failed to set keyframe: {e}"))
+                        })?;
+                    }
 
                     obj.set("metadata", js_meta).map_err(|e| {
                         StreamKitError::Runtime(format!("Failed to set metadata: {e}"))
@@ -1986,7 +1991,7 @@ mod tests {
                 timestamp_us: Some(5_000_000),
                 duration_us: Some(100_000),
                 sequence: Some(42),
-                keyframe: None,
+                keyframe: Some(true),
             }),
         }));
         let mut stats = NodeStatsTracker::new("test".to_string(), None);
@@ -2003,6 +2008,7 @@ mod tests {
                 assert_eq!(meta.timestamp_us, Some(5_000_000));
                 assert_eq!(meta.duration_us, Some(100_000));
                 assert_eq!(meta.sequence, Some(42));
+                assert_eq!(meta.keyframe, Some(true));
             },
             other => panic!("Expected Custom packet, got {other:?}"),
         }
