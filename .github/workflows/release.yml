@@ -61,21 +61,21 @@ jobs:
 
       - name: Build release binaries
         run: |
-          cargo build --locked -p streamkit-server --bin skit --release --features "moq,svt_av1_static"
-          cargo build --locked -p streamkit-client --bin skit-cli --release
+          cargo build --locked --profile release-lto -p streamkit-server --bin skit --features "moq,svt_av1_static"
+          cargo build --locked --profile release-lto -p streamkit-client --bin skit-cli
 
       - name: Strip binaries
         run: |
-          strip target/release/skit
-          strip target/release/skit-cli
+          strip target/release-lto/skit
+          strip target/release-lto/skit-cli
 
       - name: Prepare release directory
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           mkdir -p streamkit-${VERSION}/plugins/{wasm,native}
           mkdir -p streamkit-${VERSION}/samples
-          cp target/release/skit streamkit-${VERSION}/
-          cp target/release/skit-cli streamkit-${VERSION}/
+          cp target/release-lto/skit streamkit-${VERSION}/
+          cp target/release-lto/skit-cli streamkit-${VERSION}/
           cp LICENSE streamkit-${VERSION}/
           cp README.md streamkit-${VERSION}/
           cp DOCKER.md streamkit-${VERSION}/
