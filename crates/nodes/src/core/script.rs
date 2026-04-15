@@ -710,7 +710,12 @@ impl ScriptNode {
                 })?;
                 Ok(Some(Packet::Text(data.into())))
             },
-            "Custom" => {
+            // Only reconstruct a Custom packet from JS when the script is
+            // *creating* one (i.e. the original was not Custom).  When the
+            // original is already Custom, fall through to the pass-through arm
+            // so the payload is returned byte-identical — avoiding lossy f64
+            // round-trips that corrupt u64 values above 2^53.
+            "Custom" if !matches!(original_packet, Packet::Custom(_)) => {
                 let type_id: String = obj.get("type_id").map_err(|e| {
                     StreamKitError::Runtime(format!("Custom packet must have 'type_id' field: {e}"))
                 })?;
@@ -1386,8 +1391,27 @@ impl ScriptNode {
     }
 }
 
-/// Helper function to convert a rquickjs Value to serde_json::Value
+/// Maximum nesting depth for [`js_value_to_json`].  Prevents stack overflow
+/// when a script returns a cyclic or extremely deep JS object (e.g.
+/// `const x = {}; x.self = x; return { type: 'Custom', data: x };`).
+const JS_TO_JSON_MAX_DEPTH: usize = 64;
+
+/// Helper function to convert a rquickjs Value to serde_json::Value.
+///
+/// Imposes a depth limit of [`JS_TO_JSON_MAX_DEPTH`] to guard against cyclic
+/// objects and unbounded recursion.
 fn js_value_to_json(value: &rquickjs::Value<'_>) -> Option<JsonValue> {
+    js_value_to_json_inner(value, 0)
+}
+
+fn js_value_to_json_inner(value: &rquickjs::Value<'_>, depth: usize) -> Option<JsonValue> {
+    if depth > JS_TO_JSON_MAX_DEPTH {
+        tracing::warn!(
+            "js_value_to_json: max depth ({}) exceeded — possible cyclic object",
+            JS_TO_JSON_MAX_DEPTH
+        );
+        return None;
+    }
     if value.is_null() || value.is_undefined() {
         return Some(JsonValue::Null);
     }
@@ -1406,14 +1430,14 @@ fn js_value_to_json(value: &rquickjs::Value<'_>) -> Option<JsonValue> {
     if let Some(arr) = value.as_array() {
         let items: Option<Vec<JsonValue>> = arr
             .iter::<rquickjs::Value>()
-            .map(|r| r.ok().and_then(|v| js_value_to_json(&v)))
+            .map(|r| r.ok().and_then(|v| js_value_to_json_inner(&v, depth + 1)))
             .collect();
         return items.map(JsonValue::Array);
     }
     if let Some(obj) = value.as_object() {
         let mut map = serde_json::Map::new();
         for (key, val) in obj.props::<String, rquickjs::Value>().flatten() {
-            if let Some(json_val) = js_value_to_json(&val) {
+            if let Some(json_val) = js_value_to_json_inner(&val, depth + 1) {
                 map.insert(key, json_val);
             }
         }
@@ -2669,6 +2693,101 @@ mod tests {
         match &output_packets[0] {
             Packet::Text(text) => assert_eq!(text.as_ref(), "Async: test"),
             _ => panic!("Expected Text packet"),
+        }
+    }
+
+    /// P1 regression: cyclic JS objects must not stack-overflow.  The depth
+    /// guard in `js_value_to_json` safely truncates the cycle, producing a
+    /// valid (but incomplete) Custom packet rather than crashing the server.
+    #[tokio::test]
+    async fn test_custom_packet_cyclic_object_does_not_crash() {
+        let config = create_test_config(
+            "function process(packet) {
+                const x = { a: 1 };
+                x.self = x;
+                return { type: 'Custom', type_id: 'test/cyclic@1', data: x };
+            }",
+        );
+        let node = ScriptNode { config, global_config: None };
+
+        let runtime = rquickjs::AsyncRuntime::new().unwrap();
+        let context = rquickjs::AsyncContext::full(&runtime).await.unwrap();
+
+        node.validate_script(&context).await.unwrap();
+        node.initialize_web_apis(&context).await.unwrap();
+
+        // Feed a Text packet so the Custom branch (new-creation) is triggered
+        let packet = Packet::Text("trigger".into());
+        let mut stats = NodeStatsTracker::new("test".to_string(), None);
+
+        // The critical assertion: this must not stack-overflow / crash.
+        // The depth guard truncates the cycle, so we get a valid Custom packet
+        // with the cyclic property silently dropped at depth 64.
+        let result =
+            node.process_packet(&context, packet, Duration::from_secs(2), &mut stats).await;
+
+        assert!(result.is_some(), "Expected a packet, got None");
+        match result.unwrap() {
+            Packet::Custom(custom) => {
+                assert_eq!(custom.type_id, "test/cyclic@1");
+                // The non-cyclic field should be preserved
+                assert_eq!(custom.data["a"], 1);
+            },
+            other => panic!("Expected truncated Custom packet, got {other:?}"),
+        }
+    }
+
+    /// P2 regression: a no-op script that receives a Custom packet and does
+    /// `return packet;` must preserve the original data byte-for-byte,
+    /// including u64 values above 2^53 that cannot survive a JS f64 round-trip.
+    #[tokio::test]
+    async fn test_custom_packet_passthrough_preserves_large_integers() {
+        let config = create_test_config("function process(packet) { return packet; }");
+        let node = ScriptNode { config, global_config: None };
+
+        let runtime = rquickjs::AsyncRuntime::new().unwrap();
+        let context = rquickjs::AsyncContext::full(&runtime).await.unwrap();
+
+        node.validate_script(&context).await.unwrap();
+        node.initialize_web_apis(&context).await.unwrap();
+
+        // 2^53 + 1 — the smallest integer that f64 cannot represent exactly
+        let large_id: u64 = (1u64 << 53) + 1;
+        let original_data = serde_json::json!({
+            "session_id": large_id,
+            "nested": { "big_ts": large_id },
+        });
+
+        let packet = Packet::Custom(Arc::new(CustomPacketData {
+            type_id: "test/large-int@1".to_string(),
+            encoding: CustomEncoding::Json,
+            data: original_data.clone(),
+            metadata: Some(PacketMetadata {
+                timestamp_us: Some(large_id),
+                duration_us: None,
+                sequence: None,
+                keyframe: None,
+            }),
+        }));
+        let mut stats = NodeStatsTracker::new("test".to_string(), None);
+
+        let result =
+            node.process_packet(&context, packet, Duration::from_secs(1), &mut stats).await;
+
+        assert!(result.is_some(), "Expected a packet, got None");
+        match result.unwrap() {
+            Packet::Custom(custom) => {
+                assert_eq!(custom.type_id, "test/large-int@1");
+                // Data must be identical — no f64 rounding
+                assert_eq!(
+                    custom.data, original_data,
+                    "Custom packet data corrupted during pass-through (f64 round-trip)"
+                );
+                assert!(custom.metadata.is_some(), "metadata should be preserved");
+                let meta = custom.metadata.as_ref().unwrap();
+                assert_eq!(meta.timestamp_us, Some(large_id), "metadata timestamp_us corrupted");
+            },
+            other => panic!("Expected Custom packet, got {other:?}"),
         }
     }
 }
