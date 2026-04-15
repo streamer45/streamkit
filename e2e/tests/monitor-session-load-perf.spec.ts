@@ -112,21 +112,33 @@ test.describe('Monitor Session Load Perf — Re-render Budget', () => {
       );
     }
 
-    // ── 4. Reset perf data, then click the session ──────────────────────
+    // ── 4. Reset perf data, then trigger session load ───────────────────
     //
-    // Resetting right before click isolates the session-load renders from
-    // any renders that happened during initial page load.
+    // MonitorView auto-selects the first session on mount, so by the time
+    // we reach this point the session may already be selected and its
+    // nodes rendered — meaning a click would be a no-op and the profiler
+    // would capture zero components.
+    //
+    // To isolate session-load renders reliably:
+    //   1. Navigate away to unmount MonitorView (clears selection state).
+    //   2. Reset the profiler so it starts with a clean slate.
+    //   3. Navigate back to /monitor — auto-selection fires and renders
+    //      all nodes fresh, with the profiler capturing every commit.
+
+    await page.goto('/design');
+    await page.waitForTimeout(200);
 
     await resetPerfData(page);
 
-    const sessionItem = page.getByTestId('session-item').filter({ hasText: sessionName });
-    await expect(sessionItem).toBeVisible({ timeout: 10_000 });
-    await sessionItem.click();
+    await page.goto('/monitor');
+    await expect(page.getByTestId('monitor-view')).toBeVisible({
+      timeout: 15_000,
+    });
 
     // ── 5. Wait for the session graph to fully load ─────────────────────
     //
     // Wait for React Flow nodes to appear — this signals that the
-    // pipeline has been hydrated and rendered.
+    // pipeline has been hydrated and rendered via auto-selection.
 
     await expect(page.locator('.react-flow__node').first()).toBeVisible({
       timeout: 15_000,
