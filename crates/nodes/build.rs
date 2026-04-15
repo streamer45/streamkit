@@ -207,25 +207,23 @@ fn build_svt_av1_static() -> Vec<std::path::PathBuf> {
 
     // 4. Emit linker directives.
     //
-    // When dav1d_static is also active, we hit a thin-LTO linking bug:
-    // under thin LTO the Rust object files are LLVM bitcode; when the
-    // linker processes the SVT-AV1 archive it hasn't yet compiled the
-    // bitcode to native code, so it doesn't see the undefined symbol
-    // references and skips the archive members.  `+whole-archive` forces
-    // all objects from the archive to be included unconditionally, and
-    // `-bundle` keeps the archive out of the rlib so the linker receives
-    // the original `.a` file directly (avoiding a bundle–extract round-trip
-    // that can interact poorly with LTO).
+    // `+whole-archive` forces all objects from the archive to be included
+    // unconditionally, and `-bundle` keeps the archive out of the rlib so
+    // the linker receives the original `.a` file directly.  This is
+    // required for two reasons:
     //
-    // When svt_av1_static is the only native archive the default `+bundle`
-    // works fine, so we only apply the workaround when dav1d_static is
-    // also present — keeping the other Dockerfiles (Dockerfile,
-    // Dockerfile.gpu, Dockerfile.demo) on the standard linking path.
+    // * rust-lld (default linker since Rust 1.86 on x86_64-linux) uses
+    //   single-pass archive scanning; with the default `+bundle` mode the
+    //   SVT-AV1 objects are embedded in the rlib and may be visited before
+    //   the Rust code that references them, causing undefined-symbol errors.
+    //
+    // * Under thin-LTO the Rust object files are LLVM bitcode; the linker
+    //   hasn't compiled them to native code when it processes the archive,
+    //   so it doesn't see the undefined references and skips the members.
+    //   `-bundle` + `+whole-archive` avoids the bundle–extract round-trip
+    //   that interacts poorly with LTO.
     println!("cargo:rustc-link-search=native={}", dst.join("lib").display());
-    #[cfg(feature = "dav1d_static")]
     println!("cargo:rustc-link-lib=static:+whole-archive,-bundle=SvtAv1Enc");
-    #[cfg(not(feature = "dav1d_static"))]
-    println!("cargo:rustc-link-lib=static=SvtAv1Enc");
     println!("cargo:rustc-link-lib=m");
     println!("cargo:rustc-link-lib=pthread");
 
