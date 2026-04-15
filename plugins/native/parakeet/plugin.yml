@@ -1,6 +1,6 @@
 id: parakeet
 name: Parakeet TDT
-version: 0.1.0
+version: 0.2.0
 node_kind: parakeet
 kind: native
 entrypoint: libparakeet.so

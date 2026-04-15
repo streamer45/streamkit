@@ -16,6 +16,23 @@ env:
   SHERPA_ONNX_VERSION: "1.12.17"
 
 jobs:
+  registry-check:
+    name: Registry Version Check
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Python dependencies
+        run: pip install pyyaml
+
+      - name: Verify official plugins metadata is current
+        run: |
+          python3 scripts/marketplace/generate_official_plugins.py
+          git diff --exit-code -- marketplace/official-plugins.json
+
+      - name: Check plugin versions against committed registry
+        run: python3 scripts/marketplace/check_registry_versions.py
+
   lint:
     name: Lint (${{ matrix.group }})
     runs-on: ubuntu-22.04
