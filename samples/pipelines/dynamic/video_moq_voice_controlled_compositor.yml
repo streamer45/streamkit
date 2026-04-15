@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-# Voice-controlled compositor demo with GPU-accelerated H.264 encoding.
+# Voice-controlled compositor demo.
 #
 # Say "fullscreen", "pip", "center", "circle", "zoom in" etc. to
 # rearrange the compositor layout in real time.  A script node parses
@@ -25,7 +25,7 @@
 #
 # Data flow (video):
 #   webcam → moq_peer → vp9_decoder → compositor →
-#   vk_h264_encoder → moq_peer
+#   vp9_encoder → moq_peer
 #
 # Data flow (audio loopback):
 #   moq_peer → opus_decoder → gain → opus_encoder → moq_peer
@@ -41,24 +41,22 @@
 #   "hide logo" / "show logo"     → toggle logo overlay
 #
 # Requires:
-#   - skit built with --features vulkan_video
-#   - Vulkan-capable GPU with H.264 encode support
 #   - plugin::native::parakeet loaded (with Parakeet TDT model)
 #   - plugin::native::vad loaded (with TEN-VAD model)
 #   - plugin::native::slint loaded
 #   just build-plugin-native-parakeet && just build-plugin-native-vad && just build-plugin-native-slint && just copy-plugins-native
 #   just download-parakeet-models && just download-silero-vad && just download-tenvad-models
 
-name: Voice-Controlled Compositor (Vulkan Video H.264)
+name: Voice-Controlled Compositor
 description: >-
-  Voice-controlled webcam compositing with GPU-accelerated H.264
-  encoding.  Say "fullscreen", "pip", "center", "circle", or "zoom in"
-  to rearrange the live compositor layout via speech.  Parakeet STT
-  feeds a script node that parses commands and emits Custom packets,
-  which a param_bridge forwards as UpdateParams to the compositor.
-  Live subtitles and a VAD speaking indicator are rendered via a
-  separate Slint overlay.  Three param_bridge nodes coordinate on
-  two different target nodes (compositor + Slint subtitle).
+  Voice-controlled webcam compositing.  Say "fullscreen", "pip",
+  "center", "circle", or "zoom in" to rearrange the live compositor
+  layout via speech.  Parakeet STT feeds a script node that parses
+  commands and emits Custom packets, which a param_bridge forwards
+  as UpdateParams to the compositor.  Live subtitles and a VAD
+  speaking indicator are rendered via a separate Slint overlay.
+  Three param_bridge nodes coordinate on two different target nodes
+  (compositor + Slint subtitle).
 mode: dynamic
 client:
   gateway_path: /moq/video
@@ -109,10 +107,12 @@ nodes:
         - input
       output_broadcast: output
       allow_reconnect: true
-      video_codec: h264
+      # For HW H.264 output, uncomment the next line and swap
+      # vp9_encoder → vk_h264_encoder below (requires --features vulkan_video).
+      # video_codec: h264
     needs:
       in: opus_encoder
-      in_1: vk_h264_encoder
+      in_1: vp9_encoder
 
   # --- Audio → STT path ---
 
@@ -404,13 +404,20 @@ nodes:
       - vp9_decoder
       - subtitles
 
-  # --- HW-accelerated H.264 encode ---
+  # --- Encode + output ---
+  # To use HW-accelerated H.264 instead of VP9, replace this node with:
+  #   vk_h264_encoder:
+  #     kind: video::vulkan_video::h264_encoder
+  #     params:
+  #       bitrate: 3000000
+  #       framerate: 30
+  #     needs: compositor
+  # and set video_codec: h264 on moq_peer.
 
-  vk_h264_encoder:
-    kind: video::vulkan_video::h264_encoder
+  vp9_encoder:
+    kind: video::vp9::encoder
     params:
-      bitrate: 3000000
-      framerate: 30
+      keyframe_interval: 30
     needs: compositor
 
   # --- Audio loopback with gain control ---
