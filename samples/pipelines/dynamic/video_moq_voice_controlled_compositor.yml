@@ -1,0 +1,433 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Voice-controlled compositor demo.
+#
+# Say "fullscreen", "pip", "center", "circle", "zoom in" etc. to
+# rearrange the compositor layout in real time.  A script node parses
+# voice commands from Parakeet transcriptions and emits Custom packets
+# containing the full compositor config, which a param_bridge forwards
+# as UpdateParams.
+#
+# Data flow (voice → layout control):
+#   mic → opus_decoder → resampler → parakeet →
+#   [best_effort] → voice_cmd (script) →
+#   [best_effort] → cmd_bridge → UpdateParams → compositor
+#
+# Data flow (live subtitles):
+#   parakeet → [best_effort] → subtitle_bridge →
+#   UpdateParams(text) → slint subtitle → compositor
+#
+# Data flow (speaking indicator):
+#   resampler → vad → [best_effort] →
+#   vad_bridge → UpdateParams(speaking) → slint subtitle
+#
+# Data flow (video):
+#   webcam → moq_peer → vp9_decoder → compositor →
+#   vp9_encoder → moq_peer
+#
+# Data flow (audio loopback):
+#   moq_peer → opus_decoder → gain → opus_encoder → moq_peer
+#
+# Voice commands:
+#   "fullscreen" / "full screen"  → webcam fills entire canvas
+#   "pip" / "picture in picture"  → webcam in top-right PiP
+#   "center"                      → webcam centred at medium size
+#   "circle"                      → circular crop on webcam
+#   "square" / "rectangle"        → rectangular crop on webcam
+#   "zoom in"                     → increase webcam zoom
+#   "zoom out"                    → decrease webcam zoom
+#   "hide logo" / "show logo"     → toggle logo overlay
+#
+# Requires:
+#   - plugin::native::parakeet loaded (with Parakeet TDT model)
+#   - plugin::native::vad loaded (with TEN-VAD model)
+#   - plugin::native::slint loaded
+#   just build-plugin-native-parakeet && just build-plugin-native-vad && just build-plugin-native-slint && just copy-plugins-native
+#   just download-parakeet-models && just download-silero-vad && just download-tenvad-models
+
+name: Voice-Controlled Compositor
+description: >-
+  Voice-controlled webcam compositing.  Say "fullscreen", "pip",
+  "center", "circle", or "zoom in" to rearrange the live compositor
+  layout via speech.  Parakeet STT feeds a script node that parses
+  commands and emits Custom packets, which a param_bridge forwards
+  as UpdateParams to the compositor.  Live subtitles and a VAD
+  speaking indicator are rendered via a separate Slint overlay.
+  Three param_bridge nodes coordinate on two different target nodes
+  (compositor + Slint subtitle).
+mode: dynamic
+client:
+  gateway_path: /moq/video
+  publish:
+    broadcast: input
+    tracks:
+      - kind: audio
+        source: microphone
+      - kind: video
+        source: camera
+  watch:
+    broadcast: output
+    audio: true
+    video: true
+  controls:
+    - label: "Show Subtitles"
+      type: toggle
+      node: subtitles
+      property: properties.show
+      default: true
+    - label: "Volume"
+      type: number
+      node: gain
+      property: gain
+      default: 1.0
+      min: 0.0
+      max: 4.0
+      step: 0.1
+
+nodes:
+  # --- Background ---
+
+  colorbars_bg:
+    kind: video::colorbars
+    params:
+      width: 1280
+      height: 720
+      fps: 30
+      pixel_format: rgba8
+
+  # --- MoQ transport (publish + subscribe) ---
+
+  moq_peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/video
+      input_broadcasts:
+        - input
+      output_broadcast: output
+      allow_reconnect: true
+      # For HW H.264 output, uncomment the next line and swap
+      # vp9_encoder → vk_h264_encoder below (requires --features vulkan_video).
+      # video_codec: h264
+    needs:
+      in: opus_encoder
+      in_1: vp9_encoder
+
+  # --- Audio → STT path ---
+
+  opus_decoder:
+    kind: audio::opus::decoder
+    needs:
+      in: moq_peer.audio/data
+
+  resampler:
+    kind: audio::resampler
+    params:
+      target_sample_rate: 16000
+    needs: opus_decoder
+
+  parakeet:
+    kind: plugin::native::parakeet
+    params:
+      model_dir: models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8
+      num_threads: 4
+      use_vad: true
+      vad_model_path: models/silero_vad.onnx
+      vad_threshold: 0.5
+      min_silence_duration_ms: 700
+    needs: resampler
+
+  # --- Voice command parsing → compositor layout control ---
+
+  voice_cmd:
+    kind: core::script
+    params:
+      timeout_ms: 1000
+      memory_limit_mb: 16
+      script: |
+        // Compositor layout presets — each is a full CompositorConfig
+        // that will be sent as UpdateParams via param_bridge.
+
+        const W = 1280;
+        const H = 720;
+
+        // Mutable state persists across process() calls.
+        let cropZoom = 2.2;
+        let cropShape = 'rect';
+        let logoOpacity = 0.7;
+        let lastCommand = '';
+
+        // Build the full compositor config for a given webcam rect.
+        function makeConfig(cam, label) {
+          return {
+            width: W, height: H, fps: 30, num_inputs: 3,
+            output_format: 'nv12',
+            layers: {
+              in_0: { opacity: 1.0, z_index: 0 },
+              in_1: {
+                rect: cam,
+                opacity: cam.width === W ? 1.0 : 0.9,
+                z_index: 1,
+                crop_zoom: cropZoom,
+                crop_x: 0.5, crop_y: 0.5,
+                crop_shape: cropShape,
+              },
+              in_2: {
+                rect: { x: 0, y: 600, width: W, height: 120 },
+                opacity: 1.0, z_index: 2,
+              },
+            },
+            image_overlays: [{
+              id: 'logo',
+              asset_path: 'samples/images/system/streamkit-logo.png',
+              rect: { x: 20, y: 630, width: 34, height: 60 },
+              opacity: logoOpacity, z_index: 10,
+            }],
+            text_overlays: [{
+              id: 'status',
+              text: label,
+              rect: { x: 20, y: 20, width: 500, height: 40 },
+              color: [255, 255, 255, 180],
+              font_size: 28,
+              font_name: 'samples/fonts/system/Inter.ttf',
+              opacity: 1.0, z_index: 11,
+            }],
+          };
+        }
+
+        const PRESETS = {
+          pip:        { x: 880, y: 20, width: 380, height: 285 },
+          fullscreen: { x: 0,   y: 0,  width: W,   height: H   },
+          center:     { x: 240, y: 90, width: 800, height: 540 },
+        };
+        let currentPreset = 'pip';
+
+        function process(packet) {
+          if (packet.type !== 'Transcription') return null;
+
+          const raw = (packet.data && packet.data.text)
+            ? packet.data.text
+            : (packet.text || '');
+          const text = String(raw).trim().toLowerCase();
+          if (!text) return null;
+
+          let changed = false;
+          let label = '';
+
+          if (text.includes('full screen') || text.includes('fullscreen')) {
+            currentPreset = 'fullscreen';
+            changed = true;
+            label = 'Fullscreen';
+          } else if (text.includes('picture in picture') || text.includes('pip')
+                     || text.includes('small') || text.includes('corner')) {
+            currentPreset = 'pip';
+            changed = true;
+            label = 'PiP';
+          } else if (text.includes('center') || text.includes('middle')) {
+            currentPreset = 'center';
+            changed = true;
+            label = 'Center';
+          }
+
+          if (text.includes('circle')) {
+            cropShape = 'circle';
+            changed = true;
+            label = (label || lastCommand) + ' (circle)';
+          } else if (text.includes('square') || text.includes('rectangle')) {
+            cropShape = 'rect';
+            changed = true;
+            label = (label || lastCommand) + ' (rect)';
+          }
+
+          if (text.includes('zoom in')) {
+            cropZoom = Math.min(cropZoom + 0.5, 5.0);
+            changed = true;
+            label = 'Zoom ' + cropZoom.toFixed(1) + 'x';
+          } else if (text.includes('zoom out')) {
+            cropZoom = Math.max(cropZoom - 0.5, 1.0);
+            changed = true;
+            label = 'Zoom ' + cropZoom.toFixed(1) + 'x';
+          }
+
+          if (text.includes('hide logo')) {
+            logoOpacity = 0.0;
+            changed = true;
+            label = 'Logo hidden';
+          } else if (text.includes('show logo')) {
+            logoOpacity = 0.7;
+            changed = true;
+            label = 'Logo visible';
+          }
+
+          if (!changed) return null;
+
+          if (!label) label = lastCommand;
+          lastCommand = label;
+
+          const config = makeConfig(PRESETS[currentPreset], label);
+          return {
+            type: 'Custom',
+            type_id: 'voice-control/compositor-update@1',
+            data: config,
+          };
+        }
+    needs:
+      in:
+        node: parakeet
+        mode: best_effort
+
+  cmd_bridge:
+    kind: core::param_bridge
+    params:
+      target_node: compositor
+      debounce_ms: 300
+    needs:
+      in:
+        node: voice_cmd
+        mode: best_effort
+
+  # --- Real-time VAD → speaking indicator ---
+
+  vad:
+    kind: plugin::native::vad
+    params:
+      output_mode: events
+      threshold: 0.5
+      min_silence_duration_s: 0.3
+      min_speech_duration_s: 0.15
+    needs: resampler
+
+  vad_bridge:
+    kind: core::param_bridge
+    params:
+      target_node: subtitles
+      mode: template
+      template:
+        properties:
+          speaking: "{{ is_speech }}"
+    needs:
+      in:
+        node: vad
+        mode: best_effort
+
+  # --- Subtitle rendering (Slint) ---
+
+  subtitles:
+    kind: plugin::native::slint
+    params:
+      width: 1280
+      height: 120
+      fps: 30
+      slint_file: samples/slint/system/subtitle.slint
+      properties:
+        text: ""
+        show: true
+        speaking: false
+
+  subtitle_bridge:
+    kind: core::param_bridge
+    params:
+      target_node: subtitles
+      mode: template
+      template:
+        properties:
+          text: "{{ text }}"
+      debounce_ms: 100
+    needs:
+      in:
+        node: parakeet
+        mode: best_effort
+
+  # --- Video decode + compositing ---
+
+  vp9_decoder:
+    kind: video::vp9::decoder
+    needs:
+      in: moq_peer.video/hd
+
+  compositor:
+    kind: video::compositor
+    params:
+      width: 1280
+      height: 720
+      num_inputs: 3
+      output_format: nv12
+      layers:
+        in_0:
+          opacity: 1.0
+          z_index: 0
+        in_1:
+          rect:
+            x: 880
+            y: 20
+            width: 380
+            height: 285
+          opacity: 0.9
+          z_index: 1
+          crop_zoom: 2.2
+          crop_x: 0.5
+          crop_y: 0.5
+        in_2:
+          rect:
+            x: 0
+            y: 600
+            width: 1280
+            height: 120
+          opacity: 1.0
+          z_index: 2
+      image_overlays:
+        - id: logo
+          asset_path: samples/images/system/streamkit-logo.png
+          rect:
+            x: 20
+            y: 630
+            width: 34
+            height: 60
+          opacity: 0.7
+          z_index: 10
+      text_overlays:
+        - id: status
+          text: "Say a command: fullscreen, pip, center, circle, zoom in…"
+          rect:
+            x: 20
+            y: 20
+            width: 700
+            height: 40
+          color: [255, 255, 255, 180]
+          font_size: 28
+          font_name: samples/fonts/system/Inter.ttf
+          opacity: 1.0
+          z_index: 11
+    needs:
+      - colorbars_bg
+      - vp9_decoder
+      - subtitles
+
+  # --- Encode + output ---
+  # To use HW-accelerated H.264 instead of VP9, replace this node with:
+  #   vk_h264_encoder:
+  #     kind: video::vulkan_video::h264_encoder
+  #     params:
+  #       bitrate: 3000000
+  #       framerate: 30
+  #     needs: compositor
+  # and set video_codec: h264 on moq_peer.
+
+  vp9_encoder:
+    kind: video::vp9::encoder
+    params:
+      keyframe_interval: 30
+    needs: compositor
+
+  # --- Audio loopback with gain control ---
+
+  gain:
+    kind: audio::gain
+    params:
+      gain: 1.0
+    needs: opus_decoder
+
+  opus_encoder:
+    kind: audio::opus::encoder
+    needs: gain
