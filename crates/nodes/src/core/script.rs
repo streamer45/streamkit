@@ -717,11 +717,32 @@ impl ScriptNode {
                         "Failed to convert Custom packet 'data' to JSON".to_string(),
                     )
                 })?;
+                let metadata =
+                    obj.get::<_, rquickjs::Object>("metadata").ok().and_then(|meta_obj| {
+                        let timestamp_us: Option<u64> = meta_obj.get("timestamp_us").ok();
+                        let duration_us: Option<u64> = meta_obj.get("duration_us").ok();
+                        let sequence: Option<u64> = meta_obj.get("sequence").ok();
+                        let keyframe: Option<bool> = meta_obj.get("keyframe").ok();
+                        if timestamp_us.is_some()
+                            || duration_us.is_some()
+                            || sequence.is_some()
+                            || keyframe.is_some()
+                        {
+                            Some(streamkit_core::types::PacketMetadata {
+                                timestamp_us,
+                                duration_us,
+                                sequence,
+                                keyframe,
+                            })
+                        } else {
+                            None
+                        }
+                    });
                 Ok(Some(Packet::Custom(Arc::new(streamkit_core::types::CustomPacketData {
                     type_id,
                     encoding: streamkit_core::types::CustomEncoding::Json,
                     data,
-                    metadata: None,
+                    metadata,
                 }))))
             },
             _ => {
@@ -1941,6 +1962,47 @@ mod tests {
                 assert_eq!(custom.data["width"], 1280);
                 assert_eq!(custom.data["height"], 720);
                 assert_eq!(custom.data["layers"]["in_1"]["rect"]["x"], 0);
+            },
+            other => panic!("Expected Custom packet, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_custom_packet_metadata_preserved_on_passthrough() {
+        let config = create_test_config("function process(packet) { return packet; }");
+        let node = ScriptNode { config, global_config: None };
+
+        let runtime = rquickjs::AsyncRuntime::new().unwrap();
+        let context = rquickjs::AsyncContext::full(&runtime).await.unwrap();
+
+        node.validate_script(&context).await.unwrap();
+        node.initialize_web_apis(&context).await.unwrap();
+
+        let packet = Packet::Custom(Arc::new(CustomPacketData {
+            type_id: TEST_VAD_EVENT_TYPE_ID.to_string(),
+            encoding: CustomEncoding::Json,
+            data: serde_json::json!({ "event_type": "speech_start" }),
+            metadata: Some(PacketMetadata {
+                timestamp_us: Some(5_000_000),
+                duration_us: Some(100_000),
+                sequence: Some(42),
+                keyframe: None,
+            }),
+        }));
+        let mut stats = NodeStatsTracker::new("test".to_string(), None);
+
+        let result =
+            node.process_packet(&context, packet, Duration::from_secs(1), &mut stats).await;
+
+        assert!(result.is_some(), "Expected a packet, got None");
+        match result.unwrap() {
+            Packet::Custom(custom) => {
+                assert_eq!(custom.type_id, TEST_VAD_EVENT_TYPE_ID);
+                assert!(custom.metadata.is_some(), "metadata should be preserved");
+                let meta = custom.metadata.as_ref().unwrap();
+                assert_eq!(meta.timestamp_us, Some(5_000_000));
+                assert_eq!(meta.duration_us, Some(100_000));
+                assert_eq!(meta.sequence, Some(42));
             },
             other => panic!("Expected Custom packet, got {other:?}"),
         }
