@@ -39,12 +39,16 @@ const EMPTY_PARAMS: Record<string, unknown> = {};
  * Returns true when every own-key in both objects is reference-equal,
  * meaning a new wrapper object would be identical to the existing one
  * and the old reference can be preserved.
+ *
+ * The comparison is symmetric: both key sets are checked so that extra
+ * keys in either object cause a mismatch.
  */
 function shallowDataEqual(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
   const aKeys = Object.keys(a);
-  if (aKeys.length !== Object.keys(b).length) return false;
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
   for (const key of aKeys) {
-    if (a[key] !== b[key]) return false;
+    if (!Object.prototype.hasOwnProperty.call(b, key) || a[key] !== b[key]) return false;
   }
   return true;
 }
@@ -164,6 +168,9 @@ export function useNodeStatesSubscription({
     let lastPatchTime = 0;
     let throttleTimer: ReturnType<typeof setTimeout> | null = null;
     let pendingNodeStates: Record<string, NodeState> | null = null;
+    // Reset on every resubscribe so the first patch after a session
+    // switch is treated as an initial mount (applied immediately,
+    // bypassing the throttle).
     isInitialMountRef.current = true;
 
     const applyPatch = (nodeStates: Record<string, NodeState>) => {

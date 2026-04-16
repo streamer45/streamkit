@@ -126,7 +126,9 @@ test.describe('Monitor Session Load Perf — Re-render Budget', () => {
     //      all nodes fresh, with the profiler capturing every commit.
 
     await page.goto('/design');
-    await page.waitForTimeout(200);
+    await expect(page.getByTestId('design-view')).toBeVisible({
+      timeout: 10_000,
+    });
 
     await resetPerfData(page);
 
@@ -156,11 +158,20 @@ test.describe('Monitor Session Load Perf — Re-render Budget', () => {
 
     // The profiler store is available (dev mode).  We verify the perf
     // infrastructure works and that the session load path completes
-    // without hanging or crashing.  The primary render-budget assertion
-    // targets CompositorNode (which has its own <Profiler>) — if present,
-    // it must stay within budget.  MonitorView itself is NOT wrapped in a
-    // permanent <Profiler> to avoid inflating cascade metrics in other
-    // perf tests (e.g., compositor-perf).
+    // without hanging or crashing.
+    //
+    // Render-budget gates: ConfigurableNode must stay within budget to
+    // catch regressions in the Zustand→ReactFlow patching path.
+    // CompositorNode is checked when present (the Webcam PiP pipeline
+    // includes one).
+    const configurableData = snapshot.components['ConfigurableNode'];
+    if (configurableData) {
+      assertRenderBudget(snapshot, 'ConfigurableNode', {
+        max: 4,
+        maxDuration: 500,
+      });
+    }
+
     const compositorData = snapshot.components['CompositorNode'];
     if (compositorData) {
       assertRenderBudget(snapshot, 'CompositorNode', {
