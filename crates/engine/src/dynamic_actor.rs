@@ -42,7 +42,7 @@ pub struct NodePinMetadata {
 /// Pre-built OTel metric labels for a node, allocated once on creation and
 /// reused on every stats/state update to avoid per-update `String` allocations.
 #[derive(Clone)]
-pub(super) struct NodeMetricLabels {
+pub struct NodeMetricLabels {
     /// `[node_id, node_kind]` — used by stats counters.
     stats: [KeyValue; 2],
     /// Standalone `node_id` label — combined with a varying `state` label.
