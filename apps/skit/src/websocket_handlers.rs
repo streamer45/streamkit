@@ -17,6 +17,7 @@ use streamkit_api::{
     ValidationErrorType,
 };
 use streamkit_core::control::{EngineControlMessage, NodeControlMessage};
+use std::sync::Arc;
 use streamkit_core::registry::NodeDefinition;
 use streamkit_core::types::PacketType;
 use streamkit_core::{InputPin, OutputPin, PinCardinality};
@@ -1109,7 +1110,7 @@ async fn handle_get_pipeline(
 
     // Attach resolved view data so clients have accurate positions on initial load.
     if !node_view_data.is_empty() {
-        api_pipeline.view_data = Some(node_view_data);
+        api_pipeline.view_data = Some(Arc::unwrap_or_clone(node_view_data));
     }
 
     // Attach runtime param schemas so the UI can merge them with static schemas

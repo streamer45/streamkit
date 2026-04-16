@@ -286,7 +286,17 @@ pub async fn handle_websocket(
 
                 if should_send {
                     metrics.messages_counter.add(1, &[KeyValue::new("direction", "outbound")]);
-                    if send_json_message(&mut socket, &event, "event").await.is_err() {
+                    if broadcast_event.json.is_empty() {
+                        // Pre-serialization failed — skip this event.
+                        metrics.errors_counter.add(1, &[KeyValue::new("error_type", "serialize_error")]);
+                    } else if socket
+                        .send(axum::extract::ws::Message::Text(
+                            broadcast_event.json.to_string().into(),
+                        ))
+                        .await
+                        .is_err()
+                    {
+                        warn!("Failed to send WebSocket event");
                         metrics.errors_counter.add(1, &[KeyValue::new("error_type", "send_error")]);
                         break;
                     }

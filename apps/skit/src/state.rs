@@ -10,15 +10,30 @@ use streamkit_api::Event as ApiEvent;
 use streamkit_engine::Engine;
 
 /// Wrapper around [`ApiEvent`] for the broadcast channel.
+///
+/// Contains both the structured event (for filtering) and a pre-serialized
+/// JSON representation (`Arc<str>`) so that N WebSocket handlers can send the
+/// same bytes without each calling `serde_json::to_string` independently.
 #[derive(Clone, Debug)]
 pub struct BroadcastEvent {
     pub event: ApiEvent,
+    /// JSON representation serialized once at broadcast time.
+    pub json: Arc<str>,
 }
 
 impl BroadcastEvent {
     /// Wrap an event for broadcast to all connections.
-    pub const fn to_all(event: ApiEvent) -> Self {
-        Self { event }
+    ///
+    /// Serializes the event to JSON eagerly so each WebSocket handler can
+    /// forward the pre-built string without re-serializing.
+    pub fn to_all(event: ApiEvent) -> Self {
+        let json: Arc<str> = serde_json::to_string(&event)
+            .unwrap_or_else(|e| {
+                tracing::error!(error = %e, "Failed to pre-serialize broadcast event");
+                String::new()
+            })
+            .into();
+        Self { event, json }
     }
 }
 
