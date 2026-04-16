@@ -40,10 +40,15 @@ COPY wit ./wit
 RUN mkdir -p ui/dist && echo '<!DOCTYPE html><html><body>Building...</body></html>' > ui/dist/index.html
 
 # Build dependencies with cache mount (plugins are excluded from workspace)
+# NOTE: -fuse-ld=bfd overrides rust-lld with the system linker (ld.bfd).
+# rust-lld (default since Rust 1.85 on x86_64-linux) ignores
+# --whole-archive for native static archives under thin LTO,
+# causing undefined SVT-AV1 symbols.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
-    cargo build --profile release-lto -p streamkit-server --bin skit --features "moq,svt_av1_static" && \
+    RUSTFLAGS="-C link-arg=-fuse-ld=bfd" \
+    cargo build --locked --profile release-lto -p streamkit-server --bin skit --features "moq,svt_av1_static" && \
     # Copy compiled artifacts out of cache mount so they persist in the layer
     mkdir -p /build/target-out && \
     cp -r /build/target/release-lto /build/target-out/
@@ -110,8 +115,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
         /build/target/release-lto/skit.d \
         /build/target/release-lto/deps/streamkit_server-* \
         /build/target/release-lto/.fingerprint/streamkit-server-*; \
-      # Build only the server binary \
-      cargo build --profile release-lto --features "moq,svt_av1_static" --bin skit; \
+      # Build only the server binary (-fuse-ld=bfd: see note above) \
+      RUSTFLAGS="-C link-arg=-fuse-ld=bfd" \
+      cargo build --locked --profile release-lto --features "moq,svt_av1_static" --bin skit; \
       # Copy final binary out of cache mount \
       mkdir -p /build/bin && cp /build/target/release-lto/skit /build/bin/skit \
     '
@@ -534,7 +540,9 @@ FROM rust:1.92-slim-bookworm AS aac-encoder-builder
 WORKDIR /build
 
 # Install build dependencies (libfdk-aac-dev needed by shiguredo_fdk_aac)
-RUN apt-get update && apt-get install -y \
+# libfdk-aac-dev is in Debian's non-free component.
+RUN sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     libclang-dev \
@@ -594,7 +602,9 @@ RUN --mount=type=cache,id=cargo-registry-slint,target=/usr/local/cargo/registry 
 FROM debian:bookworm-slim
 
 # Install runtime dependencies (include gdb for debugging demo image crashes)
-RUN apt-get update && apt-get install -y \
+# libfdk-aac2 is in Debian's non-free component.
+RUN sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
     libopus0 \

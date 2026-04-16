@@ -596,7 +596,9 @@ FROM rust:1.92-slim-bookworm AS aac-encoder-builder
 WORKDIR /build
 
 # Install build dependencies (libfdk-aac-dev needed by shiguredo_fdk_aac)
-RUN apt-get update && apt-get install -y \
+# libfdk-aac-dev is in Debian's non-free component.
+RUN sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     libclang-dev \
@@ -659,7 +661,9 @@ FROM nvidia/cuda:${CUDA_VERSION}-cudnn9-runtime-ubuntu22.04
 
 # Install runtime dependencies and debugging tools
 # libvulkan1: required by wgpu compositor for GPU-accelerated compositing via Vulkan
-RUN apt-get update && apt-get install -y \
+# libfdk-aac2 is in Ubuntu's multiverse component.
+RUN sed -i 's/main restricted/main restricted multiverse/' /etc/apt/sources.list && \
+    apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
     libopus0 \
