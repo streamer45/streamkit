@@ -291,7 +291,7 @@ pub async fn handle_websocket(
                         metrics.errors_counter.add(1, &[KeyValue::new("error_type", "serialize_error")]);
                     } else if socket
                         .send(axum::extract::ws::Message::Text(
-                            broadcast_event.json.to_string().into(),
+                            broadcast_event.json.clone().try_into().unwrap_or_default(),
                         ))
                         .await
                         .is_err()

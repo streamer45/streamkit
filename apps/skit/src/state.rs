@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+use bytes::Bytes;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
 use tokio::task::JoinHandle;
@@ -12,13 +13,13 @@ use streamkit_engine::Engine;
 /// Wrapper around [`ApiEvent`] for the broadcast channel.
 ///
 /// Contains both the structured event (for filtering) and a pre-serialized
-/// JSON representation (`Arc<str>`) so that N WebSocket handlers can send the
-/// same bytes without each calling `serde_json::to_string` independently.
+/// JSON representation ([`Bytes`]) so that N WebSocket handlers can clone the
+/// refcounted buffer (no memcpy) instead of each calling `serde_json::to_string`.
 #[derive(Clone, Debug)]
 pub struct BroadcastEvent {
     pub event: ApiEvent,
-    /// JSON representation serialized once at broadcast time.
-    pub json: Arc<str>,
+    /// JSON bytes serialized once at broadcast time. Cloning is O(1) (refcount).
+    pub json: Bytes,
 }
 
 impl BroadcastEvent {
@@ -27,12 +28,12 @@ impl BroadcastEvent {
     /// Serializes the event to JSON eagerly so each WebSocket handler can
     /// forward the pre-built string without re-serializing.
     pub fn to_all(event: ApiEvent) -> Self {
-        let json: Arc<str> = serde_json::to_string(&event)
+        let json: Bytes = serde_json::to_vec(&event)
+            .map(Bytes::from)
             .unwrap_or_else(|e| {
                 tracing::error!(error = %e, "Failed to pre-serialize broadcast event");
-                String::new()
-            })
-            .into();
+                Bytes::new()
+            });
         Self { event, json }
     }
 }
