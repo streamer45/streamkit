@@ -414,11 +414,10 @@ impl DynamicEngine {
 
         // Record state transition metric
         let state_name = Self::node_state_name(&update.state);
-        let node_id_kv = self
-            .node_metric_labels
-            .get(&update.node_id)
-            .map(|c| c.node_id_kv.clone())
-            .unwrap_or_else(|| KeyValue::new("node_id", update.node_id.clone()));
+        let node_id_kv = self.node_metric_labels.get(&update.node_id).map_or_else(
+            || KeyValue::new("node_id", update.node_id.clone()),
+            |c| c.node_id_kv.clone(),
+        );
         self.node_state_transitions_counter
             .add(1, &[node_id_kv.clone(), KeyValue::new("state", state_name)]);
 
@@ -1626,8 +1625,7 @@ impl DynamicEngine {
         let node_id_kv = self
             .node_metric_labels
             .get(node_id)
-            .map(|c| c.node_id_kv.clone())
-            .unwrap_or_else(|| KeyValue::new("node_id", node_id.to_owned()));
+            .map_or_else(|| KeyValue::new("node_id", node_id.to_owned()), |c| c.node_id_kv.clone());
         self.node_state_gauge.record(0, &[node_id_kv, KeyValue::new("state", state_name)]);
     }
 
@@ -1641,8 +1639,7 @@ impl DynamicEngine {
         let node_id_kv = self
             .node_metric_labels
             .get(node_id)
-            .map(|c| c.node_id_kv.clone())
-            .unwrap_or_else(|| KeyValue::new("node_id", node_id.to_owned()));
+            .map_or_else(|| KeyValue::new("node_id", node_id.to_owned()), |c| c.node_id_kv.clone());
         self.node_state_transitions_counter
             .add(1, &[node_id_kv.clone(), KeyValue::new("state", state_name)]);
 
@@ -2006,11 +2003,10 @@ impl DynamicEngine {
 
                 // Step 5: Clean up remaining state
                 for (node_id, state) in self.node_states.as_ref() {
-                    let node_id_kv = self
-                        .node_metric_labels
-                        .get(node_id.as_str())
-                        .map(|c| c.node_id_kv.clone())
-                        .unwrap_or_else(|| KeyValue::new("node_id", node_id.clone()));
+                    let node_id_kv = self.node_metric_labels.get(node_id.as_str()).map_or_else(
+                        || KeyValue::new("node_id", node_id.clone()),
+                        |c| c.node_id_kv.clone(),
+                    );
                     self.node_state_gauge.record(
                         0,
                         &[node_id_kv, KeyValue::new("state", Self::node_state_name(state))],
