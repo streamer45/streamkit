@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import React, { useState, useEffect } from 'react';
+import React, { Suspense, useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -17,14 +17,15 @@ import { initializePermissions } from './services/permissions';
 import { ensureSchemasLoaded } from './stores/schemaStore';
 import { getBasePathname } from './utils/baseHref';
 import { getLogger } from './utils/logger';
-import ConvertView from './views/ConvertView';
 import DesignView from './views/DesignView';
-import LoginView from './views/LoginView';
-import LogsView from './views/LogsView';
 import MonitorView from './views/MonitorView';
-import PluginsView from './views/PluginsView';
-import StreamView from './views/StreamView';
-import TokensView from './views/TokensView';
+
+const ConvertView = React.lazy(() => import('./views/ConvertView'));
+const LoginView = React.lazy(() => import('./views/LoginView'));
+const LogsView = React.lazy(() => import('./views/LogsView'));
+const PluginsView = React.lazy(() => import('./views/PluginsView'));
+const StreamView = React.lazy(() => import('./views/StreamView'));
+const TokensView = React.lazy(() => import('./views/TokensView'));
 
 const logger = getLogger('App');
 
@@ -104,30 +105,32 @@ const App: React.FC = () => {
           <ToastProvider>
             <TooltipProvider delayDuration={300} skipDelayDuration={200}>
               <BrowserRouter basename={getBasePathname()}>
-                <Routes>
-                  <Route
-                    path="/login"
-                    element={<LoginView onLoggedIn={() => setRequiresLogin(false)} />}
-                  />
-                  <Route
-                    path="/"
-                    element={requiresLogin ? <Navigate to="/login" replace /> : <Layout />}
-                  >
-                    <Route index element={<Navigate to="/design" replace />} />
-                    <Route path="design" element={<DesignView />} />
-                    <Route path="monitor" element={<MonitorView />} />
-                    <Route path="convert" element={<ConvertView />} />
-                    <Route path="stream" element={<StreamView />} />
-                    <Route path="admin" element={<Navigate to="/admin/plugins" replace />} />
+                <Suspense fallback={<LoadingSpinner message="Loading..." />}>
+                  <Routes>
                     <Route
-                      path="admin/plugins"
-                      element={<Navigate to="/admin/plugins/installed" replace />}
+                      path="/login"
+                      element={<LoginView onLoggedIn={() => setRequiresLogin(false)} />}
                     />
-                    <Route path="admin/plugins/:tab" element={<PluginsView />} />
-                    <Route path="admin/tokens" element={<TokensView />} />
-                    <Route path="admin/logs" element={<LogsView />} />
-                  </Route>
-                </Routes>
+                    <Route
+                      path="/"
+                      element={requiresLogin ? <Navigate to="/login" replace /> : <Layout />}
+                    >
+                      <Route index element={<Navigate to="/design" replace />} />
+                      <Route path="design" element={<DesignView />} />
+                      <Route path="monitor" element={<MonitorView />} />
+                      <Route path="convert" element={<ConvertView />} />
+                      <Route path="stream" element={<StreamView />} />
+                      <Route path="admin" element={<Navigate to="/admin/plugins" replace />} />
+                      <Route
+                        path="admin/plugins"
+                        element={<Navigate to="/admin/plugins/installed" replace />}
+                      />
+                      <Route path="admin/plugins/:tab" element={<PluginsView />} />
+                      <Route path="admin/tokens" element={<TokensView />} />
+                      <Route path="admin/logs" element={<LogsView />} />
+                    </Route>
+                  </Routes>
+                </Suspense>
               </BrowserRouter>
             </TooltipProvider>
           </ToastProvider>

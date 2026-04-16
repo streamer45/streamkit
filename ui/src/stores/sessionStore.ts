@@ -4,12 +4,11 @@
 
 import { create } from 'zustand';
 
-import type { Connection, Node, Pipeline, NodeState, NodeStats } from '@/types/types';
+import type { Connection, Node, Pipeline, NodeState } from '@/types/types';
 
 interface SessionData {
   pipeline: Pipeline | null;
   nodeStates: Record<string, NodeState>;
-  nodeStats: Record<string, NodeStats>;
   nodeViewData: Record<string, unknown>;
   isConnected: boolean;
 }
@@ -19,7 +18,6 @@ interface SessionStore {
 
   // Actions
   updateNodeState: (sessionId: string, nodeId: string, state: NodeState) => void;
-  updateNodeStats: (sessionId: string, nodeId: string, stats: NodeStats) => void;
   updateNodeViewData: (sessionId: string, nodeId: string, data: unknown) => void;
   updateRuntimeSchema: (sessionId: string, nodeId: string, schema: unknown) => void;
   setPipeline: (sessionId: string, pipeline: Pipeline) => void;
@@ -40,15 +38,11 @@ interface SessionStore {
   // Batch actions — apply multiple updates in a single set() call to reduce
   // the number of store notifications and subscriber re-renders.
   batchUpdateNodeStates: (sessionId: string, updates: Record<string, NodeState>) => void;
-  batchUpdateNodeStats: (sessionId: string, updates: Record<string, NodeStats>) => void;
 
-  // Combined batch: merge node states AND stats for multiple sessions in a
-  // single set() call.  Used by the RAF-based WebSocket flush to ensure
-  // all updates from one animation frame produce exactly one store mutation.
-  batchUpdateSessionData: (
-    stateUpdates: Map<string, Record<string, NodeState>>,
-    statsUpdates: Map<string, Record<string, NodeStats>>
-  ) => void;
+  // Multi-session batch: merge node states for multiple sessions in a single
+  // set() call.  Used by the RAF-based WebSocket flush so that all updates
+  // from one animation frame produce exactly one store mutation.
+  batchUpdateNodeStatesMulti: (stateUpdates: Map<string, Record<string, NodeState>>) => void;
 }
 
 export const useSessionStore = create<SessionStore>((set, get) => ({
@@ -63,19 +57,6 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       newSessions.set(sessionId, {
         ...session,
         nodeStates: { ...session.nodeStates, [nodeId]: state },
-      });
-      return { sessions: newSessions };
-    }),
-
-  updateNodeStats: (sessionId, nodeId, stats) =>
-    set((prev) => {
-      const session = prev.sessions.get(sessionId);
-      if (!session) return prev; // Ignore updates for unknown/destroyed sessions
-
-      const newSessions = new Map(prev.sessions);
-      newSessions.set(sessionId, {
-        ...session,
-        nodeStats: { ...session.nodeStats, [nodeId]: stats },
       });
       return { sessions: newSessions };
     }),
@@ -134,7 +115,6 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       newSessions.set(sessionId, {
         pipeline,
         nodeStates: session ? { ...session.nodeStates, ...nodeStates } : nodeStates,
-        nodeStats: session?.nodeStats ?? {},
         nodeViewData: { ...(session?.nodeViewData ?? {}), ...incomingViewData },
         isConnected: session?.isConnected ?? false,
       });
@@ -289,7 +269,6 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       newSessions.set(sessionId, {
         pipeline: null,
         nodeStates: {},
-        nodeStats: {},
         nodeViewData: {},
         isConnected: connected,
       });
@@ -320,41 +299,19 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       return { sessions: newSessions };
     }),
 
-  batchUpdateNodeStats: (sessionId, updates) =>
+  batchUpdateNodeStatesMulti: (stateUpdates) =>
     set((prev) => {
-      const session = prev.sessions.get(sessionId);
-      if (!session) return prev;
-
-      const newSessions = new Map(prev.sessions);
-      newSessions.set(sessionId, {
-        ...session,
-        nodeStats: { ...session.nodeStats, ...updates },
-      });
-      return { sessions: newSessions };
-    }),
-
-  batchUpdateSessionData: (stateUpdates, statsUpdates) =>
-    set((prev) => {
-      // Collect all session IDs that need updating.
-      const sessionIds = new Set<string>();
-      for (const id of stateUpdates.keys()) sessionIds.add(id);
-      for (const id of statsUpdates.keys()) sessionIds.add(id);
-
-      if (sessionIds.size === 0) return prev;
+      if (stateUpdates.size === 0) return prev;
 
       const newSessions = new Map(prev.sessions);
 
-      for (const sessionId of sessionIds) {
+      for (const [sessionId, updates] of stateUpdates) {
         const session = newSessions.get(sessionId);
         if (!session) continue;
 
-        const stateUpdate = stateUpdates.get(sessionId);
-        const statsUpdate = statsUpdates.get(sessionId);
-
         newSessions.set(sessionId, {
           ...session,
-          nodeStates: stateUpdate ? { ...session.nodeStates, ...stateUpdate } : session.nodeStates,
-          nodeStats: statsUpdate ? { ...session.nodeStats, ...statsUpdate } : session.nodeStats,
+          nodeStates: { ...session.nodeStates, ...updates },
         });
       }
 

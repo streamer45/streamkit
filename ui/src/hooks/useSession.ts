@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { useAtomValue } from 'jotai/react';
-import { useEffect, useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 
 import { getWebSocketService } from '@/services/websocket';
@@ -34,8 +34,11 @@ export function useSession(sessionId: string | null) {
   // node-state event and would force the (very large) MonitorViewContent to
   // re-render each time.  MonitorViewContent patches ReactFlow nodes directly
   // via a Zustand store subscription instead.
-  const pipeline = useSessionStore((state) =>
-    sessionId ? state.getSession(sessionId)?.pipeline : undefined
+  const pipeline = useSessionStore(
+    useCallback(
+      (state) => (sessionId ? state.getSession(sessionId)?.pipeline : undefined),
+      [sessionId]
+    )
   );
   // Read connection status from Jotai atom (fine-grained, per-session).
   const isConnectedFromStore = useAtomValue(sessionConnectedAtom(sessionId ?? ''));

@@ -306,10 +306,9 @@ export class WebSocketService {
   private flushBatchedUpdates(): void {
     this.batchFlushRafId = null;
 
-    // Convert pending Maps to Records and flush everything in a single
-    // store mutation via batchUpdateSessionData.  This ensures that all
-    // WebSocket events from one animation frame produce exactly ONE
-    // Zustand set() call, minimising React re-renders.
+    // Convert pending Maps to Records and flush everything.  Jotai atoms
+    // receive per-node updates; the Zustand store receives a single
+    // batchUpdateNodeStatesMulti call for useNodeStatesSubscription.
     const stateUpdates = new Map<string, Record<string, NodeState>>();
     for (const [sessionId, updates] of this.pendingNodeStates) {
       stateUpdates.set(sessionId, Object.fromEntries(updates));
@@ -327,11 +326,11 @@ export class WebSocketService {
       batchWriteNodeStates(stateUpdates);
       batchWriteNodeStats(statsUpdates);
 
-      // TODO(jotai-cleanup): remove Zustand write after remaining consumers migrate
-      // Also keep Zustand write for pipeline-related consumers that still read
-      // nodeStates from the Zustand store (will be removed when those consumers
-      // are migrated).
-      useSessionStore.getState().batchUpdateSessionData(stateUpdates, statsUpdates);
+      // Keep Zustand nodeStates write for useNodeStatesSubscription which
+      // subscribes to the store to patch ReactFlow nodes without re-renders.
+      if (stateUpdates.size > 0) {
+        useSessionStore.getState().batchUpdateNodeStatesMulti(stateUpdates);
+      }
     }
   }
 
