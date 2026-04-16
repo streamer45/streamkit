@@ -93,7 +93,7 @@ fn add_source_node(
             }],
         },
     );
-    engine.node_states.insert(name.to_string(), state);
+    std::sync::Arc::make_mut(&mut engine.node_states).insert(name.to_string(), state);
     control_rx
 }
 
@@ -117,7 +117,7 @@ fn add_processor_node(engine: &mut DynamicEngine, name: &str, state: NodeState) 
             }],
         },
     );
-    engine.node_states.insert(name.to_string(), state);
+    std::sync::Arc::make_mut(&mut engine.node_states).insert(name.to_string(), state);
 }
 
 /// Source node in Ready should receive Start when all other nodes are Running.
@@ -221,7 +221,7 @@ async fn test_activation_only_starts_source_nodes() {
             output_pins: vec![],
         },
     );
-    engine.node_states.insert("processor".to_string(), NodeState::Ready);
+    std::sync::Arc::make_mut(&mut engine.node_states).insert("processor".to_string(), NodeState::Ready);
 
     engine.check_and_activate_pipeline();
 
