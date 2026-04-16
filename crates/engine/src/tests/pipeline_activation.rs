@@ -221,7 +221,8 @@ async fn test_activation_only_starts_source_nodes() {
             output_pins: vec![],
         },
     );
-    std::sync::Arc::make_mut(&mut engine.node_states).insert("processor".to_string(), NodeState::Ready);
+    std::sync::Arc::make_mut(&mut engine.node_states)
+        .insert("processor".to_string(), NodeState::Ready);
 
     engine.check_and_activate_pipeline();
 

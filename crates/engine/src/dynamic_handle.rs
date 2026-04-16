@@ -143,7 +143,9 @@ impl DynamicEngineHandle {
     /// # Errors
     ///
     /// Returns an error if the engine actor has shut down or fails to respond.
-    pub async fn get_node_view_data(&self) -> Result<Arc<HashMap<String, serde_json::Value>>, String> {
+    pub async fn get_node_view_data(
+        &self,
+    ) -> Result<Arc<HashMap<String, serde_json::Value>>, String> {
         let (response_tx, mut response_rx) = mpsc::channel(1);
         self.query_tx
             .send(QueryMessage::GetNodeViewData { response_tx })

@@ -419,10 +419,8 @@ impl DynamicEngine {
             .get(&update.node_id)
             .map(|c| c.node_id_kv.clone())
             .unwrap_or_else(|| KeyValue::new("node_id", update.node_id.clone()));
-        self.node_state_transitions_counter.add(
-            1,
-            &[node_id_kv.clone(), KeyValue::new("state", state_name)],
-        );
+        self.node_state_transitions_counter
+            .add(1, &[node_id_kv.clone(), KeyValue::new("state", state_name)]);
 
         // Record state gauge as a proper "one-hot" state indicator per node:
         // - Set the previous state's series to 0
@@ -433,16 +431,11 @@ impl DynamicEngine {
         if let Some(prev_state) = prev_state {
             let prev_state_name = Self::node_state_name(prev_state);
             if prev_state_name != state_name {
-                self.node_state_gauge.record(
-                    0,
-                    &[node_id_kv.clone(), KeyValue::new("state", prev_state_name)],
-                );
+                self.node_state_gauge
+                    .record(0, &[node_id_kv.clone(), KeyValue::new("state", prev_state_name)]);
             }
         }
-        self.node_state_gauge.record(
-            1,
-            &[node_id_kv, KeyValue::new("state", state_name)],
-        );
+        self.node_state_gauge.record(1, &[node_id_kv, KeyValue::new("state", state_name)]);
 
         // Store the current state
         Arc::make_mut(&mut self.node_states).insert(update.node_id.clone(), update.state.clone());
@@ -1650,30 +1643,23 @@ impl DynamicEngine {
             .get(node_id)
             .map(|c| c.node_id_kv.clone())
             .unwrap_or_else(|| KeyValue::new("node_id", node_id.to_owned()));
-        self.node_state_transitions_counter.add(
-            1,
-            &[node_id_kv.clone(), KeyValue::new("state", state_name)],
-        );
+        self.node_state_transitions_counter
+            .add(1, &[node_id_kv.clone(), KeyValue::new("state", state_name)]);
 
         // Zero-out the previous state's gauge series (one-hot pattern),
         // mirroring the logic in `handle_state_update`.
         if let Some(prev_state) = self.node_states.get(node_id) {
             let prev_state_name = Self::node_state_name(prev_state);
             if prev_state_name != state_name {
-                self.node_state_gauge.record(
-                    0,
-                    &[node_id_kv.clone(), KeyValue::new("state", prev_state_name)],
-                );
+                self.node_state_gauge
+                    .record(0, &[node_id_kv.clone(), KeyValue::new("state", prev_state_name)]);
             }
         }
 
         // Insert the new state AFTER reading the previous one.
         Arc::make_mut(&mut self.node_states).insert(node_id.to_owned(), new_state.clone());
 
-        self.node_state_gauge.record(
-            1,
-            &[node_id_kv, KeyValue::new("state", state_name)],
-        );
+        self.node_state_gauge.record(1, &[node_id_kv, KeyValue::new("state", state_name)]);
 
         let update = NodeStateUpdate::new(node_id.to_owned(), new_state);
         self.state_subscribers.retain(|subscriber| match subscriber.try_send(update.clone()) {

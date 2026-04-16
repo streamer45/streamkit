@@ -1389,7 +1389,8 @@ fn run_clocked_audio_thread(config: &ClockedThreadConfig) {
                 }
 
                 slow_pins.clear();
-                slow_pins.extend(inputs.iter().filter(|i| i.slow).map(|i| i.name.as_ref().to_string()));
+                slow_pins
+                    .extend(inputs.iter().filter(|i| i.slow).map(|i| i.name.as_ref().to_string()));
                 slow_pins.sort();
                 slow_pins.dedup();
 

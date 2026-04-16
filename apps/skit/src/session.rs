@@ -446,7 +446,9 @@ impl Session {
     ///
     /// Returns an error if the engine handle's oneshot channel fails to receive a response,
     /// which typically indicates the engine actor has stopped or panicked.
-    pub async fn get_node_view_data(&self) -> Result<Arc<HashMap<String, serde_json::Value>>, String> {
+    pub async fn get_node_view_data(
+        &self,
+    ) -> Result<Arc<HashMap<String, serde_json::Value>>, String> {
         self.engine_handle.get_node_view_data().await
     }
 
