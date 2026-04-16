@@ -60,8 +60,13 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm cmake
 
       - name: Build release binaries
+        # -fuse-ld=bfd: override rust-lld with the system linker (ld.bfd).
+        # rust-lld (default since Rust 1.85 on x86_64-linux) ignores
+        # --whole-archive for native static archives under thin LTO,
+        # causing undefined SVT-AV1 symbols.
         run: |
-          cargo build --locked --profile release-lto -p streamkit-server --bin skit --features "moq,svt_av1_static"
+          RUSTFLAGS="-C link-arg=-fuse-ld=bfd" \
+            cargo build --locked --profile release-lto -p streamkit-server --bin skit --features "moq,svt_av1_static"
           cargo build --locked --profile release-lto -p streamkit-client --bin skit-cli
 
       - name: Strip binaries
