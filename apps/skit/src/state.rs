@@ -28,12 +28,10 @@ impl BroadcastEvent {
     /// Serializes the event to JSON eagerly so each WebSocket handler can
     /// forward the pre-built string without re-serializing.
     pub fn to_all(event: ApiEvent) -> Self {
-        let json: Bytes = serde_json::to_vec(&event)
-            .map(Bytes::from)
-            .unwrap_or_else(|e| {
-                tracing::error!(error = %e, "Failed to pre-serialize broadcast event");
-                Bytes::new()
-            });
+        let json: Bytes = serde_json::to_vec(&event).map(Bytes::from).unwrap_or_else(|e| {
+            tracing::error!(error = %e, "Failed to pre-serialize broadcast event");
+            Bytes::new()
+        });
         Self { event, json }
     }
 }
