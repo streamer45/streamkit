@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import React, { useState, useEffect } from 'react';
+import React, { Suspense, useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -17,14 +17,15 @@ import { initializePermissions } from './services/permissions';
 import { ensureSchemasLoaded } from './stores/schemaStore';
 import { getBasePathname } from './utils/baseHref';
 import { getLogger } from './utils/logger';
-import ConvertView from './views/ConvertView';
 import DesignView from './views/DesignView';
-import LoginView from './views/LoginView';
-import LogsView from './views/LogsView';
-import MonitorView from './views/MonitorView';
-import PluginsView from './views/PluginsView';
-import StreamView from './views/StreamView';
-import TokensView from './views/TokensView';
+
+const ConvertView = React.lazy(() => import('./views/ConvertView'));
+const MonitorView = React.lazy(() => import('./views/MonitorView'));
+const LoginView = React.lazy(() => import('./views/LoginView'));
+const LogsView = React.lazy(() => import('./views/LogsView'));
+const PluginsView = React.lazy(() => import('./views/PluginsView'));
+const StreamView = React.lazy(() => import('./views/StreamView'));
+const TokensView = React.lazy(() => import('./views/TokensView'));
 
 const logger = getLogger('App');
 
@@ -107,7 +108,11 @@ const App: React.FC = () => {
                 <Routes>
                   <Route
                     path="/login"
-                    element={<LoginView onLoggedIn={() => setRequiresLogin(false)} />}
+                    element={
+                      <Suspense fallback={<LoadingSpinner message="Loading..." />}>
+                        <LoginView onLoggedIn={() => setRequiresLogin(false)} />
+                      </Suspense>
+                    }
                   />
                   <Route
                     path="/"

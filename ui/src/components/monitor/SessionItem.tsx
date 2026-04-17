@@ -137,7 +137,6 @@ export const InlineCopyButton: React.FC<{
 // ---------------------------------------------------------------------------
 
 export const SessionInfoChip: React.FC<SessionInfoDisplayProps> = React.memo(({ session }) => {
-  // Get node states from session store with shallow comparison
   const nodeStates = useSessionStore(
     useShallow((state) => state.sessions.get(session.id)?.nodeStates ?? {})
   );
@@ -250,8 +249,6 @@ export const SessionInfoChip: React.FC<SessionInfoDisplayProps> = React.memo(({ 
 
 export const SessionItem: React.FC<SessionItemProps> = React.memo(
   ({ session, isActive, onClick, onDelete }) => {
-    // Get node states from session store with shallow comparison
-    // Direct access pattern is more reliable than curried selectors
     const nodeStates = useSessionStore(
       useShallow((state) => state.sessions.get(session.id)?.nodeStates ?? {})
     );

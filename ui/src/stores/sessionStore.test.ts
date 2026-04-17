@@ -57,49 +57,6 @@ describe('sessionStore', () => {
     });
   });
 
-  describe('updateNodeStats', () => {
-    it('should ignore update for non-existent session', () => {
-      const nodeId = 'node-1';
-      const stats = {
-        received: BigInt(100),
-        sent: BigInt(95),
-        discarded: BigInt(5),
-        errored: BigInt(2),
-        duration_secs: 10.5,
-      };
-
-      useSessionStore.getState().updateNodeStats(TEST_SESSION_ID, nodeId, stats);
-
-      const session = useSessionStore.getState().getSession(TEST_SESSION_ID);
-      expect(session).toBeUndefined();
-    });
-
-    it('should update existing node stats', () => {
-      const nodeId = 'node-1';
-      const initialStats = {
-        received: BigInt(100),
-        sent: BigInt(95),
-        discarded: BigInt(5),
-        errored: BigInt(2),
-        duration_secs: 10.5,
-      };
-      const updatedStats = {
-        received: BigInt(200),
-        sent: BigInt(190),
-        discarded: BigInt(10),
-        errored: BigInt(3),
-        duration_secs: 20.5,
-      };
-
-      useSessionStore.getState().initSession(TEST_SESSION_ID, false);
-      useSessionStore.getState().updateNodeStats(TEST_SESSION_ID, nodeId, initialStats);
-      useSessionStore.getState().updateNodeStats(TEST_SESSION_ID, nodeId, updatedStats);
-
-      const session = useSessionStore.getState().getSession(TEST_SESSION_ID);
-      expect(session?.nodeStats[nodeId]).toEqual(updatedStats);
-    });
-  });
-
   describe('setPipeline', () => {
     it('should set pipeline for a session', () => {
       const sessionId = TEST_SESSION_ID;

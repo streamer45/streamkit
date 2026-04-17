@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-import { sessionStore, nodeParamsAtom, nodeKey } from '@/stores/sessionAtoms';
+import { sessionStore, nodeParamsAtom, nodeStatsAtom, nodeKey } from '@/stores/sessionAtoms';
 import { useSessionStore } from '@/stores/sessionStore';
 import type { Response, Event as WsEvent } from '@/types/types';
 
@@ -248,8 +248,9 @@ describe('WebSocketService', () => {
       // State/stats updates are RAF-batched; flush manually.
       service['flushBatchedUpdates']();
 
-      const session = useSessionStore.getState().getSession('session-1');
-      expect(session?.nodeStats['node-1']).toEqual(stats);
+      // Stats are written to Jotai atoms only (not Zustand)
+      const atomStats = sessionStore.get(nodeStatsAtom(nodeKey('session-1', 'node-1')));
+      expect(atomStats).toEqual(stats);
     });
 
     it('should handle nodeparamschanged event', () => {
