@@ -1591,11 +1591,10 @@ impl DynamicEngine {
                         NodeState::Failed { reason: e.to_string() },
                     );
 
-                    // Full cleanup (mirrors RemoveNode-while-Creating path):
-                    // zero the gauge, then remove all per-node bookkeeping so
-                    // the Failed entry doesn't linger as a ghost node.
-                    self.zero_state_gauge(&node_id, &NodeState::Failed { reason: String::new() });
-                    Arc::make_mut(&mut self.node_states).remove(&node_id);
+                    // Clean up auxiliary bookkeeping but deliberately keep the
+                    // Failed entry in node_states so clients can observe the
+                    // failure.  The user must send RemoveNode to clear it (which
+                    // mirrors the Creating-cancel path at shutdown_node).
                     self.node_kinds.remove(&node_id);
                     self.node_metric_labels.remove(&node_id);
 
@@ -1623,7 +1622,10 @@ impl DynamicEngine {
                 // Broadcast Failed (reads prev state before inserting).
                 self.broadcast_state_update(&node_id, NodeState::Failed { reason: e.to_string() });
 
-                // Clean up node_kinds and cached metric labels (mirrors RemoveNode-while-Creating).
+                // Clean up auxiliary bookkeeping but deliberately keep the
+                // Failed entry in node_states so clients can observe the
+                // failure.  The user must send RemoveNode to clear it (which
+                // mirrors the Creating-cancel path at shutdown_node).
                 self.node_kinds.remove(&node_id);
                 self.node_metric_labels.remove(&node_id);
 
