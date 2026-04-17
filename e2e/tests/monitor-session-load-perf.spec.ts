@@ -112,30 +112,64 @@ test.describe('Monitor Session Load Perf — Re-render Budget', () => {
       );
     }
 
-    // ── 4. Reset perf data, then click the session ──────────────────────
+    // ── 4. Reset perf data, then trigger session load ───────────────────
     //
-    // Resetting right before click isolates the session-load renders from
-    // any renders that happened during initial page load.
+    // MonitorView auto-selects the first session on mount, so by the time
+    // we reach this point the session may already be selected and its
+    // nodes rendered — meaning a click would be a no-op and the profiler
+    // would capture zero components.
+    //
+    // To isolate session-load renders reliably:
+    //   1. Navigate away to unmount MonitorView (clears selection state).
+    //   2. Reset the profiler so it starts with a clean slate.
+    //   3. Navigate back to /monitor — auto-selection fires and renders
+    //      all nodes fresh, with the profiler capturing every commit.
+
+    await page.goto('/design');
+    await expect(page.getByTestId('design-view')).toBeVisible({
+      timeout: 10_000,
+    });
 
     await resetPerfData(page);
 
-    const sessionItem = page.getByTestId('session-item').filter({ hasText: sessionName });
-    await expect(sessionItem).toBeVisible({ timeout: 10_000 });
-    await sessionItem.click();
+    await page.goto('/monitor');
+    await expect(page.getByTestId('monitor-view')).toBeVisible({
+      timeout: 15_000,
+    });
 
     // ── 5. Wait for the session graph to fully load ─────────────────────
     //
     // Wait for React Flow nodes to appear — this signals that the
-    // pipeline has been hydrated and rendered.
+    // pipeline has been hydrated and rendered via auto-selection.
 
     await expect(page.locator('.react-flow__node').first()).toBeVisible({
       timeout: 15_000,
     });
 
-    // Allow WebSocket state events to settle. Node state events arrive
-    // asynchronously after the pipeline is rendered, so we give them time
-    // to be batched and flushed.
-    await page.waitForTimeout(2_000);
+    // Wait for render counts to stabilise.  Instead of a fixed delay,
+    // poll until two consecutive snapshots report the same total commit
+    // count — this is both faster on quick machines and more reliable on
+    // slow CI runners than a hard `waitForTimeout`.
+    const POLL_INTERVAL = 300;
+    const STABLE_THRESHOLD = 2; // consecutive stable readings required
+    const POLL_TIMEOUT = 10_000;
+    let stableCount = 0;
+    let prevTotal = -1;
+    const pollStart = Date.now();
+    while (stableCount < STABLE_THRESHOLD && Date.now() - pollStart < POLL_TIMEOUT) {
+      await page.waitForTimeout(POLL_INTERVAL);
+      const snap = await capturePerfData(page);
+      const total = Object.values(snap.components).reduce(
+        (sum, c) => sum + (c as { renderCount: number }).renderCount,
+        0
+      );
+      if (total === prevTotal) {
+        stableCount++;
+      } else {
+        stableCount = 0;
+        prevTotal = total;
+      }
+    }
 
     // ── 6. Capture and assert render budgets ────────────────────────────
 
@@ -144,11 +178,25 @@ test.describe('Monitor Session Load Perf — Re-render Budget', () => {
 
     // The profiler store is available (dev mode).  We verify the perf
     // infrastructure works and that the session load path completes
-    // without hanging or crashing.  The primary render-budget assertion
-    // targets CompositorNode (which has its own <Profiler>) — if present,
-    // it must stay within budget.  MonitorView itself is NOT wrapped in a
-    // permanent <Profiler> to avoid inflating cascade metrics in other
-    // perf tests (e.g., compositor-perf).
+    // without hanging or crashing.
+    //
+    // Render-budget gates: catch regressions in the Zustand→ReactFlow
+    // patching path.  The Webcam PiP pipeline has ~7 ConfigurableNode
+    // instances; each transitions through several states during session
+    // load, producing ~39 total commits today.  Budget is ~15% above
+    // baseline to catch meaningful regressions — tighten further as
+    // optimisations land (e.g., reading state from atoms instead of
+    // props would drop this to ~4).
+    const configurableData = snapshot.components['ConfigurableNode'];
+    expect(
+      configurableData,
+      'ConfigurableNode profiler data must be present — ensure the Profiler wrapper is intact'
+    ).toBeDefined();
+    assertRenderBudget(snapshot, 'ConfigurableNode', {
+      max: 45,
+      maxDuration: 1_500,
+    });
+
     const compositorData = snapshot.components['CompositorNode'];
     if (compositorData) {
       assertRenderBudget(snapshot, 'CompositorNode', {

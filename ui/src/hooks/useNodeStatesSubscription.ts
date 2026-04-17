@@ -149,6 +149,9 @@ export function useNodeStatesSubscription({
     let lastPatchTime = 0;
     let throttleTimer: ReturnType<typeof setTimeout> | null = null;
     let pendingNodeStates: Record<string, NodeState> | null = null;
+    // Reset on every resubscribe so the first patch after a session
+    // switch is treated as an initial mount (applied immediately,
+    // bypassing the throttle).
     isInitialMountRef.current = true;
 
     const applyPatch = (nodeStates: Record<string, NodeState>) => {

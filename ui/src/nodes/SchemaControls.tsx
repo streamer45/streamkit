@@ -140,71 +140,71 @@ interface BooleanToggleControlProps {
   params: Record<string, unknown>;
 }
 
-export const BooleanToggleControl: React.FC<BooleanToggleControlProps> = ({
-  nodeId,
-  sessionId,
-  config,
-  params,
-}) => {
-  const { tuneNodeConfig } = useTuneNode(sessionId ?? null);
+// React.memo relies on `config` and `params` being referentially stable
+// across parent re-renders.  Do not spread or clone them before passing.
+export const BooleanToggleControl: React.FC<BooleanToggleControlProps> = React.memo(
+  ({ nodeId, sessionId, config, params }) => {
+    const { tuneNodeConfig } = useTuneNode(sessionId ?? null);
 
-  // Read from atom for live sync
-  const paramsKey = sessionId ? `${sessionId}\0${nodeId}` : nodeId;
-  const nodeParams = useAtomValue(nodeParamsAtom(paramsKey));
+    // Read from atom for live sync
+    const paramsKey = sessionId ? `${sessionId}\0${nodeId}` : nodeId;
+    const nodeParams = useAtomValue(nodeParamsAtom(paramsKey));
 
-  // Effective value: atom > props > default
-  const effectiveValue = (() => {
-    const stored = readByPath(nodeParams, config.path);
-    if (typeof stored === 'boolean') return stored;
-    const prop = readByPath(params as Record<string, unknown>, config.path);
-    if (typeof prop === 'boolean') return prop;
-    if (typeof config.schema.default === 'boolean') return config.schema.default;
-    return false;
-  })();
+    // Effective value: atom > props > default
+    const effectiveValue = (() => {
+      const stored = readByPath(nodeParams, config.path);
+      if (typeof stored === 'boolean') return stored;
+      const prop = readByPath(params as Record<string, unknown>, config.path);
+      if (typeof prop === 'boolean') return prop;
+      if (typeof config.schema.default === 'boolean') return config.schema.default;
+      return false;
+    })();
 
-  const [checked, setChecked] = useState(effectiveValue);
+    const [checked, setChecked] = useState(effectiveValue);
 
-  // Sync with external changes
-  useEffect(() => {
-    setChecked(effectiveValue);
-  }, [effectiveValue]);
+    // Sync with external changes
+    useEffect(() => {
+      setChecked(effectiveValue);
+    }, [effectiveValue]);
 
-  // Ref pattern: keep tuneNodeConfig ref stable so toggle handler identity
-  // doesn't change when sessionId (rarely) changes.
-  const tuneRef = useRef(tuneNodeConfig);
-  useEffect(() => {
-    tuneRef.current = tuneNodeConfig;
-  }, [tuneNodeConfig]);
+    // Ref pattern: keep tuneNodeConfig ref stable so toggle handler identity
+    // doesn't change when sessionId (rarely) changes.
+    const tuneRef = useRef(tuneNodeConfig);
+    useEffect(() => {
+      tuneRef.current = tuneNodeConfig;
+    }, [tuneNodeConfig]);
 
-  // Ref tracks latest checked to avoid stale closures if two clicks
-  // fire before React re-renders.
-  const checkedRef = useRef(checked);
-  checkedRef.current = checked;
+    // Ref tracks latest checked to avoid stale closures if two clicks
+    // fire before React re-renders.
+    const checkedRef = useRef(checked);
+    checkedRef.current = checked;
 
-  const handleToggle = useCallback(() => {
-    const next = !checkedRef.current;
-    checkedRef.current = next;
-    setChecked(next);
-    tuneRef.current(nodeId, buildParamUpdate(config.path, next));
-  }, [nodeId, config.path]);
+    const handleToggle = useCallback(() => {
+      const next = !checkedRef.current;
+      checkedRef.current = next;
+      setChecked(next);
+      tuneRef.current(nodeId, buildParamUpdate(config.path, next));
+    }, [nodeId, config.path]);
 
-  const disabled = !sessionId;
+    const disabled = !sessionId;
 
-  return (
-    <ToggleRow>
-      <ToggleLabel className="code-font">{config.key}</ToggleLabel>
-      <ToggleTrack
-        role="switch"
-        aria-checked={checked}
-        checked={checked}
-        onClick={handleToggle}
-        disabled={disabled}
-        aria-label={config.schema.description ?? config.key}
-        className="nodrag nopan"
-      />
-    </ToggleRow>
-  );
-};
+    return (
+      <ToggleRow>
+        <ToggleLabel className="code-font">{config.key}</ToggleLabel>
+        <ToggleTrack
+          role="switch"
+          aria-checked={checked}
+          checked={checked}
+          onClick={handleToggle}
+          disabled={disabled}
+          aria-label={config.schema.description ?? config.key}
+          className="nodrag nopan"
+        />
+      </ToggleRow>
+    );
+  }
+);
+BooleanToggleControl.displayName = 'BooleanToggleControl';
 
 // ---------------------------------------------------------------------------
 // Text input control
@@ -217,106 +217,106 @@ interface TextInputControlProps {
   params: Record<string, unknown>;
 }
 
-export const TextInputControl: React.FC<TextInputControlProps> = ({
-  nodeId,
-  sessionId,
-  config,
-  params,
-}) => {
-  const { tuneNodeConfig } = useTuneNode(sessionId ?? null);
+// React.memo relies on `config` and `params` being referentially stable
+// across parent re-renders.  Do not spread or clone them before passing.
+export const TextInputControl: React.FC<TextInputControlProps> = React.memo(
+  ({ nodeId, sessionId, config, params }) => {
+    const { tuneNodeConfig } = useTuneNode(sessionId ?? null);
 
-  // Read from atom for live sync
-  const paramsKey = sessionId ? `${sessionId}\0${nodeId}` : nodeId;
-  const nodeParams = useAtomValue(nodeParamsAtom(paramsKey));
+    // Read from atom for live sync
+    const paramsKey = sessionId ? `${sessionId}\0${nodeId}` : nodeId;
+    const nodeParams = useAtomValue(nodeParamsAtom(paramsKey));
 
-  // Effective value: atom > props > default
-  const effectiveValue = (() => {
-    const stored = readByPath(nodeParams, config.path);
-    if (typeof stored === 'string') return stored;
-    const prop = readByPath(params as Record<string, unknown>, config.path);
-    if (typeof prop === 'string') return prop;
-    if (typeof config.schema.default === 'string') return config.schema.default;
-    return '';
-  })();
+    // Effective value: atom > props > default
+    const effectiveValue = (() => {
+      const stored = readByPath(nodeParams, config.path);
+      if (typeof stored === 'string') return stored;
+      const prop = readByPath(params as Record<string, unknown>, config.path);
+      if (typeof prop === 'string') return prop;
+      if (typeof config.schema.default === 'string') return config.schema.default;
+      return '';
+    })();
 
-  const [text, setText] = useState(effectiveValue);
-  // Ref tracks latest text for flushDebounce so its identity stays
-  // stable across keystrokes (no `text` in useCallback deps).
-  const textRef = useRef(text);
-  textRef.current = text;
+    const [text, setText] = useState(effectiveValue);
+    // Ref tracks latest text for flushDebounce so its identity stays
+    // stable across keystrokes (no `text` in useCallback deps).
+    const textRef = useRef(text);
+    textRef.current = text;
 
-  // Sync with external changes when not actively editing
-  const isEditingRef = useRef(false);
-  useEffect(() => {
-    if (!isEditingRef.current) {
-      setText(effectiveValue);
-    }
-  }, [effectiveValue]);
+    // Sync with external changes when not actively editing
+    const isEditingRef = useRef(false);
+    useEffect(() => {
+      if (!isEditingRef.current) {
+        setText(effectiveValue);
+      }
+    }, [effectiveValue]);
 
-  // Ref pattern: keep tuneNodeConfig ref stable for the debounce closure.
-  const tuneRef = useRef(tuneNodeConfig);
-  useEffect(() => {
-    tuneRef.current = tuneNodeConfig;
-  }, [tuneNodeConfig]);
+    // Ref pattern: keep tuneNodeConfig ref stable for the debounce closure.
+    const tuneRef = useRef(tuneNodeConfig);
+    useEffect(() => {
+      tuneRef.current = tuneNodeConfig;
+    }, [tuneNodeConfig]);
 
-  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+    const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-  const debouncedSend = useCallback(
-    (value: string) => {
-      clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => {
+    const debouncedSend = useCallback(
+      (value: string) => {
+        clearTimeout(timerRef.current);
+        timerRef.current = setTimeout(() => {
+          timerRef.current = undefined;
+          tuneRef.current(nodeId, buildParamUpdate(config.path, value));
+          isEditingRef.current = false;
+        }, TEXT_DEBOUNCE_MS);
+      },
+      [nodeId, config.path]
+    );
+
+    // Flush any pending debounce on blur/unmount so the last typed value
+    // is sent rather than silently dropped.  Reads from textRef so the
+    // callback identity doesn't change on every keystroke.
+    const flushDebounce = useCallback(() => {
+      if (timerRef.current !== undefined) {
+        clearTimeout(timerRef.current);
         timerRef.current = undefined;
-        tuneRef.current(nodeId, buildParamUpdate(config.path, value));
+        tuneRef.current(nodeId, buildParamUpdate(config.path, textRef.current));
         isEditingRef.current = false;
-      }, TEXT_DEBOUNCE_MS);
-    },
-    [nodeId, config.path]
-  );
+      }
+    }, [nodeId, config.path]);
 
-  // Flush any pending debounce on blur/unmount so the last typed value
-  // is sent rather than silently dropped.  Reads from textRef so the
-  // callback identity doesn't change on every keystroke.
-  const flushDebounce = useCallback(() => {
-    if (timerRef.current !== undefined) {
-      clearTimeout(timerRef.current);
-      timerRef.current = undefined;
-      tuneRef.current(nodeId, buildParamUpdate(config.path, textRef.current));
-      isEditingRef.current = false;
-    }
-  }, [nodeId, config.path]);
+    useEffect(() => () => flushDebounce(), [flushDebounce]);
 
-  useEffect(() => () => flushDebounce(), [flushDebounce]);
+    const handleChange = useCallback(
+      (e: React.ChangeEvent<HTMLInputElement>) => {
+        isEditingRef.current = true;
+        const value = e.target.value;
+        setText(value);
+        debouncedSend(value);
+      },
+      [debouncedSend]
+    );
 
-  const handleChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      isEditingRef.current = true;
-      const value = e.target.value;
-      setText(value);
-      debouncedSend(value);
-    },
-    [debouncedSend]
-  );
+    const disabled = !sessionId;
 
-  const disabled = !sessionId;
-
-  return (
-    <TextInputWrapper>
-      <ControlLabel>
-        <ControlLabelText className="code-font">{config.key}</ControlLabelText>
-      </ControlLabel>
-      {config.schema.description && (
-        <ControlDescription>{config.schema.description}</ControlDescription>
-      )}
-      <CompactTextInput
-        type="text"
-        value={text}
-        onChange={handleChange}
-        onBlur={flushDebounce}
-        placeholder={config.schema.description ?? config.key}
-        disabled={disabled}
-        aria-label={config.schema.description ?? config.key}
-        className="nodrag nopan"
-      />
-    </TextInputWrapper>
-  );
-};
+    return (
+      <TextInputWrapper>
+        <ControlLabel>
+          <ControlLabelText className="code-font">{config.key}</ControlLabelText>
+        </ControlLabel>
+        {config.schema.description && (
+          <ControlDescription>{config.schema.description}</ControlDescription>
+        )}
+        <CompactTextInput
+          type="text"
+          value={text}
+          onChange={handleChange}
+          onBlur={flushDebounce}
+          placeholder={config.schema.description ?? config.key}
+          disabled={disabled}
+          aria-label={config.schema.description ?? config.key}
+          className="nodrag nopan"
+        />
+      </TextInputWrapper>
+    );
+  }
+);
+TextInputControl.displayName = 'TextInputControl';
