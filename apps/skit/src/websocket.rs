@@ -288,10 +288,11 @@ pub async fn handle_websocket(
                     metrics.messages_counter.add(1, &[KeyValue::new("direction", "outbound")]);
                     if broadcast_event.json.is_empty() {
                         // Pre-serialization failed — skip this event.
+                        warn!("Skipping broadcast event with empty pre-serialized JSON");
                         metrics.errors_counter.add(1, &[KeyValue::new("error_type", "serialize_error")]);
                     } else if socket
                         .send(axum::extract::ws::Message::Text(
-                            broadcast_event.json.clone().try_into().unwrap_or_default(),
+                            broadcast_event.json.clone(),
                         ))
                         .await
                         .is_err()

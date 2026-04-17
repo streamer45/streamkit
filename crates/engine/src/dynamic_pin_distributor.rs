@@ -74,7 +74,12 @@ fn json_byte_len(value: &serde_json::Value) -> usize {
         }
     }
     let mut w = CountWriter(0);
-    let _ = serde_json::to_writer(&mut w, value);
+    // `Value` serialization to a non-failing writer is infallible: the only
+    // error path in serde_json is the writer's `io::Error`, and `CountWriter`
+    // never fails.  We surface any (impossible) error via `debug_assert` in
+    // dev builds and silently accept the (accurate) partial count in release.
+    let result = serde_json::to_writer(&mut w, value);
+    debug_assert!(result.is_ok(), "Value serialization should be infallible");
     w.0
 }
 

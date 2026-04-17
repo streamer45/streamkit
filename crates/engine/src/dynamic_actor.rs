@@ -532,9 +532,20 @@ impl DynamicEngine {
             "Node stats updated"
         );
 
-        let labels = match self.node_metric_labels.get(&update.node_id) {
-            Some(cached) => &cached.stats,
-            None => return,
+        let fallback;
+        let labels = if let Some(cached) = self.node_metric_labels.get(&update.node_id) {
+            &cached.stats
+        } else {
+            tracing::warn!(
+                node = %update.node_id,
+                "Missing cached metric labels for live node; using fallback"
+            );
+            let node_kind = self.node_kinds.get(&update.node_id).map_or("unknown", String::as_str);
+            fallback = [
+                KeyValue::new("node_id", update.node_id.clone()),
+                KeyValue::new("node_kind", node_kind.to_string()),
+            ];
+            &fallback
         };
 
         let prev_stats = self.node_stats.get(&update.node_id);
@@ -1580,7 +1591,11 @@ impl DynamicEngine {
                         NodeState::Failed { reason: e.to_string() },
                     );
 
-                    // Clean up node_kinds (mirrors RemoveNode-while-Creating).
+                    // Full cleanup (mirrors RemoveNode-while-Creating path):
+                    // zero the gauge, then remove all per-node bookkeeping so
+                    // the Failed entry doesn't linger as a ghost node.
+                    self.zero_state_gauge(&node_id, &NodeState::Failed { reason: String::new() });
+                    Arc::make_mut(&mut self.node_states).remove(&node_id);
                     self.node_kinds.remove(&node_id);
                     self.node_metric_labels.remove(&node_id);
 
