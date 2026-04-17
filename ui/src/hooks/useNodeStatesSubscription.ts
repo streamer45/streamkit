@@ -34,25 +34,6 @@ import {
 
 const EMPTY_PARAMS: Record<string, unknown> = {};
 
-/**
- * Shallow-compare two plain data objects field-by-field (===).
- * Returns true when every own-key in both objects is reference-equal,
- * meaning a new wrapper object would be identical to the existing one
- * and the old reference can be preserved.
- *
- * The comparison is symmetric: both key sets are checked so that extra
- * keys in either object cause a mismatch.
- */
-function shallowDataEqual(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
-  const aKeys = Object.keys(a);
-  const bKeys = Object.keys(b);
-  if (aKeys.length !== bKeys.length) return false;
-  for (const key of aKeys) {
-    if (!Object.prototype.hasOwnProperty.call(b, key) || a[key] !== b[key]) return false;
-  }
-  return true;
-}
-
 /** Build tooltip lines for a slow-input-timeout alert. */
 function buildSlowInputTooltipLines(
   edge: Edge,
@@ -211,24 +192,14 @@ export function useNodeStatesSubscription({
           return prev.map((n) => {
             const updateInfo = updatesById.get(n.id);
             if (!updateInfo) return n;
-            const candidateData = {
-              ...n.data,
-              state: updateInfo.nextState,
-              params: updateInfo.nextParams,
+            return {
+              ...n,
+              data: {
+                ...n.data,
+                state: updateInfo.nextState,
+                params: updateInfo.nextParams,
+              },
             };
-            // Preserve data reference identity: if every field of the
-            // candidate is reference-equal to the existing data, reuse
-            // the old object so areNodePropsEqual's `data === data`
-            // check passes and the node component skips re-render.
-            if (
-              shallowDataEqual(
-                n.data as Record<string, unknown>,
-                candidateData as Record<string, unknown>
-              )
-            ) {
-              return n;
-            }
-            return { ...n, data: candidateData };
           });
         });
 

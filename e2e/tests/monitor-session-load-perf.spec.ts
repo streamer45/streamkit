@@ -146,10 +146,30 @@ test.describe('Monitor Session Load Perf — Re-render Budget', () => {
       timeout: 15_000,
     });
 
-    // Allow WebSocket state events to settle. Node state events arrive
-    // asynchronously after the pipeline is rendered, so we give them time
-    // to be batched and flushed.
-    await page.waitForTimeout(2_000);
+    // Wait for render counts to stabilise.  Instead of a fixed delay,
+    // poll until two consecutive snapshots report the same total commit
+    // count — this is both faster on quick machines and more reliable on
+    // slow CI runners than a hard `waitForTimeout`.
+    const POLL_INTERVAL = 300;
+    const STABLE_THRESHOLD = 2; // consecutive stable readings required
+    const POLL_TIMEOUT = 10_000;
+    let stableCount = 0;
+    let prevTotal = -1;
+    const pollStart = Date.now();
+    while (stableCount < STABLE_THRESHOLD && Date.now() - pollStart < POLL_TIMEOUT) {
+      await page.waitForTimeout(POLL_INTERVAL);
+      const snap = await capturePerfData(page);
+      const total = Object.values(snap.components).reduce(
+        (sum, c) => sum + (c as { renderCount: number }).renderCount,
+        0
+      );
+      if (total === prevTotal) {
+        stableCount++;
+      } else {
+        stableCount = 0;
+        prevTotal = total;
+      }
+    }
 
     // ── 6. Capture and assert render budgets ────────────────────────────
 
@@ -163,17 +183,19 @@ test.describe('Monitor Session Load Perf — Re-render Budget', () => {
     // Render-budget gates: catch regressions in the Zustand→ReactFlow
     // patching path.  The Webcam PiP pipeline has ~7 ConfigurableNode
     // instances; each transitions through several states during session
-    // load, producing ~39 total commits today.  The budget is set above
-    // the current baseline to act as a regression gate — tighten it as
+    // load, producing ~39 total commits today.  Budget is ~15% above
+    // baseline to catch meaningful regressions — tighten further as
     // optimisations land (e.g., reading state from atoms instead of
     // props would drop this to ~4).
     const configurableData = snapshot.components['ConfigurableNode'];
-    if (configurableData) {
-      assertRenderBudget(snapshot, 'ConfigurableNode', {
-        max: 50,
-        maxDuration: 1_500,
-      });
-    }
+    expect(
+      configurableData,
+      'ConfigurableNode profiler data must be present — ensure the Profiler wrapper is intact'
+    ).toBeDefined();
+    assertRenderBudget(snapshot, 'ConfigurableNode', {
+      max: 45,
+      maxDuration: 1_500,
+    });
 
     const compositorData = snapshot.components['CompositorNode'];
     if (compositorData) {
