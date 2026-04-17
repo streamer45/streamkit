@@ -60,6 +60,29 @@ pub struct PinDistributorActor {
     avg_packet_duration_s: f64,
 }
 
+/// Estimate the serialized JSON byte length of a `serde_json::Value` without
+/// allocating a temporary `String`.
+fn json_byte_len(value: &serde_json::Value) -> usize {
+    struct CountWriter(usize);
+    impl std::io::Write for CountWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 += buf.len();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut w = CountWriter(0);
+    // `Value` serialization to a non-failing writer is infallible: the only
+    // error path in serde_json is the writer's `io::Error`, and `CountWriter`
+    // never fails.  We surface any (impossible) error via `debug_assert` in
+    // dev builds and silently accept the (accurate) partial count in release.
+    let result = serde_json::to_writer(&mut w, value);
+    debug_assert!(result.is_ok(), "Value serialization should be infallible");
+    w.0
+}
+
 impl PinDistributorActor {
     /// Creates a new pin distributor actor.
     pub(super) fn new(
@@ -456,7 +479,7 @@ impl PinDistributorActor {
                 t.metadata.as_ref().and_then(|m| m.duration_us).map(|us| us as f64 / 1_000_000.0),
             ),
             Packet::Custom(c) => (
-                c.data.to_string().len() as f64,
+                json_byte_len(&c.data) as f64,
                 c.metadata.as_ref().and_then(|m| m.duration_us).map(|us| us as f64 / 1_000_000.0),
             ),
         }

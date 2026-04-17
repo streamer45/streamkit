@@ -12,6 +12,7 @@ use crate::permissions::Permissions;
 use crate::session::Session;
 use crate::state::{AppState, BroadcastEvent};
 use opentelemetry::global;
+use std::sync::Arc;
 use streamkit_api::{
     Event as ApiEvent, EventPayload, MessageType, RequestPayload, ResponsePayload, ValidationError,
     ValidationErrorType,
@@ -1109,7 +1110,7 @@ async fn handle_get_pipeline(
 
     // Attach resolved view data so clients have accurate positions on initial load.
     if !node_view_data.is_empty() {
-        api_pipeline.view_data = Some(node_view_data);
+        api_pipeline.view_data = Some(Arc::unwrap_or_clone(node_view_data));
     }
 
     // Attach runtime param schemas so the UI can merge them with static schemas

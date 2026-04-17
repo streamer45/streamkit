@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+use axum::extract::ws::Utf8Bytes;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
 use tokio::task::JoinHandle;
@@ -10,15 +11,34 @@ use streamkit_api::Event as ApiEvent;
 use streamkit_engine::Engine;
 
 /// Wrapper around [`ApiEvent`] for the broadcast channel.
+///
+/// Contains both the structured event (for filtering) and a pre-serialized
+/// JSON [`Utf8Bytes`] so that N WebSocket handlers can clone the refcounted
+/// buffer (no memcpy) instead of each calling `serde_json::to_string`.
+///
+/// The UTF-8 invariant is established once at construction via
+/// `serde_json::to_string` (which always produces valid UTF-8).
 #[derive(Clone, Debug)]
 pub struct BroadcastEvent {
     pub event: ApiEvent,
+    /// Pre-serialized JSON. Cloning is O(1) (refcount increment).
+    pub json: Utf8Bytes,
 }
 
 impl BroadcastEvent {
     /// Wrap an event for broadcast to all connections.
-    pub const fn to_all(event: ApiEvent) -> Self {
-        Self { event }
+    ///
+    /// Serializes the event to JSON eagerly so each WebSocket handler can
+    /// forward the pre-built bytes without re-serializing.
+    pub fn to_all(event: ApiEvent) -> Self {
+        let json: Utf8Bytes = match serde_json::to_string(&event) {
+            Ok(s) => Utf8Bytes::from(s),
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to pre-serialize broadcast event");
+                Utf8Bytes::default()
+            },
+        };
+        Self { event, json }
     }
 }
 

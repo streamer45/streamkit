@@ -1263,6 +1263,10 @@ fn run_clocked_audio_thread(config: &ClockedThreadConfig) {
     let mut last_reported_slow_pins: Vec<String> = Vec::new();
     let mut next_tick = std::time::Instant::now() + config.tick_duration;
 
+    // Pre-allocated buffers reused every tick to avoid per-tick heap allocations.
+    let mut frames: Vec<AudioFrame> = Vec::new();
+    let mut slow_pins: Vec<String> = Vec::new();
+
     let tick_us = (config.frame_samples_per_channel as u64).saturating_mul(1_000_000)
         / u64::from(config.sample_rate.max(1));
 
@@ -1332,7 +1336,7 @@ fn run_clocked_audio_thread(config: &ClockedThreadConfig) {
                     }
                 }
 
-                let mut frames: Vec<AudioFrame> = Vec::new();
+                frames.clear();
                 let mut any_input_had_frame = false;
                 let sync_timeout = config.sync_timeout;
 
@@ -1384,8 +1388,9 @@ fn run_clocked_audio_thread(config: &ClockedThreadConfig) {
                     }
                 }
 
-                let mut slow_pins: Vec<String> =
-                    inputs.iter().filter(|i| i.slow).map(|i| i.name.as_ref().to_string()).collect();
+                slow_pins.clear();
+                slow_pins
+                    .extend(inputs.iter().filter(|i| i.slow).map(|i| i.name.as_ref().to_string()));
                 slow_pins.sort();
                 slow_pins.dedup();
 
@@ -1410,7 +1415,7 @@ fn run_clocked_audio_thread(config: &ClockedThreadConfig) {
                         Some(details),
                     );
                     has_warned_slow = true;
-                    last_reported_slow_pins = slow_pins;
+                    std::mem::swap(&mut last_reported_slow_pins, &mut slow_pins);
                 }
 
                 if !any_input_had_frame && !config.generate_silence {

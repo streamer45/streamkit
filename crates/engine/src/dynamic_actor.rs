@@ -39,6 +39,16 @@ pub struct NodePinMetadata {
     pub output_pins: Vec<streamkit_core::OutputPin>,
 }
 
+/// Pre-built OTel metric labels for a node, allocated once on creation and
+/// reused on every stats/state update to avoid per-update `String` allocations.
+#[derive(Clone)]
+pub struct NodeMetricLabels {
+    /// `[node_id, node_kind]` — used by stats counters.
+    stats: [KeyValue; 2],
+    /// Standalone `node_id` label — combined with a varying `state` label.
+    node_id_kv: KeyValue,
+}
+
 /// Bundle of broadcast channel senders shared by the engine actor loop.
 ///
 /// Grouped into a struct to keep function signatures concise (avoids
@@ -107,6 +117,8 @@ pub struct DynamicEngine {
     pub(super) connections: HashMap<(String, String), (String, String)>,
     /// Map of node_id -> node_kind for labeling metrics
     pub(super) node_kinds: HashMap<String, String>,
+    /// Pre-built OTel metric labels per node, allocated once on node creation.
+    pub(super) node_metric_labels: HashMap<String, NodeMetricLabels>,
     pub(super) batch_size: usize,
     /// Session ID for gateway registration (if applicable)
     pub(super) session_id: Option<String>,
@@ -118,18 +130,22 @@ pub struct DynamicEngine {
     pub(super) node_input_capacity: usize,
     /// Buffer capacity for pin distributor channels
     pub(super) pin_distributor_capacity: usize,
-    /// Tracks the current state of each node in the pipeline
-    pub(super) node_states: HashMap<String, NodeState>,
+    /// Tracks the current state of each node in the pipeline.
+    /// Wrapped in `Arc` so that query handlers can cheaply clone the snapshot
+    /// instead of deep-copying the entire map.
+    pub(super) node_states: Arc<HashMap<String, NodeState>>,
     /// Subscribers that want to receive node state updates
     pub(super) state_subscribers: Vec<mpsc::Sender<NodeStateUpdate>>,
-    /// Tracks the current statistics of each node in the pipeline
-    pub(super) node_stats: HashMap<String, NodeStats>,
+    /// Tracks the current statistics of each node in the pipeline.
+    /// Wrapped in `Arc` for cheap query snapshots (see `node_states`).
+    pub(super) node_stats: Arc<HashMap<String, NodeStats>>,
     /// Subscribers that want to receive node statistics updates
     pub(super) stats_subscribers: Vec<mpsc::Sender<NodeStatsUpdate>>,
     /// Subscribers that want to receive telemetry events
     pub(super) telemetry_subscribers: Vec<mpsc::Sender<TelemetryEvent>>,
-    /// Latest view data per node (e.g., compositor resolved layout)
-    pub(super) node_view_data: HashMap<String, serde_json::Value>,
+    /// Latest view data per node (e.g., compositor resolved layout).
+    /// Wrapped in `Arc` for cheap query snapshots (see `node_states`).
+    pub(super) node_view_data: Arc<HashMap<String, serde_json::Value>>,
     /// Subscribers that want to receive node view data updates
     pub(super) view_data_subscribers: Vec<mpsc::Sender<NodeViewDataUpdate>>,
     /// Per-instance runtime param schema overrides discovered after node init.
@@ -239,10 +255,10 @@ impl DynamicEngine {
     async fn handle_query(&mut self, msg: QueryMessage) {
         match msg {
             QueryMessage::GetNodeStates { response_tx } => {
-                let _ = response_tx.send(self.node_states.clone()).await;
+                let _ = response_tx.send(Arc::clone(&self.node_states)).await;
             },
             QueryMessage::GetNodeStats { response_tx } => {
-                let _ = response_tx.send(self.node_stats.clone()).await;
+                let _ = response_tx.send(Arc::clone(&self.node_stats)).await;
             },
             QueryMessage::SubscribeState { response_tx } => {
                 let (tx, rx) = mpsc::channel(DEFAULT_SUBSCRIBER_CHANNEL_CAPACITY);
@@ -265,7 +281,7 @@ impl DynamicEngine {
                 let _ = response_tx.send(rx).await;
             },
             QueryMessage::GetNodeViewData { response_tx } => {
-                let _ = response_tx.send(self.node_view_data.clone()).await;
+                let _ = response_tx.send(Arc::clone(&self.node_view_data)).await;
             },
             QueryMessage::GetRuntimeSchemas { response_tx } => {
                 let _ = response_tx.send(self.runtime_schemas.clone()).await;
@@ -398,10 +414,12 @@ impl DynamicEngine {
 
         // Record state transition metric
         let state_name = Self::node_state_name(&update.state);
-        self.node_state_transitions_counter.add(
-            1,
-            &[KeyValue::new("node_id", update.node_id.clone()), KeyValue::new("state", state_name)],
+        let node_id_kv = self.node_metric_labels.get(&update.node_id).map_or_else(
+            || KeyValue::new("node_id", update.node_id.clone()),
+            |c| c.node_id_kv.clone(),
         );
+        self.node_state_transitions_counter
+            .add(1, &[node_id_kv.clone(), KeyValue::new("state", state_name)]);
 
         // Record state gauge as a proper "one-hot" state indicator per node:
         // - Set the previous state's series to 0
@@ -412,22 +430,14 @@ impl DynamicEngine {
         if let Some(prev_state) = prev_state {
             let prev_state_name = Self::node_state_name(prev_state);
             if prev_state_name != state_name {
-                self.node_state_gauge.record(
-                    0,
-                    &[
-                        KeyValue::new("node_id", update.node_id.clone()),
-                        KeyValue::new("state", prev_state_name),
-                    ],
-                );
+                self.node_state_gauge
+                    .record(0, &[node_id_kv.clone(), KeyValue::new("state", prev_state_name)]);
             }
         }
-        self.node_state_gauge.record(
-            1,
-            &[KeyValue::new("node_id", update.node_id.clone()), KeyValue::new("state", state_name)],
-        );
+        self.node_state_gauge.record(1, &[node_id_kv, KeyValue::new("state", state_name)]);
 
         // Store the current state
-        self.node_states.insert(update.node_id.clone(), update.state.clone());
+        Arc::make_mut(&mut self.node_states).insert(update.node_id.clone(), update.state.clone());
 
         // Check if all nodes are Ready or Running - if so, activate Ready nodes
         // This prevents packet loss by ensuring all nodes are initialized before data flows
@@ -483,7 +493,7 @@ impl DynamicEngine {
         }
 
         // Store latest value
-        self.node_view_data.insert(update.node_id.clone(), update.data.clone());
+        Arc::make_mut(&mut self.node_view_data).insert(update.node_id.clone(), update.data.clone());
 
         // Broadcast to all subscribers
         self.view_data_subscribers.retain(|subscriber| match subscriber.try_send(update.clone()) {
@@ -504,9 +514,6 @@ impl DynamicEngine {
     /// Not async because all operations are synchronous (no .await calls)
     /// Takes by reference to avoid unnecessary clones when broadcasting to subscribers
     fn handle_stats_update(&mut self, update: &NodeStatsUpdate) {
-        // Import at function start to avoid items_after_statements lint
-        use opentelemetry::KeyValue;
-
         // Ignore stats updates for nodes that have been removed
         if !self.live_nodes.contains_key(&update.node_id) {
             tracing::trace!(
@@ -525,12 +532,21 @@ impl DynamicEngine {
             "Node stats updated"
         );
 
-        let node_kind =
-            self.node_kinds.get(&update.node_id).map_or("unknown", std::string::String::as_str);
-        let labels = &[
-            KeyValue::new("node_id", update.node_id.clone()),
-            KeyValue::new("node_kind", node_kind.to_string()),
-        ];
+        let fallback;
+        let labels = if let Some(cached) = self.node_metric_labels.get(&update.node_id) {
+            &cached.stats
+        } else {
+            tracing::warn!(
+                node = %update.node_id,
+                "Missing cached metric labels for live node; using fallback"
+            );
+            let node_kind = self.node_kinds.get(&update.node_id).map_or("unknown", String::as_str);
+            fallback = [
+                KeyValue::new("node_id", update.node_id.clone()),
+                KeyValue::new("node_kind", node_kind.to_string()),
+            ];
+            &fallback
+        };
 
         let prev_stats = self.node_stats.get(&update.node_id);
 
@@ -568,7 +584,7 @@ impl DynamicEngine {
         self.node_packets_discarded_counter.add(delta_discarded, labels);
         self.node_packets_errored_counter.add(delta_errored, labels);
 
-        self.node_stats.insert(update.node_id.clone(), update.stats.clone());
+        Arc::make_mut(&mut self.node_stats).insert(update.node_id.clone(), update.stats.clone());
 
         // Broadcast to all subscribers
         self.stats_subscribers.retain(|subscriber| {
@@ -660,7 +676,7 @@ impl DynamicEngine {
         // Creating → Initializing) zeroes the previous gauge and sets
         // the new one atomically — no window where no gauge reads 1.
         self.broadcast_state_update(node_id, NodeState::Initializing);
-        self.node_stats.insert(node_id.to_string(), NodeStats::default());
+        Arc::make_mut(&mut self.node_stats).insert(node_id.to_string(), NodeStats::default());
 
         // 4. Setup pin management channel.
         // Always created so the engine can deliver `InputTypeResolved` to
@@ -1467,13 +1483,7 @@ impl DynamicEngine {
     /// Helper function to gracefully shut down a node and its associated actors.
     async fn shutdown_node(&mut self, node_id: &str) {
         if let Some(state) = self.node_states.get(node_id) {
-            self.node_state_gauge.record(
-                0,
-                &[
-                    KeyValue::new("node_id", node_id.to_string()),
-                    KeyValue::new("state", Self::node_state_name(state)),
-                ],
-            );
+            self.zero_state_gauge(node_id, state);
         }
 
         // 1. Stop the node task gracefully
@@ -1517,15 +1527,16 @@ impl DynamicEngine {
         }
 
         // 4. Clean up Control Plane state
-        self.node_states.remove(node_id);
-        self.node_stats.remove(node_id);
-        self.node_view_data.remove(node_id);
+        Arc::make_mut(&mut self.node_states).remove(node_id);
+        Arc::make_mut(&mut self.node_stats).remove(node_id);
+        Arc::make_mut(&mut self.node_view_data).remove(node_id);
         self.node_pin_metadata.remove(node_id);
         self.pin_management_txs.remove(node_id);
         self.dynamic_pin_nodes.remove(node_id);
         self.runtime_schemas.remove(node_id);
         self.connections.retain(|(to, _), (from, _)| to != node_id && from != node_id);
         self.node_kinds.remove(node_id);
+        self.node_metric_labels.remove(node_id);
         self.nodes_active_gauge.record(self.live_nodes.len() as u64, &[]);
     }
 
@@ -1580,8 +1591,12 @@ impl DynamicEngine {
                         NodeState::Failed { reason: e.to_string() },
                     );
 
-                    // Clean up node_kinds (mirrors RemoveNode-while-Creating).
+                    // Clean up auxiliary bookkeeping but deliberately keep the
+                    // Failed entry in node_states so clients can observe the
+                    // failure.  The user must send RemoveNode to clear it (which
+                    // mirrors the Creating-cancel path at shutdown_node).
                     self.node_kinds.remove(&node_id);
+                    self.node_metric_labels.remove(&node_id);
 
                     // Drain pending connections and tunes referencing this node.
                     self.pending_connections
@@ -1607,8 +1622,12 @@ impl DynamicEngine {
                 // Broadcast Failed (reads prev state before inserting).
                 self.broadcast_state_update(&node_id, NodeState::Failed { reason: e.to_string() });
 
-                // Clean up node_kinds (mirrors RemoveNode-while-Creating).
+                // Clean up auxiliary bookkeeping but deliberately keep the
+                // Failed entry in node_states so clients can observe the
+                // failure.  The user must send RemoveNode to clear it (which
+                // mirrors the Creating-cancel path at shutdown_node).
                 self.node_kinds.remove(&node_id);
+                self.node_metric_labels.remove(&node_id);
 
                 // Drain pending connections and tunes referencing this node.
                 self.pending_connections
@@ -1621,10 +1640,11 @@ impl DynamicEngine {
     /// Zero-out the gauge for a specific state (one-hot pattern helper).
     fn zero_state_gauge(&self, node_id: &str, state: &NodeState) {
         let state_name = Self::node_state_name(state);
-        self.node_state_gauge.record(
-            0,
-            &[KeyValue::new("node_id", node_id.to_owned()), KeyValue::new("state", state_name)],
-        );
+        let node_id_kv = self
+            .node_metric_labels
+            .get(node_id)
+            .map_or_else(|| KeyValue::new("node_id", node_id.to_owned()), |c| c.node_id_kv.clone());
+        self.node_state_gauge.record(0, &[node_id_kv, KeyValue::new("state", state_name)]);
     }
 
     /// Broadcast a state update to all subscribers (used when the actor itself
@@ -1634,33 +1654,27 @@ impl DynamicEngine {
     /// new one, so the one-hot gauge zeroing is correct.
     fn broadcast_state_update(&mut self, node_id: &str, new_state: NodeState) {
         let state_name = Self::node_state_name(&new_state);
-        self.node_state_transitions_counter.add(
-            1,
-            &[KeyValue::new("node_id", node_id.to_owned()), KeyValue::new("state", state_name)],
-        );
+        let node_id_kv = self
+            .node_metric_labels
+            .get(node_id)
+            .map_or_else(|| KeyValue::new("node_id", node_id.to_owned()), |c| c.node_id_kv.clone());
+        self.node_state_transitions_counter
+            .add(1, &[node_id_kv.clone(), KeyValue::new("state", state_name)]);
 
         // Zero-out the previous state's gauge series (one-hot pattern),
         // mirroring the logic in `handle_state_update`.
         if let Some(prev_state) = self.node_states.get(node_id) {
             let prev_state_name = Self::node_state_name(prev_state);
             if prev_state_name != state_name {
-                self.node_state_gauge.record(
-                    0,
-                    &[
-                        KeyValue::new("node_id", node_id.to_owned()),
-                        KeyValue::new("state", prev_state_name),
-                    ],
-                );
+                self.node_state_gauge
+                    .record(0, &[node_id_kv.clone(), KeyValue::new("state", prev_state_name)]);
             }
         }
 
         // Insert the new state AFTER reading the previous one.
-        self.node_states.insert(node_id.to_owned(), new_state.clone());
+        Arc::make_mut(&mut self.node_states).insert(node_id.to_owned(), new_state.clone());
 
-        self.node_state_gauge.record(
-            1,
-            &[KeyValue::new("node_id", node_id.to_owned()), KeyValue::new("state", state_name)],
-        );
+        self.node_state_gauge.record(1, &[node_id_kv, KeyValue::new("state", state_name)]);
 
         let update = NodeStateUpdate::new(node_id.to_owned(), new_state);
         self.state_subscribers.retain(|subscriber| match subscriber.try_send(update.clone()) {
@@ -1766,6 +1780,16 @@ impl DynamicEngine {
                 // Record kind immediately so the actor loop continues
                 // processing the next message without blocking.
                 self.node_kinds.insert(node_id.clone(), kind.clone());
+                self.node_metric_labels.insert(
+                    node_id.clone(),
+                    NodeMetricLabels {
+                        stats: [
+                            KeyValue::new("node_id", node_id.clone()),
+                            KeyValue::new("node_kind", kind.clone()),
+                        ],
+                        node_id_kv: KeyValue::new("node_id", node_id.clone()),
+                    },
+                );
 
                 // Insert Creating state and broadcast to subscribers.
                 // broadcast_state_update handles gauge + node_states insert.
@@ -1824,8 +1848,9 @@ impl DynamicEngine {
                     self.active_creations.remove(&node_id);
                     // Zero the gauge before removing state (mirrors shutdown_node).
                     self.zero_state_gauge(&node_id, &NodeState::Creating);
-                    self.node_states.remove(&node_id);
+                    Arc::make_mut(&mut self.node_states).remove(&node_id);
                     self.node_kinds.remove(&node_id);
+                    self.node_metric_labels.remove(&node_id);
                     // Drain pending connections and tunes referencing this node.
                     self.pending_connections
                         .retain(|pc| pc.from_node != node_id && pc.to_node != node_id);
@@ -1995,18 +2020,19 @@ impl DynamicEngine {
                 futures::future::join_all(shutdown_futures).await;
 
                 // Step 5: Clean up remaining state
-                for (node_id, state) in &self.node_states {
+                for (node_id, state) in self.node_states.as_ref() {
+                    let node_id_kv = self.node_metric_labels.get(node_id.as_str()).map_or_else(
+                        || KeyValue::new("node_id", node_id.clone()),
+                        |c| c.node_id_kv.clone(),
+                    );
                     self.node_state_gauge.record(
                         0,
-                        &[
-                            KeyValue::new("node_id", node_id.clone()),
-                            KeyValue::new("state", Self::node_state_name(state)),
-                        ],
+                        &[node_id_kv, KeyValue::new("state", Self::node_state_name(state))],
                     );
                 }
-                self.node_states.clear();
-                self.node_stats.clear();
-                self.node_view_data.clear();
+                Arc::make_mut(&mut self.node_states).clear();
+                Arc::make_mut(&mut self.node_stats).clear();
+                Arc::make_mut(&mut self.node_view_data).clear();
                 self.nodes_active_gauge.record(0, &[]);
 
                 tracing::info!("All nodes shut down successfully");

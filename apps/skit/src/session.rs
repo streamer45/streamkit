@@ -422,7 +422,7 @@ impl Session {
     ///
     /// Returns an error if the engine handle's oneshot channel fails to receive a response,
     /// which typically indicates the engine actor has stopped or panicked.
-    pub async fn get_node_states(&self) -> Result<HashMap<String, NodeState>, String> {
+    pub async fn get_node_states(&self) -> Result<Arc<HashMap<String, NodeState>>, String> {
         self.engine_handle.get_node_states().await
     }
 
@@ -433,7 +433,7 @@ impl Session {
     /// Returns an error if the engine handle's oneshot channel fails to receive a response,
     /// which typically indicates the engine actor has stopped or panicked.
     #[allow(dead_code)] // Reserved for future statistics API
-    pub async fn get_node_stats(&self) -> Result<HashMap<String, NodeStats>, String> {
+    pub async fn get_node_stats(&self) -> Result<Arc<HashMap<String, NodeStats>>, String> {
         self.engine_handle.get_node_stats().await
     }
 
@@ -446,7 +446,9 @@ impl Session {
     ///
     /// Returns an error if the engine handle's oneshot channel fails to receive a response,
     /// which typically indicates the engine actor has stopped or panicked.
-    pub async fn get_node_view_data(&self) -> Result<HashMap<String, serde_json::Value>, String> {
+    pub async fn get_node_view_data(
+        &self,
+    ) -> Result<Arc<HashMap<String, serde_json::Value>>, String> {
         self.engine_handle.get_node_view_data().await
     }
 

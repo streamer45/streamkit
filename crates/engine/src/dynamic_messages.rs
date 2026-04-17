@@ -56,10 +56,10 @@ pub struct RuntimeSchemaUpdate {
 /// Query messages for retrieving information from the engine without modifying state.
 pub enum QueryMessage {
     GetNodeStates {
-        response_tx: mpsc::Sender<HashMap<String, NodeState>>,
+        response_tx: mpsc::Sender<Arc<HashMap<String, NodeState>>>,
     },
     GetNodeStats {
-        response_tx: mpsc::Sender<HashMap<String, NodeStats>>,
+        response_tx: mpsc::Sender<Arc<HashMap<String, NodeStats>>>,
     },
     SubscribeState {
         response_tx: mpsc::Sender<mpsc::Receiver<NodeStateUpdate>>,
@@ -74,7 +74,7 @@ pub enum QueryMessage {
         response_tx: mpsc::Sender<mpsc::Receiver<NodeViewDataUpdate>>,
     },
     GetNodeViewData {
-        response_tx: mpsc::Sender<HashMap<String, serde_json::Value>>,
+        response_tx: mpsc::Sender<Arc<HashMap<String, serde_json::Value>>>,
     },
     GetRuntimeSchemas {
         response_tx: mpsc::Sender<HashMap<String, serde_json::Value>>,
