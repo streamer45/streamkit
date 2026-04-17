@@ -4,12 +4,13 @@
 
 import styled from '@emotion/styled';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
-import React from 'react';
+import React, { Suspense } from 'react';
 import { Outlet, NavLink } from 'react-router-dom';
 import { useShallow } from 'zustand/shallow';
 
 import logo from './assets/logo.png';
 import { LayoutPresetButtons } from './components/LayoutPresetButtons';
+import { LoadingSpinner } from './components/LoadingSpinner';
 import { Button } from './components/ui/Button';
 import {
   Dialog,
@@ -386,7 +387,9 @@ const Layout: React.FC = () => {
         </NavControls>
       </Nav>
       <Main>
-        <Outlet />
+        <Suspense fallback={<LoadingSpinner message="Loading..." />}>
+          <Outlet />
+        </Suspense>
       </Main>
     </LayoutContainer>
   );

@@ -39,16 +39,9 @@ export function nodeKey(sessionId: string, nodeId: string): string {
  *  (e.g. stats when the tooltip is closed) without breaking the rules of hooks. */
 export const nullStatsAtom = atom<NodeStats | null>(null);
 
-// ── Per-session aggregate atoms ─────────────────────────────────────────────
-
-/** Per-session aggregate of all node states.  Maintained alongside the
- *  per-node atoms by `batchWriteNodeStates` / `seedPipelineAtoms` so that
- *  components needing the full `Record<string, NodeState>` (e.g. session
- *  status computation) can subscribe to a single atom rather than the
- *  entire Zustand store. */
-export const sessionNodeStatesAtom = atomFamily((_sessionId: string) =>
-  atom<Record<string, NodeState>>({})
-);
+/** Static atom that always returns false.  Used when `sessionId` is null to
+ *  avoid creating a permanent empty-key entry in `sessionConnectedAtom`. */
+export const nullConnectedAtom = atom(false);
 
 // ── Per-node atoms ──────────────────────────────────────────────────────────
 
@@ -124,9 +117,6 @@ export function batchWriteNodeStates(updates: Map<string, Record<string, NodeSta
     for (const [nodeId, state] of Object.entries(nodeUpdates)) {
       sessionStore.set(nodeStateAtom(nodeKey(sessionId, nodeId)), state);
     }
-    // Maintain session-level aggregate for components that need the full map
-    const current = sessionStore.get(sessionNodeStatesAtom(sessionId));
-    sessionStore.set(sessionNodeStatesAtom(sessionId), { ...current, ...nodeUpdates });
   }
 }
 
@@ -152,18 +142,12 @@ export function writeSessionConnected(sessionId: string, connected: boolean): vo
 /** Seed Jotai atoms with initial node states and view data from a pipeline.
  *  Called when pipeline data first arrives (fetch or batch prefetch). */
 export function seedPipelineAtoms(sessionId: string, pipeline: Pipeline): void {
-  const nodeStates: Record<string, NodeState> = {};
   if (pipeline.nodes) {
     for (const [nodeId, node] of Object.entries(pipeline.nodes)) {
       if (node.state) {
         sessionStore.set(nodeStateAtom(nodeKey(sessionId, nodeId)), node.state);
-        nodeStates[nodeId] = node.state;
       }
     }
-  }
-  if (Object.keys(nodeStates).length > 0) {
-    const current = sessionStore.get(sessionNodeStatesAtom(sessionId));
-    sessionStore.set(sessionNodeStatesAtom(sessionId), { ...current, ...nodeStates });
   }
   if (pipeline.view_data && typeof pipeline.view_data === 'object') {
     for (const [nodeId, data] of Object.entries(pipeline.view_data as Record<string, unknown>)) {
@@ -201,9 +185,6 @@ export function clearSessionAtoms(sessionId: string): void {
     sessionStore.set(nodeParamsAtom(key), {});
     nodeParamsAtom.remove(key);
   }
-
-  sessionStore.set(sessionNodeStatesAtom(sessionId), {});
-  sessionNodeStatesAtom.remove(sessionId);
 
   sessionStore.set(sessionConnectedAtom(sessionId), false);
   sessionConnectedAtom.remove(sessionId);

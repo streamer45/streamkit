@@ -7,7 +7,12 @@ import { useCallback, useEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 
 import { getWebSocketService } from '@/services/websocket';
-import { sessionConnectedAtom, writeNodeParam, writeNodeParams } from '@/stores/sessionAtoms';
+import {
+  nullConnectedAtom,
+  sessionConnectedAtom,
+  writeNodeParam,
+  writeNodeParams,
+} from '@/stores/sessionAtoms';
 import { useSessionStore } from '@/stores/sessionStore';
 import type { Request, MessageType, BatchOperation } from '@/types/types';
 
@@ -41,7 +46,11 @@ export function useSession(sessionId: string | null) {
     )
   );
   // Read connection status from Jotai atom (fine-grained, per-session).
-  const isConnectedFromStore = useAtomValue(sessionConnectedAtom(sessionId ?? ''));
+  // Use nullConnectedAtom when sessionId is null to avoid leaking an
+  // empty-key entry in the sessionConnectedAtom atomFamily.
+  const isConnectedFromStore = useAtomValue(
+    sessionId ? sessionConnectedAtom(sessionId) : nullConnectedAtom
+  );
 
   const tuneNode = useCallback(
     (nodeId: string, param: string, value: unknown) => {

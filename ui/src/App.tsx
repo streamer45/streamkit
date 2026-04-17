@@ -18,9 +18,9 @@ import { ensureSchemasLoaded } from './stores/schemaStore';
 import { getBasePathname } from './utils/baseHref';
 import { getLogger } from './utils/logger';
 import DesignView from './views/DesignView';
-import MonitorView from './views/MonitorView';
 
 const ConvertView = React.lazy(() => import('./views/ConvertView'));
+const MonitorView = React.lazy(() => import('./views/MonitorView'));
 const LoginView = React.lazy(() => import('./views/LoginView'));
 const LogsView = React.lazy(() => import('./views/LogsView'));
 const PluginsView = React.lazy(() => import('./views/PluginsView'));
@@ -105,32 +105,34 @@ const App: React.FC = () => {
           <ToastProvider>
             <TooltipProvider delayDuration={300} skipDelayDuration={200}>
               <BrowserRouter basename={getBasePathname()}>
-                <Suspense fallback={<LoadingSpinner message="Loading..." />}>
-                  <Routes>
+                <Routes>
+                  <Route
+                    path="/login"
+                    element={
+                      <Suspense fallback={<LoadingSpinner message="Loading..." />}>
+                        <LoginView onLoggedIn={() => setRequiresLogin(false)} />
+                      </Suspense>
+                    }
+                  />
+                  <Route
+                    path="/"
+                    element={requiresLogin ? <Navigate to="/login" replace /> : <Layout />}
+                  >
+                    <Route index element={<Navigate to="/design" replace />} />
+                    <Route path="design" element={<DesignView />} />
+                    <Route path="monitor" element={<MonitorView />} />
+                    <Route path="convert" element={<ConvertView />} />
+                    <Route path="stream" element={<StreamView />} />
+                    <Route path="admin" element={<Navigate to="/admin/plugins" replace />} />
                     <Route
-                      path="/login"
-                      element={<LoginView onLoggedIn={() => setRequiresLogin(false)} />}
+                      path="admin/plugins"
+                      element={<Navigate to="/admin/plugins/installed" replace />}
                     />
-                    <Route
-                      path="/"
-                      element={requiresLogin ? <Navigate to="/login" replace /> : <Layout />}
-                    >
-                      <Route index element={<Navigate to="/design" replace />} />
-                      <Route path="design" element={<DesignView />} />
-                      <Route path="monitor" element={<MonitorView />} />
-                      <Route path="convert" element={<ConvertView />} />
-                      <Route path="stream" element={<StreamView />} />
-                      <Route path="admin" element={<Navigate to="/admin/plugins" replace />} />
-                      <Route
-                        path="admin/plugins"
-                        element={<Navigate to="/admin/plugins/installed" replace />}
-                      />
-                      <Route path="admin/plugins/:tab" element={<PluginsView />} />
-                      <Route path="admin/tokens" element={<TokensView />} />
-                      <Route path="admin/logs" element={<LogsView />} />
-                    </Route>
-                  </Routes>
-                </Suspense>
+                    <Route path="admin/plugins/:tab" element={<PluginsView />} />
+                    <Route path="admin/tokens" element={<TokensView />} />
+                    <Route path="admin/logs" element={<LogsView />} />
+                  </Route>
+                </Routes>
               </BrowserRouter>
             </TooltipProvider>
           </ToastProvider>

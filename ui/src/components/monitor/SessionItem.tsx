@@ -13,8 +13,8 @@
  */
 
 import * as Tooltip from '@radix-ui/react-tooltip';
-import { useAtomValue } from 'jotai/react';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useShallow } from 'zustand/shallow';
 
 import {
   SessionItemWrapper,
@@ -39,7 +39,7 @@ import {
 } from '@/components/monitor/MonitorView.styles';
 import { SKTooltip } from '@/components/Tooltip';
 import { Button } from '@/components/ui/Button';
-import { sessionNodeStatesAtom } from '@/stores/sessionAtoms';
+import { useSessionStore } from '@/stores/sessionStore';
 import { shortSessionId, summarizeNodeIssues } from '@/utils/nodeIssues';
 import {
   computeSessionStatus,
@@ -137,8 +137,9 @@ export const InlineCopyButton: React.FC<{
 // ---------------------------------------------------------------------------
 
 export const SessionInfoChip: React.FC<SessionInfoDisplayProps> = React.memo(({ session }) => {
-  // Read node states from Jotai aggregate atom (fine-grained, per-session)
-  const nodeStates = useAtomValue(sessionNodeStatesAtom(session.id));
+  const nodeStates = useSessionStore(
+    useShallow((state) => state.sessions.get(session.id)?.nodeStates ?? {})
+  );
 
   // Compute session status - memoized to prevent recalculation on every uptime update
   const sessionStatus = React.useMemo(() => computeSessionStatus(nodeStates), [nodeStates]);
@@ -248,8 +249,9 @@ export const SessionInfoChip: React.FC<SessionInfoDisplayProps> = React.memo(({ 
 
 export const SessionItem: React.FC<SessionItemProps> = React.memo(
   ({ session, isActive, onClick, onDelete }) => {
-    // Read node states from Jotai aggregate atom (fine-grained, per-session)
-    const nodeStates = useAtomValue(sessionNodeStatesAtom(session.id));
+    const nodeStates = useSessionStore(
+      useShallow((state) => state.sessions.get(session.id)?.nodeStates ?? {})
+    );
 
     // Compute session status from node states - memoized to prevent recalculation on every uptime update
     const sessionStatus = React.useMemo(() => computeSessionStatus(nodeStates), [nodeStates]);
