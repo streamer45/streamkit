@@ -179,13 +179,42 @@ enum Commands {
         #[arg(short, long, default_value = "http://127.0.0.1:4545")]
         server: String,
     },
-    /// Watch WebSocket events (GET /api/v1/control)
-    Watch {
+    /// Watch WebSocket events (GET /api/v1/control) (alias: watch-events)
+    #[command(name = "events", aliases = ["watch-events"])]
+    Events {
         /// Optional session ID or name to filter events
         session: Option<String>,
         /// Pretty-print JSON events
         #[arg(long)]
         pretty: bool,
+        /// Server URL (default: http://127.0.0.1:4545)
+        #[arg(short, long, default_value = "http://127.0.0.1:4545")]
+        server: String,
+    },
+    /// Run a pipeline in the foreground (create, monitor, destroy on exit)
+    Run {
+        /// Path to the pipeline YAML file
+        pipeline: String,
+        /// Optional session name
+        #[arg(short, long)]
+        name: Option<String>,
+        /// Show verbose output (telemetry events)
+        #[arg(short, long)]
+        verbose: bool,
+        /// Emit newline-delimited JSON events instead of formatted text
+        #[arg(long)]
+        json: bool,
+        /// Server URL (default: http://127.0.0.1:4545)
+        #[arg(short, long, default_value = "http://127.0.0.1:4545")]
+        server: String,
+    },
+    /// Watch a pipeline YAML file and apply changes live
+    Watch {
+        /// Path to the pipeline YAML file
+        pipeline: String,
+        /// Optional session name
+        #[arg(short, long)]
+        name: Option<String>,
         /// Server URL (default: http://127.0.0.1:4545)
         #[arg(short, long, default_value = "http://127.0.0.1:4545")]
         server: String,
@@ -511,6 +540,503 @@ async fn dispatch_validate(pipeline_path: &str, server: &str, fmt: OutputFormat)
 }
 
 // ---------------------------------------------------------------------------
+// Run & Watch command handlers
+// ---------------------------------------------------------------------------
+
+/// Format the current UTC time as HH:MM:SS for CLI output.
+fn now_hms() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let h = (secs / 3600) % 24;
+    let m = (secs / 60) % 60;
+    let s = secs % 60;
+    format!("{h:02}:{m:02}:{s:02}")
+}
+
+/// Compute a rate as packets per second, clamped to u64.
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn rate_per_sec(count: u64, duration_secs: f64) -> u64 {
+    if duration_secs > 0.0 {
+        (count as f64 / duration_secs) as u64
+    } else {
+        0
+    }
+}
+
+/// Format and print an event to stdout for the `run` command.
+fn print_run_event(
+    event: streamkit_api::EventPayload,
+    verbose: bool,
+    last_stats: &mut std::collections::HashMap<String, std::time::Instant>,
+    stats_interval: std::time::Duration,
+) {
+    use streamkit_api::EventPayload;
+    let now = now_hms();
+    match event {
+        EventPayload::NodeStateChanged { node_id, state, .. } => {
+            println!("[{now}] {node_id:<12} {state:?}");
+        },
+        EventPayload::NodeStatsUpdated { node_id, stats, .. } => {
+            let should_print =
+                last_stats.get(&node_id).is_none_or(|t| t.elapsed() >= stats_interval);
+            if should_print {
+                let recv_rate = rate_per_sec(stats.received, stats.duration_secs);
+                let sent_rate = rate_per_sec(stats.sent, stats.duration_secs);
+                let drop = stats.discarded;
+                println!(
+                    "[{now}] {node_id:<12} recv={recv_rate}/s  sent={sent_rate}/s  drop={drop}",
+                );
+                last_stats.insert(node_id, std::time::Instant::now());
+            }
+        },
+        EventPayload::NodeTelemetry { node_id, data, .. } if verbose => {
+            println!("[{now}] {node_id:<12} telemetry: {data}");
+        },
+        _ => {},
+    }
+}
+
+/// Format and print an event to stderr for the `watch` command.
+fn print_watch_event(
+    event: streamkit_api::EventPayload,
+    last_stats: &mut std::collections::HashMap<String, std::time::Instant>,
+    stats_interval: std::time::Duration,
+) {
+    use streamkit_api::EventPayload;
+    let now = now_hms();
+    match event {
+        EventPayload::NodeStateChanged { node_id, state, .. } => {
+            eprintln!("[{now}] {node_id:<12} {state:?}");
+        },
+        EventPayload::NodeStatsUpdated { node_id, stats, .. } => {
+            let should_print =
+                last_stats.get(&node_id).is_none_or(|t| t.elapsed() >= stats_interval);
+            if should_print {
+                let recv_rate = rate_per_sec(stats.received, stats.duration_secs);
+                let sent_rate = rate_per_sec(stats.sent, stats.duration_secs);
+                let drop = stats.discarded;
+                eprintln!(
+                    "[{now}] {node_id:<12} recv={recv_rate}/s  sent={sent_rate}/s  drop={drop}",
+                );
+                last_stats.insert(node_id, std::time::Instant::now());
+            }
+        },
+        _ => {},
+    }
+}
+
+/// Extract and validate an event payload from a WS message, filtering by session.
+fn extract_session_event(text: &str, session_id: &str) -> Option<serde_json::Value> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    if v.get("type").and_then(|t| t.as_str()) != Some("event") {
+        return None;
+    }
+    let payload = v.get("payload")?;
+    let event_session = payload.get("session_id").and_then(|s| s.as_str());
+    if event_session != Some(session_id) {
+        return None;
+    }
+    Some(payload.clone())
+}
+
+/// Set up a session and return (client, session_id, ws_url).
+async fn setup_session(
+    server: &str,
+    pipeline_path: &str,
+    name: Option<&str>,
+) -> (NetworkClient, String) {
+    let client = NetworkClient::new(server);
+    eprint!("Creating session... ");
+    let name_owned = name.map(String::from);
+    let session_id = match client.create_session(pipeline_path, &name_owned).await {
+        Ok(id) => {
+            eprintln!("done (session: {id})");
+            id
+        },
+        Err(e) => {
+            eprintln!("failed.");
+            error!(error = %e, "Failed to create session");
+            std::process::exit(exit_codes::GENERAL_ERROR);
+        },
+    };
+    (client, session_id)
+}
+
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type WsRead = futures::stream::SplitStream<WsStream>;
+type WsSink =
+    futures::stream::SplitSink<WsStream, tokio_tungstenite::tungstenite::protocol::Message>;
+
+/// Connect to the control WebSocket, cleaning up the session on failure.
+async fn connect_ws(client: &NetworkClient, session_id: &str) -> (WsRead, WsSink, String) {
+    use futures::StreamExt;
+    use tokio_tungstenite::connect_async;
+
+    let ws_url = match client.control_ws_url() {
+        Ok(url) => url,
+        Err(e) => {
+            error!(error = %e, "Failed to build WebSocket URL");
+            let _ = client.destroy_session(session_id).await;
+            std::process::exit(exit_codes::CONNECTION_ERROR);
+        },
+    };
+    let (ws_stream, _) = match connect_async(&ws_url).await {
+        Ok(s) => s,
+        Err(e) => {
+            error!(error = %e, "Failed to connect to WebSocket");
+            let _ = client.destroy_session(session_id).await;
+            std::process::exit(exit_codes::CONNECTION_ERROR);
+        },
+    };
+    let (ws_sink, ws_read) = ws_stream.split();
+    (ws_read, ws_sink, ws_url)
+}
+
+async fn dispatch_run(
+    pipeline_path: &str,
+    name: Option<String>,
+    verbose: bool,
+    json_mode: bool,
+    server: &str,
+) {
+    use futures::{SinkExt, StreamExt};
+    use std::collections::HashMap;
+    use std::time::Instant;
+    use streamkit_api::EventPayload;
+    use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+
+    let (client, session_id) = setup_session(server, pipeline_path, name.as_deref()).await;
+    let (mut ws_read, mut ws_sink, ws_url) = connect_ws(&client, &session_id).await;
+    info!(session_id = %session_id, "Subscribed to events, entering foreground loop");
+
+    let mut last_stats: HashMap<String, Instant> = HashMap::new();
+    let stats_interval = std::time::Duration::from_secs(5);
+
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                break;
+            }
+            msg = ws_read.next() => {
+                let Some(msg) = msg else {
+                    eprintln!("WebSocket disconnected, attempting reconnect...");
+                    if let Ok((new_stream, _)) = connect_async(&ws_url).await {
+                        let (new_sink, new_read) = new_stream.split();
+                        ws_read = new_read;
+                        ws_sink = new_sink;
+                        eprintln!("Reconnected.");
+                        continue;
+                    }
+                    eprintln!("Reconnect failed.");
+                    break;
+                };
+                let Ok(Message::Text(text)) = msg else {
+                    continue;
+                };
+                if json_mode {
+                    if extract_session_event(&text, &session_id).is_some() {
+                        println!("{text}");
+                    }
+                    continue;
+                }
+                if let Some(payload) = extract_session_event(&text, &session_id) {
+                    if let Ok(event) = serde_json::from_value::<EventPayload>(payload) {
+                        print_run_event(event, verbose, &mut last_stats, stats_interval);
+                    }
+                }
+            }
+        }
+    }
+
+    // Graceful shutdown
+    let _ = ws_sink.close().await;
+    destroy_session_on_exit(&client, &session_id).await;
+}
+
+/// Parse a YAML file into a compiled pipeline.
+fn parse_and_compile(path: &std::path::Path) -> Result<streamkit_api::Pipeline, String> {
+    let yaml = std::fs::read_to_string(path).map_err(|e| format!("Failed to read file: {e}"))?;
+    let user = streamkit_api::yaml::parse_yaml(&yaml).map_err(|e| format!("Parse error: {e}"))?;
+    streamkit_api::yaml::compile(user).map_err(|e| format!("Compile error: {e}"))
+}
+
+/// Outcome of applying a diff plan.
+enum ApplyResult {
+    Applied,
+    NeedsBreak,
+    Skipped,
+}
+
+/// Apply a diff plan to a running session, returning the outcome.
+async fn apply_diff_plan(
+    plan: streamkit_client::diff::DiffPlan,
+    client: &NetworkClient,
+    session_id: &mut String,
+    pipeline_path: &str,
+    name: Option<&str>,
+    ws_stream: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    ws_url: &str,
+) -> ApplyResult {
+    use streamkit_client::diff::{summarize_diff, DiffPlan};
+    use tokio_tungstenite::connect_async;
+
+    let now = now_hms();
+    match plan {
+        DiffPlan::NoOp => {
+            eprintln!("[{now}] No changes detected.");
+            ApplyResult::Skipped
+        },
+        DiffPlan::InPlace(ops) => {
+            eprintln!("[{now}] Diff: {}", summarize_diff(&ops));
+            eprint!("[{now}] Applying batch... ");
+            match client.control_apply_batch_ops(session_id, ops).await {
+                Ok(()) => {
+                    eprintln!("done.");
+                    ApplyResult::Applied
+                },
+                Err(e) => {
+                    eprintln!("failed: {e}");
+                    error!(error = %e, "Failed to apply batch");
+                    ApplyResult::Skipped
+                },
+            }
+        },
+        DiffPlan::FullRebuild { reason } => {
+            eprintln!("[{now}] Full rebuild required: {reason}");
+            info!(reason = %reason, "Performing full rebuild");
+            eprint!("[{now}] Destroying session... ");
+            if let Err(e) = client.destroy_session(session_id).await {
+                eprintln!("failed: {e}");
+                error!(error = %e, "Failed to destroy session for rebuild");
+                return ApplyResult::Skipped;
+            }
+            eprintln!("done.");
+
+            let name_owned = name.map(String::from);
+            eprint!("[{now}] Creating new session... ");
+            match client.create_session(pipeline_path, &name_owned).await {
+                Ok(id) => {
+                    eprintln!("done (session: {id})");
+                    *session_id = id;
+                    let _ = ws_stream.close(None).await;
+                    match connect_async(ws_url).await {
+                        Ok((new_stream, _)) => {
+                            *ws_stream = new_stream;
+                            ApplyResult::Applied
+                        },
+                        Err(e) => {
+                            error!(error = %e, "Failed to reconnect WS after rebuild");
+                            eprintln!("Failed to reconnect WS: {e}");
+                            ApplyResult::NeedsBreak
+                        },
+                    }
+                },
+                Err(e) => {
+                    eprintln!("failed: {e}");
+                    error!(error = %e, "Failed to create new session for rebuild");
+                    ApplyResult::NeedsBreak
+                },
+            }
+        },
+    }
+}
+
+/// Create a `notify` file watcher that sends on the given channel.
+///
+/// Handles both `Modify` and `Create` events because some editors (vim, emacs)
+/// perform atomic saves via write-to-temp-then-rename, which produces `Create`
+/// events rather than `Modify`.
+fn create_file_watcher(
+    watch_path: &std::path::Path,
+) -> (notify::RecommendedWatcher, tokio::sync::mpsc::Receiver<()>) {
+    use notify::{EventKind, RecursiveMode, Watcher};
+
+    let (fs_tx, fs_rx) = tokio::sync::mpsc::channel::<()>(16);
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if let Ok(event) = res {
+            if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
+                let _ = fs_tx.blocking_send(());
+            }
+        }
+    })
+    .unwrap_or_else(|e| {
+        error!(error = %e, "Failed to create file watcher");
+        std::process::exit(exit_codes::GENERAL_ERROR);
+    });
+
+    watcher.watch(watch_path, RecursiveMode::NonRecursive).unwrap_or_else(|e| {
+        error!(error = %e, "Failed to start watching file");
+        std::process::exit(exit_codes::GENERAL_ERROR);
+    });
+
+    (watcher, fs_rx)
+}
+
+/// Mutable state passed to diff-related helpers during watch.
+struct WatchSession<'a> {
+    session_id: &'a mut String,
+    ws_stream: &'a mut WsStream,
+    ws_url: &'a str,
+}
+
+/// Handle a file-change event: re-parse, diff, and apply.
+async fn handle_file_change(
+    pipeline_abs: &std::path::Path,
+    pipeline_path: &str,
+    name: Option<&str>,
+    current_pipeline: &streamkit_api::Pipeline,
+    client: &NetworkClient,
+    sess: &mut WatchSession<'_>,
+) -> (ApplyResult, Option<streamkit_api::Pipeline>) {
+    use streamkit_client::diff::diff_pipelines;
+
+    let now = now_hms();
+    eprintln!("[{now}] File changed \u{2014} computing diff...");
+    info!("Pipeline file changed, computing diff");
+
+    let new_pipeline = match parse_and_compile(pipeline_abs) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[{now}] {e}");
+            return (ApplyResult::Skipped, None);
+        },
+    };
+
+    let plan = diff_pipelines(current_pipeline, &new_pipeline);
+    info!(plan = ?plan, "Diff computed");
+
+    let result = apply_diff_plan(
+        plan,
+        client,
+        sess.session_id,
+        pipeline_path,
+        name,
+        sess.ws_stream,
+        sess.ws_url,
+    )
+    .await;
+    (result, Some(new_pipeline))
+}
+
+/// Resolve and compile the initial pipeline, exiting on failure.
+fn load_initial_pipeline(pipeline_path: &str) -> (std::path::PathBuf, streamkit_api::Pipeline) {
+    let pipeline_abs = std::fs::canonicalize(pipeline_path).unwrap_or_else(|e| {
+        error!(error = %e, path = %pipeline_path, "Failed to resolve pipeline path");
+        std::process::exit(exit_codes::GENERAL_ERROR);
+    });
+    let pipeline = parse_and_compile(&pipeline_abs).unwrap_or_else(|e| {
+        error!(error = %e, "Failed to load initial pipeline");
+        std::process::exit(exit_codes::GENERAL_ERROR);
+    });
+    (pipeline_abs, pipeline)
+}
+
+/// Destroy a session on exit, printing status.
+async fn destroy_session_on_exit(client: &NetworkClient, session_id: &str) {
+    eprint!("Destroying session {session_id}... ");
+    match client.destroy_session(session_id).await {
+        Ok(()) => eprintln!("done."),
+        Err(e) => {
+            eprintln!("failed.");
+            error!(error = %e, "Failed to destroy session on exit");
+            std::process::exit(exit_codes::GENERAL_ERROR);
+        },
+    }
+}
+
+async fn dispatch_watch(pipeline_path: &str, name: Option<String>, server: &str) {
+    use futures::StreamExt;
+    use std::collections::HashMap;
+    use std::time::Instant;
+    use streamkit_api::EventPayload;
+    use tokio_tungstenite::tungstenite::protocol::Message;
+
+    let client = NetworkClient::new(server);
+    let (pipeline_abs, mut current_pipeline) = load_initial_pipeline(pipeline_path);
+
+    eprint!("Creating session... ");
+    let mut session_id = match client.create_session(pipeline_path, &name).await {
+        Ok(id) => {
+            eprintln!("done (session: {id})");
+            id
+        },
+        Err(e) => {
+            eprintln!("failed.");
+            error!(error = %e, "Failed to create session");
+            std::process::exit(exit_codes::GENERAL_ERROR);
+        },
+    };
+
+    eprintln!("Watching {} for changes...", pipeline_abs.display());
+
+    let (_watcher, mut fs_rx) = create_file_watcher(&pipeline_abs);
+
+    let ws_url = match client.control_ws_url() {
+        Ok(url) => url,
+        Err(e) => {
+            error!(error = %e, "Failed to build WebSocket URL");
+            let _ = client.destroy_session(&session_id).await;
+            std::process::exit(exit_codes::CONNECTION_ERROR);
+        },
+    };
+    let (mut ws_stream, _) = match tokio_tungstenite::connect_async(&ws_url).await {
+        Ok(s) => s,
+        Err(e) => {
+            error!(error = %e, "Failed to connect to WebSocket");
+            let _ = client.destroy_session(&session_id).await;
+            std::process::exit(exit_codes::CONNECTION_ERROR);
+        },
+    };
+
+    let mut last_stats: HashMap<String, Instant> = HashMap::new();
+    let stats_interval = std::time::Duration::from_secs(5);
+
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                break;
+            }
+            _ = fs_rx.recv() => {
+                while fs_rx.try_recv().is_ok() {}
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                while fs_rx.try_recv().is_ok() {}
+
+                let mut sess = WatchSession {
+                    session_id: &mut session_id,
+                    ws_stream: &mut ws_stream,
+                    ws_url: &ws_url,
+                };
+                let (result, new_pipeline) = handle_file_change(
+                    &pipeline_abs, pipeline_path, name.as_deref(),
+                    &current_pipeline, &client, &mut sess,
+                ).await;
+                if matches!(result, ApplyResult::NeedsBreak) { break; }
+                if matches!(result, ApplyResult::Applied) {
+                    if let Some(p) = new_pipeline { current_pipeline = p; }
+                }
+            }
+            msg = ws_stream.next() => {
+                let Some(Ok(Message::Text(text))) = msg else {
+                    if msg.is_none() { break; }
+                    continue;
+                };
+                if let Some(payload) = extract_session_event(&text, &session_id) {
+                    if let Ok(event) = serde_json::from_value::<EventPayload>(payload) {
+                        print_watch_event(event, &mut last_stats, stats_interval);
+                    }
+                }
+            }
+        }
+    }
+
+    let _ = ws_stream.close(None).await;
+    destroy_session_on_exit(&client, &session_id).await;
+}
+
+// ---------------------------------------------------------------------------
 // Text renderers
 // ---------------------------------------------------------------------------
 
@@ -673,8 +1199,12 @@ async fn dispatch(command: Commands, format: OutputFormat) {
             eprint!("Creating session... ");
             let client = NetworkClient::new(&server);
             match client.create_session(&pipeline, &name).await {
-                Ok(()) => {
+                Ok(session_id) => {
                     eprintln!("done.");
+                    println!("Session created: {session_id}");
+                    if let Some(ref n) = name {
+                        println!("Name: {n}");
+                    }
                 },
                 Err(e) => {
                     eprintln!("failed.");
@@ -913,12 +1443,18 @@ async fn dispatch(command: Commands, format: OutputFormat) {
                 },
             }
         },
-        Commands::Watch { session, pretty, server } => {
+        Commands::Events { session, pretty, server } => {
             let client = NetworkClient::new(&server);
             if let Err(e) = client.watch_events(session.as_deref(), pretty).await {
-                error!(error = %e, "Watch failed");
+                error!(error = %e, "Watch events failed");
                 std::process::exit(exit_code_for_error(e.as_ref()));
             }
+        },
+        Commands::Run { pipeline, name, verbose, json, server } => {
+            dispatch_run(&pipeline, name, verbose, json, &server).await;
+        },
+        Commands::Watch { pipeline, name, server } => {
+            dispatch_watch(&pipeline, name, &server).await;
         },
         Commands::Control { command, server } => {
             let client = NetworkClient::new(&server);

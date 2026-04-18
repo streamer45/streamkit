@@ -243,6 +243,7 @@ pub trait Client: Send + Sync {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Create a new dynamic session with a pipeline configuration.
+    /// Returns the session ID on success.
     ///
     /// # Errors
     ///
@@ -252,7 +253,7 @@ pub trait Client: Send + Sync {
         &self,
         pipeline_path: &str,
         name: &Option<String>,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Destroy a dynamic session and cleanup its resources.
     ///
@@ -388,6 +389,13 @@ pub trait Client: Send + Sync {
         &self,
         session_id: &str,
         ops_file: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Apply a batch of operations directly (without reading from a file).
+    async fn control_apply_batch_ops(
+        &self,
+        session_id: &str,
+        operations: Vec<BatchOperation>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Fire-and-forget node tuning via WebSocket.
@@ -610,6 +618,21 @@ impl NetworkClient {
     pub fn new(server_url: &str) -> Self {
         Self { server_url: server_url.to_string(), http: reqwest::Client::new() }
     }
+
+    /// Returns the server URL for this client.
+    pub fn server_url(&self) -> &str {
+        &self.server_url
+    }
+
+    /// Returns the WebSocket URL for the control endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the server URL cannot be parsed or converted
+    /// to a WebSocket scheme.
+    pub fn control_ws_url(&self) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(control_ws_url(&self.server_url)?.to_string())
+    }
 }
 
 #[async_trait]
@@ -634,7 +657,7 @@ impl Client for NetworkClient {
         &self,
         pipeline_path: &str,
         name: &Option<String>,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         #[derive(serde::Serialize)]
         struct CreateSessionRequest {
             name: Option<String>,
@@ -675,23 +698,8 @@ impl Client for NetworkClient {
         let created_at = result.created_at;
 
         info!("Created session: {session_id} (name: {session_name:?}) at {created_at}");
-
-        println!("✅ Session created successfully!");
-        if let Some(ref name) = session_name {
-            println!("📋 Session Name: {name}");
-            println!("🆔 Session ID: {session_id}");
-            println!("💡 Use these commands to manage the session:");
-            println!("   skit-cli tune {name} <node> <param> <value>");
-            println!("   skit-cli destroy {name}");
-        } else {
-            println!("🆔 Session ID: {session_id}");
-            println!("💡 Use these commands to manage the session:");
-            println!("   skit-cli tune {session_id} <node> <param> <value>");
-            println!("   skit-cli destroy {session_id}");
-        }
-
         info!("Session created successfully. ID: {session_id}, Name: {session_name:?}");
-        Ok(())
+        Ok(session_id)
     }
 
     async fn destroy_session(
@@ -970,6 +978,28 @@ impl Client for NetworkClient {
                 println!("✅ Batch applied successfully");
                 Ok(())
             },
+            other => Err(format!("Unexpected response from server: {other:?}").into()),
+        }
+    }
+
+    async fn control_apply_batch_ops(
+        &self,
+        session_id: &str,
+        operations: Vec<BatchOperation>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        match ws_request(
+            &self.server_url,
+            RequestPayload::ApplyBatch { session_id: session_id.to_string(), operations },
+        )
+        .await?
+        {
+            ResponsePayload::BatchApplied { success, errors } => {
+                if !success {
+                    return Err(format!("Batch apply failed: {}", errors.join(", ")).into());
+                }
+                Ok(())
+            },
+            ResponsePayload::Success => Ok(()),
             other => Err(format!("Unexpected response from server: {other:?}").into()),
         }
     }
@@ -1571,9 +1601,9 @@ mod tests {
             &self,
             _pipeline_path: &str,
             _name: &Option<String>,
-        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
             self.record("create_session");
-            Ok(())
+            Ok("mock-session-id".to_string())
         }
 
         async fn destroy_session(
@@ -1676,6 +1706,14 @@ mod tests {
             _ops_file: &str,
         ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             self.record("control_apply_batch");
+            Ok(())
+        }
+
+        async fn control_apply_batch_ops(
+            &self,
+            _session_id: &str,
+            _operations: Vec<BatchOperation>,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Ok(())
         }
 

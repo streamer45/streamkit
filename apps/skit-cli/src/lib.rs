@@ -6,6 +6,7 @@
 #![allow(clippy::disallowed_macros)]
 
 pub mod client;
+pub mod diff;
 pub mod exit_codes;
 pub mod graph;
 pub mod load_test;

@@ -46,9 +46,13 @@ rustyline = "18.0.0"
 
 # For file I/O
 bytes = { workspace = true }
+indexmap = { workspace = true }
 serde-saphyr = { workspace = true }
 serde_json = "1.0"
 uuid = { version = "1.23", features = ["v4"] }
+
+# For file watching (skit watch)
+notify = { version = "7.0", default-features = false, features = ["macos_kqueue"] }
 
 # For load testing
 toml = "1.0"
