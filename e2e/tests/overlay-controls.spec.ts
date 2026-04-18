@@ -10,8 +10,8 @@ import { type ConsoleErrorCollector, createConsoleErrorCollector } from './test-
 /**
  * E2E tests for the declarative overlay controls feature.
  *
- * Uses the "Test: Overlay Controls" sample pipeline which includes all four
- * control types (toggle, text, number, button) and requires only core nodes
+ * Uses the "Test: Overlay Controls" sample pipeline which includes all five
+ * control types (toggle, text, number, button, select) and requires only core nodes
  * (video::colorbars → core::sink) — no plugins or MoQ gateway needed.
  */
 test.describe('Stream View - Overlay Controls', () => {
@@ -82,6 +82,7 @@ test.describe('Stream View - Overlay Controls', () => {
     await expect(labels.filter({ hasText: 'Label' })).toBeVisible();
     await expect(labels.filter({ hasText: 'Width' })).toBeVisible();
     await expect(labels.filter({ hasText: 'Height' })).toBeVisible();
+    await expect(labels.filter({ hasText: 'Format' })).toBeVisible();
     await expect(labels.filter({ hasText: 'Reset' })).toBeVisible();
 
     // Verify group heading.
@@ -180,7 +181,32 @@ test.describe('Stream View - Overlay Controls', () => {
       'width'
     );
 
-    // ── 8. Exercise button control ───────────────────────────────────
+    // ── 8. Exercise select control ───────────────────────────────────
+    wsSentMessages.length = 0;
+
+    const selectDropdown = controls.locator('select[aria-label="Format"]');
+    await expect(selectDropdown).toBeVisible();
+    // Select the second option (NV12).
+    await selectDropdown.selectOption({ index: 1 });
+
+    await page.waitForTimeout(200);
+
+    const selectMsg = wsSentMessages.find(
+      (m: unknown) =>
+        typeof m === 'object' &&
+        m !== null &&
+        (m as Record<string, unknown>).type === 'request' &&
+        ((m as Record<string, Record<string, unknown>>).payload?.action === 'tunenodeasync' ||
+          (m as Record<string, Record<string, unknown>>).payload?.action === 'TuneNodeAsync') &&
+        (m as Record<string, Record<string, unknown>>).payload?.node_id === 'colorbars' &&
+        (
+          (m as Record<string, Record<string, Record<string, unknown>>>).payload?.message
+            ?.UpdateParams as Record<string, unknown>
+        )?.pixel_format === 'nv12'
+    );
+    expect(selectMsg, 'Expected a TuneNodeAsync message for the select control').toBeTruthy();
+
+    // ── 9. Exercise button control ───────────────────────────────────
     wsSentMessages.length = 0;
 
     const resetButton = controls.getByRole('button', { name: 'Reset' });
@@ -204,12 +230,12 @@ test.describe('Stream View - Overlay Controls', () => {
     );
     expect(buttonMsg, 'Expected a TuneNodeAsync message for the button control').toBeTruthy();
 
-    // ── 9. Assert no unexpected console errors ───────────────────────
+    // ── 10. Assert no unexpected console errors ──────────────────────
     const unexpected = collector.getUnexpected();
     expect(unexpected, `Unexpected console errors: ${unexpected.join('; ')}`).toHaveLength(0);
     collector.stop();
 
-    // ── 10. Destroy session ──────────────────────────────────────────
+    // ── 11. Destroy session ──────────────────────────────────────────
     const destroyButton = page.getByRole('button', {
       name: /Destroy Session/i,
     });

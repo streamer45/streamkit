@@ -47,6 +47,8 @@ nodes:
       url: "https://webglsamples.org/aquarium/aquarium.html"
       width: 640
       height: 480
+      viewport_width: 1280
+      viewport_height: 960
       fps: 30
       frame_count: 300
 

@@ -711,7 +711,17 @@ placeholder: string | null, };
 
 export type FieldType = "file" | "text";
 
-export type ControlType = "toggle" | "text" | "number" | "button";
+export type ControlType = "toggle" | "text" | "number" | "button" | "select";
+
+export type SelectOption = { 
+/**
+ * Human-readable text shown in the dropdown.
+ */
+label: string, 
+/**
+ * Value sent to the server when this option is selected.
+ */
+value: unknown, };
 
 export type ControlConfig = { 
 /**
@@ -758,4 +768,9 @@ step: number | null,
 /**
  * Fixed value sent on click (button controls).  Defaults to `true`.
  */
-value: unknown, };
+value: unknown, 
+/**
+ * Predefined options for select controls.  Each entry has a `label`
+ * (shown in the dropdown) and a `value` (sent to the server).
+ */
+options: Array<SelectOption> | null, };

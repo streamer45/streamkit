@@ -418,6 +418,12 @@ const ControlPane: React.FC<ControlPaneProps> = ({
             })()}
         </div>
 
+        {selectedDef.description && (
+          <div style={{ fontSize: 13, color: 'var(--sk-text-muted)', lineHeight: 1.4 }}>
+            {selectedDef.description}
+          </div>
+        )}
+
         <div
           style={{
             backgroundColor: 'var(--sk-panel-bg)',

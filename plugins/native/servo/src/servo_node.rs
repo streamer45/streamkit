@@ -49,7 +49,8 @@ impl NativeSourceNode for ServoSourcePlugin {
                 "properties": {
                     "url": {
                         "type": "string",
-                        "description": "URL of the web page to render"
+                        "description": "URL of the web page to render",
+                        "tunable": true
                     },
                     "width": {
                         "type": "integer",
@@ -63,6 +64,22 @@ impl NativeSourceNode for ServoSourcePlugin {
                         "description": "Output frame height in pixels",
                         "minimum": 1
                     },
+                    "viewport_width": {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "Browser viewport width (0 = same as output width). Set larger to see more of the page, scaled down."
+                    },
+                    "viewport_height": {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "Browser viewport height (0 = same as output height). Set larger to see more of the page, scaled down."
+                    },
+                    "viewport_resolution": {
+                        "type": "string",
+                        "description": "Viewport resolution preset (WxH). Overrides viewport_width/viewport_height at runtime.",
+                        "tunable": true,
+                        "enum": ["640x480", "1280x720", "1280x960", "1920x1080", "2560x1440"]
+                    },
                     "fps": {
                         "type": "integer",
                         "default": 30,
@@ -71,7 +88,8 @@ impl NativeSourceNode for ServoSourcePlugin {
                     },
                     "custom_css": {
                         "type": "string",
-                        "description": "Optional CSS to inject into the page"
+                        "description": "Optional CSS to inject into the page",
+                        "tunable": true
                     },
                     "frame_count": {
                         "type": "integer",
@@ -103,7 +121,7 @@ impl NativeSourceNode for ServoSourcePlugin {
     }
 
     fn new(params: Option<serde_json::Value>, logger: Logger) -> Result<Self, String> {
-        let config: ServoConfig = if let Some(p) = params {
+        let mut config: ServoConfig = if let Some(p) = params {
             serde_json::from_value(p).map_err(|e| format!("Invalid config: {e}"))?
         } else {
             // Parameterless construction is used by the host to probe
@@ -121,6 +139,11 @@ impl NativeSourceNode for ServoSourcePlugin {
             });
         };
 
+        // Apply viewport_resolution preset at init time so that
+        // viewport_width/viewport_height are populated before validation
+        // and rendering context creation.
+        config.apply_resolution_preset();
+
         config.validate()?;
 
         let fps = config.fps.max(1);
@@ -128,9 +151,11 @@ impl NativeSourceNode for ServoSourcePlugin {
 
         plugin_info!(
             logger,
-            "Initializing Servo plugin: {}x{} @ {} fps, url='{}'",
+            "Initializing Servo plugin: {}x{} (viewport {}x{}) @ {} fps, url='{}'",
             config.width,
             config.height,
+            config.effective_viewport_width(),
+            config.effective_viewport_height(),
             fps,
             config.url
         );
@@ -224,6 +249,41 @@ impl NativeSourceNode for ServoSourcePlugin {
             plugin_info!(self.logger, "Updated Servo config (url='{}')", self.config.url);
         }
         Ok(())
+    }
+
+    fn on_upstream_hint(
+        &mut self,
+        hint: streamkit_plugin_sdk_native::streamkit_core::UpstreamHint,
+    ) {
+        if let streamkit_plugin_sdk_native::streamkit_core::UpstreamHint::PreferredSize {
+            width,
+            height,
+        } = hint
+        {
+            let width = width.clamp(1, crate::config::MAX_DIMENSION);
+            let height = height.clamp(1, crate::config::MAX_DIMENSION);
+            if width == self.config.width && height == self.config.height {
+                return;
+            }
+
+            plugin_info!(
+                self.logger,
+                "Upstream hint: resizing output from {}x{} to {}x{}",
+                self.config.width,
+                self.config.height,
+                width,
+                height
+            );
+
+            self.config.width = width;
+            self.config.height = height;
+
+            let _ = send_work(ServoWorkItem::Resize {
+                node_id: self.node_id,
+                width,
+                height,
+            });
+        }
     }
 
     fn cleanup(&mut self) {
