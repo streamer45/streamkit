@@ -266,8 +266,13 @@ impl FileKeyProvider {
     ///
     /// All three write locks are held simultaneously so no reader can
     /// observe a partially-swapped state (e.g. an active kid whose
-    /// verification key isn't yet in the map).  Extracted into a sync
-    /// method so the guards live in a non-async context.
+    /// verification key isn't yet in the map).
+    //
+    // Clippy wants to tighten each guard's scope, but releasing any
+    // lock before the others are updated breaks the atomicity
+    // guarantee — a reader between releases could see a new active
+    // kid whose verification key isn't in the map yet.
+    #[allow(clippy::significant_drop_tightening)]
     fn swap_state(
         &self,
         new_active: SigningKeyMaterial,
