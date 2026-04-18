@@ -9,7 +9,7 @@ edition = "2021"
 license = "MPL-2.0"
 
 [lib]
-name = "servo"
+name = "servo_web"
 crate-type = ["cdylib"]
 
 [dependencies]
