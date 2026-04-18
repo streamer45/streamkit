@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: (c) 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Render a web page to a PNG image using the Servo web engine.
+#
+# Produces a single 1280x720 frame from the given URL, encodes it as PNG,
+# and writes the result to output.png.
+#
+# Requires: plugin::native::servo loaded
+#   just build-plugin-native-servo && just copy-plugins-native
+
+name: Web Page to PNG (Oneshot)
+description: Renders a web page to a PNG image via the Servo web engine
+mode: oneshot
+client:
+  input:
+    type: none
+  output:
+    type: none
+
+nodes:
+  web:
+    kind: plugin::native::servo
+    params:
+      url: "https://example.com"
+      width: 1280
+      height: 720
+      fps: 1
+      frame_count: 1
+
+  encoder:
+    kind: video::png_encoder
+    needs: web
+
+  writer:
+    kind: transport::file_writer
+    params:
+      path: "output.png"
+    needs: encoder
