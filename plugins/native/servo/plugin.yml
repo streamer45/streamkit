@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: (c) 2025 StreamKit Contributors
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
 #
 # SPDX-License-Identifier: MPL-2.0
 
@@ -7,7 +7,7 @@ name: Servo Web Renderer
 version: 0.1.0
 node_kind: servo
 kind: native
-entrypoint: libservo_web.so
-artifact: target/plugins/release/libservo_web.so
+entrypoint: libservo.so
+artifact: target/plugins/release/libservo.so
 description: Render web pages to RGBA8 video frames via the Servo web engine
 license: MPL-2.0

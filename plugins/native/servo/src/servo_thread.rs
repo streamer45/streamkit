@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: (c) 2025 StreamKit Contributors
+// SPDX-FileCopyrightText: © 2025 StreamKit Contributors
 //
 // SPDX-License-Identifier: MPL-2.0
 
@@ -374,7 +374,8 @@ fn nudge_frame(servo: &Servo, webview: &WebView, delegate: &FrameDelegate) {
 
 /// Inject custom CSS into a loaded page via JavaScript.
 fn inject_custom_css(webview: &WebView, servo: &Servo, css: &str) {
-    let escaped = css.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n");
+    let escaped =
+        css.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n").replace('\r', "\\r");
     let js = format!(
         "(() => {{ \
             const s = document.createElement('style'); \

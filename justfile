@@ -997,7 +997,7 @@ build-plugin-native-servo:
 [working-directory: 'plugins/native/servo']
 upload-servo-plugin: build-plugin-native-servo
     @echo "Uploading Servo plugin to server..."
-    @curl -X POST -F "plugin=@{{plugins_target_dir}}/release/libservo_web.so" \
+    @curl -X POST -F "plugin=@{{plugins_target_dir}}/release/libservo.so" \
         http://127.0.0.1:4545/api/v1/plugins
 
 # Build AAC encoder native plugin (requires libfdk-aac-dev)
@@ -1113,7 +1113,7 @@ copy-plugins-native:
 
     # Official native plugins (shared target dir).
     # For most plugins the lib stem matches the plugin id.
-    for name in whisper kokoro piper matcha vad sensevoice nllb helsinki supertonic slint parakeet; do
+    for name in whisper kokoro piper matcha vad sensevoice nllb helsinki supertonic slint parakeet servo; do
         copy_plugin "$name" "$name" "$PLUGINS_TARGET"
     done
 
