@@ -24,6 +24,15 @@ euclid = "0.22"
 dpi = "0.1"
 tracing = "0.1"
 
+# Servo pulls in jemalloc via servo-allocator.  By default jemalloc uses
+# initial-exec TLS which requires static TLS slots — these are allocated
+# at process start and cannot grow.  When the plugin is dlopen'd at
+# runtime the static TLS space is already committed, causing
+# "cannot allocate memory in static TLS block".
+# Enabling `disable_initial_exec_tls` makes jemalloc use the slower but
+# dlopen-safe global-dynamic TLS model.
+tikv-jemalloc-sys = { version = "0.6", features = ["disable_initial_exec_tls"] }
+
 [lints.clippy]
 # Categories
 pedantic = { level = "warn", priority = -1 }

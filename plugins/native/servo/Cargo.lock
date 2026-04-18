@@ -6467,6 +6467,7 @@ dependencies = [
  "serde_json",
  "servo",
  "streamkit-plugin-sdk-native",
+ "tikv-jemalloc-sys",
  "tracing",
  "url",
  "uuid",
