@@ -121,7 +121,7 @@ impl NativeSourceNode for ServoSourcePlugin {
     }
 
     fn new(params: Option<serde_json::Value>, logger: Logger) -> Result<Self, String> {
-        let config: ServoConfig = if let Some(p) = params {
+        let mut config: ServoConfig = if let Some(p) = params {
             serde_json::from_value(p).map_err(|e| format!("Invalid config: {e}"))?
         } else {
             // Parameterless construction is used by the host to probe
@@ -138,6 +138,11 @@ impl NativeSourceNode for ServoSourcePlugin {
                 logger,
             });
         };
+
+        // Apply viewport_resolution preset at init time so that
+        // viewport_width/viewport_height are populated before validation
+        // and rendering context creation.
+        config.apply_resolution_preset();
 
         config.validate()?;
 

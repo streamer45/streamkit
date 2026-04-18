@@ -117,6 +117,17 @@ impl ServoConfig {
         None
     }
 
+    /// Apply `viewport_resolution` string (if set) to `viewport_width`/`viewport_height`.
+    /// Called at init time so the rendering context is created at the correct size.
+    pub fn apply_resolution_preset(&mut self) {
+        if let Some(ref res) = self.viewport_resolution {
+            if let Some((w, h)) = Self::parse_resolution(res) {
+                self.viewport_width = w.min(MAX_DIMENSION);
+                self.viewport_height = h.min(MAX_DIMENSION);
+            }
+        }
+    }
+
     /// Effective viewport width (falls back to output width).
     pub fn effective_viewport_width(&self) -> u32 {
         if self.viewport_width > 0 {
