@@ -49,7 +49,8 @@ impl NativeSourceNode for ServoSourcePlugin {
                 "properties": {
                     "url": {
                         "type": "string",
-                        "description": "URL of the web page to render"
+                        "description": "URL of the web page to render",
+                        "tunable": true
                     },
                     "width": {
                         "type": "integer",
@@ -71,7 +72,8 @@ impl NativeSourceNode for ServoSourcePlugin {
                     },
                     "custom_css": {
                         "type": "string",
-                        "description": "Optional CSS to inject into the page"
+                        "description": "Optional CSS to inject into the page",
+                        "tunable": true
                     },
                     "frame_count": {
                         "type": "integer",
