@@ -529,7 +529,7 @@ impl AuthState {
             token_meta.reload().await?;
         }
         if let Some(revocation) = self.revocation_store.as_ref() {
-            revocation.load().await?;
+            revocation.reload().await?;
         }
 
         key_provider.reload().await?;
@@ -727,7 +727,7 @@ mod tests {
 
         // CLI rotates the key and mints a token with the new key.
         let new_key = cli.rotate_key().await.unwrap();
-        let (new_token, _meta) =
+        let (new_token, meta) =
             cli.mint_api_token("admin", Some("post-rotate"), 3600, "test").await.unwrap();
 
         // Before reload: server cannot validate the new token.
@@ -743,7 +743,7 @@ mod tests {
         // CLI-minted JTI.
         let meta_store = server.token_metadata_store().unwrap();
         assert!(
-            !meta_store.exists(&_meta.jti).await,
+            !meta_store.exists(&meta.jti).await,
             "server should not know CLI-minted JTI before reload"
         );
 
@@ -763,7 +763,7 @@ mod tests {
         // After reload: server's token metadata store recognises the
         // CLI-minted JTI (the "tokens we mint" enforcement path).
         assert!(
-            meta_store.exists(&_meta.jti).await,
+            meta_store.exists(&meta.jti).await,
             "server should recognise CLI-minted JTI after reload"
         );
 

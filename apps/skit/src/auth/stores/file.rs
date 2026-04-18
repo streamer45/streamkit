@@ -343,6 +343,7 @@ impl KeyProvider for FileKeyProvider {
             pkcs8: Arc::from(pkcs8.into_boxed_slice()),
         };
 
+        // jwks.json is public data — no verify_permissions check needed.
         let jwks: Jwks = if jwks_path.exists() {
             let content = tokio::fs::read_to_string(&jwks_path).await?;
             serde_json::from_str(&content)?
@@ -471,7 +472,7 @@ impl FileRevocationStore {
 
         let store =
             Self { state_dir: state_dir.to_path_buf(), revoked: RwLock::new(HashMap::new()) };
-        store.load().await?;
+        store.reload().await?;
         Ok(store)
     }
 
@@ -519,7 +520,7 @@ impl RevocationStore for FileRevocationStore {
         Ok(())
     }
 
-    async fn load(&self) -> Result<(), AuthStoreError> {
+    async fn reload(&self) -> Result<(), AuthStoreError> {
         let path = self.state_dir.join("revoked.json");
         if path.exists() {
             FileKeyProvider::verify_permissions(&path)?;

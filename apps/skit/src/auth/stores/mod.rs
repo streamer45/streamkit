@@ -127,8 +127,8 @@ pub trait RevocationStore: Send + Sync {
     /// to automatically clean up expired revocations.
     async fn revoke(&self, token_hash: &str, exp: u64) -> Result<(), AuthStoreError>;
 
-    /// Load revocations from persistent storage.
-    async fn load(&self) -> Result<(), AuthStoreError>;
+    /// Reload revocations from persistent storage.
+    async fn reload(&self) -> Result<(), AuthStoreError>;
 }
 
 /// Token type distinguishes API tokens from MoQ tokens.

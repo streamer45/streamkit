@@ -528,9 +528,10 @@ async fn notify_server_reload_keys(server_url: Option<&str>, token: Option<&str>
         },
         Ok(resp) => {
             let status = resp.status();
-            let mut text = resp.text().await.unwrap_or_default();
+            let text = resp.text().await.unwrap_or_default();
             // Truncate to avoid leaking sensitive data a proxy might echo.
-            text.truncate(256);
+            // Use chars() to stay on a char boundary (truncate panics mid-codepoint).
+            let text: String = text.chars().take(256).collect();
             eprintln!();
             eprintln!("Warning: Server returned {status} for reload-keys: {text}");
             eprintln!("You may need to restart the server for the new key to take effect.");
