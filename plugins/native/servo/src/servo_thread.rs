@@ -258,7 +258,15 @@ fn handle_render(
         vec![0u8; len]
     };
 
-    let _ = state.result_tx.send(ServoThreadResult::Frame { rgba_data });
+    match state.result_tx.try_send(ServoThreadResult::Frame { rgba_data }) {
+        Ok(()) => {},
+        Err(std::sync::mpsc::TrySendError::Full(_)) => {
+            tracing::debug!(node_id = %node_id, "Result channel full, dropping frame");
+        },
+        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+            instances.remove(node_id);
+        },
+    }
 }
 
 /// Handle an `UpdateConfig` work item: navigate to a new URL if changed.

@@ -1,5 +1,5 @@
 <!--
-SPDX-FileCopyrightText: (c) 2025 StreamKit Contributors
+SPDX-FileCopyrightText: © 2025 StreamKit Contributors
 
 SPDX-License-Identifier: MPL-2.0
 -->
@@ -63,4 +63,4 @@ nodes:
       frame_count: 0  # 0 = infinite, >0 = stop after N frames
 ```
 
-See `samples/pipelines/oneshot/web_to_png.yml` for a complete example.
+See `samples/pipelines/oneshot/web_capture.yml` for a complete example.

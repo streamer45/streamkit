@@ -1035,7 +1035,13 @@ install-plugin name: (build-plugin-native name)
     mkdir -p "$BUNDLE_DIR"
 
     # Rust library names use underscores for hyphens.
-    LIB_STEM="lib$(echo '{{name}}' | tr '-' '_')"
+    # Some plugins have a lib stem that differs from the plugin id.
+    declare -A LIB_OVERRIDES=( ["servo"]="servo_web" )
+    if [[ -v "LIB_OVERRIDES[{{name}}]" ]]; then
+        LIB_STEM="lib${LIB_OVERRIDES[{{name}}]}"
+    else
+        LIB_STEM="lib$(echo '{{name}}' | tr '-' '_')"
+    fi
 
     SO_FILE=""
     for ext in so dylib dll; do
