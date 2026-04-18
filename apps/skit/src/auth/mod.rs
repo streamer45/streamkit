@@ -509,20 +509,28 @@ impl AuthState {
         Ok(new_key)
     }
 
-    /// Reload keys from persistent storage.
+    /// Reload all auth state from persistent storage.
     ///
-    /// Re-reads the active private key and the full JWKS from the backing
-    /// store, replacing the in-memory cache.  Call this after an external
-    /// key rotation (e.g. the CLI `rotate-key` command) to pick up the
-    /// new keys without restarting the server.
+    /// Re-reads keys, token metadata, and revocations from the backing
+    /// store, replacing every in-memory cache.  Call this after an
+    /// external mutation (e.g. the CLI `rotate-key` command) to pick up
+    /// the new state without restarting the server.
     ///
     /// # Errors
     ///
-    /// Returns errors if auth is disabled or the reload fails.
+    /// Returns errors if auth is disabled or any reload step fails.
     pub async fn reload_keys(&self) -> Result<(), AuthError> {
         let key_provider = self.key_provider.as_ref().ok_or(AuthError::Disabled)?;
         key_provider.reload().await?;
-        info!("Auth keys reloaded from disk");
+
+        if let Some(token_meta) = self.token_metadata_store.as_ref() {
+            token_meta.reload().await?;
+        }
+        if let Some(revocation) = self.revocation_store.as_ref() {
+            revocation.load().await?;
+        }
+
+        info!("Auth state reloaded from disk (keys, token metadata, revocations)");
         Ok(())
     }
 

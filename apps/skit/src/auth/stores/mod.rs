@@ -196,4 +196,9 @@ pub trait TokenMetadataStore: Send + Sync {
 
     /// Get metadata for a specific token.
     async fn get(&self, jti: &str) -> Result<Option<TokenMetadata>, AuthStoreError>;
+
+    /// Reload token metadata from persistent storage, replacing the in-memory
+    /// cache.  Call this after external mutations (e.g. CLI `rotate-key` minting
+    /// a new admin token) so the running server recognises the new JTIs.
+    async fn reload(&self) -> Result<(), AuthStoreError>;
 }

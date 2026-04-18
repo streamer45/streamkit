@@ -384,10 +384,9 @@ impl KeyProvider for FileKeyProvider {
 
         let total_keys = jwks.keys.len();
 
-        {
-            let mut active = lock_write(&self.active);
-            *active = new_active.clone();
-        }
+        // Swap verification state before the active signing key so that
+        // callers of active_key() never observe a kid whose public key
+        // is not yet in the verification map.
         {
             let mut public_keys = lock_write(&self.public_keys);
             *public_keys = new_public_keys;
@@ -395,6 +394,10 @@ impl KeyProvider for FileKeyProvider {
         {
             let mut jwks_lock = lock_write(&self.jwks);
             *jwks_lock = jwks;
+        }
+        {
+            let mut active = lock_write(&self.active);
+            *active = new_active.clone();
         }
 
         info!(kid = %new_active.kid, total_keys, "Reloaded keys from disk");
@@ -628,6 +631,23 @@ impl TokenMetadataStore for FileTokenMetadataStore {
 
     async fn get(&self, jti: &str) -> Result<Option<TokenMetadata>, AuthStoreError> {
         Ok(lock_read(&self.tokens).get(jti).cloned())
+    }
+
+    async fn reload(&self) -> Result<(), AuthStoreError> {
+        let path = self.state_dir.join("tokens.json");
+        let mut new_tokens: HashMap<String, TokenMetadata> = HashMap::new();
+        if path.exists() {
+            FileKeyProvider::verify_permissions(&path)?;
+            let data = tokio::fs::read_to_string(&path).await?;
+            let tokens: Vec<TokenMetadata> = serde_json::from_str(&data)?;
+            let count = tokens.len();
+            for token in tokens {
+                new_tokens.insert(token.jti.clone(), token);
+            }
+            debug!(count, "Reloaded token metadata from disk");
+        }
+        *lock_write(&self.tokens) = new_tokens;
+        Ok(())
     }
 }
 

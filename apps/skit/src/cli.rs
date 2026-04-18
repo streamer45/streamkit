@@ -502,10 +502,17 @@ async fn notify_server_reload_keys(server_url: Option<&str>, token: Option<&str>
     let mut headers = HeaderMap::new();
     headers.insert(AUTHORIZATION, auth_value);
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
+    let client = match reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .read_timeout(std::time::Duration::from_secs(5))
         .build()
-        .unwrap_or_default();
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Warning: Could not build HTTP client ({e}); skipping server notification.");
+            return;
+        },
+    };
 
     match client.post(&url).headers(headers).send().await {
         Ok(resp) if resp.status().is_success() => {
