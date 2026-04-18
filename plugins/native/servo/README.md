@@ -171,6 +171,10 @@ pipeline compositing a web page as PiP over colorbars with MoQ streaming.
   pages render at full configured FPS.
 - **No input forwarding** — the rendered page is view-only. Mouse/keyboard
   interaction and a JavaScript bridge are planned for a future phase.
+- **Crash recovery is partial** — Rust panics are caught via `catch_unwind`
+  and the affected node falls back to its last good frame. However, native
+  crashes in SpiderMonkey or Mesa/llvmpipe (SIGSEGV, SIGBUS, abort) still
+  terminate the shared Servo thread and all web renderer nodes.
 - **Single process** — Servo runs in-process (no multi-process sandboxing).
 - **Binary size** — ~148 MB due to embedding SpiderMonkey, WebRender, and
   their transitive dependency trees.
