@@ -293,18 +293,17 @@ impl KeyProvider for FileKeyProvider {
         Self::write_secure(&jwks_path, &serde_json::to_string_pretty(&jwks)?).await?;
         Self::write_secure(&private_path, &serde_json::to_string_pretty(&private_jwk)?).await?;
 
-        {
-            let mut active = lock_write(&self.active);
-            *active = new_signing_key.clone();
-        }
-        {
-            let mut public_keys = lock_write(&self.public_keys);
-            public_keys.insert(private_jwk.kid.clone(), public_key_bytes);
-        }
-        {
-            let mut jwks_lock = lock_write(&self.jwks);
-            *jwks_lock = jwks.clone();
-        }
+        // Hold all three write locks simultaneously so no reader can
+        // observe a partially-swapped state.
+        let mut active = lock_write(&self.active);
+        let mut public_keys_guard = lock_write(&self.public_keys);
+        let mut jwks_lock = lock_write(&self.jwks);
+        public_keys_guard.insert(private_jwk.kid.clone(), public_key_bytes);
+        *jwks_lock = jwks.clone();
+        *active = new_signing_key.clone();
+        drop(jwks_lock);
+        drop(public_keys_guard);
+        drop(active);
 
         info!(kid = %new_signing_key.kid, total_keys = jwks.keys.len(), "Rotated signing key");
 
@@ -384,21 +383,17 @@ impl KeyProvider for FileKeyProvider {
 
         let total_keys = jwks.keys.len();
 
-        // Swap verification state before the active signing key so that
-        // callers of active_key() never observe a kid whose public key
-        // is not yet in the verification map.
-        {
-            let mut public_keys = lock_write(&self.public_keys);
-            *public_keys = new_public_keys;
-        }
-        {
-            let mut jwks_lock = lock_write(&self.jwks);
-            *jwks_lock = jwks;
-        }
-        {
-            let mut active = lock_write(&self.active);
-            *active = new_active.clone();
-        }
+        // Hold all three write locks simultaneously so no reader can
+        // observe a partially-swapped state.
+        let mut active = lock_write(&self.active);
+        let mut public_keys = lock_write(&self.public_keys);
+        let mut jwks_lock = lock_write(&self.jwks);
+        *public_keys = new_public_keys;
+        *jwks_lock = jwks;
+        *active = new_active.clone();
+        drop(jwks_lock);
+        drop(public_keys);
+        drop(active);
 
         info!(kid = %new_active.kid, total_keys, "Reloaded keys from disk");
 

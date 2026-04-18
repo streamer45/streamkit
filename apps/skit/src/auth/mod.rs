@@ -521,14 +521,18 @@ impl AuthState {
     /// Returns errors if auth is disabled or any reload step fails.
     pub async fn reload_keys(&self) -> Result<(), AuthError> {
         let key_provider = self.key_provider.as_ref().ok_or(AuthError::Disabled)?;
-        key_provider.reload().await?;
 
+        // Reload metadata and revocations *before* keys so that a
+        // freshly-minted token arriving mid-reload is already in the
+        // metadata store when its new kid becomes verifiable.
         if let Some(token_meta) = self.token_metadata_store.as_ref() {
             token_meta.reload().await?;
         }
         if let Some(revocation) = self.revocation_store.as_ref() {
             revocation.load().await?;
         }
+
+        key_provider.reload().await?;
 
         info!("Auth state reloaded from disk (keys, token metadata, revocations)");
         Ok(())
