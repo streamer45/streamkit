@@ -509,6 +509,39 @@ impl AuthState {
         Ok(new_key)
     }
 
+    /// Reload all auth state from persistent storage.
+    ///
+    /// Re-reads keys, token metadata, and revocations from the backing
+    /// store, replacing every in-memory cache.  Call this after an
+    /// external mutation (e.g. the CLI `rotate-key` command) to pick up
+    /// the new state without restarting the server.
+    ///
+    /// # Errors
+    ///
+    /// Returns errors if auth is disabled or any reload step fails.
+    pub async fn reload_keys(&self) -> Result<(), AuthError> {
+        let key_provider = self.key_provider.as_ref().ok_or(AuthError::Disabled)?;
+
+        // Reload metadata and revocations before keys.  Neither order
+        // is fully atomic: metadata-first means a new-kid token arriving
+        // mid-reload fails signature verification (transient, retryable);
+        // keys-first means it passes signature but fails the JTI "minted
+        // by us" check (looks like a permanent auth error).  We choose
+        // metadata-first as the lesser evil.
+        if let Some(token_meta) = self.token_metadata_store.as_ref() {
+            token_meta.reload().await?;
+        }
+        if let Some(revocation) = self.revocation_store.as_ref() {
+            revocation.reload().await?;
+        }
+
+        key_provider.reload().await?;
+
+        let active_kid = key_provider.active_key().kid;
+        info!(kid = %active_kid, "Auth state reloaded from disk (keys, token metadata, revocations)");
+        Ok(())
+    }
+
     /// Check if auth should be enabled based on config and bind address.
     #[allow(dead_code)]
     pub const fn should_enable(config: &AuthConfig, bind_addr: &std::net::SocketAddr) -> bool {
@@ -678,6 +711,72 @@ mod tests {
         assert_ne!(hash1, hash3);
         // Hash is hex-encoded SHA-256 (64 chars)
         assert_eq!(hash1.len(), 64);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_reload_keys_picks_up_external_rotation() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = AuthConfig {
+            mode: AuthMode::Enabled,
+            state_dir: temp_dir.path().to_string_lossy().to_string(),
+            api_max_ttl_secs: 86400,
+            ..Default::default()
+        };
+
+        // "Server" auth state — stays alive the whole time.
+        let server = Arc::new(AuthState::new(&config, true).await.unwrap());
+
+        // "CLI" auth state — separate instance sharing the same state dir.
+        let cli = AuthState::new(&config, true).await.unwrap();
+
+        // CLI rotates the key and mints a token with the new key.
+        let new_key = cli.rotate_key().await.unwrap();
+        let (new_token, meta) =
+            cli.mint_api_token("admin", Some("post-rotate"), 3600, "test").await.unwrap();
+
+        // Before reload: server cannot validate the new token.
+        let server_clone = server.clone();
+        let token_clone = new_token.clone();
+        let result =
+            tokio::task::spawn_blocking(move || server_clone.validate_api_token(&token_clone))
+                .await
+                .unwrap();
+        assert!(result.is_err(), "server should reject token signed with unknown key");
+
+        // Before reload: server's token metadata store does not know the
+        // CLI-minted JTI.
+        let meta_store = server.token_metadata_store().unwrap();
+        assert!(
+            !meta_store.exists(&meta.jti).await,
+            "server should not know CLI-minted JTI before reload"
+        );
+
+        // Reload keys on the server side.
+        server.reload_keys().await.unwrap();
+
+        // After reload: server accepts the new token (JWT signature).
+        let server_clone = server.clone();
+        let token_clone = new_token.clone();
+        let claims =
+            tokio::task::spawn_blocking(move || server_clone.validate_api_token(&token_clone))
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(claims.role, "admin");
+
+        // After reload: server's token metadata store recognises the
+        // CLI-minted JTI (the "tokens we mint" enforcement path).
+        assert!(
+            meta_store.exists(&meta.jti).await,
+            "server should recognise CLI-minted JTI after reload"
+        );
+
+        // The server's key provider should report the new active kid.
+        let active_kid = {
+            let kp = server.key_provider().unwrap().clone();
+            tokio::task::spawn_blocking(move || kp.active_key().kid).await.unwrap()
+        };
+        assert_eq!(active_kid, new_key.kid);
     }
 
     #[test]

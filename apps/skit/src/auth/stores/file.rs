@@ -89,6 +89,8 @@ pub struct FileKeyProvider {
     /// kid -> raw Ed25519 public key bytes (32 bytes)
     public_keys: RwLock<HashMap<String, Arc<[u8]>>>,
     jwks: RwLock<Jwks>,
+    /// Serializes rotate/reload to prevent lost-update races.
+    mutation_lock: tokio::sync::Mutex<()>,
 }
 
 impl FileKeyProvider {
@@ -193,6 +195,7 @@ impl FileKeyProvider {
             active: RwLock::new(active_signing_key),
             public_keys: RwLock::new(public_keys),
             jwks: RwLock::new(jwks),
+            mutation_lock: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -251,8 +254,44 @@ impl FileKeyProvider {
         }
 
         // Atomic rename (same directory).
-        tokio::fs::rename(&temp_path, path).await?;
+        if let Err(e) = tokio::fs::rename(&temp_path, path).await {
+            // Best-effort cleanup of the temp file.
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err(e.into());
+        }
         Ok(())
+    }
+
+    /// Atomically swap all three in-memory caches.
+    ///
+    /// All three write locks are held simultaneously so no reader can
+    /// observe a partially-swapped state (e.g. an active kid whose
+    /// verification key isn't yet in the map).
+    //
+    // Clippy wants to tighten each guard's scope, but releasing any
+    // lock before the others are updated breaks the atomicity
+    // guarantee — a reader between releases could see a new active
+    // kid whose verification key isn't in the map yet.
+    #[allow(clippy::significant_drop_tightening)]
+    fn swap_state(
+        &self,
+        new_active: SigningKeyMaterial,
+        new_public_keys_delta: Option<(String, Arc<[u8]>)>,
+        full_public_keys: Option<HashMap<String, Arc<[u8]>>>,
+        new_jwks: Jwks,
+    ) {
+        let mut active = lock_write(&self.active);
+        let mut public_keys = lock_write(&self.public_keys);
+        let mut jwks_lock = lock_write(&self.jwks);
+
+        if let Some(full) = full_public_keys {
+            *public_keys = full;
+        }
+        if let Some((kid, key)) = new_public_keys_delta {
+            public_keys.insert(kid, key);
+        }
+        *jwks_lock = new_jwks;
+        *active = new_active;
     }
 }
 
@@ -279,36 +318,123 @@ impl KeyProvider for FileKeyProvider {
     }
 
     async fn rotate(&self) -> Result<SigningKeyMaterial, AuthStoreError> {
+        // Serialize mutations so two concurrent rotations cannot
+        // each snapshot the same base JWKS and clobber each other.
+        let _guard = self.mutation_lock.lock().await;
+
         let private_path = self.state_dir.join(PRIVATE_JWK_FILENAME);
         let jwks_path = self.state_dir.join(PUBLIC_JWKS_FILENAME);
 
         let (private_jwk, new_signing_key, public_key_bytes) = generate_new_private_key()?;
 
-        let mut jwks = lock_read(&self.jwks).clone();
+        // Re-read JWKS from disk (not in-memory) to pick up any
+        // changes persisted by a concurrent process.
+        let mut jwks: Jwks = if jwks_path.exists() {
+            let content = tokio::fs::read_to_string(&jwks_path).await?;
+            serde_json::from_str(&content)?
+        } else {
+            Jwks { keys: vec![] }
+        };
         if !jwks.keys.iter().any(|k| k.kid == private_jwk.kid) {
             jwks.keys.push(private_jwk.to_public_jwk());
         }
 
-        // Persist JWKS first so the new kid becomes verifiable before switching active key.
         Self::write_secure(&jwks_path, &serde_json::to_string_pretty(&jwks)?).await?;
         Self::write_secure(&private_path, &serde_json::to_string_pretty(&private_jwk)?).await?;
 
-        {
-            let mut active = lock_write(&self.active);
-            *active = new_signing_key.clone();
-        }
-        {
-            let mut public_keys = lock_write(&self.public_keys);
-            public_keys.insert(private_jwk.kid.clone(), public_key_bytes);
-        }
-        {
-            let mut jwks_lock = lock_write(&self.jwks);
-            *jwks_lock = jwks.clone();
-        }
+        self.swap_state(
+            new_signing_key.clone(),
+            Some((private_jwk.kid.clone(), public_key_bytes)),
+            None,
+            jwks.clone(),
+        );
 
         info!(kid = %new_signing_key.kid, total_keys = jwks.keys.len(), "Rotated signing key");
 
         Ok(new_signing_key)
+    }
+
+    async fn reload(&self) -> Result<(), AuthStoreError> {
+        let _guard = self.mutation_lock.lock().await;
+
+        let private_path = self.state_dir.join(PRIVATE_JWK_FILENAME);
+        let jwks_path = self.state_dir.join(PUBLIC_JWKS_FILENAME);
+
+        Self::verify_permissions(&private_path)?;
+        let content = tokio::fs::read_to_string(&private_path).await?;
+        let private: PrivateJwk = serde_json::from_str(&content)?;
+        private.validate()?;
+
+        let seed = base64url_decode(&private.d)?;
+        let public_from_file = base64url_decode(&private.x)?;
+
+        if seed.len() != 32 {
+            return Err(AuthStoreError::InvalidKey("Ed25519 seed must be 32 bytes".to_string()));
+        }
+        if public_from_file.len() != 32 {
+            return Err(AuthStoreError::InvalidKey(
+                "Ed25519 public key must be 32 bytes".to_string(),
+            ));
+        }
+
+        let (derived_public, pkcs8) = derive_keypair(&seed)?;
+        if derived_public != public_from_file {
+            return Err(AuthStoreError::InvalidKey(
+                "Public key in JWK does not match derived key".to_string(),
+            ));
+        }
+
+        let new_active = SigningKeyMaterial {
+            kid: private.kid.clone(),
+            pkcs8: Arc::from(pkcs8.into_boxed_slice()),
+        };
+
+        // jwks.json is public data — no verify_permissions check needed.
+        let jwks: Jwks = if jwks_path.exists() {
+            let content = tokio::fs::read_to_string(&jwks_path).await?;
+            serde_json::from_str(&content)?
+        } else {
+            Jwks { keys: vec![] }
+        };
+
+        let mut new_public_keys: HashMap<String, Arc<[u8]>> = HashMap::new();
+        for jwk in &jwks.keys {
+            let bytes = base64url_decode(&jwk.x)?;
+            if bytes.len() != 32 {
+                return Err(AuthStoreError::InvalidKey(format!(
+                    "Invalid public key length for kid {}",
+                    jwk.kid
+                )));
+            }
+            new_public_keys.insert(jwk.kid.clone(), Arc::from(bytes.into_boxed_slice()));
+        }
+
+        // Ensure the active public key is in the map (mirrors load_or_init behaviour).
+        let active_pub: Arc<[u8]> = Arc::from(public_from_file.into_boxed_slice());
+        if let Some(existing) = new_public_keys.get(&private.kid) {
+            if existing.as_ref() != active_pub.as_ref() {
+                return Err(AuthStoreError::InvalidKey(
+                    "JWKS entry for active kid does not match private key".to_string(),
+                ));
+            }
+        } else {
+            new_public_keys.insert(private.kid.clone(), active_pub);
+        }
+
+        // Keep the JWKS struct consistent with public_keys so that
+        // /.well-known/jwks.json always advertises the active key.
+        let mut jwks = jwks;
+        if !jwks.keys.iter().any(|k| k.kid == private.kid) {
+            jwks.keys.push(private.to_public_jwk());
+        }
+
+        let total_keys = jwks.keys.len();
+
+        self.swap_state(new_active.clone(), None, Some(new_public_keys), jwks);
+
+        info!(kid = %new_active.kid, total_keys, "Reloaded keys from disk");
+
+        Ok(())
     }
 }
 
@@ -382,7 +508,7 @@ impl FileRevocationStore {
 
         let store =
             Self { state_dir: state_dir.to_path_buf(), revoked: RwLock::new(HashMap::new()) };
-        store.load().await?;
+        store.reload().await?;
         Ok(store)
     }
 
@@ -430,7 +556,7 @@ impl RevocationStore for FileRevocationStore {
         Ok(())
     }
 
-    async fn load(&self) -> Result<(), AuthStoreError> {
+    async fn reload(&self) -> Result<(), AuthStoreError> {
         let path = self.state_dir.join("revoked.json");
         if path.exists() {
             FileKeyProvider::verify_permissions(&path)?;
@@ -538,11 +664,31 @@ impl TokenMetadataStore for FileTokenMetadataStore {
     async fn get(&self, jti: &str) -> Result<Option<TokenMetadata>, AuthStoreError> {
         Ok(lock_read(&self.tokens).get(jti).cloned())
     }
+
+    async fn reload(&self) -> Result<(), AuthStoreError> {
+        let path = self.state_dir.join("tokens.json");
+        if !path.exists() {
+            warn!("tokens.json not found during reload — keeping existing in-memory cache");
+            return Ok(());
+        }
+        FileKeyProvider::verify_permissions(&path)?;
+        let data = tokio::fs::read_to_string(&path).await?;
+        let tokens: Vec<TokenMetadata> = serde_json::from_str(&data)?;
+        let count = tokens.len();
+        let mut new_tokens: HashMap<String, TokenMetadata> = HashMap::with_capacity(count);
+        for token in tokens {
+            new_tokens.insert(token.jti.clone(), token);
+        }
+        *lock_write(&self.tokens) = new_tokens;
+        debug!(count, "Reloaded token metadata from disk");
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use super::super::{TokenMetadata, TokenType};
     use super::*;
     use tempfile::TempDir;
 
@@ -629,6 +775,186 @@ mod tests {
         .unwrap();
         assert!(jwks.keys.iter().any(|jwk| jwk.kid == old_kid));
         assert!(jwks.keys.iter().any(|jwk| jwk.kid == new_key.kid));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_key_provider_reload_after_external_rotation() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Simulate two independent instances sharing the same state directory,
+        // like the CLI and the running server.
+        let server_provider =
+            Arc::new(FileKeyProvider::load_or_init(temp_dir.path()).await.unwrap());
+        let cli_provider = Arc::new(FileKeyProvider::load_or_init(temp_dir.path()).await.unwrap());
+
+        let original_kid = tokio::task::spawn_blocking({
+            let p = server_provider.clone();
+            move || p.active_key().kid
+        })
+        .await
+        .unwrap();
+
+        // CLI rotates the key (writes new key material to disk).
+        let new_key = cli_provider.rotate().await.unwrap();
+        assert_ne!(original_kid, new_key.kid);
+
+        // Server instance still sees the old active key and does NOT
+        // have the new kid in its verification set — this is the bug.
+        let stale_kid = tokio::task::spawn_blocking({
+            let p = server_provider.clone();
+            move || p.active_key().kid
+        })
+        .await
+        .unwrap();
+        assert_eq!(stale_kid, original_kid, "server should still have the old key before reload");
+
+        let missing = tokio::task::spawn_blocking({
+            let p = server_provider.clone();
+            let kid = new_key.kid.clone();
+            move || p.verification_key(&kid)
+        })
+        .await
+        .unwrap();
+        assert!(missing.is_none(), "new kid should be unknown before reload");
+
+        // After reload the server picks up the on-disk changes.
+        server_provider.reload().await.unwrap();
+
+        let reloaded_kid = tokio::task::spawn_blocking({
+            let p = server_provider.clone();
+            move || p.active_key().kid
+        })
+        .await
+        .unwrap();
+        assert_eq!(reloaded_kid, new_key.kid, "active key should match after reload");
+
+        let found = tokio::task::spawn_blocking({
+            let p = server_provider.clone();
+            let kid = new_key.kid.clone();
+            move || p.verification_key(&kid)
+        })
+        .await
+        .unwrap();
+        assert!(found.is_some(), "new kid should be verifiable after reload");
+
+        // Old key should still be verifiable (kept in JWKS).
+        let old_found = tokio::task::spawn_blocking({
+            let p = server_provider.clone();
+            move || p.verification_key(&original_kid)
+        })
+        .await
+        .unwrap();
+        assert!(old_found.is_some(), "old kid should remain verifiable after reload");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_concurrent_rotations_preserve_all_kids() {
+        let temp_dir = TempDir::new().unwrap();
+        let provider = Arc::new(FileKeyProvider::load_or_init(temp_dir.path()).await.unwrap());
+        let original_kid = {
+            let p = provider.clone();
+            tokio::task::spawn_blocking(move || p.active_key().kid).await.unwrap()
+        };
+
+        // Spawn two concurrent rotations.
+        let p1 = provider.clone();
+        let p2 = provider.clone();
+        let (r1, r2) = tokio::join!(
+            tokio::spawn(async move { p1.rotate().await.unwrap() }),
+            tokio::spawn(async move { p2.rotate().await.unwrap() }),
+        );
+        let key1 = r1.unwrap();
+        let key2 = r2.unwrap();
+
+        // All three kids (original + both rotations) must be verifiable.
+        let p = provider.clone();
+        let kids = tokio::task::spawn_blocking(move || p.valid_kids()).await.unwrap();
+        assert!(kids.contains(&original_kid), "original kid lost after concurrent rotate");
+        assert!(kids.contains(&key1.kid), "key1 kid lost after concurrent rotate");
+        assert!(kids.contains(&key2.kid), "key2 kid lost after concurrent rotate");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_reload_missing_private_key_errors() {
+        let temp_dir = TempDir::new().unwrap();
+        let provider = FileKeyProvider::load_or_init(temp_dir.path()).await.unwrap();
+
+        // Remove the private key file.
+        tokio::fs::remove_file(temp_dir.path().join(PRIVATE_JWK_FILENAME)).await.unwrap();
+
+        let result = provider.reload().await;
+        assert!(result.is_err(), "reload should fail when auth.jwk is missing");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_reload_reinserts_active_kid_into_jwks() {
+        let temp_dir = TempDir::new().unwrap();
+        let provider = Arc::new(FileKeyProvider::load_or_init(temp_dir.path()).await.unwrap());
+
+        let active_kid = {
+            let p = provider.clone();
+            tokio::task::spawn_blocking(move || p.active_key().kid).await.unwrap()
+        };
+
+        // Strip the active kid from the on-disk JWKS (simulates hand-editing).
+        let jwks_path = temp_dir.path().join(PUBLIC_JWKS_FILENAME);
+        tokio::fs::write(&jwks_path, r#"{"keys":[]}"#).await.unwrap();
+
+        provider.reload().await.unwrap();
+
+        // After reload, the active kid should be re-inserted into JWKS.
+        let p = provider.clone();
+        let jwks = tokio::task::spawn_blocking(move || p.jwks()).await.unwrap();
+        assert!(
+            jwks.keys.iter().any(|k| k.kid == active_kid),
+            "active kid should be re-inserted into JWKS after reload"
+        );
+
+        // And verifiable.
+        let p = provider.clone();
+        let kid_clone = active_kid.clone();
+        let vk = tokio::task::spawn_blocking(move || p.verification_key(&kid_clone)).await.unwrap();
+        assert!(vk.is_some(), "active kid should be verifiable after reload");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_key_provider_reload_corrupt_jwks() {
+        let temp_dir = TempDir::new().unwrap();
+        let provider = FileKeyProvider::load_or_init(temp_dir.path()).await.unwrap();
+
+        // Corrupt the JWKS file on disk.
+        let jwks_path = temp_dir.path().join(PUBLIC_JWKS_FILENAME);
+        tokio::fs::write(&jwks_path, "not valid json").await.unwrap();
+
+        let result = provider.reload().await;
+        assert!(result.is_err(), "reload should fail on corrupt jwks.json");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_token_metadata_store_reload() {
+        let temp_dir = TempDir::new().unwrap();
+        let store_a = FileTokenMetadataStore::new(temp_dir.path()).await.unwrap();
+        let store_b = FileTokenMetadataStore::new(temp_dir.path()).await.unwrap();
+
+        let meta = TokenMetadata {
+            jti: "reload-jti".to_string(),
+            token_hash: "hash".to_string(),
+            token_type: TokenType::Api,
+            role: Some("admin".to_string()),
+            label: Some("test".to_string()),
+            created_at: 1000,
+            exp: 2000,
+            revoked: false,
+            created_by: "test".to_string(),
+        };
+
+        // store_a writes a token; store_b doesn't know about it yet.
+        store_a.store(meta).await.unwrap();
+        assert!(!store_b.exists("reload-jti").await);
+
+        // After reload, store_b picks it up.
+        store_b.reload().await.unwrap();
+        assert!(store_b.exists("reload-jti").await);
     }
 
     #[tokio::test(flavor = "multi_thread")]
