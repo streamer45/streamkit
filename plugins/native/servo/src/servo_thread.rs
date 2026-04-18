@@ -9,6 +9,10 @@
 //! UB, all Servo work is funnelled through a single dedicated `std::thread`,
 //! lazily spawned on the first instance's init.
 //!
+//! Servo's `Opts` is a **process-global singleton** — only one `Servo`
+//! instance can exist.  Multiple nodes share this single `Servo` instance,
+//! each with their own `SoftwareRenderingContext` and `WebView`.
+//!
 //! Each instance gets a unique `NodeId` (UUID) and communicates with the
 //! shared thread via tagged work items.  Results are sent back on per-node
 //! `std::sync::mpsc` channels so `tick()` can block-receive without needing
@@ -34,9 +38,9 @@ pub type NodeId = uuid::Uuid;
 
 /// Work item sent from a plugin's `tick()` to the shared Servo thread.
 pub enum ServoWorkItem {
-    /// Register a new instance: create a Servo + WebView and navigate to URL.
-    /// The `result_tx` is stored by the shared thread for sending render
-    /// results and the init outcome back.
+    /// Register a new instance: create a WebView on the shared Servo and
+    /// navigate to URL.  The `result_tx` is stored by the shared thread for
+    /// sending render results and the init outcome back.
     Register {
         node_id: NodeId,
         config: ServoConfig,
@@ -124,8 +128,10 @@ impl WebViewDelegate for FrameDelegate {
 }
 
 /// Per-instance state living on the shared Servo thread.
+///
+/// Each instance has its own `SoftwareRenderingContext` and `WebView`,
+/// but they all share the single process-global `Servo` instance.
 struct InstanceState {
-    servo: Servo,
     webview: WebView,
     rendering_context: Rc<SoftwareRenderingContext>,
     delegate: Rc<FrameDelegate>,
@@ -138,21 +144,26 @@ const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Entry point for the shared Servo thread.
 ///
-/// Processes work items from all plugin instances.
+/// Creates a single process-global `Servo` instance on first registration
+/// and processes work items from all plugin instances.
 #[allow(clippy::needless_pass_by_value)]
 fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
     let mut instances: HashMap<NodeId, InstanceState> = HashMap::new();
+    // Servo's Opts is a process-global singleton -- we lazily create the
+    // single Servo instance on the first Register and keep it alive for
+    // the lifetime of the thread.
+    let mut servo: Option<Servo> = None;
 
     while let Ok(work) = work_rx.recv() {
         match work {
             ServoWorkItem::Register { node_id, config, result_tx } => {
-                handle_register(&mut instances, node_id, config, result_tx);
+                handle_register(&mut instances, &mut servo, node_id, config, result_tx);
             },
             ServoWorkItem::Render { node_id } => {
-                handle_render(&mut instances, &node_id);
+                handle_render(&mut instances, servo.as_ref(), &node_id);
             },
             ServoWorkItem::UpdateConfig { node_id, config } => {
-                handle_update_config(&mut instances, &node_id, &config);
+                handle_update_config(&mut instances, servo.as_ref(), &node_id, &config);
             },
             ServoWorkItem::Unregister { node_id } => {
                 instances.remove(&node_id);
@@ -161,65 +172,39 @@ fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
     }
 }
 
-/// Handle a `Register` work item: create Servo, WebView, navigate to URL,
-/// and wait for the initial load.
+/// Handle a `Register` work item: create a WebView on the shared Servo
+/// instance (creating the Servo if this is the first registration),
+/// navigate to URL, and wait for the initial load.
 fn handle_register(
     instances: &mut HashMap<NodeId, InstanceState>,
+    servo: &mut Option<Servo>,
     node_id: NodeId,
     config: ServoConfig,
     result_tx: std::sync::mpsc::SyncSender<ServoThreadResult>,
 ) {
-    match create_servo_instance(&config) {
-        Ok((servo, webview, rendering_context, delegate)) => {
+    // Create the process-global Servo instance on first use.
+    let servo_ref = servo.get_or_insert_with(|| {
+        let prefs = servo::Preferences {
+            network_http_proxy_uri: String::new(),
+            network_https_proxy_uri: String::new(),
+            ..servo::Preferences::default()
+        };
+        let s: Servo = ServoBuilder::default().preferences(prefs).build();
+        s.setup_logging();
+        s
+    });
+
+    match create_webview(servo_ref, &config) {
+        Ok((webview, rendering_context, delegate)) => {
             // Wait for the initial page load so the first Render has content.
-            let deadline = Instant::now() + LOAD_TIMEOUT;
-            while !delegate.loaded.get() {
-                if Instant::now() > deadline {
-                    tracing::warn!(
-                        node_id = %node_id,
-                        url = %config.url,
-                        "Timed out waiting for initial page load, proceeding anyway",
-                    );
-                    break;
-                }
-                servo.spin_event_loop();
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            wait_for_load(servo_ref, &delegate, &config.url, &node_id);
 
             // Force at least one post-load frame via a rAF nudge.
-            let js_done = Rc::new(Cell::new(false));
-            {
-                let js_done_inner = js_done.clone();
-                webview.evaluate_javascript(
-                    "new Promise(r => requestAnimationFrame(() => { \
-                     document.documentElement.getBoundingClientRect(); r(); \
-                     }))",
-                    move |_r| js_done_inner.set(true),
-                );
-            }
-            let js_deadline = Instant::now() + Duration::from_secs(5);
-            while !js_done.get() {
-                if Instant::now() > js_deadline {
-                    break;
-                }
-                servo.spin_event_loop();
-                std::thread::sleep(Duration::from_millis(1));
-            }
-
-            // Wait for at least one post-load frame_ready.
-            let frames_at_load = delegate.frames.get();
-            let frame_deadline = Instant::now() + Duration::from_secs(5);
-            while delegate.frames.get() <= frames_at_load {
-                if Instant::now() > frame_deadline {
-                    break;
-                }
-                servo.spin_event_loop();
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            nudge_frame(servo_ref, &webview, &delegate);
 
             // Inject custom CSS if provided.
             if let Some(ref css) = config.custom_css {
-                inject_custom_css(&webview, &servo, css);
+                inject_custom_css(&webview, servo_ref, css);
             }
 
             tracing::info!(
@@ -227,30 +212,34 @@ fn handle_register(
                 url = %config.url,
                 width = config.width,
                 height = config.height,
-                "Created Servo instance",
+                "Created Servo WebView on shared instance",
             );
 
             let _ = result_tx.send(ServoThreadResult::InitOk);
             instances.insert(
                 node_id,
-                InstanceState { servo, webview, rendering_context, delegate, config, result_tx },
+                InstanceState { webview, rendering_context, delegate, config, result_tx },
             );
         },
         Err(e) => {
-            tracing::error!(node_id = %node_id, error = %e, "Failed to create Servo instance");
+            tracing::error!(node_id = %node_id, error = %e, "Failed to create Servo WebView");
             let _ = result_tx.send(ServoThreadResult::InitErr(e));
         },
     }
 }
 
 /// Handle a `Render` work item: pump the event loop and read pixels.
-fn handle_render(instances: &mut HashMap<NodeId, InstanceState>, node_id: &NodeId) {
-    let Some(state) = instances.get_mut(node_id) else {
+fn handle_render(
+    instances: &mut HashMap<NodeId, InstanceState>,
+    servo: Option<&Servo>,
+    node_id: &NodeId,
+) {
+    let (Some(state), Some(servo)) = (instances.get_mut(node_id), servo) else {
         return;
     };
 
     // Pump the event loop to let Servo process pending work.
-    state.servo.spin_event_loop();
+    servo.spin_event_loop();
 
     // Read pixels from the rendering context.
     let rect = Box2D::new(
@@ -275,10 +264,11 @@ fn handle_render(instances: &mut HashMap<NodeId, InstanceState>, node_id: &NodeI
 /// Handle an `UpdateConfig` work item: navigate to a new URL if changed.
 fn handle_update_config(
     instances: &mut HashMap<NodeId, InstanceState>,
+    servo: Option<&Servo>,
     node_id: &NodeId,
     new_config: &ServoConfig,
 ) {
-    let Some(state) = instances.get_mut(node_id) else {
+    let (Some(state), Some(servo)) = (instances.get_mut(node_id), servo) else {
         return;
     };
 
@@ -292,34 +282,23 @@ fn handle_update_config(
             state.webview.load(parsed);
             state.delegate.loaded.set(false);
 
-            // Wait for the new page to load.
-            let deadline = Instant::now() + LOAD_TIMEOUT;
-            while !state.delegate.loaded.get() {
-                if Instant::now() > deadline {
-                    tracing::warn!(
-                        node_id = %node_id,
-                        url = %state.config.url,
-                        "Timed out waiting for navigation load",
-                    );
-                    break;
-                }
-                state.servo.spin_event_loop();
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            wait_for_load(servo, &state.delegate, &state.config.url, node_id);
         }
     }
 
     if css_changed {
         if let Some(ref css) = state.config.custom_css {
-            inject_custom_css(&state.webview, &state.servo, css);
+            inject_custom_css(&state.webview, servo, css);
         }
     }
 }
 
-/// Create a Servo instance with a software rendering context.
-fn create_servo_instance(
+/// Create a `WebView` with its own `SoftwareRenderingContext` on the shared
+/// Servo instance.
+fn create_webview(
+    servo: &Servo,
     config: &ServoConfig,
-) -> Result<(Servo, WebView, Rc<SoftwareRenderingContext>, Rc<FrameDelegate>), String> {
+) -> Result<(WebView, Rc<SoftwareRenderingContext>, Rc<FrameDelegate>), String> {
     let size = PhysicalSize::new(config.width, config.height);
     let rendering_context: Rc<SoftwareRenderingContext> = Rc::new(
         SoftwareRenderingContext::new(size)
@@ -328,27 +307,69 @@ fn create_servo_instance(
 
     let _ = rendering_context.make_current();
 
-    let prefs = servo::Preferences {
-        network_http_proxy_uri: String::new(),
-        network_https_proxy_uri: String::new(),
-        ..servo::Preferences::default()
-    };
-
-    let servo: Servo = ServoBuilder::default().preferences(prefs).build();
-    servo.setup_logging();
-
     let delegate: Rc<FrameDelegate> = Rc::new(FrameDelegate::default());
 
     let parsed_url =
         url::Url::parse(&config.url).map_err(|e| format!("Invalid URL '{}': {e}", config.url))?;
 
-    let webview: WebView = WebViewBuilder::new(&servo, rendering_context.clone())
+    let webview: WebView = WebViewBuilder::new(servo, rendering_context.clone())
         .url(parsed_url)
         .hidpi_scale_factor(Scale::new(1.0))
         .delegate(delegate.clone() as Rc<dyn WebViewDelegate>)
         .build();
 
-    Ok((servo, webview, rendering_context, delegate))
+    Ok((webview, rendering_context, delegate))
+}
+
+/// Wait for the page to reach `LoadStatus::Complete`, with a timeout.
+fn wait_for_load(servo: &Servo, delegate: &FrameDelegate, url: &str, node_id: &NodeId) {
+    let deadline = Instant::now() + LOAD_TIMEOUT;
+    while !delegate.loaded.get() {
+        if Instant::now() > deadline {
+            tracing::warn!(
+                node_id = %node_id,
+                url = %url,
+                "Timed out waiting for page load, proceeding anyway",
+            );
+            break;
+        }
+        servo.spin_event_loop();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Force a post-load frame by triggering a `requestAnimationFrame` nudge
+/// and waiting for a new frame to be painted.
+fn nudge_frame(servo: &Servo, webview: &WebView, delegate: &FrameDelegate) {
+    let js_done = Rc::new(Cell::new(false));
+    {
+        let js_done_inner = js_done.clone();
+        webview.evaluate_javascript(
+            "new Promise(r => requestAnimationFrame(() => { \
+             document.documentElement.getBoundingClientRect(); r(); \
+             }))",
+            move |_r| js_done_inner.set(true),
+        );
+    }
+    let js_deadline = Instant::now() + Duration::from_secs(5);
+    while !js_done.get() {
+        if Instant::now() > js_deadline {
+            break;
+        }
+        servo.spin_event_loop();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    // Wait for at least one post-load frame_ready.
+    let frames_at_load = delegate.frames.get();
+    let frame_deadline = Instant::now() + Duration::from_secs(5);
+    while delegate.frames.get() <= frames_at_load {
+        if Instant::now() > frame_deadline {
+            break;
+        }
+        servo.spin_event_loop();
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 /// Inject custom CSS into a loaded page via JavaScript.
