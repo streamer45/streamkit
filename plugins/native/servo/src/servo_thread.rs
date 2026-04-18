@@ -22,7 +22,8 @@
 //!
 //! - Work item handlers are wrapped in `catch_unwind` so a panic in one
 //!   node does not bring down the shared thread (and all other nodes).
-//! - Page load errors are tracked and reported via `LoadStatus::Failed`.
+//! - Page load errors are detected via timeout when `LoadStatus::Complete`
+//!   is not received within the configured deadline.
 //! - Each instance caches the last successfully rendered frame; on render
 //!   failures the cached frame is returned instead of a blank.
 //! - Frame render timing is emitted via `tracing` for observability.
@@ -132,10 +133,8 @@ impl WebViewDelegate for FrameDelegate {
                 self.loaded.set(true);
                 self.load_failed.set(false);
             },
-            LoadStatus::Failed => {
-                self.loaded.set(true);
-                self.load_failed.set(true);
-            },
+            // Servo 0.1.0 does not expose a Failed variant.  Load failures
+            // are detected via timeout (page never reaches Complete).
             _ => {},
         }
     }
@@ -513,8 +512,8 @@ fn create_webview(
     Ok((webview, rendering_context, delegate))
 }
 
-/// Wait for the page to reach `LoadStatus::Complete` or `LoadStatus::Failed`,
-/// with a configurable timeout.
+/// Wait for the page to reach `LoadStatus::Complete`, with a configurable
+/// timeout.  Returns when the delegate's `loaded` flag is set, or on timeout.
 fn wait_for_load(
     servo: &Servo,
     delegate: &FrameDelegate,
