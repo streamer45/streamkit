@@ -488,83 +488,13 @@ async fn list_node_definitions_handler(
     State(app_state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
-    use streamkit_core::types::PacketType;
-    use streamkit_core::{InputPin, NodeDefinition, OutputPin, PinCardinality};
-
     let perms = crate::role_extractor::get_permissions(&headers, &app_state);
 
     let mut definitions = read_registry(&app_state)?.definitions();
 
-    // Add synthetic node definitions for oneshot-only nodes
-    // These are virtual markers that get replaced at runtime in oneshot pipelines
-
-    definitions.push(NodeDefinition {
-        kind: "streamkit::http_input".to_string(),
-        description: Some(
-            "Synthetic input node for oneshot HTTP pipelines. \
-             Receives binary data from the HTTP request body."
-                .to_string(),
-        ),
-        param_schema: serde_json::json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "field": {
-                    "type": "string",
-                    "description": "Multipart field name to bind to this input. Defaults to 'media' when only one http_input node exists; otherwise defaults to the node id."
-                },
-                "fields": {
-                    "type": "array",
-                    "description": "Optional list of multipart fields for this node. When set, the node exposes one output pin per entry (pin name matches the field name). Entries may be strings or objects with { name, required }.",
-                    "items": {
-                        "oneOf": [
-                            { "type": "string" },
-                            {
-                                "type": "object",
-                                "additionalProperties": false,
-                                "properties": {
-                                    "name": { "type": "string" },
-                                    "required": { "type": "boolean", "default": true }
-                                },
-                                "required": ["name"]
-                            }
-                        ]
-                    }
-                },
-                "required": {
-                    "type": "boolean",
-                    "description": "If true (default), the request must include this field.",
-                    "default": true
-                }
-            }
-        }),
-        inputs: vec![],
-        outputs: vec![OutputPin {
-            name: "out".to_string(),
-            produces_type: PacketType::Binary,
-            cardinality: PinCardinality::Broadcast,
-        }],
-        categories: vec!["transport".to_string(), "oneshot".to_string()],
-        bidirectional: false,
-    });
-
-    definitions.push(NodeDefinition {
-        kind: "streamkit::http_output".to_string(),
-        description: Some(
-            "Synthetic output node for oneshot HTTP pipelines. \
-             Sends binary data as the HTTP response body."
-                .to_string(),
-        ),
-        param_schema: serde_json::json!({}),
-        inputs: vec![InputPin {
-            name: "in".to_string(),
-            accepts_types: vec![PacketType::Binary],
-            cardinality: PinCardinality::One,
-        }],
-        outputs: vec![],
-        categories: vec!["transport".to_string(), "oneshot".to_string()],
-        bidirectional: false,
-    });
+    // Add synthetic node definitions for oneshot-only nodes.
+    // These are virtual markers that get replaced at runtime in oneshot pipelines.
+    definitions.extend(synthetic_node_definitions());
 
     definitions.retain(|def| {
         if !perms.is_node_allowed(&def.kind) {
@@ -641,14 +571,14 @@ struct ValidateRequest {
 
 /// Build synthetic `NodeDefinition`s for oneshot-only virtual nodes that are not
 /// registered in the `NodeRegistry` (`streamkit::http_input`, `streamkit::http_output`).
-fn synthetic_node_definitions() -> HashMap<String, streamkit_core::NodeDefinition> {
+///
+/// Used by both `list_node_definitions_handler` and the validate endpoint so
+/// there is a single source of truth for these definitions.
+fn synthetic_node_definitions() -> Vec<streamkit_core::NodeDefinition> {
     use streamkit_core::types::PacketType;
     use streamkit_core::{InputPin, NodeDefinition, OutputPin, PinCardinality};
 
-    let mut map = HashMap::new();
-
-    map.insert(
-        "streamkit::http_input".to_string(),
+    vec![
         NodeDefinition {
             kind: "streamkit::http_input".to_string(),
             description: Some(
@@ -662,11 +592,11 @@ fn synthetic_node_definitions() -> HashMap<String, streamkit_core::NodeDefinitio
                 "properties": {
                     "field": {
                         "type": "string",
-                        "description": "Multipart field name to bind to this input."
+                        "description": "Multipart field name to bind to this input. Defaults to 'media' when only one http_input node exists; otherwise defaults to the node id."
                     },
                     "fields": {
                         "type": "array",
-                        "description": "Optional list of multipart fields for this node.",
+                        "description": "Optional list of multipart fields for this node. When set, the node exposes one output pin per entry (pin name matches the field name). Entries may be strings or objects with { name, required }.",
                         "items": {
                             "oneOf": [
                                 { "type": "string" },
@@ -698,10 +628,6 @@ fn synthetic_node_definitions() -> HashMap<String, streamkit_core::NodeDefinitio
             categories: vec!["transport".to_string(), "oneshot".to_string()],
             bidirectional: false,
         },
-    );
-
-    map.insert(
-        "streamkit::http_output".to_string(),
         NodeDefinition {
             kind: "streamkit::http_output".to_string(),
             description: Some(
@@ -719,36 +645,63 @@ fn synthetic_node_definitions() -> HashMap<String, streamkit_core::NodeDefinitio
             categories: vec!["transport".to_string(), "oneshot".to_string()],
             bidirectional: false,
         },
-    );
-
-    map
+    ]
 }
 
 /// Validate node kinds and params against the registry, returning resolved definitions.
+///
+/// When `perms` is `Some`, per-node permission filtering is applied (matching
+/// `list_node_definitions_handler` and `create_session_handler`).  In unit tests
+/// `None` is passed to skip permission checks.
 fn validate_nodes(
     pipeline: &Pipeline,
     registry: &streamkit_core::NodeRegistry,
+    perms: Option<&crate::permissions::Permissions>,
     errors: &mut Vec<ValidateDiagnostic>,
     warnings: &mut Vec<ValidateDiagnostic>,
 ) -> HashMap<String, streamkit_core::NodeDefinition> {
     let mut node_defs: HashMap<String, streamkit_core::NodeDefinition> = HashMap::new();
-    let synthetics = synthetic_node_definitions();
+    let synthetics: HashMap<String, streamkit_core::NodeDefinition> =
+        synthetic_node_definitions().into_iter().map(|d| (d.kind.clone(), d)).collect();
 
     for (node_id, node) in &pipeline.nodes {
         debug!(node_id = %node_id, kind = %node.kind, "Validating node kind");
 
-        if let Some(def) = registry.get_definition(&node.kind) {
-            node_defs.insert(node_id.clone(), def);
-        } else if let Some(def) = synthetics.get(&node.kind) {
-            node_defs.insert(node_id.clone(), def.clone());
-        } else {
+        let def =
+            registry.get_definition(&node.kind).or_else(|| synthetics.get(&node.kind).cloned());
+
+        let Some(def) = def else {
             errors.push(ValidateDiagnostic {
                 error_type: "error".into(),
                 message: format!("Unknown node kind '{}'", node.kind),
                 node_id: Some(node_id.clone()),
                 connection_id: None,
             });
+            continue;
+        };
+
+        if let Some(perms) = perms {
+            if !perms.is_node_allowed(&node.kind) {
+                errors.push(ValidateDiagnostic {
+                    error_type: "error".into(),
+                    message: format!("Permission denied: node kind '{}' not allowed", node.kind),
+                    node_id: Some(node_id.clone()),
+                    connection_id: None,
+                });
+                continue;
+            }
+            if node.kind.starts_with("plugin::") && !perms.is_plugin_allowed(&node.kind) {
+                errors.push(ValidateDiagnostic {
+                    error_type: "error".into(),
+                    message: format!("Permission denied: plugin '{}' not allowed", node.kind),
+                    node_id: Some(node_id.clone()),
+                    connection_id: None,
+                });
+                continue;
+            }
         }
+
+        node_defs.insert(node_id.clone(), def);
     }
 
     // Param schema validation (best-effort, report as warnings).
@@ -964,7 +917,8 @@ async fn validate_pipeline_handler(
 
     // 3. Validate nodes against the registry
     let registry_guard = read_registry(&app_state)?;
-    let node_defs = validate_nodes(&pipeline, &registry_guard, &mut errors, &mut warnings);
+    let node_defs =
+        validate_nodes(&pipeline, &registry_guard, Some(&perms), &mut errors, &mut warnings);
     drop(registry_guard);
 
     // 4. Validate connections
@@ -1057,7 +1011,7 @@ nodes:
         let mut errors = Vec::new();
         let mut warnings = Vec::new();
 
-        let node_defs = validate_nodes(&pipeline, &registry, &mut errors, &mut warnings);
+        let node_defs = validate_nodes(&pipeline, &registry, None, &mut errors, &mut warnings);
 
         assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
         assert!(node_defs.contains_key("input"), "expected input in node_defs");
@@ -1076,7 +1030,7 @@ nodes:
         let mut errors = Vec::new();
         let mut warnings = Vec::new();
 
-        validate_nodes(&pipeline, &registry, &mut errors, &mut warnings);
+        validate_nodes(&pipeline, &registry, None, &mut errors, &mut warnings);
 
         assert_eq!(errors.len(), 1);
         assert!(errors[0].message.contains("Unknown node kind"));
@@ -1098,7 +1052,7 @@ nodes:
         let mut errors = Vec::new();
         let mut warnings = Vec::new();
 
-        let node_defs = validate_nodes(&pipeline, &registry, &mut errors, &mut warnings);
+        let node_defs = validate_nodes(&pipeline, &registry, None, &mut errors, &mut warnings);
 
         // Inject a connection with a bad pin name to test pin validation.
         pipeline.connections.push(streamkit_api::Connection {
@@ -1133,7 +1087,7 @@ nodes:
         let mut errors = Vec::new();
         let mut warnings = Vec::new();
 
-        let node_defs = validate_nodes(&pipeline, &registry, &mut errors, &mut warnings);
+        let node_defs = validate_nodes(&pipeline, &registry, None, &mut errors, &mut warnings);
         let mut connected = HashSet::new();
         validate_connections(&pipeline, &node_defs, &mut errors, &mut connected);
 
