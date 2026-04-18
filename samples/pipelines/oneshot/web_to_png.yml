@@ -2,22 +2,22 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-# Render a web page to a PNG image using the Servo web engine.
+# Render a web page to a short VP9/WebM video using the Servo web engine.
 #
-# Produces a single 1280x720 frame from the given URL, encodes it as PNG,
-# and writes the result to output.png.
+# Captures 30 frames (1 second at 30 fps) of the given URL and streams the
+# result via http_output as a WebM container.
 #
 # Requires: plugin::native::servo loaded
 #   just build-plugin-native-servo && just copy-plugins-native
 
-name: Web Page to PNG (Oneshot)
-description: Renders a web page to a PNG image via the Servo web engine
+name: Web Page Capture (Servo)
+description: Renders a web page via the Servo engine and outputs a short VP9/WebM clip
 mode: oneshot
 client:
   input:
     type: none
   output:
-    type: none
+    type: video
 
 nodes:
   web:
@@ -26,15 +26,29 @@ nodes:
       url: "https://streamkit.dev"
       width: 1280
       height: 720
-      fps: 1
-      frame_count: 1
+      fps: 30
+      frame_count: 30
 
-  encoder:
-    kind: video::png_encoder
+  pixel_convert:
+    kind: video::pixel_convert
+    params:
+      output_format: nv12
     needs: web
 
-  writer:
-    kind: transport::file_writer
+  vp9_encoder:
+    kind: video::vp9::encoder
+    needs: pixel_convert
+
+  webm_muxer:
+    kind: containers::webm::muxer
     params:
-      path: "output.png"
-    needs: encoder
+      video_width: 1280
+      video_height: 720
+      streaming_mode: live
+    needs: vp9_encoder
+
+  http_output:
+    kind: streamkit::http_output
+    params:
+      content_type: 'video/webm; codecs="vp9"'
+    needs: webm_muxer
