@@ -59,6 +59,7 @@ jobs:
               build-essential g++ clang
               libfontconfig1-dev libharfbuzz-dev libfreetype6-dev
               libegl1-mesa-dev libgl1-mesa-dev libgbm-dev libdrm-dev
+              libunwind-dev
               libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
               gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
               libdbus-1-dev libpulse-dev libxkbcommon-dev
