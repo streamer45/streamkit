@@ -111,6 +111,7 @@ build.
 | `height`       | integer | 720     | Output frame height in pixels |
 | `viewport_width` | integer | 0     | Browser viewport width (0 = same as `width`). Set larger to see more of the page, scaled down. |
 | `viewport_height` | integer | 0    | Browser viewport height (0 = same as `height`). Set larger to see more of the page, scaled down. |
+| `viewport_resolution` | string | — | Viewport preset (`"WxH"`, e.g. `"1920x1080"`). Tunable at runtime; overrides `viewport_width`/`viewport_height`. |
 | `fps`          | integer | 30      | Output frame rate |
 | `custom_css`   | string  | —       | Optional CSS injected into the page |
 | `frame_count`  | integer | 0       | Total frames to generate (0 = infinite) |
@@ -142,9 +143,13 @@ not affected.
 
 ### Runtime Updates
 
-The `url` and `custom_css` parameters can be updated at runtime via the
-WebSocket API or the controls panel. Dimensions and FPS are fixed at
-creation time (the rendering context cannot be resized).
+The `url`, `custom_css`, and `viewport_resolution` parameters can be updated
+at runtime via the WebSocket API or the Stream View controls panel.  Changing
+`viewport_resolution` resizes the Servo rendering context, causing the page
+to re-layout at the new viewport size.
+
+The demo pipeline includes a **Viewport** dropdown with presets (480p through
+1440p) so viewers can switch the viewport resolution live from Stream View.
 
 ## Usage
 

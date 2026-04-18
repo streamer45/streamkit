@@ -47,11 +47,22 @@ client:
           value: "https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_grid_layout"
         - label: "WebGL Aquarium"
           value: "https://webglsamples.org/aquarium/aquarium.html"
-    - label: "Custom CSS"
-      type: text
+    - label: "Viewport"
+      type: select
       node: web_overlay
-      property: custom_css
-      default: ""
+      property: viewport_resolution
+      default: "1280x960"
+      options:
+        - label: "480p (640×480)"
+          value: "640x480"
+        - label: "720p (1280×720)"
+          value: "1280x720"
+        - label: "960p (1280×960)"
+          value: "1280x960"
+        - label: "1080p (1920×1080)"
+          value: "1920x1080"
+        - label: "1440p (2560×1440)"
+          value: "2560x1440"
 
 nodes:
   colorbars_bg:

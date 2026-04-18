@@ -550,7 +550,27 @@ fn handle_update_config(
     // This ensures that on panic (caught by catch_unwind in the caller),
     // state.config still reflects the actual webview state, allowing
     // retries with the same URL to trigger navigation again.
-    state.config.merge_update(new_config);
+    let viewport_changed = state.config.merge_update(new_config);
+
+    // If the viewport resolution changed, resize the rendering context.
+    if viewport_changed {
+        let vw = state.config.effective_viewport_width();
+        let vh = state.config.effective_viewport_height();
+        if state.rc_width != vw || state.rc_height != vh {
+            tracing::info!(
+                node_id = %node_id,
+                old = %format_args!("{}x{}", state.rc_width, state.rc_height),
+                new = %format_args!("{vw}x{vh}"),
+                "Resizing Servo viewport via config update",
+            );
+            let new_size = PhysicalSize::new(vw, vh);
+            state.webview.resize(new_size);
+            state.rc_width = vw;
+            state.rc_height = vh;
+            state.last_good_frame = None;
+            servo.spin_event_loop();
+        }
+    }
 }
 
 /// Handle a `Resize` work item: update output dimensions from a compositor

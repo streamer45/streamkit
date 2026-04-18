@@ -74,6 +74,12 @@ impl NativeSourceNode for ServoSourcePlugin {
                         "default": 0,
                         "description": "Browser viewport height (0 = same as output height). Set larger to see more of the page, scaled down."
                     },
+                    "viewport_resolution": {
+                        "type": "string",
+                        "description": "Viewport resolution preset (WxH). Overrides viewport_width/viewport_height at runtime.",
+                        "tunable": true,
+                        "enum": ["640x480", "1280x720", "1280x960", "1920x1080", "2560x1440"]
+                    },
                     "fps": {
                         "type": "integer",
                         "default": 30,

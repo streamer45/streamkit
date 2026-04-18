@@ -66,6 +66,12 @@ pub struct ServoConfig {
     /// Set larger than `height` to see more of the page, scaled down.
     #[serde(default)]
     pub viewport_height: u32,
+    /// Viewport resolution preset (e.g. `"1280x720"`).  When set via
+    /// a runtime update, overrides `viewport_width` and `viewport_height`.
+    /// This is the preferred way to change the viewport at runtime via
+    /// the Stream View controls (select dropdown).
+    #[serde(default)]
+    pub viewport_resolution: Option<String>,
     /// Output frame rate.
     #[serde(default = "default_fps")]
     pub fps: u32,
@@ -88,6 +94,7 @@ impl Default for ServoConfig {
             height: default_height(),
             viewport_width: 0,
             viewport_height: 0,
+            viewport_resolution: None,
             fps: default_fps(),
             custom_css: None,
             frame_count: default_frame_count(),
@@ -97,6 +104,19 @@ impl Default for ServoConfig {
 }
 
 impl ServoConfig {
+    /// Parse a `"WxH"` resolution string (e.g. `"1920x1080"`) into `(width, height)`.
+    fn parse_resolution(s: &str) -> Option<(u32, u32)> {
+        let parts: Vec<&str> = s.split('x').collect();
+        if parts.len() == 2 {
+            if let (Ok(w), Ok(h)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
+                if w > 0 && h > 0 {
+                    return Some((w, h));
+                }
+            }
+        }
+        None
+    }
+
     /// Effective viewport width (falls back to output width).
     pub fn effective_viewport_width(&self) -> u32 {
         if self.viewport_width > 0 {
@@ -160,16 +180,33 @@ impl ServoConfig {
 
     /// Merge runtime parameter changes from an `UpdateParams` payload.
     ///
-    /// Only the `url` and `custom_css` fields are merged; init-time fields
-    /// (`width`, `height`, `fps`, `frame_count`, `viewport_*`) are left
-    /// unchanged because they cannot be changed after the rendering context
-    /// is created.
-    pub fn merge_update(&mut self, update: &Self) {
+    /// Tunable fields: `url`, `custom_css`, `viewport_resolution`.
+    /// Init-time fields (`width`, `height`, `fps`, `frame_count`) are left
+    /// unchanged.  `viewport_width`/`viewport_height` are updated only
+    /// when `viewport_resolution` is provided (parsed from a `"WxH"` string).
+    ///
+    /// Returns `true` if the viewport dimensions changed (requiring a
+    /// rendering context resize).
+    pub fn merge_update(&mut self, update: &Self) -> bool {
         if !update.url.is_empty() {
             self.url.clone_from(&update.url);
         }
         if update.custom_css.is_some() {
             self.custom_css.clone_from(&update.custom_css);
         }
+
+        // Handle viewport_resolution preset.
+        let mut viewport_changed = false;
+        if let Some(ref res) = update.viewport_resolution {
+            if let Some((w, h)) = Self::parse_resolution(res) {
+                if w != self.viewport_width || h != self.viewport_height {
+                    self.viewport_width = w;
+                    self.viewport_height = h;
+                    self.viewport_resolution = Some(res.clone());
+                    viewport_changed = true;
+                }
+            }
+        }
+        viewport_changed
     }
 }
