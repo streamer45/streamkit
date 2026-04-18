@@ -988,10 +988,22 @@ upload-slint-plugin: build-plugin-native-slint
         http://127.0.0.1:4545/api/v1/plugins
 
 # Build native Servo web renderer plugin
+# Servo's mozangle crate compiles C++ via clang which may not find libstdc++
+# headers automatically.  We auto-detect the GCC include path so the build
+# works without manual env setup.
 [working-directory: 'plugins/native/servo']
 build-plugin-native-servo:
-    @echo "Building native Servo web renderer plugin..."
-    @CARGO_TARGET_DIR={{plugins_target_dir}} cargo build --release
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Building native Servo web renderer plugin..."
+    # Auto-detect GCC C++ include paths for clang/bindgen.
+    if [ -z "${BINDGEN_EXTRA_CLANG_ARGS:-}" ]; then
+        gcc_ver=$(ls /usr/include/c++/ 2>/dev/null | sort -V | tail -1 || true)
+        if [ -n "$gcc_ver" ]; then
+            export BINDGEN_EXTRA_CLANG_ARGS="-I/usr/include/c++/${gcc_ver} -I/usr/include/x86_64-linux-gnu/c++/${gcc_ver}"
+        fi
+    fi
+    CARGO_TARGET_DIR={{plugins_target_dir}} cargo build --release
 
 # Upload Servo plugin to running server
 [working-directory: 'plugins/native/servo']
