@@ -134,6 +134,24 @@ const SliderValue = styled.span`
   font-variant-numeric: tabular-nums;
 `;
 
+const SelectDropdown = styled.select`
+  padding: 8px 12px;
+  font-size: 14px;
+  background: var(--sk-bg);
+  color: var(--sk-text);
+  border: 1px solid var(--sk-border);
+  border-radius: 6px;
+  font-family: inherit;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+
+  &:focus {
+    outline: none;
+    border-color: var(--sk-primary);
+  }
+`;
+
 const ActionButton = styled.button`
   padding: 8px 16px;
   font-size: 14px;
@@ -318,6 +336,37 @@ const ButtonControl: React.FC<{
   return <ActionButton onClick={handleClick}>{control.label}</ActionButton>;
 };
 
+const SelectControl: React.FC<{
+  control: ControlConfig;
+  onSend: (value: unknown) => void;
+}> = ({ control, onSend }) => {
+  const options = useMemo(() => control.options ?? [], [control.options]);
+  const defaultIdx = options.findIndex(
+    (o) => JSON.stringify(o.value) === JSON.stringify(control.default)
+  );
+  const [selectedIdx, setSelectedIdx] = useState<number>(defaultIdx >= 0 ? defaultIdx : 0);
+
+  const handleChange = useCallback(
+    (e: React.ChangeEvent<HTMLSelectElement>) => {
+      const idx = Number.parseInt(e.target.value, 10);
+      setSelectedIdx(idx);
+      const opt = options[idx];
+      if (opt) onSend(opt.value);
+    },
+    [options, onSend]
+  );
+
+  return (
+    <SelectDropdown value={selectedIdx} onChange={handleChange} aria-label={control.label}>
+      {options.map((opt, i) => (
+        <option key={i} value={i}>
+          {opt.label}
+        </option>
+      ))}
+    </SelectDropdown>
+  );
+};
+
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
@@ -413,6 +462,7 @@ const OverlayControls: React.FC<OverlayControlsProps> = ({ pipelineYaml, session
                   {control.type === 'text' && <TextControl control={control} onSend={send} />}
                   {control.type === 'number' && <NumberControl control={control} onSend={send} />}
                   {control.type === 'button' && <ButtonControl control={control} onSend={send} />}
+                  {control.type === 'select' && <SelectControl control={control} onSend={send} />}
                 </ControlRow>
               );
             })}

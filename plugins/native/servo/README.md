@@ -109,15 +109,47 @@ build.
 | `url`          | string  | —       | URL to render (required) |
 | `width`        | integer | 1280    | Output frame width in pixels |
 | `height`       | integer | 720     | Output frame height in pixels |
+| `viewport_width` | integer | 0     | Browser viewport width (0 = same as `width`). Set larger to see more of the page, scaled down. |
+| `viewport_height` | integer | 0    | Browser viewport height (0 = same as `height`). Set larger to see more of the page, scaled down. |
+| `viewport_resolution` | string | — | Viewport preset (`"WxH"`, e.g. `"1920x1080"`). Tunable at runtime; overrides `viewport_width`/`viewport_height`. |
 | `fps`          | integer | 30      | Output frame rate |
 | `custom_css`   | string  | —       | Optional CSS injected into the page |
 | `frame_count`  | integer | 0       | Total frames to generate (0 = infinite) |
+| `load_timeout_secs` | integer | 30 | Maximum seconds to wait for page load |
+
+### Viewport Emulation
+
+When `viewport_width`/`viewport_height` are set larger than `width`/`height`,
+Servo renders the page at the viewport resolution and scales the result down
+to the output frame size.  This is useful for web pages designed for wider
+screens that would otherwise appear cropped in a smaller PiP window.
+
+Example: render at 1920×1080 viewport, output as 640×360 frame:
+
+```yaml
+width: 640
+height: 360
+viewport_width: 1920
+viewport_height: 1080
+```
+
+### Compositor Resize Hints
+
+The plugin responds to `PreferredSize` upstream hints from the compositor.
+When the compositor layer is resized, the Servo node automatically adjusts
+its output dimensions to match, avoiding quality loss from compositor-level
+scaling.  The viewport dimensions remain unchanged so the page layout is
+not affected.
 
 ### Runtime Updates
 
-The `url` and `custom_css` parameters can be updated at runtime via the
-WebSocket API or the controls panel. Dimensions and FPS are fixed at
-creation time (the rendering context cannot be resized).
+The `url`, `custom_css`, and `viewport_resolution` parameters can be updated
+at runtime via the WebSocket API or the Stream View controls panel.  Changing
+`viewport_resolution` resizes the Servo rendering context, causing the page
+to re-layout at the new viewport size.
+
+The demo pipeline includes a **Viewport** dropdown with presets (480p through
+1440p) so viewers can switch the viewport resolution live from Stream View.
 
 ## Usage
 
@@ -147,6 +179,8 @@ nodes:
       url: "https://streamkit.dev"
       width: 640
       height: 480
+      viewport_width: 1280
+      viewport_height: 960
       fps: 30
 ```
 
@@ -170,8 +204,10 @@ pipeline compositing a web page as PiP over colorbars with MoQ streaming.
   pages render at full configured FPS.
 - **No input forwarding** — the rendered page is view-only. Mouse/keyboard
   interaction and a JavaScript bridge are planned for a future phase.
-- **No crash recovery** — if Servo panics, the shared thread terminates and
-  all web renderer nodes in the pipeline stop. Hardening is planned.
+- **Crash recovery is partial** — Rust panics are caught via `catch_unwind`
+  and the affected node falls back to its last good frame. However, native
+  crashes in SpiderMonkey or Mesa/llvmpipe (SIGSEGV, SIGBUS, abort) still
+  terminate the shared Servo thread and all web renderer nodes.
 - **Single process** — Servo runs in-process (no multi-process sandboxing).
 - **Binary size** — ~148 MB due to embedding SpiderMonkey, WebRender, and
   their transitive dependency trees.
