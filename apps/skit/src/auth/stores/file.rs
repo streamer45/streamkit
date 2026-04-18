@@ -635,20 +635,20 @@ impl TokenMetadataStore for FileTokenMetadataStore {
 
     async fn reload(&self) -> Result<(), AuthStoreError> {
         let path = self.state_dir.join("tokens.json");
-        let mut new_tokens: HashMap<String, TokenMetadata> = HashMap::new();
-        if path.exists() {
-            FileKeyProvider::verify_permissions(&path)?;
-            let data = tokio::fs::read_to_string(&path).await?;
-            let tokens: Vec<TokenMetadata> = serde_json::from_str(&data)?;
-            let count = tokens.len();
-            for token in tokens {
-                new_tokens.insert(token.jti.clone(), token);
-            }
-            debug!(count, "Reloaded token metadata from disk");
-        } else {
-            warn!("tokens.json not found during reload — token metadata cache will be empty");
+        if !path.exists() {
+            warn!("tokens.json not found during reload — keeping existing in-memory cache");
+            return Ok(());
+        }
+        FileKeyProvider::verify_permissions(&path)?;
+        let data = tokio::fs::read_to_string(&path).await?;
+        let tokens: Vec<TokenMetadata> = serde_json::from_str(&data)?;
+        let count = tokens.len();
+        let mut new_tokens: HashMap<String, TokenMetadata> = HashMap::with_capacity(count);
+        for token in tokens {
+            new_tokens.insert(token.jti.clone(), token);
         }
         *lock_write(&self.tokens) = new_tokens;
+        debug!(count, "Reloaded token metadata from disk");
         Ok(())
     }
 }

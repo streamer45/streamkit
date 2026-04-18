@@ -432,13 +432,9 @@ async fn handle_auth_rotate_key(cli: &Cli) {
             println!("New key ID: {}", key_material.kid);
             println!();
 
-            // Notify the running server to reload its in-memory state
-            // *before* overwriting admin.token.  If this fails, the old
-            // token remains on disk and is still valid against the
-            // server's cached JWKS — avoiding an admin lockout.
-            notify_server_reload_keys(server_url.as_deref(), pre_rotate_token.as_deref()).await;
-
-            // Mint a new admin token with the new key
+            // Mint a new admin token with the new key.  This persists
+            // the JTI to tokens.json via the metadata store but does NOT
+            // overwrite admin.token yet.
             match auth_state
                 .mint_api_token(
                     "admin",
@@ -449,7 +445,15 @@ async fn handle_auth_rotate_key(cli: &Cli) {
                 .await
             {
                 Ok((token, _meta)) => {
-                    // Write the new admin token
+                    // Notify the running server to reload *after* minting
+                    // (so the server picks up the new JTI from tokens.json)
+                    // but *before* overwriting admin.token (so the old token
+                    // remains on disk if the notify call fails — avoiding an
+                    // admin lockout).
+                    notify_server_reload_keys(server_url.as_deref(), pre_rotate_token.as_deref())
+                        .await;
+
+                    // Now safe to overwrite admin.token.
                     let state_dir = std::path::Path::new(&config_result.config.auth.state_dir);
                     let token_path = state_dir.join("admin.token");
 
