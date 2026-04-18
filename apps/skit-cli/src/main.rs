@@ -542,8 +542,12 @@ fn render_nodes_list(nodes: &[streamkit_api::NodeDefinition]) -> String {
     for node in &sorted {
         let category = node.categories.first().map_or("-", String::as_str);
         let desc = node.description.as_deref().unwrap_or("");
-        let desc_short =
-            if desc.len() > 40 { format!("{}...", &desc[..37]) } else { desc.to_string() };
+        let desc_short = if desc.chars().count() > 40 {
+            let truncated: String = desc.chars().take(37).collect();
+            format!("{truncated}...")
+        } else {
+            desc.to_string()
+        };
         let _ = writeln!(out, "{category:<16} {:<40} {desc_short}", node.kind);
     }
     out
@@ -615,6 +619,11 @@ fn render_validate_result(result: &ValidateResponse) -> String {
         for err in &result.errors {
             let node_ctx = err.node.as_deref().map_or(String::new(), |n| format!(" (node: {n})"));
             let _ = writeln!(out, "  error: {}{node_ctx}", err.message);
+        }
+    }
+    if !result.warnings.is_empty() {
+        if result.valid {
+            out.push_str("Warnings:\n");
         }
         for warn in &result.warnings {
             let node_ctx = warn.node.as_deref().map_or(String::new(), |n| format!(" (node: {n})"));
