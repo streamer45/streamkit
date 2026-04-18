@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use clap::{ArgAction, Parser, Subcommand};
-use streamkit_client::InputFile;
+use streamkit_client::{Client, InputFile, NetworkClient};
 use tracing::{error, info};
 
 #[derive(Parser, Debug)]
@@ -368,10 +368,8 @@ async fn dispatch(command: Commands) {
                 inputs.push(InputFile { field: extra.field, path: extra.path, content_type: None });
             }
 
-            if let Err(e) =
-                streamkit_client::process_oneshot(&pipeline, &inputs, &output, &server).await
-            {
-                // Error already logged via tracing above
+            let client = NetworkClient::new(&server);
+            if let Err(e) = client.process_oneshot(&pipeline, &inputs, &output).await {
                 error!(error = %e, "Failed to process oneshot pipeline");
                 std::process::exit(1);
             }
@@ -379,8 +377,8 @@ async fn dispatch(command: Commands) {
         Commands::Create { pipeline, name, server } => {
             info!("Starting StreamKit client - creating session");
 
-            if let Err(e) = streamkit_client::create_session(&pipeline, &name, &server).await {
-                // Error already logged via tracing above
+            let client = NetworkClient::new(&server);
+            if let Err(e) = client.create_session(&pipeline, &name).await {
                 error!(error = %e, "Failed to create dynamic session");
                 std::process::exit(1);
             }
@@ -388,8 +386,8 @@ async fn dispatch(command: Commands) {
         Commands::Destroy { session_id, server } => {
             info!("Starting StreamKit client - destroying session");
 
-            if let Err(e) = streamkit_client::destroy_session(&session_id, &server).await {
-                // Error already logged via tracing above
+            let client = NetworkClient::new(&server);
+            if let Err(e) = client.destroy_session(&session_id).await {
                 error!(error = %e, "Failed to destroy session");
                 std::process::exit(1);
             }
@@ -397,10 +395,8 @@ async fn dispatch(command: Commands) {
         Commands::Tune { session_id, node_id, param, value, server } => {
             info!("Starting StreamKit client - tuning node");
 
-            if let Err(e) =
-                streamkit_client::tune_node(&session_id, &node_id, &param, &value, &server).await
-            {
-                // Error already logged via tracing above
+            let client = NetworkClient::new(&server);
+            if let Err(e) = client.tune_node(&session_id, &node_id, &param, &value).await {
                 error!(error = %e, "Failed to tune node");
                 std::process::exit(1);
             }
@@ -408,8 +404,8 @@ async fn dispatch(command: Commands) {
         Commands::List { server } => {
             info!("Starting StreamKit client - listing sessions");
 
-            if let Err(e) = streamkit_client::list_sessions(&server).await {
-                // Error already logged via tracing above
+            let client = NetworkClient::new(&server);
+            if let Err(e) = client.list_sessions().await {
                 error!(error = %e, "Failed to list sessions");
                 std::process::exit(1);
             }
@@ -418,7 +414,6 @@ async fn dispatch(command: Commands) {
             info!("Starting StreamKit client - interactive shell");
 
             if let Err(e) = streamkit_client::start_shell(&server).await {
-                // Error already logged via tracing above
                 error!(error = %e, "Failed to start interactive shell");
                 std::process::exit(1);
             }
@@ -440,27 +435,29 @@ async fn dispatch(command: Commands) {
             if let Err(e) =
                 streamkit_client::run_load_test(&config, server, sessions, duration, cleanup).await
             {
-                // Error already logged via tracing above
                 error!(error = %e, "Load test failed");
                 std::process::exit(1);
             }
         },
         Commands::Config { server } => {
-            if let Err(e) = streamkit_client::get_config(&server).await {
+            let client = NetworkClient::new(&server);
+            if let Err(e) = client.get_config().await {
                 error!(error = %e, "Failed to fetch server config");
                 std::process::exit(1);
             }
         },
         Commands::Permissions { server } => {
-            if let Err(e) = streamkit_client::get_permissions(&server).await {
+            let client = NetworkClient::new(&server);
+            if let Err(e) = client.get_permissions().await {
                 error!(error = %e, "Failed to fetch permissions");
                 std::process::exit(1);
             }
         },
         Commands::Schema { command, server } => {
+            let client = NetworkClient::new(&server);
             let result = match command {
-                SchemaCommands::Nodes => streamkit_client::list_node_schemas(&server).await,
-                SchemaCommands::Packets => streamkit_client::list_packet_schemas(&server).await,
+                SchemaCommands::Nodes => client.list_node_schemas().await,
+                SchemaCommands::Packets => client.list_packet_schemas().await,
             };
             if let Err(e) = result {
                 error!(error = %e, "Failed to fetch schema");
@@ -468,19 +465,19 @@ async fn dispatch(command: Commands) {
             }
         },
         Commands::Pipeline { session_id, server } => {
-            if let Err(e) = streamkit_client::get_pipeline(&session_id, &server).await {
+            let client = NetworkClient::new(&server);
+            if let Err(e) = client.get_pipeline(&session_id).await {
                 error!(error = %e, "Failed to fetch pipeline");
                 std::process::exit(1);
             }
         },
         Commands::Plugins { command, server } => {
+            let client = NetworkClient::new(&server);
             let result = match command {
-                PluginCommands::List => streamkit_client::list_plugins(&server).await,
-                PluginCommands::Upload { path } => {
-                    streamkit_client::upload_plugin(&path, &server).await
-                },
+                PluginCommands::List => client.list_plugins().await,
+                PluginCommands::Upload { path } => client.upload_plugin(&path).await,
                 PluginCommands::Delete { kind, keep_file } => {
-                    streamkit_client::delete_plugin(&kind, keep_file, &server).await
+                    client.delete_plugin(&kind, keep_file).await
                 },
             };
             if let Err(e) = result {
@@ -489,30 +486,15 @@ async fn dispatch(command: Commands) {
             }
         },
         Commands::Samples { command, server } => {
+            let client = NetworkClient::new(&server);
             let result = match command {
-                SampleCommands::ListOneshot => {
-                    streamkit_client::list_samples_oneshot(&server).await
-                },
-                SampleCommands::ListDynamic => {
-                    streamkit_client::list_samples_dynamic(&server).await
-                },
-                SampleCommands::Get { id, yaml } => {
-                    streamkit_client::get_sample(&id, yaml, &server).await
-                },
+                SampleCommands::ListOneshot => client.list_samples_oneshot().await,
+                SampleCommands::ListDynamic => client.list_samples_dynamic().await,
+                SampleCommands::Get { id, yaml } => client.get_sample(&id, yaml).await,
                 SampleCommands::Save { name, description, yaml_path, overwrite, fragment } => {
-                    streamkit_client::save_sample(
-                        &name,
-                        &description,
-                        &yaml_path,
-                        overwrite,
-                        fragment,
-                        &server,
-                    )
-                    .await
+                    client.save_sample(&name, &description, &yaml_path, overwrite, fragment).await
                 },
-                SampleCommands::Delete { id } => {
-                    streamkit_client::delete_sample(&id, &server).await
-                },
+                SampleCommands::Delete { id } => client.delete_sample(&id).await,
             };
             if let Err(e) = result {
                 error!(error = %e, "Sample command failed");
@@ -520,14 +502,11 @@ async fn dispatch(command: Commands) {
             }
         },
         Commands::Assets { command, server } => {
+            let client = NetworkClient::new(&server);
             let result = match command {
-                AssetCommands::List => streamkit_client::list_audio_assets(&server).await,
-                AssetCommands::Upload { path } => {
-                    streamkit_client::upload_audio_asset(&path, &server).await
-                },
-                AssetCommands::Delete { id } => {
-                    streamkit_client::delete_audio_asset(&id, &server).await
-                },
+                AssetCommands::List => client.list_audio_assets().await,
+                AssetCommands::Upload { path } => client.upload_audio_asset(&path).await,
+                AssetCommands::Delete { id } => client.delete_audio_asset(&id).await,
             };
             if let Err(e) = result {
                 error!(error = %e, "Asset command failed");
@@ -535,42 +514,29 @@ async fn dispatch(command: Commands) {
             }
         },
         Commands::Watch { session, pretty, server } => {
-            if let Err(e) =
-                streamkit_client::watch_events(session.as_deref(), pretty, &server).await
-            {
+            let client = NetworkClient::new(&server);
+            if let Err(e) = client.watch_events(session.as_deref(), pretty).await {
                 error!(error = %e, "Watch failed");
                 std::process::exit(1);
             }
         },
         Commands::Control { command, server } => {
+            let client = NetworkClient::new(&server);
             let result = match command {
-                ControlCommands::Nodes => streamkit_client::control_list_nodes(&server).await,
+                ControlCommands::Nodes => client.control_list_nodes().await,
                 ControlCommands::Pipeline { session_id } => {
-                    streamkit_client::control_get_pipeline(&session_id, &server).await
+                    client.control_get_pipeline(&session_id).await
                 },
                 ControlCommands::AddNode { session_id, node_id, kind, params } => {
-                    streamkit_client::control_add_node(
-                        &session_id,
-                        &node_id,
-                        &kind,
-                        params.as_deref(),
-                        &server,
-                    )
-                    .await
+                    client.control_add_node(&session_id, &node_id, &kind, params.as_deref()).await
                 },
                 ControlCommands::RemoveNode { session_id, node_id } => {
-                    streamkit_client::control_remove_node(&session_id, &node_id, &server).await
+                    client.control_remove_node(&session_id, &node_id).await
                 },
                 ControlCommands::Connect { session_id, from_node, from_pin, to_node, to_pin } => {
-                    streamkit_client::control_connect(
-                        &session_id,
-                        &from_node,
-                        &from_pin,
-                        &to_node,
-                        &to_pin,
-                        &server,
-                    )
-                    .await
+                    client
+                        .control_connect(&session_id, &from_node, &from_pin, &to_node, &to_pin)
+                        .await
                 },
                 ControlCommands::Disconnect {
                     session_id,
@@ -579,31 +545,18 @@ async fn dispatch(command: Commands) {
                     to_node,
                     to_pin,
                 } => {
-                    streamkit_client::control_disconnect(
-                        &session_id,
-                        &from_node,
-                        &from_pin,
-                        &to_node,
-                        &to_pin,
-                        &server,
-                    )
-                    .await
+                    client
+                        .control_disconnect(&session_id, &from_node, &from_pin, &to_node, &to_pin)
+                        .await
                 },
                 ControlCommands::ValidateBatch { session_id, ops_file } => {
-                    streamkit_client::control_validate_batch(&session_id, &ops_file, &server).await
+                    client.control_validate_batch(&session_id, &ops_file).await
                 },
                 ControlCommands::ApplyBatch { session_id, ops_file } => {
-                    streamkit_client::control_apply_batch(&session_id, &ops_file, &server).await
+                    client.control_apply_batch(&session_id, &ops_file).await
                 },
                 ControlCommands::TuneAsync { session_id, node_id, param, value } => {
-                    streamkit_client::control_tune_async(
-                        &session_id,
-                        &node_id,
-                        &param,
-                        &value,
-                        &server,
-                    )
-                    .await
+                    client.control_tune_async(&session_id, &node_id, &param, &value).await
                 },
             };
             if let Err(e) = result {

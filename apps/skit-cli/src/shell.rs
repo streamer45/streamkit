@@ -18,6 +18,8 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tracing::{debug, warn};
 use url::Url;
 
+use crate::client::{Client, InputFile, NetworkClient};
+
 struct SkitHelper {
     completer: SkitCompleter,
     hinter: HistoryHinter,
@@ -527,8 +529,8 @@ impl Shell {
             .replace("wss://", "https://")
             .replace("/api/v1/control", "");
 
-        // Use the existing create_session function from client.rs
-        crate::client::create_session(pipeline_path, &name, &http_url).await?;
+        let client = NetworkClient::new(&http_url);
+        client.create_session(pipeline_path, &name).await?;
 
         // Refresh sessions after creation
         self.refresh_sessions().await?;
@@ -547,9 +549,8 @@ impl Shell {
 
         let session_id = args[0];
 
-        // Use the existing destroy_session function from client.rs
-        crate::client::destroy_session(session_id, &self.ws_url.replace("/api/v1/control", ""))
-            .await?;
+        let client = NetworkClient::new(&self.ws_url.replace("/api/v1/control", ""));
+        client.destroy_session(session_id).await?;
 
         println!("✅ Session '{session_id}' destroyed successfully");
 
@@ -573,15 +574,8 @@ impl Shell {
         let param = args[2];
         let value = args[3];
 
-        // Use the existing tune_node function from client.rs
-        crate::client::tune_node(
-            session_id,
-            node_id,
-            param,
-            value,
-            &self.ws_url.replace("/api/v1/control", ""),
-        )
-        .await?;
+        let client = NetworkClient::new(&self.ws_url.replace("/api/v1/control", ""));
+        client.tune_node(session_id, node_id, param, value).await?;
 
         Ok(())
     }
@@ -596,8 +590,8 @@ impl Shell {
             return Ok(());
         }
 
-        // Reuse the shared watch implementation (prints JSON events; Ctrl-C to stop).
-        crate::client::watch_events(session_filter, false, &self.ws_url).await
+        let client = NetworkClient::new(&self.ws_url);
+        client.watch_events(session_filter, false).await
     }
 
     async fn oneshot(&self, args: &[&str]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -621,14 +615,13 @@ impl Shell {
             .replace("wss://", "https://")
             .replace("/api/v1/control", "");
 
-        // Use the existing process_oneshot function from client.rs
-        // This makes a multipart HTTP POST to /api/v1/process
-        let inputs = vec![crate::client::InputFile {
+        let inputs = vec![InputFile {
             field: "media".to_string(),
             path: input_path.to_string(),
             content_type: None,
         }];
-        crate::client::process_oneshot(pipeline_path, &inputs, output_path, &http_url).await?;
+        let client = NetworkClient::new(&http_url);
+        client.process_oneshot(pipeline_path, &inputs, output_path).await?;
 
         println!("✅ Oneshot processing completed successfully");
 
