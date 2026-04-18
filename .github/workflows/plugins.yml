@@ -56,7 +56,7 @@ jobs:
           - group: servo
             plugins: "servo"
             apt_extra: >-
-              build-essential g++ clang
+              build-essential g++
               libfontconfig1-dev libharfbuzz-dev libfreetype6-dev
               libegl1-mesa-dev libgl1-mesa-dev libgbm-dev libdrm-dev
               libunwind-dev
@@ -163,7 +163,9 @@ jobs:
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/llvm.asc > /dev/null
           echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main" | sudo tee /etc/apt/sources.list.d/llvm-18.list
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libclang-18-dev
+          sudo apt-get install -y -qq clang-18 libclang-18-dev
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-18 100
           echo "LIBCLANG_PATH=/usr/lib/llvm-18/lib/" >> "$GITHUB_ENV"
           gcc_ver=$(ls /usr/include/c++/ 2>/dev/null | sort -V | tail -1 || true)
           if [ -n "$gcc_ver" ]; then
