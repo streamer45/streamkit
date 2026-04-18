@@ -363,6 +363,18 @@ impl KeyProvider for FileKeyProvider {
             new_public_keys.insert(jwk.kid.clone(), Arc::from(bytes.into_boxed_slice()));
         }
 
+        // Ensure the active public key is in the map (mirrors load_or_init behaviour).
+        let active_pub: Arc<[u8]> = Arc::from(public_from_file.into_boxed_slice());
+        if let Some(existing) = new_public_keys.get(&private.kid) {
+            if existing.as_ref() != active_pub.as_ref() {
+                return Err(AuthStoreError::InvalidKey(
+                    "JWKS entry for active kid does not match private key".to_string(),
+                ));
+            }
+        } else {
+            new_public_keys.insert(private.kid.clone(), active_pub);
+        }
+
         let total_keys = jwks.keys.len();
 
         {
