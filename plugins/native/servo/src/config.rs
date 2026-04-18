@@ -147,7 +147,7 @@ impl ServoConfig {
     }
 
     /// Whether the viewport differs from the output and scaling is needed.
-    pub fn needs_scaling(&self) -> bool {
+    pub const fn needs_scaling(&self) -> bool {
         self.effective_viewport_width() != self.width
             || self.effective_viewport_height() != self.height
     }
