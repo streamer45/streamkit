@@ -154,10 +154,17 @@ jobs:
           workspaces: ${{ steps.cache-ws.outputs.list }}
           cache-on-failure: true
 
-      # --- Servo bindgen (servo group only) ---
-      - name: Set BINDGEN_EXTRA_CLANG_ARGS
+      # --- Servo clang + bindgen (servo group only) ---
+      # mozangle requires clang >= 15 for SSE/AVX intrinsic builtins;
+      # ubuntu-22.04 ships clang-14 by default which is too old.
+      - name: Install LLVM 18 and configure bindgen
         if: matrix.group == 'servo'
         run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/llvm.asc > /dev/null
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main" | sudo tee /etc/apt/sources.list.d/llvm-18.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libclang-18-dev
+          echo "LIBCLANG_PATH=/usr/lib/llvm-18/lib/" >> "$GITHUB_ENV"
           gcc_ver=$(ls /usr/include/c++/ 2>/dev/null | sort -V | tail -1 || true)
           if [ -n "$gcc_ver" ]; then
             echo "BINDGEN_EXTRA_CLANG_ARGS=-I/usr/include/c++/${gcc_ver} -I/usr/include/x86_64-linux-gnu/c++/${gcc_ver}" >> "$GITHUB_ENV"
