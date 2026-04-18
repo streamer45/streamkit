@@ -129,6 +129,12 @@ pub trait RevocationStore: Send + Sync {
 
     /// Reload revocations from persistent storage.
     async fn reload(&self) -> Result<(), AuthStoreError>;
+
+    /// Deprecated alias for [`reload`](Self::reload).
+    #[deprecated(note = "renamed to `reload` for consistency — use `reload` instead")]
+    async fn load(&self) -> Result<(), AuthStoreError> {
+        self.reload().await
+    }
 }
 
 /// Token type distinguishes API tokens from MoQ tokens.

@@ -537,9 +537,8 @@ async fn notify_server_reload_keys(server_url: Option<&str>, token: Option<&str>
             eprintln!("You may need to restart the server for the new key to take effect.");
         },
         Err(e) if e.is_connect() || e.is_timeout() => {
-            // Server not reachable — likely not running. This is fine.
-            println!();
-            println!("Server not reachable ({e}); keys will be loaded on next startup.");
+            eprintln!();
+            eprintln!("Server not reachable ({e}); keys will be loaded on next startup.");
         },
         Err(e) => {
             eprintln!();

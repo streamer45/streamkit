@@ -522,9 +522,12 @@ impl AuthState {
     pub async fn reload_keys(&self) -> Result<(), AuthError> {
         let key_provider = self.key_provider.as_ref().ok_or(AuthError::Disabled)?;
 
-        // Reload metadata and revocations *before* keys so that a
-        // freshly-minted token arriving mid-reload is already in the
-        // metadata store when its new kid becomes verifiable.
+        // Reload metadata and revocations before keys.  Neither order
+        // is fully atomic: metadata-first means a new-kid token arriving
+        // mid-reload fails signature verification (transient, retryable);
+        // keys-first means it passes signature but fails the JTI "minted
+        // by us" check (looks like a permanent auth error).  We choose
+        // metadata-first as the lesser evil.
         if let Some(token_meta) = self.token_metadata_store.as_ref() {
             token_meta.reload().await?;
         }
@@ -534,7 +537,8 @@ impl AuthState {
 
         key_provider.reload().await?;
 
-        info!("Auth state reloaded from disk (keys, token metadata, revocations)");
+        let active_kid = key_provider.active_key().kid;
+        info!(kid = %active_kid, "Auth state reloaded from disk (keys, token metadata, revocations)");
         Ok(())
     }
 
