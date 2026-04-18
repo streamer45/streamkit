@@ -459,8 +459,17 @@ fn handle_render(
         } else {
             img.into_raw()
         };
-        state.last_good_frame = Some(raw.clone());
-        raw
+        // Reuse the old cache buffer for sending (avoids per-frame allocation).
+        // Move the fresh `raw` into the cache and copy its data into the
+        // reused buffer which is sent to the consumer.
+        let mut send_buf = state
+            .last_good_frame
+            .take()
+            .unwrap_or_else(|| Vec::with_capacity(raw.len()));
+        send_buf.clear();
+        send_buf.extend_from_slice(&raw);
+        state.last_good_frame = Some(raw);
+        send_buf
     } else if let Some(ref cached) = state.last_good_frame {
         tracing::debug!(node_id = %node_id, "read_to_image returned None, using cached frame");
         cached.clone()
