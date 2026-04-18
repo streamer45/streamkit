@@ -47,9 +47,9 @@ url = { version = "2.5.8", optional = true, features = ["serde"] }
 rquickjs = { version = "0.11", features = ["array-buffer", "futures", "loader", "parallel"], optional = true }
 wildmatch = { version = "2.6", optional = true }
 
-moq-native = { version = "0.13.6", optional = true }
-moq-lite = { version = "0.15.5", optional = true }
-hang = { version = "0.15.4", optional = true }
+moq-native = { version = "0.13.12", optional = true }
+moq-lite = { version = "0.15.13", optional = true }
+hang = { version = "0.15.7", optional = true }
 
 # For local dev, debugging moq stuff
 # moq-native = { path = "../../moq/rs/moq-native", optional = true }
@@ -63,8 +63,8 @@ reqwest = { version = "0.13", optional = true, default-features = false, feature
 ] }
 tempfile = { version = "3.27", optional = true }
 uuid = { version = "1", optional = true, features = ["v4"] }
-rubato = { version = "1.0", optional = true }
-audioadapter-buffers = { version = "2.0", optional = true }
+rubato = { version = "2.0", optional = true }
+audioadapter-buffers = { version = "3.0", optional = true }
 symphonia = { version = "0.5.5", optional = true, default-features = false, features = [
   "mp3",
   "wav",
@@ -79,7 +79,7 @@ image = { version = "0.25.10", optional = true, default-features = false, featur
 tiny-skia = { version = "0.12.0", optional = true }
 resvg = { version = "0.47", optional = true, default-features = false }
 base64 = { version = "0.22", optional = true }
-rayon = { version = "1.10", optional = true }
+rayon = { version = "1.12", optional = true }
 fontdue = { version = "0.9", optional = true }
 smallvec = { version = "1.13", optional = true, features = ["serde"] }
 ts-rs = { version = "12.0.1", optional = true }
@@ -90,7 +90,7 @@ openh264 = { version = "0.9", optional = true }
 # RTMP publishing (optional, behind `rtmp` feature)
 tokio-rustls = { version = "0.26", optional = true }
 rustls = { version = "0.23", optional = true, default-features = false, features = ["std"] }
-rustls-platform-verifier = { version = "0.6", optional = true }
+rustls-platform-verifier = { version = "0.7", optional = true }
 
 # AV1 codec (optional, behind `av1` feature)
 rav1e = { version = "0.8", optional = true, default-features = false, features = ["threading", "asm"] }
