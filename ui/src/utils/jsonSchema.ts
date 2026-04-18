@@ -352,7 +352,7 @@ function propToControlConfig(
 ): ControlConfig | null {
   const path = prop.path ?? key;
   const label = labelFromKey(key);
-  const base = { label, node: nodeId, property: path, group, value: null };
+  const base = { label, node: nodeId, property: path, group, value: null, options: null };
 
   switch (prop.type) {
     case 'boolean':
@@ -378,7 +378,17 @@ function propToControlConfig(
       };
     }
     case 'string':
-      if (prop.enum && prop.enum.length > 0) return null;
+      if (prop.enum && prop.enum.length > 0) {
+        return {
+          ...base,
+          type: 'select',
+          default: prop.default ?? prop.enum[0],
+          min: null,
+          max: null,
+          step: null,
+          options: prop.enum.map((v) => ({ label: String(v), value: v })),
+        };
+      }
       return {
         ...base,
         type: 'text',

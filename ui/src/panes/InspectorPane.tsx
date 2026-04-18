@@ -338,6 +338,9 @@ const InspectorPane: React.FC<InspectorPaneProps> = ({
       <PaneHeader>
         <PaneTitle>Inspector</PaneTitle>
         <PaneSubtitle className="code-font">{node.data.label}</PaneSubtitle>
+        {nodeDefinition.description && (
+          <PaneSubtitle style={{ marginTop: 4 }}>{nodeDefinition.description}</PaneSubtitle>
+        )}
       </PaneHeader>
       <ContentWrapper>
         <FormSection>

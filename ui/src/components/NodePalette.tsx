@@ -258,6 +258,19 @@ const NodePalette: React.FC<NodePaletteProps> = ({
                   );
                 })()}
             </div>
+            {def.description && (
+              <div
+                style={{
+                  fontSize: '11px',
+                  color: 'var(--sk-text-muted)',
+                  userSelect: 'none',
+                  fontWeight: 400,
+                  marginBottom: 2,
+                }}
+              >
+                {def.description}
+              </div>
+            )}
             <div style={{ fontSize: '10px', color: 'var(--sk-text-muted)', userSelect: 'none' }}>
               {subtext}
             </div>
