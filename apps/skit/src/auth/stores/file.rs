@@ -375,6 +375,13 @@ impl KeyProvider for FileKeyProvider {
             new_public_keys.insert(private.kid.clone(), active_pub);
         }
 
+        // Keep the JWKS struct consistent with public_keys so that
+        // /.well-known/jwks.json always advertises the active key.
+        let mut jwks = jwks;
+        if !jwks.keys.iter().any(|k| k.kid == private.kid) {
+            jwks.keys.push(private.to_public_jwk());
+        }
+
         let total_keys = jwks.keys.len();
 
         {
