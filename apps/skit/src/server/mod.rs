@@ -583,6 +583,366 @@ async fn list_node_definitions_handler(
     Ok(Json(definitions))
 }
 
+// ---------------------------------------------------------------------------
+// POST /api/v1/validate — stateless pipeline dry-run
+// ---------------------------------------------------------------------------
+
+/// A single node in the validated graph returned on success.
+#[derive(Serialize)]
+struct ValidateGraphNode {
+    id: String,
+    kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    params: Option<serde_json::Value>,
+}
+
+/// A single connection in the validated graph returned on success.
+#[derive(Serialize)]
+struct ValidateGraphConnection {
+    from_node: String,
+    from_pin: String,
+    to_node: String,
+    to_pin: String,
+}
+
+/// The parsed graph structure returned when validation succeeds.
+#[derive(Serialize)]
+struct ValidateGraph {
+    nodes: Vec<ValidateGraphNode>,
+    connections: Vec<ValidateGraphConnection>,
+}
+
+/// A single validation diagnostic.
+#[derive(Serialize)]
+struct ValidateDiagnostic {
+    error_type: String,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    node_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    connection_id: Option<String>,
+}
+
+/// Top-level response for `POST /api/v1/validate`.
+#[derive(Serialize)]
+struct ValidateResponse {
+    valid: bool,
+    errors: Vec<ValidateDiagnostic>,
+    warnings: Vec<ValidateDiagnostic>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    graph: Option<ValidateGraph>,
+}
+
+/// Request body for `POST /api/v1/validate`.
+#[derive(Deserialize)]
+struct ValidateRequest {
+    yaml: String,
+}
+
+/// Validate node kinds and params against the registry, returning resolved definitions.
+fn validate_nodes(
+    pipeline: &Pipeline,
+    registry: &streamkit_core::NodeRegistry,
+    errors: &mut Vec<ValidateDiagnostic>,
+    warnings: &mut Vec<ValidateDiagnostic>,
+) -> HashMap<String, streamkit_core::NodeDefinition> {
+    let mut node_defs: HashMap<String, streamkit_core::NodeDefinition> = HashMap::new();
+
+    for (node_id, node) in &pipeline.nodes {
+        debug!(node_id = %node_id, kind = %node.kind, "Validating node kind");
+
+        match registry.get_definition(&node.kind) {
+            Some(def) => {
+                node_defs.insert(node_id.clone(), def);
+            },
+            None => {
+                errors.push(ValidateDiagnostic {
+                    error_type: "error".into(),
+                    message: format!("Unknown node kind '{}'", node.kind),
+                    node_id: Some(node_id.clone()),
+                    connection_id: None,
+                });
+            },
+        }
+    }
+
+    // Param schema validation (best-effort, report as warnings).
+    for (node_id, def) in &node_defs {
+        let Some(node) = pipeline.nodes.get(node_id) else { continue };
+        let Some(params) = &node.params else { continue };
+        let Some(schema_obj) = def.param_schema.as_object() else { continue };
+        if schema_obj.is_empty() {
+            continue;
+        }
+        let Some(params_obj) = params.as_object() else { continue };
+        let Some(schema_props) = def.param_schema.get("properties").and_then(|v| v.as_object())
+        else {
+            continue;
+        };
+        for key in params_obj.keys() {
+            if !schema_props.contains_key(key) {
+                warnings.push(ValidateDiagnostic {
+                    error_type: "warning".into(),
+                    message: format!("Unknown parameter '{key}' for node kind '{}'", def.kind),
+                    node_id: Some(node_id.clone()),
+                    connection_id: None,
+                });
+            }
+        }
+    }
+
+    node_defs
+}
+
+/// Validate all connections and collect diagnostics for missing pins and type mismatches.
+fn validate_connections(
+    pipeline: &Pipeline,
+    node_defs: &HashMap<String, streamkit_core::NodeDefinition>,
+    errors: &mut Vec<ValidateDiagnostic>,
+    connected_input_pins: &mut HashSet<(String, String)>,
+) {
+    let packet_type_registry = streamkit_core::packet_meta::packet_type_registry();
+
+    for (idx, conn) in pipeline.connections.iter().enumerate() {
+        let conn_id = format!("connection[{idx}]");
+
+        // Check that referenced nodes exist in the pipeline definition.
+        if !pipeline.nodes.contains_key(&conn.from_node) {
+            errors.push(ValidateDiagnostic {
+                error_type: "error".into(),
+                message: format!("Source node '{}' does not exist", conn.from_node),
+                node_id: None,
+                connection_id: Some(conn_id.clone()),
+            });
+        }
+        if !pipeline.nodes.contains_key(&conn.to_node) {
+            errors.push(ValidateDiagnostic {
+                error_type: "error".into(),
+                message: format!("Destination node '{}' does not exist", conn.to_node),
+                node_id: None,
+                connection_id: Some(conn_id.clone()),
+            });
+        }
+
+        let Some(src_def) = node_defs.get(&conn.from_node) else { continue };
+        let Some(dst_def) = node_defs.get(&conn.to_node) else { continue };
+
+        let src_pin = find_output_pin(&src_def.outputs, &conn.from_pin);
+        let dst_pin = find_input_pin(&dst_def.inputs, &conn.to_pin);
+
+        if src_pin.is_none() {
+            errors.push(ValidateDiagnostic {
+                error_type: "error".into(),
+                message: format!(
+                    "Output pin '{}' not found on node '{}' (kind '{}')",
+                    conn.from_pin, conn.from_node, src_def.kind
+                ),
+                node_id: Some(conn.from_node.clone()),
+                connection_id: Some(conn_id.clone()),
+            });
+        }
+        if dst_pin.is_none() {
+            errors.push(ValidateDiagnostic {
+                error_type: "error".into(),
+                message: format!(
+                    "Input pin '{}' not found on node '{}' (kind '{}')",
+                    conn.to_pin, conn.to_node, dst_def.kind
+                ),
+                node_id: Some(conn.to_node.clone()),
+                connection_id: Some(conn_id.clone()),
+            });
+        }
+
+        if let (Some(src), Some(dst)) = (src_pin, dst_pin) {
+            validate_pin_types(src, dst, conn, &conn_id, packet_type_registry, errors);
+        }
+
+        connected_input_pins.insert((conn.to_node.clone(), conn.to_pin.clone()));
+    }
+}
+
+/// Find an output pin by exact name or dynamic-prefix match.
+fn find_output_pin<'a>(
+    pins: &'a [streamkit_core::OutputPin],
+    name: &str,
+) -> Option<&'a streamkit_core::OutputPin> {
+    pins.iter().find(|p| {
+        p.name == name
+            || matches!(
+                &p.cardinality,
+                streamkit_core::PinCardinality::Dynamic { prefix } if name.starts_with(prefix.as_str())
+            )
+    })
+}
+
+/// Find an input pin by exact name or dynamic-prefix match.
+fn find_input_pin<'a>(
+    pins: &'a [streamkit_core::InputPin],
+    name: &str,
+) -> Option<&'a streamkit_core::InputPin> {
+    pins.iter().find(|p| {
+        p.name == name
+            || matches!(
+                &p.cardinality,
+                streamkit_core::PinCardinality::Dynamic { prefix } if name.starts_with(prefix.as_str())
+            )
+    })
+}
+
+/// Check type compatibility between a source output pin and destination input pin.
+fn validate_pin_types(
+    src: &streamkit_core::OutputPin,
+    dst: &streamkit_core::InputPin,
+    conn: &streamkit_api::Connection,
+    conn_id: &str,
+    pt_registry: &[streamkit_core::packet_meta::PacketTypeMeta],
+    errors: &mut Vec<ValidateDiagnostic>,
+) {
+    if matches!(src.produces_type, streamkit_core::types::PacketType::Passthrough) {
+        return;
+    }
+    if dst.accepts_types.iter().any(|t| matches!(t, streamkit_core::types::PacketType::Passthrough))
+    {
+        return;
+    }
+    if !streamkit_core::packet_meta::can_connect_any(
+        &src.produces_type,
+        &dst.accepts_types,
+        pt_registry,
+    ) {
+        errors.push(ValidateDiagnostic {
+            error_type: "error".into(),
+            message: format!(
+                "Type mismatch: '{}' output pin '{}' produces {:?}, \
+                 but '{}' input pin '{}' accepts {:?}",
+                conn.from_node,
+                conn.from_pin,
+                src.produces_type,
+                conn.to_node,
+                conn.to_pin,
+                dst.accepts_types
+            ),
+            node_id: None,
+            connection_id: Some(conn_id.to_string()),
+        });
+    }
+}
+
+/// Axum handler for stateless pipeline validation.
+///
+/// Parses the supplied YAML, compiles it into an internal `Pipeline`, and
+/// validates every node kind, pin existence, pin-type compatibility, and
+/// required-pin connectivity — all without instantiating any nodes.
+async fn validate_pipeline_handler(
+    State(app_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ValidateRequest>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let perms = crate::role_extractor::get_permissions(&headers, &app_state);
+
+    if !perms.list_nodes {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let mut errors: Vec<ValidateDiagnostic> = Vec::new();
+    let mut warnings: Vec<ValidateDiagnostic> = Vec::new();
+
+    // 1. YAML parsing
+    let user_pipeline = match streamkit_api::yaml::parse_yaml(&payload.yaml) {
+        Ok(p) => p,
+        Err(e) => {
+            info!(error = %e, "Pipeline YAML parse error");
+            errors.push(ValidateDiagnostic {
+                error_type: "error".into(),
+                message: e,
+                node_id: None,
+                connection_id: None,
+            });
+            return Ok(Json(ValidateResponse { valid: false, errors, warnings, graph: None }));
+        },
+    };
+
+    // 2. Compile to internal Pipeline
+    let pipeline = match compile(user_pipeline) {
+        Ok(p) => p,
+        Err(e) => {
+            info!(error = %e, "Pipeline compilation error");
+            errors.push(ValidateDiagnostic {
+                error_type: "error".into(),
+                message: e,
+                node_id: None,
+                connection_id: None,
+            });
+            return Ok(Json(ValidateResponse { valid: false, errors, warnings, graph: None }));
+        },
+    };
+
+    // 3. Validate nodes against the registry
+    let registry_guard = read_registry(&app_state)?;
+    let node_defs = validate_nodes(&pipeline, &registry_guard, &mut errors, &mut warnings);
+    drop(registry_guard);
+
+    // 4. Validate connections
+    let mut connected_input_pins: HashSet<(String, String)> = HashSet::new();
+    validate_connections(&pipeline, &node_defs, &mut errors, &mut connected_input_pins);
+
+    // 5. Required pin check
+    for (node_id, def) in &node_defs {
+        for input in &def.inputs {
+            if input.cardinality == streamkit_core::PinCardinality::One
+                && !connected_input_pins.contains(&(node_id.clone(), input.name.clone()))
+            {
+                warnings.push(ValidateDiagnostic {
+                    error_type: "warning".into(),
+                    message: format!(
+                        "Node '{node_id}' has unconnected required input pin '{}'",
+                        input.name
+                    ),
+                    node_id: Some(node_id.clone()),
+                    connection_id: None,
+                });
+            }
+        }
+    }
+
+    // 6. Build response
+    let valid = errors.is_empty();
+    let graph = if valid {
+        Some(ValidateGraph {
+            nodes: pipeline
+                .nodes
+                .iter()
+                .map(|(id, n)| ValidateGraphNode {
+                    id: id.clone(),
+                    kind: n.kind.clone(),
+                    params: n.params.clone(),
+                })
+                .collect(),
+            connections: pipeline
+                .connections
+                .iter()
+                .map(|c| ValidateGraphConnection {
+                    from_node: c.from_node.clone(),
+                    from_pin: c.from_pin.clone(),
+                    to_node: c.to_node.clone(),
+                    to_pin: c.to_pin.clone(),
+                })
+                .collect(),
+        })
+    } else {
+        None
+    };
+
+    info!(
+        valid = valid,
+        error_count = errors.len(),
+        warning_count = warnings.len(),
+        "Pipeline validation completed"
+    );
+
+    Ok(Json(ValidateResponse { valid, errors, warnings, graph }))
+}
+
 /// Response structure for the permissions endpoint
 #[derive(Serialize)]
 struct PermissionsResponse {
@@ -3235,6 +3595,7 @@ pub fn create_app(
         .route("/api/v1/config", get(get_config_handler))
         .route("/api/v1/schema/nodes", get(list_node_definitions_handler))
         .route("/api/v1/schema/packets", get(list_packet_types_handler))
+        .route("/api/v1/validate", post(validate_pipeline_handler))
         .route("/api/v1/logs", get(crate::log_viewer::get_logs_handler))
         .route("/api/v1/logs/stream", get(crate::log_viewer::stream_logs_handler))
         .route("/api/v1/sessions", get(list_sessions_handler).post(create_session_handler))
