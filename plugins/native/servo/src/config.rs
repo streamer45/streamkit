@@ -129,7 +129,7 @@ impl ServoConfig {
     }
 
     /// Effective viewport width (falls back to output width).
-    pub fn effective_viewport_width(&self) -> u32 {
+    pub const fn effective_viewport_width(&self) -> u32 {
         if self.viewport_width > 0 {
             self.viewport_width
         } else {
@@ -138,7 +138,7 @@ impl ServoConfig {
     }
 
     /// Effective viewport height (falls back to output height).
-    pub fn effective_viewport_height(&self) -> u32 {
+    pub const fn effective_viewport_height(&self) -> u32 {
         if self.viewport_height > 0 {
             self.viewport_height
         } else {

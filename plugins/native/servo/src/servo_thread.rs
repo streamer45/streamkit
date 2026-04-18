@@ -130,15 +130,12 @@ struct FrameDelegate {
 
 impl WebViewDelegate for FrameDelegate {
     fn notify_load_status_changed(&self, _webview: WebView, status: LoadStatus) {
-        match status {
-            LoadStatus::Complete => {
-                self.loaded.set(true);
-                self.load_failed.set(false);
-            },
-            // Servo 0.1.0 does not expose a Failed variant.  Load failures
-            // are detected via timeout (page never reaches Complete).
-            _ => {},
+        if status == LoadStatus::Complete {
+            self.loaded.set(true);
+            self.load_failed.set(false);
         }
+        // Servo 0.1.0 does not expose a Failed variant.  Load failures
+        // are detected via timeout (page never reaches Complete).
     }
 
     fn notify_new_frame_ready(&self, webview: WebView) {
@@ -178,6 +175,7 @@ struct InstanceState {
 /// wrapped in `catch_unwind` so a panic in one node does not terminate the
 /// shared thread.
 #[allow(clippy::needless_pass_by_value)] // Receiver must be moved into the thread entry point
+#[allow(clippy::cognitive_complexity)] // Main event loop — splitting would obscure control flow
 fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
     let mut instances: HashMap<NodeId, InstanceState> = HashMap::new();
     // Servo's Opts is a process-global singleton -- we lazily create the
@@ -211,7 +209,7 @@ fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
                         error = %msg,
                         "Panic during Servo Render — sending fallback frame",
                     );
-                    send_fallback_frame(&mut instances, &node_id);
+                    send_fallback_frame(&instances, &node_id);
                 }
             },
             ServoWorkItem::UpdateConfig { node_id, config } => {
@@ -293,26 +291,25 @@ fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
 
 /// Extract a human-readable message from a panic payload.
 fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
-    if let Some(s) = payload.downcast_ref::<&str>() {
-        (*s).to_string()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "unknown panic".to_string()
-    }
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".to_string())
 }
 
 /// Send a fallback frame (last good frame or transparent) after a panic.
-fn send_fallback_frame(instances: &mut HashMap<NodeId, InstanceState>, node_id: &NodeId) {
+fn send_fallback_frame(instances: &HashMap<NodeId, InstanceState>, node_id: &NodeId) {
     let Some(state) = instances.get(node_id) else {
         return;
     };
-    let fallback = if let Some(ref cached) = state.last_good_frame {
-        cached.clone()
-    } else {
-        let len = (state.config.width as usize) * (state.config.height as usize) * 4;
-        vec![0u8; len]
-    };
+    let fallback = state.last_good_frame.as_ref().map_or_else(
+        || {
+            let len = (state.config.width as usize) * (state.config.height as usize) * 4;
+            vec![0u8; len]
+        },
+        Clone::clone,
+    );
     let _ = state.result_tx.send(ServoThreadResult::Frame { rgba_data: fallback });
 }
 
