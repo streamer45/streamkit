@@ -199,6 +199,8 @@ impl ServoConfig {
         let mut viewport_changed = false;
         if let Some(ref res) = update.viewport_resolution {
             if let Some((w, h)) = Self::parse_resolution(res) {
+                let w = w.min(MAX_DIMENSION);
+                let h = h.min(MAX_DIMENSION);
                 if w != self.viewport_width || h != self.viewport_height {
                     self.viewport_width = w;
                     self.viewport_height = h;
