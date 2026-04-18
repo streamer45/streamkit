@@ -221,17 +221,27 @@ fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
                 }
             },
             ServoWorkItem::Unregister { node_id } => {
-                if let Some(state) = instances.remove(&node_id) {
-                    if state.render_count > 0 {
-                        let avg_us = state.render_duration_sum.as_micros()
-                            / u128::from(state.render_count);
-                        tracing::info!(
-                            node_id = %node_id,
-                            total_frames = state.render_count,
-                            avg_render_us = avg_us,
-                            "Unregistered Servo instance",
-                        );
+                let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    if let Some(state) = instances.remove(&node_id) {
+                        if state.render_count > 0 {
+                            let avg_us = state.render_duration_sum.as_micros()
+                                / u128::from(state.render_count);
+                            tracing::info!(
+                                node_id = %node_id,
+                                total_frames = state.render_count,
+                                avg_render_us = avg_us,
+                                "Unregistered Servo instance",
+                            );
+                        }
                     }
+                }));
+                if let Err(panic) = result {
+                    let msg = panic_message(&panic);
+                    tracing::error!(
+                        node_id = %node_id,
+                        error = %msg,
+                        "Panic during Servo Unregister — instance may leak",
+                    );
                 }
             },
         }
