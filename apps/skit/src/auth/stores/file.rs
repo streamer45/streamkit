@@ -261,6 +261,33 @@ impl FileKeyProvider {
         }
         Ok(())
     }
+
+    /// Atomically swap all three in-memory caches.
+    ///
+    /// All three write locks are held simultaneously so no reader can
+    /// observe a partially-swapped state (e.g. an active kid whose
+    /// verification key isn't yet in the map).  Extracted into a sync
+    /// method so the guards live in a non-async context.
+    fn swap_state(
+        &self,
+        new_active: SigningKeyMaterial,
+        new_public_keys_delta: Option<(String, Arc<[u8]>)>,
+        full_public_keys: Option<HashMap<String, Arc<[u8]>>>,
+        new_jwks: Jwks,
+    ) {
+        let mut active = lock_write(&self.active);
+        let mut public_keys = lock_write(&self.public_keys);
+        let mut jwks_lock = lock_write(&self.jwks);
+
+        if let Some(full) = full_public_keys {
+            *public_keys = full;
+        }
+        if let Some((kid, key)) = new_public_keys_delta {
+            public_keys.insert(kid, key);
+        }
+        *jwks_lock = new_jwks;
+        *active = new_active;
+    }
 }
 
 #[async_trait]
@@ -310,16 +337,12 @@ impl KeyProvider for FileKeyProvider {
         Self::write_secure(&jwks_path, &serde_json::to_string_pretty(&jwks)?).await?;
         Self::write_secure(&private_path, &serde_json::to_string_pretty(&private_jwk)?).await?;
 
-        // Swap all three caches atomically inside a sync block so
-        // the guards never exist across an await point.
-        {
-            let mut active = lock_write(&self.active);
-            let mut public_keys_guard = lock_write(&self.public_keys);
-            let mut jwks_lock = lock_write(&self.jwks);
-            public_keys_guard.insert(private_jwk.kid.clone(), public_key_bytes);
-            *jwks_lock = jwks.clone();
-            *active = new_signing_key.clone();
-        }
+        self.swap_state(
+            new_signing_key.clone(),
+            Some((private_jwk.kid.clone(), public_key_bytes)),
+            None,
+            jwks.clone(),
+        );
 
         info!(kid = %new_signing_key.kid, total_keys = jwks.keys.len(), "Rotated signing key");
 
@@ -402,16 +425,7 @@ impl KeyProvider for FileKeyProvider {
 
         let total_keys = jwks.keys.len();
 
-        // Swap all three caches atomically inside a sync block so
-        // the guards never exist across an await point.
-        {
-            let mut active = lock_write(&self.active);
-            let mut public_keys = lock_write(&self.public_keys);
-            let mut jwks_lock = lock_write(&self.jwks);
-            *public_keys = new_public_keys;
-            *jwks_lock = jwks;
-            *active = new_active.clone();
-        }
+        self.swap_state(new_active.clone(), None, Some(new_public_keys), jwks);
 
         info!(kid = %new_active.kid, total_keys, "Reloaded keys from disk");
 
