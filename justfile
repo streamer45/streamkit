@@ -1034,26 +1034,26 @@ install-plugin name: (build-plugin-native name)
     BUNDLE_DIR=".plugins/native/{{name}}"
     mkdir -p "$BUNDLE_DIR"
 
-    # Rust library names use underscores for hyphens.
-    # Some plugins have a lib stem that differs from the plugin id.
-    declare -A LIB_OVERRIDES=( ["servo"]="servo_web" )
-    if [[ -v "LIB_OVERRIDES[{{name}}]" ]]; then
-        LIB_STEM="lib${LIB_OVERRIDES[{{name}}]}"
-    else
+    # Derive library filename from plugin.yml entrypoint if available,
+    # otherwise fall back to the convention (hyphens → underscores).
+    PLUGIN_YML="plugins/native/{{name}}/plugin.yml"
+    if [[ -f "$PLUGIN_YML" ]]; then
+        ENTRYPOINT=$(grep '^entrypoint:' "$PLUGIN_YML" | awk '{print $2}')
+    fi
+    if [[ -z "${ENTRYPOINT:-}" ]]; then
         LIB_STEM="lib$(echo '{{name}}' | tr '-' '_')"
+        ENTRYPOINT=""
+        for ext in so dylib dll; do
+            if [[ -f "$PLUGINS_TARGET/release/${LIB_STEM}.${ext}" ]]; then
+                ENTRYPOINT="${LIB_STEM}.${ext}"
+                break
+            fi
+        done
     fi
 
-    SO_FILE=""
-    for ext in so dylib dll; do
-        candidate="$PLUGINS_TARGET/release/${LIB_STEM}.${ext}"
-        if [[ -f "$candidate" ]]; then
-            SO_FILE="$candidate"
-            break
-        fi
-    done
-
-    if [[ -z "$SO_FILE" ]]; then
-        echo "❌ Built library not found (expected ${LIB_STEM}.{so,dylib,dll} in $PLUGINS_TARGET/release/)"
+    SO_FILE="$PLUGINS_TARGET/release/${ENTRYPOINT}"
+    if [[ -z "$ENTRYPOINT" ]] || [[ ! -f "$SO_FILE" ]]; then
+        echo "❌ Built library not found (expected ${ENTRYPOINT:-lib{{name}}.{so,dylib,dll}} in $PLUGINS_TARGET/release/)"
         exit 1
     fi
 
