@@ -5,7 +5,7 @@
 # Minimal pipeline for E2E-testing overlay controls.
 # Uses only core nodes (no plugins, no MoQ) so the session can be
 # created in any environment.  The controls section exercises all
-# four control types: toggle, text, number, and button.
+# five control types: toggle, text, number, button, and select.
 
 name: "Test: Overlay Controls"
 description: Colorbars-to-sink pipeline with overlay controls (E2E test fixture)
@@ -40,6 +40,16 @@ client:
       min: 120
       max: 1080
       step: 10
+    - label: "Format"
+      type: select
+      node: colorbars
+      property: pixel_format
+      default: rgba8
+      options:
+        - label: RGBA 8-bit
+          value: rgba8
+        - label: NV12
+          value: nv12
     - label: "Reset"
       type: button
       node: colorbars

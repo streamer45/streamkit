@@ -428,13 +428,23 @@ describe('schemaToControlConfigs', () => {
     expect(result).toEqual([]);
   });
 
-  it('skips enum-constrained strings', () => {
+  it('converts enum-constrained strings to select ControlConfigs', () => {
     const result = schemaToControlConfigs('node', {
       properties: {
         mode: { type: 'string', tunable: true, enum: ['fast', 'slow'] },
       },
     });
-    expect(result).toEqual([]);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      label: 'Mode',
+      type: 'select',
+      node: 'node',
+      default: 'fast',
+      options: [
+        { label: 'fast', value: 'fast' },
+        { label: 'slow', value: 'slow' },
+      ],
+    });
   });
 
   it('assigns group label when provided', () => {

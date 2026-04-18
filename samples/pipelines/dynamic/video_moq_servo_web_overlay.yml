@@ -29,11 +29,22 @@ client:
     audio: false
     video: true
   controls:
-    - label: "URL"
-      type: text
+    - label: "Page"
+      type: select
       node: web_overlay
       property: url
       default: "https://streamkit.dev"
+      options:
+        - label: StreamKit — Home
+          value: "https://streamkit.dev"
+        - label: Servo — Home
+          value: "https://servo.org"
+        - label: Wikipedia — WebRTC
+          value: "https://en.wikipedia.org/wiki/WebRTC"
+        - label: MDN — CSS Grid
+          value: "https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_grid_layout"
+        - label: "Example — Clock (CSS)"
+          value: "https://codepen.io/Mamboleoo/full/abNdRwb"
     - label: "Custom CSS"
       type: text
       node: web_overlay

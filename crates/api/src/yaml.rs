@@ -342,6 +342,19 @@ pub enum ControlType {
     Number,
     /// Action button that sends a fixed value on click.
     Button,
+    /// Dropdown selector with predefined options.
+    Select,
+}
+
+/// A single option for a `select` control.
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+#[ts(export)]
+pub struct SelectOption {
+    /// Human-readable text shown in the dropdown.
+    pub label: String,
+    /// Value sent to the server when this option is selected.
+    #[ts(type = "unknown")]
+    pub value: serde_json::Value,
 }
 
 /// A single declarative control entry in the `client.controls` array.
@@ -392,6 +405,11 @@ pub struct ControlConfig {
     #[serde(default)]
     #[ts(type = "unknown")]
     pub value: Option<serde_json::Value>,
+    // -- Select-only field --
+    /// Predefined options for select controls.  Each entry has a `label`
+    /// (shown in the dropdown) and a `value` (sent to the server).
+    #[serde(default)]
+    pub options: Option<Vec<SelectOption>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1174,6 +1192,8 @@ pub struct NodeInfo<'a> {
 ///     does not exist in the pipeline's `nodes` map.
 /// 22. **`control-number-no-bounds`** — a `number` control is missing `min`
 ///     and/or `max`, so the slider will lack proper bounds.
+/// 23. **`control-select-no-options`** — a `select` control has no `options`
+///     array, so the dropdown will be empty.
 pub fn lint_client_against_nodes(
     client: &ClientSection,
     _mode: EngineMode,
@@ -1441,6 +1461,22 @@ pub fn lint_client_against_nodes(
                             (false, true) => "`max`",
                             _ => unreachable!(),
                         }
+                    ),
+                });
+            }
+
+            if matches!(control.control_type, ControlType::Select)
+                && control
+                    .options
+                    .as_ref()
+                    .is_none_or(|opts| opts.is_empty())
+            {
+                warnings.push(ClientLintWarning {
+                    rule: "control-select-no-options",
+                    message: format!(
+                        "control `{}` is type `select` but has no `options` — the \
+                         dropdown will be empty.",
+                        control.label,
                     ),
                 });
             }
@@ -2307,6 +2343,7 @@ client:
             max: None,
             step: None,
             value: None,
+            options: None,
         }]);
         let warnings = lint_client_section(&c, EngineMode::OneShot);
         assert!(warnings.iter().any(|w| w.rule == "mode-mismatch-oneshot"));
@@ -2992,6 +3029,7 @@ client:
                 max: None,
                 step: None,
                 value: None,
+                options: None,
             }]),
             ..Default::default()
         };
@@ -3017,6 +3055,7 @@ client:
                 max: None,
                 step: None,
                 value: None,
+                options: None,
             }]),
             ..Default::default()
         };
@@ -3043,6 +3082,7 @@ client:
                 max: None,
                 step: None,
                 value: None,
+                options: None,
             }]),
             ..Default::default()
         };
@@ -3068,6 +3108,7 @@ client:
                 max: Some(99.0),
                 step: Some(1.0),
                 value: None,
+                options: None,
             }]),
             ..Default::default()
         };
@@ -3076,6 +3117,68 @@ client:
         assert!(
             !warnings.iter().any(|w| w.rule == "control-number-no-bounds"),
             "Should not warn when number control has min and max: {warnings:?}"
+        );
+    }
+
+    // Rule 23 — control-select-no-options
+    #[test]
+    fn test_lint_control_select_no_options() {
+        let c = ClientSection {
+            controls: Some(vec![ControlConfig {
+                label: "Page".into(),
+                control_type: ControlType::Select,
+                node: "web_overlay".into(),
+                property: "url".into(),
+                group: None,
+                default: None,
+                min: None,
+                max: None,
+                step: None,
+                value: None,
+                options: None,
+            }]),
+            ..Default::default()
+        };
+        let nodes = vec![named_node("web_overlay", "plugin::native::servo", None)];
+        let warnings = lint_client_against_nodes(&c, EngineMode::Dynamic, &nodes);
+        assert!(
+            warnings.iter().any(|w| w.rule == "control-select-no-options"),
+            "Should warn when select control has no options: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_lint_control_select_with_options_clean() {
+        let c = ClientSection {
+            controls: Some(vec![ControlConfig {
+                label: "Page".into(),
+                control_type: ControlType::Select,
+                node: "web_overlay".into(),
+                property: "url".into(),
+                group: None,
+                default: None,
+                min: None,
+                max: None,
+                step: None,
+                value: None,
+                options: Some(vec![
+                    SelectOption {
+                        label: "Home".into(),
+                        value: serde_json::json!("https://streamkit.dev"),
+                    },
+                    SelectOption {
+                        label: "Docs".into(),
+                        value: serde_json::json!("https://servo.org"),
+                    },
+                ]),
+            }]),
+            ..Default::default()
+        };
+        let nodes = vec![named_node("web_overlay", "plugin::native::servo", None)];
+        let warnings = lint_client_against_nodes(&c, EngineMode::Dynamic, &nodes);
+        assert!(
+            !warnings.iter().any(|w| w.rule == "control-select-no-options"),
+            "Should not warn when select control has options: {warnings:?}"
         );
     }
 
