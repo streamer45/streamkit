@@ -164,8 +164,9 @@ jobs:
           echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main" | sudo tee /etc/apt/sources.list.d/llvm-18.list
           sudo apt-get update -qq
           sudo apt-get install -y -qq clang-18 libclang-18-dev
-          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
-          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-18 100
+          echo "CC=clang-18" >> "$GITHUB_ENV"
+          echo "CXX=clang++-18" >> "$GITHUB_ENV"
+          echo "CLANG_PATH=/usr/bin/clang-18" >> "$GITHUB_ENV"
           echo "LIBCLANG_PATH=/usr/lib/llvm-18/lib/" >> "$GITHUB_ENV"
           gcc_ver=$(ls /usr/include/c++/ 2>/dev/null | sort -V | tail -1 || true)
           if [ -n "$gcc_ver" ]; then
