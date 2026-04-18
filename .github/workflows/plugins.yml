@@ -52,6 +52,17 @@ jobs:
           - group: nllb
             plugins: "nllb"
             apt_extra: "libopenblas-dev"
+          # Servo embeds a full browser engine with heavy system deps
+          - group: servo
+            plugins: "servo"
+            apt_extra: >-
+              build-essential g++ clang
+              libfontconfig1-dev libharfbuzz-dev libfreetype6-dev
+              libegl1-mesa-dev libgl1-mesa-dev libgbm-dev libdrm-dev
+              libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+              gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
+              libdbus-1-dev libpulse-dev libxkbcommon-dev
+              nasm
     steps:
       - uses: actions/checkout@v5
 
@@ -142,6 +153,15 @@ jobs:
           workspaces: ${{ steps.cache-ws.outputs.list }}
           cache-on-failure: true
 
+      # --- Servo bindgen (servo group only) ---
+      - name: Set BINDGEN_EXTRA_CLANG_ARGS
+        if: matrix.group == 'servo'
+        run: |
+          gcc_ver=$(ls /usr/include/c++/ 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$gcc_ver" ]; then
+            echo "BINDGEN_EXTRA_CLANG_ARGS=-I/usr/include/c++/${gcc_ver} -I/usr/include/x86_64-linux-gnu/c++/${gcc_ver}" >> "$GITHUB_ENV"
+          fi
+
       # --- Lint ---
       - name: Format check
         run: |
@@ -158,5 +178,14 @@ jobs:
             # Shared target dir deduplicates common crate compilation across plugins in the group.
             # If flaky clippy results appear, conflicting feature flags between plugins could be the cause.
             (cd "plugins/native/${plugin}" && CARGO_TARGET_DIR="${{ github.workspace }}/target/plugins" cargo clippy -- -D warnings)
+            echo "::endgroup::"
+          done
+
+      # --- Test ---
+      - name: Test
+        run: |
+          for plugin in ${{ matrix.plugins }}; do
+            echo "::group::test — ${plugin}"
+            (cd "plugins/native/${plugin}" && CARGO_TARGET_DIR="${{ github.workspace }}/target/plugins" cargo test)
             echo "::endgroup::"
           done
