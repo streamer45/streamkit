@@ -77,6 +77,12 @@ impl NativeSourceNode for ServoSourcePlugin {
                         "type": "integer",
                         "default": 0,
                         "description": "Total frames to generate (0 = infinite)"
+                    },
+                    "load_timeout_secs": {
+                        "type": "integer",
+                        "default": 30,
+                        "description": "Maximum seconds to wait for page load",
+                        "minimum": 1
                     }
                 },
                 "required": ["url"]

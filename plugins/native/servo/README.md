@@ -112,6 +112,7 @@ build.
 | `fps`          | integer | 30      | Output frame rate |
 | `custom_css`   | string  | —       | Optional CSS injected into the page |
 | `frame_count`  | integer | 0       | Total frames to generate (0 = infinite) |
+| `load_timeout_secs` | integer | 30 | Maximum seconds to wait for page load |
 
 ### Runtime Updates
 
@@ -170,8 +171,6 @@ pipeline compositing a web page as PiP over colorbars with MoQ streaming.
   pages render at full configured FPS.
 - **No input forwarding** — the rendered page is view-only. Mouse/keyboard
   interaction and a JavaScript bridge are planned for a future phase.
-- **No crash recovery** — if Servo panics, the shared thread terminates and
-  all web renderer nodes in the pipeline stop. Hardening is planned.
 - **Single process** — Servo runs in-process (no multi-process sandboxing).
 - **Binary size** — ~148 MB due to embedding SpiderMonkey, WebRender, and
   their transitive dependency trees.

@@ -28,6 +28,10 @@ const fn default_frame_count() -> u32 {
     0
 }
 
+const fn default_load_timeout_secs() -> u32 {
+    30
+}
+
 // -- Configuration -----------------------------------------------------------
 
 /// Configuration for the Servo web renderer plugin.
@@ -55,6 +59,9 @@ pub struct ServoConfig {
     /// Total frames to generate.  0 = infinite (real-time pacing).
     #[serde(default = "default_frame_count")]
     pub frame_count: u32,
+    /// Maximum seconds to wait for the initial page load.
+    #[serde(default = "default_load_timeout_secs")]
+    pub load_timeout_secs: u32,
 }
 
 impl Default for ServoConfig {
@@ -66,6 +73,7 @@ impl Default for ServoConfig {
             fps: default_fps(),
             custom_css: None,
             frame_count: default_frame_count(),
+            load_timeout_secs: default_load_timeout_secs(),
         }
     }
 }
@@ -92,6 +100,9 @@ impl ServoConfig {
         }
         if self.fps == 0 {
             return Err("fps must be > 0".to_string());
+        }
+        if self.load_timeout_secs == 0 {
+            return Err("load_timeout_secs must be > 0".to_string());
         }
         // Validate that the URL is parseable.
         url::Url::parse(&self.url).map_err(|e| format!("invalid url '{}': {e}", self.url))?;

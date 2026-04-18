@@ -17,9 +17,19 @@
 //! shared thread via tagged work items.  Results are sent back on per-node
 //! `std::sync::mpsc` channels so `tick()` can block-receive without needing
 //! a tokio runtime.
+//!
+//! ## Hardening
+//!
+//! - Work item handlers are wrapped in `catch_unwind` so a panic in one
+//!   node does not bring down the shared thread (and all other nodes).
+//! - Page load errors are tracked and reported via `LoadStatus::Failed`.
+//! - Each instance caches the last successfully rendered frame; on render
+//!   failures the cached frame is returned instead of a blank.
+//! - Frame render timing is emitted via `tracing` for observability.
 
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::panic::AssertUnwindSafe;
 use std::rc::Rc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -103,7 +113,7 @@ pub fn send_work(item: ServoWorkItem) -> Result<(), String> {
 
 // -- Servo thread internals --------------------------------------------------
 
-/// Minimal delegate that drives the compositor.
+/// Minimal delegate that drives the compositor and tracks load status.
 ///
 /// The critical contract is calling `webview.paint()` inside
 /// `notify_new_frame_ready` -- without it the software rendering context's
@@ -111,13 +121,22 @@ pub fn send_work(item: ServoWorkItem) -> Result<(), String> {
 #[derive(Default)]
 struct FrameDelegate {
     loaded: Cell<bool>,
+    load_failed: Cell<bool>,
     frames: Cell<u64>,
 }
 
 impl WebViewDelegate for FrameDelegate {
     fn notify_load_status_changed(&self, _webview: WebView, status: LoadStatus) {
-        if matches!(status, LoadStatus::Complete) {
-            self.loaded.set(true);
+        match status {
+            LoadStatus::Complete => {
+                self.loaded.set(true);
+                self.load_failed.set(false);
+            },
+            LoadStatus::Failed => {
+                self.loaded.set(true);
+                self.load_failed.set(true);
+            },
+            _ => {},
         }
     }
 
@@ -137,15 +156,20 @@ struct InstanceState {
     delegate: Rc<FrameDelegate>,
     config: ServoConfig,
     result_tx: std::sync::mpsc::SyncSender<ServoThreadResult>,
+    /// Cached last successfully rendered frame for resilience.
+    last_good_frame: Option<Vec<u8>>,
+    /// Cumulative render count for metrics.
+    render_count: u64,
+    /// Sum of render durations for average calculation.
+    render_duration_sum: Duration,
 }
-
-/// Maximum time to wait for the initial page load.
-const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Entry point for the shared Servo thread.
 ///
 /// Creates a single process-global `Servo` instance on first registration
-/// and processes work items from all plugin instances.
+/// and processes work items from all plugin instances.  Each handler is
+/// wrapped in `catch_unwind` so a panic in one node does not terminate the
+/// shared thread.
 #[allow(clippy::needless_pass_by_value)] // Receiver must be moved into the thread entry point
 fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
     let mut instances: HashMap<NodeId, InstanceState> = HashMap::new();
@@ -157,19 +181,86 @@ fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
     while let Ok(work) = work_rx.recv() {
         match work {
             ServoWorkItem::Register { node_id, config, result_tx } => {
-                handle_register(&mut instances, &mut servo, node_id, config, result_tx);
+                let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    handle_register(&mut instances, &mut servo, node_id, config, result_tx);
+                }));
+                if let Err(panic) = result {
+                    let msg = panic_message(&panic);
+                    tracing::error!(
+                        node_id = %node_id,
+                        error = %msg,
+                        "Panic during Servo Register — instance not created",
+                    );
+                }
             },
             ServoWorkItem::Render { node_id } => {
-                handle_render(&mut instances, servo.as_ref(), &node_id);
+                let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    handle_render(&mut instances, servo.as_ref(), &node_id);
+                }));
+                if let Err(panic) = result {
+                    let msg = panic_message(&panic);
+                    tracing::error!(
+                        node_id = %node_id,
+                        error = %msg,
+                        "Panic during Servo Render — sending fallback frame",
+                    );
+                    send_fallback_frame(&mut instances, &node_id);
+                }
             },
             ServoWorkItem::UpdateConfig { node_id, config } => {
-                handle_update_config(&mut instances, servo.as_ref(), &node_id, &config);
+                let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    handle_update_config(&mut instances, servo.as_ref(), &node_id, &config);
+                }));
+                if let Err(panic) = result {
+                    let msg = panic_message(&panic);
+                    tracing::error!(
+                        node_id = %node_id,
+                        error = %msg,
+                        "Panic during Servo UpdateConfig — config unchanged",
+                    );
+                }
             },
             ServoWorkItem::Unregister { node_id } => {
-                instances.remove(&node_id);
+                if let Some(state) = instances.remove(&node_id) {
+                    if state.render_count > 0 {
+                        let avg_us = state.render_duration_sum.as_micros()
+                            / u128::from(state.render_count);
+                        tracing::info!(
+                            node_id = %node_id,
+                            total_frames = state.render_count,
+                            avg_render_us = avg_us,
+                            "Unregistered Servo instance",
+                        );
+                    }
+                }
             },
         }
     }
+}
+
+/// Extract a human-readable message from a panic payload.
+fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
+
+/// Send a fallback frame (last good frame or transparent) after a panic.
+fn send_fallback_frame(instances: &mut HashMap<NodeId, InstanceState>, node_id: &NodeId) {
+    let Some(state) = instances.get(node_id) else {
+        return;
+    };
+    let fallback = if let Some(ref cached) = state.last_good_frame {
+        cached.clone()
+    } else {
+        let len = (state.config.width as usize) * (state.config.height as usize) * 4;
+        vec![0u8; len]
+    };
+    let _ = state.result_tx.send(ServoThreadResult::Frame { rgba_data: fallback });
 }
 
 /// Handle a `Register` work item: create a WebView on the shared Servo
@@ -194,10 +285,30 @@ fn handle_register(
         s
     });
 
+    let load_timeout = Duration::from_secs(u64::from(config.load_timeout_secs));
+
     match create_webview(servo_ref, &config) {
         Ok((webview, rendering_context, delegate)) => {
             // Wait for the initial page load so the first Render has content.
-            wait_for_load(servo_ref, &delegate, &config.url, &node_id);
+            let load_start = Instant::now();
+            wait_for_load(servo_ref, &delegate, &config.url, &node_id, load_timeout);
+            let load_duration = load_start.elapsed();
+
+            if delegate.load_failed.get() {
+                tracing::warn!(
+                    node_id = %node_id,
+                    url = %config.url,
+                    load_ms = load_duration.as_millis(),
+                    "Page load reported failure — proceeding with partial content",
+                );
+            } else {
+                tracing::info!(
+                    node_id = %node_id,
+                    url = %config.url,
+                    load_ms = load_duration.as_millis(),
+                    "Page loaded successfully",
+                );
+            }
 
             // Force at least one post-load frame via a rAF nudge.
             nudge_frame(servo_ref, &webview, &delegate);
@@ -218,7 +329,16 @@ fn handle_register(
             let _ = result_tx.send(ServoThreadResult::InitOk);
             instances.insert(
                 node_id,
-                InstanceState { webview, rendering_context, delegate, config, result_tx },
+                InstanceState {
+                    webview,
+                    rendering_context,
+                    delegate,
+                    config,
+                    result_tx,
+                    last_good_frame: None,
+                    render_count: 0,
+                    render_duration_sum: Duration::ZERO,
+                },
             );
         },
         Err(e) => {
@@ -238,6 +358,8 @@ fn handle_render(
         return;
     };
 
+    let render_start = Instant::now();
+
     // Pump the event loop to let Servo process pending work.
     servo.spin_event_loop();
 
@@ -251,12 +373,34 @@ fn handle_render(
     );
 
     let rgba_data = if let Some(img) = state.rendering_context.read_to_image(rect) {
-        img.into_raw()
+        let raw = img.into_raw();
+        state.last_good_frame = Some(raw.clone());
+        raw
+    } else if let Some(ref cached) = state.last_good_frame {
+        tracing::debug!(node_id = %node_id, "read_to_image returned None, using cached frame");
+        cached.clone()
     } else {
-        // Fallback: send a transparent frame.
+        // No cached frame — send transparent.
         let len = (state.config.width as usize) * (state.config.height as usize) * 4;
         vec![0u8; len]
     };
+
+    let render_duration = render_start.elapsed();
+    state.render_count += 1;
+    state.render_duration_sum += render_duration;
+
+    // Log render time periodically (every 300 frames ~ 10s at 30fps).
+    if state.render_count % 300 == 0 {
+        let avg_us =
+            state.render_duration_sum.as_micros() / u128::from(state.render_count);
+        tracing::debug!(
+            node_id = %node_id,
+            frame = state.render_count,
+            render_us = render_duration.as_micros(),
+            avg_render_us = avg_us,
+            "Servo render metrics",
+        );
+    }
 
     if state.result_tx.send(ServoThreadResult::Frame { rgba_data }).is_err() {
         instances.remove(node_id);
@@ -283,8 +427,21 @@ fn handle_update_config(
         if let Ok(parsed) = url::Url::parse(&state.config.url) {
             state.webview.load(parsed);
             state.delegate.loaded.set(false);
+            state.delegate.load_failed.set(false);
 
-            wait_for_load(servo, &state.delegate, &state.config.url, node_id);
+            let load_timeout =
+                Duration::from_secs(u64::from(state.config.load_timeout_secs));
+            let load_start = Instant::now();
+            wait_for_load(servo, &state.delegate, &state.config.url, node_id, load_timeout);
+
+            if state.delegate.load_failed.get() {
+                tracing::warn!(
+                    node_id = %node_id,
+                    url = %state.config.url,
+                    load_ms = load_start.elapsed().as_millis(),
+                    "URL navigation load failed",
+                );
+            }
         }
     }
 
@@ -323,14 +480,22 @@ fn create_webview(
     Ok((webview, rendering_context, delegate))
 }
 
-/// Wait for the page to reach `LoadStatus::Complete`, with a timeout.
-fn wait_for_load(servo: &Servo, delegate: &FrameDelegate, url: &str, node_id: &NodeId) {
-    let deadline = Instant::now() + LOAD_TIMEOUT;
+/// Wait for the page to reach `LoadStatus::Complete` or `LoadStatus::Failed`,
+/// with a configurable timeout.
+fn wait_for_load(
+    servo: &Servo,
+    delegate: &FrameDelegate,
+    url: &str,
+    node_id: &NodeId,
+    timeout: Duration,
+) {
+    let deadline = Instant::now() + timeout;
     while !delegate.loaded.get() {
         if Instant::now() > deadline {
             tracing::warn!(
                 node_id = %node_id,
                 url = %url,
+                timeout_secs = timeout.as_secs(),
                 "Timed out waiting for page load, proceeding anyway",
             );
             break;
