@@ -1,0 +1,137 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Composites a Servo browser window (rendering a WebGL benchmark) as a
+# picture-in-picture overlay on top of SMPTE colorbars, encodes the
+# result to H.264 via OpenH264, and muxes into an MP4 container.
+#
+# Demonstrates:
+#   - Servo plugin rendering a dynamic web page (WebGL aquarium)
+#   - Video compositor with PiP layer + text overlay
+#   - H.264 encoding pipeline into MP4
+#
+# Requires: plugin::native::servo loaded
+#   just build-plugin-native-servo && just copy-plugins-native
+
+name: Web PiP Compositor (H.264/MP4)
+description: Composites a Servo-rendered WebGL page as PiP over colorbars, encodes to H.264/MP4
+mode: oneshot
+client:
+  input:
+    type: none
+  output:
+    type: video
+
+nodes:
+  # ============================================================
+  # SOURCES
+  # ============================================================
+
+  # Full-screen SMPTE colorbars background.
+  colorbars_bg:
+    kind: video::colorbars
+    params:
+      width: 1280
+      height: 720
+      fps: 30
+      frame_count: 300  # 10 seconds at 30 fps
+      pixel_format: rgba8
+      draw_time: true
+      draw_time_use_pts: true
+
+  # Servo browser rendering a WebGL aquarium demo as PiP source.
+  web_pip:
+    kind: plugin::native::servo
+    params:
+      url: "https://webglsamples.org/aquarium/aquarium.html"
+      width: 640
+      height: 480
+      fps: 30
+      frame_count: 300
+
+  # ============================================================
+  # COMPOSITING
+  # ============================================================
+
+  compositor:
+    kind: video::compositor
+    params:
+      width: 1280
+      height: 720
+      num_inputs: 2
+      layers:
+        # Background: colorbars fill the full canvas.
+        in_0:
+          opacity: 1.0
+          z_index: 0
+        # PiP: Servo browser window in the bottom-right corner
+        # with a slight inset and subtle transparency.
+        in_1:
+          rect:
+            x: 720
+            y: 340
+            width: 520
+            height: 350
+          opacity: 0.95
+          z_index: 1
+      text_overlays:
+        - id: "pip_label"
+          text: "WebGL Aquarium (Servo)"
+          rect:
+            x: 720
+            y: 315
+            width: 520
+            height: 24
+          color: [255, 255, 255, 200]
+          font_size: 18
+          opacity: 1.0
+          z_index: 2
+          font_name: samples/fonts/system/DejaVuSans.ttf
+        - id: "title"
+          text: "StreamKit Servo PiP Demo"
+          rect:
+            x: 20
+            y: 20
+            width: 500
+            height: 40
+          color: [255, 255, 255, 230]
+          font_size: 28
+          opacity: 1.0
+          z_index: 2
+          font_name: samples/fonts/system/DejaVuSans.ttf
+    needs:
+      - colorbars_bg
+      - web_pip
+
+  # ============================================================
+  # ENCODE + MUX
+  # ============================================================
+
+  pixel_convert:
+    kind: video::pixel_convert
+    params:
+      output_format: nv12
+    needs: compositor
+
+  h264_encoder:
+    kind: video::openh264::encoder
+    params:
+      bitrate_kbps: 4000
+      max_frame_rate: 30.0
+    needs: pixel_convert
+
+  mp4_muxer:
+    kind: containers::mp4::muxer
+    params:
+      mode: stream
+      video_width: 1280
+      video_height: 720
+      video_codec: h264
+    needs: h264_encoder
+
+  http_output:
+    kind: streamkit::http_output
+    params:
+      content_type: 'video/mp4; codecs="avc1.42c01f"'
+    needs: mp4_muxer
