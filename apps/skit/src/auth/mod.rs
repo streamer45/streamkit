@@ -509,6 +509,23 @@ impl AuthState {
         Ok(new_key)
     }
 
+    /// Reload keys from persistent storage.
+    ///
+    /// Re-reads the active private key and the full JWKS from the backing
+    /// store, replacing the in-memory cache.  Call this after an external
+    /// key rotation (e.g. the CLI `rotate-key` command) to pick up the
+    /// new keys without restarting the server.
+    ///
+    /// # Errors
+    ///
+    /// Returns errors if auth is disabled or the reload fails.
+    pub async fn reload_keys(&self) -> Result<(), AuthError> {
+        let key_provider = self.key_provider.as_ref().ok_or(AuthError::Disabled)?;
+        key_provider.reload().await?;
+        info!("Auth keys reloaded from disk");
+        Ok(())
+    }
+
     /// Check if auth should be enabled based on config and bind address.
     #[allow(dead_code)]
     pub const fn should_enable(config: &AuthConfig, bind_addr: &std::net::SocketAddr) -> bool {
@@ -678,6 +695,57 @@ mod tests {
         assert_ne!(hash1, hash3);
         // Hash is hex-encoded SHA-256 (64 chars)
         assert_eq!(hash1.len(), 64);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_reload_keys_picks_up_external_rotation() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = AuthConfig {
+            mode: AuthMode::Enabled,
+            state_dir: temp_dir.path().to_string_lossy().to_string(),
+            api_max_ttl_secs: 86400,
+            ..Default::default()
+        };
+
+        // "Server" auth state — stays alive the whole time.
+        let server = Arc::new(AuthState::new(&config, true).await.unwrap());
+
+        // "CLI" auth state — separate instance sharing the same state dir.
+        let cli = AuthState::new(&config, true).await.unwrap();
+
+        // CLI rotates the key and mints a token with the new key.
+        let new_key = cli.rotate_key().await.unwrap();
+        let (new_token, _meta) =
+            cli.mint_api_token("admin", Some("post-rotate"), 3600, "test").await.unwrap();
+
+        // Before reload: server cannot validate the new token.
+        let server_clone = server.clone();
+        let token_clone = new_token.clone();
+        let result =
+            tokio::task::spawn_blocking(move || server_clone.validate_api_token(&token_clone))
+                .await
+                .unwrap();
+        assert!(result.is_err(), "server should reject token signed with unknown key");
+
+        // Reload keys on the server side.
+        server.reload_keys().await.unwrap();
+
+        // After reload: server accepts the new token.
+        let server_clone = server.clone();
+        let token_clone = new_token.clone();
+        let claims =
+            tokio::task::spawn_blocking(move || server_clone.validate_api_token(&token_clone))
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(claims.role, "admin");
+
+        // The server's key provider should report the new active kid.
+        let active_kid = {
+            let kp = server.key_provider().unwrap().clone();
+            tokio::task::spawn_blocking(move || kp.active_key().kid).await.unwrap()
+        };
+        assert_eq!(active_kid, new_key.kid);
     }
 
     #[test]

@@ -99,6 +99,14 @@ pub trait KeyProvider: Send + Sync {
     ///
     /// Returns the new active key material.
     async fn rotate(&self) -> Result<SigningKeyMaterial, AuthStoreError>;
+
+    /// Reload keys from the backing store.
+    ///
+    /// Re-reads the active private key and the full JWKS from persistent
+    /// storage, replacing the in-memory cache.  This is used to pick up
+    /// key rotations performed by an external process (e.g. the CLI
+    /// `rotate-key` command) without restarting the server.
+    async fn reload(&self) -> Result<(), AuthStoreError>;
 }
 
 /// Revocation store for invalidated tokens.
