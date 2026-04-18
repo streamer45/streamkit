@@ -216,7 +216,7 @@ fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
                     tracing::error!(
                         node_id = %node_id,
                         error = %msg,
-                        "Panic during Servo UpdateConfig — config unchanged",
+                        "Panic during Servo UpdateConfig — config not applied",
                     );
                 }
             },
@@ -438,30 +438,28 @@ fn handle_update_config(
     let url_changed = new_config.url != state.config.url && !new_config.url.is_empty();
     let css_changed = new_config.custom_css != state.config.custom_css;
 
-    state.config.merge_update(new_config);
-
     if url_changed {
-        if let Ok(parsed) = url::Url::parse(&state.config.url) {
+        if let Ok(parsed) = url::Url::parse(&new_config.url) {
             state.webview.load(parsed);
             state.delegate.loaded.set(false);
             state.delegate.load_failed.set(false);
 
             let load_timeout =
-                Duration::from_secs(u64::from(state.config.load_timeout_secs));
+                Duration::from_secs(u64::from(new_config.load_timeout_secs));
             let load_start = Instant::now();
-            wait_for_load(servo, &state.delegate, &state.config.url, node_id, load_timeout);
+            wait_for_load(servo, &state.delegate, &new_config.url, node_id, load_timeout);
 
             if state.delegate.load_failed.get() {
                 tracing::warn!(
                     node_id = %node_id,
-                    url = %state.config.url,
+                    url = %new_config.url,
                     load_ms = load_start.elapsed().as_millis(),
                     "URL navigation load failed",
                 );
             } else if !state.delegate.loaded.get() {
                 tracing::warn!(
                     node_id = %node_id,
-                    url = %state.config.url,
+                    url = %new_config.url,
                     load_ms = load_start.elapsed().as_millis(),
                     "URL navigation load timed out",
                 );
@@ -470,10 +468,21 @@ fn handle_update_config(
     }
 
     if css_changed || url_changed {
-        if let Some(ref css) = state.config.custom_css {
+        let css = if css_changed {
+            new_config.custom_css.as_deref()
+        } else {
+            state.config.custom_css.as_deref()
+        };
+        if let Some(css) = css {
             inject_custom_css(&state.webview, servo, css);
         }
     }
+
+    // Commit the config only after all side effects have succeeded.
+    // This ensures that on panic (caught by catch_unwind in the caller),
+    // state.config still reflects the actual webview state, allowing
+    // retries with the same URL to trigger navigation again.
+    state.config.merge_update(new_config);
 }
 
 /// Create a `WebView` with its own `SoftwareRenderingContext` on the shared
