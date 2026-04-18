@@ -13,6 +13,11 @@ ARG SHERPA_ONNX_VERSION=1.12.17
 # This is the recommended version for ONNX Runtime GPU in 2025
 ARG CUDA_VERSION=12.3.2
 
+# Stage 0: Extract CUDA dev headers for nvcodec build
+# shiguredo_nvcodec uses bindgen to generate FFI bindings and needs cuda.h.
+ARG CUDA_VERSION
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS cuda-dev
+
 # Stage 1: Build Rust dependencies
 FROM rust:1.92-slim-bookworm AS rust-deps
 
@@ -20,6 +25,7 @@ WORKDIR /build
 
 # Install build dependencies (includes all deps needed by workspace plugins)
 # meson + ninja-build + python3 are needed by dav1d_static (builds dav1d from source)
+# libva-dev + libgbm-dev are needed by cros-codecs (vaapi feature)
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
@@ -35,7 +41,12 @@ RUN apt-get update && apt-get install -y \
     meson \
     ninja-build \
     python3 \
+    libva-dev \
+    libgbm-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Copy CUDA headers for nvcodec feature (shiguredo_nvcodec needs cuda.h)
+COPY --from=cuda-dev /usr/local/cuda/include /usr/local/cuda/include
 
 # Copy workspace files to build dependencies (plugins are now excluded)
 COPY Cargo.toml Cargo.lock ./
@@ -60,7 +71,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
     RUSTFLAGS="-C link-arg=-fuse-ld=bfd" \
-    cargo build --profile release-lto -p streamkit-server --bin skit --features "moq,svt_av1_static,dav1d_static" -j$(nproc) && \
+    CUDA_INCLUDE_PATH=/usr/local/cuda/include \
+    cargo build --profile release-lto -p streamkit-server --bin skit --features "moq,svt_av1_static,dav1d_static,nvcodec,vulkan_video,vaapi" -j$(nproc) && \
     # Copy compiled artifacts out of cache mount so they persist in the layer
     mkdir -p /build/target-out && \
     cp -r /build/target/release-lto /build/target-out/
@@ -100,7 +112,12 @@ RUN apt-get update && apt-get install -y \
     meson \
     ninja-build \
     python3 \
+    libva-dev \
+    libgbm-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Copy CUDA headers for nvcodec feature (shiguredo_nvcodec needs cuda.h)
+COPY --from=cuda-dev /usr/local/cuda/include /usr/local/cuda/include
 
 # Copy workspace files (plugins are excluded from workspace)
 COPY Cargo.toml Cargo.lock ./
@@ -133,7 +150,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       # Build only the server binary \
       # (-fuse-ld=bfd: use system ld instead of rust-lld — see note above) \
       RUSTFLAGS="-C link-arg=-fuse-ld=bfd" \
-      cargo build --profile release-lto --features "moq,svt_av1_static,dav1d_static" --bin skit -j$(nproc); \
+      CUDA_INCLUDE_PATH=/usr/local/cuda/include \
+      cargo build --profile release-lto --features "moq,svt_av1_static,dav1d_static,nvcodec,vulkan_video,vaapi" --bin skit -j$(nproc); \
       # Copy final binary out of cache mount \
       mkdir -p /build/bin && cp /build/target/release-lto/skit /build/bin/skit \
     '
@@ -660,7 +678,9 @@ ARG CUDA_VERSION
 FROM nvidia/cuda:${CUDA_VERSION}-cudnn9-runtime-ubuntu22.04
 
 # Install runtime dependencies and debugging tools
-# libvulkan1: required by wgpu compositor for GPU-accelerated compositing via Vulkan
+# libvulkan1: required by wgpu compositor and vulkan_video HW codec via Vulkan
+# libva2 + libva-drm2 + libgbm1: VA-API runtime for vaapi HW codec
+# mesa-va-drivers: VA-API backends for Intel/AMD GPUs (NVIDIA uses nvidia-vaapi-driver from host)
 # libfdk-aac2 is in Ubuntu's multiverse component.
 RUN sed -i 's/main restricted/main restricted multiverse/' /etc/apt/sources.list && \
     apt-get update && apt-get install -y \
@@ -673,6 +693,10 @@ RUN sed -i 's/main restricted/main restricted multiverse/' /etc/apt/sources.list
     fonts-dejavu-core \
     libfdk-aac2 \
     libvulkan1 \
+    libva2 \
+    libva-drm2 \
+    libgbm1 \
+    mesa-va-drivers \
     gdb \
     curl \
     iproute2 \
