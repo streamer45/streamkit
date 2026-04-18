@@ -146,7 +146,7 @@ const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 ///
 /// Creates a single process-global `Servo` instance on first registration
 /// and processes work items from all plugin instances.
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value)] // Receiver must be moved into the thread entry point
 fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
     let mut instances: HashMap<NodeId, InstanceState> = HashMap::new();
     // Servo's Opts is a process-global singleton -- we lazily create the
@@ -286,7 +286,7 @@ fn handle_update_config(
         }
     }
 
-    if css_changed {
+    if css_changed || url_changed {
         if let Some(ref css) = state.config.custom_css {
             inject_custom_css(&state.webview, servo, css);
         }
