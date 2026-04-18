@@ -157,6 +157,12 @@ struct InstanceState {
     delegate: Rc<FrameDelegate>,
     config: ServoConfig,
     result_tx: std::sync::mpsc::SyncSender<ServoThreadResult>,
+    /// Width of the `SoftwareRenderingContext` (set once at creation).
+    /// This is the size Servo actually renders at, and must not change
+    /// when the output dimensions are updated via resize hints.
+    rc_width: u32,
+    /// Height of the `SoftwareRenderingContext` (set once at creation).
+    rc_height: u32,
     /// Cached last successfully rendered frame for resilience.
     last_good_frame: Option<Vec<u8>>,
     /// Cumulative render count for metrics.
@@ -384,6 +390,9 @@ fn handle_register(
                 "Created Servo WebView on shared instance",
             );
 
+            let rc_width = config.effective_viewport_width();
+            let rc_height = config.effective_viewport_height();
+
             let _ = result_tx.send(ServoThreadResult::InitOk);
             instances.insert(
                 node_id,
@@ -393,6 +402,8 @@ fn handle_register(
                     delegate,
                     config,
                     result_tx,
+                    rc_width,
+                    rc_height,
                     last_good_frame: None,
                     render_count: 0,
                     render_duration_sum: Duration::ZERO,
@@ -421,20 +432,23 @@ fn handle_render(
     // Pump the event loop to let Servo process pending work.
     servo.spin_event_loop();
 
-    // Read pixels from the rendering context at viewport resolution.
-    let vw = state.config.effective_viewport_width();
-    let vh = state.config.effective_viewport_height();
+    // Always read the full rendering context (rc_width × rc_height).
+    // These dimensions are fixed at creation time and never change,
+    // even when the output dimensions are updated via resize hints.
     let rect = Box2D::new(
         Point2D::new(0, 0),
         Point2D::new(
-            i32::try_from(vw).unwrap_or(i32::MAX),
-            i32::try_from(vh).unwrap_or(i32::MAX),
+            i32::try_from(state.rc_width).unwrap_or(i32::MAX),
+            i32::try_from(state.rc_height).unwrap_or(i32::MAX),
         ),
     );
 
+    // Scale when the rendering context size differs from the output.
+    let needs_scaling =
+        state.rc_width != state.config.width || state.rc_height != state.config.height;
+
     let rgba_data = if let Some(img) = state.rendering_context.read_to_image(rect) {
-        // Scale to output dimensions if viewport differs from output.
-        let raw = if state.config.needs_scaling() {
+        let raw = if needs_scaling {
             let scaled = image::imageops::resize(
                 &img,
                 state.config.width,
