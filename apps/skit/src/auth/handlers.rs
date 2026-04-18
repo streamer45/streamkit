@@ -506,7 +506,10 @@ pub fn auth_router() -> axum::Router<Arc<AppState>> {
             "/tokens/{jti}",
             delete(revoke_token_handler).layer(ConcurrencyLimitLayer::new(AUTH_MAX_CONCURRENCY)),
         )
-        .route("/reload-keys", post(reload_keys_handler));
+        .route(
+            "/reload-keys",
+            post(reload_keys_handler).layer(ConcurrencyLimitLayer::new(AUTH_MAX_CONCURRENCY)),
+        );
 
     #[cfg(feature = "moq")]
     {

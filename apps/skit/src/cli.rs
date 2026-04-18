@@ -432,6 +432,12 @@ async fn handle_auth_rotate_key(cli: &Cli) {
             println!("New key ID: {}", key_material.kid);
             println!();
 
+            // Notify the running server to reload its in-memory state
+            // *before* overwriting admin.token.  If this fails, the old
+            // token remains on disk and is still valid against the
+            // server's cached JWKS — avoiding an admin lockout.
+            notify_server_reload_keys(server_url.as_deref(), pre_rotate_token.as_deref()).await;
+
             // Mint a new admin token with the new key
             match auth_state
                 .mint_api_token(
@@ -464,9 +470,6 @@ async fn handle_auth_rotate_key(cli: &Cli) {
                     std::process::exit(1);
                 },
             }
-
-            // Notify the running server to reload its in-memory key cache.
-            notify_server_reload_keys(server_url.as_deref(), pre_rotate_token.as_deref()).await;
         },
         Err(e) => {
             eprintln!("Failed to rotate key: {e}");

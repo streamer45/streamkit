@@ -735,10 +735,18 @@ mod tests {
                 .unwrap();
         assert!(result.is_err(), "server should reject token signed with unknown key");
 
+        // Before reload: server's token metadata store does not know the
+        // CLI-minted JTI.
+        let meta_store = server.token_metadata_store().unwrap();
+        assert!(
+            !meta_store.exists(&_meta.jti).await,
+            "server should not know CLI-minted JTI before reload"
+        );
+
         // Reload keys on the server side.
         server.reload_keys().await.unwrap();
 
-        // After reload: server accepts the new token.
+        // After reload: server accepts the new token (JWT signature).
         let server_clone = server.clone();
         let token_clone = new_token.clone();
         let claims =
@@ -747,6 +755,13 @@ mod tests {
                 .unwrap()
                 .unwrap();
         assert_eq!(claims.role, "admin");
+
+        // After reload: server's token metadata store recognises the
+        // CLI-minted JTI (the "tokens we mint" enforcement path).
+        assert!(
+            meta_store.exists(&_meta.jti).await,
+            "server should recognise CLI-minted JTI after reload"
+        );
 
         // The server's key provider should report the new active kid.
         let active_kid = {

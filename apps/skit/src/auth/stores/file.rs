@@ -645,6 +645,8 @@ impl TokenMetadataStore for FileTokenMetadataStore {
                 new_tokens.insert(token.jti.clone(), token);
             }
             debug!(count, "Reloaded token metadata from disk");
+        } else {
+            warn!("tokens.json not found during reload — token metadata cache will be empty");
         }
         *lock_write(&self.tokens) = new_tokens;
         Ok(())
@@ -654,6 +656,7 @@ impl TokenMetadataStore for FileTokenMetadataStore {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use super::super::{TokenMetadata, TokenType};
     use super::*;
     use tempfile::TempDir;
 
@@ -810,6 +813,46 @@ mod tests {
         .await
         .unwrap();
         assert!(old_found.is_some(), "old kid should remain verifiable after reload");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_key_provider_reload_corrupt_jwks() {
+        let temp_dir = TempDir::new().unwrap();
+        let provider = FileKeyProvider::load_or_init(temp_dir.path()).await.unwrap();
+
+        // Corrupt the JWKS file on disk.
+        let jwks_path = temp_dir.path().join(PUBLIC_JWKS_FILENAME);
+        tokio::fs::write(&jwks_path, "not valid json").await.unwrap();
+
+        let result = provider.reload().await;
+        assert!(result.is_err(), "reload should fail on corrupt jwks.json");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_token_metadata_store_reload() {
+        let temp_dir = TempDir::new().unwrap();
+        let store_a = FileTokenMetadataStore::new(temp_dir.path()).await.unwrap();
+        let store_b = FileTokenMetadataStore::new(temp_dir.path()).await.unwrap();
+
+        let meta = TokenMetadata {
+            jti: "reload-jti".to_string(),
+            token_hash: "hash".to_string(),
+            token_type: TokenType::Api,
+            role: Some("admin".to_string()),
+            label: Some("test".to_string()),
+            created_at: 1000,
+            exp: 2000,
+            revoked: false,
+            created_by: "test".to_string(),
+        };
+
+        // store_a writes a token; store_b doesn't know about it yet.
+        store_a.store(meta).await.unwrap();
+        assert!(!store_b.exists("reload-jti").await);
+
+        // After reload, store_b picks it up.
+        store_b.reload().await.unwrap();
+        assert!(store_b.exists("reload-jti").await);
     }
 
     #[tokio::test(flavor = "multi_thread")]
