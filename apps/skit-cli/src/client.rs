@@ -195,6 +195,29 @@ pub struct PluginSummary {
     pub plugin_type: PluginType,
 }
 
+/// Diagnostic entry returned by the validate endpoint.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ValidationDiagnostic {
+    pub level: String,
+    pub message: String,
+    #[serde(default)]
+    pub node: Option<String>,
+    #[serde(default)]
+    pub pin: Option<String>,
+}
+
+/// Response from `POST /api/v1/validate`.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ValidateResponse {
+    pub valid: bool,
+    #[serde(default)]
+    pub errors: Vec<ValidationDiagnostic>,
+    #[serde(default)]
+    pub warnings: Vec<ValidationDiagnostic>,
+    #[serde(default)]
+    pub graph: Option<serde_json::Value>,
+}
+
 // ---------------------------------------------------------------------------
 // trait Client
 // ---------------------------------------------------------------------------
@@ -562,6 +585,12 @@ pub trait Client: Send + Sync {
         session_filter: Option<&str>,
         pretty: bool,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Validate a pipeline YAML against the server's node registry.
+    async fn validate_pipeline(
+        &self,
+        yaml: &str,
+    ) -> Result<ValidateResponse, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1314,6 +1343,26 @@ impl Client for NetworkClient {
         ws_stream.close(None).await?;
         Ok(())
     }
+
+    async fn validate_pipeline(
+        &self,
+        yaml: &str,
+    ) -> Result<ValidateResponse, Box<dyn std::error::Error + Send + Sync>> {
+        #[derive(serde::Serialize)]
+        struct ValidateRequest<'a> {
+            yaml: &'a str,
+        }
+
+        let url = http_base_url(&self.server_url)?.join("/api/v1/validate")?;
+        let response = self.http.post(url).json(&ValidateRequest { yaml }).send().await?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(format!("Server returned error {status}: {body}").into());
+        }
+        let result: ValidateResponse = response.json().await?;
+        Ok(result)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1774,6 +1823,14 @@ mod tests {
         ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             self.record("watch_events");
             Ok(())
+        }
+
+        async fn validate_pipeline(
+            &self,
+            _yaml: &str,
+        ) -> Result<ValidateResponse, Box<dyn std::error::Error + Send + Sync>> {
+            self.record("validate_pipeline");
+            Ok(ValidateResponse { valid: true, errors: vec![], warnings: vec![], graph: None })
         }
     }
 

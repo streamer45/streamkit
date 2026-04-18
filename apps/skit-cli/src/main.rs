@@ -2,9 +2,14 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+// Allow println/eprintln in CLI binary - these are for direct user output, not logging
+#![allow(clippy::disallowed_macros)]
+
 use std::fmt::Write;
 
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
+use streamkit_client::client::ValidateResponse;
+use streamkit_client::graph::GraphFormat;
 use streamkit_client::{exit_codes, CliOutput, Client, InputFile, NetworkClient, OutputFormat};
 use tracing::{error, info};
 
@@ -193,6 +198,30 @@ enum Commands {
         #[arg(short, long, default_value = "http://127.0.0.1:4545")]
         server: String,
     },
+    /// Browse available node types from the server's registry
+    Nodes {
+        #[command(subcommand)]
+        command: NodesCommands,
+        /// Server URL (default: http://127.0.0.1:4545)
+        #[arg(short, long, default_value = "http://127.0.0.1:4545")]
+        server: String,
+    },
+    /// Visualize a pipeline's graph structure (offline, no server needed)
+    Graph {
+        /// Path to the pipeline YAML file
+        pipeline: String,
+        /// Output format
+        #[arg(long, value_enum, default_value = "text")]
+        format: GraphFormat,
+    },
+    /// Validate a pipeline YAML against the server's node registry
+    Validate {
+        /// Path to the pipeline YAML file
+        pipeline: String,
+        /// Server URL (default: http://127.0.0.1:4545)
+        #[arg(short, long, default_value = "http://127.0.0.1:4545")]
+        server: String,
+    },
     /// Generate shell completions
     #[command(name = "completions", hide = true)]
     Completions {
@@ -214,6 +243,17 @@ enum SchemaCommands {
     Nodes,
     /// List packet schemas (GET /api/v1/schema/packets)
     Packets,
+}
+
+#[derive(Subcommand, Debug)]
+enum NodesCommands {
+    /// List all available node types from the server's registry
+    List,
+    /// Show detailed info for a single node kind
+    Show {
+        /// Node kind to inspect (e.g. audio::gain)
+        kind: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -379,6 +419,211 @@ fn exit_code_for_error(e: &(dyn std::error::Error + Send + Sync)) -> i32 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Extracted command handlers (keep dispatch under 300 lines)
+// ---------------------------------------------------------------------------
+
+async fn dispatch_nodes(command: NodesCommands, server: &str, fmt: OutputFormat) {
+    let client = NetworkClient::new(server);
+    match command {
+        NodesCommands::List => match client.list_node_schemas().await {
+            Ok(nodes) => {
+                CliOutput::new(fmt, nodes, |nodes| render_nodes_list(nodes)).print();
+            },
+            Err(e) => {
+                error!(error = %e, "Failed to list node types");
+                std::process::exit(exit_code_for_error(e.as_ref()));
+            },
+        },
+        NodesCommands::Show { kind } => match client.list_node_schemas().await {
+            Ok(nodes) => {
+                if let Some(node) = nodes.into_iter().find(|n| n.kind == kind) {
+                    CliOutput::new(fmt, node, render_node_detail).print();
+                } else {
+                    error!("Unknown node kind: {kind}");
+                    std::process::exit(exit_codes::GENERAL_ERROR);
+                }
+            },
+            Err(e) => {
+                error!(error = %e, "Failed to fetch node schemas");
+                std::process::exit(exit_code_for_error(e.as_ref()));
+            },
+        },
+    }
+}
+
+fn dispatch_graph(pipeline_path: &str, format: GraphFormat, fmt: OutputFormat) {
+    let yaml = match std::fs::read_to_string(pipeline_path) {
+        Ok(content) => content,
+        Err(e) => {
+            error!(error = %e, path = %pipeline_path, "Failed to read pipeline file");
+            std::process::exit(exit_codes::GENERAL_ERROR);
+        },
+    };
+
+    let user_pipeline = match streamkit_api::yaml::parse_yaml(&yaml) {
+        Ok(p) => p,
+        Err(e) => {
+            error!(error = %e, "Failed to parse pipeline YAML");
+            std::process::exit(exit_codes::GENERAL_ERROR);
+        },
+    };
+
+    let compiled = match streamkit_api::yaml::compile(user_pipeline) {
+        Ok(p) => p,
+        Err(e) => {
+            error!(error = %e, "Failed to compile pipeline");
+            std::process::exit(exit_codes::GENERAL_ERROR);
+        },
+    };
+
+    if fmt == OutputFormat::Json {
+        CliOutput::new(fmt, compiled, move |p| streamkit_client::graph::render_graph(p, format))
+            .print();
+    } else {
+        println!("{}", streamkit_client::graph::render_graph(&compiled, format));
+    }
+}
+
+async fn dispatch_validate(pipeline_path: &str, server: &str, fmt: OutputFormat) {
+    let yaml = match std::fs::read_to_string(pipeline_path) {
+        Ok(content) => content,
+        Err(e) => {
+            error!(error = %e, path = %pipeline_path, "Failed to read pipeline file");
+            std::process::exit(exit_codes::GENERAL_ERROR);
+        },
+    };
+
+    let client = NetworkClient::new(server);
+    match client.validate_pipeline(&yaml).await {
+        Ok(result) => {
+            let is_valid = result.valid;
+            CliOutput::new(fmt, result, render_validate_result).print();
+            if !is_valid {
+                std::process::exit(exit_codes::GENERAL_ERROR);
+            }
+        },
+        Err(e) => {
+            error!(error = %e, "Validation request failed");
+            std::process::exit(exit_code_for_error(e.as_ref()));
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Text renderers
+// ---------------------------------------------------------------------------
+
+fn cardinality_label(cardinality: &serde_json::Value) -> &'static str {
+    match cardinality {
+        serde_json::Value::String(s) if s == "One" => "required",
+        serde_json::Value::String(s) if s == "Broadcast" => "broadcast",
+        serde_json::Value::Object(_) => "dynamic",
+        _ => "unknown",
+    }
+}
+
+fn render_nodes_list(nodes: &[streamkit_api::NodeDefinition]) -> String {
+    if nodes.is_empty() {
+        return "No node types found.".to_string();
+    }
+    let mut out = String::new();
+    let _ = writeln!(out, "{:<16} {:<40} DESCRIPTION", "CATEGORY", "KIND");
+    out.push_str(&"\u{2500}".repeat(80));
+    out.push('\n');
+
+    let mut sorted = nodes.to_vec();
+    sorted.sort_by(|a, b| {
+        let cat_a = a.categories.first().map_or("", String::as_str);
+        let cat_b = b.categories.first().map_or("", String::as_str);
+        cat_a.cmp(cat_b).then_with(|| a.kind.cmp(&b.kind))
+    });
+
+    for node in &sorted {
+        let category = node.categories.first().map_or("-", String::as_str);
+        let desc = node.description.as_deref().unwrap_or("");
+        let desc_short =
+            if desc.len() > 40 { format!("{}...", &desc[..37]) } else { desc.to_string() };
+        let _ = writeln!(out, "{category:<16} {:<40} {desc_short}", node.kind);
+    }
+    out
+}
+
+fn render_node_detail(node: &streamkit_api::NodeDefinition) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "Kind:       {}", node.kind);
+    if !node.categories.is_empty() {
+        let _ = writeln!(out, "Categories: {}", node.categories.join(", "));
+    }
+    if let Some(desc) = &node.description {
+        let _ = writeln!(out, "Description: {desc}");
+    }
+
+    out.push_str("\nInputs:\n");
+    if node.inputs.is_empty() {
+        out.push_str("  (none)\n");
+    } else {
+        for pin in &node.inputs {
+            let types =
+                pin.accepts_types.iter().map(|t| format!("{t:?}")).collect::<Vec<_>>().join(", ");
+            let card_json = serde_json::to_value(&pin.cardinality).unwrap_or_default();
+            let card = cardinality_label(&card_json);
+            let _ = writeln!(out, "  {:<12} {:<20} ({card})", pin.name, types);
+        }
+    }
+
+    out.push_str("\nOutputs:\n");
+    if node.outputs.is_empty() {
+        out.push_str("  (none)\n");
+    } else {
+        for pin in &node.outputs {
+            let ptype = format!("{:?}", pin.produces_type);
+            let card_json = serde_json::to_value(&pin.cardinality).unwrap_or_default();
+            let card = cardinality_label(&card_json);
+            let _ = writeln!(out, "  {:<12} {:<20} ({card})", pin.name, ptype);
+        }
+    }
+
+    out.push_str("\nParameters:\n");
+    let schema = &node.param_schema;
+    if let Some(props) =
+        schema.get("properties").and_then(|v| v.as_object()).filter(|p| !p.is_empty())
+    {
+        for (key, prop) in props {
+            let type_label = prop.get("type").and_then(|v| v.as_str()).unwrap_or("any");
+            let default_val =
+                prop.get("default").map(std::string::ToString::to_string).unwrap_or_default();
+            if default_val.is_empty() {
+                let _ = writeln!(out, "  {key:<20} {type_label}");
+            } else {
+                let _ = writeln!(out, "  {key:<20} {type_label:<12} (default: {default_val})");
+            }
+        }
+    } else {
+        out.push_str("  (none)\n");
+    }
+
+    out
+}
+
+fn render_validate_result(result: &ValidateResponse) -> String {
+    let mut out = String::new();
+    if result.valid {
+        out.push_str("Pipeline is valid.\n");
+    } else {
+        out.push_str("Validation errors:\n");
+        for err in &result.errors {
+            let node_ctx = err.node.as_deref().map_or(String::new(), |n| format!(" (node: {n})"));
+            let _ = writeln!(out, "  error: {}{node_ctx}", err.message);
+        }
+        for warn in &result.warnings {
+            let node_ctx = warn.node.as_deref().map_or(String::new(), |n| format!(" (node: {n})"));
+            let _ = writeln!(out, "  warning: {}{node_ctx}", warn.message);
+        }
+    }
+    out
+}
+
 #[tokio::main]
 async fn main() {
     // Initialize basic logging for client
@@ -416,10 +661,17 @@ async fn dispatch(command: Commands, format: OutputFormat) {
         Commands::Create { pipeline, name, server } => {
             info!("Starting StreamKit client - creating session");
 
+            eprint!("Creating session... ");
             let client = NetworkClient::new(&server);
-            if let Err(e) = client.create_session(&pipeline, &name).await {
-                error!(error = %e, "Failed to create dynamic session");
-                std::process::exit(exit_code_for_error(e.as_ref()));
+            match client.create_session(&pipeline, &name).await {
+                Ok(()) => {
+                    eprintln!("done.");
+                },
+                Err(e) => {
+                    eprintln!("failed.");
+                    error!(error = %e, "Failed to create dynamic session");
+                    std::process::exit(exit_code_for_error(e.as_ref()));
+                },
             }
         },
         Commands::Destroy { session_id, server } => {
@@ -742,6 +994,15 @@ async fn dispatch(command: Commands, format: OutputFormat) {
                     }
                 },
             }
+        },
+        Commands::Nodes { command, server } => {
+            dispatch_nodes(command, &server, format).await;
+        },
+        Commands::Graph { pipeline, format: graph_format } => {
+            dispatch_graph(&pipeline, graph_format, format);
+        },
+        Commands::Validate { pipeline, server } => {
+            dispatch_validate(&pipeline, &server, format).await;
         },
         Commands::Completions { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "skit-cli", &mut std::io::stdout());

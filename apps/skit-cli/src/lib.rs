@@ -7,6 +7,7 @@
 
 pub mod client;
 pub mod exit_codes;
+pub mod graph;
 pub mod load_test;
 pub mod output;
 pub mod shell;
