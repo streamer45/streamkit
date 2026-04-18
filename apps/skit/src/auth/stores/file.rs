@@ -310,13 +310,16 @@ impl KeyProvider for FileKeyProvider {
         Self::write_secure(&jwks_path, &serde_json::to_string_pretty(&jwks)?).await?;
         Self::write_secure(&private_path, &serde_json::to_string_pretty(&private_jwk)?).await?;
 
-        // Swap all three caches atomically.
-        let mut active = lock_write(&self.active);
-        let mut public_keys_guard = lock_write(&self.public_keys);
-        let mut jwks_lock = lock_write(&self.jwks);
-        public_keys_guard.insert(private_jwk.kid.clone(), public_key_bytes);
-        *jwks_lock = jwks.clone();
-        *active = new_signing_key.clone();
+        // Swap all three caches atomically inside a sync block so
+        // the guards never exist across an await point.
+        {
+            let mut active = lock_write(&self.active);
+            let mut public_keys_guard = lock_write(&self.public_keys);
+            let mut jwks_lock = lock_write(&self.jwks);
+            public_keys_guard.insert(private_jwk.kid.clone(), public_key_bytes);
+            *jwks_lock = jwks.clone();
+            *active = new_signing_key.clone();
+        }
 
         info!(kid = %new_signing_key.kid, total_keys = jwks.keys.len(), "Rotated signing key");
 
@@ -399,13 +402,16 @@ impl KeyProvider for FileKeyProvider {
 
         let total_keys = jwks.keys.len();
 
-        // Swap all three caches atomically.
-        let mut active = lock_write(&self.active);
-        let mut public_keys = lock_write(&self.public_keys);
-        let mut jwks_lock = lock_write(&self.jwks);
-        *public_keys = new_public_keys;
-        *jwks_lock = jwks;
-        *active = new_active.clone();
+        // Swap all three caches atomically inside a sync block so
+        // the guards never exist across an await point.
+        {
+            let mut active = lock_write(&self.active);
+            let mut public_keys = lock_write(&self.public_keys);
+            let mut jwks_lock = lock_write(&self.jwks);
+            *public_keys = new_public_keys;
+            *jwks_lock = jwks;
+            *active = new_active.clone();
+        }
 
         info!(kid = %new_active.kid, total_keys, "Reloaded keys from disk");
 
