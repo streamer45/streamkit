@@ -23,7 +23,7 @@ nodes:
   web:
     kind: plugin::native::servo
     params:
-      url: "https://example.com"
+      url: "https://streamkit.dev"
       width: 1280
       height: 720
       fps: 1
