@@ -54,13 +54,13 @@ tokio-util = { workspace = true }
 tower = "0.5.3"
 tower-http = { version = "0.6", features = ["cors", "trace", "fs", "set-header"] }
 tokio-stream = "0.1.18"
-hyper = { version = "1.8", features = ["full"] }
+hyper = { version = "1.9", features = ["full"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 rustls = { version = "0.23.36", features = ["ring"] }
 reqwest = { version = "0.13", features = ["multipart", "json"] }
 bytes = { workspace = true }
 futures = { workspace = true }
-uuid = { version = "1.22", features = ["v4", "serde"] }
+uuid = { version = "1.23", features = ["v4", "serde"] }
 http-body-util = "0.1"
 multer = "3.1"
 tar = "0.4"
@@ -115,7 +115,7 @@ jemalloc_pprof = { version = "0.8", features = ["symbolize"], optional = true }
 dhat = { version = "0.3", optional = true }
 
 # MoQ support (optional)
-moq-native = { version = "0.13.6", optional = true }
+moq-native = { version = "0.13.12", optional = true }
 async-trait = { workspace = true }
 
 # For glob pattern matching in permissions
@@ -133,7 +133,7 @@ getrandom = "0.4"
 aws-lc-rs = "1"
 
 # For MoQ auth path matching (optional, with moq feature)
-moq-lite = { version = "0.15.5", optional = true }
+moq-lite = { version = "0.15.13", optional = true }
 blake2 = "0.10.6"
 async-stream = "0.3.6"
 
