@@ -1466,10 +1466,7 @@ pub fn lint_client_against_nodes(
             }
 
             if matches!(control.control_type, ControlType::Select)
-                && control
-                    .options
-                    .as_ref()
-                    .is_none_or(|opts| opts.is_empty())
+                && control.options.as_ref().is_none_or(|opts| opts.is_empty())
             {
                 warnings.push(ClientLintWarning {
                     rule: "control-select-no-options",
