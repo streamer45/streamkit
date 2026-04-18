@@ -258,14 +258,8 @@ fn handle_render(
         vec![0u8; len]
     };
 
-    match state.result_tx.try_send(ServoThreadResult::Frame { rgba_data }) {
-        Ok(()) => {},
-        Err(std::sync::mpsc::TrySendError::Full(_)) => {
-            tracing::debug!(node_id = %node_id, "Result channel full, dropping frame");
-        },
-        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-            instances.remove(node_id);
-        },
+    if state.result_tx.send(ServoThreadResult::Frame { rgba_data }).is_err() {
+        instances.remove(node_id);
     }
 }
 
@@ -386,9 +380,9 @@ fn inject_custom_css(webview: &WebView, servo: &Servo, css: &str) {
         css.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n").replace('\r', "\\r");
     let js = format!(
         "(() => {{ \
-            const s = document.createElement('style'); \
+            let s = document.getElementById('__streamkit_custom_css'); \
+            if (!s) {{ s = document.createElement('style'); s.id = '__streamkit_custom_css'; document.head.appendChild(s); }} \
             s.textContent = '{escaped}'; \
-            document.head.appendChild(s); \
         }})()"
     );
     let done = Rc::new(Cell::new(false));
