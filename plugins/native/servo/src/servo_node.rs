@@ -278,11 +278,7 @@ impl NativeSourceNode for ServoSourcePlugin {
             self.config.width = width;
             self.config.height = height;
 
-            let _ = send_work(ServoWorkItem::Resize {
-                node_id: self.node_id,
-                width,
-                height,
-            });
+            let _ = send_work(ServoWorkItem::Resize { node_id: self.node_id, width, height });
         }
     }
 

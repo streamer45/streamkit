@@ -286,10 +286,7 @@ fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
-    tracing::info!(
-        instances_cleared = count,
-        "Servo thread shutting down gracefully",
-    );
+    tracing::info!(instances_cleared = count, "Servo thread shutting down gracefully",);
     // `servo` is dropped here -- its Drop impl sends Exit and spins
     // until the constellation finishes shutting down.
 }
@@ -462,10 +459,8 @@ fn handle_render(
         // Reuse the old cache buffer for sending (avoids per-frame allocation).
         // Move the fresh `raw` into the cache and copy its data into the
         // reused buffer which is sent to the consumer.
-        let mut send_buf = state
-            .last_good_frame
-            .take()
-            .unwrap_or_else(|| Vec::with_capacity(raw.len()));
+        let mut send_buf =
+            state.last_good_frame.take().unwrap_or_else(|| Vec::with_capacity(raw.len()));
         send_buf.clear();
         send_buf.extend_from_slice(&raw);
         state.last_good_frame = Some(raw);
@@ -485,8 +480,7 @@ fn handle_render(
 
     // Log render time periodically (every 300 frames ~ 10s at 30fps).
     if state.render_count % 300 == 0 {
-        let avg_us =
-            state.render_duration_sum.as_micros() / u128::from(state.render_count);
+        let avg_us = state.render_duration_sum.as_micros() / u128::from(state.render_count);
         tracing::debug!(
             node_id = %node_id,
             frame = state.render_count,
@@ -521,8 +515,7 @@ fn handle_update_config(
             state.delegate.loaded.set(false);
             state.delegate.load_failed.set(false);
 
-            let load_timeout =
-                Duration::from_secs(u64::from(new_config.load_timeout_secs));
+            let load_timeout = Duration::from_secs(u64::from(new_config.load_timeout_secs));
             let load_start = Instant::now();
             wait_for_load(servo, &state.delegate, &new_config.url, node_id, load_timeout);
 
