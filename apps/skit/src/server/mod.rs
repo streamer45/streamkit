@@ -613,7 +613,7 @@ struct ValidateGraph {
 }
 
 /// A single validation diagnostic.
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct ValidateDiagnostic {
     error_type: String,
     message: String,
@@ -639,6 +639,91 @@ struct ValidateRequest {
     yaml: String,
 }
 
+/// Build synthetic `NodeDefinition`s for oneshot-only virtual nodes that are not
+/// registered in the `NodeRegistry` (`streamkit::http_input`, `streamkit::http_output`).
+fn synthetic_node_definitions() -> HashMap<String, streamkit_core::NodeDefinition> {
+    use streamkit_core::types::PacketType;
+    use streamkit_core::{InputPin, NodeDefinition, OutputPin, PinCardinality};
+
+    let mut map = HashMap::new();
+
+    map.insert(
+        "streamkit::http_input".to_string(),
+        NodeDefinition {
+            kind: "streamkit::http_input".to_string(),
+            description: Some(
+                "Synthetic input node for oneshot HTTP pipelines. \
+                 Receives binary data from the HTTP request body."
+                    .to_string(),
+            ),
+            param_schema: serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "field": {
+                        "type": "string",
+                        "description": "Multipart field name to bind to this input."
+                    },
+                    "fields": {
+                        "type": "array",
+                        "description": "Optional list of multipart fields for this node.",
+                        "items": {
+                            "oneOf": [
+                                { "type": "string" },
+                                {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "name": { "type": "string" },
+                                        "required": { "type": "boolean", "default": true }
+                                    },
+                                    "required": ["name"]
+                                }
+                            ]
+                        }
+                    },
+                    "required": {
+                        "type": "boolean",
+                        "description": "If true (default), the request must include this field.",
+                        "default": true
+                    }
+                }
+            }),
+            inputs: vec![],
+            outputs: vec![OutputPin {
+                name: "out".to_string(),
+                produces_type: PacketType::Binary,
+                cardinality: PinCardinality::Broadcast,
+            }],
+            categories: vec!["transport".to_string(), "oneshot".to_string()],
+            bidirectional: false,
+        },
+    );
+
+    map.insert(
+        "streamkit::http_output".to_string(),
+        NodeDefinition {
+            kind: "streamkit::http_output".to_string(),
+            description: Some(
+                "Synthetic output node for oneshot HTTP pipelines. \
+                 Sends binary data as the HTTP response body."
+                    .to_string(),
+            ),
+            param_schema: serde_json::json!({}),
+            inputs: vec![InputPin {
+                name: "in".to_string(),
+                accepts_types: vec![PacketType::Binary],
+                cardinality: PinCardinality::One,
+            }],
+            outputs: vec![],
+            categories: vec!["transport".to_string(), "oneshot".to_string()],
+            bidirectional: false,
+        },
+    );
+
+    map
+}
+
 /// Validate node kinds and params against the registry, returning resolved definitions.
 fn validate_nodes(
     pipeline: &Pipeline,
@@ -647,22 +732,22 @@ fn validate_nodes(
     warnings: &mut Vec<ValidateDiagnostic>,
 ) -> HashMap<String, streamkit_core::NodeDefinition> {
     let mut node_defs: HashMap<String, streamkit_core::NodeDefinition> = HashMap::new();
+    let synthetics = synthetic_node_definitions();
 
     for (node_id, node) in &pipeline.nodes {
         debug!(node_id = %node_id, kind = %node.kind, "Validating node kind");
 
-        match registry.get_definition(&node.kind) {
-            Some(def) => {
-                node_defs.insert(node_id.clone(), def);
-            },
-            None => {
-                errors.push(ValidateDiagnostic {
-                    error_type: "error".into(),
-                    message: format!("Unknown node kind '{}'", node.kind),
-                    node_id: Some(node_id.clone()),
-                    connection_id: None,
-                });
-            },
+        if let Some(def) = registry.get_definition(&node.kind) {
+            node_defs.insert(node_id.clone(), def);
+        } else if let Some(def) = synthetics.get(&node.kind) {
+            node_defs.insert(node_id.clone(), def.clone());
+        } else {
+            errors.push(ValidateDiagnostic {
+                error_type: "error".into(),
+                message: format!("Unknown node kind '{}'", node.kind),
+                node_id: Some(node_id.clone()),
+                connection_id: None,
+            });
         }
     }
 
@@ -941,6 +1026,120 @@ async fn validate_pipeline_handler(
     );
 
     Ok(Json(ValidateResponse { valid, errors, warnings, graph }))
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod validate_pipeline_tests {
+    use super::*;
+
+    fn make_registry() -> streamkit_core::NodeRegistry {
+        streamkit_core::NodeRegistry::new()
+    }
+
+    fn minimal_pipeline(yaml: &str) -> Result<Pipeline, String> {
+        let user = streamkit_api::yaml::parse_yaml(yaml)?;
+        compile(user)
+    }
+
+    #[test]
+    fn synthetic_http_nodes_are_recognised() {
+        let yaml = "\
+nodes:
+  input:
+    kind: streamkit::http_input
+  output:
+    kind: streamkit::http_output
+    needs: input
+";
+        let pipeline = minimal_pipeline(yaml).expect("parse should succeed");
+        let registry = make_registry();
+        let mut errors = Vec::new();
+        let mut warnings = Vec::new();
+
+        let node_defs = validate_nodes(&pipeline, &registry, &mut errors, &mut warnings);
+
+        assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
+        assert!(node_defs.contains_key("input"), "expected input in node_defs");
+        assert!(node_defs.contains_key("output"), "expected output in node_defs");
+    }
+
+    #[test]
+    fn unknown_node_kind_reported() {
+        let yaml = "\
+nodes:
+  bad:
+    kind: audio::nonexistent_node
+";
+        let pipeline = minimal_pipeline(yaml).expect("parse should succeed");
+        let registry = make_registry();
+        let mut errors = Vec::new();
+        let mut warnings = Vec::new();
+
+        validate_nodes(&pipeline, &registry, &mut errors, &mut warnings);
+
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].message.contains("Unknown node kind"));
+        assert!(errors[0].message.contains("audio::nonexistent_node"));
+    }
+
+    #[test]
+    fn connection_validation_catches_bad_pins() {
+        let yaml = "\
+nodes:
+  input:
+    kind: streamkit::http_input
+  output:
+    kind: streamkit::http_output
+    needs: input
+";
+        let mut pipeline = minimal_pipeline(yaml).expect("parse should succeed");
+        let registry = make_registry();
+        let mut errors = Vec::new();
+        let mut warnings = Vec::new();
+
+        let node_defs = validate_nodes(&pipeline, &registry, &mut errors, &mut warnings);
+
+        // Inject a connection with a bad pin name to test pin validation.
+        pipeline.connections.push(streamkit_api::Connection {
+            from_node: "input".to_string(),
+            from_pin: "nonexistent_pin".to_string(),
+            to_node: "output".to_string(),
+            to_pin: "in".to_string(),
+            mode: streamkit_api::ConnectionMode::default(),
+        });
+
+        let mut connected = HashSet::new();
+        validate_connections(&pipeline, &node_defs, &mut errors, &mut connected);
+
+        assert!(
+            errors.iter().any(|e| e.message.contains("not found")),
+            "expected pin-not-found error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn valid_oneshot_pipeline_no_errors() {
+        let yaml = "\
+nodes:
+  input:
+    kind: streamkit::http_input
+  output:
+    kind: streamkit::http_output
+    needs: input
+";
+        let pipeline = minimal_pipeline(yaml).expect("parse should succeed");
+        let registry = make_registry();
+        let mut errors = Vec::new();
+        let mut warnings = Vec::new();
+
+        let node_defs = validate_nodes(&pipeline, &registry, &mut errors, &mut warnings);
+        let mut connected = HashSet::new();
+        validate_connections(&pipeline, &node_defs, &mut errors, &mut connected);
+
+        assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
+        assert_eq!(pipeline.connections.len(), 1);
+    }
 }
 
 /// Response structure for the permissions endpoint
