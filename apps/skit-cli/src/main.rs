@@ -168,6 +168,40 @@ enum Commands {
         #[arg(short, long, default_value = "http://127.0.0.1:4545")]
         server: String,
     },
+    /// Show live session statistics (like top)
+    Top {
+        /// Session ID to monitor
+        session_id: String,
+        /// Output as newline-delimited JSON
+        #[arg(long)]
+        json: bool,
+        /// Server URL (default: http://127.0.0.1:4545)
+        #[arg(short, long, default_value = "http://127.0.0.1:4545")]
+        server: String,
+    },
+    /// Show current session statistics snapshot
+    Stats {
+        /// Session ID to query
+        session_id: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Server URL (default: http://127.0.0.1:4545)
+        #[arg(short, long, default_value = "http://127.0.0.1:4545")]
+        server: String,
+    },
+    /// Stream server logs
+    Logs {
+        /// Follow log output (stream continuously)
+        #[arg(short, long, default_value_t = true)]
+        follow: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Server URL (default: http://127.0.0.1:4545)
+        #[arg(short, long, default_value = "http://127.0.0.1:4545")]
+        server: String,
+    },
     /// Watch WebSocket events (GET /api/v1/control)
     Watch {
         /// Optional session ID or name to filter events
@@ -531,6 +565,30 @@ async fn dispatch(command: Commands) {
             };
             if let Err(e) = result {
                 error!(error = %e, "Asset command failed");
+                std::process::exit(1);
+            }
+        },
+        Commands::Top { session_id, json, server } => {
+            info!("Starting StreamKit client - live stats dashboard");
+
+            if let Err(e) = streamkit_client::run_top(&session_id, &server, json).await {
+                error!(error = %e, "Top command failed");
+                std::process::exit(1);
+            }
+        },
+        Commands::Stats { session_id, json, server } => {
+            info!("Starting StreamKit client - stats snapshot");
+
+            if let Err(e) = streamkit_client::run_stats(&session_id, &server, json).await {
+                error!(error = %e, "Stats command failed");
+                std::process::exit(1);
+            }
+        },
+        Commands::Logs { follow, json, server } => {
+            info!("Starting StreamKit client - log streaming");
+
+            if let Err(e) = streamkit_client::stream_logs(follow, json, &server).await {
+                error!(error = %e, "Logs command failed");
                 std::process::exit(1);
             }
         },

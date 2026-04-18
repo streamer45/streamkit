@@ -44,7 +44,12 @@ fn http_base_url(server_url: &str) -> Result<Url, Box<dyn std::error::Error + Se
     Ok(url)
 }
 
-fn control_ws_url(server_url: &str) -> Result<Url, Box<dyn std::error::Error + Send + Sync>> {
+/// Build the WebSocket URL for the control endpoint.
+///
+/// # Errors
+///
+/// Returns an error if the server URL is invalid or has an unsupported scheme.
+pub fn control_ws_url(server_url: &str) -> Result<Url, Box<dyn std::error::Error + Send + Sync>> {
     let mut ws_url = Url::parse(server_url)?;
     match ws_url.scheme() {
         "http" => ws_url
@@ -1311,5 +1316,111 @@ pub async fn watch_events(
     }
 
     ws_stream.close(None).await?;
+    Ok(())
+}
+
+/// Process buffered SSE lines, emitting complete events to stdout.
+fn process_sse_lines(line_buf: &mut String, data_buf: &mut String, json: bool) {
+    while let Some(pos) = line_buf.find('\n') {
+        let line = line_buf[..pos].trim_end_matches('\r').to_string();
+        *line_buf = line_buf[pos + 1..].to_string();
+
+        if line.is_empty() {
+            if !data_buf.is_empty() {
+                let data = data_buf.trim_end_matches('\n').to_string();
+                if json {
+                    let obj = serde_json::json!({ "data": data });
+                    println!("{obj}");
+                } else {
+                    println!("{data}");
+                }
+                data_buf.clear();
+            }
+        } else if let Some(value) = line.strip_prefix("data:") {
+            let value = value.strip_prefix(' ').unwrap_or(value);
+            if !data_buf.is_empty() {
+                data_buf.push('\n');
+            }
+            data_buf.push_str(value);
+        }
+    }
+}
+
+/// Read the next chunk from the SSE stream, respecting an optional deadline.
+async fn next_sse_chunk(
+    stream: &mut (impl futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Unpin),
+    deadline: Option<tokio::time::Instant>,
+) -> Option<Result<bytes::Bytes, reqwest::Error>> {
+    if let Some(dl) = deadline {
+        let now = tokio::time::Instant::now();
+        if now >= dl {
+            return None;
+        }
+        let remaining = dl - now;
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => None,
+            () = tokio::time::sleep(remaining) => None,
+            chunk = FuturesStreamExt::next(stream) => chunk,
+        }
+    } else {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => None,
+            chunk = FuturesStreamExt::next(stream) => chunk,
+        }
+    }
+}
+
+/// Stream server logs via the SSE endpoint (`/api/v1/logs/stream`).
+///
+/// When `follow` is true, the stream continues indefinitely until Ctrl-C.
+/// When false, it reads events for a few seconds then exits.
+///
+/// # Errors
+///
+/// Returns an error if the server URL is invalid or the SSE connection fails.
+pub async fn stream_logs(
+    follow: bool,
+    json: bool,
+    server_url: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let base = http_base_url(server_url)?;
+    let url = base.join("/api/v1/logs/stream")?;
+
+    info!(url = %url, follow, "Connecting to log stream");
+
+    let client = reqwest::Client::new();
+    let response = client.get(url).header("Accept", "text/event-stream").send().await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Server returned error {status}: {body}").into());
+    }
+
+    debug!("SSE connection opened");
+
+    let deadline = if follow {
+        None
+    } else {
+        Some(tokio::time::Instant::now() + tokio::time::Duration::from_secs(3))
+    };
+
+    let mut stream = response.bytes_stream();
+    let mut line_buf = String::new();
+    let mut data_buf = String::new();
+
+    while let Some(chunk) = next_sse_chunk(&mut stream, deadline).await {
+        match chunk {
+            Ok(bytes) => {
+                line_buf.push_str(&String::from_utf8_lossy(&bytes));
+                process_sse_lines(&mut line_buf, &mut data_buf, json);
+            },
+            Err(e) => {
+                error!(error = %e, "SSE stream error");
+                break;
+            },
+        }
+    }
+
     Ok(())
 }

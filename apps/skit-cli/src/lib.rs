@@ -8,6 +8,7 @@
 pub mod client;
 pub mod load_test;
 pub mod shell;
+pub mod top;
 
 // Re-export for convenience
 pub use client::{
@@ -16,10 +17,11 @@ pub use client::{
     control_validate_batch, create_session, delete_audio_asset, delete_plugin, delete_sample,
     destroy_session, get_config, get_permissions, get_pipeline, get_sample, list_audio_assets,
     list_node_schemas, list_packet_schemas, list_plugins, list_samples_dynamic,
-    list_samples_oneshot, list_sessions, process_oneshot, save_sample, tune_node,
+    list_samples_oneshot, list_sessions, process_oneshot, save_sample, stream_logs, tune_node,
     upload_audio_asset, upload_plugin, watch_events, InputFile,
 };
 pub use load_test::run_load_test;
+pub use top::{run_stats, run_top};
 
 /// Start an interactive shell session
 ///
