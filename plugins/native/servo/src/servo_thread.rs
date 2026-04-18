@@ -311,6 +311,13 @@ fn handle_register(
                     load_ms = load_duration.as_millis(),
                     "Page load reported failure — proceeding with partial content",
                 );
+            } else if !delegate.loaded.get() {
+                tracing::warn!(
+                    node_id = %node_id,
+                    url = %config.url,
+                    load_ms = load_duration.as_millis(),
+                    "Page load timed out — proceeding with partial content",
+                );
             } else {
                 tracing::info!(
                     node_id = %node_id,
@@ -450,6 +457,13 @@ fn handle_update_config(
                     url = %state.config.url,
                     load_ms = load_start.elapsed().as_millis(),
                     "URL navigation load failed",
+                );
+            } else if !state.delegate.loaded.get() {
+                tracing::warn!(
+                    node_id = %node_id,
+                    url = %state.config.url,
+                    load_ms = load_start.elapsed().as_millis(),
+                    "URL navigation load timed out",
                 );
             }
         }
