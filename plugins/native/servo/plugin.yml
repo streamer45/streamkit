@@ -7,7 +7,7 @@ name: Servo Web Renderer
 version: 0.1.0
 node_kind: servo
 kind: native
-entrypoint: libservo.so
-artifact: target/plugins/release/libservo.so
+entrypoint: libservo_web.so
+artifact: target/plugins/release/libservo_web.so
 description: Render web pages to RGBA8 video frames via the Servo web engine
 license: MPL-2.0
