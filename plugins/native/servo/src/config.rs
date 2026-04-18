@@ -38,6 +38,14 @@ const fn default_load_timeout_secs() -> u32 {
 ///
 /// Renders a web page at the given URL to RGBA8 video frames using the
 /// embedded Servo browser engine.
+///
+/// ## Viewport vs Output resolution
+///
+/// `viewport_width`/`viewport_height` control how large the browser
+/// viewport is (the CSS layout size).  `width`/`height` control the
+/// output frame size.  When the viewport is larger than the output,
+/// the rendered page is scaled down.  This lets web pages designed for
+/// wider screens render fully without cropping.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ServoConfig {
@@ -50,6 +58,14 @@ pub struct ServoConfig {
     /// Output frame height in pixels.
     #[serde(default = "default_height")]
     pub height: u32,
+    /// Browser viewport width.  Defaults to `width` if unset or 0.
+    /// Set larger than `width` to see more of the page, scaled down.
+    #[serde(default)]
+    pub viewport_width: u32,
+    /// Browser viewport height.  Defaults to `height` if unset or 0.
+    /// Set larger than `height` to see more of the page, scaled down.
+    #[serde(default)]
+    pub viewport_height: u32,
     /// Output frame rate.
     #[serde(default = "default_fps")]
     pub fps: u32,
@@ -70,6 +86,8 @@ impl Default for ServoConfig {
             url: String::new(),
             width: default_width(),
             height: default_height(),
+            viewport_width: 0,
+            viewport_height: 0,
             fps: default_fps(),
             custom_css: None,
             frame_count: default_frame_count(),
@@ -79,6 +97,30 @@ impl Default for ServoConfig {
 }
 
 impl ServoConfig {
+    /// Effective viewport width (falls back to output width).
+    pub fn effective_viewport_width(&self) -> u32 {
+        if self.viewport_width > 0 {
+            self.viewport_width
+        } else {
+            self.width
+        }
+    }
+
+    /// Effective viewport height (falls back to output height).
+    pub fn effective_viewport_height(&self) -> u32 {
+        if self.viewport_height > 0 {
+            self.viewport_height
+        } else {
+            self.height
+        }
+    }
+
+    /// Whether the viewport differs from the output and scaling is needed.
+    pub fn needs_scaling(&self) -> bool {
+        self.effective_viewport_width() != self.width
+            || self.effective_viewport_height() != self.height
+    }
+
     /// Validate configuration parameters.
     ///
     /// # Errors
@@ -98,6 +140,13 @@ impl ServoConfig {
                 self.width, self.height
             ));
         }
+        let vw = self.effective_viewport_width();
+        let vh = self.effective_viewport_height();
+        if vw > MAX_DIMENSION || vh > MAX_DIMENSION {
+            return Err(format!(
+                "viewport dimensions must be <= {MAX_DIMENSION} (8K), got {vw}x{vh}",
+            ));
+        }
         if self.fps == 0 {
             return Err("fps must be > 0".to_string());
         }
@@ -112,8 +161,9 @@ impl ServoConfig {
     /// Merge runtime parameter changes from an `UpdateParams` payload.
     ///
     /// Only the `url` and `custom_css` fields are merged; init-time fields
-    /// (`width`, `height`, `fps`, `frame_count`) are left unchanged because
-    /// they cannot be changed after the rendering context is created.
+    /// (`width`, `height`, `fps`, `frame_count`, `viewport_*`) are left
+    /// unchanged because they cannot be changed after the rendering context
+    /// is created.
     pub fn merge_update(&mut self, update: &Self) {
         if !update.url.is_empty() {
             self.url.clone_from(&update.url);

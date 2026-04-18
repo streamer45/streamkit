@@ -9,6 +9,8 @@
 #   - Servo plugin as a real-time video source in a dynamic pipeline
 #   - Web page rendered as a PiP layer with transparency
 #   - Runtime URL updates via the controls panel
+#   - Viewport emulation (1280x960 viewport → 640x480 output) to
+#     show full page layouts without cropping
 #
 # Requires: plugin::native::servo loaded
 #   just build-plugin-native-servo && just install-plugin servo
@@ -39,12 +41,12 @@ client:
           value: "https://streamkit.dev"
         - label: Servo — Home
           value: "https://servo.org"
-        - label: Wikipedia — WebRTC
-          value: "https://en.wikipedia.org/wiki/WebRTC"
+        - label: MoQ — Home
+          value: "https://moq.dev"
         - label: MDN — CSS Grid
           value: "https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_grid_layout"
-        - label: "Example — Clock (CSS)"
-          value: "https://codepen.io/Mamboleoo/full/abNdRwb"
+        - label: "WebGL Aquarium"
+          value: "https://webglsamples.org/aquarium/aquarium.html"
     - label: "Custom CSS"
       type: text
       node: web_overlay
@@ -67,6 +69,8 @@ nodes:
       url: "https://streamkit.dev"
       width: 640
       height: 480
+      viewport_width: 1280
+      viewport_height: 960
       fps: 30
 
   compositor:

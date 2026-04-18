@@ -61,6 +61,8 @@ pub enum ServoWorkItem {
     Render { node_id: NodeId },
     /// Update the config (URL) for subsequent renders.
     UpdateConfig { node_id: NodeId, config: ServoConfig },
+    /// Resize the output dimensions (from compositor upstream hint).
+    Resize { node_id: NodeId, width: u32, height: u32 },
     /// Unregister an instance -- drop its WebView and result channel.
     Unregister { node_id: NodeId },
 }
@@ -219,6 +221,19 @@ fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
                     );
                 }
             },
+            ServoWorkItem::Resize { node_id, width, height } => {
+                let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    handle_resize(&mut instances, &node_id, width, height);
+                }));
+                if let Err(panic) = result {
+                    let msg = panic_message(&panic);
+                    tracing::error!(
+                        node_id = %node_id,
+                        error = %msg,
+                        "Panic during Servo Resize",
+                    );
+                }
+            },
             ServoWorkItem::Unregister { node_id } => {
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     if let Some(state) = instances.remove(&node_id) {
@@ -245,6 +260,32 @@ fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
             },
         }
     }
+
+    // ── Graceful shutdown ───────────────────────────────────────────────
+    //
+    // When all senders are dropped the recv() loop exits.  We must drop
+    // every WebView *before* dropping the Servo instance so that each
+    // WebView's Drop impl can send `CloseWebView` to the constellation
+    // while it is still alive.  After clearing instances we pump the
+    // event loop so Servo can process the close messages, avoiding the
+    // "pthread_mutex_destroy failed: Device or resource busy" error
+    // from SpiderMonkey's mutex teardown.
+    let count = instances.len();
+    instances.clear();
+    if let Some(ref s) = servo {
+        // Pump the event loop a few times to let the constellation
+        // process the WebView close messages.
+        for _ in 0..20 {
+            s.spin_event_loop();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    tracing::info!(
+        instances_cleared = count,
+        "Servo thread shutting down gracefully",
+    );
+    // `servo` is dropped here -- its Drop impl sends Exit and spins
+    // until the constellation finishes shutting down.
 }
 
 /// Extract a human-readable message from a panic payload.
@@ -337,8 +378,9 @@ fn handle_register(
             tracing::info!(
                 node_id = %node_id,
                 url = %config.url,
-                width = config.width,
-                height = config.height,
+                output = %format_args!("{}x{}", config.width, config.height),
+                viewport = %format_args!("{}x{}", config.effective_viewport_width(), config.effective_viewport_height()),
+                scaling = config.needs_scaling(),
                 "Created Servo WebView on shared instance",
             );
 
@@ -379,24 +421,37 @@ fn handle_render(
     // Pump the event loop to let Servo process pending work.
     servo.spin_event_loop();
 
-    // Read pixels from the rendering context.
+    // Read pixels from the rendering context at viewport resolution.
+    let vw = state.config.effective_viewport_width();
+    let vh = state.config.effective_viewport_height();
     let rect = Box2D::new(
         Point2D::new(0, 0),
         Point2D::new(
-            i32::try_from(state.config.width).unwrap_or(i32::MAX),
-            i32::try_from(state.config.height).unwrap_or(i32::MAX),
+            i32::try_from(vw).unwrap_or(i32::MAX),
+            i32::try_from(vh).unwrap_or(i32::MAX),
         ),
     );
 
     let rgba_data = if let Some(img) = state.rendering_context.read_to_image(rect) {
-        let raw = img.into_raw();
+        // Scale to output dimensions if viewport differs from output.
+        let raw = if state.config.needs_scaling() {
+            let scaled = image::imageops::resize(
+                &img,
+                state.config.width,
+                state.config.height,
+                image::imageops::FilterType::Triangle,
+            );
+            scaled.into_raw()
+        } else {
+            img.into_raw()
+        };
         state.last_good_frame = Some(raw.clone());
         raw
     } else if let Some(ref cached) = state.last_good_frame {
         tracing::debug!(node_id = %node_id, "read_to_image returned None, using cached frame");
         cached.clone()
     } else {
-        // No cached frame — send transparent.
+        // No cached frame — send transparent at output resolution.
         let len = (state.config.width as usize) * (state.config.height as usize) * 4;
         vec![0u8; len]
     };
@@ -484,13 +539,45 @@ fn handle_update_config(
     state.config.merge_update(new_config);
 }
 
+/// Handle a `Resize` work item: update output dimensions from a compositor
+/// upstream hint.  Only the output (frame) dimensions change; the Servo
+/// viewport remains the same so the page layout is unaffected.  This means
+/// the scaling ratio may change, but the page doesn't reflow.
+fn handle_resize(
+    instances: &mut HashMap<NodeId, InstanceState>,
+    node_id: &NodeId,
+    width: u32,
+    height: u32,
+) {
+    let Some(state) = instances.get_mut(node_id) else {
+        return;
+    };
+    if state.config.width == width && state.config.height == height {
+        return;
+    }
+    tracing::info!(
+        node_id = %node_id,
+        old = %format_args!("{}x{}", state.config.width, state.config.height),
+        new = %format_args!("{width}x{height}"),
+        "Resized Servo output via upstream hint",
+    );
+    state.config.width = width;
+    state.config.height = height;
+    // Invalidate the cached frame since dimensions changed.
+    state.last_good_frame = None;
+}
+
 /// Create a `WebView` with its own `SoftwareRenderingContext` on the shared
-/// Servo instance.
+/// Servo instance.  The rendering context uses the *viewport* dimensions
+/// (which may be larger than the output frame), so the page layout has
+/// room to breathe.  Scaling to output dimensions happens in `handle_render`.
 fn create_webview(
     servo: &Servo,
     config: &ServoConfig,
 ) -> Result<(WebView, Rc<SoftwareRenderingContext>, Rc<FrameDelegate>), String> {
-    let size = PhysicalSize::new(config.width, config.height);
+    let vw = config.effective_viewport_width();
+    let vh = config.effective_viewport_height();
+    let size = PhysicalSize::new(vw, vh);
     let rendering_context: Rc<SoftwareRenderingContext> = Rc::new(
         SoftwareRenderingContext::new(size)
             .map_err(|e| format!("Failed to create SoftwareRenderingContext: {e:?}"))?,
