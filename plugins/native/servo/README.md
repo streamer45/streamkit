@@ -42,6 +42,29 @@ sudo apt-get install -y \
 just build-plugin-native-servo
 ```
 
+### Runtime: Static TLS
+
+Servo's dependency tree (rayon, crossbeam, tokio, parking\_lot, etc.)
+uses ~4.8 KiB of `thread_local!` storage, which exceeds glibc's default
+`dlopen` surplus (~512 bytes).  Without a workaround, the plugin fails
+to load with `cannot allocate memory in static TLS block`.
+
+**Recommended fix** — increase glibc's optional static TLS allocation:
+
+```bash
+GLIBC_TUNABLES=glibc.rtld.optional_static_tls=0x2000 just skit
+```
+
+**Alternative** — preload the library so it gets static TLS at startup:
+
+```bash
+LD_PRELOAD=$(pwd)/.plugins/native/servo/libservo_web.so just skit
+```
+
+> This is a known limitation of Rust's pre-compiled libstd using the
+> `initial-exec` TLS model.  A future nightly-only fix would be to
+> rebuild with `-Z tls-model=global-dynamic` or `-Z build-std`.
+
 ### Binary Size
 
 The built `.so` is approximately **148 MB** — this is inherent to embedding
