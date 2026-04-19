@@ -130,15 +130,12 @@ struct FrameDelegate {
 
 impl WebViewDelegate for FrameDelegate {
     fn notify_load_status_changed(&self, _webview: WebView, status: LoadStatus) {
-        match status {
-            LoadStatus::Complete => {
-                self.loaded.set(true);
-                self.load_failed.set(false);
-            },
-            // Servo 0.1.0 does not expose a Failed variant.  Load failures
-            // are detected via timeout (page never reaches Complete).
-            _ => {},
+        if status == LoadStatus::Complete {
+            self.loaded.set(true);
+            self.load_failed.set(false);
         }
+        // Servo 0.1.0 does not expose a Failed variant.  Load failures
+        // are detected via timeout (page never reaches Complete).
     }
 
     fn notify_new_frame_ready(&self, webview: WebView) {
@@ -178,6 +175,7 @@ struct InstanceState {
 /// wrapped in `catch_unwind` so a panic in one node does not terminate the
 /// shared thread.
 #[allow(clippy::needless_pass_by_value)] // Receiver must be moved into the thread entry point
+#[allow(clippy::cognitive_complexity)] // Main event loop — splitting would obscure control flow
 fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
     let mut instances: HashMap<NodeId, InstanceState> = HashMap::new();
     // Servo's Opts is a process-global singleton -- we lazily create the
@@ -211,7 +209,7 @@ fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
                         error = %msg,
                         "Panic during Servo Render — sending fallback frame",
                     );
-                    send_fallback_frame(&mut instances, &node_id);
+                    send_fallback_frame(&instances, &node_id);
                 }
             },
             ServoWorkItem::UpdateConfig { node_id, config } => {
@@ -286,36 +284,32 @@ fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
-    tracing::info!(
-        instances_cleared = count,
-        "Servo thread shutting down gracefully",
-    );
+    tracing::info!(instances_cleared = count, "Servo thread shutting down gracefully",);
     // `servo` is dropped here -- its Drop impl sends Exit and spins
     // until the constellation finishes shutting down.
 }
 
 /// Extract a human-readable message from a panic payload.
 fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
-    if let Some(s) = payload.downcast_ref::<&str>() {
-        (*s).to_string()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "unknown panic".to_string()
-    }
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".to_string())
 }
 
 /// Send a fallback frame (last good frame or transparent) after a panic.
-fn send_fallback_frame(instances: &mut HashMap<NodeId, InstanceState>, node_id: &NodeId) {
+fn send_fallback_frame(instances: &HashMap<NodeId, InstanceState>, node_id: &NodeId) {
     let Some(state) = instances.get(node_id) else {
         return;
     };
-    let fallback = if let Some(ref cached) = state.last_good_frame {
-        cached.clone()
-    } else {
-        let len = (state.config.width as usize) * (state.config.height as usize) * 4;
-        vec![0u8; len]
-    };
+    let fallback = state.last_good_frame.as_ref().map_or_else(
+        || {
+            let len = (state.config.width as usize) * (state.config.height as usize) * 4;
+            vec![0u8; len]
+        },
+        Clone::clone,
+    );
     let _ = state.result_tx.send(ServoThreadResult::Frame { rgba_data: fallback });
 }
 
@@ -462,10 +456,8 @@ fn handle_render(
         // Reuse the old cache buffer for sending (avoids per-frame allocation).
         // Move the fresh `raw` into the cache and copy its data into the
         // reused buffer which is sent to the consumer.
-        let mut send_buf = state
-            .last_good_frame
-            .take()
-            .unwrap_or_else(|| Vec::with_capacity(raw.len()));
+        let mut send_buf =
+            state.last_good_frame.take().unwrap_or_else(|| Vec::with_capacity(raw.len()));
         send_buf.clear();
         send_buf.extend_from_slice(&raw);
         state.last_good_frame = Some(raw);
@@ -485,8 +477,7 @@ fn handle_render(
 
     // Log render time periodically (every 300 frames ~ 10s at 30fps).
     if state.render_count % 300 == 0 {
-        let avg_us =
-            state.render_duration_sum.as_micros() / u128::from(state.render_count);
+        let avg_us = state.render_duration_sum.as_micros() / u128::from(state.render_count);
         tracing::debug!(
             node_id = %node_id,
             frame = state.render_count,
@@ -521,8 +512,7 @@ fn handle_update_config(
             state.delegate.loaded.set(false);
             state.delegate.load_failed.set(false);
 
-            let load_timeout =
-                Duration::from_secs(u64::from(new_config.load_timeout_secs));
+            let load_timeout = Duration::from_secs(u64::from(new_config.load_timeout_secs));
             let load_start = Instant::now();
             wait_for_load(servo, &state.delegate, &new_config.url, node_id, load_timeout);
 
