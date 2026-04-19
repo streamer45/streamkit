@@ -378,7 +378,7 @@ async fn dispatch(command: Commands) {
             info!("Starting StreamKit client - creating session");
 
             let client = NetworkClient::new(&server);
-            if let Err(e) = client.create_session(&pipeline, &name).await {
+            if let Err(e) = client.create_session(&pipeline, name.as_deref()).await {
                 error!(error = %e, "Failed to create dynamic session");
                 std::process::exit(1);
             }

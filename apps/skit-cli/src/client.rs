@@ -228,7 +228,7 @@ pub trait Client: Send + Sync {
     async fn create_session(
         &self,
         pipeline_path: &str,
-        name: &Option<String>,
+        name: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Destroy a dynamic session and cleanup its resources.
@@ -586,7 +586,7 @@ impl Client for NetworkClient {
     async fn create_session(
         &self,
         pipeline_path: &str,
-        name: &Option<String>,
+        name: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         #[derive(serde::Serialize)]
         struct CreateSessionRequest {
@@ -608,7 +608,8 @@ impl Client for NetworkClient {
         );
 
         let pipeline_content = fs::read_to_string(pipeline_path).await?;
-        let request_body = CreateSessionRequest { name: name.clone(), yaml: pipeline_content };
+        let request_body =
+            CreateSessionRequest { name: name.map(str::to_string), yaml: pipeline_content };
 
         let url = http_base_url(&self.server_url)?.join("/api/v1/sessions")?;
 
@@ -1333,7 +1334,7 @@ impl Client for NetworkClient {
 /// - Network communication fails
 /// - Failed to write output file
 #[allow(clippy::cognitive_complexity)]
-pub async fn process_oneshot_with_client(
+pub(crate) async fn process_oneshot_with_client(
     client: &reqwest::Client,
     pipeline_path: &str,
     inputs: &[InputFile],
@@ -1439,7 +1440,7 @@ pub async fn process_oneshot_with_client(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -1455,11 +1456,11 @@ mod tests {
         }
 
         fn record(&self, method: &str) {
-            self.calls.lock().unwrap().push(method.to_string());
+            self.calls.lock().expect("mock mutex poisoned").push(method.to_string());
         }
 
         fn calls(&self) -> Vec<String> {
-            self.calls.lock().unwrap().clone()
+            self.calls.lock().expect("mock mutex poisoned").clone()
         }
     }
 
@@ -1478,7 +1479,7 @@ mod tests {
         async fn create_session(
             &self,
             _pipeline_path: &str,
-            _name: &Option<String>,
+            _name: Option<&str>,
         ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             self.record("create_session");
             Ok(())
@@ -1724,14 +1725,27 @@ mod tests {
     /// dynamic dispatch (`&dyn Client`), proving the trait is object-safe
     /// and testable without a server.
     #[tokio::test]
-    async fn mock_client_records_calls() {
+    async fn mock_client_is_object_safe() {
         let mock = MockClient::new();
         let client: &dyn Client = &mock;
 
         client.list_sessions().await.unwrap();
         client.get_config().await.unwrap();
         client.destroy_session("test-session").await.unwrap();
+        client.create_session("pipe.yaml", Some("my-session")).await.unwrap();
+        client.create_session("pipe.yaml", None).await.unwrap();
+        client.tune_node("s1", "n1", "gain", "0.5").await.unwrap();
 
-        assert_eq!(mock.calls(), vec!["list_sessions", "get_config", "destroy_session"]);
+        assert_eq!(
+            mock.calls(),
+            vec![
+                "list_sessions",
+                "get_config",
+                "destroy_session",
+                "create_session",
+                "create_session",
+                "tune_node",
+            ]
+        );
     }
 }

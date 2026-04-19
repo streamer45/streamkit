@@ -278,9 +278,20 @@ impl Shell {
             debug!("No previous history found");
         }
 
-        let mut base_url = ws_url.clone();
-        base_url.set_path("");
-        let client = NetworkClient::new(base_url.as_str());
+        let mut http_url = ws_url.clone();
+        http_url.set_path("");
+        match http_url.scheme() {
+            #[allow(clippy::expect_used)]
+            "ws" => {
+                http_url.set_scheme("http").expect("http is a valid URL scheme");
+            },
+            #[allow(clippy::expect_used)]
+            "wss" => {
+                http_url.set_scheme("https").expect("https is a valid URL scheme");
+            },
+            _ => {},
+        }
+        let client = NetworkClient::new(http_url.as_str());
 
         Ok(Self { ws_url: ws_url.to_string(), client, editor, current_sessions: Vec::new() })
     }
@@ -527,7 +538,7 @@ impl Shell {
             }
         }
 
-        self.client.create_session(pipeline_path, &name).await?;
+        self.client.create_session(pipeline_path, name.as_deref()).await?;
 
         // Refresh sessions after creation
         self.refresh_sessions().await?;
