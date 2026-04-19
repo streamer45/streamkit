@@ -814,6 +814,9 @@ async fn apply_diff_plan(
                 return ApplyResult::Skipped;
             }
             eprintln!("done.");
+            // Old session is gone — clear the ID so the caller won't
+            // attempt a redundant destroy if we fail below.
+            session_id.clear();
 
             let name_owned = name.map(String::from);
             eprint!("[{now}] Creating new session... ");
@@ -935,7 +938,13 @@ fn load_initial_pipeline(pipeline_path: &str) -> (std::path::PathBuf, streamkit_
 }
 
 /// Destroy a session on exit, printing status.
+///
+/// If `session_id` is empty (e.g. after a failed `FullRebuild` that already
+/// destroyed the old session), this is a no-op.
 async fn destroy_session_on_exit(client: &NetworkClient, session_id: &str) {
+    if session_id.is_empty() {
+        return;
+    }
     eprint!("Destroying session {session_id}... ");
     match client.destroy_session(session_id).await {
         Ok(()) => eprintln!("done."),

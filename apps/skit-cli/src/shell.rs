@@ -527,7 +527,12 @@ impl Shell {
             }
         }
 
-        self.client.create_session(pipeline_path, &name).await?;
+        let session_id = self.client.create_session(pipeline_path, &name).await?;
+
+        println!("Session created: {session_id}");
+        if let Some(ref n) = name {
+            println!("Name: {n}");
+        }
 
         // Refresh sessions after creation
         self.refresh_sessions().await?;
