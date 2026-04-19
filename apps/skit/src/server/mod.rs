@@ -577,14 +577,17 @@ struct ValidateResponse {
 #[derive(Deserialize)]
 struct ValidateRequest {
     yaml: String,
+    /// Optional pipeline mode: `"dynamic"` or `"oneshot"`.
+    /// When `"dynamic"`, synthetic nodes (`streamkit::http_input`/`http_output`)
+    /// are rejected — matching `create_session_handler` behaviour.
+    #[serde(default)]
+    mode: Option<String>,
 }
 
-/// Returns `true` for node kinds that are synthetic oneshot-only markers
-/// (`streamkit::http_input`, `streamkit::http_output`).  These nodes are
-/// defined outside the `NodeRegistry` and should bypass per-node permission
-/// filtering since the oneshot handler itself never checks them.
+/// Returns `true` for node kinds that are synthetic oneshot-only markers.
+/// Derived from `synthetic_node_definitions()` to prevent drift.
 fn is_synthetic_kind(kind: &str) -> bool {
-    kind == "streamkit::http_input" || kind == "streamkit::http_output"
+    synthetic_node_definitions().iter().any(|d| d.kind == kind)
 }
 
 /// Build synthetic `NodeDefinition`s for oneshot-only virtual nodes that are not
@@ -726,32 +729,58 @@ fn validate_nodes(
             }
         }
 
-        node_defs.insert(node_id.clone(), def);
-    }
+        // Param schema validation (best-effort, report as warnings).
+        if let Some(schema_obj) = def.param_schema.as_object() {
+            if !schema_obj.is_empty() {
+                if let Some(schema_props) =
+                    def.param_schema.get("properties").and_then(|v| v.as_object())
+                {
+                    let params_obj = node.params.as_ref().and_then(|p| p.as_object());
 
-    // Param schema validation (best-effort, report as warnings).
-    for (node_id, def) in &node_defs {
-        let Some(node) = pipeline.nodes.get(node_id) else { continue };
-        let Some(params) = &node.params else { continue };
-        let Some(schema_obj) = def.param_schema.as_object() else { continue };
-        if schema_obj.is_empty() {
-            continue;
-        }
-        let Some(params_obj) = params.as_object() else { continue };
-        let Some(schema_props) = def.param_schema.get("properties").and_then(|v| v.as_object())
-        else {
-            continue;
-        };
-        for key in params_obj.keys() {
-            if !schema_props.contains_key(key) {
-                warnings.push(ValidateDiagnostic {
-                    kind: DiagnosticKind::Schema,
-                    message: format!("Unknown parameter '{key}' for node kind '{}'", def.kind),
-                    node_id: Some(node_id.clone()),
-                    connection_id: None,
-                });
+                    // Warn on unknown parameters.
+                    if let Some(params_obj) = params_obj {
+                        for key in params_obj.keys() {
+                            if !schema_props.contains_key(key) {
+                                warnings.push(ValidateDiagnostic {
+                                    kind: DiagnosticKind::Schema,
+                                    message: format!(
+                                        "Unknown parameter '{key}' for node kind '{}'",
+                                        def.kind
+                                    ),
+                                    node_id: Some(node_id.clone()),
+                                    connection_id: None,
+                                });
+                            }
+                        }
+                    }
+
+                    // Warn on missing required parameters.
+                    if let Some(required) =
+                        def.param_schema.get("required").and_then(|v| v.as_array())
+                    {
+                        for req in required {
+                            if let Some(req_name) = req.as_str() {
+                                let is_present =
+                                    params_obj.is_some_and(|p| p.contains_key(req_name));
+                                if !is_present {
+                                    warnings.push(ValidateDiagnostic {
+                                        kind: DiagnosticKind::Schema,
+                                        message: format!(
+                                            "Missing required parameter '{req_name}' for node kind '{}'",
+                                            def.kind
+                                        ),
+                                        node_id: Some(node_id.clone()),
+                                        connection_id: None,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
+
+        node_defs.insert(node_id.clone(), def);
     }
 
     node_defs
@@ -762,7 +791,6 @@ fn validate_connections(
     pipeline: &Pipeline,
     node_defs: &HashMap<String, streamkit_core::NodeDefinition>,
     errors: &mut Vec<ValidateDiagnostic>,
-    connected_input_pins: &mut HashSet<(String, String)>,
 ) {
     let packet_type_registry = streamkit_core::packet_meta::packet_type_registry();
 
@@ -819,8 +847,6 @@ fn validate_connections(
         if let (Some(src), Some(dst)) = (src_pin, dst_pin) {
             validate_pin_types(src, dst, conn, &conn_id, packet_type_registry, errors);
         }
-
-        connected_input_pins.insert((conn.to_node.clone(), conn.to_pin.clone()));
     }
 }
 
@@ -966,14 +992,30 @@ async fn validate_pipeline_handler(
         validate_nodes(&pipeline, &registry_guard, Some(&perms), &mut errors, &mut warnings);
     drop(registry_guard);
 
-    // 5. Validate connections
-    let mut connected_input_pins: HashSet<(String, String)> = HashSet::new();
-    validate_connections(&pipeline, &node_defs, &mut errors, &mut connected_input_pins);
+    // 5. Mode-specific checks: reject synthetic nodes in dynamic mode
+    if payload.mode.as_deref() == Some("dynamic") {
+        for (node_id, node) in &pipeline.nodes {
+            if is_synthetic_kind(&node.kind) {
+                errors.push(ValidateDiagnostic {
+                    kind: DiagnosticKind::Schema,
+                    message: format!(
+                        "Node kind '{}' is only valid in oneshot pipelines",
+                        node.kind
+                    ),
+                    node_id: Some(node_id.clone()),
+                    connection_id: None,
+                });
+            }
+        }
+    }
 
-    // 6. File-path security checks (match session/oneshot handlers)
-    validate_file_paths(&pipeline, &app_state.config.security, &mut errors);
+    // 6. Validate connections
+    validate_connections(&pipeline, &node_defs, &mut errors);
 
-    // 7. Build graph (always included so the UI can highlight bad nodes)
+    // 7. File-path security checks (reuse session/oneshot helpers)
+    collect_file_path_errors(&pipeline, &app_state.config.security, &mut errors);
+
+    // 8. Build graph (always included so the UI can highlight bad nodes)
     let graph = Some(ValidateGraph {
         nodes: pipeline
             .nodes
@@ -1008,61 +1050,39 @@ async fn validate_pipeline_handler(
     Ok(Json(ValidateResponse { valid, errors, warnings, graph }))
 }
 
-/// Run file-path security checks matching `create_session_handler` / `process_oneshot_pipeline_handler`.
-fn validate_file_paths(
+/// Extract a human-readable message from an `AppError`.
+fn app_error_message(err: AppError) -> String {
+    match err {
+        AppError::BadRequest(msg)
+        | AppError::PipelineCompilation(msg)
+        | AppError::Forbidden(msg) => msg,
+        AppError::Engine(e) => format!("{e}"),
+        AppError::Multipart(e) => format!("{e}"),
+        AppError::Serde(e) => format!("{e}"),
+    }
+}
+
+/// Run file-path security checks by delegating to the existing
+/// `validate_file_reader_paths` / `validate_file_writer_paths` / `validate_script_paths`
+/// helpers.  This keeps a single implementation so that new checks in those
+/// helpers automatically apply to the validate endpoint.
+fn collect_file_path_errors(
     pipeline: &Pipeline,
     security_config: &crate::config::SecurityConfig,
     errors: &mut Vec<ValidateDiagnostic>,
 ) {
-    for (node_id, node) in &pipeline.nodes {
-        let Some(params) = &node.params else { continue };
-
-        match node.kind.as_str() {
-            "core::file_reader" => {
-                if let Some(path_str) = params.get("path").and_then(|v| v.as_str()) {
-                    if let Err(e) =
-                        crate::file_security::validate_file_path(path_str, security_config)
-                    {
-                        errors.push(ValidateDiagnostic {
-                            kind: DiagnosticKind::Security,
-                            message: format!("Invalid file path in node '{node_id}': {e}"),
-                            node_id: Some(node_id.clone()),
-                            connection_id: None,
-                        });
-                    }
-                }
-            },
-            "core::file_writer" => {
-                if let Some(path_str) = params.get("path").and_then(|v| v.as_str()) {
-                    if let Err(e) =
-                        crate::file_security::validate_write_path(path_str, security_config)
-                    {
-                        errors.push(ValidateDiagnostic {
-                            kind: DiagnosticKind::Security,
-                            message: format!("Invalid write path in node '{node_id}': {e}"),
-                            node_id: Some(node_id.clone()),
-                            connection_id: None,
-                        });
-                    }
-                }
-            },
-            "core::script" => {
-                if let Some(path_str) = params.get("script_path").and_then(|v| v.as_str()) {
-                    if !path_str.trim().is_empty() {
-                        if let Err(e) =
-                            crate::file_security::validate_file_path(path_str, security_config)
-                        {
-                            errors.push(ValidateDiagnostic {
-                                kind: DiagnosticKind::Security,
-                                message: format!("Invalid script_path in node '{node_id}': {e}"),
-                                node_id: Some(node_id.clone()),
-                                connection_id: None,
-                            });
-                        }
-                    }
-                }
-            },
-            _ => {},
+    for result in [
+        validate_file_reader_paths(pipeline, security_config),
+        validate_file_writer_paths(pipeline, security_config),
+        validate_script_paths(pipeline, security_config),
+    ] {
+        if let Err(e) = result {
+            errors.push(ValidateDiagnostic {
+                kind: DiagnosticKind::Security,
+                message: app_error_message(e),
+                node_id: None,
+                connection_id: None,
+            });
         }
     }
 }
@@ -1155,8 +1175,7 @@ nodes:
             mode: streamkit_api::ConnectionMode::default(),
         });
 
-        let mut connected = HashSet::new();
-        validate_connections(&pipeline, &node_defs, &mut errors, &mut connected);
+        validate_connections(&pipeline, &node_defs, &mut errors);
 
         assert!(
             errors.iter().any(|e| e.message.contains("not found")),
@@ -1180,8 +1199,7 @@ nodes:
         let mut warnings = Vec::new();
 
         let node_defs = validate_nodes(&pipeline, &registry, None, &mut errors, &mut warnings);
-        let mut connected = HashSet::new();
-        validate_connections(&pipeline, &node_defs, &mut errors, &mut connected);
+        validate_connections(&pipeline, &node_defs, &mut errors);
 
         assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
         assert_eq!(pipeline.connections.len(), 1);
