@@ -622,9 +622,7 @@ fn render_validate_result(result: &ValidateResponse) -> String {
         }
     }
     if !result.warnings.is_empty() {
-        if result.valid {
-            out.push_str("Warnings:\n");
-        }
+        out.push_str("Warnings:\n");
         for warn in &result.warnings {
             let node_ctx = warn.node.as_deref().map_or(String::new(), |n| format!(" (node: {n})"));
             let _ = writeln!(out, "  warning: {}{node_ctx}", warn.message);
