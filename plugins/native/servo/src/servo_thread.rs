@@ -154,11 +154,13 @@ struct InstanceState {
     delegate: Rc<FrameDelegate>,
     config: ServoConfig,
     result_tx: std::sync::mpsc::SyncSender<ServoThreadResult>,
-    /// Width of the `SoftwareRenderingContext` (set once at creation).
-    /// This is the size Servo actually renders at, and must not change
-    /// when the output dimensions are updated via resize hints.
+    /// Current width of the `SoftwareRenderingContext` — the size Servo
+    /// actually renders at.  Stays constant when only the output dimensions
+    /// change (via `Resize` hints), but is updated when the viewport
+    /// resolution changes via `UpdateConfig` (which calls `WebView::resize`
+    /// and therefore resizes the underlying `RenderingContext`).
     rc_width: u32,
-    /// Height of the `SoftwareRenderingContext` (set once at creation).
+    /// Current height of the `SoftwareRenderingContext`.  See `rc_width`.
     rc_height: u32,
     /// Cached last successfully rendered frame for resilience.
     last_good_frame: Option<Vec<u8>>,
