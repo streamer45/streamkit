@@ -615,8 +615,7 @@ async fn dispatch(command: Commands) {
         Commands::Logs { follow, json, color, token, server } => {
             info!("Starting StreamKit client - log streaming");
 
-            let use_color =
-                color.unwrap_or_else(|| !json && std::io::stdout().is_terminal());
+            let use_color = color.unwrap_or_else(|| !json && std::io::stdout().is_terminal());
 
             if let Err(e) =
                 streamkit_client::stream_logs(follow, json, &server, token.as_deref(), use_color)

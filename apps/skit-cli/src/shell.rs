@@ -651,8 +651,7 @@ impl Shell {
             .iter()
             .enumerate()
             .find(|(i, a)| {
-                !(a.starts_with('-')
-                    || (*i > 0 && args.get(i - 1) == Some(&"--timeout")))
+                !(a.starts_with('-') || (*i > 0 && args.get(i - 1) == Some(&"--timeout")))
             })
             .map(|(_, a)| *a);
 

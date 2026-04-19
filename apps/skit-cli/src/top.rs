@@ -301,15 +301,9 @@ pub async fn run_top(
     // RAII guard ensures terminal state is always restored, even on panic
     let _guard = if json { None } else { Some(RawModeGuard::new()?) };
 
-    let result = run_top_loop(
-        session_id,
-        &mut ws_stream,
-        &mut snapshots,
-        &mut prev_snapshots,
-        start,
-        json,
-    )
-    .await;
+    let result =
+        run_top_loop(session_id, &mut ws_stream, &mut snapshots, &mut prev_snapshots, start, json)
+            .await;
 
     // _guard dropped here → terminal restored
 
