@@ -1319,8 +1319,40 @@ pub async fn watch_events(
     Ok(())
 }
 
+/// Colorize a log line by highlighting the level token.
+fn colorize_log_line(line: &str) -> String {
+    const RED: &str = "\x1b[31m";
+    const YELLOW: &str = "\x1b[33m";
+    const GREEN: &str = "\x1b[32m";
+    const BLUE: &str = "\x1b[34m";
+    const DIM: &str = "\x1b[2m";
+    const RESET: &str = "\x1b[0m";
+
+    for (token, color) in [
+        ("  ERROR ", RED),
+        (" ERROR ", RED),
+        ("  WARN ", YELLOW),
+        (" WARN ", YELLOW),
+        ("  INFO ", GREEN),
+        (" INFO ", GREEN),
+        ("  DEBUG ", BLUE),
+        (" DEBUG ", BLUE),
+        ("  TRACE ", DIM),
+        (" TRACE ", DIM),
+    ] {
+        if let Some(idx) = line.find(token) {
+            let level = token.trim();
+            let before = &line[..=idx];
+            let after = &line[idx + token.len()..];
+            return format!("{before}{color}{level}{RESET} {after}");
+        }
+    }
+
+    line.to_string()
+}
+
 /// Process buffered SSE lines, emitting complete events to stdout.
-fn process_sse_lines(line_buf: &mut String, data_buf: &mut String, json: bool) {
+fn process_sse_lines(line_buf: &mut String, data_buf: &mut String, json: bool, color: bool) {
     while let Some(pos) = line_buf.find('\n') {
         let line = line_buf[..pos].trim_end_matches('\r').to_string();
         *line_buf = line_buf[pos + 1..].to_string();
@@ -1331,6 +1363,8 @@ fn process_sse_lines(line_buf: &mut String, data_buf: &mut String, json: bool) {
                 if json {
                     let obj = serde_json::json!({ "data": data });
                     println!("{obj}");
+                } else if color {
+                    println!("{}", colorize_log_line(&data));
                 } else {
                     println!("{data}");
                 }
@@ -1375,6 +1409,9 @@ async fn next_sse_chunk(
 /// When `follow` is true, the stream continues indefinitely until Ctrl-C.
 /// When false, it reads events for a few seconds then exits.
 ///
+/// When `color` is true, log level tokens are colorized (red = ERROR,
+/// yellow = WARN, green = INFO, blue = DEBUG, dim = TRACE).
+///
 /// # Errors
 ///
 /// Returns an error if the server URL is invalid or the SSE connection fails.
@@ -1382,6 +1419,8 @@ pub async fn stream_logs(
     follow: bool,
     json: bool,
     server_url: &str,
+    token: Option<&str>,
+    color: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let base = http_base_url(server_url)?;
     let url = base.join("/api/v1/logs/stream")?;
@@ -1389,7 +1428,11 @@ pub async fn stream_logs(
     info!(url = %url, follow, "Connecting to log stream");
 
     let client = reqwest::Client::new();
-    let response = client.get(url).header("Accept", "text/event-stream").send().await?;
+    let mut req = client.get(url).header("Accept", "text/event-stream");
+    if let Some(t) = token {
+        req = req.header("Authorization", format!("Bearer {t}"));
+    }
+    let response = req.send().await?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -1413,7 +1456,7 @@ pub async fn stream_logs(
         match chunk {
             Ok(bytes) => {
                 line_buf.push_str(&String::from_utf8_lossy(&bytes));
-                process_sse_lines(&mut line_buf, &mut data_buf, json);
+                process_sse_lines(&mut line_buf, &mut data_buf, json, color);
             },
             Err(e) => {
                 error!(error = %e, "SSE stream error");

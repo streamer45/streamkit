@@ -18,15 +18,30 @@ use tracing::{debug, info, warn};
 
 use crate::client::control_ws_url;
 
-/// Helper: connect to the control WebSocket and return the stream.
+/// Helper: connect to the control WebSocket, optionally with a Bearer token.
 async fn connect_control_ws(
     server_url: &str,
+    token: Option<&str>,
 ) -> Result<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     Box<dyn std::error::Error + Send + Sync>,
 > {
-    let ws_url = control_ws_url(server_url)?.to_string();
-    let (ws_stream, _) = tokio_tungstenite::connect_async(ws_url).await?;
+    let ws_url = control_ws_url(server_url)?;
+    let mut request = tokio_tungstenite::tungstenite::http::Request::builder()
+        .uri(ws_url.as_str())
+        .header("Host", ws_url.host_str().unwrap_or("localhost"))
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header(
+            "Sec-WebSocket-Key",
+            tokio_tungstenite::tungstenite::handshake::client::generate_key(),
+        );
+    if let Some(t) = token {
+        request = request.header("Authorization", format!("Bearer {t}"));
+    }
+    let request = request.body(())?;
+    let (ws_stream, _) = tokio_tungstenite::connect_async(request).await?;
     Ok(ws_stream)
 }
 
@@ -80,21 +95,23 @@ struct TopJsonEntry {
 /// Collect one round of stats from all nodes and print a snapshot table.
 ///
 /// Connects to the control WebSocket, filters `NodeStatsUpdated` events for the
-/// given session, waits until no new updates arrive for `quiet_period` seconds
-/// (or until `timeout` elapses), then prints and exits.
+/// given session (or all sessions when `session_id` is `None`), waits until no
+/// new updates arrive for `quiet_period` seconds (or until `timeout` elapses),
+/// then prints and exits.
 ///
 /// # Errors
 ///
 /// Returns an error if the WebSocket connection fails or message parsing fails.
 pub async fn run_stats(
-    session_id: &str,
+    session_id: Option<&str>,
     server_url: &str,
     json: bool,
     timeout_secs: u64,
+    token: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    info!(session_id, timeout_secs, "Collecting stats snapshot");
+    info!(?session_id, timeout_secs, "Collecting stats snapshot");
 
-    let mut ws_stream = connect_control_ws(server_url).await?;
+    let mut ws_stream = connect_control_ws(server_url, token).await?;
 
     let mut stats_map: BTreeMap<String, NodeStats> = BTreeMap::new();
     let quiet_period = tokio::time::Duration::from_millis(500);
@@ -127,9 +144,14 @@ pub async fn run_stats(
                 let msg = msg?;
                 let Message::Text(text) = msg else { continue; };
 
-                if let Some((node_id, stats)) = parse_stats_event(&text, session_id) {
-                    debug!(node_id = %node_id, "Received stats update");
-                    stats_map.insert(node_id, stats);
+                if let Some((sid, node_id, stats)) = parse_stats_event_global(&text, session_id) {
+                    let key = if session_id.is_some() {
+                        node_id
+                    } else {
+                        format!("{sid}/{node_id}")
+                    };
+                    debug!(key = %key, "Received stats update");
+                    stats_map.insert(key, stats);
                     last_update = tokio::time::Instant::now();
                 }
             }
@@ -141,8 +163,9 @@ pub async fn run_stats(
     }
 
     if stats_map.is_empty() {
+        let target = session_id.unwrap_or("all sessions");
         eprintln!(
-            "No stats received for session '{session_id}' (timed out after {timeout_secs}s). \
+            "No stats received for {target} (timed out after {timeout_secs}s). \
              The session may be idle or may not exist."
         );
         return Ok(());
@@ -166,7 +189,8 @@ pub async fn run_stats(
             .collect();
         println!("{}", serde_json::to_string_pretty(&entries)?);
     } else {
-        print_stats_table(session_id, &stats_map);
+        let header = session_id.unwrap_or("All Sessions");
+        print_stats_table(header, &stats_map);
     }
 
     Ok(())
@@ -186,10 +210,10 @@ fn format_stats_row(node_id: &str, max_id_len: usize, cols: &[String; 5]) -> Str
     )
 }
 
-fn print_stats_table(session_id: &str, stats_map: &BTreeMap<String, NodeStats>) {
+fn print_stats_table(header: &str, stats_map: &BTreeMap<String, NodeStats>) {
     let id_width = 14;
     let divider_len = id_width + 1 + 10 + 10 + 12 + 10 + 12;
-    println!("Session: {session_id}");
+    println!("Session: {header}");
     println!(
         "{:<width$}{:>10}{:>10}{:>12}{:>10}{:>12}",
         "Node",
@@ -227,7 +251,12 @@ struct RawModeGuard;
 impl RawModeGuard {
     fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         terminal::enable_raw_mode()?;
-        execute!(io::stdout(), terminal::Clear(terminal::ClearType::All), cursor::MoveTo(0, 0))?;
+        execute!(
+            io::stdout(),
+            cursor::Hide,
+            terminal::Clear(terminal::ClearType::All),
+            cursor::MoveTo(0, 0)
+        )?;
         Ok(Self)
     }
 }
@@ -248,18 +277,22 @@ impl Drop for RawModeGuard {
 /// Uses basic `crossterm` terminal control for cursor positioning and clearing,
 /// with an RAII guard to ensure terminal state is always restored.
 ///
+/// When `session_id` is `None`, shows stats from all sessions keyed as
+/// `"session_id/node_id"`.
+///
 /// # Errors
 ///
 /// Returns an error if the WebSocket connection fails, terminal control fails,
 /// or message parsing fails.
 pub async fn run_top(
-    session_id: &str,
+    session_id: Option<&str>,
     server_url: &str,
     json: bool,
+    token: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    info!(session_id, "Starting live stats dashboard");
+    info!(?session_id, "Starting live stats dashboard");
 
-    let mut ws_stream = connect_control_ws(server_url).await?;
+    let mut ws_stream = connect_control_ws(server_url, token).await?;
 
     let mut snapshots: BTreeMap<String, StatsSnapshot> = BTreeMap::new();
     let mut prev_snapshots: BTreeMap<String, StatsSnapshot> = BTreeMap::new();
@@ -268,9 +301,15 @@ pub async fn run_top(
     // RAII guard ensures terminal state is always restored, even on panic
     let _guard = if json { None } else { Some(RawModeGuard::new()?) };
 
-    let result =
-        run_top_loop(session_id, &mut ws_stream, &mut snapshots, &mut prev_snapshots, start, json)
-            .await;
+    let result = run_top_loop(
+        session_id,
+        &mut ws_stream,
+        &mut snapshots,
+        &mut prev_snapshots,
+        start,
+        json,
+    )
+    .await;
 
     // _guard dropped here → terminal restored
 
@@ -282,7 +321,7 @@ pub async fn run_top(
 }
 
 async fn run_top_loop(
-    session_id: &str,
+    session_id: Option<&str>,
     ws_stream: &mut tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
@@ -298,12 +337,14 @@ async fn run_top_loop(
     // Use crossterm event stream for key input (works in raw mode, unlike tokio::signal)
     let mut key_reader = crossterm::event::EventStream::new();
 
+    let header = session_id.unwrap_or("All Sessions");
+
     loop {
         tokio::select! {
             // Periodic re-render: keeps uptime ticking even when idle
             _ = ticker.tick() => {
                 if !json && !snapshots.is_empty() {
-                    render_top_table(session_id, snapshots, prev_snapshots, start)?;
+                    render_top_table(header, snapshots, prev_snapshots, start)?;
                 }
             }
             // Keyboard input: q or Ctrl-C to quit
@@ -326,20 +367,25 @@ async fn run_top_loop(
                 let msg = msg?;
                 let Message::Text(text) = msg else { continue; };
 
-                if let Some((node_id, stats)) = parse_stats_event(&text, session_id) {
+                if let Some((sid, node_id, stats)) = parse_stats_event_global(&text, session_id) {
                     let now = Instant::now();
-                    debug!(node_id = %node_id, "Stats tick");
+                    let key = if session_id.is_some() {
+                        node_id
+                    } else {
+                        format!("{sid}/{node_id}")
+                    };
+                    debug!(key = %key, "Stats tick");
 
                     // Rotate current → previous
-                    if let Some(current) = snapshots.get(&node_id) {
-                        prev_snapshots.insert(node_id.clone(), current.clone());
+                    if let Some(current) = snapshots.get(&key) {
+                        prev_snapshots.insert(key.clone(), current.clone());
                     }
-                    snapshots.insert(node_id, StatsSnapshot { stats, observed_at: now });
+                    snapshots.insert(key, StatsSnapshot { stats, observed_at: now });
 
                     if json {
                         render_top_json(snapshots, prev_snapshots);
                     } else {
-                        render_top_table(session_id, snapshots, prev_snapshots, start)?;
+                        render_top_table(header, snapshots, prev_snapshots, start)?;
                     }
                 }
             }
@@ -349,7 +395,7 @@ async fn run_top_loop(
 }
 
 fn render_top_table(
-    session_id: &str,
+    header: &str,
     snapshots: &BTreeMap<String, StatsSnapshot>,
     prev_snapshots: &BTreeMap<String, StatsSnapshot>,
     start: Instant,
@@ -367,7 +413,7 @@ fn render_top_table(
 
     writeln!(
         stdout,
-        "Session: {session_id}                    Uptime: {hours:02}:{minutes:02}:{seconds:02}"
+        "Session: {header}                    Uptime: {hours:02}:{minutes:02}:{seconds:02}"
     )?;
     writeln!(stdout, "{}", "─".repeat(divider_len))?;
     writeln!(
@@ -448,31 +494,29 @@ fn render_top_json(
     }
 }
 
-/// Parse a WebSocket message as a `NodeStatsUpdated` event for the given session.
-///
-/// Returns `Some((node_id, stats))` if the message matches, `None` otherwise.
-fn parse_stats_event(text: &str, session_id: &str) -> Option<(String, NodeStats)> {
+/// Parse a WebSocket message as a `NodeStatsUpdated` event, optionally filtering
+/// by session. Returns `(session_id, node_id, stats)` on match.
+fn parse_stats_event_global(
+    text: &str,
+    session_filter: Option<&str>,
+) -> Option<(String, String, NodeStats)> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
-
-    // Must be an event message
     if v.get("type")?.as_str()? != "event" {
         return None;
     }
-
     let payload = v.get("payload")?;
-
-    // Must be a nodestats event for the target session
     if payload.get("event")?.as_str()? != "nodestatsupdated" {
         return None;
     }
-    if payload.get("session_id")?.as_str()? != session_id {
-        return None;
+    let sid = payload.get("session_id")?.as_str()?.to_string();
+    if let Some(filter) = session_filter {
+        if sid != filter {
+            return None;
+        }
     }
-
     let node_id = payload.get("node_id")?.as_str()?.to_string();
     let stats: NodeStats = serde_json::from_value(payload.get("stats")?.clone()).ok()?;
-
-    Some((node_id, stats))
+    Some((sid, node_id, stats))
 }
 
 /// Truncate a string to `max_len` display characters, appending `…` if truncated.
@@ -577,5 +621,26 @@ mod tests {
         let result = truncate_id(s, 4);
         assert!(result.ends_with('…'));
         assert_eq!(result.chars().count(), 4);
+    }
+
+    #[test]
+    fn test_parse_stats_event_global_specific_session() {
+        let msg = r#"{"type":"event","payload":{"event":"nodestatsupdated","session_id":"abc","node_id":"src","stats":{"received":10,"sent":10,"discarded":0,"errored":0,"duration_secs":1.0}}}"#;
+        let result = parse_stats_event_global(msg, Some("abc"));
+        assert!(result.is_some());
+        let (sid, nid, _) = result.unwrap();
+        assert_eq!(sid, "abc");
+        assert_eq!(nid, "src");
+        assert!(parse_stats_event_global(msg, Some("xyz")).is_none());
+    }
+
+    #[test]
+    fn test_parse_stats_event_global_all_sessions() {
+        let msg = r#"{"type":"event","payload":{"event":"nodestatsupdated","session_id":"abc","node_id":"src","stats":{"received":10,"sent":10,"discarded":0,"errored":0,"duration_secs":1.0}}}"#;
+        let result = parse_stats_event_global(msg, None);
+        assert!(result.is_some());
+        let (sid, nid, _) = result.unwrap();
+        assert_eq!(sid, "abc");
+        assert_eq!(nid, "src");
     }
 }

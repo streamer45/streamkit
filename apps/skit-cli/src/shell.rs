@@ -13,6 +13,7 @@ use rustyline::Helper;
 use rustyline::{Cmd, CompletionType, Config, EditMode, Editor, KeyEvent};
 use std::borrow::Cow::{self, Borrowed, Owned};
 use std::collections::HashSet;
+use std::io::IsTerminal;
 use streamkit_api::{MessageType, Request, RequestPayload, Response, ResponsePayload, SessionInfo};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tracing::{debug, warn};
@@ -398,9 +399,9 @@ impl Shell {
         println!("    --cleanup                             Cleanup sessions after test");
         println!();
         println!("Monitoring:");
-        println!("  top <session>                            Live stats dashboard (q to quit)");
-        println!("  stats <session> [--json] [--timeout N]    One-shot stats snapshot");
-        println!("  logs [--follow] [--json]                 Stream server logs");
+        println!("  top [<session>] [--json]                  Live stats dashboard (q to quit)");
+        println!("  stats [<session>] [--json] [--timeout N]  One-shot stats snapshot");
+        println!("  logs [--follow] [--json]                  Stream server logs (color auto)");
         println!();
         println!("General:");
         println!("  help, h                                 Show this help message");
@@ -619,13 +620,9 @@ impl Shell {
         &self,
         args: &[&str],
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if args.is_empty() {
-            eprintln!("Usage: top <session_id_or_name> [--json]");
-            return Ok(());
-        }
-
-        let session_id = args[0];
         let json = args.contains(&"--json");
+        // First non-flag arg is session_id (optional — omit for global view)
+        let session_id = args.iter().find(|a| !a.starts_with('-')).copied();
 
         let http_url = self
             .ws_url
@@ -633,19 +630,13 @@ impl Shell {
             .replace("wss://", "https://")
             .replace("/api/v1/control", "");
 
-        crate::top::run_top(session_id, &http_url, json).await
+        crate::top::run_top(session_id, &http_url, json, None).await
     }
 
     async fn stats_session(
         &self,
         args: &[&str],
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if args.is_empty() {
-            eprintln!("Usage: stats <session_id_or_name> [--json] [--timeout <secs>]");
-            return Ok(());
-        }
-
-        let session_id = args[0];
         let json = args.contains(&"--json");
 
         let mut timeout: u64 = 5;
@@ -655,18 +646,29 @@ impl Shell {
             }
         }
 
+        // First non-flag arg (skip --timeout value) is session_id (optional)
+        let session_id = args
+            .iter()
+            .enumerate()
+            .find(|(i, a)| {
+                !(a.starts_with('-')
+                    || (*i > 0 && args.get(i - 1) == Some(&"--timeout")))
+            })
+            .map(|(_, a)| *a);
+
         let http_url = self
             .ws_url
             .replace("ws://", "http://")
             .replace("wss://", "https://")
             .replace("/api/v1/control", "");
 
-        crate::top::run_stats(session_id, &http_url, json, timeout).await
+        crate::top::run_stats(session_id, &http_url, json, timeout, None).await
     }
 
     async fn logs(&self, args: &[&str]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let follow = args.contains(&"--follow") || args.contains(&"-f");
         let json = args.contains(&"--json");
+        let color = !json && std::io::stdout().is_terminal();
 
         let http_url = self
             .ws_url
@@ -674,7 +676,7 @@ impl Shell {
             .replace("wss://", "https://")
             .replace("/api/v1/control", "");
 
-        crate::client::stream_logs(follow, json, &http_url).await
+        crate::client::stream_logs(follow, json, &http_url, None, color).await
     }
 
     async fn oneshot(&self, args: &[&str]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

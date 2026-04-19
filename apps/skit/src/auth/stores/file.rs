@@ -548,9 +548,15 @@ impl RevocationStore for FileRevocationStore {
         lock_read(&self.revoked).contains_key(token_hash)
     }
 
+    // Guard scope is intentional: the RwLockWriteGuard (non-Send) must be
+    // dropped before the `.await` on `persist()`.
+    #[allow(clippy::significant_drop_tightening)]
     async fn revoke(&self, token_hash: &str, exp: u64) -> Result<(), AuthStoreError> {
-        lock_write(&self.revoked).insert(token_hash.to_string(), exp);
-        Self::prune_expired_locked(&mut lock_write(&self.revoked));
+        {
+            let mut guard = lock_write(&self.revoked);
+            guard.insert(token_hash.to_string(), exp);
+            Self::prune_expired_locked(&mut guard);
+        }
         self.persist().await?;
         debug!(token_hash = %token_hash, "Token revoked");
         Ok(())

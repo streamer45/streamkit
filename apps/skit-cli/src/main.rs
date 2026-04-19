@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+use std::io::IsTerminal;
+
 use clap::{ArgAction, Parser, Subcommand};
 use streamkit_client::InputFile;
 use tracing::{error, info};
@@ -170,25 +172,31 @@ enum Commands {
     },
     /// Show live session statistics (like top)
     Top {
-        /// Session ID to monitor
-        session_id: String,
+        /// Session ID to monitor (omit to show all sessions)
+        session_id: Option<String>,
         /// Output as newline-delimited JSON
         #[arg(long)]
         json: bool,
+        /// API token for authenticated servers
+        #[arg(long, env = "SKIT_TOKEN")]
+        token: Option<String>,
         /// Server URL (default: http://127.0.0.1:4545)
         #[arg(short, long, default_value = "http://127.0.0.1:4545")]
         server: String,
     },
     /// Show current session statistics snapshot
     Stats {
-        /// Session ID to query
-        session_id: String,
+        /// Session ID to query (omit to show all sessions)
+        session_id: Option<String>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
         /// Timeout in seconds waiting for stats (default: 5)
         #[arg(short, long, default_value_t = 5)]
         timeout: u64,
+        /// API token for authenticated servers
+        #[arg(long, env = "SKIT_TOKEN")]
+        token: Option<String>,
         /// Server URL (default: http://127.0.0.1:4545)
         #[arg(short, long, default_value = "http://127.0.0.1:4545")]
         server: String,
@@ -201,6 +209,12 @@ enum Commands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Colorize log levels (auto-detected from TTY when omitted)
+        #[arg(long)]
+        color: Option<bool>,
+        /// API token for authenticated servers
+        #[arg(long, env = "SKIT_TOKEN")]
+        token: Option<String>,
         /// Server URL (default: http://127.0.0.1:4545)
         #[arg(short, long, default_value = "http://127.0.0.1:4545")]
         server: String,
@@ -571,26 +585,43 @@ async fn dispatch(command: Commands) {
                 std::process::exit(1);
             }
         },
-        Commands::Top { session_id, json, server } => {
+        Commands::Top { session_id, json, token, server } => {
             info!("Starting StreamKit client - live stats dashboard");
 
-            if let Err(e) = streamkit_client::run_top(&session_id, &server, json).await {
+            if let Err(e) =
+                streamkit_client::run_top(session_id.as_deref(), &server, json, token.as_deref())
+                    .await
+            {
                 error!(error = %e, "Top command failed");
                 std::process::exit(1);
             }
         },
-        Commands::Stats { session_id, json, timeout, server } => {
+        Commands::Stats { session_id, json, timeout, token, server } => {
             info!("Starting StreamKit client - stats snapshot");
 
-            if let Err(e) = streamkit_client::run_stats(&session_id, &server, json, timeout).await {
+            if let Err(e) = streamkit_client::run_stats(
+                session_id.as_deref(),
+                &server,
+                json,
+                timeout,
+                token.as_deref(),
+            )
+            .await
+            {
                 error!(error = %e, "Stats command failed");
                 std::process::exit(1);
             }
         },
-        Commands::Logs { follow, json, server } => {
+        Commands::Logs { follow, json, color, token, server } => {
             info!("Starting StreamKit client - log streaming");
 
-            if let Err(e) = streamkit_client::stream_logs(follow, json, &server).await {
+            let use_color =
+                color.unwrap_or_else(|| !json && std::io::stdout().is_terminal());
+
+            if let Err(e) =
+                streamkit_client::stream_logs(follow, json, &server, token.as_deref(), use_color)
+                    .await
+            {
                 error!(error = %e, "Logs command failed");
                 std::process::exit(1);
             }

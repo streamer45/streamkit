@@ -113,6 +113,8 @@ pub struct AuthState {
     key_provider: Option<Arc<dyn KeyProvider>>,
     revocation_store: Option<Arc<dyn RevocationStore>>,
     token_metadata_store: Option<Arc<dyn TokenMetadataStore>>,
+    /// Serialises `reload_keys` calls so only one reload runs at a time.
+    reload_mutex: tokio::sync::Mutex<()>,
 }
 
 impl AuthState {
@@ -127,6 +129,7 @@ impl AuthState {
             key_provider: None,
             revocation_store: None,
             token_metadata_store: None,
+            reload_mutex: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -145,6 +148,7 @@ impl AuthState {
                 key_provider: None,
                 revocation_store: None,
                 token_metadata_store: None,
+                reload_mutex: tokio::sync::Mutex::new(()),
             });
         }
 
@@ -166,6 +170,7 @@ impl AuthState {
                 key_provider: Some(key_provider.clone()),
                 revocation_store: Some(revocation_store.clone()),
                 token_metadata_store: Some(token_metadata_store.clone()),
+                reload_mutex: tokio::sync::Mutex::new(()),
             };
 
             let (token, _meta) = state
@@ -192,6 +197,7 @@ impl AuthState {
             key_provider: Some(key_provider),
             revocation_store: Some(revocation_store),
             token_metadata_store: Some(token_metadata_store),
+            reload_mutex: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -522,12 +528,16 @@ impl AuthState {
     pub async fn reload_keys(&self) -> Result<(), AuthError> {
         let key_provider = self.key_provider.as_ref().ok_or(AuthError::Disabled)?;
 
-        // Reload metadata and revocations before keys.  Neither order
-        // is fully atomic: metadata-first means a new-kid token arriving
-        // mid-reload fails signature verification (transient, retryable);
-        // keys-first means it passes signature but fails the JTI "minted
-        // by us" check (looks like a permanent auth error).  We choose
-        // metadata-first as the lesser evil.
+        // Serialise concurrent reload calls — only one reload at a time.
+        let _guard = self.reload_mutex.lock().await;
+
+        // Reload metadata and revocations before keys.  The three swaps
+        // are not fully atomic because each store holds its own internal
+        // lock.  Metadata-first minimises the impact window: a token
+        // minted with the new key that arrives mid-reload will fail
+        // signature verification (transient, client retries immediately).
+        // The alternative (keys-first) would fail the JTI "minted by us"
+        // check, which looks like a permanent auth error.
         if let Some(token_meta) = self.token_metadata_store.as_ref() {
             token_meta.reload().await?;
         }

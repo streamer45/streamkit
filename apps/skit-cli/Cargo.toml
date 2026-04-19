@@ -19,7 +19,7 @@ path = "src/main.rs"
 streamkit-api = { workspace = true }
 
 # For building the command-line interface
-clap = { version = "4.6", features = ["derive"] }
+clap = { version = "4.6", features = ["derive", "env"] }
 
 # For HTTP client functionality
 reqwest = { version = "0.13", features = ["multipart", "stream", "json"] }

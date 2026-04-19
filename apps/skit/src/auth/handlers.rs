@@ -27,6 +27,8 @@ use tower::limit::ConcurrencyLimitLayer;
 
 const AUTH_MAX_BODY_BYTES: usize = 64 * 1024;
 const AUTH_MAX_CONCURRENCY: usize = 64;
+/// Reload-keys is an admin-only, rare operation; allow at most 2 in-flight.
+const RELOAD_MAX_CONCURRENCY: usize = 2;
 
 /// Request body for login endpoint.
 #[derive(Debug, Deserialize)]
@@ -508,7 +510,7 @@ pub fn auth_router() -> axum::Router<Arc<AppState>> {
         )
         .route(
             "/reload-keys",
-            post(reload_keys_handler).layer(ConcurrencyLimitLayer::new(AUTH_MAX_CONCURRENCY)),
+            post(reload_keys_handler).layer(ConcurrencyLimitLayer::new(RELOAD_MAX_CONCURRENCY)),
         );
 
     #[cfg(feature = "moq")]
