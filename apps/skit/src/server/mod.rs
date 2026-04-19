@@ -573,21 +573,33 @@ struct ValidateResponse {
     graph: Option<ValidateGraph>,
 }
 
+/// Pipeline mode for validation — determines which synthetic-node rules apply.
+#[derive(Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum PipelineMode {
+    Dynamic,
+    Oneshot,
+}
+
 /// Request body for `POST /api/v1/validate`.
 #[derive(Deserialize)]
 struct ValidateRequest {
     yaml: String,
-    /// Optional pipeline mode: `"dynamic"` or `"oneshot"`.
-    /// When `"dynamic"`, synthetic nodes (`streamkit::http_input`/`http_output`)
+    /// Optional pipeline mode.
+    /// When `Dynamic`, synthetic nodes (`streamkit::http_input`/`http_output`)
     /// are rejected — matching `create_session_handler` behaviour.
     #[serde(default)]
-    mode: Option<String>,
+    mode: Option<PipelineMode>,
 }
 
+/// Synthetic oneshot-only node kinds, derived from `synthetic_node_definitions()`
+/// to prevent drift.  `LazyLock` avoids rebuilding the list on every call.
+static SYNTHETIC_KINDS: std::sync::LazyLock<Vec<String>> =
+    std::sync::LazyLock::new(|| synthetic_node_definitions().into_iter().map(|d| d.kind).collect());
+
 /// Returns `true` for node kinds that are synthetic oneshot-only markers.
-/// Derived from `synthetic_node_definitions()` to prevent drift.
 fn is_synthetic_kind(kind: &str) -> bool {
-    synthetic_node_definitions().iter().any(|d| d.kind == kind)
+    SYNTHETIC_KINDS.iter().any(|k| k == kind)
 }
 
 /// Build synthetic `NodeDefinition`s for oneshot-only virtual nodes that are not
@@ -703,29 +715,24 @@ fn validate_nodes(
 
         // Synthetic oneshot nodes bypass per-node permission checks,
         // matching the oneshot handler which never filters them.
-        if let Some(perms) = perms {
-            if !is_synthetic_kind(&node.kind) {
-                if !perms.is_node_allowed(&node.kind) {
-                    errors.push(ValidateDiagnostic {
-                        kind: DiagnosticKind::Permission,
-                        message: format!(
-                            "Permission denied: node kind '{}' not allowed",
-                            node.kind
-                        ),
-                        node_id: Some(node_id.clone()),
-                        connection_id: None,
-                    });
-                    continue;
-                }
-                if node.kind.starts_with("plugin::") && !perms.is_plugin_allowed(&node.kind) {
-                    errors.push(ValidateDiagnostic {
-                        kind: DiagnosticKind::Permission,
-                        message: format!("Permission denied: plugin '{}' not allowed", node.kind),
-                        node_id: Some(node_id.clone()),
-                        connection_id: None,
-                    });
-                    continue;
-                }
+        if let Some(perms) = perms.filter(|_| !is_synthetic_kind(&node.kind)) {
+            if !perms.is_node_allowed(&node.kind) {
+                errors.push(ValidateDiagnostic {
+                    kind: DiagnosticKind::Permission,
+                    message: format!("Permission denied: node kind '{}' not allowed", node.kind),
+                    node_id: Some(node_id.clone()),
+                    connection_id: None,
+                });
+                continue;
+            }
+            if node.kind.starts_with("plugin::") && !perms.is_plugin_allowed(&node.kind) {
+                errors.push(ValidateDiagnostic {
+                    kind: DiagnosticKind::Permission,
+                    message: format!("Permission denied: plugin '{}' not allowed", node.kind),
+                    node_id: Some(node_id.clone()),
+                    connection_id: None,
+                });
+                continue;
             }
         }
 
@@ -854,17 +861,21 @@ fn validate_connections(
 ///
 /// Uses `PinCardinality::is_dynamic_pin_match` from `streamkit_core` — the
 /// same matching logic the dynamic engine applies at runtime.
+///
+/// Exact-name matches are preferred: if a static pin with name == `name` exists
+/// it wins even when a dynamic-prefix pin could also match.
 fn find_output_pin<'a>(
     pins: &'a [streamkit_core::OutputPin],
     name: &str,
 ) -> Option<&'a streamkit_core::OutputPin> {
-    pins.iter().find(|p| {
-        p.name == name
-            || matches!(
+    pins.iter().find(|p| p.name == name).or_else(|| {
+        pins.iter().find(|p| {
+            matches!(
                 &p.cardinality,
                 streamkit_core::PinCardinality::Dynamic { prefix }
                     if streamkit_core::PinCardinality::is_dynamic_pin_match(prefix, name)
             )
+        })
     })
 }
 
@@ -872,17 +883,21 @@ fn find_output_pin<'a>(
 ///
 /// Uses `PinCardinality::is_dynamic_pin_match` from `streamkit_core` — the
 /// same matching logic the dynamic engine applies at runtime.
+///
+/// Exact-name matches are preferred: if a static pin with name == `name` exists
+/// it wins even when a dynamic-prefix pin could also match.
 fn find_input_pin<'a>(
     pins: &'a [streamkit_core::InputPin],
     name: &str,
 ) -> Option<&'a streamkit_core::InputPin> {
-    pins.iter().find(|p| {
-        p.name == name
-            || matches!(
+    pins.iter().find(|p| p.name == name).or_else(|| {
+        pins.iter().find(|p| {
+            matches!(
                 &p.cardinality,
                 streamkit_core::PinCardinality::Dynamic { prefix }
                     if streamkit_core::PinCardinality::is_dynamic_pin_match(prefix, name)
             )
+        })
     })
 }
 
@@ -993,7 +1008,7 @@ async fn validate_pipeline_handler(
     drop(registry_guard);
 
     // 5. Mode-specific checks: reject synthetic nodes in dynamic mode
-    if payload.mode.as_deref() == Some("dynamic") {
+    if payload.mode == Some(PipelineMode::Dynamic) {
         for (node_id, node) in &pipeline.nodes {
             if is_synthetic_kind(&node.kind) {
                 errors.push(ValidateDiagnostic {
@@ -1051,6 +1066,9 @@ async fn validate_pipeline_handler(
 }
 
 /// Extract a human-readable message from an `AppError`.
+///
+/// `AppError` does not implement `Display` (only `IntoResponse`), so we
+/// pattern-match to pull out the inner message/error.
 fn app_error_message(err: AppError) -> String {
     match err {
         AppError::BadRequest(msg)
@@ -1262,6 +1280,234 @@ nodes:
         let yaml = "nodes: {}";
         let pipeline = minimal_pipeline(yaml).expect("parse should succeed");
         assert!(pipeline.nodes.is_empty());
+    }
+
+    /// Register a test node with explicit input/output pin types.
+    fn register_typed_node(
+        registry: &mut streamkit_core::NodeRegistry,
+        kind: &str,
+        inputs: Vec<streamkit_core::InputPin>,
+        outputs: Vec<streamkit_core::OutputPin>,
+    ) {
+        registry.register_static(
+            kind,
+            |_| Err(streamkit_core::StreamKitError::Configuration("test stub".into())),
+            serde_json::Value::Object(serde_json::Map::default()),
+            streamkit_core::registry::StaticPins { inputs, outputs },
+            vec![],
+            false,
+        );
+    }
+
+    #[test]
+    fn type_mismatch_reported() {
+        use streamkit_core::types::PacketType;
+        use streamkit_core::{InputPin, OutputPin, PinCardinality};
+
+        let yaml = "\
+nodes:
+  src:
+    kind: test::text_src
+  dst:
+    kind: test::audio_dst
+    needs: src
+";
+        let pipeline = minimal_pipeline(yaml).expect("parse should succeed");
+        let mut registry = make_registry();
+
+        register_typed_node(
+            &mut registry,
+            "test::text_src",
+            vec![],
+            vec![OutputPin {
+                name: "out".to_string(),
+                produces_type: PacketType::Text,
+                cardinality: PinCardinality::Broadcast,
+            }],
+        );
+        register_typed_node(
+            &mut registry,
+            "test::audio_dst",
+            vec![InputPin {
+                name: "in".to_string(),
+                accepts_types: vec![PacketType::Binary],
+                cardinality: PinCardinality::One,
+            }],
+            vec![],
+        );
+
+        let mut errors = Vec::new();
+        let mut warnings = Vec::new();
+        let node_defs = validate_nodes(&pipeline, &registry, None, &mut errors, &mut warnings);
+        validate_connections(&pipeline, &node_defs, &mut errors);
+
+        assert!(
+            errors.iter().any(|e| e.message.contains("Type mismatch")),
+            "expected type mismatch error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn passthrough_source_skips_type_check() {
+        use streamkit_core::types::PacketType;
+        use streamkit_core::{InputPin, OutputPin, PinCardinality};
+
+        let yaml = "\
+nodes:
+  src:
+    kind: test::passthrough_src
+  dst:
+    kind: test::audio_dst
+    needs: src
+";
+        let pipeline = minimal_pipeline(yaml).expect("parse should succeed");
+        let mut registry = make_registry();
+
+        register_typed_node(
+            &mut registry,
+            "test::passthrough_src",
+            vec![],
+            vec![OutputPin {
+                name: "out".to_string(),
+                produces_type: PacketType::Passthrough,
+                cardinality: PinCardinality::Broadcast,
+            }],
+        );
+        register_typed_node(
+            &mut registry,
+            "test::audio_dst",
+            vec![InputPin {
+                name: "in".to_string(),
+                accepts_types: vec![PacketType::Binary],
+                cardinality: PinCardinality::One,
+            }],
+            vec![],
+        );
+
+        let mut errors = Vec::new();
+        let mut warnings = Vec::new();
+        let node_defs = validate_nodes(&pipeline, &registry, None, &mut errors, &mut warnings);
+        validate_connections(&pipeline, &node_defs, &mut errors);
+
+        assert!(errors.is_empty(), "passthrough source should skip type check, got: {errors:?}");
+    }
+
+    #[test]
+    fn passthrough_destination_skips_type_check() {
+        use streamkit_core::types::PacketType;
+        use streamkit_core::{InputPin, OutputPin, PinCardinality};
+
+        let yaml = "\
+nodes:
+  src:
+    kind: test::text_src
+  dst:
+    kind: test::passthrough_dst
+    needs: src
+";
+        let pipeline = minimal_pipeline(yaml).expect("parse should succeed");
+        let mut registry = make_registry();
+
+        register_typed_node(
+            &mut registry,
+            "test::text_src",
+            vec![],
+            vec![OutputPin {
+                name: "out".to_string(),
+                produces_type: PacketType::Text,
+                cardinality: PinCardinality::Broadcast,
+            }],
+        );
+        register_typed_node(
+            &mut registry,
+            "test::passthrough_dst",
+            vec![InputPin {
+                name: "in".to_string(),
+                accepts_types: vec![PacketType::Passthrough],
+                cardinality: PinCardinality::One,
+            }],
+            vec![],
+        );
+
+        let mut errors = Vec::new();
+        let mut warnings = Vec::new();
+        let node_defs = validate_nodes(&pipeline, &registry, None, &mut errors, &mut warnings);
+        validate_connections(&pipeline, &node_defs, &mut errors);
+
+        assert!(
+            errors.is_empty(),
+            "passthrough destination should skip type check, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn dynamic_mode_rejects_synthetic_nodes() {
+        let yaml = "\
+nodes:
+  input:
+    kind: streamkit::http_input
+  output:
+    kind: streamkit::http_output
+    needs: input
+";
+        let pipeline = minimal_pipeline(yaml).expect("parse should succeed");
+
+        let mut errors: Vec<ValidateDiagnostic> = Vec::new();
+
+        // Simulate the dynamic-mode branch from the handler.
+        let mode = Some(PipelineMode::Dynamic);
+        if mode == Some(PipelineMode::Dynamic) {
+            for (node_id, node) in &pipeline.nodes {
+                if is_synthetic_kind(&node.kind) {
+                    errors.push(ValidateDiagnostic {
+                        kind: DiagnosticKind::Schema,
+                        message: format!(
+                            "Node kind '{}' is only valid in oneshot pipelines",
+                            node.kind
+                        ),
+                        node_id: Some(node_id.clone()),
+                        connection_id: None,
+                    });
+                }
+            }
+        }
+
+        assert_eq!(errors.len(), 2, "expected 2 synthetic rejections, got: {errors:?}");
+        assert!(errors.iter().all(|e| e.message.contains("only valid in oneshot")));
+    }
+
+    #[test]
+    fn oneshot_mode_accepts_synthetic_nodes() {
+        let yaml = "\
+nodes:
+  input:
+    kind: streamkit::http_input
+  output:
+    kind: streamkit::http_output
+    needs: input
+";
+        let pipeline = minimal_pipeline(yaml).expect("parse should succeed");
+
+        let mut errors: Vec<ValidateDiagnostic> = Vec::new();
+
+        let mode = Some(PipelineMode::Oneshot);
+        if mode == Some(PipelineMode::Dynamic) {
+            for (node_id, node) in &pipeline.nodes {
+                if is_synthetic_kind(&node.kind) {
+                    errors.push(ValidateDiagnostic {
+                        kind: DiagnosticKind::Schema,
+                        message: format!(
+                            "Node kind '{}' is only valid in oneshot pipelines",
+                            node.kind
+                        ),
+                        node_id: Some(node_id.clone()),
+                        connection_id: None,
+                    });
+                }
+            }
+        }
+
+        assert!(errors.is_empty(), "oneshot mode should accept synthetics, got: {errors:?}");
     }
 }
 
