@@ -186,14 +186,17 @@ enum Commands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Timeout in seconds waiting for stats (default: 5)
+        #[arg(short, long, default_value_t = 5)]
+        timeout: u64,
         /// Server URL (default: http://127.0.0.1:4545)
         #[arg(short, long, default_value = "http://127.0.0.1:4545")]
         server: String,
     },
     /// Stream server logs
     Logs {
-        /// Follow log output (stream continuously)
-        #[arg(short, long, default_value_t = true)]
+        /// Follow log output (stream continuously, like tail -f)
+        #[arg(short, long)]
         follow: bool,
         /// Output as JSON
         #[arg(long)]
@@ -576,10 +579,10 @@ async fn dispatch(command: Commands) {
                 std::process::exit(1);
             }
         },
-        Commands::Stats { session_id, json, server } => {
+        Commands::Stats { session_id, json, timeout, server } => {
             info!("Starting StreamKit client - stats snapshot");
 
-            if let Err(e) = streamkit_client::run_stats(&session_id, &server, json).await {
+            if let Err(e) = streamkit_client::run_stats(&session_id, &server, json, timeout).await {
                 error!(error = %e, "Stats command failed");
                 std::process::exit(1);
             }

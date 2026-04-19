@@ -48,7 +48,7 @@ serde_json = "1.0"
 uuid = { version = "1.23", features = ["v4"] }
 
 # For terminal control (top command)
-crossterm = "0.28"
+crossterm = { version = "0.28", features = ["event-stream"] }
 
 # For load testing
 toml = "1.0"

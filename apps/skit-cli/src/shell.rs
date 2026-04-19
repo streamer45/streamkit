@@ -97,6 +97,9 @@ impl SkitCompleter {
                 "tune".to_string(),
                 "list".to_string(),
                 "watch".to_string(),
+                "top".to_string(),
+                "stats".to_string(),
+                "logs".to_string(),
                 "oneshot".to_string(),
                 "loadtest".to_string(),
                 "lt".to_string(),
@@ -197,7 +200,11 @@ impl Completer for SkitCompleter {
                 .collect();
             Ok((start, toml_matches))
         } else if words.len() >= 2
-            && (words[0] == "destroy" || words[0] == "tune" || words[0] == "watch")
+            && (words[0] == "destroy"
+                || words[0] == "tune"
+                || words[0] == "watch"
+                || words[0] == "top"
+                || words[0] == "stats")
         {
             // Complete session names for commands that need them
             let start = line.rfind(' ').map_or(0, |i| i + 1);
@@ -357,6 +364,9 @@ impl Shell {
             "destroy" | "rm" => self.destroy_session(&parts[1..]).await?,
             "tune" => self.tune_node(&parts[1..]).await?,
             "watch" => self.watch_session(&parts[1..]).await?,
+            "top" => self.top_session(&parts[1..]).await?,
+            "stats" => self.stats_session(&parts[1..]).await?,
+            "logs" => self.logs(&parts[1..]).await?,
             "oneshot" => self.oneshot(&parts[1..]).await?,
             "loadtest" | "lt" => self.loadtest(&parts[1..]).await?,
             cmd => {
@@ -386,6 +396,11 @@ impl Shell {
         println!("    --server <url>                        Override server URL");
         println!("    --duration <seconds>                  Override test duration");
         println!("    --cleanup                             Cleanup sessions after test");
+        println!();
+        println!("Monitoring:");
+        println!("  top <session>                            Live stats dashboard (q to quit)");
+        println!("  stats <session> [--json] [--timeout N]    One-shot stats snapshot");
+        println!("  logs [--follow] [--json]                 Stream server logs");
         println!();
         println!("General:");
         println!("  help, h                                 Show this help message");
@@ -598,6 +613,68 @@ impl Shell {
 
         // Reuse the shared watch implementation (prints JSON events; Ctrl-C to stop).
         crate::client::watch_events(session_filter, false, &self.ws_url).await
+    }
+
+    async fn top_session(
+        &self,
+        args: &[&str],
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if args.is_empty() {
+            eprintln!("Usage: top <session_id_or_name> [--json]");
+            return Ok(());
+        }
+
+        let session_id = args[0];
+        let json = args.contains(&"--json");
+
+        let http_url = self
+            .ws_url
+            .replace("ws://", "http://")
+            .replace("wss://", "https://")
+            .replace("/api/v1/control", "");
+
+        crate::top::run_top(session_id, &http_url, json).await
+    }
+
+    async fn stats_session(
+        &self,
+        args: &[&str],
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if args.is_empty() {
+            eprintln!("Usage: stats <session_id_or_name> [--json] [--timeout <secs>]");
+            return Ok(());
+        }
+
+        let session_id = args[0];
+        let json = args.contains(&"--json");
+
+        let mut timeout: u64 = 5;
+        if let Some(pos) = args.iter().position(|&a| a == "--timeout") {
+            if let Some(val) = args.get(pos + 1) {
+                timeout = val.parse().unwrap_or(5);
+            }
+        }
+
+        let http_url = self
+            .ws_url
+            .replace("ws://", "http://")
+            .replace("wss://", "https://")
+            .replace("/api/v1/control", "");
+
+        crate::top::run_stats(session_id, &http_url, json, timeout).await
+    }
+
+    async fn logs(&self, args: &[&str]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let follow = args.contains(&"--follow") || args.contains(&"-f");
+        let json = args.contains(&"--json");
+
+        let http_url = self
+            .ws_url
+            .replace("ws://", "http://")
+            .replace("wss://", "https://")
+            .replace("/api/v1/control", "");
+
+        crate::client::stream_logs(follow, json, &http_url).await
     }
 
     async fn oneshot(&self, args: &[&str]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
