@@ -414,14 +414,14 @@ fn render_top_table(
     let id_width = 14;
     let divider_len = id_width + 1 + 10 + 10 + 10 + 10 + 12;
 
-    writeln!(
+    write!(
         stdout,
-        "Session: {header}                    Uptime: {hours:02}:{minutes:02}:{seconds:02}"
+        "Session: {header}                    Uptime: {hours:02}:{minutes:02}:{seconds:02}\r\n"
     )?;
-    writeln!(stdout, "{}", "─".repeat(divider_len))?;
-    writeln!(
+    write!(stdout, "{}\r\n", "─".repeat(divider_len))?;
+    write!(
         stdout,
-        "{:<width$}{:>10}{:>10}{:>10}{:>10}{:>12}",
+        "{:<width$}{:>10}{:>10}{:>10}{:>10}{:>12}\r\n",
         "Node",
         "Recv/s",
         "Sent/s",
@@ -440,9 +440,9 @@ fn render_top_table(
             },
         );
 
-        writeln!(
+        write!(
             stdout,
-            "{:<width$}{:>10.1}{:>10.1}{:>10.1}{:>10.1}{:>12}",
+            "{:<width$}{:>10.1}{:>10.1}{:>10.1}{:>10.1}{:>12}\r\n",
             truncate_id(node_id, id_width),
             rates.recv_per_sec,
             rates.sent_per_sec,
@@ -453,8 +453,8 @@ fn render_top_table(
         )?;
     }
 
-    writeln!(stdout, "{}", "─".repeat(divider_len))?;
-    writeln!(stdout, "Press q to quit")?;
+    write!(stdout, "{}\r\n", "─".repeat(divider_len))?;
+    write!(stdout, "Press q to quit\r\n")?;
     stdout.flush()?;
 
     Ok(())
