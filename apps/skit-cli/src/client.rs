@@ -202,10 +202,16 @@ struct PluginSummary {
 /// Abstracts all server communication for the CLI.
 ///
 /// Each method corresponds 1:1 to an existing public function. The trait is
-/// object-safe (`&dyn Client`) so subcommands can use it polymorphically.
+/// object-safe (`Send + Sync`) to support future dynamic dispatch and
+/// alternative implementations (e.g. `MockClient` in tests).
 #[async_trait]
 pub trait Client: Send + Sync {
     /// Process a pipeline using a remote server in oneshot mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if pipeline or input files do not exist, the server
+    /// returns a non-success status, or the output file cannot be written.
     async fn process_oneshot(
         &self,
         pipeline_path: &str,
@@ -214,6 +220,11 @@ pub trait Client: Send + Sync {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Create a new dynamic session with a pipeline configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the pipeline file cannot be read, the server returns
+    /// a non-success status, or network communication fails.
     async fn create_session(
         &self,
         pipeline_path: &str,
@@ -221,12 +232,22 @@ pub trait Client: Send + Sync {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Destroy a dynamic session and cleanup its resources.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the WebSocket connection fails or the server returns
+    /// an error response.
     async fn destroy_session(
         &self,
         session_id: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Tune a node's parameters in a dynamic session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the parameter value is not valid YAML, the WebSocket
+    /// connection fails, or the server returns an error response.
     async fn tune_node(
         &self,
         session_id: &str,
@@ -236,18 +257,38 @@ pub trait Client: Send + Sync {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// List all active dynamic sessions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the WebSocket connection fails or the server returns
+    /// an error response.
     async fn list_sessions(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// List available node types via WebSocket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the WebSocket request fails or the server returns
+    /// an error response.
     async fn control_list_nodes(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Fetch a session pipeline via WebSocket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the WebSocket request fails or the server returns
+    /// an error response.
     async fn control_get_pipeline(
         &self,
         session_id: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Add a node to a session via WebSocket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `params` cannot be parsed, the WebSocket request
+    /// fails, or the server returns an error response.
     async fn control_add_node(
         &self,
         session_id: &str,
@@ -257,6 +298,11 @@ pub trait Client: Send + Sync {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Remove a node from a session via WebSocket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the WebSocket request fails or the server returns
+    /// an error response.
     async fn control_remove_node(
         &self,
         session_id: &str,
@@ -264,6 +310,11 @@ pub trait Client: Send + Sync {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Connect two nodes in a session via WebSocket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the WebSocket request fails or the server returns
+    /// an error response.
     async fn control_connect(
         &self,
         session_id: &str,
@@ -274,6 +325,11 @@ pub trait Client: Send + Sync {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Disconnect two nodes in a session via WebSocket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the WebSocket request fails or the server returns
+    /// an error response.
     async fn control_disconnect(
         &self,
         session_id: &str,
@@ -284,6 +340,11 @@ pub trait Client: Send + Sync {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Validate a batch of operations via WebSocket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the ops file cannot be read or parsed, the WebSocket
+    /// request fails, or the server returns an error response.
     async fn control_validate_batch(
         &self,
         session_id: &str,
@@ -291,6 +352,11 @@ pub trait Client: Send + Sync {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Apply a batch of operations via WebSocket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the ops file cannot be read or parsed, the WebSocket
+    /// request fails, or the server returns an error response.
     async fn control_apply_batch(
         &self,
         session_id: &str,
@@ -298,6 +364,11 @@ pub trait Client: Send + Sync {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Fire-and-forget node tuning via WebSocket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the parameter value is not valid YAML or the
+    /// WebSocket request fails.
     async fn control_tune_async(
         &self,
         session_id: &str,
@@ -307,33 +378,73 @@ pub trait Client: Send + Sync {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Fetch UI bootstrap config.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the server returns a
+    /// non-success status.
     async fn get_config(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Fetch permissions for the current request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the server returns a
+    /// non-success status.
     async fn get_permissions(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// List node schemas via HTTP.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the server returns a
+    /// non-success status.
     async fn list_node_schemas(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// List packet schemas via HTTP.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the server returns a
+    /// non-success status.
     async fn list_packet_schemas(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Fetch a session's pipeline via HTTP.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the server returns a
+    /// non-success status.
     async fn get_pipeline(
         &self,
         session_id: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// List loaded plugins.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the server returns a
+    /// non-success status.
     async fn list_plugins(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Upload a plugin file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the plugin file cannot be read, the request fails,
+    /// or the server returns a non-success status.
     async fn upload_plugin(
         &self,
         path: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Unload/delete a plugin.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the server returns a
+    /// non-success status.
     async fn delete_plugin(
         &self,
         kind: &str,
@@ -341,12 +452,27 @@ pub trait Client: Send + Sync {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// List oneshot sample pipelines.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the server returns a
+    /// non-success status.
     async fn list_samples_oneshot(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// List dynamic sample pipelines.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the server returns a
+    /// non-success status.
     async fn list_samples_dynamic(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Fetch a sample pipeline by ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the server returns a
+    /// non-success status.
     async fn get_sample(
         &self,
         id: &str,
@@ -354,6 +480,11 @@ pub trait Client: Send + Sync {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Save a sample pipeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the YAML file cannot be read, the request fails,
+    /// or the server returns a non-success status.
     async fn save_sample(
         &self,
         name: &str,
@@ -364,34 +495,51 @@ pub trait Client: Send + Sync {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Delete a sample pipeline by ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the server returns a
+    /// non-success status.
     async fn delete_sample(&self, id: &str)
         -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// List audio assets.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the server returns a
+    /// non-success status.
     async fn list_audio_assets(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Upload an audio asset.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the audio file cannot be read, the request fails,
+    /// or the server returns a non-success status.
     async fn upload_audio_asset(
         &self,
         path: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Delete an audio asset.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the server returns a
+    /// non-success status.
     async fn delete_audio_asset(
         &self,
         id: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Watch WebSocket events and print them as JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the WebSocket connection fails or event output
+    /// cannot be serialized.
     async fn watch_events(
-        &self,
-        session_filter: Option<&str>,
-        pretty: bool,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
-
-    /// Subscribe to server-sent events. Delegates to the WebSocket event
-    /// stream for now; future PRs will return a typed `Stream`.
-    async fn events(
         &self,
         session_filter: Option<&str>,
         pretty: bool,
@@ -419,7 +567,6 @@ impl NetworkClient {
 
 #[async_trait]
 impl Client for NetworkClient {
-    #[allow(clippy::cognitive_complexity)]
     async fn process_oneshot(
         &self,
         pipeline_path: &str,
@@ -436,7 +583,6 @@ impl Client for NetworkClient {
         .await
     }
 
-    #[allow(clippy::cognitive_complexity)]
     async fn create_session(
         &self,
         pipeline_path: &str,
@@ -501,7 +647,6 @@ impl Client for NetworkClient {
         Ok(())
     }
 
-    #[allow(clippy::cognitive_complexity)]
     async fn destroy_session(
         &self,
         session_id: &str,
@@ -529,7 +674,6 @@ impl Client for NetworkClient {
         Ok(())
     }
 
-    #[allow(clippy::cognitive_complexity)]
     async fn tune_node(
         &self,
         session_id: &str,
@@ -574,7 +718,6 @@ impl Client for NetworkClient {
         Ok(())
     }
 
-    #[allow(clippy::cognitive_complexity)]
     async fn list_sessions(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         info!(
             server = %self.server_url,
@@ -1170,14 +1313,6 @@ impl Client for NetworkClient {
         ws_stream.close(None).await?;
         Ok(())
     }
-
-    async fn events(
-        &self,
-        session_filter: Option<&str>,
-        pretty: bool,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.watch_events(session_filter, pretty).await
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1297,4 +1432,306 @@ pub async fn process_oneshot_with_client(
     );
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// A mock implementation of [`Client`] that records method calls without
+    /// requiring a running server, demonstrating the trait is usable for testing.
+    struct MockClient {
+        calls: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl MockClient {
+        fn new() -> Self {
+            Self { calls: std::sync::Mutex::new(Vec::new()) }
+        }
+
+        fn record(&self, method: &str) {
+            self.calls.lock().unwrap().push(method.to_string());
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl Client for MockClient {
+        async fn process_oneshot(
+            &self,
+            _pipeline_path: &str,
+            _inputs: &[InputFile],
+            _output_path: &str,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("process_oneshot");
+            Ok(())
+        }
+
+        async fn create_session(
+            &self,
+            _pipeline_path: &str,
+            _name: &Option<String>,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("create_session");
+            Ok(())
+        }
+
+        async fn destroy_session(
+            &self,
+            _session_id: &str,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("destroy_session");
+            Ok(())
+        }
+
+        async fn tune_node(
+            &self,
+            _session_id: &str,
+            _node_id: &str,
+            _param: &str,
+            _value: &str,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("tune_node");
+            Ok(())
+        }
+
+        async fn list_sessions(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("list_sessions");
+            Ok(())
+        }
+
+        async fn control_list_nodes(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("control_list_nodes");
+            Ok(())
+        }
+
+        async fn control_get_pipeline(
+            &self,
+            _session_id: &str,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("control_get_pipeline");
+            Ok(())
+        }
+
+        async fn control_add_node(
+            &self,
+            _session_id: &str,
+            _node_id: &str,
+            _kind: &str,
+            _params: Option<&str>,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("control_add_node");
+            Ok(())
+        }
+
+        async fn control_remove_node(
+            &self,
+            _session_id: &str,
+            _node_id: &str,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("control_remove_node");
+            Ok(())
+        }
+
+        async fn control_connect(
+            &self,
+            _session_id: &str,
+            _from_node: &str,
+            _from_pin: &str,
+            _to_node: &str,
+            _to_pin: &str,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("control_connect");
+            Ok(())
+        }
+
+        async fn control_disconnect(
+            &self,
+            _session_id: &str,
+            _from_node: &str,
+            _from_pin: &str,
+            _to_node: &str,
+            _to_pin: &str,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("control_disconnect");
+            Ok(())
+        }
+
+        async fn control_validate_batch(
+            &self,
+            _session_id: &str,
+            _ops_file: &str,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("control_validate_batch");
+            Ok(())
+        }
+
+        async fn control_apply_batch(
+            &self,
+            _session_id: &str,
+            _ops_file: &str,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("control_apply_batch");
+            Ok(())
+        }
+
+        async fn control_tune_async(
+            &self,
+            _session_id: &str,
+            _node_id: &str,
+            _param: &str,
+            _value: &str,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("control_tune_async");
+            Ok(())
+        }
+
+        async fn get_config(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("get_config");
+            Ok(())
+        }
+
+        async fn get_permissions(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("get_permissions");
+            Ok(())
+        }
+
+        async fn list_node_schemas(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("list_node_schemas");
+            Ok(())
+        }
+
+        async fn list_packet_schemas(
+            &self,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("list_packet_schemas");
+            Ok(())
+        }
+
+        async fn get_pipeline(
+            &self,
+            _session_id: &str,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("get_pipeline");
+            Ok(())
+        }
+
+        async fn list_plugins(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("list_plugins");
+            Ok(())
+        }
+
+        async fn upload_plugin(
+            &self,
+            _path: &str,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("upload_plugin");
+            Ok(())
+        }
+
+        async fn delete_plugin(
+            &self,
+            _kind: &str,
+            _keep_file: bool,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("delete_plugin");
+            Ok(())
+        }
+
+        async fn list_samples_oneshot(
+            &self,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("list_samples_oneshot");
+            Ok(())
+        }
+
+        async fn list_samples_dynamic(
+            &self,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("list_samples_dynamic");
+            Ok(())
+        }
+
+        async fn get_sample(
+            &self,
+            _id: &str,
+            _yaml_only: bool,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("get_sample");
+            Ok(())
+        }
+
+        async fn save_sample(
+            &self,
+            _name: &str,
+            _description: &str,
+            _yaml_path: &str,
+            _overwrite: bool,
+            _fragment: bool,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("save_sample");
+            Ok(())
+        }
+
+        async fn delete_sample(
+            &self,
+            _id: &str,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("delete_sample");
+            Ok(())
+        }
+
+        async fn list_audio_assets(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("list_audio_assets");
+            Ok(())
+        }
+
+        async fn upload_audio_asset(
+            &self,
+            _path: &str,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("upload_audio_asset");
+            Ok(())
+        }
+
+        async fn delete_audio_asset(
+            &self,
+            _id: &str,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("delete_audio_asset");
+            Ok(())
+        }
+
+        async fn watch_events(
+            &self,
+            _session_filter: Option<&str>,
+            _pretty: bool,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("watch_events");
+            Ok(())
+        }
+    }
+
+    /// Verify that `MockClient` implements `Client` and can be used via
+    /// dynamic dispatch (`&dyn Client`), proving the trait is object-safe
+    /// and testable without a server.
+    #[tokio::test]
+    async fn mock_client_records_calls() {
+        let mock = MockClient::new();
+        let client: &dyn Client = &mock;
+
+        client.list_sessions().await.unwrap();
+        client.get_config().await.unwrap();
+        client.destroy_session("test-session").await.unwrap();
+
+        assert_eq!(mock.calls(), vec!["list_sessions", "get_config", "destroy_session"]);
+    }
 }

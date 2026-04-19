@@ -219,6 +219,7 @@ impl Completer for SkitCompleter {
 
 pub struct Shell {
     ws_url: String,
+    client: NetworkClient,
     editor: Editor<SkitHelper, DefaultHistory>,
     current_sessions: Vec<SessionInfo>,
 }
@@ -277,7 +278,11 @@ impl Shell {
             debug!("No previous history found");
         }
 
-        Ok(Self { ws_url: ws_url.to_string(), editor, current_sessions: Vec::new() })
+        let mut base_url = ws_url.clone();
+        base_url.set_path("");
+        let client = NetworkClient::new(base_url.as_str());
+
+        Ok(Self { ws_url: ws_url.to_string(), client, editor, current_sessions: Vec::new() })
     }
 
     /// Runs the interactive shell loop
@@ -522,15 +527,7 @@ impl Shell {
             }
         }
 
-        // Convert WebSocket URL to HTTP URL for the create_session function
-        let http_url = self
-            .ws_url
-            .replace("ws://", "http://")
-            .replace("wss://", "https://")
-            .replace("/api/v1/control", "");
-
-        let client = NetworkClient::new(&http_url);
-        client.create_session(pipeline_path, &name).await?;
+        self.client.create_session(pipeline_path, &name).await?;
 
         // Refresh sessions after creation
         self.refresh_sessions().await?;
@@ -549,8 +546,7 @@ impl Shell {
 
         let session_id = args[0];
 
-        let client = NetworkClient::new(&self.ws_url.replace("/api/v1/control", ""));
-        client.destroy_session(session_id).await?;
+        self.client.destroy_session(session_id).await?;
 
         println!("✅ Session '{session_id}' destroyed successfully");
 
@@ -574,8 +570,7 @@ impl Shell {
         let param = args[2];
         let value = args[3];
 
-        let client = NetworkClient::new(&self.ws_url.replace("/api/v1/control", ""));
-        client.tune_node(session_id, node_id, param, value).await?;
+        self.client.tune_node(session_id, node_id, param, value).await?;
 
         Ok(())
     }
@@ -590,8 +585,7 @@ impl Shell {
             return Ok(());
         }
 
-        let client = NetworkClient::new(&self.ws_url);
-        client.watch_events(session_filter, false).await
+        self.client.watch_events(session_filter, false).await
     }
 
     async fn oneshot(&self, args: &[&str]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -606,22 +600,12 @@ impl Shell {
 
         println!("🚀 Processing oneshot pipeline: {input_path} → {pipeline_path} → {output_path}");
 
-        // Convert WebSocket URL back to HTTP URL for the oneshot HTTP API
-        // ws://host:port/api/v1/control -> http://host:port
-        // wss://host:port/api/v1/control -> https://host:port
-        let http_url = self
-            .ws_url
-            .replace("ws://", "http://")
-            .replace("wss://", "https://")
-            .replace("/api/v1/control", "");
-
         let inputs = vec![InputFile {
             field: "media".to_string(),
             path: input_path.to_string(),
             content_type: None,
         }];
-        let client = NetworkClient::new(&http_url);
-        client.process_oneshot(pipeline_path, &inputs, output_path).await?;
+        self.client.process_oneshot(pipeline_path, &inputs, output_path).await?;
 
         println!("✅ Oneshot processing completed successfully");
 
