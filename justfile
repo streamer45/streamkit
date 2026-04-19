@@ -354,6 +354,7 @@ lint-plugins:
     @cd plugins/native/supertonic && cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
     @cd plugins/native/slint && cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
     @cd plugins/native/aac-encoder && cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
+    @cd plugins/native/servo && cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
     @echo "✓ All native plugins passed linting"
 
 # Auto-fix formatting and linting issues in native plugins
@@ -370,6 +371,7 @@ fix-plugins:
     @cd plugins/native/supertonic && cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @cd plugins/native/slint && cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @cd plugins/native/aac-encoder && cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/servo && cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @echo "✓ All native plugins fixed"
 
 # --- Profiling ---
@@ -985,6 +987,31 @@ upload-slint-plugin: build-plugin-native-slint
     @curl -X POST -F "plugin=@{{plugins_target_dir}}/release/libslint.so" \
         http://127.0.0.1:4545/api/v1/plugins
 
+# Build native Servo web renderer plugin
+# Servo's mozangle crate compiles C++ via clang which may not find libstdc++
+# headers automatically.  We auto-detect the GCC include path so the build
+# works without manual env setup.
+[working-directory: 'plugins/native/servo']
+build-plugin-native-servo:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Building native Servo web renderer plugin..."
+    # Auto-detect GCC C++ include paths for clang/bindgen.
+    if [ -z "${BINDGEN_EXTRA_CLANG_ARGS:-}" ]; then
+        gcc_ver=$(ls /usr/include/c++/ 2>/dev/null | sort -V | tail -1 || true)
+        if [ -n "$gcc_ver" ]; then
+            export BINDGEN_EXTRA_CLANG_ARGS="-I/usr/include/c++/${gcc_ver} -I/usr/include/x86_64-linux-gnu/c++/${gcc_ver}"
+        fi
+    fi
+    CARGO_TARGET_DIR={{plugins_target_dir}} cargo build --release
+
+# Upload Servo plugin to running server
+[working-directory: 'plugins/native/servo']
+upload-servo-plugin: build-plugin-native-servo
+    @echo "Uploading Servo plugin to server..."
+    @curl -X POST -F "plugin=@{{plugins_target_dir}}/release/libservo_web.so" \
+        http://127.0.0.1:4545/api/v1/plugins
+
 # Build AAC encoder native plugin (requires libfdk-aac-dev)
 [working-directory: 'plugins/native/aac-encoder']
 build-plugin-native-aac-encoder:
@@ -1007,20 +1034,26 @@ install-plugin name: (build-plugin-native name)
     BUNDLE_DIR=".plugins/native/{{name}}"
     mkdir -p "$BUNDLE_DIR"
 
-    # Rust library names use underscores for hyphens.
-    LIB_STEM="lib$(echo '{{name}}' | tr '-' '_')"
+    # Derive library filename from plugin.yml entrypoint if available,
+    # otherwise fall back to the convention (hyphens → underscores).
+    PLUGIN_YML="plugins/native/{{name}}/plugin.yml"
+    if [[ -f "$PLUGIN_YML" ]]; then
+        ENTRYPOINT=$(grep '^entrypoint:' "$PLUGIN_YML" | awk '{print $2}')
+    fi
+    if [[ -z "${ENTRYPOINT:-}" ]]; then
+        LIB_STEM="lib$(echo '{{name}}' | tr '-' '_')"
+        ENTRYPOINT=""
+        for ext in so dylib dll; do
+            if [[ -f "$PLUGINS_TARGET/release/${LIB_STEM}.${ext}" ]]; then
+                ENTRYPOINT="${LIB_STEM}.${ext}"
+                break
+            fi
+        done
+    fi
 
-    SO_FILE=""
-    for ext in so dylib dll; do
-        candidate="$PLUGINS_TARGET/release/${LIB_STEM}.${ext}"
-        if [[ -f "$candidate" ]]; then
-            SO_FILE="$candidate"
-            break
-        fi
-    done
-
-    if [[ -z "$SO_FILE" ]]; then
-        echo "❌ Built library not found (expected ${LIB_STEM}.{so,dylib,dll} in $PLUGINS_TARGET/release/)"
+    SO_FILE="$PLUGINS_TARGET/release/${ENTRYPOINT}"
+    if [[ -z "$ENTRYPOINT" ]] || [[ ! -f "$SO_FILE" ]]; then
+        echo "❌ Built library not found (expected ${ENTRYPOINT:-lib{{name}}.{so,dylib,dll}} in $PLUGINS_TARGET/release/)"
         exit 1
     fi
 
@@ -1035,7 +1068,7 @@ install-plugin name: (build-plugin-native name)
     fi
 
 # Build all native plugin examples
-build-plugins-native: build-plugin-native-gain build-plugin-native-whisper build-plugin-native-kokoro build-plugin-native-piper build-plugin-native-matcha build-plugin-native-pocket-tts build-plugin-native-sensevoice build-plugin-native-nllb build-plugin-native-vad build-plugin-native-helsinki build-plugin-native-supertonic build-plugin-native-slint build-plugin-native-aac-encoder build-plugin-native-parakeet
+build-plugins-native: build-plugin-native-gain build-plugin-native-whisper build-plugin-native-kokoro build-plugin-native-piper build-plugin-native-matcha build-plugin-native-pocket-tts build-plugin-native-sensevoice build-plugin-native-nllb build-plugin-native-vad build-plugin-native-helsinki build-plugin-native-supertonic build-plugin-native-slint build-plugin-native-aac-encoder build-plugin-native-parakeet build-plugin-native-servo
 
 ## Combined
 
@@ -1105,6 +1138,7 @@ copy-plugins-native:
     # Plugins whose lib stem differs from the plugin id.
     copy_plugin "pocket-tts"   "pocket_tts"   "$PLUGINS_TARGET"
     copy_plugin "aac-encoder"  "aac_encoder"  "$PLUGINS_TARGET"
+    copy_plugin "servo"        "servo_web"    "$PLUGINS_TARGET"
 
     echo "✓ Native plugins copied to .plugins/native/"
 

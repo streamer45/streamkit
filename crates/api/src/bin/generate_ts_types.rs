@@ -82,6 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         format!("export {}", streamkit_api::yaml::FieldHint::decl(&cfg)),
         format!("export {}", streamkit_api::yaml::FieldType::decl(&cfg)),
         format!("export {}", streamkit_api::yaml::ControlType::decl(&cfg)),
+        format!("export {}", streamkit_api::yaml::SelectOption::decl(&cfg)),
         format!("export {}", streamkit_api::yaml::ControlConfig::decl(&cfg)),
     ];
 

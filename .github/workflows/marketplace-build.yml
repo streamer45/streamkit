@@ -42,7 +42,12 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libclang-dev libfontconfig1-dev wget libopenblas-dev zstd patchelf python3-yaml python3-tomli libfdk-aac-dev
+          sudo apt-get install -y cmake pkg-config libclang-dev libfontconfig1-dev wget libopenblas-dev zstd patchelf python3-yaml python3-tomli libfdk-aac-dev \
+            build-essential g++ libharfbuzz-dev libfreetype6-dev \
+            libegl1-mesa-dev libgl1-mesa-dev libgbm-dev libdrm-dev libunwind-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+            libdbus-1-dev libpulse-dev libxkbcommon-dev nasm
 
       - name: Install minisign
         run: |
@@ -79,6 +84,22 @@ jobs:
           make -j$(nproc)
           sudo make install
           sudo ldconfig
+
+      # Servo's mozangle requires clang >= 15; ubuntu-22.04 ships clang-14.
+      - name: Install LLVM 18 for Servo bindgen
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/llvm.asc > /dev/null
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main" | sudo tee /etc/apt/sources.list.d/llvm-18.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang-18 libclang-18-dev
+          echo "CC=clang-18" >> "$GITHUB_ENV"
+          echo "CXX=clang++-18" >> "$GITHUB_ENV"
+          echo "CLANG_PATH=/usr/bin/clang-18" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=/usr/lib/llvm-18/lib/" >> "$GITHUB_ENV"
+          gcc_ver=$(ls /usr/include/c++/ 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$gcc_ver" ]; then
+            echo "BINDGEN_EXTRA_CLANG_ARGS=-I/usr/include/c++/${gcc_ver} -I/usr/include/x86_64-linux-gnu/c++/${gcc_ver}" >> "$GITHUB_ENV"
+          fi
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
