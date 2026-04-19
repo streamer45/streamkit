@@ -418,6 +418,9 @@ fn handle_render(
     node_id: &NodeId,
 ) {
     let (Some(state), Some(servo)) = (instances.get_mut(node_id), servo) else {
+        // Instance or Servo not found — send a fallback frame so the
+        // caller's blocking recv() in tick() does not deadlock.
+        send_fallback_frame(instances, node_id);
         return;
     };
 
