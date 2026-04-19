@@ -1714,6 +1714,7 @@ mod tests {
             _session_id: &str,
             _operations: Vec<BatchOperation>,
         ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record("control_apply_batch_ops");
             Ok(())
         }
 
