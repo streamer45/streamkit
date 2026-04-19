@@ -901,6 +901,27 @@ fn find_input_pin<'a>(
     })
 }
 
+/// Reject synthetic nodes when the requested mode is `Dynamic`.
+fn check_mode(
+    pipeline: &Pipeline,
+    mode: Option<PipelineMode>,
+    errors: &mut Vec<ValidateDiagnostic>,
+) {
+    if mode != Some(PipelineMode::Dynamic) {
+        return;
+    }
+    for (node_id, node) in &pipeline.nodes {
+        if is_synthetic_kind(&node.kind) {
+            errors.push(ValidateDiagnostic {
+                kind: DiagnosticKind::Schema,
+                message: format!("Node kind '{}' is only valid in oneshot pipelines", node.kind),
+                node_id: Some(node_id.clone()),
+                connection_id: None,
+            });
+        }
+    }
+}
+
 /// Check type compatibility between a source output pin and destination input pin.
 fn validate_pin_types(
     src: &streamkit_core::OutputPin,
@@ -1008,21 +1029,7 @@ async fn validate_pipeline_handler(
     drop(registry_guard);
 
     // 5. Mode-specific checks: reject synthetic nodes in dynamic mode
-    if payload.mode == Some(PipelineMode::Dynamic) {
-        for (node_id, node) in &pipeline.nodes {
-            if is_synthetic_kind(&node.kind) {
-                errors.push(ValidateDiagnostic {
-                    kind: DiagnosticKind::Schema,
-                    message: format!(
-                        "Node kind '{}' is only valid in oneshot pipelines",
-                        node.kind
-                    ),
-                    node_id: Some(node_id.clone()),
-                    connection_id: None,
-                });
-            }
-        }
-    }
+    check_mode(&pipeline, payload.mode, &mut errors);
 
     // 6. Validate connections
     validate_connections(&pipeline, &node_defs, &mut errors);
@@ -1451,26 +1458,9 @@ nodes:
     needs: input
 ";
         let pipeline = minimal_pipeline(yaml).expect("parse should succeed");
-
         let mut errors: Vec<ValidateDiagnostic> = Vec::new();
 
-        // Simulate the dynamic-mode branch from the handler.
-        let mode = Some(PipelineMode::Dynamic);
-        if mode == Some(PipelineMode::Dynamic) {
-            for (node_id, node) in &pipeline.nodes {
-                if is_synthetic_kind(&node.kind) {
-                    errors.push(ValidateDiagnostic {
-                        kind: DiagnosticKind::Schema,
-                        message: format!(
-                            "Node kind '{}' is only valid in oneshot pipelines",
-                            node.kind
-                        ),
-                        node_id: Some(node_id.clone()),
-                        connection_id: None,
-                    });
-                }
-            }
-        }
+        check_mode(&pipeline, Some(PipelineMode::Dynamic), &mut errors);
 
         assert_eq!(errors.len(), 2, "expected 2 synthetic rejections, got: {errors:?}");
         assert!(errors.iter().all(|e| e.message.contains("only valid in oneshot")));
@@ -1487,27 +1477,29 @@ nodes:
     needs: input
 ";
         let pipeline = minimal_pipeline(yaml).expect("parse should succeed");
-
         let mut errors: Vec<ValidateDiagnostic> = Vec::new();
 
-        let mode = Some(PipelineMode::Oneshot);
-        if mode == Some(PipelineMode::Dynamic) {
-            for (node_id, node) in &pipeline.nodes {
-                if is_synthetic_kind(&node.kind) {
-                    errors.push(ValidateDiagnostic {
-                        kind: DiagnosticKind::Schema,
-                        message: format!(
-                            "Node kind '{}' is only valid in oneshot pipelines",
-                            node.kind
-                        ),
-                        node_id: Some(node_id.clone()),
-                        connection_id: None,
-                    });
-                }
-            }
-        }
+        check_mode(&pipeline, Some(PipelineMode::Oneshot), &mut errors);
 
         assert!(errors.is_empty(), "oneshot mode should accept synthetics, got: {errors:?}");
+    }
+
+    #[test]
+    fn no_mode_accepts_synthetic_nodes() {
+        let yaml = "\
+nodes:
+  input:
+    kind: streamkit::http_input
+  output:
+    kind: streamkit::http_output
+    needs: input
+";
+        let pipeline = minimal_pipeline(yaml).expect("parse should succeed");
+        let mut errors: Vec<ValidateDiagnostic> = Vec::new();
+
+        check_mode(&pipeline, None, &mut errors);
+
+        assert!(errors.is_empty(), "no mode should accept synthetics, got: {errors:?}");
     }
 }
 
