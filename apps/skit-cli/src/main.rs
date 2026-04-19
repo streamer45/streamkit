@@ -554,6 +554,8 @@ fn now_hms() -> String {
 }
 
 /// Compute a rate as packets per second, clamped to u64.
+// Casts are acceptable: packet counts won't exceed f64 integer precision limits,
+// and dividing non-negative values cannot produce a negative result.
 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 fn rate_per_sec(count: u64, duration_secs: f64) -> u64 {
     if duration_secs > 0.0 {
