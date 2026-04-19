@@ -452,6 +452,39 @@ pub async fn create_moq_token_handler(
     Json(CreateTokenResponse { token, jti: meta.jti, exp: meta.exp, url_template }).into_response()
 }
 
+/// POST /api/v1/auth/reload-keys
+///
+/// Reload signing/verification keys from disk (admin only).
+///
+/// Call this after an out-of-band key rotation (e.g. `skit auth rotate-key`)
+/// so the running server picks up the new keys without a restart.
+pub async fn reload_keys_handler(
+    State(app_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !app_state.auth.is_enabled() {
+        return (StatusCode::BAD_REQUEST, "Authentication is disabled".to_string()).into_response();
+    }
+
+    let auth_ctx = match get_auth_context(&headers, &app_state).await {
+        Ok(ctx) => ctx,
+        Err(e) => return e.into_response(),
+    };
+
+    if let Err(e) = require_admin(&auth_ctx) {
+        return e.into_response();
+    }
+
+    match app_state.auth.reload_keys().await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to reload auth keys");
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to reload keys: {e}"))
+                .into_response()
+        },
+    }
+}
+
 /// Build the auth router with all authentication endpoints.
 pub fn auth_router() -> axum::Router<Arc<AppState>> {
     use axum::routing::{delete, get, post};
@@ -472,6 +505,10 @@ pub fn auth_router() -> axum::Router<Arc<AppState>> {
         .route(
             "/tokens/{jti}",
             delete(revoke_token_handler).layer(ConcurrencyLimitLayer::new(AUTH_MAX_CONCURRENCY)),
+        )
+        .route(
+            "/reload-keys",
+            post(reload_keys_handler).layer(ConcurrencyLimitLayer::new(AUTH_MAX_CONCURRENCY)),
         );
 
     #[cfg(feature = "moq")]

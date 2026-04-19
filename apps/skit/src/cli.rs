@@ -394,14 +394,25 @@ fn handle_auth_print_admin_token_raw(config_path: &str) {
 /// Handle the "auth rotate-key" command
 // Allow println/eprintln for CLI output (intentional)
 #[allow(clippy::disallowed_macros)]
-async fn handle_auth_rotate_key(config_path: &str) {
-    let config_result = match config::load(config_path) {
+async fn handle_auth_rotate_key(cli: &Cli) {
+    let config_result = match config::load(&cli.config) {
         Ok(result) => result,
         Err(e) => {
             eprintln!("Failed to load configuration: {e}");
             std::process::exit(1);
         },
     };
+
+    // Resolve the pre-rotation token and server URL so we can notify the
+    // running server after the on-disk key files have been updated.  The
+    // old token is still valid against the server's in-memory JWKS, which
+    // is exactly what we need to authenticate the reload-keys call.
+    let pre_rotate_token = resolve_cli_token(cli, &config_result.config).ok();
+    let server_url = cli
+        .server_url
+        .as_deref()
+        .map(|u| u.trim().trim_end_matches('/').to_string())
+        .or_else(|| default_server_url(&config_result.config).ok());
 
     // Initialize auth state (this will load existing keys)
     let auth_state = match crate::auth::AuthState::new(&config_result.config.auth, true).await {
@@ -421,7 +432,9 @@ async fn handle_auth_rotate_key(config_path: &str) {
             println!("New key ID: {}", key_material.kid);
             println!();
 
-            // Mint a new admin token with the new key
+            // Mint a new admin token with the new key.  This persists
+            // the JTI to tokens.json via the metadata store but does NOT
+            // overwrite admin.token yet.
             match auth_state
                 .mint_api_token(
                     "admin",
@@ -432,7 +445,15 @@ async fn handle_auth_rotate_key(config_path: &str) {
                 .await
             {
                 Ok((token, _meta)) => {
-                    // Write the new admin token
+                    // Notify the running server to reload *after* minting
+                    // (so the server picks up the new JTI from tokens.json)
+                    // but *before* overwriting admin.token (so the old token
+                    // remains on disk if the notify call fails — avoiding an
+                    // admin lockout).
+                    notify_server_reload_keys(server_url.as_deref(), pre_rotate_token.as_deref())
+                        .await;
+
+                    // Now safe to overwrite admin.token.
                     let state_dir = std::path::Path::new(&config_result.config.auth.state_dir);
                     let token_path = state_dir.join("admin.token");
 
@@ -457,6 +478,74 @@ async fn handle_auth_rotate_key(config_path: &str) {
         Err(e) => {
             eprintln!("Failed to rotate key: {e}");
             std::process::exit(1);
+        },
+    }
+}
+
+/// Best-effort POST to the running server's reload-keys endpoint.
+///
+/// Uses the pre-rotation admin token (which the server still recognises)
+/// to tell it to re-read the on-disk JWKS.  Failures are printed as
+/// warnings — the rotation itself has already succeeded on disk.
+// Allow eprintln/println for CLI output (intentional)
+#[allow(clippy::disallowed_macros)]
+async fn notify_server_reload_keys(server_url: Option<&str>, token: Option<&str>) {
+    let (Some(server_url), Some(token)) = (server_url, token) else {
+        eprintln!();
+        eprintln!(
+            "Warning: Could not notify the running server (no server URL or token available)."
+        );
+        eprintln!("If the server is running, restart it or call POST /api/v1/auth/reload-keys.");
+        return;
+    };
+
+    let url = format!("{server_url}/api/v1/auth/reload-keys");
+
+    let Ok(auth_value) = HeaderValue::from_str(&format!("Bearer {token}")) else {
+        eprintln!("Warning: pre-rotation token contains invalid header characters; skipping server notification.");
+        return;
+    };
+
+    let mut headers = HeaderMap::new();
+    headers.insert(AUTHORIZATION, auth_value);
+
+    let client = match reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .read_timeout(std::time::Duration::from_secs(5))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Warning: Could not build HTTP client ({e}); skipping server notification.");
+            return;
+        },
+    };
+
+    match client.post(&url).headers(headers).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            println!();
+            println!("Running server notified — keys reloaded.");
+        },
+        Ok(resp) => {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            // Truncate to avoid leaking sensitive data a proxy might echo.
+            // Use chars() to stay on a char boundary (truncate panics mid-codepoint).
+            let text: String = text.chars().take(256).collect();
+            eprintln!();
+            eprintln!("Warning: Server returned {status} for reload-keys: {text}");
+            eprintln!("You may need to restart the server for the new key to take effect.");
+        },
+        Err(e) if e.is_connect() || e.is_timeout() => {
+            eprintln!();
+            eprintln!("Server not reachable ({e}); keys will be loaded on next startup.");
+        },
+        Err(e) => {
+            eprintln!();
+            eprintln!("Warning: Failed to notify server: {e}");
+            eprintln!(
+                "If the server is running, restart it or call POST /api/v1/auth/reload-keys."
+            );
         },
     }
 }
@@ -652,7 +741,7 @@ pub async fn handle_command(cli: &Cli, init_logging: LogInitFn) {
             handle_auth_mint_token(cli, cmd).await;
         },
         Commands::Auth(AuthCommands::RotateKey) => {
-            handle_auth_rotate_key(&cli.config).await;
+            handle_auth_rotate_key(cli).await;
         },
     }
 }

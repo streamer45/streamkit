@@ -739,19 +739,12 @@ impl DynamicEngine {
         to_node: &str,
         to_pin: &str,
     ) -> Result<(), String> {
-        fn is_dynamic_pin_match(prefix: &str, pin: &str) -> bool {
-            if pin == prefix {
-                return true;
-            }
-            pin.strip_prefix(prefix).is_some_and(|rest| rest.starts_with('_'))
-        }
-
         fn match_dynamic_pin<'a>(
             pins: &'a [streamkit_core::InputPin],
             pin: &str,
         ) -> Option<&'a streamkit_core::InputPin> {
             pins.iter().find(|p| {
-                matches!(&p.cardinality, PinCardinality::Dynamic { prefix } if is_dynamic_pin_match(prefix, pin))
+                matches!(&p.cardinality, PinCardinality::Dynamic { prefix } if PinCardinality::is_dynamic_pin_match(prefix, pin))
             })
         }
 
@@ -760,7 +753,7 @@ impl DynamicEngine {
             pin: &str,
         ) -> Option<&'a streamkit_core::OutputPin> {
             pins.iter().find(|p| {
-                matches!(&p.cardinality, PinCardinality::Dynamic { prefix } if is_dynamic_pin_match(prefix, pin))
+                matches!(&p.cardinality, PinCardinality::Dynamic { prefix } if PinCardinality::is_dynamic_pin_match(prefix, pin))
             })
         }
 

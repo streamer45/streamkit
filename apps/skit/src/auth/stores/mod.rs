@@ -99,6 +99,14 @@ pub trait KeyProvider: Send + Sync {
     ///
     /// Returns the new active key material.
     async fn rotate(&self) -> Result<SigningKeyMaterial, AuthStoreError>;
+
+    /// Reload keys from the backing store.
+    ///
+    /// Re-reads the active private key and the full JWKS from persistent
+    /// storage, replacing the in-memory cache.  This is used to pick up
+    /// key rotations performed by an external process (e.g. the CLI
+    /// `rotate-key` command) without restarting the server.
+    async fn reload(&self) -> Result<(), AuthStoreError>;
 }
 
 /// Revocation store for invalidated tokens.
@@ -119,8 +127,8 @@ pub trait RevocationStore: Send + Sync {
     /// to automatically clean up expired revocations.
     async fn revoke(&self, token_hash: &str, exp: u64) -> Result<(), AuthStoreError>;
 
-    /// Load revocations from persistent storage.
-    async fn load(&self) -> Result<(), AuthStoreError>;
+    /// Reload revocations from persistent storage.
+    async fn reload(&self) -> Result<(), AuthStoreError>;
 }
 
 /// Token type distinguishes API tokens from MoQ tokens.
@@ -188,4 +196,9 @@ pub trait TokenMetadataStore: Send + Sync {
 
     /// Get metadata for a specific token.
     async fn get(&self, jti: &str) -> Result<Option<TokenMetadata>, AuthStoreError>;
+
+    /// Reload token metadata from persistent storage, replacing the in-memory
+    /// cache.  Call this after external mutations (e.g. CLI `rotate-key` minting
+    /// a new admin token) so the running server recognises the new JTIs.
+    async fn reload(&self) -> Result<(), AuthStoreError>;
 }

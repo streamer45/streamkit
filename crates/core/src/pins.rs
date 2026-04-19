@@ -45,6 +45,20 @@ pub enum PinCardinality {
     Dynamic { prefix: String },
 }
 
+impl PinCardinality {
+    /// Returns `true` when `pin` belongs to a `Dynamic { prefix }` pin family.
+    ///
+    /// A match occurs when the pin name equals the prefix exactly, or when it
+    /// equals the prefix followed by `_` and a suffix (e.g. prefix `"in"` matches
+    /// `"in"`, `"in_0"`, `"in_foo"` but not `"inside"` or `"internal"`).
+    pub fn is_dynamic_pin_match(prefix: &str, pin: &str) -> bool {
+        if pin == prefix {
+            return true;
+        }
+        pin.strip_prefix(prefix).is_some_and(|rest| rest.starts_with('_'))
+    }
+}
+
 /// Describes an input pin and the packet types it can accept.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
