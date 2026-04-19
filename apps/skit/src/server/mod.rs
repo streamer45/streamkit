@@ -517,7 +517,7 @@ async fn list_node_definitions_handler(
 // POST /api/v1/validate — stateless pipeline dry-run
 // ---------------------------------------------------------------------------
 
-/// A single node in the validated graph returned on success.
+/// A single node in the validated graph.
 #[derive(Serialize)]
 struct ValidateGraphNode {
     id: String,
@@ -526,7 +526,7 @@ struct ValidateGraphNode {
     params: Option<serde_json::Value>,
 }
 
-/// A single connection in the validated graph returned on success.
+/// A single connection in the validated graph.
 #[derive(Serialize)]
 struct ValidateGraphConnection {
     from_node: String,
@@ -535,17 +535,28 @@ struct ValidateGraphConnection {
     to_pin: String,
 }
 
-/// The parsed graph structure returned when validation succeeds.
+/// The parsed graph structure — always returned so the UI can highlight nodes.
 #[derive(Serialize)]
 struct ValidateGraph {
     nodes: Vec<ValidateGraphNode>,
     connections: Vec<ValidateGraphConnection>,
 }
 
+/// Diagnostic category.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DiagnosticKind {
+    Parse,
+    Schema,
+    Connection,
+    Permission,
+    Security,
+}
+
 /// A single validation diagnostic.
 #[derive(Debug, Serialize)]
 struct ValidateDiagnostic {
-    error_type: String,
+    kind: DiagnosticKind,
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     node_id: Option<String>,
@@ -559,7 +570,6 @@ struct ValidateResponse {
     valid: bool,
     errors: Vec<ValidateDiagnostic>,
     warnings: Vec<ValidateDiagnostic>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     graph: Option<ValidateGraph>,
 }
 
@@ -567,6 +577,14 @@ struct ValidateResponse {
 #[derive(Deserialize)]
 struct ValidateRequest {
     yaml: String,
+}
+
+/// Returns `true` for node kinds that are synthetic oneshot-only markers
+/// (`streamkit::http_input`, `streamkit::http_output`).  These nodes are
+/// defined outside the `NodeRegistry` and should bypass per-node permission
+/// filtering since the oneshot handler itself never checks them.
+fn is_synthetic_kind(kind: &str) -> bool {
+    kind == "streamkit::http_input" || kind == "streamkit::http_output"
 }
 
 /// Build synthetic `NodeDefinition`s for oneshot-only virtual nodes that are not
@@ -672,7 +690,7 @@ fn validate_nodes(
 
         let Some(def) = def else {
             errors.push(ValidateDiagnostic {
-                error_type: "error".into(),
+                kind: DiagnosticKind::Schema,
                 message: format!("Unknown node kind '{}'", node.kind),
                 node_id: Some(node_id.clone()),
                 connection_id: None,
@@ -680,24 +698,31 @@ fn validate_nodes(
             continue;
         };
 
+        // Synthetic oneshot nodes bypass per-node permission checks,
+        // matching the oneshot handler which never filters them.
         if let Some(perms) = perms {
-            if !perms.is_node_allowed(&node.kind) {
-                errors.push(ValidateDiagnostic {
-                    error_type: "error".into(),
-                    message: format!("Permission denied: node kind '{}' not allowed", node.kind),
-                    node_id: Some(node_id.clone()),
-                    connection_id: None,
-                });
-                continue;
-            }
-            if node.kind.starts_with("plugin::") && !perms.is_plugin_allowed(&node.kind) {
-                errors.push(ValidateDiagnostic {
-                    error_type: "error".into(),
-                    message: format!("Permission denied: plugin '{}' not allowed", node.kind),
-                    node_id: Some(node_id.clone()),
-                    connection_id: None,
-                });
-                continue;
+            if !is_synthetic_kind(&node.kind) {
+                if !perms.is_node_allowed(&node.kind) {
+                    errors.push(ValidateDiagnostic {
+                        kind: DiagnosticKind::Permission,
+                        message: format!(
+                            "Permission denied: node kind '{}' not allowed",
+                            node.kind
+                        ),
+                        node_id: Some(node_id.clone()),
+                        connection_id: None,
+                    });
+                    continue;
+                }
+                if node.kind.starts_with("plugin::") && !perms.is_plugin_allowed(&node.kind) {
+                    errors.push(ValidateDiagnostic {
+                        kind: DiagnosticKind::Permission,
+                        message: format!("Permission denied: plugin '{}' not allowed", node.kind),
+                        node_id: Some(node_id.clone()),
+                        connection_id: None,
+                    });
+                    continue;
+                }
             }
         }
 
@@ -720,7 +745,7 @@ fn validate_nodes(
         for key in params_obj.keys() {
             if !schema_props.contains_key(key) {
                 warnings.push(ValidateDiagnostic {
-                    error_type: "warning".into(),
+                    kind: DiagnosticKind::Schema,
                     message: format!("Unknown parameter '{key}' for node kind '{}'", def.kind),
                     node_id: Some(node_id.clone()),
                     connection_id: None,
@@ -741,13 +766,13 @@ fn validate_connections(
 ) {
     let packet_type_registry = streamkit_core::packet_meta::packet_type_registry();
 
-    for (idx, conn) in pipeline.connections.iter().enumerate() {
-        let conn_id = format!("connection[{idx}]");
+    for conn in &pipeline.connections {
+        let conn_id = format!("{}->{}", conn.from_node, conn.to_node);
 
         // Check that referenced nodes exist in the pipeline definition.
         if !pipeline.nodes.contains_key(&conn.from_node) {
             errors.push(ValidateDiagnostic {
-                error_type: "error".into(),
+                kind: DiagnosticKind::Connection,
                 message: format!("Source node '{}' does not exist", conn.from_node),
                 node_id: None,
                 connection_id: Some(conn_id.clone()),
@@ -755,7 +780,7 @@ fn validate_connections(
         }
         if !pipeline.nodes.contains_key(&conn.to_node) {
             errors.push(ValidateDiagnostic {
-                error_type: "error".into(),
+                kind: DiagnosticKind::Connection,
                 message: format!("Destination node '{}' does not exist", conn.to_node),
                 node_id: None,
                 connection_id: Some(conn_id.clone()),
@@ -770,7 +795,7 @@ fn validate_connections(
 
         if src_pin.is_none() {
             errors.push(ValidateDiagnostic {
-                error_type: "error".into(),
+                kind: DiagnosticKind::Connection,
                 message: format!(
                     "Output pin '{}' not found on node '{}' (kind '{}')",
                     conn.from_pin, conn.from_node, src_def.kind
@@ -781,7 +806,7 @@ fn validate_connections(
         }
         if dst_pin.is_none() {
             errors.push(ValidateDiagnostic {
-                error_type: "error".into(),
+                kind: DiagnosticKind::Connection,
                 message: format!(
                     "Input pin '{}' not found on node '{}' (kind '{}')",
                     conn.to_pin, conn.to_node, dst_def.kind
@@ -800,6 +825,9 @@ fn validate_connections(
 }
 
 /// Find an output pin by exact name or dynamic-prefix match.
+///
+/// Uses `PinCardinality::is_dynamic_pin_match` from `streamkit_core` — the
+/// same matching logic the dynamic engine applies at runtime.
 fn find_output_pin<'a>(
     pins: &'a [streamkit_core::OutputPin],
     name: &str,
@@ -808,12 +836,16 @@ fn find_output_pin<'a>(
         p.name == name
             || matches!(
                 &p.cardinality,
-                streamkit_core::PinCardinality::Dynamic { prefix } if name.starts_with(prefix.as_str())
+                streamkit_core::PinCardinality::Dynamic { prefix }
+                    if streamkit_core::PinCardinality::is_dynamic_pin_match(prefix, name)
             )
     })
 }
 
 /// Find an input pin by exact name or dynamic-prefix match.
+///
+/// Uses `PinCardinality::is_dynamic_pin_match` from `streamkit_core` — the
+/// same matching logic the dynamic engine applies at runtime.
 fn find_input_pin<'a>(
     pins: &'a [streamkit_core::InputPin],
     name: &str,
@@ -822,7 +854,8 @@ fn find_input_pin<'a>(
         p.name == name
             || matches!(
                 &p.cardinality,
-                streamkit_core::PinCardinality::Dynamic { prefix } if name.starts_with(prefix.as_str())
+                streamkit_core::PinCardinality::Dynamic { prefix }
+                    if streamkit_core::PinCardinality::is_dynamic_pin_match(prefix, name)
             )
     })
 }
@@ -849,7 +882,7 @@ fn validate_pin_types(
         pt_registry,
     ) {
         errors.push(ValidateDiagnostic {
-            error_type: "error".into(),
+            kind: DiagnosticKind::Connection,
             message: format!(
                 "Type mismatch: '{}' output pin '{}' produces {:?}, \
                  but '{}' input pin '{}' accepts {:?}",
@@ -870,16 +903,16 @@ fn validate_pin_types(
 ///
 /// Parses the supplied YAML, compiles it into an internal `Pipeline`, and
 /// validates every node kind, pin existence, pin-type compatibility, and
-/// required-pin connectivity — all without instantiating any nodes.
+/// file-path security — all without instantiating any nodes.
 async fn validate_pipeline_handler(
     State(app_state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(payload): Json<ValidateRequest>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, (StatusCode, String)> {
     let perms = crate::role_extractor::get_permissions(&headers, &app_state);
 
-    if !perms.list_nodes {
-        return Err(StatusCode::FORBIDDEN);
+    if !perms.create_sessions {
+        return Err((StatusCode::FORBIDDEN, "Permission denied: create_sessions required".into()));
     }
 
     let mut errors: Vec<ValidateDiagnostic> = Vec::new();
@@ -889,9 +922,9 @@ async fn validate_pipeline_handler(
     let user_pipeline = match streamkit_api::yaml::parse_yaml(&payload.yaml) {
         Ok(p) => p,
         Err(e) => {
-            info!(error = %e, "Pipeline YAML parse error");
+            debug!(error = %e, "Pipeline YAML parse error");
             errors.push(ValidateDiagnostic {
-                error_type: "error".into(),
+                kind: DiagnosticKind::Parse,
                 message: e,
                 node_id: None,
                 connection_id: None,
@@ -904,9 +937,9 @@ async fn validate_pipeline_handler(
     let pipeline = match compile(user_pipeline) {
         Ok(p) => p,
         Err(e) => {
-            info!(error = %e, "Pipeline compilation error");
+            debug!(error = %e, "Pipeline compilation error");
             errors.push(ValidateDiagnostic {
-                error_type: "error".into(),
+                kind: DiagnosticKind::Parse,
                 message: e,
                 node_id: None,
                 connection_id: None,
@@ -915,64 +948,57 @@ async fn validate_pipeline_handler(
         },
     };
 
-    // 3. Validate nodes against the registry
-    let registry_guard = read_registry(&app_state)?;
+    // 3. Reject empty pipelines (matches create_session_handler)
+    if pipeline.nodes.is_empty() {
+        errors.push(ValidateDiagnostic {
+            kind: DiagnosticKind::Schema,
+            message: "Pipeline is empty. Add some nodes before validating.".into(),
+            node_id: None,
+            connection_id: None,
+        });
+        return Ok(Json(ValidateResponse { valid: false, errors, warnings, graph: None }));
+    }
+
+    // 4. Validate nodes against the registry
+    let registry_guard =
+        read_registry(&app_state).map_err(|sc| (sc, "Failed to read node registry".to_string()))?;
     let node_defs =
         validate_nodes(&pipeline, &registry_guard, Some(&perms), &mut errors, &mut warnings);
     drop(registry_guard);
 
-    // 4. Validate connections
+    // 5. Validate connections
     let mut connected_input_pins: HashSet<(String, String)> = HashSet::new();
     validate_connections(&pipeline, &node_defs, &mut errors, &mut connected_input_pins);
 
-    // 5. Required pin check
-    for (node_id, def) in &node_defs {
-        for input in &def.inputs {
-            if input.cardinality == streamkit_core::PinCardinality::One
-                && !connected_input_pins.contains(&(node_id.clone(), input.name.clone()))
-            {
-                warnings.push(ValidateDiagnostic {
-                    error_type: "warning".into(),
-                    message: format!(
-                        "Node '{node_id}' has unconnected required input pin '{}'",
-                        input.name
-                    ),
-                    node_id: Some(node_id.clone()),
-                    connection_id: None,
-                });
-            }
-        }
-    }
+    // 6. File-path security checks (match session/oneshot handlers)
+    validate_file_paths(&pipeline, &app_state.config.security, &mut errors);
 
-    // 6. Build response
+    // 7. Build graph (always included so the UI can highlight bad nodes)
+    let graph = Some(ValidateGraph {
+        nodes: pipeline
+            .nodes
+            .iter()
+            .map(|(id, n)| ValidateGraphNode {
+                id: id.clone(),
+                kind: n.kind.clone(),
+                params: n.params.clone(),
+            })
+            .collect(),
+        connections: pipeline
+            .connections
+            .iter()
+            .map(|c| ValidateGraphConnection {
+                from_node: c.from_node.clone(),
+                from_pin: c.from_pin.clone(),
+                to_node: c.to_node.clone(),
+                to_pin: c.to_pin.clone(),
+            })
+            .collect(),
+    });
+
     let valid = errors.is_empty();
-    let graph = if valid {
-        Some(ValidateGraph {
-            nodes: pipeline
-                .nodes
-                .iter()
-                .map(|(id, n)| ValidateGraphNode {
-                    id: id.clone(),
-                    kind: n.kind.clone(),
-                    params: n.params.clone(),
-                })
-                .collect(),
-            connections: pipeline
-                .connections
-                .iter()
-                .map(|c| ValidateGraphConnection {
-                    from_node: c.from_node.clone(),
-                    from_pin: c.from_pin.clone(),
-                    to_node: c.to_node.clone(),
-                    to_pin: c.to_pin.clone(),
-                })
-                .collect(),
-        })
-    } else {
-        None
-    };
 
-    info!(
+    debug!(
         valid = valid,
         error_count = errors.len(),
         warning_count = warnings.len(),
@@ -980,6 +1006,65 @@ async fn validate_pipeline_handler(
     );
 
     Ok(Json(ValidateResponse { valid, errors, warnings, graph }))
+}
+
+/// Run file-path security checks matching `create_session_handler` / `process_oneshot_pipeline_handler`.
+fn validate_file_paths(
+    pipeline: &Pipeline,
+    security_config: &crate::config::SecurityConfig,
+    errors: &mut Vec<ValidateDiagnostic>,
+) {
+    for (node_id, node) in &pipeline.nodes {
+        let Some(params) = &node.params else { continue };
+
+        match node.kind.as_str() {
+            "core::file_reader" => {
+                if let Some(path_str) = params.get("path").and_then(|v| v.as_str()) {
+                    if let Err(e) =
+                        crate::file_security::validate_file_path(path_str, security_config)
+                    {
+                        errors.push(ValidateDiagnostic {
+                            kind: DiagnosticKind::Security,
+                            message: format!("Invalid file path in node '{node_id}': {e}"),
+                            node_id: Some(node_id.clone()),
+                            connection_id: None,
+                        });
+                    }
+                }
+            },
+            "core::file_writer" => {
+                if let Some(path_str) = params.get("path").and_then(|v| v.as_str()) {
+                    if let Err(e) =
+                        crate::file_security::validate_write_path(path_str, security_config)
+                    {
+                        errors.push(ValidateDiagnostic {
+                            kind: DiagnosticKind::Security,
+                            message: format!("Invalid write path in node '{node_id}': {e}"),
+                            node_id: Some(node_id.clone()),
+                            connection_id: None,
+                        });
+                    }
+                }
+            },
+            "core::script" => {
+                if let Some(path_str) = params.get("script_path").and_then(|v| v.as_str()) {
+                    if !path_str.trim().is_empty() {
+                        if let Err(e) =
+                            crate::file_security::validate_file_path(path_str, security_config)
+                        {
+                            errors.push(ValidateDiagnostic {
+                                kind: DiagnosticKind::Security,
+                                message: format!("Invalid script_path in node '{node_id}': {e}"),
+                                node_id: Some(node_id.clone()),
+                                connection_id: None,
+                            });
+                        }
+                    }
+                }
+            },
+            _ => {},
+        }
+    }
 }
 
 #[cfg(test)]
@@ -994,6 +1079,14 @@ mod validate_pipeline_tests {
     fn minimal_pipeline(yaml: &str) -> Result<Pipeline, String> {
         let user = streamkit_api::yaml::parse_yaml(yaml)?;
         compile(user)
+    }
+
+    fn make_restricted_perms() -> crate::permissions::Permissions {
+        crate::permissions::Permissions {
+            list_nodes: true,
+            create_sessions: true,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -1054,7 +1147,6 @@ nodes:
 
         let node_defs = validate_nodes(&pipeline, &registry, None, &mut errors, &mut warnings);
 
-        // Inject a connection with a bad pin name to test pin validation.
         pipeline.connections.push(streamkit_api::Connection {
             from_node: "input".to_string(),
             from_pin: "nonexistent_pin".to_string(),
@@ -1093,6 +1185,65 @@ nodes:
 
         assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
         assert_eq!(pipeline.connections.len(), 1);
+    }
+
+    #[test]
+    fn synthetic_nodes_bypass_permission_checks() {
+        let yaml = "\
+nodes:
+  input:
+    kind: streamkit::http_input
+  output:
+    kind: streamkit::http_output
+    needs: input
+";
+        let pipeline = minimal_pipeline(yaml).expect("parse should succeed");
+        let registry = make_registry();
+        let perms = make_restricted_perms();
+        let mut errors = Vec::new();
+        let mut warnings = Vec::new();
+
+        let node_defs =
+            validate_nodes(&pipeline, &registry, Some(&perms), &mut errors, &mut warnings);
+
+        assert!(errors.is_empty(), "synthetic nodes should bypass perms, got: {errors:?}");
+        assert_eq!(node_defs.len(), 2);
+    }
+
+    #[test]
+    fn restricted_perms_deny_non_allowed_node() {
+        let yaml = "\
+nodes:
+  src:
+    kind: test::dummy
+";
+        let pipeline = minimal_pipeline(yaml).expect("parse should succeed");
+        let mut registry = make_registry();
+        registry.register_static(
+            "test::dummy",
+            |_| Err(streamkit_core::StreamKitError::Configuration("test stub".into())),
+            serde_json::Value::Object(serde_json::Map::default()),
+            streamkit_core::registry::StaticPins { inputs: vec![], outputs: vec![] },
+            vec![],
+            false,
+        );
+        let perms = make_restricted_perms();
+        let mut errors = Vec::new();
+        let mut warnings = Vec::new();
+
+        validate_nodes(&pipeline, &registry, Some(&perms), &mut errors, &mut warnings);
+
+        assert!(
+            errors.iter().any(|e| e.message.contains("Permission denied")),
+            "expected permission denied error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn empty_pipeline_rejected() {
+        let yaml = "nodes: {}";
+        let pipeline = minimal_pipeline(yaml).expect("parse should succeed");
+        assert!(pipeline.nodes.is_empty());
     }
 }
 
@@ -3748,7 +3899,11 @@ pub fn create_app(
         .route("/api/v1/config", get(get_config_handler))
         .route("/api/v1/schema/nodes", get(list_node_definitions_handler))
         .route("/api/v1/schema/packets", get(list_packet_types_handler))
-        .route("/api/v1/validate", post(validate_pipeline_handler))
+        .route(
+            "/api/v1/validate",
+            post(validate_pipeline_handler)
+                .layer(DefaultBodyLimit::max(app_state.config.server.max_body_size)),
+        )
         .route("/api/v1/logs", get(crate::log_viewer::get_logs_handler))
         .route("/api/v1/logs/stream", get(crate::log_viewer::stream_logs_handler))
         .route("/api/v1/sessions", get(list_sessions_handler).post(create_session_handler))
