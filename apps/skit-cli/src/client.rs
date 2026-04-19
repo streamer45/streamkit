@@ -1342,7 +1342,8 @@ fn colorize_log_line(line: &str) -> String {
     ] {
         if let Some(idx) = line.find(token) {
             let level = token.trim();
-            let before = &line[..=idx];
+            let leading_len = token.len() - token.trim_start().len();
+            let before = &line[..idx + leading_len];
             let after = &line[idx + token.len()..];
             return format!("{before}{color}{level}{RESET} {after}");
         }

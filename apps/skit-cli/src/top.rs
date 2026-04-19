@@ -29,7 +29,13 @@ async fn connect_control_ws(
     let ws_url = control_ws_url(server_url)?;
     let mut request = tokio_tungstenite::tungstenite::http::Request::builder()
         .uri(ws_url.as_str())
-        .header("Host", ws_url.host_str().unwrap_or("localhost"))
+        .header(
+            "Host",
+            ws_url.port().map_or_else(
+                || ws_url.host_str().unwrap_or("localhost").to_string(),
+                |port| format!("{}:{port}", ws_url.host_str().unwrap_or("localhost")),
+            ),
+        )
         .header("Connection", "Upgrade")
         .header("Upgrade", "websocket")
         .header("Sec-WebSocket-Version", "13")
@@ -251,12 +257,15 @@ struct RawModeGuard;
 impl RawModeGuard {
     fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         terminal::enable_raw_mode()?;
-        execute!(
+        if let Err(e) = execute!(
             io::stdout(),
             cursor::Hide,
             terminal::Clear(terminal::ClearType::All),
             cursor::MoveTo(0, 0)
-        )?;
+        ) {
+            let _ = terminal::disable_raw_mode();
+            return Err(e.into());
+        }
         Ok(Self)
     }
 }
