@@ -431,9 +431,10 @@ fn handle_render(
     // Pump the event loop to let Servo process pending work.
     servo.spin_event_loop();
 
-    // Always read the full rendering context (rc_width × rc_height).
-    // These dimensions are fixed at creation time and never change,
-    // even when the output dimensions are updated via resize hints.
+    // Always read the full rendering context (rc_width × rc_height) —
+    // this is the native size Servo is currently rendering at.  These
+    // stay constant under `Resize` hints (output-only) but are updated
+    // under `UpdateConfig` when the viewport resolution changes.
     let rect = Box2D::new(
         Point2D::new(0, 0),
         Point2D::new(
