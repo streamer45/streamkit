@@ -6,12 +6,15 @@
 #![allow(clippy::disallowed_macros)]
 
 pub mod client;
+pub mod exit_codes;
 pub mod load_test;
+pub mod output;
 pub mod shell;
 
 // Re-export trait, concrete implementation, and standalone helpers
 pub use client::{Client, InputFile, NetworkClient};
 pub use load_test::run_load_test;
+pub use output::{CliOutput, OutputFormat};
 
 /// Start an interactive shell session
 ///

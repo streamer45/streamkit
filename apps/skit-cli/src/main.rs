@@ -2,13 +2,19 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-use clap::{ArgAction, Parser, Subcommand};
-use streamkit_client::{Client, InputFile, NetworkClient};
+use std::fmt::Write;
+
+use clap::{ArgAction, CommandFactory, Parser, Subcommand};
+use streamkit_client::{exit_codes, CliOutput, Client, InputFile, NetworkClient, OutputFormat};
 use tracing::{error, info};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "StreamKit client CLI", long_about = None)]
 struct Cli {
+    /// Output results as JSON instead of human-readable text
+    #[arg(long, global = true)]
+    json: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -187,6 +193,19 @@ enum Commands {
         #[arg(short, long, default_value = "http://127.0.0.1:4545")]
         server: String,
     },
+    /// Generate shell completions
+    #[command(name = "completions", hide = true)]
+    Completions {
+        /// Shell to generate completions for
+        shell: clap_complete::Shell,
+    },
+    /// Generate man pages
+    #[command(name = "mangen", hide = true)]
+    ManGen {
+        /// Output directory for man pages
+        #[arg(default_value = ".")]
+        dir: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -341,23 +360,43 @@ enum ControlCommands {
     },
 }
 
+fn json_pretty<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_string_pretty(value)
+        .unwrap_or_else(|e| format!("{{\"error\": \"Failed to serialize: {e}\"}}"))
+}
+
+fn exit_code_for_error(e: &(dyn std::error::Error + Send + Sync)) -> i32 {
+    let msg = e.to_string().to_lowercase();
+    if msg.contains("connection refused")
+        || msg.contains("dns error")
+        || msg.contains("connect error")
+        || msg.contains("timed out")
+        || msg.contains("connection reset")
+    {
+        exit_codes::CONNECTION_ERROR
+    } else {
+        exit_codes::GENERAL_ERROR
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // Initialize basic logging for client
     tracing_subscriber::fmt::init();
 
     let cli = Cli::parse();
+    let format = if cli.json { OutputFormat::Json } else { OutputFormat::Text };
 
     // Dispatch into a heap-allocated future to keep main's stack frame small.
     // The many command variants produce a large async state machine (~660 KiB)
     // which would otherwise overflow Clippy's stack-size threshold.
-    Box::pin(dispatch(cli.command)).await;
+    Box::pin(dispatch(cli.command, format)).await;
 }
 
 // Always called via Box::pin (heap-allocated), so the large async state machine
 // never lands on the call stack. Cognitive complexity is inherent to CLI dispatch.
-#[allow(clippy::large_stack_frames, clippy::cognitive_complexity)]
-async fn dispatch(command: Commands) {
+#[allow(clippy::large_stack_frames, clippy::cognitive_complexity, clippy::too_many_lines)]
+async fn dispatch(command: Commands, format: OutputFormat) {
     match command {
         Commands::OneShot { pipeline, input, extra_input, output, server } => {
             info!("Starting StreamKit client - oneshot processing");
@@ -371,7 +410,7 @@ async fn dispatch(command: Commands) {
             let client = NetworkClient::new(&server);
             if let Err(e) = client.process_oneshot(&pipeline, &inputs, &output).await {
                 error!(error = %e, "Failed to process oneshot pipeline");
-                std::process::exit(1);
+                std::process::exit(exit_code_for_error(e.as_ref()));
             }
         },
         Commands::Create { pipeline, name, server } => {
@@ -380,7 +419,7 @@ async fn dispatch(command: Commands) {
             let client = NetworkClient::new(&server);
             if let Err(e) = client.create_session(&pipeline, &name).await {
                 error!(error = %e, "Failed to create dynamic session");
-                std::process::exit(1);
+                std::process::exit(exit_code_for_error(e.as_ref()));
             }
         },
         Commands::Destroy { session_id, server } => {
@@ -389,7 +428,7 @@ async fn dispatch(command: Commands) {
             let client = NetworkClient::new(&server);
             if let Err(e) = client.destroy_session(&session_id).await {
                 error!(error = %e, "Failed to destroy session");
-                std::process::exit(1);
+                std::process::exit(exit_code_for_error(e.as_ref()));
             }
         },
         Commands::Tune { session_id, node_id, param, value, server } => {
@@ -398,16 +437,35 @@ async fn dispatch(command: Commands) {
             let client = NetworkClient::new(&server);
             if let Err(e) = client.tune_node(&session_id, &node_id, &param, &value).await {
                 error!(error = %e, "Failed to tune node");
-                std::process::exit(1);
+                std::process::exit(exit_code_for_error(e.as_ref()));
             }
         },
         Commands::List { server } => {
             info!("Starting StreamKit client - listing sessions");
 
             let client = NetworkClient::new(&server);
-            if let Err(e) = client.list_sessions().await {
-                error!(error = %e, "Failed to list sessions");
-                std::process::exit(1);
+            match client.list_sessions().await {
+                Ok(sessions) => {
+                    CliOutput::new(format, sessions, |sessions| {
+                        if sessions.is_empty() {
+                            return "No active sessions found.".to_string();
+                        }
+                        let mut out = String::new();
+                        let _ = writeln!(out, "Active Sessions:");
+                        let _ = writeln!(out, "{:<20} {:<36} STATUS", "NAME", "SESSION ID");
+                        let _ = writeln!(out, "{}", "-".repeat(70));
+                        for s in sessions {
+                            let name = s.name.as_deref().unwrap_or("<unnamed>");
+                            let _ = writeln!(out, "{:<20} {:<36} Running", name, s.id);
+                        }
+                        out
+                    })
+                    .print();
+                },
+                Err(e) => {
+                    error!(error = %e, "Failed to list sessions");
+                    std::process::exit(exit_code_for_error(e.as_ref()));
+                },
             }
         },
         Commands::Shell { server } => {
@@ -415,7 +473,7 @@ async fn dispatch(command: Commands) {
 
             if let Err(e) = streamkit_client::start_shell(&server).await {
                 error!(error = %e, "Failed to start interactive shell");
-                std::process::exit(1);
+                std::process::exit(exit_code_for_error(e.as_ref()));
             }
         },
         Commands::LoadTest { config_path, config, server, sessions, duration, cleanup } => {
@@ -426,7 +484,7 @@ async fn dispatch(command: Commands) {
                     error!(
                         "Provide load test config either as positional CONFIG or via --config, not both"
                     );
-                    std::process::exit(2);
+                    std::process::exit(exit_codes::USAGE_ERROR);
                 },
                 (Some(path), _) => path,
                 (None, flag) => flag,
@@ -436,107 +494,217 @@ async fn dispatch(command: Commands) {
                 streamkit_client::run_load_test(&config, server, sessions, duration, cleanup).await
             {
                 error!(error = %e, "Load test failed");
-                std::process::exit(1);
+                std::process::exit(exit_code_for_error(e.as_ref()));
             }
         },
         Commands::Config { server } => {
             let client = NetworkClient::new(&server);
-            if let Err(e) = client.get_config().await {
-                error!(error = %e, "Failed to fetch server config");
-                std::process::exit(1);
+            match client.get_config().await {
+                Ok(config) => {
+                    CliOutput::new(format, config, json_pretty).print();
+                },
+                Err(e) => {
+                    error!(error = %e, "Failed to fetch server config");
+                    std::process::exit(exit_code_for_error(e.as_ref()));
+                },
             }
         },
         Commands::Permissions { server } => {
             let client = NetworkClient::new(&server);
-            if let Err(e) = client.get_permissions().await {
-                error!(error = %e, "Failed to fetch permissions");
-                std::process::exit(1);
+            match client.get_permissions().await {
+                Ok(perms) => {
+                    CliOutput::new(format, perms, json_pretty).print();
+                },
+                Err(e) => {
+                    error!(error = %e, "Failed to fetch permissions");
+                    std::process::exit(exit_code_for_error(e.as_ref()));
+                },
             }
         },
         Commands::Schema { command, server } => {
             let client = NetworkClient::new(&server);
-            let result = match command {
-                SchemaCommands::Nodes => client.list_node_schemas().await,
-                SchemaCommands::Packets => client.list_packet_schemas().await,
-            };
-            if let Err(e) = result {
-                error!(error = %e, "Failed to fetch schema");
-                std::process::exit(1);
+            match command {
+                SchemaCommands::Nodes => match client.list_node_schemas().await {
+                    Ok(nodes) => {
+                        CliOutput::new(format, nodes, json_pretty).print();
+                    },
+                    Err(e) => {
+                        error!(error = %e, "Failed to fetch node schemas");
+                        std::process::exit(exit_code_for_error(e.as_ref()));
+                    },
+                },
+                SchemaCommands::Packets => match client.list_packet_schemas().await {
+                    Ok(packets) => {
+                        CliOutput::new(format, packets, json_pretty).print();
+                    },
+                    Err(e) => {
+                        error!(error = %e, "Failed to fetch packet schemas");
+                        std::process::exit(exit_code_for_error(e.as_ref()));
+                    },
+                },
             }
         },
         Commands::Pipeline { session_id, server } => {
             let client = NetworkClient::new(&server);
-            if let Err(e) = client.get_pipeline(&session_id).await {
-                error!(error = %e, "Failed to fetch pipeline");
-                std::process::exit(1);
+            match client.get_pipeline(&session_id).await {
+                Ok(pipeline) => {
+                    CliOutput::new(format, pipeline, json_pretty).print();
+                },
+                Err(e) => {
+                    error!(error = %e, "Failed to fetch pipeline");
+                    std::process::exit(exit_code_for_error(e.as_ref()));
+                },
             }
         },
         Commands::Plugins { command, server } => {
             let client = NetworkClient::new(&server);
-            let result = match command {
-                PluginCommands::List => client.list_plugins().await,
-                PluginCommands::Upload { path } => client.upload_plugin(&path).await,
-                PluginCommands::Delete { kind, keep_file } => {
-                    client.delete_plugin(&kind, keep_file).await
+            match command {
+                PluginCommands::List => match client.list_plugins().await {
+                    Ok(plugins) => {
+                        CliOutput::new(format, plugins, json_pretty).print();
+                    },
+                    Err(e) => {
+                        error!(error = %e, "Plugin list failed");
+                        std::process::exit(exit_code_for_error(e.as_ref()));
+                    },
                 },
-            };
-            if let Err(e) = result {
-                error!(error = %e, "Plugin command failed");
-                std::process::exit(1);
+                PluginCommands::Upload { path } => {
+                    if let Err(e) = client.upload_plugin(&path).await {
+                        error!(error = %e, "Plugin upload failed");
+                        std::process::exit(exit_code_for_error(e.as_ref()));
+                    }
+                },
+                PluginCommands::Delete { kind, keep_file } => {
+                    if let Err(e) = client.delete_plugin(&kind, keep_file).await {
+                        error!(error = %e, "Plugin delete failed");
+                        std::process::exit(exit_code_for_error(e.as_ref()));
+                    }
+                },
             }
         },
         Commands::Samples { command, server } => {
             let client = NetworkClient::new(&server);
-            let result = match command {
-                SampleCommands::ListOneshot => client.list_samples_oneshot().await,
-                SampleCommands::ListDynamic => client.list_samples_dynamic().await,
-                SampleCommands::Get { id, yaml } => client.get_sample(&id, yaml).await,
-                SampleCommands::Save { name, description, yaml_path, overwrite, fragment } => {
-                    client.save_sample(&name, &description, &yaml_path, overwrite, fragment).await
+            match command {
+                SampleCommands::ListOneshot => match client.list_samples_oneshot().await {
+                    Ok(samples) => {
+                        CliOutput::new(format, samples, json_pretty).print();
+                    },
+                    Err(e) => {
+                        error!(error = %e, "Sample list failed");
+                        std::process::exit(exit_code_for_error(e.as_ref()));
+                    },
                 },
-                SampleCommands::Delete { id } => client.delete_sample(&id).await,
-            };
-            if let Err(e) = result {
-                error!(error = %e, "Sample command failed");
-                std::process::exit(1);
+                SampleCommands::ListDynamic => match client.list_samples_dynamic().await {
+                    Ok(samples) => {
+                        CliOutput::new(format, samples, json_pretty).print();
+                    },
+                    Err(e) => {
+                        error!(error = %e, "Sample list failed");
+                        std::process::exit(exit_code_for_error(e.as_ref()));
+                    },
+                },
+                SampleCommands::Get { id, yaml } => {
+                    if let Err(e) = client.get_sample(&id, yaml).await {
+                        error!(error = %e, "Sample get failed");
+                        std::process::exit(exit_code_for_error(e.as_ref()));
+                    }
+                },
+                SampleCommands::Save { name, description, yaml_path, overwrite, fragment } => {
+                    if let Err(e) = client
+                        .save_sample(&name, &description, &yaml_path, overwrite, fragment)
+                        .await
+                    {
+                        error!(error = %e, "Sample save failed");
+                        std::process::exit(exit_code_for_error(e.as_ref()));
+                    }
+                },
+                SampleCommands::Delete { id } => {
+                    if let Err(e) = client.delete_sample(&id).await {
+                        error!(error = %e, "Sample delete failed");
+                        std::process::exit(exit_code_for_error(e.as_ref()));
+                    }
+                },
             }
         },
         Commands::Assets { command, server } => {
             let client = NetworkClient::new(&server);
-            let result = match command {
-                AssetCommands::List => client.list_audio_assets().await,
-                AssetCommands::Upload { path } => client.upload_audio_asset(&path).await,
-                AssetCommands::Delete { id } => client.delete_audio_asset(&id).await,
-            };
-            if let Err(e) = result {
-                error!(error = %e, "Asset command failed");
-                std::process::exit(1);
+            match command {
+                AssetCommands::List => match client.list_audio_assets().await {
+                    Ok(assets) => {
+                        CliOutput::new(format, assets, json_pretty).print();
+                    },
+                    Err(e) => {
+                        error!(error = %e, "Asset list failed");
+                        std::process::exit(exit_code_for_error(e.as_ref()));
+                    },
+                },
+                AssetCommands::Upload { path } => {
+                    if let Err(e) = client.upload_audio_asset(&path).await {
+                        error!(error = %e, "Asset upload failed");
+                        std::process::exit(exit_code_for_error(e.as_ref()));
+                    }
+                },
+                AssetCommands::Delete { id } => {
+                    if let Err(e) = client.delete_audio_asset(&id).await {
+                        error!(error = %e, "Asset delete failed");
+                        std::process::exit(exit_code_for_error(e.as_ref()));
+                    }
+                },
             }
         },
         Commands::Watch { session, pretty, server } => {
             let client = NetworkClient::new(&server);
             if let Err(e) = client.watch_events(session.as_deref(), pretty).await {
                 error!(error = %e, "Watch failed");
-                std::process::exit(1);
+                std::process::exit(exit_code_for_error(e.as_ref()));
             }
         },
         Commands::Control { command, server } => {
             let client = NetworkClient::new(&server);
-            let result = match command {
-                ControlCommands::Nodes => client.control_list_nodes().await,
+            match command {
+                ControlCommands::Nodes => match client.control_list_nodes().await {
+                    Ok(nodes) => {
+                        CliOutput::new(format, nodes, json_pretty).print();
+                    },
+                    Err(e) => {
+                        error!(error = %e, "Control nodes failed");
+                        std::process::exit(exit_code_for_error(e.as_ref()));
+                    },
+                },
                 ControlCommands::Pipeline { session_id } => {
-                    client.control_get_pipeline(&session_id).await
+                    match client.control_get_pipeline(&session_id).await {
+                        Ok(pipeline) => {
+                            CliOutput::new(format, pipeline, json_pretty).print();
+                        },
+                        Err(e) => {
+                            error!(error = %e, "Control pipeline failed");
+                            std::process::exit(exit_code_for_error(e.as_ref()));
+                        },
+                    }
                 },
                 ControlCommands::AddNode { session_id, node_id, kind, params } => {
-                    client.control_add_node(&session_id, &node_id, &kind, params.as_deref()).await
+                    if let Err(e) = client
+                        .control_add_node(&session_id, &node_id, &kind, params.as_deref())
+                        .await
+                    {
+                        error!(error = %e, "Control add-node failed");
+                        std::process::exit(exit_code_for_error(e.as_ref()));
+                    }
                 },
                 ControlCommands::RemoveNode { session_id, node_id } => {
-                    client.control_remove_node(&session_id, &node_id).await
+                    if let Err(e) = client.control_remove_node(&session_id, &node_id).await {
+                        error!(error = %e, "Control remove-node failed");
+                        std::process::exit(exit_code_for_error(e.as_ref()));
+                    }
                 },
                 ControlCommands::Connect { session_id, from_node, from_pin, to_node, to_pin } => {
-                    client
+                    if let Err(e) = client
                         .control_connect(&session_id, &from_node, &from_pin, &to_node, &to_pin)
                         .await
+                    {
+                        error!(error = %e, "Control connect failed");
+                        std::process::exit(exit_code_for_error(e.as_ref()));
+                    }
                 },
                 ControlCommands::Disconnect {
                     session_id,
@@ -545,24 +713,53 @@ async fn dispatch(command: Commands) {
                     to_node,
                     to_pin,
                 } => {
-                    client
+                    if let Err(e) = client
                         .control_disconnect(&session_id, &from_node, &from_pin, &to_node, &to_pin)
                         .await
+                    {
+                        error!(error = %e, "Control disconnect failed");
+                        std::process::exit(exit_code_for_error(e.as_ref()));
+                    }
                 },
                 ControlCommands::ValidateBatch { session_id, ops_file } => {
-                    client.control_validate_batch(&session_id, &ops_file).await
+                    if let Err(e) = client.control_validate_batch(&session_id, &ops_file).await {
+                        error!(error = %e, "Control validate-batch failed");
+                        std::process::exit(exit_code_for_error(e.as_ref()));
+                    }
                 },
                 ControlCommands::ApplyBatch { session_id, ops_file } => {
-                    client.control_apply_batch(&session_id, &ops_file).await
+                    if let Err(e) = client.control_apply_batch(&session_id, &ops_file).await {
+                        error!(error = %e, "Control apply-batch failed");
+                        std::process::exit(exit_code_for_error(e.as_ref()));
+                    }
                 },
                 ControlCommands::TuneAsync { session_id, node_id, param, value } => {
-                    client.control_tune_async(&session_id, &node_id, &param, &value).await
+                    if let Err(e) =
+                        client.control_tune_async(&session_id, &node_id, &param, &value).await
+                    {
+                        error!(error = %e, "Control tune-async failed");
+                        std::process::exit(exit_code_for_error(e.as_ref()));
+                    }
                 },
-            };
-            if let Err(e) = result {
-                error!(error = %e, "Control command failed");
-                std::process::exit(1);
             }
+        },
+        Commands::Completions { shell } => {
+            clap_complete::generate(shell, &mut Cli::command(), "skit-cli", &mut std::io::stdout());
+        },
+        Commands::ManGen { dir } => {
+            let cmd = Cli::command();
+            let man = clap_mangen::Man::new(cmd);
+            let mut buf: Vec<u8> = Vec::new();
+            if let Err(e) = man.render(&mut buf) {
+                error!(error = %e, "Failed to generate man page");
+                std::process::exit(exit_codes::GENERAL_ERROR);
+            }
+            let out_path = std::path::Path::new(&dir).join("skit-cli.1");
+            if let Err(e) = std::fs::write(&out_path, buf) {
+                error!(error = %e, path = %out_path.display(), "Failed to write man page");
+                std::process::exit(exit_codes::GENERAL_ERROR);
+            }
+            info!(path = %out_path.display(), "Man page written");
         },
     }
 }

@@ -8,8 +8,8 @@ use futures_util::SinkExt;
 use reqwest::multipart;
 use std::path::Path;
 use streamkit_api::{
-    AudioAsset, BatchOperation, MessageType, PermissionsInfo, Request, RequestPayload, Response,
-    ResponsePayload, SamplePipeline, SavePipelineRequest,
+    ApiPipeline, AudioAsset, BatchOperation, MessageType, NodeDefinition, PermissionsInfo, Request,
+    RequestPayload, Response, ResponsePayload, SamplePipeline, SavePipelineRequest, SessionInfo,
 };
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
@@ -166,33 +166,33 @@ fn parse_batch_operations(
 // Module-private types used by HTTP responses
 // ---------------------------------------------------------------------------
 
-#[derive(serde::Deserialize, serde::Serialize)]
-struct FrontendConfig {
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+pub struct FrontendConfig {
     #[serde(default)]
-    moq_gateway_url: Option<String>,
+    pub moq_gateway_url: Option<String>,
 }
 
-#[derive(serde::Deserialize, serde::Serialize)]
-struct PermissionsResponse {
-    role: String,
-    permissions: PermissionsInfo,
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+pub struct PermissionsResponse {
+    pub role: String,
+    pub permissions: PermissionsInfo,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
-enum PluginType {
+pub enum PluginType {
     Wasm,
     Native,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-struct PluginSummary {
-    kind: String,
-    original_kind: String,
-    file_name: String,
-    categories: Vec<String>,
-    loaded_at_ms: u128,
-    plugin_type: PluginType,
+pub struct PluginSummary {
+    pub kind: String,
+    pub original_kind: String,
+    pub file_name: String,
+    pub categories: Vec<String>,
+    pub loaded_at_ms: u128,
+    pub plugin_type: PluginType,
 }
 
 // ---------------------------------------------------------------------------
@@ -262,7 +262,9 @@ pub trait Client: Send + Sync {
     ///
     /// Returns an error if the WebSocket connection fails or the server returns
     /// an error response.
-    async fn list_sessions(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_sessions(
+        &self,
+    ) -> Result<Vec<SessionInfo>, Box<dyn std::error::Error + Send + Sync>>;
 
     /// List available node types via WebSocket.
     ///
@@ -270,7 +272,9 @@ pub trait Client: Send + Sync {
     ///
     /// Returns an error if the WebSocket request fails or the server returns
     /// an error response.
-    async fn control_list_nodes(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn control_list_nodes(
+        &self,
+    ) -> Result<Vec<NodeDefinition>, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Fetch a session pipeline via WebSocket.
     ///
@@ -281,7 +285,7 @@ pub trait Client: Send + Sync {
     async fn control_get_pipeline(
         &self,
         session_id: &str,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<Box<ApiPipeline>, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Add a node to a session via WebSocket.
     ///
@@ -383,7 +387,7 @@ pub trait Client: Send + Sync {
     ///
     /// Returns an error if the request fails or the server returns a
     /// non-success status.
-    async fn get_config(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_config(&self) -> Result<FrontendConfig, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Fetch permissions for the current request.
     ///
@@ -391,7 +395,9 @@ pub trait Client: Send + Sync {
     ///
     /// Returns an error if the request fails or the server returns a
     /// non-success status.
-    async fn get_permissions(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_permissions(
+        &self,
+    ) -> Result<PermissionsResponse, Box<dyn std::error::Error + Send + Sync>>;
 
     /// List node schemas via HTTP.
     ///
@@ -399,7 +405,9 @@ pub trait Client: Send + Sync {
     ///
     /// Returns an error if the request fails or the server returns a
     /// non-success status.
-    async fn list_node_schemas(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_node_schemas(
+        &self,
+    ) -> Result<Vec<NodeDefinition>, Box<dyn std::error::Error + Send + Sync>>;
 
     /// List packet schemas via HTTP.
     ///
@@ -407,7 +415,9 @@ pub trait Client: Send + Sync {
     ///
     /// Returns an error if the request fails or the server returns a
     /// non-success status.
-    async fn list_packet_schemas(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_packet_schemas(
+        &self,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Fetch a session's pipeline via HTTP.
     ///
@@ -418,7 +428,7 @@ pub trait Client: Send + Sync {
     async fn get_pipeline(
         &self,
         session_id: &str,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<ApiPipeline, Box<dyn std::error::Error + Send + Sync>>;
 
     /// List loaded plugins.
     ///
@@ -426,7 +436,9 @@ pub trait Client: Send + Sync {
     ///
     /// Returns an error if the request fails or the server returns a
     /// non-success status.
-    async fn list_plugins(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_plugins(
+        &self,
+    ) -> Result<Vec<PluginSummary>, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Upload a plugin file.
     ///
@@ -457,7 +469,9 @@ pub trait Client: Send + Sync {
     ///
     /// Returns an error if the request fails or the server returns a
     /// non-success status.
-    async fn list_samples_oneshot(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_samples_oneshot(
+        &self,
+    ) -> Result<Vec<SamplePipeline>, Box<dyn std::error::Error + Send + Sync>>;
 
     /// List dynamic sample pipelines.
     ///
@@ -465,7 +479,9 @@ pub trait Client: Send + Sync {
     ///
     /// Returns an error if the request fails or the server returns a
     /// non-success status.
-    async fn list_samples_dynamic(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_samples_dynamic(
+        &self,
+    ) -> Result<Vec<SamplePipeline>, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Fetch a sample pipeline by ID.
     ///
@@ -509,7 +525,9 @@ pub trait Client: Send + Sync {
     ///
     /// Returns an error if the request fails or the server returns a
     /// non-success status.
-    async fn list_audio_assets(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_audio_assets(
+        &self,
+    ) -> Result<Vec<AudioAsset>, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Upload an audio asset.
     ///
@@ -718,43 +736,25 @@ impl Client for NetworkClient {
         Ok(())
     }
 
-    async fn list_sessions(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        info!(
-            server = %self.server_url,
-            "Listing active sessions"
-        );
+    async fn list_sessions(
+        &self,
+    ) -> Result<Vec<SessionInfo>, Box<dyn std::error::Error + Send + Sync>> {
+        info!(server = %self.server_url, "Listing active sessions");
 
         match ws_request(&self.server_url, RequestPayload::ListSessions).await? {
             ResponsePayload::SessionsListed { sessions } => {
-                let count = sessions.len();
-                info!("Successfully retrieved {count} sessions");
-
-                if sessions.is_empty() {
-                    println!("No active sessions found.");
-                } else {
-                    println!("Active Sessions:");
-                    println!("{:<20} {:<36} STATUS", "NAME", "SESSION ID");
-                    println!("{}", "-".repeat(70));
-
-                    for session in sessions {
-                        let name = session.name.as_deref().unwrap_or("<unnamed>");
-                        println!("{:<20} {:<36} Running", name, session.id);
-                    }
-                }
+                info!("Successfully retrieved {} sessions", sessions.len());
+                Ok(sessions)
             },
-            other => return Err(format!("Unexpected response from server: {other:?}").into()),
+            other => Err(format!("Unexpected response from server: {other:?}").into()),
         }
-
-        info!("Session listing completed successfully");
-        Ok(())
     }
 
-    async fn control_list_nodes(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn control_list_nodes(
+        &self,
+    ) -> Result<Vec<NodeDefinition>, Box<dyn std::error::Error + Send + Sync>> {
         match ws_request(&self.server_url, RequestPayload::ListNodes).await? {
-            ResponsePayload::NodesListed { nodes } => {
-                println!("{}", serde_json::to_string_pretty(&nodes)?);
-                Ok(())
-            },
+            ResponsePayload::NodesListed { nodes } => Ok(nodes),
             other => Err(format!("Unexpected response from server: {other:?}").into()),
         }
     }
@@ -762,17 +762,14 @@ impl Client for NetworkClient {
     async fn control_get_pipeline(
         &self,
         session_id: &str,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Box<ApiPipeline>, Box<dyn std::error::Error + Send + Sync>> {
         match ws_request(
             &self.server_url,
             RequestPayload::GetPipeline { session_id: session_id.to_string() },
         )
         .await?
         {
-            ResponsePayload::Pipeline { pipeline } => {
-                println!("{}", serde_json::to_string_pretty(&pipeline)?);
-                Ok(())
-            },
+            ResponsePayload::Pipeline { pipeline } => Ok(pipeline),
             other => Err(format!("Unexpected response from server: {other:?}").into()),
         }
     }
@@ -974,7 +971,7 @@ impl Client for NetworkClient {
         Ok(())
     }
 
-    async fn get_config(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn get_config(&self) -> Result<FrontendConfig, Box<dyn std::error::Error + Send + Sync>> {
         let url = http_base_url(&self.server_url)?.join("/api/v1/config")?;
         let response = self.http.get(url).send().await?;
         if !response.status().is_success() {
@@ -983,11 +980,12 @@ impl Client for NetworkClient {
             return Err(format!("Server returned error {status}: {body}").into());
         }
         let config: FrontendConfig = response.json().await?;
-        println!("{}", serde_json::to_string_pretty(&config)?);
-        Ok(())
+        Ok(config)
     }
 
-    async fn get_permissions(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn get_permissions(
+        &self,
+    ) -> Result<PermissionsResponse, Box<dyn std::error::Error + Send + Sync>> {
         let url = http_base_url(&self.server_url)?.join("/api/v1/permissions")?;
         let response = self.http.get(url).send().await?;
         if !response.status().is_success() {
@@ -996,11 +994,12 @@ impl Client for NetworkClient {
             return Err(format!("Server returned error {status}: {body}").into());
         }
         let perms: PermissionsResponse = response.json().await?;
-        println!("{}", serde_json::to_string_pretty(&perms)?);
-        Ok(())
+        Ok(perms)
     }
 
-    async fn list_node_schemas(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn list_node_schemas(
+        &self,
+    ) -> Result<Vec<NodeDefinition>, Box<dyn std::error::Error + Send + Sync>> {
         let url = http_base_url(&self.server_url)?.join("/api/v1/schema/nodes")?;
         let response = self.http.get(url).send().await?;
         if !response.status().is_success() {
@@ -1008,12 +1007,13 @@ impl Client for NetworkClient {
             let body = response.text().await.unwrap_or_default();
             return Err(format!("Server returned error {status}: {body}").into());
         }
-        let nodes: Vec<streamkit_api::NodeDefinition> = response.json().await?;
-        println!("{}", serde_json::to_string_pretty(&nodes)?);
-        Ok(())
+        let nodes: Vec<NodeDefinition> = response.json().await?;
+        Ok(nodes)
     }
 
-    async fn list_packet_schemas(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn list_packet_schemas(
+        &self,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
         let url = http_base_url(&self.server_url)?.join("/api/v1/schema/packets")?;
         let response = self.http.get(url).send().await?;
         if !response.status().is_success() {
@@ -1021,16 +1021,14 @@ impl Client for NetworkClient {
             let body = response.text().await.unwrap_or_default();
             return Err(format!("Server returned error {status}: {body}").into());
         }
-
         let packet_meta: serde_json::Value = response.json().await?;
-        println!("{}", serde_json::to_string_pretty(&packet_meta)?);
-        Ok(())
+        Ok(packet_meta)
     }
 
     async fn get_pipeline(
         &self,
         session_id: &str,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<ApiPipeline, Box<dyn std::error::Error + Send + Sync>> {
         let url = http_base_url(&self.server_url)?
             .join(&format!("/api/v1/sessions/{session_id}/pipeline"))?;
         let response = self.http.get(url).send().await?;
@@ -1039,12 +1037,13 @@ impl Client for NetworkClient {
             let body = response.text().await.unwrap_or_default();
             return Err(format!("Server returned error {status}: {body}").into());
         }
-        let pipeline: streamkit_api::ApiPipeline = response.json().await?;
-        println!("{}", serde_json::to_string_pretty(&pipeline)?);
-        Ok(())
+        let pipeline: ApiPipeline = response.json().await?;
+        Ok(pipeline)
     }
 
-    async fn list_plugins(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn list_plugins(
+        &self,
+    ) -> Result<Vec<PluginSummary>, Box<dyn std::error::Error + Send + Sync>> {
         let url = http_base_url(&self.server_url)?.join("/api/v1/plugins")?;
         let response = self.http.get(url).send().await?;
         if !response.status().is_success() {
@@ -1053,8 +1052,7 @@ impl Client for NetworkClient {
             return Err(format!("Server returned error {status}: {body}").into());
         }
         let plugins: Vec<PluginSummary> = response.json().await?;
-        println!("{}", serde_json::to_string_pretty(&plugins)?);
-        Ok(())
+        Ok(plugins)
     }
 
     async fn upload_plugin(
@@ -1108,7 +1106,9 @@ impl Client for NetworkClient {
         Ok(())
     }
 
-    async fn list_samples_oneshot(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn list_samples_oneshot(
+        &self,
+    ) -> Result<Vec<SamplePipeline>, Box<dyn std::error::Error + Send + Sync>> {
         let url = http_base_url(&self.server_url)?.join("/api/v1/samples/oneshot")?;
         let response = self.http.get(url).send().await?;
         if !response.status().is_success() {
@@ -1117,11 +1117,12 @@ impl Client for NetworkClient {
             return Err(format!("Server returned error {status}: {body}").into());
         }
         let samples: Vec<SamplePipeline> = response.json().await?;
-        println!("{}", serde_json::to_string_pretty(&samples)?);
-        Ok(())
+        Ok(samples)
     }
 
-    async fn list_samples_dynamic(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn list_samples_dynamic(
+        &self,
+    ) -> Result<Vec<SamplePipeline>, Box<dyn std::error::Error + Send + Sync>> {
         let url = http_base_url(&self.server_url)?.join("/api/v1/samples/dynamic")?;
         let response = self.http.get(url).send().await?;
         if !response.status().is_success() {
@@ -1130,8 +1131,7 @@ impl Client for NetworkClient {
             return Err(format!("Server returned error {status}: {body}").into());
         }
         let samples: Vec<SamplePipeline> = response.json().await?;
-        println!("{}", serde_json::to_string_pretty(&samples)?);
-        Ok(())
+        Ok(samples)
     }
 
     async fn get_sample(
@@ -1201,7 +1201,9 @@ impl Client for NetworkClient {
         Err(format!("Server returned error {status}: {body}").into())
     }
 
-    async fn list_audio_assets(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn list_audio_assets(
+        &self,
+    ) -> Result<Vec<AudioAsset>, Box<dyn std::error::Error + Send + Sync>> {
         let url = http_base_url(&self.server_url)?.join("/api/v1/assets/audio")?;
         let response = self.http.get(url).send().await?;
         if !response.status().is_success() {
@@ -1210,8 +1212,7 @@ impl Client for NetworkClient {
             return Err(format!("Server returned error {status}: {body}").into());
         }
         let assets: Vec<AudioAsset> = response.json().await?;
-        println!("{}", serde_json::to_string_pretty(&assets)?);
-        Ok(())
+        Ok(assets)
     }
 
     async fn upload_audio_asset(
@@ -1439,19 +1440,61 @@ pub async fn process_oneshot_with_client(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::output::{CliOutput, OutputFormat};
 
-    /// A mock implementation of [`Client`] that records method calls without
-    /// requiring a running server, demonstrating the trait is usable for testing.
-    struct MockClient {
+    /// A mock implementation of [`Client`] that records method calls and
+    /// returns pre-loaded data without requiring a running server.
+    pub struct MockClient {
         calls: std::sync::Mutex<Vec<String>>,
+        pub sessions: Vec<SessionInfo>,
+        pub nodes: Vec<NodeDefinition>,
+        pub config: FrontendConfig,
+        pub permissions: PermissionsResponse,
+        pub plugins: Vec<PluginSummary>,
+        pub samples_oneshot: Vec<SamplePipeline>,
+        pub samples_dynamic: Vec<SamplePipeline>,
+        pub audio_assets: Vec<AudioAsset>,
+        pub packet_schemas: serde_json::Value,
+        pub pipeline: ApiPipeline,
     }
 
     impl MockClient {
         fn new() -> Self {
-            Self { calls: std::sync::Mutex::new(Vec::new()) }
+            Self {
+                calls: std::sync::Mutex::new(Vec::new()),
+                sessions: Vec::new(),
+                nodes: Vec::new(),
+                config: FrontendConfig { moq_gateway_url: None },
+                permissions: PermissionsResponse {
+                    role: "admin".to_string(),
+                    permissions: PermissionsInfo {
+                        create_sessions: true,
+                        destroy_sessions: true,
+                        list_sessions: true,
+                        modify_sessions: true,
+                        tune_nodes: true,
+                        load_plugins: true,
+                        delete_plugins: true,
+                        list_nodes: true,
+                        list_samples: true,
+                        read_samples: true,
+                        write_samples: true,
+                        delete_samples: true,
+                        access_all_sessions: true,
+                        upload_assets: true,
+                        delete_assets: true,
+                    },
+                },
+                plugins: Vec::new(),
+                samples_oneshot: Vec::new(),
+                samples_dynamic: Vec::new(),
+                audio_assets: Vec::new(),
+                packet_schemas: serde_json::json!({}),
+                pipeline: ApiPipeline::default(),
+            }
         }
 
         fn record(&self, method: &str) {
@@ -1503,22 +1546,26 @@ mod tests {
             Ok(())
         }
 
-        async fn list_sessions(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        async fn list_sessions(
+            &self,
+        ) -> Result<Vec<SessionInfo>, Box<dyn std::error::Error + Send + Sync>> {
             self.record("list_sessions");
-            Ok(())
+            Ok(self.sessions.clone())
         }
 
-        async fn control_list_nodes(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        async fn control_list_nodes(
+            &self,
+        ) -> Result<Vec<NodeDefinition>, Box<dyn std::error::Error + Send + Sync>> {
             self.record("control_list_nodes");
-            Ok(())
+            Ok(self.nodes.clone())
         }
 
         async fn control_get_pipeline(
             &self,
             _session_id: &str,
-        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        ) -> Result<Box<ApiPipeline>, Box<dyn std::error::Error + Send + Sync>> {
             self.record("control_get_pipeline");
-            Ok(())
+            Ok(Box::new(self.pipeline.clone()))
         }
 
         async fn control_add_node(
@@ -1594,39 +1641,47 @@ mod tests {
             Ok(())
         }
 
-        async fn get_config(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        async fn get_config(
+            &self,
+        ) -> Result<FrontendConfig, Box<dyn std::error::Error + Send + Sync>> {
             self.record("get_config");
-            Ok(())
+            Ok(self.config.clone())
         }
 
-        async fn get_permissions(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        async fn get_permissions(
+            &self,
+        ) -> Result<PermissionsResponse, Box<dyn std::error::Error + Send + Sync>> {
             self.record("get_permissions");
-            Ok(())
+            Ok(self.permissions.clone())
         }
 
-        async fn list_node_schemas(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        async fn list_node_schemas(
+            &self,
+        ) -> Result<Vec<NodeDefinition>, Box<dyn std::error::Error + Send + Sync>> {
             self.record("list_node_schemas");
-            Ok(())
+            Ok(self.nodes.clone())
         }
 
         async fn list_packet_schemas(
             &self,
-        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
             self.record("list_packet_schemas");
-            Ok(())
+            Ok(self.packet_schemas.clone())
         }
 
         async fn get_pipeline(
             &self,
             _session_id: &str,
-        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        ) -> Result<ApiPipeline, Box<dyn std::error::Error + Send + Sync>> {
             self.record("get_pipeline");
-            Ok(())
+            Ok(self.pipeline.clone())
         }
 
-        async fn list_plugins(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        async fn list_plugins(
+            &self,
+        ) -> Result<Vec<PluginSummary>, Box<dyn std::error::Error + Send + Sync>> {
             self.record("list_plugins");
-            Ok(())
+            Ok(self.plugins.clone())
         }
 
         async fn upload_plugin(
@@ -1648,16 +1703,16 @@ mod tests {
 
         async fn list_samples_oneshot(
             &self,
-        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        ) -> Result<Vec<SamplePipeline>, Box<dyn std::error::Error + Send + Sync>> {
             self.record("list_samples_oneshot");
-            Ok(())
+            Ok(self.samples_oneshot.clone())
         }
 
         async fn list_samples_dynamic(
             &self,
-        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        ) -> Result<Vec<SamplePipeline>, Box<dyn std::error::Error + Send + Sync>> {
             self.record("list_samples_dynamic");
-            Ok(())
+            Ok(self.samples_dynamic.clone())
         }
 
         async fn get_sample(
@@ -1689,9 +1744,11 @@ mod tests {
             Ok(())
         }
 
-        async fn list_audio_assets(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        async fn list_audio_assets(
+            &self,
+        ) -> Result<Vec<AudioAsset>, Box<dyn std::error::Error + Send + Sync>> {
             self.record("list_audio_assets");
-            Ok(())
+            Ok(self.audio_assets.clone())
         }
 
         async fn upload_audio_asset(
@@ -1728,10 +1785,90 @@ mod tests {
         let mock = MockClient::new();
         let client: &dyn Client = &mock;
 
-        client.list_sessions().await.unwrap();
-        client.get_config().await.unwrap();
+        let _ = client.list_sessions().await.unwrap();
+        let _ = client.get_config().await.unwrap();
         client.destroy_session("test-session").await.unwrap();
 
         assert_eq!(mock.calls(), vec!["list_sessions", "get_config", "destroy_session"]);
+    }
+
+    #[tokio::test]
+    async fn mock_client_list_sessions_returns_data() {
+        let mut mock = MockClient::new();
+        mock.sessions = vec![
+            SessionInfo {
+                id: "sess-1".to_string(),
+                name: Some("Test Session".to_string()),
+                created_at: "2025-01-01T00:00:00Z".to_string(),
+            },
+            SessionInfo {
+                id: "sess-2".to_string(),
+                name: None,
+                created_at: "2025-01-02T00:00:00Z".to_string(),
+            },
+        ];
+
+        let sessions = mock.list_sessions().await.unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].id, "sess-1");
+        assert_eq!(sessions[0].name.as_deref(), Some("Test Session"));
+        assert_eq!(sessions[1].id, "sess-2");
+        assert!(sessions[1].name.is_none());
+    }
+
+    #[tokio::test]
+    async fn mock_client_list_sessions_json_output() {
+        let mut mock = MockClient::new();
+        mock.sessions = vec![SessionInfo {
+            id: "sess-json".to_string(),
+            name: Some("JSON Test".to_string()),
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+        }];
+
+        let sessions = mock.list_sessions().await.unwrap();
+        let json = serde_json::to_string_pretty(&sessions).expect("serialize");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert!(parsed.is_array());
+        assert_eq!(parsed[0]["id"], "sess-json");
+    }
+
+    #[tokio::test]
+    async fn cli_output_text_format() {
+        let mock = MockClient::new();
+        let sessions = mock.list_sessions().await.unwrap();
+        let _output =
+            CliOutput::new(OutputFormat::Text, &sessions, |s| format!("{} sessions", s.len()));
+    }
+
+    #[tokio::test]
+    async fn cli_output_json_format() {
+        let mock = MockClient::new();
+        let sessions = mock.list_sessions().await.unwrap();
+        let _output =
+            CliOutput::new(OutputFormat::Json, &sessions, |s| format!("{} sessions", s.len()));
+    }
+
+    #[tokio::test]
+    async fn mock_client_get_config_returns_data() {
+        let mut mock = MockClient::new();
+        mock.config =
+            FrontendConfig { moq_gateway_url: Some("https://gw.example.com".to_string()) };
+
+        let config = mock.get_config().await.unwrap();
+        assert_eq!(config.moq_gateway_url.as_deref(), Some("https://gw.example.com"));
+    }
+
+    #[tokio::test]
+    async fn mock_client_list_plugins_empty() {
+        let mock = MockClient::new();
+        let plugins = mock.list_plugins().await.unwrap();
+        assert!(plugins.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mock_client_get_permissions_returns_data() {
+        let mock = MockClient::new();
+        let perms = mock.get_permissions().await.unwrap();
+        assert_eq!(perms.role, "admin");
     }
 }
