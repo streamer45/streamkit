@@ -11,6 +11,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use libloading::Library;
 use std::ffi::{c_void, CString};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use streamkit_core::control::NodeControlMessage;
@@ -30,6 +31,29 @@ use streamkit_plugin_sdk_native::{
 use tracing::{error, info, warn};
 
 use crate::PluginMetadata;
+
+// ── Host-side FFI panic guards ─────────────────────────────────────────────
+//
+// These guard the `extern "C"` callbacks that the host exposes to plugins.
+// A misbehaving plugin could trigger a panic in host code (e.g. via a
+// poisoned mutex or an unexpected null pointer); without `catch_unwind` the
+// panic would unwind across the C ABI boundary — instant UB.
+
+fn ffi_guard_result<F: FnOnce() -> CResult>(f: F) -> CResult {
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| CResult::error(std::ptr::null()))
+}
+
+fn ffi_guard_alloc_video<F: FnOnce() -> CAllocVideoResult>(f: F) -> CAllocVideoResult {
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| CAllocVideoResult::null())
+}
+
+fn ffi_guard_alloc_audio<F: FnOnce() -> CAllocAudioResult>(f: F) -> CAllocAudioResult {
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| CAllocAudioResult::null())
+}
+
+fn ffi_guard_unit<F: FnOnce()>(f: F) {
+    let _ = catch_unwind(AssertUnwindSafe(f));
+}
 
 struct InstanceState {
     library: Arc<Library>,
@@ -109,8 +133,8 @@ impl InstanceState {
     }
 }
 
-/// C callback function for plugin logging
-/// Routes plugin logs to the tracing infrastructure
+/// C callback function for plugin logging.
+/// Routes plugin logs to the tracing infrastructure.
 #[allow(clippy::cognitive_complexity)]
 extern "C" fn plugin_log_callback(
     level: streamkit_plugin_sdk_native::types::CLogLevel,
@@ -118,41 +142,41 @@ extern "C" fn plugin_log_callback(
     message: *const std::os::raw::c_char,
     _user_data: *mut c_void,
 ) {
-    use streamkit_plugin_sdk_native::{conversions, types::CLogLevel};
+    ffi_guard_unit(|| {
+        use streamkit_plugin_sdk_native::{conversions, types::CLogLevel};
 
-    // Convert C strings to Rust strings
-    let target_str = if target.is_null() {
-        "unknown".to_string()
-    } else {
-        unsafe { conversions::c_str_to_string(target) }.unwrap_or_else(|_| "unknown".to_string())
-    };
+        let target_str = if target.is_null() {
+            "unknown".to_string()
+        } else {
+            unsafe { conversions::c_str_to_string(target) }
+                .unwrap_or_else(|_| "unknown".to_string())
+        };
 
-    let message_str = if message.is_null() {
-        String::new()
-    } else {
-        unsafe { conversions::c_str_to_string(message) }
-            .unwrap_or_else(|_| "[invalid UTF-8]".to_string())
-    };
+        let message_str = if message.is_null() {
+            String::new()
+        } else {
+            unsafe { conversions::c_str_to_string(message) }
+                .unwrap_or_else(|_| "[invalid UTF-8]".to_string())
+        };
 
-    // Route to tracing based on log level
-    // Use the event! macro which allows dynamic targets
-    match level {
-        CLogLevel::Trace => {
-            tracing::event!(tracing::Level::TRACE, target = %target_str, "{}", message_str);
-        },
-        CLogLevel::Debug => {
-            tracing::event!(tracing::Level::DEBUG, target = %target_str, "{}", message_str);
-        },
-        CLogLevel::Info => {
-            tracing::event!(tracing::Level::INFO, target = %target_str, "{}", message_str);
-        },
-        CLogLevel::Warn => {
-            tracing::event!(tracing::Level::WARN, target = %target_str, "{}", message_str);
-        },
-        CLogLevel::Error => {
-            tracing::event!(tracing::Level::ERROR, target = %target_str, "{}", message_str);
-        },
-    }
+        match level {
+            CLogLevel::Trace => {
+                tracing::event!(tracing::Level::TRACE, target = %target_str, "{}", message_str);
+            },
+            CLogLevel::Debug => {
+                tracing::event!(tracing::Level::DEBUG, target = %target_str, "{}", message_str);
+            },
+            CLogLevel::Info => {
+                tracing::event!(tracing::Level::INFO, target = %target_str, "{}", message_str);
+            },
+            CLogLevel::Warn => {
+                tracing::event!(tracing::Level::WARN, target = %target_str, "{}", message_str);
+            },
+            CLogLevel::Error => {
+                tracing::event!(tracing::Level::ERROR, target = %target_str, "{}", message_str);
+            },
+        }
+    });
 }
 
 /// Wrapper that implements ProcessorNode for native plugins
@@ -1103,47 +1127,49 @@ unsafe fn free_packet_buffer_handle(c_packet: *const CPacket) {
     }
 }
 
-/// C callback function for sending output packets
-/// This collects packets and they are sent asynchronously after the callback returns
+/// C callback function for sending output packets.
+/// This collects packets and they are sent asynchronously after the callback returns.
 extern "C" fn output_callback_shim(
     pin_name: *const std::os::raw::c_char,
     c_packet: *const CPacket,
     user_data: *mut c_void,
 ) -> CResult {
-    if pin_name.is_null() || c_packet.is_null() || user_data.is_null() {
-        return CResult::error(std::ptr::null());
-    }
-
-    // SAFETY: user_data is a valid pointer to CallbackContext that we passed to process_packet.
-    // The pointer remains valid for the duration of this callback.
-    let ctx = unsafe { &mut *user_data.cast::<CallbackContext>() };
-
-    // SAFETY: pin_name is a valid C string pointer provided by the plugin.
-    let pin_str = match unsafe { conversions::c_str_to_string(pin_name) } {
-        Ok(s) => s,
-        Err(e) => {
-            ctx.error = Some(format!("Invalid pin name: {e}"));
-            // Free any pooled buffer the plugin already consumed.
-            unsafe { free_packet_buffer_handle(c_packet) };
+    ffi_guard_result(|| {
+        if pin_name.is_null() || c_packet.is_null() || user_data.is_null() {
             return CResult::error(std::ptr::null());
-        },
-    };
+        }
 
-    // SAFETY: c_packet is a valid pointer to CPacket provided by the plugin.
-    let packet = match unsafe { conversions::packet_from_c(c_packet) } {
-        Ok(p) => p,
-        Err(e) => {
-            // packet_from_c already frees the buffer_handle on its own error
-            // paths (Critical #1), so no extra cleanup needed here.
-            ctx.error = Some(format!("Failed to convert packet: {e}"));
-            return CResult::error(std::ptr::null());
-        },
-    };
+        // SAFETY: user_data is a valid pointer to CallbackContext that we passed to process_packet.
+        // The pointer remains valid for the duration of this callback.
+        let ctx = unsafe { &mut *user_data.cast::<CallbackContext>() };
 
-    // Store packet for async sending after callback returns
-    ctx.output_packets.push((pin_str, packet));
+        // SAFETY: pin_name is a valid C string pointer provided by the plugin.
+        let pin_str = match unsafe { conversions::c_str_to_string(pin_name) } {
+            Ok(s) => s,
+            Err(e) => {
+                ctx.error = Some(format!("Invalid pin name: {e}"));
+                // Free any pooled buffer the plugin already consumed.
+                unsafe { free_packet_buffer_handle(c_packet) };
+                return CResult::error(std::ptr::null());
+            },
+        };
 
-    CResult::success()
+        // SAFETY: c_packet is a valid pointer to CPacket provided by the plugin.
+        let packet = match unsafe { conversions::packet_from_c(c_packet) } {
+            Ok(p) => p,
+            Err(e) => {
+                // packet_from_c already frees the buffer_handle on its own error
+                // paths (Critical #1), so no extra cleanup needed here.
+                ctx.error = Some(format!("Failed to convert packet: {e}"));
+                return CResult::error(std::ptr::null());
+            },
+        };
+
+        // Store packet for async sending after callback returns
+        ctx.output_packets.push((pin_str, packet));
+
+        CResult::success()
+    })
 }
 
 /// C callback function for emitting telemetry events.
@@ -1157,135 +1183,149 @@ extern "C" fn telemetry_callback_shim(
     metadata: *const streamkit_plugin_sdk_native::types::CPacketMetadata,
     user_data: *mut c_void,
 ) -> CResult {
-    if event_type.is_null() || user_data.is_null() {
-        return CResult::success();
-    }
-
-    let ctx = unsafe { &mut *user_data.cast::<CallbackContext>() };
-    let Some(ref tx) = ctx.telemetry_tx else {
-        return CResult::success();
-    };
-
-    let event_type_str = match unsafe { conversions::c_str_to_string(event_type) } {
-        Ok(s) => s,
-        Err(e) => {
-            warn!(error = %e, node = %ctx.node_id, "Invalid telemetry event_type");
+    ffi_guard_result(|| {
+        if event_type.is_null() || user_data.is_null() {
             return CResult::success();
-        },
-    };
+        }
 
-    let data_value = if data_json.is_null() || data_len == 0 {
-        serde_json::Value::Object(serde_json::Map::new())
-    } else {
-        let bytes = unsafe { std::slice::from_raw_parts(data_json, data_len) };
-        match serde_json::from_slice::<serde_json::Value>(bytes) {
-            Ok(v) => v,
+        let ctx = unsafe { &mut *user_data.cast::<CallbackContext>() };
+        let Some(ref tx) = ctx.telemetry_tx else {
+            return CResult::success();
+        };
+
+        let event_type_str = match unsafe { conversions::c_str_to_string(event_type) } {
+            Ok(s) => s,
             Err(e) => {
-                warn!(error = %e, node = %ctx.node_id, event_type = %event_type_str, "Invalid telemetry JSON payload");
+                warn!(error = %e, node = %ctx.node_id, "Invalid telemetry event_type");
                 return CResult::success();
             },
-        }
-    };
+        };
 
-    let timestamp_us = if metadata.is_null() {
-        None
-    } else {
-        let meta = unsafe { &*metadata };
-        if meta.has_timestamp_us {
-            Some(meta.timestamp_us)
+        let data_value = if data_json.is_null() || data_len == 0 {
+            serde_json::Value::Object(serde_json::Map::new())
         } else {
+            let bytes = unsafe { std::slice::from_raw_parts(data_json, data_len) };
+            match serde_json::from_slice::<serde_json::Value>(bytes) {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(error = %e, node = %ctx.node_id, event_type = %event_type_str, "Invalid telemetry JSON payload");
+                    return CResult::success();
+                },
+            }
+        };
+
+        let timestamp_us = if metadata.is_null() {
             None
+        } else {
+            let meta = unsafe { &*metadata };
+            if meta.has_timestamp_us {
+                Some(meta.timestamp_us)
+            } else {
+                None
+            }
         }
-    }
-    .unwrap_or_else(|| {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .ok()
-            .and_then(|d| u64::try_from(d.as_micros()).ok())
-            .unwrap_or(0)
-    });
+        .unwrap_or_else(|| {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .and_then(|d| u64::try_from(d.as_micros()).ok())
+                .unwrap_or(0)
+        });
 
-    let mut event_data = match data_value {
-        serde_json::Value::Object(map) => serde_json::Value::Object(map),
-        other => serde_json::json!({ "value": other }),
-    };
+        let mut event_data = match data_value {
+            serde_json::Value::Object(map) => serde_json::Value::Object(map),
+            other => serde_json::json!({ "value": other }),
+        };
 
-    if let Some(obj) = event_data.as_object_mut() {
-        obj.insert("event_type".to_string(), serde_json::Value::String(event_type_str));
-    }
+        if let Some(obj) = event_data.as_object_mut() {
+            obj.insert("event_type".to_string(), serde_json::Value::String(event_type_str));
+        }
 
-    let event =
-        TelemetryEvent::new(ctx.session_id.clone(), ctx.node_id.clone(), event_data, timestamp_us);
+        let event = TelemetryEvent::new(
+            ctx.session_id.clone(),
+            ctx.node_id.clone(),
+            event_data,
+            timestamp_us,
+        );
 
-    if tx.try_send(event).is_err() {
-        // Drop silently: best-effort.
-    }
+        if tx.try_send(event).is_err() {
+            // Drop silently: best-effort.
+        }
 
-    CResult::success()
+        CResult::success()
+    })
 }
 
 // ── Frame pool allocation shims (v6) ─────────────────────────────────────
 
 /// Allocate a video buffer from the host's frame pool.
 extern "C" fn alloc_video_shim(min_bytes: usize, user_data: *mut c_void) -> CAllocVideoResult {
-    use streamkit_core::frame_pool::PooledVideoData;
+    ffi_guard_alloc_video(|| {
+        use streamkit_core::frame_pool::PooledVideoData;
 
-    if user_data.is_null() {
-        return CAllocVideoResult::null();
-    }
+        if user_data.is_null() {
+            return CAllocVideoResult::null();
+        }
 
-    let ctx = unsafe { &*user_data.cast::<CallbackContext>() };
-    let Some(pool) = ctx.video_pool.as_ref() else {
-        return CAllocVideoResult::null();
-    };
+        let ctx = unsafe { &*user_data.cast::<CallbackContext>() };
+        let Some(pool) = ctx.video_pool.as_ref() else {
+            return CAllocVideoResult::null();
+        };
 
-    let mut pooled: PooledVideoData = pool.get(min_bytes);
-    let data_ptr = pooled.as_mut_ptr();
-    let len = pooled.len();
-    let handle = Box::into_raw(Box::new(pooled)).cast::<c_void>();
+        let mut pooled: PooledVideoData = pool.get(min_bytes);
+        let data_ptr = pooled.as_mut_ptr();
+        let len = pooled.len();
+        let handle = Box::into_raw(Box::new(pooled)).cast::<c_void>();
 
-    CAllocVideoResult { data: data_ptr, len, handle, free_fn: Some(free_video_buffer) }
+        CAllocVideoResult { data: data_ptr, len, handle, free_fn: Some(free_video_buffer) }
+    })
 }
 
 /// Free a video buffer without sending it (error/discard path).
 extern "C" fn free_video_buffer(handle: *mut c_void) {
-    use streamkit_core::frame_pool::PooledVideoData;
+    ffi_guard_unit(|| {
+        use streamkit_core::frame_pool::PooledVideoData;
 
-    if !handle.is_null() {
-        // SAFETY: handle was created by alloc_video_shim via Box::into_raw.
-        let _ = unsafe { Box::from_raw(handle.cast::<PooledVideoData>()) };
-    }
+        if !handle.is_null() {
+            // SAFETY: handle was created by alloc_video_shim via Box::into_raw.
+            let _ = unsafe { Box::from_raw(handle.cast::<PooledVideoData>()) };
+        }
+    });
 }
 
 /// Allocate an audio buffer from the host's frame pool.
 extern "C" fn alloc_audio_shim(min_samples: usize, user_data: *mut c_void) -> CAllocAudioResult {
-    use streamkit_core::frame_pool::PooledSamples;
+    ffi_guard_alloc_audio(|| {
+        use streamkit_core::frame_pool::PooledSamples;
 
-    if user_data.is_null() {
-        return CAllocAudioResult::null();
-    }
+        if user_data.is_null() {
+            return CAllocAudioResult::null();
+        }
 
-    let ctx = unsafe { &*user_data.cast::<CallbackContext>() };
-    let Some(pool) = ctx.audio_pool.as_ref() else {
-        return CAllocAudioResult::null();
-    };
+        let ctx = unsafe { &*user_data.cast::<CallbackContext>() };
+        let Some(pool) = ctx.audio_pool.as_ref() else {
+            return CAllocAudioResult::null();
+        };
 
-    let mut pooled: PooledSamples = pool.get(min_samples);
-    let data_ptr = pooled.as_mut_ptr();
-    let sample_count = pooled.len();
-    let handle = Box::into_raw(Box::new(pooled)).cast::<c_void>();
+        let mut pooled: PooledSamples = pool.get(min_samples);
+        let data_ptr = pooled.as_mut_ptr();
+        let sample_count = pooled.len();
+        let handle = Box::into_raw(Box::new(pooled)).cast::<c_void>();
 
-    CAllocAudioResult { data: data_ptr, sample_count, handle, free_fn: Some(free_audio_buffer) }
+        CAllocAudioResult { data: data_ptr, sample_count, handle, free_fn: Some(free_audio_buffer) }
+    })
 }
 
 /// Free an audio buffer without sending it (error/discard path).
 extern "C" fn free_audio_buffer(handle: *mut c_void) {
-    use streamkit_core::frame_pool::PooledSamples;
+    ffi_guard_unit(|| {
+        use streamkit_core::frame_pool::PooledSamples;
 
-    if !handle.is_null() {
-        let _ = unsafe { Box::from_raw(handle.cast::<PooledSamples>()) };
-    }
+        if !handle.is_null() {
+            let _ = unsafe { Box::from_raw(handle.cast::<PooledSamples>()) };
+        }
+    });
 }
 
 /// Build a `CNodeCallbacks` struct from a `CallbackContext` pointer.
@@ -1302,5 +1342,33 @@ fn build_node_callbacks(callback_data: *mut c_void) -> CNodeCallbacks {
         alloc_video: Some(alloc_video_shim),
         alloc_audio: Some(alloc_audio_shim),
         alloc_user_data: callback_data,
+    }
+}
+
+#[cfg(test)]
+mod ffi_guard_tests {
+    use super::*;
+
+    #[test]
+    fn host_guard_result_catches_panic() {
+        let r = ffi_guard_result(|| panic!("host boom"));
+        assert!(!r.success);
+    }
+
+    #[test]
+    fn host_guard_alloc_video_catches_panic() {
+        let r = ffi_guard_alloc_video(|| panic!("video alloc boom"));
+        assert!(r.data.is_null());
+    }
+
+    #[test]
+    fn host_guard_alloc_audio_catches_panic() {
+        let r = ffi_guard_alloc_audio(|| panic!("audio alloc boom"));
+        assert!(r.data.is_null());
+    }
+
+    #[test]
+    fn host_guard_unit_catches_panic() {
+        ffi_guard_unit(|| panic!("unit boom"));
     }
 }
