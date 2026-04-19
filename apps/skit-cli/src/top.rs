@@ -620,8 +620,7 @@ mod tests {
     #[test]
     fn test_parse_stats_event_global_specific_session() {
         let msg = r#"{"type":"event","payload":{"event":"nodestatsupdated","session_id":"abc","node_id":"src","stats":{"received":10,"sent":10,"discarded":0,"errored":0,"duration_secs":1.0}}}"#;
-        let (sid, nid, _) =
-            parse_stats_event_global(msg, Some("abc")).expect("should parse");
+        let (sid, nid, _) = parse_stats_event_global(msg, Some("abc")).expect("should parse");
         assert_eq!(sid, "abc");
         assert_eq!(nid, "src");
         assert!(parse_stats_event_global(msg, Some("xyz")).is_none());
