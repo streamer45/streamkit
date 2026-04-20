@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use libloading::Library;
 use std::ffi::{c_void, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::Arc;
 use streamkit_core::control::NodeControlMessage;
 use streamkit_core::telemetry::TelemetryEvent;
@@ -117,9 +117,10 @@ pub(crate) const DEFAULT_CALL_TIMEOUT: std::time::Duration = std::time::Duration
 /// — and the `Library` keeping it alive is behind an `Arc`.
 struct ApiPtr(*const CNativePluginAPI);
 
-// SAFETY: see ApiPtr doc.
+// SAFETY: The pointee is a static vtable of function pointers, never mutated
+// after construction.  The `Library` owning the symbol is kept alive by an `Arc`.
 unsafe impl Send for ApiPtr {}
-// SAFETY: see ApiPtr doc.
+// SAFETY: Same as Send — immutable vtable behind Arc<Library>.
 unsafe impl Sync for ApiPtr {}
 
 /// RAII guard for an in-flight FFI call.
@@ -151,7 +152,7 @@ impl Drop for CallGuard<'_> {
 struct InstanceState {
     library: Arc<Library>,
     api: ApiPtr,
-    handle_addr: AtomicUsize,
+    handle: AtomicPtr<c_void>,
     in_flight_calls: AtomicUsize,
     drop_requested: AtomicBool,
     /// Plugin's declared API version (6, 7, or 8).  Used to avoid sending
@@ -163,7 +164,7 @@ struct InstanceState {
 }
 
 impl InstanceState {
-    fn new(
+    const fn new(
         library: Arc<Library>,
         api: &'static CNativePluginAPI,
         handle: CPluginHandle,
@@ -173,7 +174,7 @@ impl InstanceState {
         Self {
             library,
             api: ApiPtr(std::ptr::from_ref(api)),
-            handle_addr: AtomicUsize::new(handle as usize),
+            handle: AtomicPtr::new(handle),
             in_flight_calls: AtomicUsize::new(0),
             drop_requested: AtomicBool::new(false),
             api_version,
@@ -191,13 +192,13 @@ impl InstanceState {
     fn begin_call(&self) -> Option<CallGuard<'_>> {
         self.in_flight_calls.fetch_add(1, Ordering::AcqRel);
 
-        let handle_addr = self.handle_addr.load(Ordering::Acquire);
-        if handle_addr == 0 {
+        let h = self.handle.load(Ordering::Acquire);
+        if h.is_null() {
             self.in_flight_calls.fetch_sub(1, Ordering::AcqRel);
             return None;
         }
 
-        Some(CallGuard { state: self, handle: handle_addr as CPluginHandle })
+        Some(CallGuard { state: self, handle: h })
     }
 
     fn finish_call(&self) {
@@ -217,15 +218,15 @@ impl InstanceState {
     }
 
     fn destroy_instance(&self) {
-        let handle_addr = self.handle_addr.swap(0, Ordering::AcqRel);
-        if handle_addr == 0 {
+        let h = self.handle.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        if h.is_null() {
             return;
         }
 
         // Keep the library alive for the duration of the destroy call.
         let _lib = Arc::clone(&self.library);
         let api = self.api();
-        (api.destroy_instance)(handle_addr as CPluginHandle);
+        (api.destroy_instance)(h);
     }
 }
 
@@ -361,10 +362,9 @@ impl ProcessorNode for NativeNodeWrapper {
         }
 
         // success=true, non-null json_schema → JSON string containing the schema.
-        // SAFETY: result.json_schema points to a thread-local CString set by
-        // error_to_c (used here as a generic "String → *const c_char" helper).
-        // We must copy the string BEFORE the guard drops (which calls finish_call,
-        // potentially invoking error_to_c again and overwriting the thread-local buffer).
+        // SAFETY: result.json_schema points to a thread-local CString managed
+        // by the plugin SDK.  We copy the string BEFORE dropping the guard so
+        // no subsequent FFI call can overwrite the thread-local buffer.
         let json_str = unsafe { conversions::c_str_to_string(result.json_schema) }.ok();
         drop(guard);
         json_str.and_then(|s| serde_json::from_str(&s).ok())
@@ -400,6 +400,11 @@ impl NativeNodeWrapper {
             Some(timeout) => tokio::time::timeout(timeout, task)
                 .await
                 .map_err(|_| {
+                    warn!(
+                        "Plugin {op} timed out after {timeout:?}; \
+                         the blocking task is still running and holds a CallGuard — \
+                         in_flight_calls will remain elevated until it completes"
+                    );
                     StreamKitError::Runtime(format!("Plugin {op} timed out after {timeout:?}"))
                 })?
                 .map_err(|e| StreamKitError::Runtime(format!("Plugin {op} task panicked: {e}"))),
@@ -514,39 +519,7 @@ impl NativeNodeWrapper {
                 maybe_control = context.control_rx.recv(), if control_channel_open => {
                     match maybe_control {
                         Some(NodeControlMessage::UpdateParams(params_value)) => {
-                            // Serialize params to JSON string
-                            let params_json = serde_json::to_string(&params_value)
-                                .map_err(|e| StreamKitError::Configuration(format!("Failed to serialize params: {e}")))?;
-                            let params_cstr = CString::new(params_json)
-                                .map_err(|e| StreamKitError::Configuration(format!("Invalid params string: {e}")))?;
-
-                            let state = Arc::clone(&self.state);
-                            let error_msg = self.call_with_timeout("update_params", move || {
-                                let guard = state.begin_call()?;
-
-                                let _lib = Arc::clone(&state.library);
-                                let api = state.api();
-                                let result = (api.update_params)(guard.handle(), params_cstr.as_ptr());
-
-                                // Convert error message immediately to String (CResult is not Send)
-                                if result.success {
-                                    None
-                                } else if result.error_message.is_null() {
-                                    Some("Failed to update parameters".to_string())
-                                } else {
-                                    // SAFETY: The error_message pointer is provided by the plugin
-                                    // and is valid for the duration of this call.
-                                    unsafe {
-                                        Some(conversions::c_str_to_string(result.error_message)
-                                            .unwrap_or_else(|_| "Failed to update parameters".to_string()))
-                                    }
-                                }
-                            })
-                            .await?;
-
-                            if let Some(err) = error_msg {
-                                warn!(node = %node_name, error = %err, "Parameter update failed");
-                            }
+                            self.apply_params_update(&node_name, &params_value).await?;
                         }
                         Some(NodeControlMessage::Start) => {
                             // Native plugins don't implement ready/start lifecycle - ignore
@@ -574,7 +547,10 @@ impl NativeNodeWrapper {
 
                         let (outputs, error) = self.call_with_timeout("flush", move || {
                             let Some(guard) = state.begin_call() else {
-                                return (Vec::new(), None);
+                                return (
+                                    Vec::new(),
+                                    Some("Instance destroyed during flush".to_string()),
+                                );
                             };
 
                             let _lib = Arc::clone(&state.library);
@@ -645,7 +621,10 @@ impl NativeNodeWrapper {
                     let audio_pool = audio_pool.clone();
                     let (outputs, error) = self.call_with_timeout("process_packet", move || {
                         let Some(guard) = state.begin_call() else {
-                            return (Vec::new(), None);
+                            return (
+                                Vec::new(),
+                                Some("Instance destroyed during process_packet".to_string()),
+                            );
                         };
 
                         let _lib = Arc::clone(&state.library);
@@ -1642,7 +1621,7 @@ mod ffi_guard_tests {
         Arc::new(InstanceState::new(
             Arc::new(lib),
             api,
-            1 as CPluginHandle, // non-zero dummy handle
+            std::ptr::without_provenance_mut::<c_void>(1), // non-null dummy handle
             8,
             None,
         ))
@@ -1672,6 +1651,20 @@ mod ffi_guard_tests {
             state.in_flight_calls.load(Ordering::Acquire),
             0,
             "guard must decrement in_flight_calls even on panic"
+        );
+    }
+
+    #[test]
+    fn begin_call_returns_none_after_request_drop() {
+        let state = test_instance_state();
+        state.request_drop();
+        // After request_drop the handle is swapped to null, so begin_call
+        // must return None.
+        assert!(state.begin_call().is_none(), "begin_call must return None after request_drop");
+        assert_eq!(
+            state.in_flight_calls.load(Ordering::Acquire),
+            0,
+            "failed begin_call must not leave in_flight_calls elevated"
         );
     }
 
