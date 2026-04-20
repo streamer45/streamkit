@@ -39,52 +39,51 @@ use crate::PluginMetadata;
 // poisoned mutex or an unexpected null pointer); without `catch_unwind` the
 // panic would unwind across the C ABI boundary — instant UB.
 //
-// Message extraction is delegated to
-// [`streamkit_plugin_sdk_native::ffi_guard::panic_message`] to avoid
-// reimplementing the same logic.
+// All guards are implemented in terms of `ffi_guard_with`, which handles
+// catch_unwind + panic message extraction + logging.  The `on_panic`
+// closure receives the formatted message so the caller can embed it in
+// the return value if desired.
+
+/// Generic host-side panic guard.
+///
+/// Runs `f` inside [`catch_unwind`].  On panic, extracts a human-readable
+/// message, logs it at `error!` level with `label`, and calls `on_panic`
+/// to produce a fallback return value.
+fn ffi_guard_with<T>(label: &str, on_panic: impl FnOnce(String) -> T, f: impl FnOnce() -> T) -> T {
+    match catch_unwind(AssertUnwindSafe(f)) {
+        Ok(value) => value,
+        Err(payload) => {
+            let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
+            error!("{label}: {msg}");
+            on_panic(format!("{label}: {msg}"))
+        },
+    }
+}
 
 /// Guard a host callback that returns [`CResult`].
-///
-/// On panic the error message is preserved via [`conversions::error_to_c`]
-/// and logged with [`tracing::error!`] for host-side observability.
-fn ffi_guard_result<F: FnOnce() -> CResult>(f: F) -> CResult {
-    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|payload| {
-        let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
-        error!("host callback panicked: {msg}");
-        CResult::error(conversions::error_to_c(format!("host callback panicked: {msg}")))
-    })
+fn ffi_guard_result(f: impl FnOnce() -> CResult) -> CResult {
+    ffi_guard_with("host callback panicked", |msg| CResult::error(conversions::error_to_c(msg)), f)
 }
 
 /// Guard a host callback that returns [`CAllocVideoResult`].
-///
-/// On panic, logs the error and returns a null allocation result.
-fn ffi_guard_alloc_video<F: FnOnce() -> CAllocVideoResult>(f: F) -> CAllocVideoResult {
-    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|payload| {
-        let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
-        error!("host video allocation callback panicked: {msg}");
-        CAllocVideoResult::null()
-    })
+fn ffi_guard_alloc_video(f: impl FnOnce() -> CAllocVideoResult) -> CAllocVideoResult {
+    ffi_guard_with("host video allocation callback panicked", |_| CAllocVideoResult::null(), f)
 }
 
 /// Guard a host callback that returns [`CAllocAudioResult`].
-///
-/// On panic, logs the error and returns a null allocation result.
-fn ffi_guard_alloc_audio<F: FnOnce() -> CAllocAudioResult>(f: F) -> CAllocAudioResult {
-    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|payload| {
-        let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
-        error!("host audio allocation callback panicked: {msg}");
-        CAllocAudioResult::null()
-    })
+fn ffi_guard_alloc_audio(f: impl FnOnce() -> CAllocAudioResult) -> CAllocAudioResult {
+    ffi_guard_with("host audio allocation callback panicked", |_| CAllocAudioResult::null(), f)
 }
 
 /// Guard a host callback that returns nothing (e.g. logging, buffer free).
-///
-/// On panic, logs the error and swallows the panic.
-fn ffi_guard_unit<F: FnOnce()>(f: F) {
-    if let Err(payload) = catch_unwind(AssertUnwindSafe(f)) {
-        let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
-        error!("host callback panicked: {msg}");
-    }
+fn ffi_guard_unit(f: impl FnOnce()) {
+    ffi_guard_with(
+        "host callback panicked",
+        |_| {},
+        || {
+            f();
+        },
+    );
 }
 
 struct InstanceState {
@@ -1440,5 +1439,59 @@ mod ffi_guard_tests {
     #[test]
     fn host_guard_unit_catches_panic() {
         ffi_guard_unit(|| panic!("unit boom"));
+    }
+
+    // ── Real shim tests ────────────────────────────────────────────────
+    //
+    // These exercise the actual `extern "C"` callback shims (not just the
+    // guard helpers) so that accidentally removing a guard from a shim
+    // body would be caught by CI.
+
+    #[test]
+    fn output_callback_shim_null_args_returns_error() {
+        let r = output_callback_shim(std::ptr::null(), std::ptr::null(), std::ptr::null_mut());
+        assert!(!r.success);
+    }
+
+    #[test]
+    fn output_callback_shim_valid_text_packet() {
+        let mut ctx = CallbackContext {
+            output_packets: Vec::new(),
+            error: None,
+            telemetry_tx: None,
+            session_id: None,
+            node_id: "test-node".to_string(),
+            video_pool: None,
+            audio_pool: None,
+        };
+        let user_data = (&raw mut ctx).cast::<c_void>();
+
+        let pin = CString::new("output").expect("valid pin");
+        // packet_from_c reads Text packets via CStr::from_ptr, so the
+        // data must be a null-terminated C string.
+        let text = CString::new("hello").expect("valid text");
+        let c_packet = CPacket {
+            packet_type: streamkit_plugin_sdk_native::types::CPacketType::Text,
+            data: text.as_ptr().cast(),
+            len: text.as_bytes_with_nul().len(),
+        };
+
+        let r = output_callback_shim(pin.as_ptr(), &raw const c_packet, user_data);
+        assert!(r.success, "expected success for valid text packet");
+        assert_eq!(ctx.output_packets.len(), 1);
+        assert_eq!(ctx.output_packets[0].0, "output");
+    }
+
+    #[test]
+    fn telemetry_callback_shim_null_args_returns_success() {
+        // telemetry is best-effort — null args should not panic
+        let r = telemetry_callback_shim(
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+        );
+        assert!(r.success);
     }
 }

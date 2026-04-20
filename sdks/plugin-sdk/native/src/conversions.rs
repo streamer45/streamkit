@@ -837,6 +837,11 @@ pub fn string_to_c(s: &str) -> *const c_char {
 
 /// Convert an error message to a C string for returning across the C ABI.
 ///
+/// Despite the name, this is a generic "String → thread-local CString"
+/// helper and is also used for non-error payloads (e.g. the JSON string
+/// returned by `get_runtime_param_schema`).  A rename to e.g.
+/// `thread_local_c_str` would clarify intent but touches many call-sites.
+///
 /// # Ownership and lifetime
 ///
 /// The returned pointer is **borrowed** and **must not be freed** by the caller.

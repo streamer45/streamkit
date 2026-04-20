@@ -1870,13 +1870,11 @@ macro_rules! native_source_plugin_entry {
             })
         }
 
-        // Not wrapped in a panic guard — body is a pure constant
-        // (`CResult::success()`), so it cannot panic.
         extern "C" fn __plugin_flush_noop(
             _handle: $crate::types::CPluginHandle,
             _callbacks: *const $crate::types::CNodeCallbacks,
         ) -> $crate::types::CResult {
-            $crate::types::CResult::success()
+            $crate::ffi_guard::guard_result(|| $crate::types::CResult::success())
         }
 
         // ── Upstream hint delivery (v5) ─────────────────────────────────
