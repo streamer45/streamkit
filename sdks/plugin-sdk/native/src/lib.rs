@@ -547,7 +547,14 @@ pub trait NativeProcessorNode: Sized + Send + 'static {
         Ok(())
     }
 
-    /// Clean up resources (optional)
+    /// Clean up resources (optional).
+    ///
+    /// # Panics
+    ///
+    /// This method **must not panic**.  It runs inside a `catch_unwind`
+    /// guard, but the plugin value is dropped immediately afterwards.
+    /// If both `cleanup()` and the type's `Drop` impl panic, the process
+    /// aborts (Rust double-panic rule).
     fn cleanup(&mut self) {}
 
     /// Return a runtime-discovered param schema after initialization (optional).
@@ -665,6 +672,13 @@ pub trait NativeSourceNode: Sized + Send + 'static {
     }
 
     /// Clean up resources (optional).
+    ///
+    /// # Panics
+    ///
+    /// This method **must not panic**.  It runs inside a `catch_unwind`
+    /// guard, but the plugin value is dropped immediately afterwards.
+    /// If both `cleanup()` and the type's `Drop` impl panic, the process
+    /// aborts (Rust double-panic rule).
     fn cleanup(&mut self) {}
 
     /// Return a runtime-discovered param schema after initialization (optional).
@@ -807,7 +821,21 @@ macro_rules! __plugin_shared_ffi {
             $crate::ffi_guard::guard_unit(|| {
                 if !handle.is_null() {
                     let mut instance = unsafe { Box::from_raw(handle as *mut $plugin_type) };
-                    instance.cleanup();
+                    // Run cleanup() in a nested catch_unwind so that a
+                    // panic here does not cause a double-panic abort if
+                    // Drop also panics.
+                    if let Err(payload) =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            instance.cleanup()
+                        }))
+                    {
+                        let msg = $crate::ffi_guard::panic_message(&*payload);
+                        let _ = $crate::conversions::error_to_c(format!(
+                            "plugin cleanup() panicked: {msg}"
+                        ));
+                    }
+                    // instance (Box) is dropped here — if Drop panics,
+                    // the outer guard_unit catches it.
                 }
             })
         }
@@ -887,8 +915,9 @@ macro_rules! native_plugin_entry {
                     let mut input_video_formats = Vec::new();
 
                     for input in &meta.inputs {
-                        let name = std::ffi::CString::new(input.name.as_str())
-                            .expect("Input pin name should not contain null bytes");
+                        let name = $crate::ffi_guard::cstring_lossy(
+                            input.name.as_str(), "input pin name",
+                        );
                         let mut types_info = Vec::new();
                         let mut audio_formats = Vec::new();
                         let mut custom_type_ids = Vec::new();
@@ -904,8 +933,8 @@ macro_rules! native_plugin_entry {
                             audio_formats.push(audio_format);
                             let custom_type_id = match pt {
                                 $crate::streamkit_core::types::PacketType::Custom { type_id } => {
-                                    Some(std::ffi::CString::new(type_id.as_str()).expect(
-                                        "Custom type_id should not contain null bytes",
+                                    Some($crate::ffi_guard::cstring_lossy(
+                                        type_id.as_str(), "custom type_id",
                                     ))
                                 }
                                 $crate::streamkit_core::types::PacketType::EncodedAudio(format) => {
@@ -1015,8 +1044,9 @@ macro_rules! native_plugin_entry {
                     let mut output_video_formats = Vec::new();
 
                     for output in &meta.outputs {
-                        let name = std::ffi::CString::new(output.name.as_str())
-                            .expect("Output pin name should not contain null bytes");
+                        let name = $crate::ffi_guard::cstring_lossy(
+                            output.name.as_str(), "output pin name",
+                        );
 
                         let audio_format = match &output.produces_type {
                             $crate::streamkit_core::types::PacketType::RawAudio(af) => {
@@ -1027,8 +1057,8 @@ macro_rules! native_plugin_entry {
                         output_audio_formats.push(audio_format);
                         let output_custom_type_id = match &output.produces_type {
                             $crate::streamkit_core::types::PacketType::Custom { type_id } => {
-                                Some(std::ffi::CString::new(type_id.as_str()).expect(
-                                    "Custom type_id should not contain null bytes",
+                                Some($crate::ffi_guard::cstring_lossy(
+                                    type_id.as_str(), "output custom type_id",
                                 ))
                             }
                             $crate::streamkit_core::types::PacketType::EncodedAudio(format) => {
@@ -1135,20 +1165,22 @@ macro_rules! native_plugin_entry {
                     let mut category_ptrs = Vec::new();
 
                     for cat in &meta.categories {
-                        let c_str = std::ffi::CString::new(cat.as_str())
-                            .expect("Category name should not contain null bytes");
+                        let c_str = $crate::ffi_guard::cstring_lossy(
+                            cat.as_str(), "category name",
+                        );
                         category_ptrs.push(c_str.as_ptr());
                         category_strings.push(c_str);
                     }
 
-                    let kind = std::ffi::CString::new(meta.kind.as_str())
-                        .expect("Node kind should not contain null bytes");
+                    let kind = $crate::ffi_guard::cstring_lossy(
+                        meta.kind.as_str(), "node kind",
+                    );
                     let description = meta.description.as_ref().map(|d| {
-                        std::ffi::CString::new(d.as_str())
-                            .expect("Description should not contain null bytes")
+                        $crate::ffi_guard::cstring_lossy(d.as_str(), "description")
                     });
-                    let param_schema = std::ffi::CString::new(meta.param_schema.to_string())
-                        .expect("Param schema JSON should not contain null bytes");
+                    let param_schema = $crate::ffi_guard::cstring_lossy(
+                        &meta.param_schema.to_string(), "param schema JSON",
+                    );
 
                     let c_metadata = $crate::types::CNodeMetadata {
                         kind: kind.as_ptr(),
@@ -1420,8 +1452,10 @@ macro_rules! native_source_plugin_entry {
                         let mut input_video_formats = Vec::new();
 
                         for input in &meta.inputs {
-                            let name = std::ffi::CString::new(input.name.as_str())
-                                .expect("Input pin name should not contain null bytes");
+                            let name = $crate::ffi_guard::cstring_lossy(
+                                input.name.as_str(),
+                                "input pin name",
+                            );
                             let mut types_info = Vec::new();
                             let mut audio_formats = Vec::new();
                             let mut custom_type_ids = Vec::new();
@@ -1438,10 +1472,10 @@ macro_rules! native_source_plugin_entry {
                                 let custom_type_id = match pt {
                                     $crate::streamkit_core::types::PacketType::Custom {
                                         type_id,
-                                    } => Some(
-                                        std::ffi::CString::new(type_id.as_str())
-                                            .expect("Custom type_id should not contain null bytes"),
-                                    ),
+                                    } => Some($crate::ffi_guard::cstring_lossy(
+                                        type_id.as_str(),
+                                        "custom type_id",
+                                    )),
                                     $crate::streamkit_core::types::PacketType::EncodedAudio(
                                         format,
                                     ) => Some($crate::conversions::codec_name_to_cstring(
@@ -1554,8 +1588,10 @@ macro_rules! native_source_plugin_entry {
                         let mut output_video_formats = Vec::new();
 
                         for output in &meta.outputs {
-                            let name = std::ffi::CString::new(output.name.as_str())
-                                .expect("Output pin name should not contain null bytes");
+                            let name = $crate::ffi_guard::cstring_lossy(
+                                output.name.as_str(),
+                                "output pin name",
+                            );
 
                             let audio_format = match &output.produces_type {
                                 $crate::streamkit_core::types::PacketType::RawAudio(af) => {
@@ -1566,10 +1602,10 @@ macro_rules! native_source_plugin_entry {
                             output_audio_formats.push(audio_format);
                             let output_custom_type_id = match &output.produces_type {
                                 $crate::streamkit_core::types::PacketType::Custom { type_id } => {
-                                    Some(
-                                        std::ffi::CString::new(type_id.as_str())
-                                            .expect("Custom type_id should not contain null bytes"),
-                                    )
+                                    Some($crate::ffi_guard::cstring_lossy(
+                                        type_id.as_str(),
+                                        "output custom type_id",
+                                    ))
                                 },
                                 $crate::streamkit_core::types::PacketType::EncodedAudio(format) => {
                                     Some($crate::conversions::codec_name_to_cstring(
@@ -1678,20 +1714,22 @@ macro_rules! native_source_plugin_entry {
                         let mut category_ptrs = Vec::new();
 
                         for cat in &meta.categories {
-                            let c_str = std::ffi::CString::new(cat.as_str())
-                                .expect("Category name should not contain null bytes");
+                            let c_str =
+                                $crate::ffi_guard::cstring_lossy(cat.as_str(), "category name");
                             category_ptrs.push(c_str.as_ptr());
                             category_strings.push(c_str);
                         }
 
-                        let kind = std::ffi::CString::new(meta.kind.as_str())
-                            .expect("Node kind should not contain null bytes");
-                        let description = meta.description.as_ref().map(|d| {
-                            std::ffi::CString::new(d.as_str())
-                                .expect("Description should not contain null bytes")
-                        });
-                        let param_schema = std::ffi::CString::new(meta.param_schema.to_string())
-                            .expect("Param schema JSON should not contain null bytes");
+                        let kind =
+                            $crate::ffi_guard::cstring_lossy(meta.kind.as_str(), "node kind");
+                        let description = meta
+                            .description
+                            .as_ref()
+                            .map(|d| $crate::ffi_guard::cstring_lossy(d.as_str(), "description"));
+                        let param_schema = $crate::ffi_guard::cstring_lossy(
+                            &meta.param_schema.to_string(),
+                            "param schema JSON",
+                        );
 
                         let c_metadata = $crate::types::CNodeMetadata {
                             kind: kind.as_ptr(),

@@ -16,20 +16,26 @@
 //! instance.  The alternative — aborting the entire server — is strictly
 //! worse.
 
+use std::ffi::CString;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use crate::types;
 
 /// Extract a human-readable message from a panic payload.
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
-    payload.downcast_ref::<&str>().map_or_else(
-        || {
-            payload
-                .downcast_ref::<String>()
-                .map_or_else(|| "unknown panic".to_string(), Clone::clone)
-        },
-        |s| (*s).to_string(),
-    )
+///
+/// Handles `&str`, `String`, and `Box<dyn Error + Send + Sync>` payloads
+/// (the latter covers e.g. [`std::panic::panic_any`] with a boxed error).
+pub fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        return (*s).to_string();
+    }
+    if let Some(s) = payload.downcast_ref::<String>() {
+        return s.clone();
+    }
+    if let Some(e) = payload.downcast_ref::<Box<dyn std::error::Error + Send + Sync>>() {
+        return e.to_string();
+    }
+    "unknown panic".to_string()
 }
 
 /// Guard a trampoline that returns [`types::CResult`].
@@ -50,7 +56,7 @@ pub fn guard_handle<F: FnOnce() -> types::CPluginHandle>(f: F) -> types::CPlugin
         Ok(handle) => handle,
         Err(payload) => {
             let msg = panic_message(&*payload);
-            // Best-effort log; error_to_c is thread-local so this is safe.
+            // Store in thread-local for host retrieval via error_to_c.
             let _ = crate::conversions::error_to_c(format!(
                 "plugin panicked in create_instance: {msg}"
             ));
@@ -97,11 +103,19 @@ pub fn guard_schema<F: FnOnce() -> types::CSchemaResult>(f: F) -> types::CSchema
 }
 
 /// Guard a trampoline that returns [`types::CSourceConfig`].
+///
+/// On panic the returned config has `is_source: false`, which silently
+/// reclassifies the node as a processor.  A `tracing::error!` is emitted
+/// so this does not go unnoticed.
 pub fn guard_source_config<F: FnOnce() -> types::CSourceConfig>(f: F) -> types::CSourceConfig {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(cfg) => cfg,
         Err(payload) => {
             let msg = panic_message(&*payload);
+            tracing::error!(
+                "plugin panicked in get_source_config \
+                 (node reclassified as non-source): {msg}"
+            );
             let _ = crate::conversions::error_to_c(format!(
                 "plugin panicked in get_source_config: {msg}"
             ));
@@ -110,11 +124,44 @@ pub fn guard_source_config<F: FnOnce() -> types::CSourceConfig>(f: F) -> types::
     }
 }
 
-/// Guard a trampoline that returns nothing (swallow panic, log it).
+/// Guard a trampoline that returns nothing (e.g. `destroy_instance`).
+///
+/// # Double-panic risk
+///
+/// In `__plugin_destroy_instance`, `cleanup()` runs first and then the
+/// plugin value is dropped.  If `cleanup()` panics **and** `Drop` also
+/// panics, the process aborts (Rust double-panic rule).  To mitigate
+/// this, `__plugin_destroy_instance` wraps `cleanup()` in its own
+/// nested `catch_unwind`, so a `cleanup` panic does not propagate into
+/// the `Drop`.  Plugin authors should still avoid panicking in `Drop`.
 pub fn guard_unit<F: FnOnce()>(f: F) {
     if let Err(payload) = catch_unwind(AssertUnwindSafe(f)) {
         let msg = panic_message(&*payload);
         let _ = crate::conversions::error_to_c(format!("plugin panicked in cleanup: {msg}"));
+    }
+}
+
+/// Create a [`CString`], sanitizing embedded null bytes instead of panicking.
+///
+/// If `s` contains null bytes they are stripped and a `tracing::error!` is
+/// emitted with `context` so plugin authors can locate the mistake.  This
+/// avoids a panic inside `__plugin_get_metadata` that [`guard_ptr`] would
+/// silently turn into a null return.
+///
+/// # Panics
+///
+/// Cannot panic in practice — after stripping all null bytes,
+/// `CString::new` is infallible.
+pub fn cstring_lossy(s: &str, context: &str) -> CString {
+    match CString::new(s) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("metadata field '{context}' contains null bytes: {e}");
+            let sanitized = s.replace('\0', "");
+            // After removing all null bytes CString::new cannot fail.
+            #[allow(clippy::unwrap_used)]
+            CString::new(sanitized).unwrap()
+        },
     }
 }
 
@@ -195,5 +242,27 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(panic_message(&*msg), "unknown panic");
+    }
+
+    #[test]
+    fn panic_message_extracts_boxed_error() {
+        let err: Box<dyn std::error::Error + Send + Sync> = "boxed error".into();
+        let msg = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            std::panic::panic_any(err);
+        }))
+        .unwrap_err();
+        assert_eq!(panic_message(&*msg), "boxed error");
+    }
+
+    #[test]
+    fn cstring_lossy_clean_string() {
+        let c = cstring_lossy("hello", "test");
+        assert_eq!(c.to_str().unwrap(), "hello");
+    }
+
+    #[test]
+    fn cstring_lossy_strips_null_bytes() {
+        let c = cstring_lossy("hel\0lo", "test field");
+        assert_eq!(c.to_str().unwrap(), "hello");
     }
 }

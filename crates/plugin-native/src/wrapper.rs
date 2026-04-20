@@ -38,21 +38,53 @@ use crate::PluginMetadata;
 // A misbehaving plugin could trigger a panic in host code (e.g. via a
 // poisoned mutex or an unexpected null pointer); without `catch_unwind` the
 // panic would unwind across the C ABI boundary — instant UB.
+//
+// Message extraction is delegated to
+// [`streamkit_plugin_sdk_native::ffi_guard::panic_message`] to avoid
+// reimplementing the same logic.
 
+/// Guard a host callback that returns [`CResult`].
+///
+/// On panic the error message is preserved via [`conversions::error_to_c`]
+/// and logged with [`tracing::error!`] for host-side observability.
 fn ffi_guard_result<F: FnOnce() -> CResult>(f: F) -> CResult {
-    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| CResult::error(std::ptr::null()))
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|payload| {
+        let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
+        error!("host callback panicked: {msg}");
+        CResult::error(conversions::error_to_c(format!("host callback panicked: {msg}")))
+    })
 }
 
+/// Guard a host callback that returns [`CAllocVideoResult`].
+///
+/// On panic, logs the error and returns a null allocation result.
 fn ffi_guard_alloc_video<F: FnOnce() -> CAllocVideoResult>(f: F) -> CAllocVideoResult {
-    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| CAllocVideoResult::null())
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|payload| {
+        let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
+        error!("host video allocation callback panicked: {msg}");
+        CAllocVideoResult::null()
+    })
 }
 
+/// Guard a host callback that returns [`CAllocAudioResult`].
+///
+/// On panic, logs the error and returns a null allocation result.
 fn ffi_guard_alloc_audio<F: FnOnce() -> CAllocAudioResult>(f: F) -> CAllocAudioResult {
-    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| CAllocAudioResult::null())
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|payload| {
+        let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
+        error!("host audio allocation callback panicked: {msg}");
+        CAllocAudioResult::null()
+    })
 }
 
+/// Guard a host callback that returns nothing (e.g. logging, buffer free).
+///
+/// On panic, logs the error and swallows the panic.
 fn ffi_guard_unit<F: FnOnce()>(f: F) {
-    let _ = catch_unwind(AssertUnwindSafe(f));
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(f)) {
+        let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
+        error!("host callback panicked: {msg}");
+    }
 }
 
 struct InstanceState {
@@ -1127,6 +1159,38 @@ unsafe fn free_packet_buffer_handle(c_packet: *const CPacket) {
     }
 }
 
+/// RAII guard ensuring a converted [`Packet`] is not leaked if a panic
+/// occurs between [`conversions::packet_from_c()`] and the push into
+/// [`CallbackContext::output_packets`].
+///
+/// On normal flow the caller calls [`consume()`](Self::consume) to
+/// extract the entry.  If the guard is dropped without consuming (i.e.
+/// during panic unwinding), [`Packet::drop`] returns pooled buffers to
+/// their pool and a warning is logged.
+struct ConvertedPacketGuard(Option<(String, Packet)>);
+
+impl ConvertedPacketGuard {
+    const fn new(pin: String, packet: Packet) -> Self {
+        Self(Some((pin, packet)))
+    }
+
+    /// Take ownership of the guarded entry for pushing into output_packets.
+    fn consume(mut self) -> (String, Packet) {
+        // SAFETY: always constructed with Some; consumed at most once (self is moved).
+        #[allow(clippy::unwrap_used)]
+        self.0.take().unwrap()
+    }
+}
+
+impl Drop for ConvertedPacketGuard {
+    fn drop(&mut self) {
+        if self.0.is_some() {
+            // Panic unwinding — Packet::drop returns pooled buffers.
+            warn!("output_callback_shim: converted packet dropped by panic guard");
+        }
+    }
+}
+
 /// C callback function for sending output packets.
 /// This collects packets and they are sent asynchronously after the callback returns.
 extern "C" fn output_callback_shim(
@@ -1165,8 +1229,10 @@ extern "C" fn output_callback_shim(
             },
         };
 
-        // Store packet for async sending after callback returns
-        ctx.output_packets.push((pin_str, packet));
+        // RAII guard ensures pooled buffers are returned if a panic
+        // occurs before the push completes (e.g. OOM in Vec::push).
+        let guard = ConvertedPacketGuard::new(pin_str, packet);
+        ctx.output_packets.push(guard.consume());
 
         CResult::success()
     })
@@ -1346,13 +1412,17 @@ fn build_node_callbacks(callback_data: *mut c_void) -> CNodeCallbacks {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod ffi_guard_tests {
     use super::*;
 
     #[test]
-    fn host_guard_result_catches_panic() {
+    fn host_guard_result_catches_panic_and_preserves_message() {
         let r = ffi_guard_result(|| panic!("host boom"));
         assert!(!r.success);
+        assert!(!r.error_message.is_null());
+        let msg = unsafe { conversions::c_str_to_string(r.error_message) }.expect("valid UTF-8");
+        assert!(msg.contains("host boom"), "expected panic message, got: {msg}");
     }
 
     #[test]
