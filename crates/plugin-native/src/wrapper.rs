@@ -49,6 +49,12 @@ use crate::PluginMetadata;
 /// Runs `f` inside [`catch_unwind`].  On panic, extracts a human-readable
 /// message, logs it at `error!` level with `label`, and calls `on_panic`
 /// to produce a fallback return value.
+///
+/// **Note:** `on_panic` runs *outside* the `catch_unwind`.  If it panics
+/// (e.g. `error_to_c` hits a poisoned `RefCell`), the panic will
+/// propagate across the C ABI — UB.  All current `on_panic` impls are
+/// trivial (construct a null result or call the infallible
+/// `error_to_c`), so this is not a practical concern today.
 fn ffi_guard_with<T>(label: &str, on_panic: impl FnOnce(String) -> T, f: impl FnOnce() -> T) -> T {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(value) => value,
@@ -1158,14 +1164,17 @@ unsafe fn free_packet_buffer_handle(c_packet: *const CPacket) {
     }
 }
 
-/// RAII guard ensuring a converted [`Packet`] is not leaked if a panic
-/// occurs between [`conversions::packet_from_c()`] and the push into
-/// [`CallbackContext::output_packets`].
+/// RAII guard for a converted [`Packet`].
 ///
-/// On normal flow the caller calls [`consume()`](Self::consume) to
-/// extract the entry.  If the guard is dropped without consuming (i.e.
-/// during panic unwinding), [`Packet::drop`] returns pooled buffers to
-/// their pool and a warning is logged.
+/// Wraps the gap between [`ConvertedPacketGuard::new`] and
+/// [`consume()`](Self::consume).  In the current code that gap is a
+/// single expression (`push(guard.consume())`), so the guard
+/// effectively only fires if the `Vec::push` allocation itself panics
+/// — a narrow but real edge case.
+///
+/// If the guard is dropped without consuming (i.e. during panic
+/// unwinding), [`Packet::drop`] returns pooled buffers to their pool
+/// and a warning is logged.
 struct ConvertedPacketGuard(Option<(String, Packet)>);
 
 impl ConvertedPacketGuard {
@@ -1228,8 +1237,7 @@ extern "C" fn output_callback_shim(
             },
         };
 
-        // RAII guard ensures pooled buffers are returned if a panic
-        // occurs before the push completes (e.g. OOM in Vec::push).
+        // RAII guard — see ConvertedPacketGuard doc for scope.
         let guard = ConvertedPacketGuard::new(pin_str, packet);
         ctx.output_packets.push(guard.consume());
 
@@ -1493,5 +1501,17 @@ mod ffi_guard_tests {
             std::ptr::null_mut(),
         );
         assert!(r.success);
+    }
+
+    #[test]
+    fn alloc_video_shim_null_user_data_returns_null() {
+        let r = alloc_video_shim(1024, std::ptr::null_mut());
+        assert!(r.data.is_null());
+    }
+
+    #[test]
+    fn alloc_audio_shim_null_user_data_returns_null() {
+        let r = alloc_audio_shim(960, std::ptr::null_mut());
+        assert!(r.data.is_null());
     }
 }

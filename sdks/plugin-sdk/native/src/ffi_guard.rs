@@ -67,15 +67,17 @@ pub fn guard_handle<F: FnOnce() -> types::CPluginHandle>(f: F) -> types::CPlugin
 
 /// Guard a trampoline that returns `*const T` (null on panic).
 ///
-/// The host receives a null pointer (e.g. null metadata) and must treat
-/// it as a load-time failure.  The panic message is logged via
-/// [`tracing::error!`].
-pub fn guard_ptr<T, F: FnOnce() -> *const T>(f: F) -> *const T {
+/// `label` identifies the trampoline in the log message (e.g.
+/// `"get_metadata"`).
+///
+/// The host receives a null pointer and must treat it as a load-time
+/// failure.  The panic message is logged via [`tracing::error!`].
+pub fn guard_ptr<T, F: FnOnce() -> *const T>(label: &str, f: F) -> *const T {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(ptr) => ptr,
         Err(payload) => {
             let msg = panic_message(&*payload);
-            tracing::error!("plugin panicked in get_metadata: {msg}");
+            tracing::error!("plugin panicked in {label}: {msg}");
             std::ptr::null()
         },
     }
@@ -198,7 +200,7 @@ mod tests {
 
     #[test]
     fn guard_ptr_returns_null_on_panic() {
-        let ptr: *const u8 = guard_ptr(|| panic!("ptr boom"));
+        let ptr: *const u8 = guard_ptr("test_trampoline", || panic!("ptr boom"));
         assert!(ptr.is_null());
     }
 

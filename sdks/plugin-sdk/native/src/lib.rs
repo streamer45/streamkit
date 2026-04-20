@@ -899,7 +899,7 @@ macro_rules! native_plugin_entry {
         }
 
         extern "C" fn __plugin_get_metadata() -> *const $crate::types::CNodeMetadata {
-            $crate::ffi_guard::guard_ptr(|| {
+            $crate::ffi_guard::guard_ptr("get_metadata", || {
             unsafe {
                 let metadata = METADATA.get_or_init(|| {
                     let meta = <$plugin_type as $crate::NativeProcessorNode>::metadata();
@@ -1436,7 +1436,7 @@ macro_rules! native_source_plugin_entry {
         // Source nodes typically have zero inputs and one or more outputs.
 
         extern "C" fn __plugin_get_metadata() -> *const $crate::types::CNodeMetadata {
-            $crate::ffi_guard::guard_ptr(|| {
+            $crate::ffi_guard::guard_ptr("get_metadata", || {
                 unsafe {
                     let metadata = METADATA.get_or_init(|| {
                         let meta = <$plugin_type as $crate::NativeSourceNode>::metadata();
