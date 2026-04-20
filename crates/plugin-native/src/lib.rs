@@ -35,6 +35,7 @@ pub struct LoadedNativePlugin {
     library: Arc<Library>,
     api: &'static CNativePluginAPI,
     metadata: PluginMetadata,
+    call_timeout: Option<std::time::Duration>,
 }
 
 /// Metadata extracted from a plugin
@@ -160,7 +161,12 @@ impl LoadedNativePlugin {
 
         info!(kind = %metadata.kind, "Successfully loaded native plugin");
 
-        Ok(Self { library: Arc::new(library), api, metadata })
+        Ok(Self {
+            library: Arc::new(library),
+            api,
+            metadata,
+            call_timeout: Some(wrapper::DEFAULT_CALL_TIMEOUT),
+        })
     }
 
     /// Extract metadata from the plugin
@@ -300,6 +306,13 @@ impl LoadedNativePlugin {
         &self.library
     }
 
+    /// Override the call timeout for FFI calls.
+    ///
+    /// Pass `None` to disable the timeout entirely.
+    pub const fn set_call_timeout(&mut self, timeout: Option<std::time::Duration>) {
+        self.call_timeout = timeout;
+    }
+
     /// Create a new node instance from this plugin
     ///
     /// # Errors
@@ -316,6 +329,7 @@ impl LoadedNativePlugin {
             self.api,
             self.metadata.clone(),
             params,
+            self.call_timeout,
         )?;
 
         Ok(Box::new(wrapper))

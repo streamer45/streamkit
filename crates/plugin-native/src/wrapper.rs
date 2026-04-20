@@ -6,6 +6,13 @@
 //!
 //! This module provides the `NativeNodeWrapper` which implements the `ProcessorNode` trait
 //! and bridges to the C ABI plugin interface.
+//!
+//! ## Callback Lifetime Contract
+//!
+//! The [`CNodeCallbacks`] struct and all pointers passed to plugin API
+//! functions (`process_packet`, `flush`, `tick`) are valid **only for
+//! the duration of that single host→plugin call**.  The plugin must not
+//! stash callback pointers or call them after returning.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -92,9 +99,58 @@ fn ffi_guard_unit(f: impl FnOnce()) {
     );
 }
 
+/// Default timeout for plugin FFI calls (process_packet, flush, tick).
+/// 5 minutes — generous to support slow plugins (e.g. ML inference).
+pub(crate) const DEFAULT_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Wrapper preserving pointer provenance for the plugin's API vtable.
+///
+/// The raw pointer is derived from `&'static CNativePluginAPI` which lives
+/// inside the loaded `Library`.  The library is kept alive by
+/// `InstanceState::library: Arc<Library>`, so the pointee is valid for
+/// the lifetime of the `InstanceState`.
+///
+/// # Safety
+///
+/// `ApiPtr` is `Send + Sync` because the pointee (`CNativePluginAPI`) is
+/// a static vtable of function pointers — never mutated after construction
+/// — and the `Library` keeping it alive is behind an `Arc`.
+struct ApiPtr(*const CNativePluginAPI);
+
+// SAFETY: see ApiPtr doc.
+unsafe impl Send for ApiPtr {}
+// SAFETY: see ApiPtr doc.
+unsafe impl Sync for ApiPtr {}
+
+/// RAII guard for an in-flight FFI call.
+///
+/// Created by [`InstanceState::begin_call`].  Dropping the guard
+/// decrements `in_flight_calls` (and triggers deferred destroy if
+/// this was the last call and `drop_requested` is set).
+///
+/// This ensures `finish_call` runs even if the body panics, early-returns,
+/// or propagates an error via `?`.
+struct CallGuard<'a> {
+    state: &'a InstanceState,
+    handle: CPluginHandle,
+}
+
+impl CallGuard<'_> {
+    /// Returns the plugin handle for use in FFI calls.
+    const fn handle(&self) -> CPluginHandle {
+        self.handle
+    }
+}
+
+impl Drop for CallGuard<'_> {
+    fn drop(&mut self) {
+        self.state.finish_call();
+    }
+}
+
 struct InstanceState {
     library: Arc<Library>,
-    api_addr: usize,
+    api: ApiPtr,
     handle_addr: AtomicUsize,
     in_flight_calls: AtomicUsize,
     drop_requested: AtomicBool,
@@ -103,6 +159,7 @@ struct InstanceState {
     /// v7 plugins understand BinaryWithMeta but not EncodedAudio metadata
     /// (which is fine — EncodedAudio is metadata-only, not a runtime packet).
     api_version: u32,
+    call_timeout: Option<std::time::Duration>,
 }
 
 impl InstanceState {
@@ -111,25 +168,27 @@ impl InstanceState {
         api: &'static CNativePluginAPI,
         handle: CPluginHandle,
         api_version: u32,
+        call_timeout: Option<std::time::Duration>,
     ) -> Self {
         Self {
             library,
-            api_addr: std::ptr::from_ref(api) as usize,
+            api: ApiPtr(std::ptr::from_ref(api)),
             handle_addr: AtomicUsize::new(handle as usize),
             in_flight_calls: AtomicUsize::new(0),
             drop_requested: AtomicBool::new(false),
             api_version,
+            call_timeout,
         }
     }
 
     const fn api(&self) -> &'static CNativePluginAPI {
-        // SAFETY: api_addr was created from a valid &'static CNativePluginAPI reference.
-        // The loaded library is kept alive by self.library (Arc<Library>) held by this state,
-        // which is itself held by any in-flight spawn_blocking tasks.
-        unsafe { &*(self.api_addr as *const CNativePluginAPI) }
+        // SAFETY: The pointer was derived from a valid &'static CNativePluginAPI reference
+        // via std::ptr::from_ref, preserving provenance.  The loaded library is kept alive
+        // by self.library (Arc<Library>) held by this state.
+        unsafe { &*self.api.0 }
     }
 
-    fn begin_call(&self) -> Option<CPluginHandle> {
+    fn begin_call(&self) -> Option<CallGuard<'_>> {
         self.in_flight_calls.fetch_add(1, Ordering::AcqRel);
 
         let handle_addr = self.handle_addr.load(Ordering::Acquire);
@@ -138,7 +197,7 @@ impl InstanceState {
             return None;
         }
 
-        Some(handle_addr as CPluginHandle)
+        Some(CallGuard { state: self, handle: handle_addr as CPluginHandle })
     }
 
     fn finish_call(&self) {
@@ -236,6 +295,7 @@ impl NativeNodeWrapper {
         api: &'static CNativePluginAPI,
         metadata: PluginMetadata,
         params: Option<&serde_json::Value>,
+        call_timeout: Option<std::time::Duration>,
     ) -> Result<Self, StreamKitError> {
         // Convert params to JSON string if provided
         let params_json = params
@@ -263,7 +323,7 @@ impl NativeNodeWrapper {
         }
 
         Ok(Self {
-            state: Arc::new(InstanceState::new(library, api, handle, api.version)),
+            state: Arc::new(InstanceState::new(library, api, handle, api.version, call_timeout)),
             metadata,
         })
     }
@@ -281,9 +341,9 @@ impl ProcessorNode for NativeNodeWrapper {
 
     fn runtime_param_schema(&self) -> Option<serde_json::Value> {
         let get_schema = self.state.api().get_runtime_param_schema?;
-        let handle = self.state.begin_call()?;
+        let guard = self.state.begin_call()?;
 
-        let result = get_schema(handle);
+        let result = get_schema(guard.handle());
 
         if !result.success {
             // FFI call failed — log and return None.
@@ -292,24 +352,21 @@ impl ProcessorNode for NativeNodeWrapper {
                     .unwrap_or_default();
                 warn!(error = %msg, "Plugin runtime_param_schema failed");
             }
-            self.state.finish_call();
             return None;
         }
 
         // success=true, null json_schema → plugin has no runtime schema.
         if result.json_schema.is_null() {
-            self.state.finish_call();
             return None;
         }
 
         // success=true, non-null json_schema → JSON string containing the schema.
         // SAFETY: result.json_schema points to a thread-local CString set by
         // error_to_c (used here as a generic "String → *const c_char" helper).
-        // We must copy the string BEFORE any other FFI call on this thread
-        // (including finish_call) that could invoke error_to_c again and
-        // overwrite the thread-local buffer.
+        // We must copy the string BEFORE the guard drops (which calls finish_call,
+        // potentially invoking error_to_c again and overwriting the thread-local buffer).
         let json_str = unsafe { conversions::c_str_to_string(result.json_schema) }.ok();
-        self.state.finish_call();
+        drop(guard);
         json_str.and_then(|s| serde_json::from_str(&s).ok())
     }
 
@@ -326,6 +383,32 @@ impl ProcessorNode for NativeNodeWrapper {
 
 // ── Private run implementations ────────────────────────────────────────────
 impl NativeNodeWrapper {
+    /// Run `f` on a blocking thread with an optional timeout.
+    ///
+    /// If `self.state.call_timeout` is `Some(d)` and the call exceeds `d`,
+    /// returns `StreamKitError::Runtime`.  The `spawn_blocking` task itself
+    /// cannot be cancelled — it will eventually complete in the background
+    /// — but the pipeline node gets an immediate error so downstream can
+    /// react.
+    async fn call_with_timeout<T, F>(&self, op: &'static str, f: F) -> Result<T, StreamKitError>
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        let task = tokio::task::spawn_blocking(f);
+        match self.state.call_timeout {
+            Some(timeout) => tokio::time::timeout(timeout, task)
+                .await
+                .map_err(|_| {
+                    StreamKitError::Runtime(format!("Plugin {op} timed out after {timeout:?}"))
+                })?
+                .map_err(|e| StreamKitError::Runtime(format!("Plugin {op} task panicked: {e}"))),
+            None => task
+                .await
+                .map_err(|e| StreamKitError::Runtime(format!("Plugin {op} task panicked: {e}"))),
+        }
+    }
+
     /// Input-driven processing loop (existing behaviour for processor plugins).
     #[allow(clippy::too_many_lines)]
     async fn run_processor(
@@ -437,17 +520,16 @@ impl NativeNodeWrapper {
                             let params_cstr = CString::new(params_json)
                                 .map_err(|e| StreamKitError::Configuration(format!("Invalid params string: {e}")))?;
 
-                            // Move the blocking FFI call to spawn_blocking
                             let state = Arc::clone(&self.state);
-                            let error_msg = tokio::task::spawn_blocking(move || {
-                                let handle = state.begin_call()?;
+                            let error_msg = self.call_with_timeout("update_params", move || {
+                                let guard = state.begin_call()?;
 
                                 let _lib = Arc::clone(&state.library);
                                 let api = state.api();
-                                let result = (api.update_params)(handle, params_cstr.as_ptr());
+                                let result = (api.update_params)(guard.handle(), params_cstr.as_ptr());
 
                                 // Convert error message immediately to String (CResult is not Send)
-                                let error = if result.success {
+                                if result.success {
                                     None
                                 } else if result.error_message.is_null() {
                                     Some("Failed to update parameters".to_string())
@@ -458,17 +540,9 @@ impl NativeNodeWrapper {
                                         Some(conversions::c_str_to_string(result.error_message)
                                             .unwrap_or_else(|_| "Failed to update parameters".to_string()))
                                     }
-                                };
-
-                                state.finish_call();
-                                error
+                                }
                             })
-                            .await
-                            .map_err(|e| {
-                                StreamKitError::Runtime(format!(
-                                    "Update params task panicked: {e}"
-                                ))
-                            })?;
+                            .await?;
 
                             if let Some(err) = error_msg {
                                 warn!(node = %node_name, error = %err, "Parameter update failed");
@@ -498,8 +572,8 @@ impl NativeNodeWrapper {
                         let session_id = context.session_id.clone();
                         let node_id = node_name.clone();
 
-                        let (outputs, error) = tokio::task::spawn_blocking(move || {
-                            let Some(handle) = state.begin_call() else {
+                        let (outputs, error) = self.call_with_timeout("flush", move || {
+                            let Some(guard) = state.begin_call() else {
                                 return (Vec::new(), None);
                             };
 
@@ -522,7 +596,7 @@ impl NativeNodeWrapper {
                             // Call plugin's flush function
                             tracing::info!("Calling api.flush()");
                             let result = (api.flush)(
-                                handle,
+                                guard.handle(),
                                 &raw const node_callbacks,
                             );
                             tracing::info!(success = result.success, "Flush returned");
@@ -542,11 +616,10 @@ impl NativeNodeWrapper {
                             };
 
                             let outputs = callback_ctx.output_packets;
-                            state.finish_call();
+                            drop(guard);
                             (outputs, error)
                         })
-                        .await
-                        .map_err(|e| StreamKitError::Runtime(format!("Plugin flush task panicked: {e}")))?;
+                        .await?;
 
                         // Send flush outputs
                         for (pin, pkt) in outputs {
@@ -570,8 +643,8 @@ impl NativeNodeWrapper {
                     let pin_cstr = Arc::clone(&input_pin_cstrs[pin_index]);
                     let video_pool = video_pool.clone();
                     let audio_pool = audio_pool.clone();
-                    let (outputs, error) = tokio::task::spawn_blocking(move || {
-                        let Some(handle) = state.begin_call() else {
+                    let (outputs, error) = self.call_with_timeout("process_packet", move || {
+                        let Some(guard) = state.begin_call() else {
                             return (Vec::new(), None);
                         };
 
@@ -604,9 +677,9 @@ impl NativeNodeWrapper {
                         let callback_data = (&raw mut callback_ctx).cast::<c_void>();
                         let node_callbacks = build_node_callbacks(callback_data);
 
-                        // Call plugin's process function (BLOCKING - but we're in spawn_blocking)
+                        // Call plugin's process function (BLOCKING - but we're in call_with_timeout)
                         let result = (api.process_packet)(
-                            handle,
+                            guard.handle(),
                             pin_cstr.as_ptr(),
                             &raw const packet_repr.packet,
                             &raw const node_callbacks,
@@ -630,13 +703,10 @@ impl NativeNodeWrapper {
                         };
 
                         let outputs = callback_ctx.output_packets;
-                        state.finish_call();
+                        drop(guard);
                         (outputs, error)
                     })
-                    .await
-                    .map_err(|e| {
-                        StreamKitError::Runtime(format!("Plugin processing task panicked: {e}"))
-                    })?;
+                    .await?;
 
             // Now send outputs (after dropping c_packet and result)
             for (pin, pkt) in outputs {
@@ -814,9 +884,8 @@ impl NativeNodeWrapper {
             .api()
             .get_source_config
             .and_then(|get_source_config_fn| {
-                self.state.begin_call().map(|h| {
-                    let cfg = get_source_config_fn(h);
-                    self.state.finish_call();
+                self.state.begin_call().map(|guard| {
+                    let cfg = get_source_config_fn(guard.handle());
                     let ti = std::time::Duration::from_micros(cfg.tick_interval_us.max(1));
                     (ti, cfg.max_ticks)
                 })
@@ -923,9 +992,8 @@ impl NativeNodeWrapper {
                         let state = Arc::clone(&self.state);
                         let _ = tokio::task::spawn_blocking(move || {
                             for c_str in &pending_hints {
-                                if let Some(handle) = state.begin_call() {
-                                    let _ = on_hint_fn(handle, c_str.as_ptr());
-                                    state.finish_call();
+                                if let Some(guard) = state.begin_call() {
+                                    let _ = on_hint_fn(guard.handle(), c_str.as_ptr());
                                 }
                             }
                         })
@@ -941,57 +1009,57 @@ impl NativeNodeWrapper {
             let node_id = node_name.clone();
             let video_pool = video_pool.clone();
             let audio_pool = audio_pool.clone();
-            let outcome = tokio::task::spawn_blocking(move || {
-                let Some(handle) = state.begin_call() else {
-                    return TickOutcome {
-                        outputs: Vec::new(),
-                        success: false,
-                        done: false,
-                        error_msg: Some("Instance handle is null".to_string()),
+            let outcome = self
+                .call_with_timeout("tick", move || {
+                    let Some(guard) = state.begin_call() else {
+                        return TickOutcome {
+                            outputs: Vec::new(),
+                            success: false,
+                            done: false,
+                            error_msg: Some("Instance handle is null".to_string()),
+                        };
                     };
-                };
 
-                let _lib = Arc::clone(&state.library);
+                    let _lib = Arc::clone(&state.library);
 
-                let mut callback_ctx = CallbackContext {
-                    output_packets: Vec::new(),
-                    error: None,
-                    telemetry_tx,
-                    session_id,
-                    node_id,
-                    video_pool,
-                    audio_pool,
-                };
+                    let mut callback_ctx = CallbackContext {
+                        output_packets: Vec::new(),
+                        error: None,
+                        telemetry_tx,
+                        session_id,
+                        node_id,
+                        video_pool,
+                        audio_pool,
+                    };
 
-                let callback_data = (&raw mut callback_ctx).cast::<c_void>();
-                let node_callbacks = build_node_callbacks(callback_data);
+                    let callback_data = (&raw mut callback_ctx).cast::<c_void>();
+                    let node_callbacks = build_node_callbacks(callback_data);
 
-                let result = tick_fn(handle, &raw const node_callbacks);
+                    let result = tick_fn(guard.handle(), &raw const node_callbacks);
 
-                // Extract error string while pointers are still valid.
-                let error_msg = if result.result.success {
-                    callback_ctx.error
-                } else if result.result.error_message.is_null() {
-                    Some("Source tick failed".to_string())
-                } else {
-                    Some(unsafe {
-                        conversions::c_str_to_string(result.result.error_message)
-                            .unwrap_or_else(|_| "Source tick failed".to_string())
-                    })
-                };
+                    // Extract error string while pointers are still valid.
+                    let error_msg = if result.result.success {
+                        callback_ctx.error
+                    } else if result.result.error_message.is_null() {
+                        Some("Source tick failed".to_string())
+                    } else {
+                        Some(unsafe {
+                            conversions::c_str_to_string(result.result.error_message)
+                                .unwrap_or_else(|_| "Source tick failed".to_string())
+                        })
+                    };
 
-                let outputs = callback_ctx.output_packets;
-                state.finish_call();
+                    let outputs = callback_ctx.output_packets;
+                    drop(guard);
 
-                TickOutcome {
-                    outputs,
-                    success: result.result.success,
-                    done: result.done,
-                    error_msg,
-                }
-            })
-            .await
-            .map_err(|e| StreamKitError::Runtime(format!("Source tick task panicked: {e}")))?;
+                    TickOutcome {
+                        outputs,
+                        success: result.result.success,
+                        done: result.done,
+                        error_msg,
+                    }
+                })
+                .await?;
 
             // Send outputs produced by tick.  If the output channel is closed,
             // stop ticking — source nodes have no input-close backstop so we must
@@ -1078,31 +1146,28 @@ impl NativeNodeWrapper {
 
         let state = Arc::clone(&self.state);
         let node_name_owned = node_name.to_string();
-        let error_msg = tokio::task::spawn_blocking(move || {
-            let handle = state.begin_call()?;
+        let error_msg = self
+            .call_with_timeout("update_params", move || {
+                let guard = state.begin_call()?;
 
-            let _lib = Arc::clone(&state.library);
-            let api = state.api();
-            let result = (api.update_params)(handle, params_cstr.as_ptr());
+                let _lib = Arc::clone(&state.library);
+                let api = state.api();
+                let result = (api.update_params)(guard.handle(), params_cstr.as_ptr());
 
-            let error = if result.success {
-                None
-            } else if result.error_message.is_null() {
-                Some("Failed to update parameters".to_string())
-            } else {
-                unsafe {
-                    Some(
-                        conversions::c_str_to_string(result.error_message)
-                            .unwrap_or_else(|_| "Failed to update parameters".to_string()),
-                    )
+                if result.success {
+                    None
+                } else if result.error_message.is_null() {
+                    Some("Failed to update parameters".to_string())
+                } else {
+                    unsafe {
+                        Some(
+                            conversions::c_str_to_string(result.error_message)
+                                .unwrap_or_else(|_| "Failed to update parameters".to_string()),
+                        )
+                    }
                 }
-            };
-
-            state.finish_call();
-            error
-        })
-        .await
-        .map_err(|e| StreamKitError::Runtime(format!("Update params task panicked: {e}")))?;
+            })
+            .await?;
 
         if let Some(err) = error_msg {
             warn!(node = %node_name_owned, error = %err, "Parameter update failed");
@@ -1513,5 +1578,112 @@ mod ffi_guard_tests {
     fn alloc_audio_shim_null_user_data_returns_null() {
         let r = alloc_audio_shim(960, std::ptr::null_mut());
         assert!(r.data.is_null());
+    }
+
+    // ── CallGuard / ApiPtr tests ───────────────────────────────────────
+
+    /// Dummy `extern "C"` stubs used to populate a test `CNativePluginAPI`.
+    mod test_stubs {
+        use super::*;
+        use streamkit_plugin_sdk_native::types::{CNodeCallbacks, CNodeMetadata};
+
+        pub extern "C" fn get_metadata() -> *const CNodeMetadata {
+            std::ptr::null()
+        }
+        pub extern "C" fn create_instance(
+            _: *const std::os::raw::c_char,
+            _: streamkit_plugin_sdk_native::types::CLogCallback,
+            _: *mut c_void,
+        ) -> CPluginHandle {
+            std::ptr::null_mut()
+        }
+        pub extern "C" fn process_packet(
+            _: CPluginHandle,
+            _: *const std::os::raw::c_char,
+            _: *const CPacket,
+            _: *const CNodeCallbacks,
+        ) -> CResult {
+            CResult::success()
+        }
+        pub extern "C" fn update_params(
+            _: CPluginHandle,
+            _: *const std::os::raw::c_char,
+        ) -> CResult {
+            CResult::success()
+        }
+        pub extern "C" fn flush(_: CPluginHandle, _: *const CNodeCallbacks) -> CResult {
+            CResult::success()
+        }
+        pub extern "C" fn destroy_instance(_: CPluginHandle) {}
+    }
+
+    /// Build a valid `CNativePluginAPI` populated with no-op stubs.
+    fn dummy_api() -> CNativePluginAPI {
+        CNativePluginAPI {
+            version: 8,
+            get_metadata: test_stubs::get_metadata,
+            create_instance: test_stubs::create_instance,
+            process_packet: test_stubs::process_packet,
+            update_params: test_stubs::update_params,
+            flush: test_stubs::flush,
+            destroy_instance: test_stubs::destroy_instance,
+            get_source_config: None,
+            tick: None,
+            get_runtime_param_schema: None,
+            on_upstream_hint: None,
+        }
+    }
+
+    /// Helper: build a minimal `InstanceState` for guard tests.
+    fn test_instance_state() -> Arc<InstanceState> {
+        // SAFETY: loading libc is harmless; we never call any symbols from it.
+        let lib = unsafe { Library::new("libc.so.6").expect("libc must be loadable") };
+        let api: &'static CNativePluginAPI = Box::leak(Box::new(dummy_api()));
+        Arc::new(InstanceState::new(
+            Arc::new(lib),
+            api,
+            1 as CPluginHandle, // non-zero dummy handle
+            8,
+            None,
+        ))
+    }
+
+    #[test]
+    fn call_guard_drops_on_normal_path() {
+        let state = test_instance_state();
+        {
+            let guard = state.begin_call().expect("begin_call should succeed");
+            assert_eq!(state.in_flight_calls.load(Ordering::Acquire), 1);
+            let _h = guard.handle();
+        }
+        assert_eq!(state.in_flight_calls.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn call_guard_drops_on_panic() {
+        let state = test_instance_state();
+        let state2 = Arc::clone(&state);
+        let result = std::panic::catch_unwind(AssertUnwindSafe(move || {
+            let _guard = state2.begin_call().expect("begin_call should succeed");
+            panic!("boom");
+        }));
+        assert!(result.is_err(), "should have panicked");
+        assert_eq!(
+            state.in_flight_calls.load(Ordering::Acquire),
+            0,
+            "guard must decrement in_flight_calls even on panic"
+        );
+    }
+
+    #[test]
+    fn api_ptr_preserves_provenance() {
+        let api: &'static CNativePluginAPI = Box::leak(Box::new(dummy_api()));
+        let original_addr = std::ptr::from_ref(api);
+        let wrapper = ApiPtr(original_addr);
+        let recovered: *const CNativePluginAPI = wrapper.0;
+        assert_eq!(
+            original_addr, recovered,
+            "ApiPtr must round-trip the pointer without losing provenance"
+        );
     }
 }
