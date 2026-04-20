@@ -51,28 +51,31 @@ pub fn guard_result<F: FnOnce() -> types::CResult>(f: F) -> types::CResult {
 }
 
 /// Guard a trampoline that returns [`types::CPluginHandle`] (null on panic).
+///
+/// The host receives a null handle and must treat it as instance creation
+/// failure.  The panic message is logged via [`tracing::error!`].
 pub fn guard_handle<F: FnOnce() -> types::CPluginHandle>(f: F) -> types::CPluginHandle {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(handle) => handle,
         Err(payload) => {
             let msg = panic_message(&*payload);
-            // Store in thread-local for host retrieval via error_to_c.
-            let _ = crate::conversions::error_to_c(format!(
-                "plugin panicked in create_instance: {msg}"
-            ));
+            tracing::error!("plugin panicked in create_instance: {msg}");
             std::ptr::null_mut()
         },
     }
 }
 
 /// Guard a trampoline that returns `*const T` (null on panic).
+///
+/// The host receives a null pointer (e.g. null metadata) and must treat
+/// it as a load-time failure.  The panic message is logged via
+/// [`tracing::error!`].
 pub fn guard_ptr<T, F: FnOnce() -> *const T>(f: F) -> *const T {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(ptr) => ptr,
         Err(payload) => {
             let msg = panic_message(&*payload);
-            let _ =
-                crate::conversions::error_to_c(format!("plugin panicked in get_metadata: {msg}"));
+            tracing::error!("plugin panicked in get_metadata: {msg}");
             std::ptr::null()
         },
     }
@@ -104,9 +107,13 @@ pub fn guard_schema<F: FnOnce() -> types::CSchemaResult>(f: F) -> types::CSchema
 
 /// Guard a trampoline that returns [`types::CSourceConfig`].
 ///
-/// On panic the returned config has `is_source: false`, which silently
-/// reclassifies the node as a processor.  A `tracing::error!` is emitted
-/// so this does not go unnoticed.
+/// On panic the returned config has `is_source: false`, which tells the
+/// host to treat this node as a processor rather than a source.  Because
+/// the node was *declared* as a source (it implements [`NativeSourceNode`]),
+/// the pipeline will route no input packets to it, and it will never
+/// receive `tick()` calls — effectively becoming an inert no-op that
+/// produces no output.  A `tracing::error!` is emitted so operators can
+/// detect this and restart/remove the plugin.
 pub fn guard_source_config<F: FnOnce() -> types::CSourceConfig>(f: F) -> types::CSourceConfig {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(cfg) => cfg,
@@ -116,9 +123,6 @@ pub fn guard_source_config<F: FnOnce() -> types::CSourceConfig>(f: F) -> types::
                 "plugin panicked in get_source_config \
                  (node reclassified as non-source): {msg}"
             );
-            let _ = crate::conversions::error_to_c(format!(
-                "plugin panicked in get_source_config: {msg}"
-            ));
             types::CSourceConfig { is_source: false, tick_interval_us: 0, max_ticks: 0 }
         },
     }
@@ -137,7 +141,7 @@ pub fn guard_source_config<F: FnOnce() -> types::CSourceConfig>(f: F) -> types::
 pub fn guard_unit<F: FnOnce()>(f: F) {
     if let Err(payload) = catch_unwind(AssertUnwindSafe(f)) {
         let msg = panic_message(&*payload);
-        let _ = crate::conversions::error_to_c(format!("plugin panicked in cleanup: {msg}"));
+        tracing::error!("plugin panicked in cleanup: {msg}");
     }
 }
 
