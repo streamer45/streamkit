@@ -830,9 +830,7 @@ macro_rules! __plugin_shared_ffi {
                         }))
                     {
                         let msg = $crate::ffi_guard::panic_message(&*payload);
-                        let _ = $crate::conversions::error_to_c(format!(
-                            "plugin cleanup() panicked: {msg}"
-                        ));
+                        tracing::error!("plugin cleanup() panicked: {msg}");
                     }
                     // instance (Box) is dropped here — if Drop panics,
                     // the outer guard_unit catches it.
