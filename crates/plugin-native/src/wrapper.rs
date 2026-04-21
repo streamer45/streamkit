@@ -14,22 +14,23 @@
 //! the duration of that single host→plugin call**.  The plugin must not
 //! stash callback pointers or call them after returning.
 //!
-//! ## Timeout and Instance Leak
+//! ## Per-Instance Worker Thread
 //!
-//! [`call_with_timeout`] wraps `spawn_blocking` calls with
-//! `tokio::time::timeout`.  When a call times out, the blocking task
-//! **cannot be cancelled** — it keeps running in the background, holding
-//! a [`CallGuard`] that keeps `in_flight_calls` elevated.  If the
-//! wrapper is subsequently dropped, `destroy_instance` is deferred to
-//! the still-running task (via `finish_call` in the `CallGuard` drop).
-//! If the plugin never returns, the instance and its `Arc<Library>` leak
-//! for the process lifetime.  This is safe (no UB) but not ideal.
+//! Each plugin instance runs its FFI calls on a dedicated OS thread
+//! that receives [`WorkerRequest`] messages over a bounded channel and
+//! replies via oneshot channels.  This replaces the previous
+//! `spawn_blocking` approach, eliminating per-packet thread-pool
+//! dispatch, ~7 `Arc::clone` operations, and a `Vec` allocation per
+//! packet.  The worker owns reusable [`CallbackContext`] buffers and
+//! hoisted `Arc` clones, amortising allocation across the instance
+//! lifetime.
 //!
-//! Additionally, `NativeNodeWrapper::drop` calls `request_drop` →
-//! `destroy_instance` synchronously on whatever thread drops the
-//! wrapper — typically an async tokio worker.  A slow plugin destroy
-//! will stall that worker.  Routing through `block_in_place` or a
-//! dedicated thread is a future improvement.
+//! Timeout behaviour is preserved: the async side applies
+//! `tokio::time::timeout` on the oneshot reply channel rather than on
+//! a `spawn_blocking` future.  If a call times out, the worker thread
+//! is not cancelled — it continues running until the FFI call returns.
+//! `NativeNodeWrapper::drop` calls `request_drop` →
+//! `destroy_instance` which is deferred if a call is in flight.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -304,6 +305,274 @@ impl Drop for InstanceState {
     }
 }
 
+// ── Per-instance worker thread types ───────────────────────────────────────
+
+/// Message sent from the async side to the worker thread.
+enum WorkerRequest {
+    Process { pin_index: usize, packet: Packet, reply: tokio::sync::oneshot::Sender<WorkerReply> },
+    Flush { reply: tokio::sync::oneshot::Sender<WorkerReply> },
+    Tick { reply: tokio::sync::oneshot::Sender<WorkerReply> },
+    UpdateParams { params_cstr: CString, reply: tokio::sync::oneshot::Sender<Option<String>> },
+    OnUpstreamHint { hints: Vec<CString> },
+    Shutdown,
+}
+
+struct WorkerReply {
+    outputs: Vec<(String, Packet)>,
+    error: Option<String>,
+    done: bool,
+}
+
+struct InstanceWorker {
+    tx: Option<tokio::sync::mpsc::Sender<WorkerRequest>>,
+    join: Option<std::thread::JoinHandle<()>>,
+}
+
+impl InstanceWorker {
+    /// Returns a reference to the worker channel sender.
+    ///
+    /// The sender is always `Some` until [`Drop`] runs.
+    const fn tx(&self) -> &tokio::sync::mpsc::Sender<WorkerRequest> {
+        // SAFETY-ish: tx is only taken in Drop.  All call-sites run before Drop.
+        #[allow(clippy::unwrap_used)]
+        self.tx.as_ref().unwrap()
+    }
+}
+
+impl Drop for InstanceWorker {
+    fn drop(&mut self) {
+        // Close the channel so the worker's `blocking_recv` returns `None`.
+        drop(self.tx.take());
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+/// Main loop for the per-instance worker thread.
+///
+/// Receives [`WorkerRequest`] messages, dispatches FFI calls through the
+/// existing [`CallGuard`] / [`begin_call`](InstanceState::begin_call) pattern,
+/// and replies via oneshot channels.  A single reusable `Vec` for output
+/// packets is kept across calls to avoid per-packet allocation.
+#[allow(clippy::too_many_lines, clippy::too_many_arguments, clippy::needless_pass_by_value)]
+fn worker_thread_main(
+    mut rx: tokio::sync::mpsc::Receiver<WorkerRequest>,
+    state: Arc<InstanceState>,
+    pin_names: Vec<Arc<CString>>,
+    telemetry_tx: Option<tokio::sync::mpsc::Sender<TelemetryEvent>>,
+    session_id: Option<String>,
+    node_id: String,
+    video_pool: Option<Arc<VideoFramePool>>,
+    audio_pool: Option<Arc<AudioFramePool>>,
+) {
+    let _lib = Arc::clone(&state.library);
+    let mut reusable_outputs: Vec<(String, Packet)> = Vec::new();
+
+    while let Some(request) = rx.blocking_recv() {
+        match request {
+            WorkerRequest::Process { pin_index, packet, reply } => {
+                let Some(guard) = state.begin_call() else {
+                    let _ = reply.send(WorkerReply {
+                        outputs: Vec::new(),
+                        error: Some("Instance destroyed during process_packet".to_string()),
+                        done: false,
+                    });
+                    continue;
+                };
+
+                let api = state.api();
+                let mut packet_repr = conversions::packet_to_c(&packet);
+
+                if state.api_version < 7 {
+                    packet_repr.downgrade_binary_with_meta();
+                }
+
+                let mut callback_ctx = CallbackContext {
+                    output_packets: std::mem::take(&mut reusable_outputs),
+                    error: None,
+                    telemetry_tx: telemetry_tx.clone(),
+                    session_id: session_id.clone(),
+                    node_id: node_id.clone(),
+                    video_pool: video_pool.clone(),
+                    audio_pool: audio_pool.clone(),
+                };
+
+                let callback_data = (&raw mut callback_ctx).cast::<c_void>();
+                let node_callbacks = build_node_callbacks(callback_data);
+
+                let result = (api.process_packet)(
+                    guard.handle(),
+                    pin_names[pin_index].as_ptr(),
+                    &raw const packet_repr.packet,
+                    &raw const node_callbacks,
+                );
+
+                let error = if result.success {
+                    callback_ctx.error
+                } else {
+                    let error_msg = if result.error_message.is_null() {
+                        "Unknown plugin error".to_string()
+                    } else {
+                        unsafe {
+                            conversions::c_str_to_string(result.error_message)
+                                .unwrap_or_else(|_| "Unknown plugin error".to_string())
+                        }
+                    };
+                    Some(error_msg)
+                };
+
+                let reply_outputs: Vec<_> = callback_ctx.output_packets.drain(..).collect();
+                reusable_outputs = callback_ctx.output_packets;
+                drop(guard);
+
+                let _ = reply.send(WorkerReply { outputs: reply_outputs, error, done: false });
+            },
+
+            WorkerRequest::Flush { reply } => {
+                let Some(guard) = state.begin_call() else {
+                    let _ = reply.send(WorkerReply {
+                        outputs: Vec::new(),
+                        error: Some("Instance destroyed during flush".to_string()),
+                        done: false,
+                    });
+                    continue;
+                };
+
+                let api = state.api();
+
+                let mut callback_ctx = CallbackContext {
+                    output_packets: std::mem::take(&mut reusable_outputs),
+                    error: None,
+                    telemetry_tx: telemetry_tx.clone(),
+                    session_id: session_id.clone(),
+                    node_id: node_id.clone(),
+                    video_pool: video_pool.clone(),
+                    audio_pool: audio_pool.clone(),
+                };
+
+                let callback_data = (&raw mut callback_ctx).cast::<c_void>();
+                let node_callbacks = build_node_callbacks(callback_data);
+
+                tracing::info!("Calling api.flush()");
+                let result = (api.flush)(guard.handle(), &raw const node_callbacks);
+                tracing::info!(success = result.success, "Flush returned");
+
+                let error = if result.success {
+                    callback_ctx.error
+                } else {
+                    let error_msg = if result.error_message.is_null() {
+                        "Plugin flush failed".to_string()
+                    } else {
+                        unsafe {
+                            conversions::c_str_to_string(result.error_message)
+                                .unwrap_or_else(|_| "Plugin flush failed".to_string())
+                        }
+                    };
+                    Some(error_msg)
+                };
+
+                let reply_outputs: Vec<_> = callback_ctx.output_packets.drain(..).collect();
+                reusable_outputs = callback_ctx.output_packets;
+                drop(guard);
+
+                let _ = reply.send(WorkerReply { outputs: reply_outputs, error, done: false });
+            },
+
+            WorkerRequest::Tick { reply } => {
+                let Some(tick_fn) = state.api().tick else {
+                    let _ = reply.send(WorkerReply {
+                        outputs: Vec::new(),
+                        error: Some("Source plugin missing tick function".to_string()),
+                        done: false,
+                    });
+                    continue;
+                };
+
+                let Some(guard) = state.begin_call() else {
+                    let _ = reply.send(WorkerReply {
+                        outputs: Vec::new(),
+                        error: Some("Instance handle is null".to_string()),
+                        done: false,
+                    });
+                    continue;
+                };
+
+                let mut callback_ctx = CallbackContext {
+                    output_packets: std::mem::take(&mut reusable_outputs),
+                    error: None,
+                    telemetry_tx: telemetry_tx.clone(),
+                    session_id: session_id.clone(),
+                    node_id: node_id.clone(),
+                    video_pool: video_pool.clone(),
+                    audio_pool: audio_pool.clone(),
+                };
+
+                let callback_data = (&raw mut callback_ctx).cast::<c_void>();
+                let node_callbacks = build_node_callbacks(callback_data);
+
+                let result = tick_fn(guard.handle(), &raw const node_callbacks);
+
+                let error = if result.result.success {
+                    None
+                } else if result.result.error_message.is_null() {
+                    Some("Source tick failed".to_string())
+                } else {
+                    Some(unsafe {
+                        conversions::c_str_to_string(result.result.error_message)
+                            .unwrap_or_else(|_| "Source tick failed".to_string())
+                    })
+                };
+
+                let reply_outputs: Vec<_> = callback_ctx.output_packets.drain(..).collect();
+                reusable_outputs = callback_ctx.output_packets;
+                drop(guard);
+
+                let _ =
+                    reply.send(WorkerReply { outputs: reply_outputs, error, done: result.done });
+            },
+
+            WorkerRequest::UpdateParams { params_cstr, reply } => {
+                let Some(guard) = state.begin_call() else {
+                    let _ = reply.send(Some("Instance destroyed during update_params".to_string()));
+                    continue;
+                };
+
+                let api = state.api();
+                let result = (api.update_params)(guard.handle(), params_cstr.as_ptr());
+                drop(guard);
+
+                let error = if result.success {
+                    None
+                } else if result.error_message.is_null() {
+                    Some("Failed to update parameters".to_string())
+                } else {
+                    unsafe {
+                        Some(
+                            conversions::c_str_to_string(result.error_message)
+                                .unwrap_or_else(|_| "Failed to update parameters".to_string()),
+                        )
+                    }
+                };
+
+                let _ = reply.send(error);
+            },
+
+            WorkerRequest::OnUpstreamHint { hints } => {
+                if let Some(on_hint_fn) = state.api().on_upstream_hint {
+                    for c_str in &hints {
+                        if let Some(guard) = state.begin_call() {
+                            let _ = on_hint_fn(guard.handle(), c_str.as_ptr());
+                        }
+                    }
+                }
+            },
+
+            WorkerRequest::Shutdown => break,
+        }
+    }
+}
+
 /// C callback function for plugin logging.
 /// Routes plugin logs to the tracing infrastructure.
 #[allow(clippy::cognitive_complexity)]
@@ -463,57 +732,63 @@ impl ProcessorNode for NativeNodeWrapper {
 
 // ── Private run implementations ────────────────────────────────────────────
 impl NativeNodeWrapper {
-    /// Run `f` on a blocking thread with an optional timeout.
-    ///
-    /// If `self.state.call_timeout` is `Some(d)` and the call exceeds `d`,
-    /// returns `StreamKitError::Runtime`.  The `spawn_blocking` task itself
-    /// cannot be cancelled — it will eventually complete in the background
-    /// — but the pipeline node gets an immediate error so downstream can
-    /// react.
-    ///
-    /// **Leak note:** if a call times out and the wrapper is subsequently
-    /// dropped, `destroy_instance` is deferred to the still-running
-    /// blocking task (via `CallGuard` / `finish_call`).  If the plugin
-    /// never returns, the instance and its `Arc<Library>` leak for the
-    /// process lifetime.  This is safe but not ideal — a future metric
-    /// (`plugin.leaked_instances`) should track this case.
-    async fn call_with_timeout<T, F>(
+    /// Spawn a dedicated worker thread for this plugin instance.
+    fn spawn_worker(
+        state: Arc<InstanceState>,
+        pin_names: Vec<Arc<CString>>,
+        telemetry_tx: Option<tokio::sync::mpsc::Sender<TelemetryEvent>>,
+        session_id: Option<String>,
+        node_id: String,
+        video_pool: Option<Arc<VideoFramePool>>,
+        audio_pool: Option<Arc<AudioFramePool>>,
+    ) -> Result<InstanceWorker, StreamKitError> {
+        let (tx, rx) = tokio::sync::mpsc::channel::<WorkerRequest>(1);
+        let thread_name = format!("skit-plugin-{node_id}");
+        let join = std::thread::Builder::new()
+            .name(thread_name)
+            .spawn(move || {
+                worker_thread_main(
+                    rx,
+                    state,
+                    pin_names,
+                    telemetry_tx,
+                    session_id,
+                    node_id,
+                    video_pool,
+                    audio_pool,
+                );
+            })
+            .map_err(|e| {
+                StreamKitError::Runtime(format!("Failed to spawn plugin worker thread: {e}"))
+            })?;
+        Ok(InstanceWorker { tx: Some(tx), join: Some(join) })
+    }
+
+    /// Await a oneshot reply from the worker, applying the configured timeout.
+    async fn await_reply<T>(
         &self,
-        op: &'static str,
+        op: &str,
         node: &str,
-        f: F,
-    ) -> Result<T, StreamKitError>
-    where
-        F: FnOnce() -> T + Send + 'static,
-        T: Send + 'static,
-    {
-        let task = tokio::task::spawn_blocking(f);
+        reply_rx: tokio::sync::oneshot::Receiver<T>,
+    ) -> Result<T, StreamKitError> {
         match self.state.call_timeout {
-            Some(timeout) => tokio::time::timeout(timeout, task)
+            Some(d) => tokio::time::timeout(d, reply_rx)
                 .await
                 .map_err(|_| {
-                    // Rate-limit: only warn once per instance to avoid
-                    // log spam from a permanently wedged plugin.
                     if !self.state.timeout_warned.swap(true, Ordering::Relaxed) {
                         warn!(
                             node = %node,
-                            "Plugin {op} timed out after {timeout:?}; \
-                             the blocking task is still running and holds a CallGuard — \
-                             in_flight_calls will remain elevated until it completes"
+                            "Plugin {op} timed out after {d:?}"
                         );
                     }
                     StreamKitError::Runtime(format!(
-                        "Plugin {op} on node {node} timed out after {timeout:?}"
+                        "Plugin {op} on node {node} timed out after {d:?}"
                     ))
                 })?
-                .map_err(|e| {
-                    StreamKitError::Runtime(format!(
-                        "Plugin {op} on node {node} task panicked: {e}"
-                    ))
-                }),
-            None => task.await.map_err(|e| {
-                StreamKitError::Runtime(format!("Plugin {op} on node {node} task panicked: {e}"))
-            }),
+                .map_err(|_| StreamKitError::Runtime("Worker reply channel dropped".into())),
+            None => reply_rx
+                .await
+                .map_err(|_| StreamKitError::Runtime("Worker reply channel dropped".into())),
         }
     }
 
@@ -551,8 +826,6 @@ impl NativeNodeWrapper {
         let (merged_tx, mut merged_rx) =
             tokio::sync::mpsc::channel::<(usize, Packet)>(context.batch_size.max(1));
         let cancellation_token = context.cancellation_token.clone();
-        let video_pool = context.video_pool.clone();
-        let audio_pool = context.audio_pool.clone();
 
         for (pin_name, mut rx) in inputs.drain() {
             let pin_cstr = CString::new(pin_name.as_str()).map_err(|e| {
@@ -589,6 +862,17 @@ impl NativeNodeWrapper {
 
         drop(merged_tx);
 
+        // Spawn the dedicated worker thread for this instance.
+        let worker = Self::spawn_worker(
+            Arc::clone(&self.state),
+            input_pin_cstrs,
+            context.telemetry_tx.clone(),
+            context.session_id.clone(),
+            node_name.clone(),
+            context.video_pool.clone(),
+            context.audio_pool.clone(),
+        )?;
+
         tracing::debug!(
             node = %node_name,
             inputs = ?input_pin_names,
@@ -622,7 +906,12 @@ impl NativeNodeWrapper {
                 maybe_control = context.control_rx.recv(), if control_channel_open => {
                     match maybe_control {
                         Some(NodeControlMessage::UpdateParams(params_value)) => {
-                            self.apply_params_update(&node_name, &params_value).await?;
+                            self.apply_params_update(
+                                &node_name,
+                                &params_value,
+                                worker.tx(),
+                            )
+                            .await?;
                         }
                         Some(NodeControlMessage::Start) => {
                             // Native plugins don't implement ready/start lifecycle - ignore
@@ -642,176 +931,65 @@ impl NativeNodeWrapper {
                         // Input closed - flush any buffered data before shutting down
                         tracing::debug!(node = %node_name, "Native plugin input closed, flushing buffers");
 
-                        // Call flush to process any remaining buffered data
-                        let state = Arc::clone(&self.state);
-                        let telemetry_tx = context.telemetry_tx.clone();
-                        let session_id = context.session_id.clone();
-                        let node_id = node_name.clone();
-
-                        let (outputs, error) = self.call_with_timeout("flush", &node_name, move || {
-                            let Some(guard) = state.begin_call() else {
-                                return (
-                                    Vec::new(),
-                                    Some("Instance destroyed during flush".to_string()),
-                                );
-                            };
-
-                            let _lib = Arc::clone(&state.library);
-                            let api = state.api();
-
-                            let mut callback_ctx = CallbackContext {
-                                output_packets: Vec::new(),
-                                error: None,
-                                telemetry_tx,
-                                session_id,
-                                node_id,
-                                video_pool,
-                                audio_pool,
-                            };
-
-                            let callback_data = (&raw mut callback_ctx).cast::<c_void>();
-                            let node_callbacks = build_node_callbacks(callback_data);
-
-                            // Call plugin's flush function
-                            tracing::info!("Calling api.flush()");
-                            let result = (api.flush)(
-                                guard.handle(),
-                                &raw const node_callbacks,
-                            );
-                            tracing::info!(success = result.success, "Flush returned");
-
-                            let error = if result.success {
-                                callback_ctx.error
-                            } else {
-                                let error_msg = if result.error_message.is_null() {
-                                    "Plugin flush failed".to_string()
-                                } else {
-                                    unsafe {
-                                        conversions::c_str_to_string(result.error_message)
-                                            .unwrap_or_else(|_| "Plugin flush failed".to_string())
-                                    }
-                                };
-                                Some(error_msg)
-                            };
-
-                            let outputs = callback_ctx.output_packets;
-                            drop(guard);
-                            (outputs, error)
-                        })
-                        .await?;
+                        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                        worker
+                            .tx()
+                            .send(WorkerRequest::Flush { reply: reply_tx })
+                            .await
+                            .map_err(|_| {
+                                StreamKitError::Runtime("Worker thread died".into())
+                            })?;
+                        let reply = self.await_reply("flush", &node_name, reply_rx).await?;
 
                         // Send flush outputs
-                        for (pin, pkt) in outputs {
+                        for (pin, pkt) in reply.outputs {
                             if context.output_sender.send(&pin, pkt).await.is_err() {
                                 tracing::debug!("Output channel closed during flush");
                             }
                         }
 
-                        if let Some(error_msg) = error {
+                        if let Some(error_msg) = reply.error {
                             warn!(node = %node_name, error = %error_msg, "Plugin flush failed");
                         }
 
                         break;
                     };
 
-                    // Move the blocking FFI call to spawn_blocking to avoid blocking the async runtime
-                    let state = Arc::clone(&self.state);
-                    let telemetry_tx = context.telemetry_tx.clone();
-                    let session_id = context.session_id.clone();
-                    let node_id = node_name.clone();
-                    let pin_cstr = Arc::clone(&input_pin_cstrs[pin_index]);
-                    let video_pool = video_pool.clone();
-                    let audio_pool = audio_pool.clone();
-                    let (outputs, error) = self.call_with_timeout("process_packet", &node_name, move || {
-                        let Some(guard) = state.begin_call() else {
-                            return (
-                                Vec::new(),
-                                Some("Instance destroyed during process_packet".to_string()),
-                            );
-                        };
+                    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                    worker
+                        .tx()
+                        .send(WorkerRequest::Process { pin_index, packet, reply: reply_tx })
+                        .await
+                        .map_err(|_| {
+                            StreamKitError::Runtime("Worker thread died".into())
+                        })?;
+                    let reply = self
+                        .await_reply("process_packet", &node_name, reply_rx)
+                        .await?;
+                    let (outputs, error) = (reply.outputs, reply.error);
 
-                        let _lib = Arc::clone(&state.library);
-                        let api = state.api();
-                        // Convert packet to C representation
-                        let mut packet_repr = conversions::packet_to_c(&packet);
-
-                        // v6 plugins do not understand BinaryWithMeta (discriminant 10).
-                        // Downgrade to plain Binary so the raw bytes still arrive; the
-                        // metadata/content_type fields are lost but the plugin won't crash.
-                        // Note: no downgrade needed for EncodedAudio (discriminant 11)
-                        // because it is a metadata-only type used in CPacketTypeInfo for
-                        // pin declarations — it never appears in runtime CPacket transport.
-                        if state.api_version < 7 {
-                            packet_repr.downgrade_binary_with_meta();
+                    // Send outputs
+                    for (pin, pkt) in outputs {
+                        if context.output_sender.send(&pin, pkt).await.is_err() {
+                            tracing::debug!("Output channel closed, stopping node");
+                            break;
                         }
+                    }
 
-                        // Create callback context
-                        let mut callback_ctx = CallbackContext {
-                            output_packets: Vec::new(),
-                            error: None,
-                            telemetry_tx,
-                            session_id,
-                            node_id,
-                            video_pool,
-                            audio_pool,
-                        };
+                    // Handle errors
+                    if let Some(error_msg) = error {
+                        error!(node = %node_name, error = %error_msg, "Plugin process failed");
 
-                        let callback_data = (&raw mut callback_ctx).cast::<c_void>();
-                        let node_callbacks = build_node_callbacks(callback_data);
-
-                        // Call plugin's process function (BLOCKING - but we're in call_with_timeout)
-                        let result = (api.process_packet)(
-                            guard.handle(),
-                            pin_cstr.as_ptr(),
-                            &raw const packet_repr.packet,
-                            &raw const node_callbacks,
-                        );
-
-                        // Check for errors
-                        let error = if result.success {
-                            callback_ctx.error
-                        } else {
-                            let error_msg = if result.error_message.is_null() {
-                                "Unknown plugin error".to_string()
-                            } else {
-                                // SAFETY: The error_message pointer is provided by the plugin
-                                // and is valid for the duration of this call.
-                                unsafe {
-                                    conversions::c_str_to_string(result.error_message)
-                                        .unwrap_or_else(|_| "Unknown plugin error".to_string())
-                                }
-                            };
-                            Some(error_msg)
-                        };
-
-                        let outputs = callback_ctx.output_packets;
-                        drop(guard);
-                        (outputs, error)
-                    })
-                    .await?;
-
-            // Now send outputs (after dropping c_packet and result)
-            for (pin, pkt) in outputs {
-                if context.output_sender.send(&pin, pkt).await.is_err() {
-                    tracing::debug!("Output channel closed, stopping node");
-                    break;
-                }
-            }
-
-            // Handle errors
-            if let Some(error_msg) = error {
-                error!(node = %node_name, error = %error_msg, "Plugin process failed");
-
-                if let Err(e) = context
-                    .state_tx
-                    .send(NodeStateUpdate::new(
-                        node_name.clone(),
-                        NodeState::Failed { reason: error_msg.clone() },
-                    ))
-                    .await
-                {
-                    warn!(error = %e, node = %node_name, "Failed to send failed state");
-                }
+                        if let Err(e) = context
+                            .state_tx
+                            .send(NodeStateUpdate::new(
+                                node_name.clone(),
+                                NodeState::Failed { reason: error_msg.clone() },
+                            ))
+                            .await
+                        {
+                            warn!(error = %e, node = %node_name, "Failed to send failed state");
+                        }
 
                         for handle in &input_tasks {
                             handle.abort();
@@ -821,6 +999,9 @@ impl NativeNodeWrapper {
                 }
             }
         }
+
+        // Shut down the worker thread.
+        let _ = worker.tx().try_send(WorkerRequest::Shutdown);
 
         for handle in &input_tasks {
             handle.abort();
@@ -847,17 +1028,7 @@ impl NativeNodeWrapper {
     /// Lifecycle: Initializing → Ready → (wait for Start) → Running → tick loop → Stopped.
     #[allow(clippy::too_many_lines)]
     async fn run_source(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
-        // Defined up-front to satisfy `items_after_statements` lint.
-        struct TickOutcome {
-            outputs: Vec<(String, Packet)>,
-            success: bool,
-            done: bool,
-            error_msg: Option<String>,
-        }
-
         let node_name = context.output_sender.node_name().to_string();
-        let video_pool = context.video_pool.clone();
-        let audio_pool = context.audio_pool.clone();
 
         tracing::info!(node = %node_name, "Native source plugin wrapper starting");
 
@@ -869,6 +1040,19 @@ impl NativeNodeWrapper {
         {
             warn!(error = %e, node = %node_name, "Failed to send initializing state");
         }
+
+        // Spawn the dedicated worker thread for this instance.
+        // Spawned before the Ready→Start handshake so that pre-start
+        // UpdateParams can be routed through the worker.
+        let worker = Self::spawn_worker(
+            Arc::clone(&self.state),
+            Vec::new(), // source plugins have no input pins
+            context.telemetry_tx.clone(),
+            context.session_id.clone(),
+            node_name.clone(),
+            context.video_pool.clone(),
+            context.audio_pool.clone(),
+        )?;
 
         // ── Ready → Start handshake ─────────────────────────────────────
         // Emit Ready so the pipeline coordinator knows this node is waiting
@@ -926,7 +1110,12 @@ impl NativeNodeWrapper {
                         }
                         Some(NodeControlMessage::UpdateParams(params_value)) => {
                             // Apply parameter updates even before Start.
-                            self.apply_params_update(&node_name, &params_value).await?;
+                            self.apply_params_update(
+                                &node_name,
+                                &params_value,
+                                worker.tx(),
+                            )
+                            .await?;
                         }
                         None => {
                             // Control channel closed before Start — shut down gracefully.
@@ -977,9 +1166,10 @@ impl NativeNodeWrapper {
             .unwrap_or_else(fallback);
         let mut tick_count: u64 = 0;
 
-        let tick_fn = self.state.api().tick.ok_or_else(|| {
-            StreamKitError::Runtime("Source plugin missing tick function".to_string())
-        })?;
+        // Verify tick function exists (will be called by the worker thread).
+        if self.state.api().tick.is_none() {
+            return Err(StreamKitError::Runtime("Source plugin missing tick function".to_string()));
+        }
 
         let mut interval = tokio::time::interval(tick_interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -994,6 +1184,8 @@ impl NativeNodeWrapper {
             String,
             tokio::sync::mpsc::Receiver<streamkit_core::UpstreamHint>,
         )> = Vec::new();
+
+        let worker_tx = worker.tx();
 
         loop {
             // Check tick limit
@@ -1020,7 +1212,7 @@ impl NativeNodeWrapper {
                         return Ok(());
                     },
                     NodeControlMessage::UpdateParams(params_value) => {
-                        self.apply_params_update(&node_name, &params_value).await?;
+                        self.apply_params_update(&node_name, &params_value, worker_tx).await?;
                     },
                     NodeControlMessage::Start => {
                         // Already started — ignore duplicate.
@@ -1030,11 +1222,6 @@ impl NativeNodeWrapper {
 
             // Non-blocking drain of pin management messages to pick up
             // OutputHintChannel deliveries from the engine.
-            // NOTE: this consumes ALL variants but only extracts
-            // OutputHintChannel.  Safe today because source plugins
-            // don't receive AddedOutputPin/RemoveOutputPin/InputTypeResolved.
-            // If dynamic output pins are added to sources in the future,
-            // this drain must be updated to handle those variants.
             if let Some(ref mut pin_mgmt_rx) = context.pin_management_rx {
                 while let Ok(msg) = pin_mgmt_rx.try_recv() {
                     if let streamkit_core::pins::PinManagementMessage::OutputHintChannel {
@@ -1048,111 +1235,45 @@ impl NativeNodeWrapper {
                 }
             }
 
-            // Drain all hint receivers and deliver to plugin via C ABI.
-            // Retain only receivers whose channels are still open.
-            // First collect pending hints (non-blocking), then deliver
-            // via call_with_timeout to avoid blocking the tokio worker
-            // and to keep timeout hardening consistent across all FFI
-            // call sites.  Hints are best-effort — timeout errors are
-            // ignored.
-            if !hint_receivers.is_empty() {
-                if let Some(on_hint_fn) = self.state.api().on_upstream_hint {
-                    let mut pending_hints: Vec<std::ffi::CString> = Vec::new();
-                    hint_receivers.retain_mut(|(_pin, rx)| loop {
-                        match rx.try_recv() {
-                            Ok(hint) => {
-                                tracing::info!(node = %node_name, ?hint, "Delivering upstream hint to plugin");
-                                if let Ok(json) = serde_json::to_string(&hint) {
-                                    if let Ok(c_str) = std::ffi::CString::new(json) {
-                                        pending_hints.push(c_str);
-                                    }
+            // Drain all hint receivers and deliver to plugin via the worker.
+            if !hint_receivers.is_empty() && self.state.api().on_upstream_hint.is_some() {
+                let mut pending_hints: Vec<std::ffi::CString> = Vec::new();
+                hint_receivers.retain_mut(|(_pin, rx)| loop {
+                    match rx.try_recv() {
+                        Ok(hint) => {
+                            tracing::info!(node = %node_name, ?hint, "Delivering upstream hint to plugin");
+                            if let Ok(json) = serde_json::to_string(&hint) {
+                                if let Ok(c_str) = std::ffi::CString::new(json) {
+                                    pending_hints.push(c_str);
                                 }
-                            },
-                            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return true,
-                            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                                return false
-                            },
-                        }
-                    });
-                    if !pending_hints.is_empty() {
-                        let state = Arc::clone(&self.state);
-                        let _ = self
-                            .call_with_timeout("on_upstream_hint", &node_name, move || {
-                                for c_str in &pending_hints {
-                                    if let Some(guard) = state.begin_call() {
-                                        let _ = on_hint_fn(guard.handle(), c_str.as_ptr());
-                                    }
-                                }
-                            })
-                            .await;
+                            }
+                        },
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return true,
+                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                            return false
+                        },
                     }
+                });
+                if !pending_hints.is_empty() {
+                    let _ = worker_tx
+                        .send(WorkerRequest::OnUpstreamHint { hints: pending_hints })
+                        .await;
                 }
             }
 
             // ── Tick ────────────────────────────────────────────────────
-            let state = Arc::clone(&self.state);
-            let telemetry_tx = context.telemetry_tx.clone();
-            let session_id = context.session_id.clone();
-            let node_id = node_name.clone();
-            let video_pool = video_pool.clone();
-            let audio_pool = audio_pool.clone();
-            let outcome = self
-                .call_with_timeout("tick", &node_name, move || {
-                    let Some(guard) = state.begin_call() else {
-                        return TickOutcome {
-                            outputs: Vec::new(),
-                            success: false,
-                            done: false,
-                            error_msg: Some("Instance handle is null".to_string()),
-                        };
-                    };
-
-                    let _lib = Arc::clone(&state.library);
-
-                    let mut callback_ctx = CallbackContext {
-                        output_packets: Vec::new(),
-                        error: None,
-                        telemetry_tx,
-                        session_id,
-                        node_id,
-                        video_pool,
-                        audio_pool,
-                    };
-
-                    let callback_data = (&raw mut callback_ctx).cast::<c_void>();
-                    let node_callbacks = build_node_callbacks(callback_data);
-
-                    let result = tick_fn(guard.handle(), &raw const node_callbacks);
-
-                    // Extract error string while pointers are still valid.
-                    let error_msg = if result.result.success {
-                        callback_ctx.error
-                    } else if result.result.error_message.is_null() {
-                        Some("Source tick failed".to_string())
-                    } else {
-                        Some(unsafe {
-                            conversions::c_str_to_string(result.result.error_message)
-                                .unwrap_or_else(|_| "Source tick failed".to_string())
-                        })
-                    };
-
-                    let outputs = callback_ctx.output_packets;
-                    drop(guard);
-
-                    TickOutcome {
-                        outputs,
-                        success: result.result.success,
-                        done: result.done,
-                        error_msg,
-                    }
-                })
-                .await?;
+            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+            worker_tx
+                .send(WorkerRequest::Tick { reply: reply_tx })
+                .await
+                .map_err(|_| StreamKitError::Runtime("Worker thread died".into()))?;
+            let reply = self.await_reply("tick", &node_name, reply_rx).await?;
 
             // Send outputs produced by tick.  If the output channel is closed,
             // stop ticking — source nodes have no input-close backstop so we must
             // detect consumer disconnect here.
             let mut output_closed = false;
-            for (pin, pkt) in outcome.outputs {
+            for (pin, pkt) in reply.outputs {
                 if context.output_sender.send(&pin, pkt).await.is_err() {
                     tracing::debug!(node = %node_name, "Output channel closed during tick");
                     output_closed = true;
@@ -1166,9 +1287,7 @@ impl NativeNodeWrapper {
             tick_count += 1;
 
             // Check tick result
-            if !outcome.success {
-                let error_msg =
-                    outcome.error_msg.unwrap_or_else(|| "Source tick failed".to_string());
+            if let Some(error_msg) = reply.error {
                 error!(node = %node_name, error = %error_msg, "Source tick error");
                 if let Err(e) = context
                     .state_tx
@@ -1183,7 +1302,7 @@ impl NativeNodeWrapper {
                 return Err(StreamKitError::Runtime(error_msg));
             }
 
-            if outcome.done {
+            if reply.done {
                 tracing::info!(node = %node_name, ticks = tick_count, "Source signalled done");
                 break;
             }
@@ -1204,6 +1323,9 @@ impl NativeNodeWrapper {
             }
         }
 
+        // Shut down the worker thread.
+        let _ = worker.tx().try_send(WorkerRequest::Shutdown);
+
         // Emit stopped state
         if let Err(e) = context
             .state_tx
@@ -1219,11 +1341,12 @@ impl NativeNodeWrapper {
         Ok(())
     }
 
-    /// Helper to apply a parameter update via the C ABI.
+    /// Helper to apply a parameter update via the worker thread.
     async fn apply_params_update(
         &self,
         node_name: &str,
         params_value: &serde_json::Value,
+        worker_tx: &tokio::sync::mpsc::Sender<WorkerRequest>,
     ) -> Result<(), StreamKitError> {
         let params_json = serde_json::to_string(params_value).map_err(|e| {
             StreamKitError::Configuration(format!("Failed to serialize params: {e}"))
@@ -1231,31 +1354,13 @@ impl NativeNodeWrapper {
         let params_cstr = CString::new(params_json)
             .map_err(|e| StreamKitError::Configuration(format!("Invalid params string: {e}")))?;
 
-        let state = Arc::clone(&self.state);
-        let error_msg = self
-            .call_with_timeout("update_params", node_name, move || {
-                let Some(guard) = state.begin_call() else {
-                    return Some("Instance destroyed during update_params".to_string());
-                };
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        worker_tx
+            .send(WorkerRequest::UpdateParams { params_cstr, reply: reply_tx })
+            .await
+            .map_err(|_| StreamKitError::Runtime("Worker thread died".into()))?;
 
-                let _lib = Arc::clone(&state.library);
-                let api = state.api();
-                let result = (api.update_params)(guard.handle(), params_cstr.as_ptr());
-
-                if result.success {
-                    None
-                } else if result.error_message.is_null() {
-                    Some("Failed to update parameters".to_string())
-                } else {
-                    unsafe {
-                        Some(
-                            conversions::c_str_to_string(result.error_message)
-                                .unwrap_or_else(|_| "Failed to update parameters".to_string()),
-                        )
-                    }
-                }
-            })
-            .await?;
+        let error_msg = self.await_reply("update_params", node_name, reply_rx).await?;
 
         if let Some(err) = error_msg {
             warn!(node = %node_name, error = %err, "Parameter update failed");
