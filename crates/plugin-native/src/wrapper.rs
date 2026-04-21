@@ -179,6 +179,9 @@ struct InstanceState {
     handle: AtomicPtr<c_void>,
     in_flight_calls: AtomicUsize,
     drop_requested: AtomicBool,
+    /// One-shot flag: set after the first timeout warning so a wedged
+    /// plugin does not spam `warn!` on every subsequent FFI call.
+    timeout_warned: AtomicBool,
     /// Plugin's declared API version (6, 7, or 8).  Used to avoid sending
     /// `BinaryWithMeta` packets to v6 plugins that don't understand them.
     /// v7 plugins understand BinaryWithMeta but not EncodedAudio metadata
@@ -201,6 +204,7 @@ impl InstanceState {
             handle: AtomicPtr::new(handle),
             in_flight_calls: AtomicUsize::new(0),
             drop_requested: AtomicBool::new(false),
+            timeout_warned: AtomicBool::new(false),
             api_version,
             call_timeout,
         }
@@ -257,10 +261,10 @@ impl InstanceState {
     /// `destroy_instance` — this is benign because `destroy_instance`
     /// is idempotent (atomic null-swap guard).
     fn finish_call(&self) {
-        let prev = self.in_flight_calls.fetch_sub(1, Ordering::AcqRel);
+        let prev = self.in_flight_calls.fetch_sub(1, Ordering::SeqCst);
         debug_assert!(prev > 0, "finish_call called without begin_call");
 
-        if prev == 1 && self.drop_requested.load(Ordering::Acquire) {
+        if prev == 1 && self.drop_requested.load(Ordering::SeqCst) {
             self.destroy_instance();
         }
     }
@@ -278,7 +282,7 @@ impl InstanceState {
     }
 
     fn destroy_instance(&self) {
-        let h = self.handle.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        let h = self.handle.swap(std::ptr::null_mut(), Ordering::SeqCst);
         if h.is_null() {
             return;
         }
@@ -413,6 +417,9 @@ impl ProcessorNode for NativeNodeWrapper {
     // TODO: runtime_param_schema is synchronous and has no timeout protection —
     // a hung plugin will stall the calling tokio worker.  Refactoring to
     // async + call_with_timeout is a larger change (trait method is sync).
+    // NOTE: unlike async call sites, this path does not wrap the FFI call
+    // in catch_unwind — a panicking plugin will unwind into the caller.
+    // Closing this asymmetry requires moving to spawn_blocking + timeout.
     fn runtime_param_schema(&self) -> Option<serde_json::Value> {
         let get_schema = self.state.api().get_runtime_param_schema?;
         let guard = self.state.begin_call()?;
@@ -485,12 +492,16 @@ impl NativeNodeWrapper {
             Some(timeout) => tokio::time::timeout(timeout, task)
                 .await
                 .map_err(|_| {
-                    warn!(
-                        node = %node,
-                        "Plugin {op} timed out after {timeout:?}; \
-                         the blocking task is still running and holds a CallGuard — \
-                         in_flight_calls will remain elevated until it completes"
-                    );
+                    // Rate-limit: only warn once per instance to avoid
+                    // log spam from a permanently wedged plugin.
+                    if !self.state.timeout_warned.swap(true, Ordering::Relaxed) {
+                        warn!(
+                            node = %node,
+                            "Plugin {op} timed out after {timeout:?}; \
+                             the blocking task is still running and holds a CallGuard — \
+                             in_flight_calls will remain elevated until it completes"
+                        );
+                    }
                     StreamKitError::Runtime(format!(
                         "Plugin {op} on node {node} timed out after {timeout:?}"
                     ))
@@ -950,8 +961,8 @@ impl NativeNodeWrapper {
             let ti = std::time::Duration::from_micros(self.metadata.tick_interval_us.max(1));
             (ti, self.metadata.max_ticks)
         };
-        // TODO: get_source_config is synchronous (no timeout) — same concern
-        // as runtime_param_schema.  Needs async refactor for full coverage.
+        // TODO: get_source_config is synchronous (no timeout, no catch_unwind) —
+        // same concern as runtime_param_schema.  Needs async refactor for full coverage.
         let (tick_interval, max_ticks) = self
             .state
             .api()
@@ -1221,7 +1232,6 @@ impl NativeNodeWrapper {
             .map_err(|e| StreamKitError::Configuration(format!("Invalid params string: {e}")))?;
 
         let state = Arc::clone(&self.state);
-        let node_name_owned = node_name.to_string();
         let error_msg = self
             .call_with_timeout("update_params", node_name, move || {
                 let Some(guard) = state.begin_call() else {
@@ -1248,7 +1258,7 @@ impl NativeNodeWrapper {
             .await?;
 
         if let Some(err) = error_msg {
-            warn!(node = %node_name_owned, error = %err, "Parameter update failed");
+            warn!(node = %node_name, error = %err, "Parameter update failed");
         }
 
         Ok(())
@@ -1779,13 +1789,7 @@ mod ffi_guard_tests {
     fn concurrent_begin_call_and_request_drop() {
         use std::sync::Barrier;
 
-        // Use an AtomicUsize to count how many times destroy_instance
-        // actually swaps a non-null handle (should be exactly 1).
-        static DESTROY_COUNT: std::sync::atomic::AtomicUsize =
-            std::sync::atomic::AtomicUsize::new(0);
-
         for _round in 0..50 {
-            DESTROY_COUNT.store(0, Ordering::SeqCst);
             let state = test_instance_state();
             let num_callers = 8;
             let barrier = Arc::new(Barrier::new(num_callers + 1));
@@ -1831,12 +1835,12 @@ mod ffi_guard_tests {
         }
     }
 
-    // NOTE: This test verifies that ApiPtr round-trips the raw pointer value,
-    // but pointer-equality alone does not prove provenance is preserved — a
-    // cast through usize would also pass.  For authoritative validation, run
-    // under Miri: `cargo +nightly miri test -p streamkit-plugin-native`.
-    // TODO: add Miri to CI to catch provenance violations automatically.
+    // Pointer-equality alone does not prove provenance is preserved.
+    // Under Miri this test authoritatively validates that ApiPtr never
+    // strips provenance.  Outside Miri, it is a no-op.
+    // TODO: add `cargo +nightly miri test -p streamkit-plugin-native` to CI.
     #[test]
+    #[cfg(miri)]
     fn api_ptr_preserves_provenance() {
         let api: &'static CNativePluginAPI = Box::leak(Box::new(dummy_api()));
         let original_addr = std::ptr::from_ref(api);
