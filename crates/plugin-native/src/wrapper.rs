@@ -13,6 +13,17 @@
 //! functions (`process_packet`, `flush`, `tick`) are valid **only for
 //! the duration of that single host→plugin call**.  The plugin must not
 //! stash callback pointers or call them after returning.
+//!
+//! ## Timeout and Instance Leak
+//!
+//! [`call_with_timeout`] wraps `spawn_blocking` calls with
+//! `tokio::time::timeout`.  When a call times out, the blocking task
+//! **cannot be cancelled** — it keeps running in the background, holding
+//! a [`CallGuard`] that keeps `in_flight_calls` elevated.  If the
+//! wrapper is subsequently dropped, `destroy_instance` is deferred to
+//! the still-running task (via `finish_call` in the `CallGuard` drop).
+//! If the plugin never returns, the instance and its `Arc<Library>` leak
+//! for the process lifetime.  This is safe (no UB) but not ideal.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -101,6 +112,9 @@ fn ffi_guard_unit(f: impl FnOnce()) {
 
 /// Default timeout for plugin FFI calls (process_packet, flush, tick).
 /// 5 minutes — generous to support slow plugins (e.g. ML inference).
+// TODO: wire this through user configuration (e.g. pipeline YAML or server
+// config) instead of hard-coding.  `set_call_timeout` exists on
+// `LoadedNativePlugin` but nothing calls it yet.
 pub(crate) const DEFAULT_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Wrapper preserving pointer provenance for the plugin's API vtable.
@@ -189,12 +203,33 @@ impl InstanceState {
         unsafe { &*self.api.0 }
     }
 
+    /// Acquire a guard for an in-flight FFI call.
+    ///
+    /// Returns `None` if the instance has been destroyed or a drop has been
+    /// requested.  Uses Dekker-style mutual exclusion with [`request_drop`]:
+    ///
+    /// ```text
+    /// begin_call:   write(in_flight, SeqCst) → read(drop_requested, SeqCst)
+    /// request_drop: write(drop_requested, SeqCst) → read(in_flight, SeqCst)
+    /// ```
+    ///
+    /// `SeqCst` on both sides guarantees at least one side observes the
+    /// other's write, closing the TOCTOU window between incrementing
+    /// `in_flight_calls` and loading the handle.
     fn begin_call(&self) -> Option<CallGuard<'_>> {
-        self.in_flight_calls.fetch_add(1, Ordering::AcqRel);
+        self.in_flight_calls.fetch_add(1, Ordering::SeqCst);
+
+        // Dekker re-check: if drop was requested, our increment may have
+        // raced with request_drop seeing in_flight == 0 and calling
+        // destroy_instance.  Roll back.
+        if self.drop_requested.load(Ordering::SeqCst) {
+            self.in_flight_calls.fetch_sub(1, Ordering::SeqCst);
+            return None;
+        }
 
         let h = self.handle.load(Ordering::Acquire);
         if h.is_null() {
-            self.in_flight_calls.fetch_sub(1, Ordering::AcqRel);
+            self.in_flight_calls.fetch_sub(1, Ordering::SeqCst);
             return None;
         }
 
@@ -210,9 +245,14 @@ impl InstanceState {
         }
     }
 
+    /// Signal that the wrapper is done with this instance.
+    ///
+    /// If no calls are in flight, destroys immediately.  Otherwise,
+    /// defers to the last [`finish_call`].  Uses `SeqCst` ordering
+    /// to form a Dekker pair with [`begin_call`].
     fn request_drop(&self) {
-        self.drop_requested.store(true, Ordering::Release);
-        if self.in_flight_calls.load(Ordering::Acquire) == 0 {
+        self.drop_requested.store(true, Ordering::SeqCst);
+        if self.in_flight_calls.load(Ordering::SeqCst) == 0 {
             self.destroy_instance();
         }
     }
@@ -227,6 +267,15 @@ impl InstanceState {
         let _lib = Arc::clone(&self.library);
         let api = self.api();
         (api.destroy_instance)(h);
+    }
+}
+
+impl Drop for InstanceState {
+    fn drop(&mut self) {
+        // Defense-in-depth: if NativeNodeWrapper::drop failed to call
+        // request_drop (or if request_drop deferred), make one last
+        // attempt.  destroy_instance is idempotent (null-swap guard).
+        self.destroy_instance();
     }
 }
 
@@ -340,6 +389,9 @@ impl ProcessorNode for NativeNodeWrapper {
         self.metadata.outputs.clone()
     }
 
+    // TODO: runtime_param_schema is synchronous and has no timeout protection —
+    // a hung plugin will stall the calling tokio worker.  Refactoring to
+    // async + call_with_timeout is a larger change (trait method is sync).
     fn runtime_param_schema(&self) -> Option<serde_json::Value> {
         let get_schema = self.state.api().get_runtime_param_schema?;
         let guard = self.state.begin_call()?;
@@ -390,7 +442,19 @@ impl NativeNodeWrapper {
     /// cannot be cancelled — it will eventually complete in the background
     /// — but the pipeline node gets an immediate error so downstream can
     /// react.
-    async fn call_with_timeout<T, F>(&self, op: &'static str, f: F) -> Result<T, StreamKitError>
+    ///
+    /// **Leak note:** if a call times out and the wrapper is subsequently
+    /// dropped, `destroy_instance` is deferred to the still-running
+    /// blocking task (via `CallGuard` / `finish_call`).  If the plugin
+    /// never returns, the instance and its `Arc<Library>` leak for the
+    /// process lifetime.  This is safe but not ideal — a future metric
+    /// (`plugin.leaked_instances`) should track this case.
+    async fn call_with_timeout<T, F>(
+        &self,
+        op: &'static str,
+        node: &str,
+        f: F,
+    ) -> Result<T, StreamKitError>
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
@@ -401,16 +465,23 @@ impl NativeNodeWrapper {
                 .await
                 .map_err(|_| {
                     warn!(
+                        node = %node,
                         "Plugin {op} timed out after {timeout:?}; \
                          the blocking task is still running and holds a CallGuard — \
                          in_flight_calls will remain elevated until it completes"
                     );
-                    StreamKitError::Runtime(format!("Plugin {op} timed out after {timeout:?}"))
+                    StreamKitError::Runtime(format!(
+                        "Plugin {op} on node {node} timed out after {timeout:?}"
+                    ))
                 })?
-                .map_err(|e| StreamKitError::Runtime(format!("Plugin {op} task panicked: {e}"))),
-            None => task
-                .await
-                .map_err(|e| StreamKitError::Runtime(format!("Plugin {op} task panicked: {e}"))),
+                .map_err(|e| {
+                    StreamKitError::Runtime(format!(
+                        "Plugin {op} on node {node} task panicked: {e}"
+                    ))
+                }),
+            None => task.await.map_err(|e| {
+                StreamKitError::Runtime(format!("Plugin {op} on node {node} task panicked: {e}"))
+            }),
         }
     }
 
@@ -545,7 +616,7 @@ impl NativeNodeWrapper {
                         let session_id = context.session_id.clone();
                         let node_id = node_name.clone();
 
-                        let (outputs, error) = self.call_with_timeout("flush", move || {
+                        let (outputs, error) = self.call_with_timeout("flush", &node_name, move || {
                             let Some(guard) = state.begin_call() else {
                                 return (
                                     Vec::new(),
@@ -619,7 +690,7 @@ impl NativeNodeWrapper {
                     let pin_cstr = Arc::clone(&input_pin_cstrs[pin_index]);
                     let video_pool = video_pool.clone();
                     let audio_pool = audio_pool.clone();
-                    let (outputs, error) = self.call_with_timeout("process_packet", move || {
+                    let (outputs, error) = self.call_with_timeout("process_packet", &node_name, move || {
                         let Some(guard) = state.begin_call() else {
                             return (
                                 Vec::new(),
@@ -858,6 +929,8 @@ impl NativeNodeWrapper {
             let ti = std::time::Duration::from_micros(self.metadata.tick_interval_us.max(1));
             (ti, self.metadata.max_ticks)
         };
+        // TODO: get_source_config is synchronous (no timeout) — same concern
+        // as runtime_param_schema.  Needs async refactor for full coverage.
         let (tick_interval, max_ticks) = self
             .state
             .api()
@@ -948,6 +1021,9 @@ impl NativeNodeWrapper {
             // First collect pending hints (non-blocking), then deliver
             // via spawn_blocking to avoid blocking the tokio worker —
             // consistent with how tick_fn and other C ABI calls are made.
+            // TODO: use call_with_timeout here for consistency with other
+            // FFI call sites.  Hints are best-effort so timeout errors
+            // would be ignored, but it keeps the hardening uniform.
             if !hint_receivers.is_empty() {
                 if let Some(on_hint_fn) = self.state.api().on_upstream_hint {
                     let mut pending_hints: Vec<std::ffi::CString> = Vec::new();
@@ -989,7 +1065,7 @@ impl NativeNodeWrapper {
             let video_pool = video_pool.clone();
             let audio_pool = audio_pool.clone();
             let outcome = self
-                .call_with_timeout("tick", move || {
+                .call_with_timeout("tick", &node_name, move || {
                     let Some(guard) = state.begin_call() else {
                         return TickOutcome {
                             outputs: Vec::new(),
@@ -1126,7 +1202,7 @@ impl NativeNodeWrapper {
         let state = Arc::clone(&self.state);
         let node_name_owned = node_name.to_string();
         let error_msg = self
-            .call_with_timeout("update_params", move || {
+            .call_with_timeout("update_params", node_name, move || {
                 let guard = state.begin_call()?;
 
                 let _lib = Arc::clone(&state.library);
@@ -1668,6 +1744,11 @@ mod ffi_guard_tests {
         );
     }
 
+    // NOTE: This test verifies that ApiPtr round-trips the raw pointer value,
+    // but pointer-equality alone does not prove provenance is preserved — a
+    // cast through usize would also pass.  For authoritative validation, run
+    // under Miri: `cargo +nightly miri test -p streamkit-plugin-native`.
+    // TODO: add Miri to CI to catch provenance violations automatically.
     #[test]
     fn api_ptr_preserves_provenance() {
         let api: &'static CNativePluginAPI = Box::leak(Box::new(dummy_api()));
