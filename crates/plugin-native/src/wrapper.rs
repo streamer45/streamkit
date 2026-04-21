@@ -325,7 +325,6 @@ struct WorkerReply {
 
 struct InstanceWorker {
     tx: Option<tokio::sync::mpsc::Sender<WorkerRequest>>,
-    join: Option<std::thread::JoinHandle<()>>,
 }
 
 impl InstanceWorker {
@@ -343,9 +342,13 @@ impl Drop for InstanceWorker {
     fn drop(&mut self) {
         // Close the channel so the worker's `blocking_recv` returns `None`.
         drop(self.tx.take());
-        if let Some(join) = self.join.take() {
-            let _ = join.join();
-        }
+        // Detach the worker thread — do NOT join synchronously.  This Drop
+        // runs on a tokio worker thread (inside async run_processor/run_source),
+        // so a blocking join would stall the async runtime if the worker is
+        // stuck in a long FFI call (e.g. after a timeout).  The worker holds
+        // an Arc<InstanceState> which ensures the plugin instance stays alive
+        // until the FFI call completes; request_drop/destroy_instance handle
+        // deferred cleanup.
     }
 }
 
@@ -514,7 +517,7 @@ fn worker_thread_main(
                 let result = tick_fn(guard.handle(), &raw const node_callbacks);
 
                 let error = if result.result.success {
-                    None
+                    callback_ctx.error
                 } else if result.result.error_message.is_null() {
                     Some("Source tick failed".to_string())
                 } else {
@@ -744,7 +747,7 @@ impl NativeNodeWrapper {
     ) -> Result<InstanceWorker, StreamKitError> {
         let (tx, rx) = tokio::sync::mpsc::channel::<WorkerRequest>(1);
         let thread_name = format!("skit-plugin-{node_id}");
-        let join = std::thread::Builder::new()
+        std::thread::Builder::new()
             .name(thread_name)
             .spawn(move || {
                 worker_thread_main(
@@ -761,7 +764,7 @@ impl NativeNodeWrapper {
             .map_err(|e| {
                 StreamKitError::Runtime(format!("Failed to spawn plugin worker thread: {e}"))
             })?;
-        Ok(InstanceWorker { tx: Some(tx), join: Some(join) })
+        Ok(InstanceWorker { tx: Some(tx) })
     }
 
     /// Await a oneshot reply from the worker, applying the configured timeout.
