@@ -20,10 +20,11 @@
 //! that receives [`WorkerRequest`] messages over a bounded channel and
 //! replies via oneshot channels.  This replaces the previous
 //! `spawn_blocking` approach, eliminating per-packet thread-pool
-//! dispatch, ~7 `Arc::clone` operations, and a `Vec` allocation per
-//! packet.  The worker owns reusable [`CallbackContext`] buffers and
-//! hoisted `Arc` clones, amortising allocation across the instance
-//! lifetime.
+//! dispatch and ~7 `Arc::clone` operations per packet.  The worker
+//! owns reusable [`CallbackContext`] buffers and hoisted `Arc`
+//! clones, amortising allocation across the instance lifetime.
+//! The reusable output `Vec`'s *capacity* is preserved across calls;
+//! each reply still allocates a `Vec` sized to the actual outputs.
 //!
 //! Timeout behaviour is preserved: the async side applies
 //! `tokio::time::timeout` on the oneshot reply channel rather than on
@@ -175,6 +176,9 @@ impl Drop for CallGuard<'_> {
 }
 
 struct InstanceState {
+    /// Prevents the shared library from being unloaded while the
+    /// instance is alive.  Never read directly — kept for its `Drop`.
+    #[allow(dead_code)]
     library: Arc<Library>,
     api: ApiPtr,
     handle: AtomicPtr<c_void>,
@@ -313,8 +317,7 @@ enum WorkerRequest {
     Flush { reply: tokio::sync::oneshot::Sender<WorkerReply> },
     Tick { reply: tokio::sync::oneshot::Sender<WorkerReply> },
     UpdateParams { params_cstr: CString, reply: tokio::sync::oneshot::Sender<Option<String>> },
-    OnUpstreamHint { hints: Vec<CString> },
-    Shutdown,
+    OnUpstreamHint { hints: Vec<CString>, reply: tokio::sync::oneshot::Sender<()> },
 }
 
 struct WorkerReply {
@@ -330,9 +333,10 @@ struct InstanceWorker {
 impl InstanceWorker {
     /// Returns a reference to the worker channel sender.
     ///
-    /// The sender is always `Some` until [`Drop`] runs.
-    const fn tx(&self) -> &tokio::sync::mpsc::Sender<WorkerRequest> {
-        // SAFETY-ish: tx is only taken in Drop.  All call-sites run before Drop.
+    /// The sender is `Some` from construction until [`Drop`] runs;
+    /// all call-sites execute before `Drop`.
+    #[allow(clippy::missing_const_for_fn)] // intentionally non-const for readability
+    fn tx(&self) -> &tokio::sync::mpsc::Sender<WorkerRequest> {
         #[allow(clippy::unwrap_used)]
         self.tx.as_ref().unwrap()
     }
@@ -362,14 +366,13 @@ impl Drop for InstanceWorker {
 fn worker_thread_main(
     mut rx: tokio::sync::mpsc::Receiver<WorkerRequest>,
     state: Arc<InstanceState>,
-    pin_names: Vec<Arc<CString>>,
+    pin_names: Vec<CString>,
     telemetry_tx: Option<tokio::sync::mpsc::Sender<TelemetryEvent>>,
     session_id: Option<String>,
     node_id: String,
     video_pool: Option<Arc<VideoFramePool>>,
     audio_pool: Option<Arc<AudioFramePool>>,
 ) {
-    let _lib = Arc::clone(&state.library);
     let mut reusable_outputs: Vec<(String, Packet)> = Vec::new();
 
     while let Some(request) = rx.blocking_recv() {
@@ -404,25 +407,36 @@ fn worker_thread_main(
                 let callback_data = (&raw mut callback_ctx).cast::<c_void>();
                 let node_callbacks = build_node_callbacks(callback_data);
 
-                let result = (api.process_packet)(
-                    guard.handle(),
-                    pin_names[pin_index].as_ptr(),
-                    &raw const packet_repr.packet,
-                    &raw const node_callbacks,
-                );
+                let panic_msg = catch_unwind(AssertUnwindSafe(|| {
+                    (api.process_packet)(
+                        guard.handle(),
+                        pin_names[pin_index].as_ptr(),
+                        &raw const packet_repr.packet,
+                        &raw const node_callbacks,
+                    )
+                }));
 
-                let error = if result.success {
-                    callback_ctx.error
-                } else {
-                    let error_msg = if result.error_message.is_null() {
-                        "Unknown plugin error".to_string()
-                    } else {
-                        unsafe {
-                            conversions::c_str_to_string(result.error_message)
-                                .unwrap_or_else(|_| "Unknown plugin error".to_string())
+                let error = match panic_msg {
+                    Ok(result) => {
+                        if result.success {
+                            callback_ctx.error
+                        } else {
+                            let error_msg = if result.error_message.is_null() {
+                                "Unknown plugin error".to_string()
+                            } else {
+                                unsafe {
+                                    conversions::c_str_to_string(result.error_message)
+                                        .unwrap_or_else(|_| "Unknown plugin error".to_string())
+                                }
+                            };
+                            Some(error_msg)
                         }
-                    };
-                    Some(error_msg)
+                    },
+                    Err(payload) => {
+                        let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
+                        error!("Plugin process_packet panicked: {msg}");
+                        Some(format!("Plugin process_packet panicked: {msg}"))
+                    },
                 };
 
                 let reply_outputs: Vec<_> = callback_ctx.output_packets.drain(..).collect();
@@ -458,21 +472,32 @@ fn worker_thread_main(
                 let node_callbacks = build_node_callbacks(callback_data);
 
                 tracing::info!("Calling api.flush()");
-                let result = (api.flush)(guard.handle(), &raw const node_callbacks);
-                tracing::info!(success = result.success, "Flush returned");
+                let panic_msg = catch_unwind(AssertUnwindSafe(|| {
+                    (api.flush)(guard.handle(), &raw const node_callbacks)
+                }));
+                tracing::info!("Flush returned");
 
-                let error = if result.success {
-                    callback_ctx.error
-                } else {
-                    let error_msg = if result.error_message.is_null() {
-                        "Plugin flush failed".to_string()
-                    } else {
-                        unsafe {
-                            conversions::c_str_to_string(result.error_message)
-                                .unwrap_or_else(|_| "Plugin flush failed".to_string())
+                let error = match panic_msg {
+                    Ok(result) => {
+                        if result.success {
+                            callback_ctx.error
+                        } else {
+                            let error_msg = if result.error_message.is_null() {
+                                "Plugin flush failed".to_string()
+                            } else {
+                                unsafe {
+                                    conversions::c_str_to_string(result.error_message)
+                                        .unwrap_or_else(|_| "Plugin flush failed".to_string())
+                                }
+                            };
+                            Some(error_msg)
                         }
-                    };
-                    Some(error_msg)
+                    },
+                    Err(payload) => {
+                        let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
+                        error!("Plugin flush panicked: {msg}");
+                        Some(format!("Plugin flush panicked: {msg}"))
+                    },
                 };
 
                 let reply_outputs: Vec<_> = callback_ctx.output_packets.drain(..).collect();
@@ -514,25 +539,36 @@ fn worker_thread_main(
                 let callback_data = (&raw mut callback_ctx).cast::<c_void>();
                 let node_callbacks = build_node_callbacks(callback_data);
 
-                let result = tick_fn(guard.handle(), &raw const node_callbacks);
+                let panic_msg = catch_unwind(AssertUnwindSafe(|| {
+                    tick_fn(guard.handle(), &raw const node_callbacks)
+                }));
 
-                let error = if result.result.success {
-                    callback_ctx.error
-                } else if result.result.error_message.is_null() {
-                    Some("Source tick failed".to_string())
-                } else {
-                    Some(unsafe {
-                        conversions::c_str_to_string(result.result.error_message)
-                            .unwrap_or_else(|_| "Source tick failed".to_string())
-                    })
+                let (error, done) = match panic_msg {
+                    Ok(result) => {
+                        let err = if result.result.success {
+                            callback_ctx.error
+                        } else if result.result.error_message.is_null() {
+                            Some("Source tick failed".to_string())
+                        } else {
+                            Some(unsafe {
+                                conversions::c_str_to_string(result.result.error_message)
+                                    .unwrap_or_else(|_| "Source tick failed".to_string())
+                            })
+                        };
+                        (err, result.done)
+                    },
+                    Err(payload) => {
+                        let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
+                        error!("Plugin tick panicked: {msg}");
+                        (Some(format!("Plugin tick panicked: {msg}")), false)
+                    },
                 };
 
                 let reply_outputs: Vec<_> = callback_ctx.output_packets.drain(..).collect();
                 reusable_outputs = callback_ctx.output_packets;
                 drop(guard);
 
-                let _ =
-                    reply.send(WorkerReply { outputs: reply_outputs, error, done: result.done });
+                let _ = reply.send(WorkerReply { outputs: reply_outputs, error, done });
             },
 
             WorkerRequest::UpdateParams { params_cstr, reply } => {
@@ -542,36 +578,51 @@ fn worker_thread_main(
                 };
 
                 let api = state.api();
-                let result = (api.update_params)(guard.handle(), params_cstr.as_ptr());
+
+                let panic_msg = catch_unwind(AssertUnwindSafe(|| {
+                    (api.update_params)(guard.handle(), params_cstr.as_ptr())
+                }));
                 drop(guard);
 
-                let error = if result.success {
-                    None
-                } else if result.error_message.is_null() {
-                    Some("Failed to update parameters".to_string())
-                } else {
-                    unsafe {
-                        Some(
-                            conversions::c_str_to_string(result.error_message)
-                                .unwrap_or_else(|_| "Failed to update parameters".to_string()),
-                        )
-                    }
+                let error = match panic_msg {
+                    Ok(result) => {
+                        if result.success {
+                            None
+                        } else if result.error_message.is_null() {
+                            Some("Failed to update parameters".to_string())
+                        } else {
+                            unsafe {
+                                Some(
+                                    conversions::c_str_to_string(result.error_message)
+                                        .unwrap_or_else(|_| {
+                                            "Failed to update parameters".to_string()
+                                        }),
+                                )
+                            }
+                        }
+                    },
+                    Err(payload) => {
+                        let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
+                        error!("Plugin update_params panicked: {msg}");
+                        Some(format!("Plugin update_params panicked: {msg}"))
+                    },
                 };
 
                 let _ = reply.send(error);
             },
 
-            WorkerRequest::OnUpstreamHint { hints } => {
+            WorkerRequest::OnUpstreamHint { hints, reply } => {
                 if let Some(on_hint_fn) = state.api().on_upstream_hint {
                     for c_str in &hints {
                         if let Some(guard) = state.begin_call() {
-                            let _ = on_hint_fn(guard.handle(), c_str.as_ptr());
+                            let _ = catch_unwind(AssertUnwindSafe(|| {
+                                on_hint_fn(guard.handle(), c_str.as_ptr())
+                            }));
                         }
                     }
                 }
+                let _ = reply.send(());
             },
-
-            WorkerRequest::Shutdown => break,
         }
     }
 }
@@ -738,7 +789,7 @@ impl NativeNodeWrapper {
     /// Spawn a dedicated worker thread for this plugin instance.
     fn spawn_worker(
         state: Arc<InstanceState>,
-        pin_names: Vec<Arc<CString>>,
+        pin_names: Vec<CString>,
         telemetry_tx: Option<tokio::sync::mpsc::Sender<TelemetryEvent>>,
         session_id: Option<String>,
         node_id: String,
@@ -746,7 +797,8 @@ impl NativeNodeWrapper {
         audio_pool: Option<Arc<AudioFramePool>>,
     ) -> Result<InstanceWorker, StreamKitError> {
         let (tx, rx) = tokio::sync::mpsc::channel::<WorkerRequest>(1);
-        let thread_name = format!("skit-plugin-{node_id}");
+        // Linux caps prctl(PR_SET_NAME) at 15 bytes; keep prefix short.
+        let thread_name = format!("skit-plg-{node_id}");
         std::thread::Builder::new()
             .name(thread_name)
             .spawn(move || {
@@ -836,7 +888,7 @@ impl NativeNodeWrapper {
             })?;
             let pin_index = input_pin_names.len();
             input_pin_names.push(pin_name);
-            input_pin_cstrs.push(Arc::new(pin_cstr));
+            input_pin_cstrs.push(pin_cstr);
 
             let tx = merged_tx.clone();
             let token = cancellation_token.clone();
@@ -1002,9 +1054,6 @@ impl NativeNodeWrapper {
                 }
             }
         }
-
-        // Shut down the worker thread.
-        let _ = worker.tx().try_send(WorkerRequest::Shutdown);
 
         for handle in &input_tasks {
             handle.abort();
@@ -1258,9 +1307,16 @@ impl NativeNodeWrapper {
                     }
                 });
                 if !pending_hints.is_empty() {
+                    let (hint_reply_tx, hint_reply_rx) = tokio::sync::oneshot::channel();
                     let _ = worker_tx
-                        .send(WorkerRequest::OnUpstreamHint { hints: pending_hints })
+                        .send(WorkerRequest::OnUpstreamHint {
+                            hints: pending_hints,
+                            reply: hint_reply_tx,
+                        })
                         .await;
+                    // Best-effort: apply timeout so a wedged plugin doesn't
+                    // stall the tick loop indefinitely.
+                    let _ = self.await_reply("on_upstream_hint", &node_name, hint_reply_rx).await;
                 }
             }
 
@@ -1325,9 +1381,6 @@ impl NativeNodeWrapper {
                 _ = interval.tick() => {}
             }
         }
-
-        // Shut down the worker thread.
-        let _ = worker.tx().try_send(WorkerRequest::Shutdown);
 
         // Emit stopped state
         if let Err(e) = context
