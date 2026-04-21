@@ -229,11 +229,15 @@ impl InstanceState {
     fn begin_call(&self) -> Option<CallGuard<'_>> {
         self.in_flight_calls.fetch_add(1, Ordering::SeqCst);
 
-        // Dekker re-check: if drop was requested, our increment may have
-        // raced with request_drop seeing in_flight == 0 and calling
-        // destroy_instance.  Roll back.
+        // Dekker re-check: if drop was requested, roll back.  A
+        // concurrent request_drop may have seen our in_flight == 1 and
+        // deferred destroy.  If our rollback brings the count back to 0,
+        // we are responsible for triggering destroy (idempotent).
         if self.drop_requested.load(Ordering::SeqCst) {
-            self.in_flight_calls.fetch_sub(1, Ordering::SeqCst);
+            let prev = self.in_flight_calls.fetch_sub(1, Ordering::SeqCst);
+            if prev == 1 {
+                self.destroy_instance();
+            }
             return None;
         }
 
@@ -246,6 +250,12 @@ impl InstanceState {
         Some(CallGuard { state: self, handle: h })
     }
 
+    /// Decrement `in_flight_calls`; if this was the last call and
+    /// `drop_requested` is set, trigger `destroy_instance`.
+    ///
+    /// Both `finish_call` and `begin_call` (rollback path) may call
+    /// `destroy_instance` — this is benign because `destroy_instance`
+    /// is idempotent (atomic null-swap guard).
     fn finish_call(&self) {
         let prev = self.in_flight_calls.fetch_sub(1, Ordering::AcqRel);
         debug_assert!(prev > 0, "finish_call called without begin_call");
@@ -273,8 +283,6 @@ impl InstanceState {
             return;
         }
 
-        // Keep the library alive for the duration of the destroy call.
-        let _lib = Arc::clone(&self.library);
         let api = self.api();
         // Wrap in ffi_guard_unit so a panicking destroy (e.g. via
         // InstanceState::Drop) cannot unwind across the C ABI boundary
@@ -1032,11 +1040,10 @@ impl NativeNodeWrapper {
             // Drain all hint receivers and deliver to plugin via C ABI.
             // Retain only receivers whose channels are still open.
             // First collect pending hints (non-blocking), then deliver
-            // via spawn_blocking to avoid blocking the tokio worker —
-            // consistent with how tick_fn and other C ABI calls are made.
-            // TODO: use call_with_timeout here for consistency with other
-            // FFI call sites.  Hints are best-effort so timeout errors
-            // would be ignored, but it keeps the hardening uniform.
+            // via call_with_timeout to avoid blocking the tokio worker
+            // and to keep timeout hardening consistent across all FFI
+            // call sites.  Hints are best-effort — timeout errors are
+            // ignored.
             if !hint_receivers.is_empty() {
                 if let Some(on_hint_fn) = self.state.api().on_upstream_hint {
                     let mut pending_hints: Vec<std::ffi::CString> = Vec::new();
@@ -1058,14 +1065,15 @@ impl NativeNodeWrapper {
                     });
                     if !pending_hints.is_empty() {
                         let state = Arc::clone(&self.state);
-                        let _ = tokio::task::spawn_blocking(move || {
-                            for c_str in &pending_hints {
-                                if let Some(guard) = state.begin_call() {
-                                    let _ = on_hint_fn(guard.handle(), c_str.as_ptr());
+                        let _ = self
+                            .call_with_timeout("on_upstream_hint", &node_name, move || {
+                                for c_str in &pending_hints {
+                                    if let Some(guard) = state.begin_call() {
+                                        let _ = on_hint_fn(guard.handle(), c_str.as_ptr());
+                                    }
                                 }
-                            }
-                        })
-                        .await;
+                            })
+                            .await;
                     }
                 }
             }
@@ -1757,6 +1765,70 @@ mod ffi_guard_tests {
             0,
             "failed begin_call must not leave in_flight_calls elevated"
         );
+    }
+
+    /// Stress test: hammer `begin_call` from many threads while another
+    /// thread calls `request_drop`.  Asserts that after all threads join:
+    /// - `in_flight_calls` is 0  (no stranded counts)
+    /// - `handle` is null        (destroy was called exactly once)
+    /// - `drop_requested` is set
+    ///
+    /// This exercises the Dekker pair and the rollback-triggers-destroy
+    /// path that was missing before the fix.
+    #[test]
+    fn concurrent_begin_call_and_request_drop() {
+        use std::sync::Barrier;
+
+        // Use an AtomicUsize to count how many times destroy_instance
+        // actually swaps a non-null handle (should be exactly 1).
+        static DESTROY_COUNT: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+
+        for _round in 0..50 {
+            DESTROY_COUNT.store(0, Ordering::SeqCst);
+            let state = test_instance_state();
+            let num_callers = 8;
+            let barrier = Arc::new(Barrier::new(num_callers + 1));
+
+            let mut handles = Vec::new();
+
+            // Spawn begin_call threads
+            for _ in 0..num_callers {
+                let s = Arc::clone(&state);
+                let b = Arc::clone(&barrier);
+                handles.push(std::thread::spawn(move || {
+                    b.wait();
+                    // Try to begin a call; if we get a guard, hold it
+                    // briefly then drop it.
+                    let _guard = s.begin_call();
+                }));
+            }
+
+            // Spawn request_drop thread
+            {
+                let s = Arc::clone(&state);
+                let b = Arc::clone(&barrier);
+                handles.push(std::thread::spawn(move || {
+                    b.wait();
+                    s.request_drop();
+                }));
+            }
+
+            for h in handles {
+                h.join().expect("thread panicked");
+            }
+
+            assert_eq!(
+                state.in_flight_calls.load(Ordering::SeqCst),
+                0,
+                "in_flight_calls must be 0 after all threads complete"
+            );
+            assert!(
+                state.handle.load(Ordering::SeqCst).is_null(),
+                "handle must be null (destroy_instance must have been called)"
+            );
+            assert!(state.drop_requested.load(Ordering::SeqCst), "drop_requested must be set");
+        }
     }
 
     // NOTE: This test verifies that ApiPtr round-trips the raw pointer value,
