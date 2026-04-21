@@ -24,6 +24,12 @@
 //! the still-running task (via `finish_call` in the `CallGuard` drop).
 //! If the plugin never returns, the instance and its `Arc<Library>` leak
 //! for the process lifetime.  This is safe (no UB) but not ideal.
+//!
+//! Additionally, `NativeNodeWrapper::drop` calls `request_drop` →
+//! `destroy_instance` synchronously on whatever thread drops the
+//! wrapper — typically an async tokio worker.  A slow plugin destroy
+//! will stall that worker.  Routing through `block_in_place` or a
+//! dedicated thread is a future improvement.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -145,6 +151,10 @@ unsafe impl Sync for ApiPtr {}
 ///
 /// This ensures `finish_call` runs even if the body panics, early-returns,
 /// or propagates an error via `?`.
+///
+/// The borrow ties the guard's lifetime to the `InstanceState`.  Callers
+/// that move the guard into a closure (e.g. `spawn_blocking`) must keep
+/// the `Arc<InstanceState>` alive in the enclosing scope.
 struct CallGuard<'a> {
     state: &'a InstanceState,
     handle: CPluginHandle,
@@ -266,7 +276,10 @@ impl InstanceState {
         // Keep the library alive for the duration of the destroy call.
         let _lib = Arc::clone(&self.library);
         let api = self.api();
-        (api.destroy_instance)(h);
+        // Wrap in ffi_guard_unit so a panicking destroy (e.g. via
+        // InstanceState::Drop) cannot unwind across the C ABI boundary
+        // or trigger a double-panic abort.
+        ffi_guard_unit(|| (api.destroy_instance)(h));
     }
 }
 
@@ -1203,7 +1216,9 @@ impl NativeNodeWrapper {
         let node_name_owned = node_name.to_string();
         let error_msg = self
             .call_with_timeout("update_params", node_name, move || {
-                let guard = state.begin_call()?;
+                let Some(guard) = state.begin_call() else {
+                    return Some("Instance destroyed during update_params".to_string());
+                };
 
                 let _lib = Arc::clone(&state.library);
                 let api = state.api();
