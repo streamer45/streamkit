@@ -46,6 +46,7 @@
 pub mod conversions;
 pub mod ffi_guard;
 pub mod logger;
+pub mod metadata_storage;
 pub mod types;
 
 use std::ffi::CString;
@@ -300,6 +301,14 @@ impl OutputSender {
         unsafe { &*self.callbacks }
     }
 
+    /// Check if a callback field at the given byte offset is within the
+    /// host-provided `CNodeCallbacks` struct.  Returns `false` when the
+    /// host is older and doesn't include this field.
+    #[allow(clippy::missing_const_for_fn)] // offset_of! result is not usable in const context for callers.
+    fn callback_available(&self, field_end_offset: usize) -> bool {
+        self.cb().struct_size >= field_end_offset
+    }
+
     /// Send a packet to an output pin
     ///
     /// # Errors
@@ -328,6 +337,11 @@ impl OutputSender {
     ///
     /// Returns `None` if the host has no video pool or allocation fails.
     pub fn alloc_video(&self, min_bytes: usize) -> Option<PooledVideoBuffer> {
+        let end = std::mem::offset_of!(types::CNodeCallbacks, alloc_video)
+            + std::mem::size_of::<Option<types::CAllocVideoFn>>();
+        if !self.callback_available(end) {
+            return None;
+        }
         let cb = self.cb();
         let alloc_fn = cb.alloc_video?;
         let res = alloc_fn(min_bytes, cb.alloc_user_data);
@@ -348,6 +362,11 @@ impl OutputSender {
     ///
     /// Returns `None` if the host has no audio pool or allocation fails.
     pub fn alloc_audio(&self, min_samples: usize) -> Option<PooledAudioBuffer> {
+        let end = std::mem::offset_of!(types::CNodeCallbacks, alloc_audio)
+            + std::mem::size_of::<Option<types::CAllocAudioFn>>();
+        if !self.callback_available(end) {
+            return None;
+        }
         let cb = self.cb();
         let alloc_fn = cb.alloc_audio?;
         let res = alloc_fn(min_samples, cb.alloc_user_data);
@@ -472,6 +491,11 @@ impl OutputSender {
         data: &serde_json::Value,
         timestamp_us: Option<u64>,
     ) -> Result<(), String> {
+        let end = std::mem::offset_of!(types::CNodeCallbacks, telemetry_callback)
+            + std::mem::size_of::<types::CTelemetryCallback>();
+        if !self.callback_available(end) {
+            return Ok(());
+        }
         let cb = self.cb();
         let Some(telemetry_cb) = cb.telemetry_callback else {
             return Ok(());
@@ -923,26 +947,8 @@ macro_rules! __plugin_shared_ffi {
 #[macro_export]
 macro_rules! native_plugin_entry {
     ($plugin_type:ty) => {
-        // Static metadata storage
-        static mut METADATA: std::sync::OnceLock<(
-            $crate::types::CNodeMetadata,
-            Vec<$crate::types::CInputPin>,
-            Vec<$crate::types::COutputPin>,
-            Vec<std::ffi::CString>,
-            Vec<Vec<$crate::types::CPacketTypeInfo>>,
-            Vec<Vec<Option<$crate::types::CAudioFormat>>>,
-            Vec<Vec<Option<std::ffi::CString>>>,
-            Vec<Vec<Option<$crate::types::CRawVideoFormat>>>,
-            Vec<std::ffi::CString>,
-            Vec<Option<$crate::types::CAudioFormat>>,
-            Vec<Option<std::ffi::CString>>,
-            Vec<Option<$crate::types::CRawVideoFormat>>,
-            Vec<std::ffi::CString>,
-            Vec<*const std::os::raw::c_char>,
-            std::ffi::CString,
-            Option<std::ffi::CString>,
-            std::ffi::CString,
-        )> = std::sync::OnceLock::new();
+        static METADATA: std::sync::OnceLock<$crate::metadata_storage::PluginMetadataStorage> =
+            std::sync::OnceLock::new();
 
         #[no_mangle]
         pub extern "C" fn streamkit_native_plugin_api() -> *const $crate::types::CNativePluginAPI {
@@ -965,321 +971,11 @@ macro_rules! native_plugin_entry {
 
         extern "C" fn __plugin_get_metadata() -> *const $crate::types::CNodeMetadata {
             $crate::ffi_guard::guard_ptr("get_metadata", || {
-            unsafe {
-                let metadata = METADATA.get_or_init(|| {
+                let storage = METADATA.get_or_init(|| {
                     let meta = <$plugin_type as $crate::NativeProcessorNode>::metadata();
-
-                    // Convert inputs
-                    let mut c_inputs = Vec::new();
-                    let mut input_names = Vec::new();
-                    let mut input_types = Vec::new();
-                    let mut input_audio_formats = Vec::new();
-                    let mut input_custom_type_ids = Vec::new();
-                    let mut input_video_formats = Vec::new();
-
-                    for input in &meta.inputs {
-                        let name = $crate::ffi_guard::cstring_lossy(
-                            input.name.as_str(), "input pin name",
-                        );
-                        let mut types_info = Vec::new();
-                        let mut audio_formats = Vec::new();
-                        let mut custom_type_ids = Vec::new();
-                        let mut video_formats = Vec::new();
-
-                        for pt in &input.accepts_types {
-                            let audio_format = match pt {
-                                $crate::streamkit_core::types::PacketType::RawAudio(af) => {
-                                    Some($crate::conversions::audio_format_to_c(af))
-                                }
-                                _ => None,
-                            };
-                            audio_formats.push(audio_format);
-                            let custom_type_id = match pt {
-                                $crate::streamkit_core::types::PacketType::Custom { type_id } => {
-                                    Some($crate::ffi_guard::cstring_lossy(
-                                        type_id.as_str(), "custom type_id",
-                                    ))
-                                }
-                                $crate::streamkit_core::types::PacketType::EncodedAudio(format) => {
-                                    Some($crate::conversions::codec_name_to_cstring(format.codec.as_c_name()))
-                                }
-                                $crate::streamkit_core::types::PacketType::EncodedVideo(format) => {
-                                    Some($crate::conversions::codec_name_to_cstring(format.codec.as_c_name()))
-                                }
-                                _ => None,
-                            };
-                            custom_type_ids.push(custom_type_id);
-                            let video_format = match pt {
-                                $crate::streamkit_core::types::PacketType::RawVideo(vf) => {
-                                    Some($crate::conversions::raw_video_format_to_c(vf))
-                                }
-                                _ => None,
-                            };
-                            video_formats.push(video_format);
-                        }
-
-                        // Now create CPacketTypeInfo with stable pointers to the stored formats
-                        for (idx, pt) in input.accepts_types.iter().enumerate() {
-                            let type_discriminant = match pt {
-                                $crate::streamkit_core::types::PacketType::RawAudio(_) => {
-                                    $crate::types::CPacketType::RawAudio
-                                }
-                                $crate::streamkit_core::types::PacketType::EncodedAudio(format) => {
-                                    if format.codec
-                                        == $crate::streamkit_core::types::AudioCodec::Opus
-                                        && format.codec_private.is_none()
-                                    {
-                                        $crate::types::CPacketType::OpusAudio
-                                    } else {
-                                        $crate::types::CPacketType::EncodedAudio
-                                    }
-                                }
-                                $crate::streamkit_core::types::PacketType::RawVideo(_) => {
-                                    $crate::types::CPacketType::RawVideo
-                                }
-                                $crate::streamkit_core::types::PacketType::EncodedVideo(_) => {
-                                    $crate::types::CPacketType::EncodedVideo
-                                }
-                                $crate::streamkit_core::types::PacketType::Text => {
-                                    $crate::types::CPacketType::Text
-                                }
-                                $crate::streamkit_core::types::PacketType::Transcription => {
-                                    $crate::types::CPacketType::Transcription
-                                }
-                                $crate::streamkit_core::types::PacketType::Custom { .. } => {
-                                    $crate::types::CPacketType::Custom
-                                }
-                                $crate::streamkit_core::types::PacketType::Binary => {
-                                    $crate::types::CPacketType::Binary
-                                }
-                                $crate::streamkit_core::types::PacketType::Any => {
-                                    $crate::types::CPacketType::Any
-                                }
-                                $crate::streamkit_core::types::PacketType::Passthrough => {
-                                    $crate::types::CPacketType::Any
-                                }
-                            };
-
-                            let audio_format_ptr = if let Some(ref fmt) = audio_formats[idx] {
-                                fmt as *const $crate::types::CAudioFormat
-                            } else {
-                                std::ptr::null()
-                            };
-
-                            let custom_type_id_ptr = if let Some(ref s) = custom_type_ids[idx] {
-                                s.as_ptr()
-                            } else {
-                                std::ptr::null()
-                            };
-
-                            let video_format_ptr = if let Some(ref vf) = video_formats[idx] {
-                                vf as *const $crate::types::CRawVideoFormat
-                            } else {
-                                std::ptr::null()
-                            };
-
-                            types_info.push($crate::types::CPacketTypeInfo {
-                                type_discriminant,
-                                audio_format: audio_format_ptr,
-                                custom_type_id: custom_type_id_ptr,
-                                raw_video_format: video_format_ptr,
-                            });
-                        }
-
-                        c_inputs.push($crate::types::CInputPin {
-                            name: name.as_ptr(),
-                            accepts_types: types_info.as_ptr(),
-                            accepts_types_count: types_info.len(),
-                        });
-
-                        input_names.push(name);
-                        input_types.push(types_info);
-                        input_audio_formats.push(audio_formats);
-                        input_custom_type_ids.push(custom_type_ids);
-                        input_video_formats.push(video_formats);
-                    }
-
-                    // Convert outputs
-                    let mut c_outputs = Vec::new();
-                    let mut output_names = Vec::new();
-                    let mut output_audio_formats = Vec::new();
-                    let mut output_custom_type_ids = Vec::new();
-                    let mut output_video_formats = Vec::new();
-
-                    for output in &meta.outputs {
-                        let name = $crate::ffi_guard::cstring_lossy(
-                            output.name.as_str(), "output pin name",
-                        );
-
-                        let audio_format = match &output.produces_type {
-                            $crate::streamkit_core::types::PacketType::RawAudio(af) => {
-                                Some($crate::conversions::audio_format_to_c(af))
-                            }
-                            _ => None,
-                        };
-                        output_audio_formats.push(audio_format);
-                        let output_custom_type_id = match &output.produces_type {
-                            $crate::streamkit_core::types::PacketType::Custom { type_id } => {
-                                Some($crate::ffi_guard::cstring_lossy(
-                                    type_id.as_str(), "output custom type_id",
-                                ))
-                            }
-                            $crate::streamkit_core::types::PacketType::EncodedAudio(format) => {
-                                Some($crate::conversions::codec_name_to_cstring(format.codec.as_c_name()))
-                            }
-                            $crate::streamkit_core::types::PacketType::EncodedVideo(format) => {
-                                Some($crate::conversions::codec_name_to_cstring(format.codec.as_c_name()))
-                            }
-                            _ => None,
-                        };
-                        output_custom_type_ids.push(output_custom_type_id);
-                        let video_format = match &output.produces_type {
-                            $crate::streamkit_core::types::PacketType::RawVideo(vf) => {
-                                Some($crate::conversions::raw_video_format_to_c(vf))
-                            }
-                            _ => None,
-                        };
-                        output_video_formats.push(video_format);
-
-                        // Now create CPacketTypeInfo with stable pointer to the stored format
-                        let type_discriminant = match &output.produces_type {
-                            $crate::streamkit_core::types::PacketType::RawAudio(_) => {
-                                $crate::types::CPacketType::RawAudio
-                            }
-                            $crate::streamkit_core::types::PacketType::EncodedAudio(format) => {
-                                if format.codec
-                                    == $crate::streamkit_core::types::AudioCodec::Opus
-                                    && format.codec_private.is_none()
-                                {
-                                    $crate::types::CPacketType::OpusAudio
-                                } else {
-                                    $crate::types::CPacketType::EncodedAudio
-                                }
-                            }
-                            $crate::streamkit_core::types::PacketType::RawVideo(_) => {
-                                $crate::types::CPacketType::RawVideo
-                            }
-                            $crate::streamkit_core::types::PacketType::EncodedVideo(_) => {
-                                $crate::types::CPacketType::EncodedVideo
-                            }
-                            $crate::streamkit_core::types::PacketType::Text => {
-                                $crate::types::CPacketType::Text
-                            }
-                            $crate::streamkit_core::types::PacketType::Transcription => {
-                                $crate::types::CPacketType::Transcription
-                            }
-                            $crate::streamkit_core::types::PacketType::Custom { .. } => {
-                                $crate::types::CPacketType::Custom
-                            }
-                            $crate::streamkit_core::types::PacketType::Binary => {
-                                $crate::types::CPacketType::Binary
-                            }
-                            $crate::streamkit_core::types::PacketType::Any => {
-                                $crate::types::CPacketType::Any
-                            }
-                            $crate::streamkit_core::types::PacketType::Passthrough => {
-                                $crate::types::CPacketType::Any
-                            }
-                        };
-
-                        // SAFETY: We just pushed an element, so last() is guaranteed to be Some
-                        #[allow(clippy::unwrap_used)]
-                        let audio_format_ptr =
-                            if let Some(ref fmt) = output_audio_formats.last().unwrap() {
-                                fmt as *const $crate::types::CAudioFormat
-                            } else {
-                                std::ptr::null()
-                            };
-
-                        // SAFETY: We just pushed an element, so last() is guaranteed to be Some
-                        #[allow(clippy::unwrap_used)]
-                        let custom_type_id_ptr =
-                            if let Some(ref s) = output_custom_type_ids.last().unwrap() {
-                                s.as_ptr()
-                            } else {
-                                std::ptr::null()
-                            };
-
-                        // SAFETY: We just pushed an element, so last() is guaranteed to be Some
-                        #[allow(clippy::unwrap_used)]
-                        let video_format_ptr =
-                            if let Some(ref vf) = output_video_formats.last().unwrap() {
-                                vf as *const $crate::types::CRawVideoFormat
-                            } else {
-                                std::ptr::null()
-                            };
-
-                        let type_info = $crate::types::CPacketTypeInfo {
-                            type_discriminant,
-                            audio_format: audio_format_ptr,
-                            custom_type_id: custom_type_id_ptr,
-                            raw_video_format: video_format_ptr,
-                        };
-
-                        c_outputs.push($crate::types::COutputPin {
-                            name: name.as_ptr(),
-                            produces_type: type_info,
-                        });
-                        output_names.push(name);
-                    }
-
-                    // Convert categories
-                    let mut category_strings = Vec::new();
-                    let mut category_ptrs = Vec::new();
-
-                    for cat in &meta.categories {
-                        let c_str = $crate::ffi_guard::cstring_lossy(
-                            cat.as_str(), "category name",
-                        );
-                        category_ptrs.push(c_str.as_ptr());
-                        category_strings.push(c_str);
-                    }
-
-                    let kind = $crate::ffi_guard::cstring_lossy(
-                        meta.kind.as_str(), "node kind",
-                    );
-                    let description = meta.description.as_ref().map(|d| {
-                        $crate::ffi_guard::cstring_lossy(d.as_str(), "description")
-                    });
-                    let param_schema = $crate::ffi_guard::cstring_lossy(
-                        &meta.param_schema.to_string(), "param schema JSON",
-                    );
-
-                    let c_metadata = $crate::types::CNodeMetadata {
-                        kind: kind.as_ptr(),
-                        description: description.as_ref().map_or(std::ptr::null(), |d| d.as_ptr()),
-                        inputs: c_inputs.as_ptr(),
-                        inputs_count: c_inputs.len(),
-                        outputs: c_outputs.as_ptr(),
-                        outputs_count: c_outputs.len(),
-                        param_schema: param_schema.as_ptr(),
-                        categories: category_ptrs.as_ptr(),
-                        categories_count: category_ptrs.len(),
-                    };
-
-                    (
-                        c_metadata,
-                        c_inputs,
-                        c_outputs,
-                        input_names,
-                        input_types,
-                        input_audio_formats,
-                        input_custom_type_ids,
-                        input_video_formats,
-                        output_names,
-                        output_audio_formats,
-                        output_custom_type_ids,
-                        output_video_formats,
-                        category_strings,
-                        category_ptrs,
-                        kind,
-                        description,
-                        param_schema,
-                    )
+                    $crate::metadata_storage::PluginMetadataStorage::from_node_metadata(&meta)
                 });
-
-                &metadata.0
-            }
+                &storage.c_metadata
             })
         }
 
@@ -1459,26 +1155,8 @@ macro_rules! native_plugin_entry {
 #[macro_export]
 macro_rules! native_source_plugin_entry {
     ($plugin_type:ty) => {
-        // Static metadata storage (same layout as processor macro + video format vecs)
-        static mut METADATA: std::sync::OnceLock<(
-            $crate::types::CNodeMetadata,
-            Vec<$crate::types::CInputPin>,
-            Vec<$crate::types::COutputPin>,
-            Vec<std::ffi::CString>,
-            Vec<Vec<$crate::types::CPacketTypeInfo>>,
-            Vec<Vec<Option<$crate::types::CAudioFormat>>>,
-            Vec<Vec<Option<std::ffi::CString>>>,
-            Vec<Vec<Option<$crate::types::CRawVideoFormat>>>,
-            Vec<std::ffi::CString>,
-            Vec<Option<$crate::types::CAudioFormat>>,
-            Vec<Option<std::ffi::CString>>,
-            Vec<Option<$crate::types::CRawVideoFormat>>,
-            Vec<std::ffi::CString>,
-            Vec<*const std::os::raw::c_char>,
-            std::ffi::CString,
-            Option<std::ffi::CString>,
-            std::ffi::CString,
-        )> = std::sync::OnceLock::new();
+        static METADATA: std::sync::OnceLock<$crate::metadata_storage::PluginMetadataStorage> =
+            std::sync::OnceLock::new();
 
         #[no_mangle]
         pub extern "C" fn streamkit_native_plugin_api() -> *const $crate::types::CNativePluginAPI {
@@ -1499,341 +1177,13 @@ macro_rules! native_source_plugin_entry {
             &API
         }
 
-        // ── Metadata ────────────────────────────────────────────────────
-        // Reuse the same metadata-building logic as the processor macro.
-        // Source nodes typically have zero inputs and one or more outputs.
-
         extern "C" fn __plugin_get_metadata() -> *const $crate::types::CNodeMetadata {
             $crate::ffi_guard::guard_ptr("get_metadata", || {
-                unsafe {
-                    let metadata = METADATA.get_or_init(|| {
-                        let meta = <$plugin_type as $crate::NativeSourceNode>::metadata();
-
-                        // Convert inputs (usually empty for source nodes)
-                        let mut c_inputs = Vec::new();
-                        let mut input_names = Vec::new();
-                        let mut input_types = Vec::new();
-                        let mut input_audio_formats = Vec::new();
-                        let mut input_custom_type_ids = Vec::new();
-                        let mut input_video_formats = Vec::new();
-
-                        for input in &meta.inputs {
-                            let name = $crate::ffi_guard::cstring_lossy(
-                                input.name.as_str(),
-                                "input pin name",
-                            );
-                            let mut types_info = Vec::new();
-                            let mut audio_formats = Vec::new();
-                            let mut custom_type_ids = Vec::new();
-                            let mut video_formats = Vec::new();
-
-                            for pt in &input.accepts_types {
-                                let audio_format = match pt {
-                                    $crate::streamkit_core::types::PacketType::RawAudio(af) => {
-                                        Some($crate::conversions::audio_format_to_c(af))
-                                    },
-                                    _ => None,
-                                };
-                                audio_formats.push(audio_format);
-                                let custom_type_id = match pt {
-                                    $crate::streamkit_core::types::PacketType::Custom {
-                                        type_id,
-                                    } => Some($crate::ffi_guard::cstring_lossy(
-                                        type_id.as_str(),
-                                        "custom type_id",
-                                    )),
-                                    $crate::streamkit_core::types::PacketType::EncodedAudio(
-                                        format,
-                                    ) => Some($crate::conversions::codec_name_to_cstring(
-                                        format.codec.as_c_name(),
-                                    )),
-                                    $crate::streamkit_core::types::PacketType::EncodedVideo(
-                                        format,
-                                    ) => Some($crate::conversions::codec_name_to_cstring(
-                                        format.codec.as_c_name(),
-                                    )),
-                                    _ => None,
-                                };
-                                custom_type_ids.push(custom_type_id);
-                                let video_format = match pt {
-                                    $crate::streamkit_core::types::PacketType::RawVideo(vf) => {
-                                        Some($crate::conversions::raw_video_format_to_c(vf))
-                                    },
-                                    _ => None,
-                                };
-                                video_formats.push(video_format);
-                            }
-
-                            for (idx, pt) in input.accepts_types.iter().enumerate() {
-                                let type_discriminant = match pt {
-                                    $crate::streamkit_core::types::PacketType::RawAudio(_) => {
-                                        $crate::types::CPacketType::RawAudio
-                                    },
-                                    $crate::streamkit_core::types::PacketType::EncodedAudio(
-                                        format,
-                                    ) => {
-                                        if format.codec
-                                            == $crate::streamkit_core::types::AudioCodec::Opus
-                                            && format.codec_private.is_none()
-                                        {
-                                            $crate::types::CPacketType::OpusAudio
-                                        } else {
-                                            $crate::types::CPacketType::EncodedAudio
-                                        }
-                                    },
-                                    $crate::streamkit_core::types::PacketType::RawVideo(_) => {
-                                        $crate::types::CPacketType::RawVideo
-                                    },
-                                    $crate::streamkit_core::types::PacketType::EncodedVideo(_) => {
-                                        $crate::types::CPacketType::EncodedVideo
-                                    },
-                                    $crate::streamkit_core::types::PacketType::Text => {
-                                        $crate::types::CPacketType::Text
-                                    },
-                                    $crate::streamkit_core::types::PacketType::Transcription => {
-                                        $crate::types::CPacketType::Transcription
-                                    },
-                                    $crate::streamkit_core::types::PacketType::Custom {
-                                        ..
-                                    } => $crate::types::CPacketType::Custom,
-                                    $crate::streamkit_core::types::PacketType::Binary => {
-                                        $crate::types::CPacketType::Binary
-                                    },
-                                    $crate::streamkit_core::types::PacketType::Any => {
-                                        $crate::types::CPacketType::Any
-                                    },
-                                    $crate::streamkit_core::types::PacketType::Passthrough => {
-                                        $crate::types::CPacketType::Any
-                                    },
-                                };
-
-                                let audio_format_ptr = if let Some(ref fmt) = audio_formats[idx] {
-                                    fmt as *const $crate::types::CAudioFormat
-                                } else {
-                                    std::ptr::null()
-                                };
-
-                                let custom_type_id_ptr = if let Some(ref s) = custom_type_ids[idx] {
-                                    s.as_ptr()
-                                } else {
-                                    std::ptr::null()
-                                };
-
-                                let video_format_ptr = if let Some(ref vf) = video_formats[idx] {
-                                    vf as *const $crate::types::CRawVideoFormat
-                                } else {
-                                    std::ptr::null()
-                                };
-
-                                types_info.push($crate::types::CPacketTypeInfo {
-                                    type_discriminant,
-                                    audio_format: audio_format_ptr,
-                                    custom_type_id: custom_type_id_ptr,
-                                    raw_video_format: video_format_ptr,
-                                });
-                            }
-
-                            c_inputs.push($crate::types::CInputPin {
-                                name: name.as_ptr(),
-                                accepts_types: types_info.as_ptr(),
-                                accepts_types_count: types_info.len(),
-                            });
-
-                            input_names.push(name);
-                            input_types.push(types_info);
-                            input_audio_formats.push(audio_formats);
-                            input_custom_type_ids.push(custom_type_ids);
-                            input_video_formats.push(video_formats);
-                        }
-
-                        // Convert outputs
-                        let mut c_outputs = Vec::new();
-                        let mut output_names = Vec::new();
-                        let mut output_audio_formats = Vec::new();
-                        let mut output_custom_type_ids = Vec::new();
-                        let mut output_video_formats = Vec::new();
-
-                        for output in &meta.outputs {
-                            let name = $crate::ffi_guard::cstring_lossy(
-                                output.name.as_str(),
-                                "output pin name",
-                            );
-
-                            let audio_format = match &output.produces_type {
-                                $crate::streamkit_core::types::PacketType::RawAudio(af) => {
-                                    Some($crate::conversions::audio_format_to_c(af))
-                                },
-                                _ => None,
-                            };
-                            output_audio_formats.push(audio_format);
-                            let output_custom_type_id = match &output.produces_type {
-                                $crate::streamkit_core::types::PacketType::Custom { type_id } => {
-                                    Some($crate::ffi_guard::cstring_lossy(
-                                        type_id.as_str(),
-                                        "output custom type_id",
-                                    ))
-                                },
-                                $crate::streamkit_core::types::PacketType::EncodedAudio(format) => {
-                                    Some($crate::conversions::codec_name_to_cstring(
-                                        format.codec.as_c_name(),
-                                    ))
-                                },
-                                $crate::streamkit_core::types::PacketType::EncodedVideo(format) => {
-                                    Some($crate::conversions::codec_name_to_cstring(
-                                        format.codec.as_c_name(),
-                                    ))
-                                },
-                                _ => None,
-                            };
-                            output_custom_type_ids.push(output_custom_type_id);
-                            let video_format = match &output.produces_type {
-                                $crate::streamkit_core::types::PacketType::RawVideo(vf) => {
-                                    Some($crate::conversions::raw_video_format_to_c(vf))
-                                },
-                                _ => None,
-                            };
-                            output_video_formats.push(video_format);
-
-                            let type_discriminant = match &output.produces_type {
-                                $crate::streamkit_core::types::PacketType::RawAudio(_) => {
-                                    $crate::types::CPacketType::RawAudio
-                                },
-                                $crate::streamkit_core::types::PacketType::EncodedAudio(format) => {
-                                    if format.codec
-                                        == $crate::streamkit_core::types::AudioCodec::Opus
-                                        && format.codec_private.is_none()
-                                    {
-                                        $crate::types::CPacketType::OpusAudio
-                                    } else {
-                                        $crate::types::CPacketType::EncodedAudio
-                                    }
-                                },
-                                $crate::streamkit_core::types::PacketType::RawVideo(_) => {
-                                    $crate::types::CPacketType::RawVideo
-                                },
-                                $crate::streamkit_core::types::PacketType::EncodedVideo(_) => {
-                                    $crate::types::CPacketType::EncodedVideo
-                                },
-                                $crate::streamkit_core::types::PacketType::Text => {
-                                    $crate::types::CPacketType::Text
-                                },
-                                $crate::streamkit_core::types::PacketType::Transcription => {
-                                    $crate::types::CPacketType::Transcription
-                                },
-                                $crate::streamkit_core::types::PacketType::Custom { .. } => {
-                                    $crate::types::CPacketType::Custom
-                                },
-                                $crate::streamkit_core::types::PacketType::Binary => {
-                                    $crate::types::CPacketType::Binary
-                                },
-                                $crate::streamkit_core::types::PacketType::Any => {
-                                    $crate::types::CPacketType::Any
-                                },
-                                $crate::streamkit_core::types::PacketType::Passthrough => {
-                                    $crate::types::CPacketType::Any
-                                },
-                            };
-
-                            // SAFETY: We just pushed an element, so last() is guaranteed to be Some
-                            #[allow(clippy::unwrap_used)]
-                            let audio_format_ptr =
-                                if let Some(ref fmt) = output_audio_formats.last().unwrap() {
-                                    fmt as *const $crate::types::CAudioFormat
-                                } else {
-                                    std::ptr::null()
-                                };
-
-                            // SAFETY: We just pushed an element, so last() is guaranteed to be Some
-                            #[allow(clippy::unwrap_used)]
-                            let custom_type_id_ptr =
-                                if let Some(ref s) = output_custom_type_ids.last().unwrap() {
-                                    s.as_ptr()
-                                } else {
-                                    std::ptr::null()
-                                };
-
-                            // SAFETY: We just pushed an element, so last() is guaranteed to be Some
-                            #[allow(clippy::unwrap_used)]
-                            let video_format_ptr =
-                                if let Some(ref vf) = output_video_formats.last().unwrap() {
-                                    vf as *const $crate::types::CRawVideoFormat
-                                } else {
-                                    std::ptr::null()
-                                };
-
-                            let type_info = $crate::types::CPacketTypeInfo {
-                                type_discriminant,
-                                audio_format: audio_format_ptr,
-                                custom_type_id: custom_type_id_ptr,
-                                raw_video_format: video_format_ptr,
-                            };
-
-                            c_outputs.push($crate::types::COutputPin {
-                                name: name.as_ptr(),
-                                produces_type: type_info,
-                            });
-                            output_names.push(name);
-                        }
-
-                        // Convert categories
-                        let mut category_strings = Vec::new();
-                        let mut category_ptrs = Vec::new();
-
-                        for cat in &meta.categories {
-                            let c_str =
-                                $crate::ffi_guard::cstring_lossy(cat.as_str(), "category name");
-                            category_ptrs.push(c_str.as_ptr());
-                            category_strings.push(c_str);
-                        }
-
-                        let kind =
-                            $crate::ffi_guard::cstring_lossy(meta.kind.as_str(), "node kind");
-                        let description = meta
-                            .description
-                            .as_ref()
-                            .map(|d| $crate::ffi_guard::cstring_lossy(d.as_str(), "description"));
-                        let param_schema = $crate::ffi_guard::cstring_lossy(
-                            &meta.param_schema.to_string(),
-                            "param schema JSON",
-                        );
-
-                        let c_metadata = $crate::types::CNodeMetadata {
-                            kind: kind.as_ptr(),
-                            description: description
-                                .as_ref()
-                                .map_or(std::ptr::null(), |d| d.as_ptr()),
-                            inputs: c_inputs.as_ptr(),
-                            inputs_count: c_inputs.len(),
-                            outputs: c_outputs.as_ptr(),
-                            outputs_count: c_outputs.len(),
-                            param_schema: param_schema.as_ptr(),
-                            categories: category_ptrs.as_ptr(),
-                            categories_count: category_ptrs.len(),
-                        };
-
-                        (
-                            c_metadata,
-                            c_inputs,
-                            c_outputs,
-                            input_names,
-                            input_types,
-                            input_audio_formats,
-                            input_custom_type_ids,
-                            input_video_formats,
-                            output_names,
-                            output_audio_formats,
-                            output_custom_type_ids,
-                            output_video_formats,
-                            category_strings,
-                            category_ptrs,
-                            kind,
-                            description,
-                            param_schema,
-                        )
-                    });
-
-                    &metadata.0
-                }
+                let storage = METADATA.get_or_init(|| {
+                    let meta = <$plugin_type as $crate::NativeSourceNode>::metadata();
+                    $crate::metadata_storage::PluginMetadataStorage::from_node_metadata(&meta)
+                });
+                &storage.c_metadata
             })
         }
 
