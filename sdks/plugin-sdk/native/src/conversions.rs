@@ -839,8 +839,18 @@ pub unsafe fn packet_from_c(c_packet: *const CPacket) -> Result<Packet, String> 
             let data_len = (*bp).data_len;
             let content_type_ptr = (*bp).content_type;
             let metadata_ptr = (*bp).metadata;
-            let buffer_handle = (*bp).buffer_handle;
-            let free_fn = (*bp).free_fn;
+
+            // ABI compat: v7/v8 plugins allocate a smaller CBinaryPacket
+            // (4 fields, no buffer_handle/free_fn).  CPacket::len is set
+            // to size_of::<CBinaryPacket>() by the sender at their SDK
+            // version.  If it's smaller than the v9 struct, the new fields
+            // are past the allocation — reading them would be UB.
+            let is_v9_binary = c_pkt.len >= std::mem::size_of::<CBinaryPacket>();
+            let (buffer_handle, free_fn) = if is_v9_binary {
+                ((*bp).buffer_handle, (*bp).free_fn)
+            } else {
+                (std::ptr::null_mut(), None)
+            };
             let has_handle = !buffer_handle.is_null();
 
             if data_ptr.is_null() && data_len > 0 {
@@ -1396,6 +1406,52 @@ mod tests {
         }
 
         assert!(FREED.load(Ordering::SeqCst), "buffer_handle must be freed on drop");
+    }
+
+    /// v8 ABI compat: a `BinaryWithMeta` packet with `CPacket::len` smaller
+    /// than the v9 `CBinaryPacket` size must NOT read `buffer_handle`/`free_fn`
+    /// — those fields are past the allocation boundary.
+    #[test]
+    fn packet_from_c_v8_binary_with_meta_ignores_new_fields() {
+        // Simulate a v8-sized CBinaryPacket (4 fields, no buffer_handle/free_fn).
+        // We allocate a full v9 struct but set garbage in the new fields to
+        // prove they are NOT read when len < size_of::<CBinaryPacket>().
+        let payload = bytes::Bytes::from_static(b"v8-payload");
+        let bp = CBinaryPacket {
+            data: payload.as_ptr(),
+            data_len: payload.len(),
+            content_type: std::ptr::null(),
+            metadata: std::ptr::null(),
+            // Poison: if packet_from_c reads these, it would crash or
+            // enter the zero-copy path with an invalid pointer.
+            buffer_handle: 0xDEAD_BEEF_usize as *mut c_void,
+            free_fn: Some(free_binary_buffer_handle),
+        };
+
+        // v8 CBinaryPacket has 4 pointer-sized fields = 32 bytes on 64-bit.
+        let v8_size = 4 * std::mem::size_of::<usize>();
+        assert!(
+            v8_size < std::mem::size_of::<CBinaryPacket>(),
+            "test assumes v9 CBinaryPacket is larger than v8"
+        );
+
+        let c_pkt = CPacket {
+            packet_type: CPacketType::BinaryWithMeta,
+            data: std::ptr::from_ref(&bp).cast(),
+            len: v8_size, // v8 size — smaller than v9
+        };
+
+        // Must take the legacy copy path, not touch buffer_handle.
+        let result = unsafe { packet_from_c(&raw const c_pkt) };
+        let pkt = result.unwrap_or_else(|e| panic!("v8 BinaryWithMeta should succeed: {e}"));
+        match pkt {
+            Packet::Binary { data, content_type, metadata } => {
+                assert_eq!(data.as_ref(), b"v8-payload");
+                assert!(content_type.is_none());
+                assert!(metadata.is_none());
+            },
+            other => panic!("expected Binary, got {other:?}"),
+        }
     }
 
     /// After `packet_from_c` reclaims the handle, `BinaryWithMetaOwned::Drop`

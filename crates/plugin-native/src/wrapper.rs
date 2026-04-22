@@ -1744,10 +1744,16 @@ unsafe fn free_packet_buffer_handle(c_packet: *const CPacket) {
             }
         },
         CPacketType::BinaryWithMeta => {
-            let bp = &*pkt.data.cast::<streamkit_plugin_sdk_native::types::CBinaryPacket>();
-            if !bp.buffer_handle.is_null() {
-                if let Some(free_fn) = bp.free_fn {
-                    free_fn(bp.buffer_handle);
+            // ABI compat: v7/v8 plugins allocate a smaller CBinaryPacket
+            // without buffer_handle/free_fn.  Only read those fields when
+            // the struct is large enough (v9+).
+            if pkt.len >= std::mem::size_of::<streamkit_plugin_sdk_native::types::CBinaryPacket>() {
+                let bp =
+                    &*pkt.data.cast::<streamkit_plugin_sdk_native::types::CBinaryPacket>();
+                if !bp.buffer_handle.is_null() {
+                    if let Some(free_fn) = bp.free_fn {
+                        free_fn(bp.buffer_handle);
+                    }
                 }
             }
         },
