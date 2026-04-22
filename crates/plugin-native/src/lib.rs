@@ -306,9 +306,13 @@ impl LoadedNativePlugin {
         &self.library
     }
 
-    /// Override the call timeout for FFI calls.
+    /// Override the reply-side timeout for FFI calls (process_packet, flush,
+    /// tick).  This controls how long the async side waits for the worker
+    /// thread's oneshot reply.
     ///
-    /// Pass `None` to disable the timeout entirely.
+    /// Pass `None` to wait indefinitely for the FFI call to complete.
+    /// The channel-send timeout (backpressure guard) is always bounded
+    /// regardless of this setting.
     pub const fn set_call_timeout(&mut self, timeout: Option<std::time::Duration>) {
         self.call_timeout = timeout;
     }
