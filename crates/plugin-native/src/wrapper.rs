@@ -686,24 +686,61 @@ fn worker_thread_main(
     }
 }
 
+/// Callsite anchor for dynamically-constructed [`tracing::Metadata`].
+///
+/// Only used as a [`tracing::callsite::Identifier`] target; never registered
+/// with the tracing infrastructure, so `set_interest` and `metadata()` are
+/// unreachable stubs.
+struct PluginLogCallsite;
+
+impl tracing::callsite::Callsite for PluginLogCallsite {
+    fn set_interest(&self, _: tracing::subscriber::Interest) {}
+    fn metadata(&self) -> &tracing::Metadata<'_> {
+        unreachable!("PluginLogCallsite is only used as an Identifier anchor")
+    }
+}
+
+static PLUGIN_LOG_CALLSITE: PluginLogCallsite = PluginLogCallsite;
+
 /// C callback to check whether a log level is enabled for a given target.
 ///
-/// Consults the tracing subscriber so the plugin can skip formatting when
-/// the level is filtered out.  Used by v9 plugins via `set_log_enabled_callback`.
+/// Consults the tracing subscriber with per-target metadata so that
+/// directives like `RUST_LOG=whisper=debug` correctly filter plugin logs.
+/// Used by v9 plugins via `set_log_enabled_callback`.
 extern "C" fn plugin_log_enabled_callback(
     level: streamkit_plugin_sdk_native::types::CLogLevel,
-    _target: *const std::os::raw::c_char,
+    target: *const std::os::raw::c_char,
     _user_data: *mut c_void,
 ) -> bool {
     use streamkit_plugin_sdk_native::types::CLogLevel;
 
-    match level {
-        CLogLevel::Trace => tracing::level_enabled!(tracing::Level::TRACE),
-        CLogLevel::Debug => tracing::level_enabled!(tracing::Level::DEBUG),
-        CLogLevel::Info => tracing::level_enabled!(tracing::Level::INFO),
-        CLogLevel::Warn => tracing::level_enabled!(tracing::Level::WARN),
-        CLogLevel::Error => tracing::level_enabled!(tracing::Level::ERROR),
-    }
+    let tracing_level = match level {
+        CLogLevel::Trace => tracing::Level::TRACE,
+        CLogLevel::Debug => tracing::Level::DEBUG,
+        CLogLevel::Info => tracing::Level::INFO,
+        CLogLevel::Warn => tracing::Level::WARN,
+        CLogLevel::Error => tracing::Level::ERROR,
+    };
+
+    let target_str = if target.is_null() {
+        "plugin"
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(target) }.to_str().unwrap_or("plugin")
+    };
+
+    let field_set =
+        tracing::field::FieldSet::new(&[], tracing::callsite::Identifier(&PLUGIN_LOG_CALLSITE));
+    let metadata = tracing::Metadata::new(
+        "plugin_log",
+        target_str,
+        tracing_level,
+        None,
+        None,
+        None,
+        field_set,
+        tracing::metadata::Kind::EVENT,
+    );
+    tracing::dispatcher::get_default(|d| d.enabled(&metadata))
 }
 
 /// C callback function for plugin logging.

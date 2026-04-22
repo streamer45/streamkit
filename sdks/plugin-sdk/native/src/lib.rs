@@ -579,6 +579,12 @@ pub trait NativeProcessorNode: Sized + Send + 'static {
     /// The host calls `set_log_enabled_callback` immediately after instance
     /// creation; the SDK trampoline uses this method to inject the callback.
     ///
+    /// **Clone caveat:** If the plugin clones the [`Logger`] before the
+    /// host injects the callback (i.e. during `create`), those clones
+    /// will **not** see the enabled callback.  Store the logger in a
+    /// single location and hand out `&Logger` references instead of
+    /// cloning, or re-clone after `create` returns.
+    ///
     /// Default: `None` (no short-circuit — all levels always "enabled").
     fn logger_mut(&mut self) -> Option<&mut Logger> {
         None
@@ -722,6 +728,12 @@ pub trait NativeSourceNode: Sized + Send + 'static {
     /// Override this to enable the host's log-enabled callback, allowing
     /// `plugin_trace!` / `plugin_debug!` / etc. to short-circuit before
     /// formatting when the level is disabled by the tracing subscriber.
+    ///
+    /// **Clone caveat:** If the plugin clones the [`Logger`] before the
+    /// host injects the callback (i.e. during `create`), those clones
+    /// will **not** see the enabled callback.  Store the logger in a
+    /// single location and hand out `&Logger` references instead of
+    /// cloning, or re-clone after `create` returns.
     ///
     /// Default: `None` (no short-circuit — all levels always "enabled").
     fn logger_mut(&mut self) -> Option<&mut Logger> {

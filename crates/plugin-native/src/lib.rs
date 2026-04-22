@@ -315,6 +315,13 @@ impl LoadedNativePlugin {
     /// Pass `None` to wait indefinitely for the FFI call to complete.
     /// The channel-send timeout (backpressure guard) is always bounded
     /// regardless of this setting.
+    ///
+    /// # Warning
+    ///
+    /// Setting `None` (infinite wait) can wedge the tokio runtime if a
+    /// plugin worker hangs or deadlocks.  Prefer a finite timeout in
+    /// production and use `None` only for debugging or known-slow
+    /// operations (e.g. large-model ML inference).
     pub const fn set_call_timeout(&mut self, timeout: Option<std::time::Duration>) {
         self.call_timeout = timeout;
     }

@@ -17,6 +17,7 @@ pub struct Logger {
     callback: CLogCallback,
     enabled_callback: Option<CLogEnabledCallback>,
     user_data: *mut c_void,
+    enabled_user_data: *mut c_void,
     target: Arc<str>,
 }
 
@@ -28,13 +29,22 @@ unsafe impl Sync for Logger {}
 impl Logger {
     /// Create a new logger
     pub fn new(callback: CLogCallback, user_data: *mut c_void, target: &str) -> Self {
-        Self { callback, enabled_callback: None, user_data, target: Arc::from(target) }
+        Self {
+            callback,
+            enabled_callback: None,
+            user_data,
+            enabled_user_data: std::ptr::null_mut(),
+            target: Arc::from(target),
+        }
     }
 
     /// Set the enabled-check callback (called by the host for v9 plugins).
+    ///
+    /// Uses a separate `user_data` pointer so that it does not interfere
+    /// with the log-output callback's `user_data`.
     pub fn set_enabled_callback(&mut self, callback: CLogEnabledCallback, user_data: *mut c_void) {
         self.enabled_callback = Some(callback);
-        self.user_data = user_data;
+        self.enabled_user_data = user_data;
     }
 
     /// Check whether the given log level is enabled.
@@ -46,7 +56,7 @@ impl Logger {
                 let Ok(target_cstr) = CString::new(self.target.as_ref()) else {
                     return true;
                 };
-                cb(level, target_cstr.as_ptr(), self.user_data)
+                cb(level, target_cstr.as_ptr(), self.enabled_user_data)
             },
             None => true,
         }
