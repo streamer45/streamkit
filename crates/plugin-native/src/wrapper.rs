@@ -694,9 +694,13 @@ fn worker_thread_main(
 /// evaluates directives on every `enabled()` call rather than caching a
 /// static `Interest`.
 ///
-/// Future optimisation: register a small set of per-level/per-kind static
-/// callsites (via `tracing::callsite!`) to restore Interest caching for
-/// hot-path `plugin_trace!` calls.
+/// **Performance note:** Without registration, `EnvFilter` re-evaluates
+/// directives on every `enabled()` call.  For plugins that call
+/// `plugin_trace!` on a hot audio-frame path, this overhead (while still
+/// cheaper than formatting) narrows the win the short-circuit is meant to
+/// provide.  Registering a small set of per-level/per-kind static
+/// callsites (via `tracing::callsite!`) would restore `Interest` caching
+/// and should be done as a follow-up.
 struct PluginLogCallsite;
 
 impl tracing::callsite::Callsite for PluginLogCallsite {

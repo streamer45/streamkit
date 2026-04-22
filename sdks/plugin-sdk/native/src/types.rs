@@ -40,6 +40,15 @@ use std::os::raw::{c_char, c_void};
 ///     to attach the zero-copy buffer handle.  C plugins that `switch` on
 ///     `packet_type` must handle `BinaryWithMeta` even when those fields
 ///     are null.
+///     **ABI note:** `CBinaryPacket` grew by 16 bytes (buffer_handle +
+///     free_fn).  v8 plugins compiled against the old 40-byte layout that
+///     validate `len == sizeof(CBinaryPacket)` will reject BinaryWithMeta
+///     packets from a v9 host.  Plugins using `len >= sizeof(…)` or bare
+///     pointer casts are unaffected.
+///     **Logger target change:** The logger target moved from
+///     `module_path!()` (e.g. `whisper_plugin::inner`) to
+///     `metadata().kind` (e.g. `whisper`).  Existing `RUST_LOG` directives
+///     that filter on the old module path will need updating.
 pub const NATIVE_PLUGIN_API_VERSION: u32 = 9;
 
 /// Opaque handle to a plugin instance

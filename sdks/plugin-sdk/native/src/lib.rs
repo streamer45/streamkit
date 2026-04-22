@@ -581,9 +581,20 @@ pub trait NativeProcessorNode: Sized + Send + 'static {
     ///
     /// **Clone caveat:** If the plugin clones the [`Logger`] before the
     /// host injects the callback (i.e. during `create`), those clones
-    /// will **not** see the enabled callback.  Store the logger in a
-    /// single location and hand out `&Logger` references instead of
-    /// cloning, or re-clone after `create` returns.
+    /// will **not** see the enabled callback.  Recommended patterns for
+    /// multi-threaded plugins:
+    ///
+    /// - **Single owner + shared ref:** Store the `Logger` in the plugin
+    ///   struct and pass `&Logger` to spawned tasks (requires scoped
+    ///   threads or an `Arc<Mutex<Logger>>`).
+    /// - **Re-clone after create:** Clone the logger only after `create`
+    ///   returns, at which point the callback is already injected.
+    /// - **`Arc<Mutex<Logger>>`:** Wrap in a mutex so all threads see
+    ///   the injected callback.  The lock is uncontended in practice
+    ///   (only `logger_mut` needs `&mut`).
+    ///
+    /// Avoid `Arc<Logger>` (without interior mutability) — `logger_mut`
+    /// cannot reach through an `Arc` to inject the callback.
     ///
     /// Default: `None` (no short-circuit — all levels always "enabled").
     fn logger_mut(&mut self) -> Option<&mut Logger> {
@@ -731,9 +742,9 @@ pub trait NativeSourceNode: Sized + Send + 'static {
     ///
     /// **Clone caveat:** If the plugin clones the [`Logger`] before the
     /// host injects the callback (i.e. during `create`), those clones
-    /// will **not** see the enabled callback.  Store the logger in a
-    /// single location and hand out `&Logger` references instead of
-    /// cloning, or re-clone after `create` returns.
+    /// will **not** see the enabled callback.  See
+    /// [`NativeProcessorNode::logger_mut`] for recommended multi-thread
+    /// patterns (`Arc<Mutex<Logger>>`, re-clone after create, etc.).
     ///
     /// Default: `None` (no short-circuit — all levels always "enabled").
     fn logger_mut(&mut self) -> Option<&mut Logger> {

@@ -428,6 +428,13 @@ impl CPacketRepr {
             CPacketType::Binary => {
                 // Upgrade to BinaryWithMeta so we have a CBinaryPacket to
                 // attach the zero-copy handle to.
+                //
+                // `bp.data` inherits the original `self.packet.data` pointer,
+                // while `buffer_handle` holds a `Bytes::clone()` (Arc bump —
+                // same underlying buffer).  This relies on `Bytes::clone()`
+                // preserving `as_ptr()` identity, which holds for the
+                // current `bytes` crate implementation (shared-reference
+                // Bytes always clones the Arc, not the data).
                 let mut bp = Box::new(CBinaryPacket {
                     data: self.packet.data.cast::<u8>(),
                     data_len: self.packet.len,
