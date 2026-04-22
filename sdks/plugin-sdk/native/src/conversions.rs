@@ -547,11 +547,15 @@ unsafe fn null_binary_buffer_handle(data_ptr: *const c_void) {
 /// Used as the `free_fn` field value — called if the plugin discards the
 /// packet without reclaiming the buffer (e.g. on error paths).
 extern "C" fn free_binary_buffer_handle(handle: *mut c_void) {
-    if !handle.is_null() {
-        // SAFETY: handle was created by `Box::into_raw(Box::new(bytes))` in
-        // `set_binary_buffer_handle` and has not been reclaimed yet.
-        drop(unsafe { Box::from_raw(handle.cast::<bytes::Bytes>()) });
-    }
+    // Guard against panics across the FFI boundary (Bytes::drop should
+    // never panic, but every other extern "C" at this boundary is wrapped).
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if !handle.is_null() {
+            // SAFETY: handle was created by `Box::into_raw(Box::new(bytes))` in
+            // `set_binary_buffer_handle` and has not been reclaimed yet.
+            drop(unsafe { Box::from_raw(handle.cast::<bytes::Bytes>()) });
+        }
+    }));
 }
 
 /// Convert Rust Packet to C representation.
@@ -819,19 +823,18 @@ pub unsafe fn packet_from_c(c_packet: *const CPacket) -> Result<Packet, String> 
             })
         },
         CPacketType::BinaryWithMeta => {
-            let bp = &*c_pkt.data.cast::<CBinaryPacket>();
-
-            // Snapshot all fields before any mutable write through the
-            // pointer (avoids a Stacked-Borrows violation when we null
-            // out buffer_handle below).
-            let data_ptr = bp.data;
-            let data_len = bp.data_len;
-            let content_type_ptr = bp.content_type;
-            let metadata_ptr = bp.metadata;
-            let buffer_handle = bp.buffer_handle;
-            let free_fn = bp.free_fn;
+            // Read all fields via raw-pointer dereference — no shared
+            // reference is created, so the subsequent write through
+            // null_binary_buffer_handle has no parent tag to conflict
+            // with under Stacked Borrows.
+            let bp = c_pkt.data.cast::<CBinaryPacket>();
+            let data_ptr = (*bp).data;
+            let data_len = (*bp).data_len;
+            let content_type_ptr = (*bp).content_type;
+            let metadata_ptr = (*bp).metadata;
+            let buffer_handle = (*bp).buffer_handle;
+            let free_fn = (*bp).free_fn;
             let has_handle = !buffer_handle.is_null();
-            // `bp` is not read after this point.
 
             if data_ptr.is_null() && data_len > 0 {
                 // Free buffer_handle via free_fn to honour the contract.

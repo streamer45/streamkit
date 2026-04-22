@@ -693,12 +693,34 @@ fn worker_thread_main(
 /// target string is dynamic (varies per plugin).  `EnvFilter` therefore
 /// evaluates directives on every `enabled()` call rather than caching a
 /// static `Interest`.
+///
+/// Future optimisation: register a small set of per-level/per-kind static
+/// callsites (via `tracing::callsite!`) to restore Interest caching for
+/// hot-path `plugin_trace!` calls.
 struct PluginLogCallsite;
 
 impl tracing::callsite::Callsite for PluginLogCallsite {
     fn set_interest(&self, _: tracing::subscriber::Interest) {}
     fn metadata(&self) -> &tracing::Metadata<'_> {
-        unreachable!("PluginLogCallsite is only used as an Identifier anchor")
+        // Return a harmless fallback so a future subscriber change
+        // degrades gracefully instead of panicking.
+        static FALLBACK: std::sync::LazyLock<tracing::Metadata<'static>> =
+            std::sync::LazyLock::new(|| {
+                tracing::Metadata::new(
+                    "plugin_log_callsite",
+                    "plugin",
+                    tracing::Level::TRACE,
+                    None,
+                    None,
+                    None,
+                    tracing::field::FieldSet::new(
+                        &[],
+                        tracing::callsite::Identifier(&PLUGIN_LOG_CALLSITE),
+                    ),
+                    tracing::metadata::Kind::EVENT,
+                )
+            });
+        &FALLBACK
     }
 }
 
@@ -2663,4 +2685,95 @@ mod ffi_guard_tests {
     // NOTE: worker_thread_main wraps each FFI call in catch_unwind, but
     // we cannot test that path with an extern "C" stub because Rust aborts
     // on panic-across-FFI.  See the comment in worker_stubs above.
+
+    // ── plugin_log_enabled_callback tests ──────────────────────────────
+
+    /// Minimal subscriber that only enables events at or above a given level.
+    struct LevelGateSubscriber(tracing::Level);
+
+    impl tracing::Subscriber for LevelGateSubscriber {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            *metadata.level() <= self.0
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, _: &tracing::Event<'_>) {}
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    #[test]
+    fn plugin_log_enabled_respects_subscriber_level() {
+        use streamkit_plugin_sdk_native::types::CLogLevel;
+
+        let subscriber = LevelGateSubscriber(tracing::Level::INFO);
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let _guard = tracing::dispatcher::set_default(&dispatch);
+
+        // INFO and above should be enabled.
+        assert!(plugin_log_enabled_callback(
+            CLogLevel::Error,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+        ));
+        assert!(plugin_log_enabled_callback(
+            CLogLevel::Info,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+        ));
+        // DEBUG / TRACE should be disabled.
+        assert!(!plugin_log_enabled_callback(
+            CLogLevel::Debug,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+        ));
+        assert!(!plugin_log_enabled_callback(
+            CLogLevel::Trace,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+        ));
+    }
+
+    /// Subscriber that only enables events whose target matches a given string.
+    struct TargetFilterSubscriber(&'static str);
+
+    impl tracing::Subscriber for TargetFilterSubscriber {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            metadata.target() == self.0
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, _: &tracing::Event<'_>) {}
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    #[test]
+    fn plugin_log_enabled_passes_target_to_subscriber() {
+        use streamkit_plugin_sdk_native::types::CLogLevel;
+
+        let subscriber = TargetFilterSubscriber("whisper");
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let _guard = tracing::dispatcher::set_default(&dispatch);
+
+        let whisper = std::ffi::CString::new("whisper").unwrap();
+        let kokoro = std::ffi::CString::new("kokoro").unwrap();
+
+        assert!(plugin_log_enabled_callback(
+            CLogLevel::Info,
+            whisper.as_ptr(),
+            std::ptr::null_mut(),
+        ));
+        assert!(!plugin_log_enabled_callback(
+            CLogLevel::Info,
+            kokoro.as_ptr(),
+            std::ptr::null_mut(),
+        ));
+    }
 }

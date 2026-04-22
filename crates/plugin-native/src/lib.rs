@@ -113,8 +113,10 @@ impl LoadedNativePlugin {
         // v8: added EncodedAudio metadata.
         // v9: zero-copy binary packets (buffer_handle), logger overhaul
         //     (set_log_enabled_callback, target = plugin kind).
-        // All are wire-compatible; version-gated features use runtime
-        // api_version checks (e.g. buffer_handle for v9, downgrade for v6).
+        // v6–v8 are wire-compatible; v9 adds a Binary→BinaryWithMeta wire
+        // upgrade (see v9 notes in types.rs).  Version-gated features use
+        // runtime api_version checks (e.g. buffer_handle for v9, downgrade
+        // for v6).
         if api.version < MIN_SUPPORTED_API_VERSION || api.version > NATIVE_PLUGIN_API_VERSION {
             let plugin_version = api.version;
             return Err(anyhow!(
