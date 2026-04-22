@@ -84,7 +84,7 @@ impl PluginMetadataStorage {
                 let audio_format = match pt {
                     streamkit_core::types::PacketType::RawAudio(af) => {
                         Some(conversions::audio_format_to_c(af))
-                    }
+                    },
                     _ => None,
                 };
                 audio_formats.push(audio_format);
@@ -92,13 +92,13 @@ impl PluginMetadataStorage {
                 let custom_type_id = match pt {
                     streamkit_core::types::PacketType::Custom { type_id } => {
                         Some(ffi_guard::cstring_lossy(type_id.as_str(), "custom type_id"))
-                    }
+                    },
                     streamkit_core::types::PacketType::EncodedAudio(format) => {
                         Some(conversions::codec_name_to_cstring(format.codec.as_c_name()))
-                    }
+                    },
                     streamkit_core::types::PacketType::EncodedVideo(format) => {
                         Some(conversions::codec_name_to_cstring(format.codec.as_c_name()))
-                    }
+                    },
                     _ => None,
                 };
                 custom_type_ids.push(custom_type_id);
@@ -106,7 +106,7 @@ impl PluginMetadataStorage {
                 let video_format = match pt {
                     streamkit_core::types::PacketType::RawVideo(vf) => {
                         Some(conversions::raw_video_format_to_c(vf))
-                    }
+                    },
                     _ => None,
                 };
                 video_formats.push(video_format);
@@ -115,17 +115,14 @@ impl PluginMetadataStorage {
             for (idx, pt) in input.accepts_types.iter().enumerate() {
                 let type_discriminant = packet_type_to_c_discriminant(pt);
 
-                let audio_format_ptr = audio_formats[idx]
-                    .as_ref()
-                    .map_or(std::ptr::null(), std::ptr::from_ref);
+                let audio_format_ptr =
+                    audio_formats[idx].as_ref().map_or(std::ptr::null(), std::ptr::from_ref);
 
-                let custom_type_id_ptr = custom_type_ids[idx]
-                    .as_ref()
-                    .map_or(std::ptr::null(), |s| s.as_ptr());
+                let custom_type_id_ptr =
+                    custom_type_ids[idx].as_ref().map_or(std::ptr::null(), |s| s.as_ptr());
 
-                let video_format_ptr = video_formats[idx]
-                    .as_ref()
-                    .map_or(std::ptr::null(), std::ptr::from_ref);
+                let video_format_ptr =
+                    video_formats[idx].as_ref().map_or(std::ptr::null(), std::ptr::from_ref);
 
                 types_info.push(CPacketTypeInfo {
                     type_discriminant,
@@ -161,24 +158,21 @@ impl PluginMetadataStorage {
             let audio_format = match &output.produces_type {
                 streamkit_core::types::PacketType::RawAudio(af) => {
                     Some(conversions::audio_format_to_c(af))
-                }
+                },
                 _ => None,
             };
             output_audio_formats.push(audio_format);
 
             let output_custom_type_id = match &output.produces_type {
                 streamkit_core::types::PacketType::Custom { type_id } => {
-                    Some(ffi_guard::cstring_lossy(
-                        type_id.as_str(),
-                        "output custom type_id",
-                    ))
-                }
+                    Some(ffi_guard::cstring_lossy(type_id.as_str(), "output custom type_id"))
+                },
                 streamkit_core::types::PacketType::EncodedAudio(format) => {
                     Some(conversions::codec_name_to_cstring(format.codec.as_c_name()))
-                }
+                },
                 streamkit_core::types::PacketType::EncodedVideo(format) => {
                     Some(conversions::codec_name_to_cstring(format.codec.as_c_name()))
-                }
+                },
                 _ => None,
             };
             output_custom_type_ids.push(output_custom_type_id);
@@ -186,7 +180,7 @@ impl PluginMetadataStorage {
             let video_format = match &output.produces_type {
                 streamkit_core::types::PacketType::RawVideo(vf) => {
                     Some(conversions::raw_video_format_to_c(vf))
-                }
+                },
                 _ => None,
             };
             output_video_formats.push(video_format);
@@ -224,10 +218,7 @@ impl PluginMetadataStorage {
                 raw_video_format: video_format_ptr,
             };
 
-            c_outputs.push(COutputPin {
-                name: name.as_ptr(),
-                produces_type: type_info,
-            });
+            c_outputs.push(COutputPin { name: name.as_ptr(), produces_type: type_info });
             output_names.push(name);
         }
 
@@ -243,10 +234,8 @@ impl PluginMetadataStorage {
 
         // ── Scalar fields ───────────────────────────────────────────
         let kind = ffi_guard::cstring_lossy(meta.kind.as_str(), "node kind");
-        let description = meta
-            .description
-            .as_ref()
-            .map(|d| ffi_guard::cstring_lossy(d.as_str(), "description"));
+        let description =
+            meta.description.as_ref().map(|d| ffi_guard::cstring_lossy(d.as_str(), "description"));
         let param_schema =
             ffi_guard::cstring_lossy(&meta.param_schema.to_string(), "param schema JSON");
 
@@ -296,7 +285,7 @@ fn packet_type_to_c_discriminant(pt: &streamkit_core::types::PacketType) -> CPac
             } else {
                 CPacketType::EncodedAudio
             }
-        }
+        },
         streamkit_core::types::PacketType::RawVideo(_) => CPacketType::RawVideo,
         streamkit_core::types::PacketType::EncodedVideo(_) => CPacketType::EncodedVideo,
         streamkit_core::types::PacketType::Text => CPacketType::Text,
@@ -305,6 +294,6 @@ fn packet_type_to_c_discriminant(pt: &streamkit_core::types::PacketType) -> CPac
         streamkit_core::types::PacketType::Binary => CPacketType::Binary,
         streamkit_core::types::PacketType::Any | streamkit_core::types::PacketType::Passthrough => {
             CPacketType::Any
-        }
+        },
     }
 }
