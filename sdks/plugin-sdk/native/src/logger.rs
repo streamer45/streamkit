@@ -6,16 +6,18 @@
 //!
 //! Provides a logger that sends log messages back to the host via callback.
 
-use crate::types::{CLogCallback, CLogLevel};
+use crate::types::{CLogCallback, CLogEnabledCallback, CLogLevel};
 use std::ffi::CString;
 use std::os::raw::c_void;
+use std::sync::Arc;
 
 /// Logger for sending log messages to the host
 #[derive(Clone)]
 pub struct Logger {
     callback: CLogCallback,
+    enabled_callback: Option<CLogEnabledCallback>,
     user_data: *mut c_void,
-    target: String,
+    target: Arc<str>,
 }
 
 // SAFETY: The callback is a C function pointer which is thread-safe,
@@ -26,13 +28,34 @@ unsafe impl Sync for Logger {}
 impl Logger {
     /// Create a new logger
     pub fn new(callback: CLogCallback, user_data: *mut c_void, target: &str) -> Self {
-        Self { callback, user_data, target: target.to_string() }
+        Self { callback, enabled_callback: None, user_data, target: Arc::from(target) }
+    }
+
+    /// Set the enabled-check callback (called by the host for v9 plugins).
+    pub fn set_enabled_callback(&mut self, callback: CLogEnabledCallback, user_data: *mut c_void) {
+        self.enabled_callback = Some(callback);
+        self.user_data = user_data;
+    }
+
+    /// Check whether the given log level is enabled.
+    ///
+    /// When no enabled callback is set (v8 host), always returns `true`.
+    pub fn enabled(&self, level: CLogLevel) -> bool {
+        match self.enabled_callback {
+            Some(cb) => {
+                let Ok(target_cstr) = CString::new(self.target.as_ref()) else {
+                    return true;
+                };
+                cb(level, target_cstr.as_ptr(), self.user_data)
+            },
+            None => true,
+        }
     }
 
     /// Log a message at the given level
     pub fn log(&self, level: CLogLevel, message: &str) {
         // Convert strings to C strings
-        let Ok(target_cstr) = CString::new(self.target.as_str()) else {
+        let Ok(target_cstr) = CString::new(self.target.as_ref()) else {
             return; // Silently ignore if target has null bytes
         };
 
@@ -137,34 +160,44 @@ macro_rules! plugin_log {
 #[macro_export]
 macro_rules! plugin_trace {
     ($logger:expr, $($arg:tt)*) => {
-        $logger.trace(&$crate::__format_fields!($($arg)*))
+        if $logger.enabled($crate::types::CLogLevel::Trace) {
+            $logger.trace(&$crate::__format_fields!($($arg)*))
+        }
     };
 }
 
 #[macro_export]
 macro_rules! plugin_debug {
     ($logger:expr, $($arg:tt)*) => {
-        $logger.debug(&$crate::__format_fields!($($arg)*))
+        if $logger.enabled($crate::types::CLogLevel::Debug) {
+            $logger.debug(&$crate::__format_fields!($($arg)*))
+        }
     };
 }
 
 #[macro_export]
 macro_rules! plugin_info {
     ($logger:expr, $($arg:tt)*) => {
-        $logger.info(&$crate::__format_fields!($($arg)*))
+        if $logger.enabled($crate::types::CLogLevel::Info) {
+            $logger.info(&$crate::__format_fields!($($arg)*))
+        }
     };
 }
 
 #[macro_export]
 macro_rules! plugin_warn {
     ($logger:expr, $($arg:tt)*) => {
-        $logger.warn(&$crate::__format_fields!($($arg)*))
+        if $logger.enabled($crate::types::CLogLevel::Warn) {
+            $logger.warn(&$crate::__format_fields!($($arg)*))
+        }
     };
 }
 
 #[macro_export]
 macro_rules! plugin_error {
     ($logger:expr, $($arg:tt)*) => {
-        $logger.error(&$crate::__format_fields!($($arg)*))
+        if $logger.enabled($crate::types::CLogLevel::Error) {
+            $logger.error(&$crate::__format_fields!($($arg)*))
+        }
     };
 }

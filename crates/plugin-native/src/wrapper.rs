@@ -211,10 +211,9 @@ struct InstanceState {
     /// One-shot flag: set after the first timeout warning so a wedged
     /// plugin does not spam `warn!` on every subsequent FFI call.
     timeout_warned: AtomicBool,
-    /// Plugin's declared API version (6, 7, or 8).  Used to avoid sending
-    /// `BinaryWithMeta` packets to v6 plugins that don't understand them.
-    /// v7 plugins understand BinaryWithMeta but not EncodedAudio metadata
-    /// (which is fine — EncodedAudio is metadata-only, not a runtime packet).
+    /// Plugin's declared API version (6–9).  Used to gate features:
+    /// - v6: downgrade BinaryWithMeta to plain Binary
+    /// - v9+: enable zero-copy binary buffer_handle
     api_version: u32,
     call_timeout: Option<std::time::Duration>,
 }
@@ -419,6 +418,11 @@ fn worker_thread_main(
                     let mut packet_repr = conversions::packet_to_c(&packet);
                     if state.api_version < 7 {
                         packet_repr.downgrade_binary_with_meta();
+                    } else if state.api_version >= 9 {
+                        // Enable zero-copy binary transfer for v9 plugins.
+                        if let Packet::Binary { ref data, .. } = packet {
+                            packet_repr.set_binary_buffer_handle(data);
+                        }
                     }
 
                     let mut callback_ctx = CallbackContext {
@@ -682,6 +686,26 @@ fn worker_thread_main(
     }
 }
 
+/// C callback to check whether a log level is enabled for a given target.
+///
+/// Consults the tracing subscriber so the plugin can skip formatting when
+/// the level is filtered out.  Used by v9 plugins via `set_log_enabled_callback`.
+extern "C" fn plugin_log_enabled_callback(
+    level: streamkit_plugin_sdk_native::types::CLogLevel,
+    _target: *const std::os::raw::c_char,
+    _user_data: *mut c_void,
+) -> bool {
+    use streamkit_plugin_sdk_native::types::CLogLevel;
+
+    match level {
+        CLogLevel::Trace => tracing::level_enabled!(tracing::Level::TRACE),
+        CLogLevel::Debug => tracing::level_enabled!(tracing::Level::DEBUG),
+        CLogLevel::Info => tracing::level_enabled!(tracing::Level::INFO),
+        CLogLevel::Warn => tracing::level_enabled!(tracing::Level::WARN),
+        CLogLevel::Error => tracing::level_enabled!(tracing::Level::ERROR),
+    }
+}
+
 /// C callback function for plugin logging.
 /// Routes plugin logs to the tracing infrastructure.
 #[allow(clippy::cognitive_complexity)]
@@ -773,6 +797,14 @@ impl NativeNodeWrapper {
             return Err(StreamKitError::Configuration(
                 "Plugin failed to create instance".to_string(),
             ));
+        }
+
+        // For v9 plugins, inject the log-enabled callback so the plugin
+        // can short-circuit log formatting when the level is filtered.
+        if api.version >= 9 {
+            if let Some(set_cb) = api.set_log_enabled_callback {
+                set_cb(handle, plugin_log_enabled_callback, std::ptr::null_mut());
+            }
         }
 
         Ok(Self {
@@ -1629,6 +1661,14 @@ unsafe fn free_packet_buffer_handle(c_packet: *const CPacket) {
                 drop(Box::from_raw(frame.buffer_handle.cast::<PooledSamples>()));
             }
         },
+        CPacketType::BinaryWithMeta => {
+            let bp = &*pkt.data.cast::<streamkit_plugin_sdk_native::types::CBinaryPacket>();
+            if !bp.buffer_handle.is_null() {
+                if let Some(free_fn) = bp.free_fn {
+                    free_fn(bp.buffer_handle);
+                }
+            }
+        },
         _ => {},
     }
 }
@@ -2035,6 +2075,7 @@ mod ffi_guard_tests {
             tick: None,
             get_runtime_param_schema: None,
             on_upstream_hint: None,
+            set_log_enabled_callback: None,
         }
     }
 

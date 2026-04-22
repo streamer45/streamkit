@@ -393,6 +393,33 @@ impl CPacketRepr {
             }
         }
     }
+
+    /// Enable zero-copy binary transfer for v9 plugins.
+    ///
+    /// For `BinaryWithMeta` packets, clones the `Bytes` (cheap Arc bump),
+    /// boxes it, and sets `buffer_handle` + `free_fn` on the underlying
+    /// `CBinaryPacket`.  The plugin SDK's `packet_from_c` reclaims the
+    /// box via `Box::from_raw`, avoiding a memcpy.
+    ///
+    /// Ownership of the boxed `Bytes` transfers to the plugin — the host
+    /// must NOT attempt to free it after the FFI call returns.
+    ///
+    /// No-op for non-`BinaryWithMeta` packets or when the packet was
+    /// produced from a plain `Binary` variant (no `CBinaryPacket`).
+    #[allow(clippy::used_underscore_binding)]
+    pub fn set_binary_buffer_handle(&mut self, source_bytes: &bytes::Bytes) {
+        if self.packet.packet_type == CPacketType::BinaryWithMeta {
+            if let CPacketOwned::BinaryWithMeta(ref mut bwm) = self._owned {
+                let cloned = Box::new(source_bytes.clone());
+                bwm.binary.buffer_handle = Box::into_raw(cloned).cast::<c_void>();
+                bwm.binary.free_fn = Some(free_binary_buffer_handle);
+                // buffer_handle_box stays None — ownership transfers to the
+                // plugin via packet_from_c's Box::from_raw.  If the plugin
+                // fails before reclaiming, packet_from_c's error path frees
+                // the handle.
+            }
+        }
+    }
 }
 
 #[allow(dead_code)] // Owned values are kept alive to support FFI pointers during callbacks.
@@ -431,6 +458,11 @@ struct BinaryWithMetaOwned {
     content_type: Option<CString>,
     metadata: Option<Box<CPacketMetadata>>,
     binary: Box<CBinaryPacket>,
+    /// Boxed `Bytes` clone for v9 zero-copy transfer.  When the plugin
+    /// reclaims the `buffer_handle`, this becomes `None` (ownership moved).
+    /// If the plugin never reclaims it, dropping this field releases the
+    /// `Bytes` (cheap ref-count decrement).
+    buffer_handle_box: Option<Box<bytes::Bytes>>,
 }
 
 pub fn metadata_to_c(meta: &PacketMetadata) -> CPacketMetadata {
@@ -455,6 +487,18 @@ fn metadata_from_c(meta: &CPacketMetadata) -> PacketMetadata {
 
 fn cstring_sanitize(s: &str) -> CString {
     CString::new(s).unwrap_or_else(|_| CString::new(s.replace('\0', " ")).unwrap_or_default())
+}
+
+/// Free a boxed `bytes::Bytes` stored as a `buffer_handle` in [`CBinaryPacket`].
+///
+/// Used as the `free_fn` field value — called if the plugin discards the
+/// packet without reclaiming the buffer (e.g. on error paths).
+extern "C" fn free_binary_buffer_handle(handle: *mut c_void) {
+    if !handle.is_null() {
+        // SAFETY: handle was created by `Box::into_raw(Box::new(bytes))` in
+        // `set_binary_buffer_handle` and has not been reclaimed yet.
+        drop(unsafe { Box::from_raw(handle.cast::<bytes::Bytes>()) });
+    }
 }
 
 /// Convert Rust Packet to C representation.
@@ -557,6 +601,8 @@ pub fn packet_to_c(packet: &Packet) -> CPacketRepr {
                     data_len: data.len(),
                     content_type: ct_cstring.as_ref().map_or(std::ptr::null(), |cs| cs.as_ptr()),
                     metadata: meta_box.as_deref().map_or(std::ptr::null(), std::ptr::from_ref),
+                    buffer_handle: std::ptr::null_mut(),
+                    free_fn: None,
                 });
                 let packet = CPacket {
                     packet_type: CPacketType::BinaryWithMeta,
@@ -569,6 +615,7 @@ pub fn packet_to_c(packet: &Packet) -> CPacketRepr {
                         content_type: ct_cstring,
                         metadata: meta_box,
                         binary: bp,
+                        buffer_handle_box: None,
                     }),
                 }
             } else {
@@ -722,11 +769,19 @@ pub unsafe fn packet_from_c(c_packet: *const CPacket) -> Result<Packet, String> 
         CPacketType::BinaryWithMeta => {
             let bp = &*c_pkt.data.cast::<CBinaryPacket>();
             if bp.data.is_null() && bp.data_len > 0 {
+                // Free buffer_handle if present to avoid leaking.
+                if !bp.buffer_handle.is_null() {
+                    drop(Box::from_raw(bp.buffer_handle.cast::<bytes::Bytes>()));
+                }
                 return Err("BinaryWithMeta packet has null data pointer".to_string());
             }
             let data = if bp.data_len == 0 {
                 bytes::Bytes::new()
+            } else if !bp.buffer_handle.is_null() {
+                // v9 zero-copy path: reclaim the Bytes from the handle.
+                *Box::from_raw(bp.buffer_handle.cast::<bytes::Bytes>())
             } else {
+                // Legacy copy path (v8 host or null handle).
                 bytes::Bytes::copy_from_slice(std::slice::from_raw_parts(bp.data, bp.data_len))
             };
             let content_type = if bp.content_type.is_null() {
@@ -780,20 +835,12 @@ pub unsafe fn packet_from_c(c_packet: *const CPacket) -> Result<Packet, String> 
                 .map_err(|e| format!("Invalid video frame: {e}"))
             }
         },
-        CPacketType::EncodedVideo => {
-            // Encoded video is carried as opaque bytes across the C ABI.
-            let data = std::slice::from_raw_parts(c_pkt.data.cast::<u8>(), c_pkt.len);
-            Ok(Packet::Binary {
-                data: bytes::Bytes::copy_from_slice(data),
-                content_type: None,
-                metadata: None,
-            })
-        },
-        CPacketType::EncodedAudio => {
+        CPacketType::EncodedVideo | CPacketType::EncodedAudio => {
+            // Encoded video/audio is carried as opaque bytes across the C ABI.
             // EncodedAudio is a *type-level* discriminant used in pin
             // declarations.  At runtime, encoded audio packets travel as
             // BinaryWithMeta (preserving content_type and metadata).
-            // If we somehow receive one here, treat it as opaque bytes.
+            // If we receive one here, treat it as opaque bytes.
             let data = std::slice::from_raw_parts(c_pkt.data.cast::<u8>(), c_pkt.len);
             Ok(Packet::Binary {
                 data: bytes::Bytes::copy_from_slice(data),

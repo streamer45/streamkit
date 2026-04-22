@@ -32,7 +32,10 @@ use std::os::raw::{c_char, c_void};
 ///     with MoQ transport nodes.  The codec name is carried as a
 ///     null-terminated string via the `custom_type_id` pointer in
 ///     [`CPacketTypeInfo`].
-pub const NATIVE_PLUGIN_API_VERSION: u32 = 8;
+/// v9: Zero-copy binary packets (`CBinaryPacket::buffer_handle` + `free_fn`)
+///     and logger overhaul (`CLogEnabledCallback`, `set_log_enabled_callback`,
+///     logger target set to plugin kind instead of `module_path!()`).
+pub const NATIVE_PLUGIN_API_VERSION: u32 = 9;
 
 /// Opaque handle to a plugin instance
 pub type CPluginHandle = *mut c_void;
@@ -55,6 +58,15 @@ pub enum CLogLevel {
 /// - message: The log message
 /// - user_data: Opaque pointer passed by host
 pub type CLogCallback = extern "C" fn(CLogLevel, *const c_char, *const c_char, *mut c_void);
+
+/// Callback to check whether a given log level is enabled for a target.
+///
+/// Parameters: (level, target, user_data) -> bool
+///
+/// The host implements this by consulting the tracing subscriber.  If
+/// this returns `false`, the plugin can skip formatting the log message
+/// entirely.
+pub type CLogEnabledCallback = extern "C" fn(CLogLevel, *const c_char, *mut c_void) -> bool;
 
 /// Result type for C ABI functions
 #[repr(C)]
@@ -306,6 +318,11 @@ pub struct CAudioFrame {
 /// `packet_type == BinaryWithMeta`.  Unlike the plain `Binary` variant this
 /// preserves MIME content-type (e.g. `"audio/aac"`) and timing metadata
 /// across the plugin ↔ host boundary.
+///
+/// When `buffer_handle` is non-null (v9 host), the plugin can reclaim the
+/// original `bytes::Bytes` via `Box::from_raw` for zero-copy transfer.
+/// When null (v8 host or legacy), the plugin falls back to
+/// `Bytes::copy_from_slice`.
 #[repr(C)]
 pub struct CBinaryPacket {
     pub data: *const u8,
@@ -314,6 +331,15 @@ pub struct CBinaryPacket {
     pub content_type: *const c_char,
     /// Nullable.  Per-packet timing metadata.
     pub metadata: *const CPacketMetadata,
+    /// Opaque handle to a `Box<bytes::Bytes>` for zero-copy transfer.
+    /// NULL for v8 hosts or when the packet was not allocated from a
+    /// `Bytes` buffer.  The plugin reclaims the `Bytes` via
+    /// `Box::from_raw(handle.cast::<bytes::Bytes>())`.
+    pub buffer_handle: *mut c_void,
+    /// Releases the `buffer_handle` without using the buffer (e.g. on
+    /// error paths where `packet_from_c` is never called).  NULL when
+    /// `buffer_handle` is NULL.
+    pub free_fn: Option<extern "C" fn(*mut c_void)>,
 }
 
 /// Generic packet container
@@ -504,6 +530,15 @@ pub struct CNativePluginAPI {
     /// `None` for processor plugins or source plugins that don't handle
     /// hints.
     pub on_upstream_hint: Option<extern "C" fn(CPluginHandle, *const c_char) -> CResult>,
+
+    // ── v9 additions ──────────────────────────────────────────────────────
+    /// Set the log-enabled callback on a plugin instance.
+    ///
+    /// The host calls this after `create_instance` for v9 plugins so the
+    /// plugin can short-circuit log formatting when the level is disabled.
+    /// `None` when not supported (v8 and earlier).
+    pub set_log_enabled_callback:
+        Option<extern "C" fn(CPluginHandle, CLogEnabledCallback, *mut c_void)>,
 }
 
 // ── v6 additions: frame pool allocation ────────────────────────────────

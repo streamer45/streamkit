@@ -107,12 +107,14 @@ impl LoadedNativePlugin {
         // the lifetime of the loaded library, which we keep alive via Arc<Library>.
         let api = unsafe { &*api_ptr };
 
-        // Check API version compatibility — accept v6 (pre-BinaryWithMeta),
-        // v7 (added BinaryWithMeta), and v8 (added EncodedAudio metadata).
-        // All are wire-compatible; v6 plugins never emit BinaryWithMeta
-        // packets, v7 plugins don't declare EncodedAudio pin types (they
-        // fall back to Binary), but runtime packet transport is unaffected
-        // since EncodedAudio is a metadata-only discriminant.
+        // Check API version compatibility — accept v6 through v9.
+        // v6: pre-BinaryWithMeta.
+        // v7: added BinaryWithMeta.
+        // v8: added EncodedAudio metadata.
+        // v9: zero-copy binary packets (buffer_handle), logger overhaul
+        //     (set_log_enabled_callback, target = plugin kind).
+        // All are wire-compatible; version-gated features use runtime
+        // api_version checks (e.g. buffer_handle for v9, downgrade for v6).
         if api.version < MIN_SUPPORTED_API_VERSION || api.version > NATIVE_PLUGIN_API_VERSION {
             let plugin_version = api.version;
             return Err(anyhow!(

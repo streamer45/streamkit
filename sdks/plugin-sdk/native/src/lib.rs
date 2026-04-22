@@ -569,6 +569,20 @@ pub trait NativeProcessorNode: Sized + Send + 'static {
     fn runtime_param_schema(&self) -> Option<serde_json::Value> {
         None
     }
+
+    /// Return a mutable reference to the plugin's [`Logger`] (v9).
+    ///
+    /// Override this to enable the host's log-enabled callback, allowing
+    /// `plugin_trace!` / `plugin_debug!` / etc. to short-circuit before
+    /// formatting when the level is disabled by the tracing subscriber.
+    ///
+    /// The host calls `set_log_enabled_callback` immediately after instance
+    /// creation; the SDK trampoline uses this method to inject the callback.
+    ///
+    /// Default: `None` (no short-circuit — all levels always "enabled").
+    fn logger_mut(&mut self) -> Option<&mut Logger> {
+        None
+    }
 }
 
 /// Configuration for a source node's tick loop.
@@ -701,6 +715,17 @@ pub trait NativeSourceNode: Sized + Send + 'static {
     /// override this to resize their output.
     fn on_upstream_hint(&mut self, _hint: streamkit_core::UpstreamHint) {
         // default: ignore
+    }
+
+    /// Return a mutable reference to the plugin's [`Logger`] (v9).
+    ///
+    /// Override this to enable the host's log-enabled callback, allowing
+    /// `plugin_trace!` / `plugin_debug!` / etc. to short-circuit before
+    /// formatting when the level is disabled by the tracing subscriber.
+    ///
+    /// Default: `None` (no short-circuit — all levels always "enabled").
+    fn logger_mut(&mut self) -> Option<&mut Logger> {
+        None
     }
 }
 
@@ -837,6 +862,22 @@ macro_rules! __plugin_shared_ffi {
                 }
             })
         }
+
+        extern "C" fn __plugin_set_log_enabled_callback(
+            handle: $crate::types::CPluginHandle,
+            callback: $crate::types::CLogEnabledCallback,
+            user_data: *mut std::os::raw::c_void,
+        ) {
+            $crate::ffi_guard::guard_unit(|| {
+                if handle.is_null() {
+                    return;
+                }
+                let instance = unsafe { &mut *(handle as *mut $plugin_type) };
+                if let Some(logger) = instance.logger_mut() {
+                    logger.set_enabled_callback(callback, user_data);
+                }
+            })
+        }
     };
 }
 
@@ -894,6 +935,7 @@ macro_rules! native_plugin_entry {
                 tick: None,
                 get_runtime_param_schema: Some(__plugin_get_runtime_param_schema),
                 on_upstream_hint: None,
+                set_log_enabled_callback: Some(__plugin_set_log_enabled_callback),
             };
             &API
         }
@@ -1237,8 +1279,10 @@ macro_rules! native_plugin_entry {
                     }
                 };
 
-                // Create logger for this plugin instance
-                let logger = $crate::logger::Logger::new(log_callback, log_user_data, module_path!());
+                // Create logger using the plugin's kind as target (e.g. "whisper")
+                // instead of module_path! which is opaque to the user.
+                let kind = <$plugin_type as $crate::NativeProcessorNode>::metadata().kind;
+                let logger = $crate::logger::Logger::new(log_callback, log_user_data, &kind);
 
                 match <$plugin_type as $crate::NativeProcessorNode>::new(params_json, logger) {
                     Ok(instance) => Box::into_raw(Box::new(instance)) as $crate::types::CPluginHandle,
@@ -1427,6 +1471,7 @@ macro_rules! native_source_plugin_entry {
                 tick: Some(__plugin_tick),
                 get_runtime_param_schema: Some(__plugin_get_runtime_param_schema),
                 on_upstream_hint: Some(__plugin_on_upstream_hint),
+                set_log_enabled_callback: Some(__plugin_set_log_enabled_callback),
             };
             &API
         }
@@ -1790,8 +1835,10 @@ macro_rules! native_source_plugin_entry {
                     }
                 };
 
-                let logger =
-                    $crate::logger::Logger::new(log_callback, log_user_data, module_path!());
+                // Create logger using the plugin's kind as target (e.g. "my_source")
+                // instead of module_path! which is opaque to the user.
+                let kind = <$plugin_type as $crate::NativeSourceNode>::metadata().kind;
+                let logger = $crate::logger::Logger::new(log_callback, log_user_data, &kind);
 
                 match <$plugin_type as $crate::NativeSourceNode>::new(params_json, logger) {
                     Ok(instance) => {
