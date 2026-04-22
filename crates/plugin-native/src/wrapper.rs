@@ -45,7 +45,7 @@
 //! - **Detached workers**: `InstanceWorker::Drop` closes the channel
 //!   but does not join the thread (doing so on a tokio worker would
 //!   block the runtime).  A worker stuck in a long FFI call is
-//!   detached and will run to completion; a warn-level log is emitted.
+//!   detached and will run to completion; a debug-level log is emitted.
 //! - **One OS thread per instance**: each plugin instance consumes an
 //!   OS thread for its entire lifetime.  This is acceptable for the
 //!   expected instance counts but would not scale to thousands of
@@ -172,9 +172,9 @@ unsafe impl Sync for ApiPtr {}
 /// This ensures `finish_call` runs even if the body panics, early-returns,
 /// or propagates an error via `?`.
 ///
-/// The borrow ties the guard's lifetime to the `InstanceState`.  Callers
-/// that move the guard into a closure (e.g. `spawn_blocking`) must keep
-/// the `Arc<InstanceState>` alive in the enclosing scope.
+/// The borrow ties the guard's lifetime to the `InstanceState`.  The
+/// worker thread keeps the `Arc<InstanceState>` alive for the guard's
+/// entire lifetime.
 struct CallGuard<'a> {
     state: &'a InstanceState,
     handle: CPluginHandle,
@@ -365,7 +365,7 @@ impl Drop for InstanceWorker {
         // a timeout).  The worker holds an Arc<InstanceState> which ensures the
         // plugin instance stays alive until the FFI call completes;
         // request_drop/destroy_instance handle deferred cleanup.
-        warn!(node = %self.node_id, "Detaching plugin worker thread");
+        tracing::debug!(node = %self.node_id, "Detaching plugin worker thread");
     }
 }
 
@@ -403,37 +403,44 @@ fn worker_thread_main(
                 };
 
                 let api = state.api();
-                let mut packet_repr = conversions::packet_to_c(&packet);
 
-                if state.api_version < 7 {
-                    packet_repr.downgrade_binary_with_meta();
-                }
+                // Widen catch_unwind to cover packet conversion, clone
+                // setup, and the FFI call itself so that a panic in any
+                // of these steps produces a clean error instead of
+                // poisoning the worker.
+                let mut ctx_out = std::mem::take(&mut reusable_outputs);
+                let panic_result = catch_unwind(AssertUnwindSafe(|| {
+                    let mut packet_repr = conversions::packet_to_c(&packet);
+                    if state.api_version < 7 {
+                        packet_repr.downgrade_binary_with_meta();
+                    }
 
-                let mut callback_ctx = CallbackContext {
-                    output_packets: std::mem::take(&mut reusable_outputs),
-                    error: None,
-                    telemetry_tx: telemetry_tx.clone(),
-                    session_id: session_id.clone(),
-                    node_id: node_id.clone(),
-                    video_pool: video_pool.clone(),
-                    audio_pool: audio_pool.clone(),
-                };
+                    let mut callback_ctx = CallbackContext {
+                        output_packets: std::mem::take(&mut ctx_out),
+                        error: None,
+                        telemetry_tx: telemetry_tx.clone(),
+                        session_id: session_id.clone(),
+                        node_id: node_id.clone(),
+                        video_pool: video_pool.clone(),
+                        audio_pool: audio_pool.clone(),
+                    };
 
-                let callback_data = (&raw mut callback_ctx).cast::<c_void>();
-                let node_callbacks = build_node_callbacks(callback_data);
+                    let callback_data = (&raw mut callback_ctx).cast::<c_void>();
+                    let node_callbacks = build_node_callbacks(callback_data);
 
-                let panic_msg = catch_unwind(AssertUnwindSafe(|| {
-                    (api.process_packet)(
+                    let result = (api.process_packet)(
                         guard.handle(),
                         pin_names[pin_index].as_ptr(),
                         &raw const packet_repr.packet,
                         &raw const node_callbacks,
-                    )
+                    );
+
+                    (result, callback_ctx)
                 }));
 
-                let error = match panic_msg {
-                    Ok(result) => {
-                        if result.success {
+                let (reply_outputs, error) = match panic_result {
+                    Ok((result, mut callback_ctx)) => {
+                        let err = if result.success {
                             callback_ctx.error
                         } else {
                             let error_msg = if result.error_message.is_null() {
@@ -445,19 +452,20 @@ fn worker_thread_main(
                                 }
                             };
                             Some(error_msg)
-                        }
+                        };
+                        let outputs: Vec<_> = callback_ctx.output_packets.drain(..).collect();
+                        reusable_outputs = callback_ctx.output_packets;
+                        (outputs, err)
                     },
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
                         error!("Plugin process_packet panicked: {msg}");
-                        Some(format!("Plugin process_packet panicked: {msg}"))
+                        // reusable_outputs capacity is lost on panic.
+                        (Vec::new(), Some(format!("Plugin process_packet panicked: {msg}")))
                     },
                 };
 
-                let reply_outputs: Vec<_> = callback_ctx.output_packets.drain(..).collect();
-                reusable_outputs = callback_ctx.output_packets;
                 drop(guard);
-
                 let _ = reply.send(WorkerReply { outputs: reply_outputs, error, done: false });
             },
 
@@ -473,28 +481,28 @@ fn worker_thread_main(
 
                 let api = state.api();
 
-                let mut callback_ctx = CallbackContext {
-                    output_packets: std::mem::take(&mut reusable_outputs),
-                    error: None,
-                    telemetry_tx: telemetry_tx.clone(),
-                    session_id: session_id.clone(),
-                    node_id: node_id.clone(),
-                    video_pool: video_pool.clone(),
-                    audio_pool: audio_pool.clone(),
-                };
+                let mut ctx_out = std::mem::take(&mut reusable_outputs);
+                let panic_result = catch_unwind(AssertUnwindSafe(|| {
+                    let mut callback_ctx = CallbackContext {
+                        output_packets: std::mem::take(&mut ctx_out),
+                        error: None,
+                        telemetry_tx: telemetry_tx.clone(),
+                        session_id: session_id.clone(),
+                        node_id: node_id.clone(),
+                        video_pool: video_pool.clone(),
+                        audio_pool: audio_pool.clone(),
+                    };
 
-                let callback_data = (&raw mut callback_ctx).cast::<c_void>();
-                let node_callbacks = build_node_callbacks(callback_data);
+                    let callback_data = (&raw mut callback_ctx).cast::<c_void>();
+                    let node_callbacks = build_node_callbacks(callback_data);
 
-                tracing::info!("Calling api.flush()");
-                let panic_msg = catch_unwind(AssertUnwindSafe(|| {
-                    (api.flush)(guard.handle(), &raw const node_callbacks)
+                    let result = (api.flush)(guard.handle(), &raw const node_callbacks);
+                    (result, callback_ctx)
                 }));
-                tracing::info!("Flush returned");
 
-                let error = match panic_msg {
-                    Ok(result) => {
-                        if result.success {
+                let (reply_outputs, error) = match panic_result {
+                    Ok((result, mut callback_ctx)) => {
+                        let err = if result.success {
                             callback_ctx.error
                         } else {
                             let error_msg = if result.error_message.is_null() {
@@ -506,19 +514,19 @@ fn worker_thread_main(
                                 }
                             };
                             Some(error_msg)
-                        }
+                        };
+                        let outputs: Vec<_> = callback_ctx.output_packets.drain(..).collect();
+                        reusable_outputs = callback_ctx.output_packets;
+                        (outputs, err)
                     },
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
                         error!("Plugin flush panicked: {msg}");
-                        Some(format!("Plugin flush panicked: {msg}"))
+                        (Vec::new(), Some(format!("Plugin flush panicked: {msg}")))
                     },
                 };
 
-                let reply_outputs: Vec<_> = callback_ctx.output_packets.drain(..).collect();
-                reusable_outputs = callback_ctx.output_packets;
                 drop(guard);
-
                 let _ = reply.send(WorkerReply { outputs: reply_outputs, error, done: false });
             },
 
@@ -541,25 +549,27 @@ fn worker_thread_main(
                     continue;
                 };
 
-                let mut callback_ctx = CallbackContext {
-                    output_packets: std::mem::take(&mut reusable_outputs),
-                    error: None,
-                    telemetry_tx: telemetry_tx.clone(),
-                    session_id: session_id.clone(),
-                    node_id: node_id.clone(),
-                    video_pool: video_pool.clone(),
-                    audio_pool: audio_pool.clone(),
-                };
+                let mut ctx_out = std::mem::take(&mut reusable_outputs);
+                let panic_result = catch_unwind(AssertUnwindSafe(|| {
+                    let mut callback_ctx = CallbackContext {
+                        output_packets: std::mem::take(&mut ctx_out),
+                        error: None,
+                        telemetry_tx: telemetry_tx.clone(),
+                        session_id: session_id.clone(),
+                        node_id: node_id.clone(),
+                        video_pool: video_pool.clone(),
+                        audio_pool: audio_pool.clone(),
+                    };
 
-                let callback_data = (&raw mut callback_ctx).cast::<c_void>();
-                let node_callbacks = build_node_callbacks(callback_data);
+                    let callback_data = (&raw mut callback_ctx).cast::<c_void>();
+                    let node_callbacks = build_node_callbacks(callback_data);
 
-                let panic_msg = catch_unwind(AssertUnwindSafe(|| {
-                    tick_fn(guard.handle(), &raw const node_callbacks)
+                    let result = tick_fn(guard.handle(), &raw const node_callbacks);
+                    (result, callback_ctx)
                 }));
 
-                let (error, done) = match panic_msg {
-                    Ok(result) => {
+                let (reply_outputs, error, done) = match panic_result {
+                    Ok((result, mut callback_ctx)) => {
                         let err = if result.result.success {
                             callback_ctx.error
                         } else if result.result.error_message.is_null() {
@@ -570,19 +580,18 @@ fn worker_thread_main(
                                     .unwrap_or_else(|_| "Source tick failed".to_string())
                             })
                         };
-                        (err, result.done)
+                        let outputs: Vec<_> = callback_ctx.output_packets.drain(..).collect();
+                        reusable_outputs = callback_ctx.output_packets;
+                        (outputs, err, result.done)
                     },
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
                         error!("Plugin tick panicked: {msg}");
-                        (Some(format!("Plugin tick panicked: {msg}")), false)
+                        (Vec::new(), Some(format!("Plugin tick panicked: {msg}")), false)
                     },
                 };
 
-                let reply_outputs: Vec<_> = callback_ctx.output_packets.drain(..).collect();
-                reusable_outputs = callback_ctx.output_packets;
                 drop(guard);
-
                 let _ = reply.send(WorkerReply { outputs: reply_outputs, error, done });
             },
 
@@ -834,8 +843,9 @@ impl NativeNodeWrapper {
     ) -> Result<InstanceWorker, StreamKitError> {
         let (tx, rx) = tokio::sync::mpsc::channel::<WorkerRequest>(1);
         // Linux caps prctl(PR_SET_NAME) at 15 bytes.  "skp-" is 4 bytes,
-        // leaving 11 for the node_id tail (most distinguishing part).
-        // Use char_indices to avoid panicking on non-ASCII node IDs.
+        // leaving room for the node_id tail.  We take the last 11 *chars*
+        // to avoid panicking on multi-byte UTF-8; the resulting byte length
+        // may exceed 11 for non-ASCII IDs (silently truncated by the OS).
         let id_suffix = if node_id.len() > 11 {
             node_id.char_indices().rev().nth(10).map_or(&*node_id, |(i, _)| &node_id[i..])
         } else {
@@ -976,7 +986,7 @@ impl NativeNodeWrapper {
         drop(merged_tx);
 
         // Spawn the dedicated worker thread for this instance.
-        let worker = Self::spawn_worker(
+        let worker = match Self::spawn_worker(
             Arc::clone(&self.state),
             input_pin_cstrs,
             context.telemetry_tx.clone(),
@@ -984,7 +994,19 @@ impl NativeNodeWrapper {
             node_name.clone(),
             context.video_pool.clone(),
             context.audio_pool.clone(),
-        )?;
+        ) {
+            Ok(w) => w,
+            Err(e) => {
+                let _ = context
+                    .state_tx
+                    .send(NodeStateUpdate::new(
+                        node_name.clone(),
+                        NodeState::Failed { reason: e.to_string() },
+                    ))
+                    .await;
+                return Err(e);
+            },
+        };
 
         tracing::debug!(
             node = %node_name,
@@ -1157,7 +1179,7 @@ impl NativeNodeWrapper {
         // Spawn the dedicated worker thread for this instance.
         // Spawned before the Ready→Start handshake so that pre-start
         // UpdateParams can be routed through the worker.
-        let worker = Self::spawn_worker(
+        let worker = match Self::spawn_worker(
             Arc::clone(&self.state),
             Vec::new(), // source plugins have no input pins
             context.telemetry_tx.clone(),
@@ -1165,7 +1187,19 @@ impl NativeNodeWrapper {
             node_name.clone(),
             context.video_pool.clone(),
             context.audio_pool.clone(),
-        )?;
+        ) {
+            Ok(w) => w,
+            Err(e) => {
+                let _ = context
+                    .state_tx
+                    .send(NodeStateUpdate::new(
+                        node_name.clone(),
+                        NodeState::Failed { reason: e.to_string() },
+                    ))
+                    .await;
+                return Err(e);
+            },
+        };
 
         // ── Ready → Start handshake ─────────────────────────────────────
         // Emit Ready so the pipeline coordinator knows this node is waiting
@@ -1471,17 +1505,30 @@ impl NativeNodeWrapper {
     }
 
     /// Helper to apply a parameter update via the worker thread.
+    ///
+    /// Serialization / null-byte errors from bad user params are logged
+    /// as warnings rather than killing the node — the pipeline continues
+    /// with the previous parameters.  Only a dead worker is fatal.
     async fn apply_params_update(
         &self,
         node_name: &str,
         params_value: &serde_json::Value,
         worker_tx: &tokio::sync::mpsc::Sender<WorkerRequest>,
     ) -> Result<(), StreamKitError> {
-        let params_json = serde_json::to_string(params_value).map_err(|e| {
-            StreamKitError::Configuration(format!("Failed to serialize params: {e}"))
-        })?;
-        let params_cstr = CString::new(params_json)
-            .map_err(|e| StreamKitError::Configuration(format!("Invalid params string: {e}")))?;
+        let params_json = match serde_json::to_string(params_value) {
+            Ok(json) => json,
+            Err(e) => {
+                warn!(node = %node_name, error = %e, "Failed to serialize params, ignoring update");
+                return Ok(());
+            },
+        };
+        let params_cstr = match CString::new(params_json) {
+            Ok(cstr) => cstr,
+            Err(e) => {
+                warn!(node = %node_name, error = %e, "Invalid params string, ignoring update");
+                return Ok(());
+            },
+        };
 
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         worker_tx
@@ -2338,7 +2385,7 @@ mod ffi_guard_tests {
         let pin_names = vec![CString::new("input").unwrap()];
 
         let s = Arc::clone(&state);
-        std::thread::Builder::new()
+        let handle = std::thread::Builder::new()
             .name("test-worker-timeout".into())
             .spawn(move || {
                 worker_thread_main(rx, s, pin_names, None, None, "test".into(), None, None);
@@ -2368,6 +2415,7 @@ mod ffi_guard_tests {
         assert!(flush_reply.error.is_none(), "worker should survive after timeout");
 
         drop(tx);
+        handle.join().unwrap();
     }
 
     /// Flush round-trip through the worker.
