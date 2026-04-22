@@ -39,9 +39,15 @@
 //!
 //! - **Capacity-1 channel behind wedged FFI**: if a plugin FFI call
 //!   hangs, the bounded channel blocks further sends until the call
-//!   returns.  Timeouts fire on the reply side, but the next send
-//!   will wait for the worker to drain the channel.  For hints, this
-//!   is handled by `try_send` (drop hints when worker is busy).
+//!   returns.  Both sides are now bounded: `send_to_worker` applies
+//!   `call_timeout` on the send, and `await_reply` applies it on the
+//!   reply.  For hints, `try_send` drops hints when worker is busy.
+//! - **`on_upstream_hint` has no reply-side timeout**: hint delivery
+//!   uses `try_send` (non-blocking on the async side) but the worker
+//!   executes the FFI call synchronously with no timeout.  A wedged
+//!   `on_upstream_hint` permanently blocks the worker; subsequent
+//!   `try_send`s will see the channel full and drop hints, and the
+//!   next `send_to_worker` for Tick will time out on the send side.
 //! - **Detached workers**: `InstanceWorker::Drop` closes the channel
 //!   but does not join the thread (doing so on a tokio worker would
 //!   block the runtime).  A worker stuck in a long FFI call is
@@ -846,16 +852,9 @@ impl NativeNodeWrapper {
         audio_pool: Option<Arc<AudioFramePool>>,
     ) -> Result<InstanceWorker, StreamKitError> {
         let (tx, rx) = tokio::sync::mpsc::channel::<WorkerRequest>(1);
-        // Linux caps prctl(PR_SET_NAME) at 15 bytes.  "skp-" is 4 bytes,
-        // leaving room for the node_id tail.  We take the last 11 *chars*
-        // to avoid panicking on multi-byte UTF-8; the resulting byte length
-        // may exceed 11 for non-ASCII IDs (silently truncated by the OS).
-        let id_suffix = if node_id.len() > 11 {
-            node_id.char_indices().rev().nth(10).map_or(&*node_id, |(i, _)| &node_id[i..])
-        } else {
-            &node_id
-        };
-        let thread_name = format!("skp-{id_suffix}");
+        // Linux caps prctl(PR_SET_NAME) at 15 bytes; the OS silently
+        // truncates longer names.  We just format and let the OS handle it.
+        let thread_name = format!("skp-{node_id}");
         let worker_node_id = node_id.clone();
         std::thread::Builder::new()
             .name(thread_name)
@@ -917,6 +916,30 @@ impl NativeNodeWrapper {
                 .await
                 .map_err(|_| StreamKitError::Runtime("Worker reply channel dropped".into())),
         }
+    }
+
+    /// Send a request to the worker with timeout, preventing indefinite
+    /// blocking when a prior FFI call has wedged the worker.
+    ///
+    /// Uses [`Self::state.call_timeout`] (or [`DEFAULT_CALL_TIMEOUT`]) so the
+    /// send side cannot park longer than one FFI timeout period.
+    async fn send_to_worker(
+        &self,
+        op: &str,
+        node: &str,
+        tx: &tokio::sync::mpsc::Sender<WorkerRequest>,
+        request: WorkerRequest,
+    ) -> Result<(), StreamKitError> {
+        let timeout_dur = self.state.call_timeout.unwrap_or(DEFAULT_CALL_TIMEOUT);
+        tokio::time::timeout(timeout_dur, tx.send(request))
+            .await
+            .map_err(|_| {
+                StreamKitError::Runtime(format!(
+                    "Plugin {op} on node {node}: send to worker timed out \
+                     (worker likely wedged in prior FFI call)"
+                ))
+            })?
+            .map_err(|_| worker_died_error(op, node))
     }
 
     /// Input-driven processing loop (existing behaviour for processor plugins).
@@ -1074,11 +1097,7 @@ impl NativeNodeWrapper {
                             tracing::debug!(node = %node_name, "Native plugin input closed, flushing buffers");
 
                             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                            worker
-                                .tx
-                                .send(WorkerRequest::Flush { reply: reply_tx })
-                                .await
-                                .map_err(|_| worker_died_error("flush", &node_name))?;
+                            self.send_to_worker("flush", &node_name, &worker.tx, WorkerRequest::Flush { reply: reply_tx }).await?;
                             let reply = self.await_reply("flush", &node_name, reply_rx, Some(&context.state_tx)).await?;
 
                             // Send flush outputs
@@ -1096,11 +1115,7 @@ impl NativeNodeWrapper {
                         };
 
                         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                        worker
-                            .tx
-                            .send(WorkerRequest::Process { pin_index, packet, reply: reply_tx })
-                            .await
-                            .map_err(|_| worker_died_error("process_packet", &node_name))?;
+                        self.send_to_worker("process_packet", &node_name, &worker.tx, WorkerRequest::Process { pin_index, packet, reply: reply_tx }).await?;
                         let reply = self
                             .await_reply("process_packet", &node_name, reply_rx, Some(&context.state_tx))
                             .await?;
@@ -1178,6 +1193,21 @@ impl NativeNodeWrapper {
             .await
         {
             warn!(error = %e, node = %node_name, "Failed to send initializing state");
+        }
+
+        // Verify tick function exists before spawning the worker — a
+        // missing tick is a misconfiguration that should surface at
+        // Initializing, not after the Ready→Start handshake.
+        if self.state.api().tick.is_none() {
+            let reason = "Source plugin missing tick function".to_string();
+            let _ = context
+                .state_tx
+                .send(NodeStateUpdate::new(
+                    node_name.clone(),
+                    NodeState::Failed { reason: reason.clone() },
+                ))
+                .await;
+            return Err(StreamKitError::Runtime(reason));
         }
 
         // Spawn the dedicated worker thread for this instance.
@@ -1317,11 +1347,6 @@ impl NativeNodeWrapper {
             .unwrap_or_else(fallback);
         let mut tick_count: u64 = 0;
 
-        // Verify tick function exists (will be called by the worker thread).
-        if self.state.api().tick.is_none() {
-            return Err(StreamKitError::Runtime("Source plugin missing tick function".to_string()));
-        }
-
         let mut interval = tokio::time::interval(tick_interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         // Consume the first (immediate) tick so we don't double-fire on entry.
@@ -1432,10 +1457,13 @@ impl NativeNodeWrapper {
 
             // ── Tick ────────────────────────────────────────────────────
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-            worker_tx
-                .send(WorkerRequest::Tick { reply: reply_tx })
-                .await
-                .map_err(|_| worker_died_error("tick", &node_name))?;
+            self.send_to_worker(
+                "tick",
+                &node_name,
+                worker_tx,
+                WorkerRequest::Tick { reply: reply_tx },
+            )
+            .await?;
             let reply =
                 self.await_reply("tick", &node_name, reply_rx, Some(&context.state_tx)).await?;
 
@@ -1535,10 +1563,13 @@ impl NativeNodeWrapper {
         };
 
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        worker_tx
-            .send(WorkerRequest::UpdateParams { params_cstr, reply: reply_tx })
-            .await
-            .map_err(|_| worker_died_error("update_params", node_name))?;
+        self.send_to_worker(
+            "update_params",
+            node_name,
+            worker_tx,
+            WorkerRequest::UpdateParams { params_cstr, reply: reply_tx },
+        )
+        .await?;
 
         let error_msg = self.await_reply("update_params", node_name, reply_rx, None).await?;
 
@@ -2144,17 +2175,17 @@ mod ffi_guard_tests {
         use super::*;
         use streamkit_plugin_sdk_native::types::CNodeCallbacks;
 
+        /// Static error message for the process_error stub — avoids a
+        /// per-call `Box::leak`.
+        static PROCESS_ERROR_MSG: &std::ffi::CStr = c"plugin exploded";
+
         pub extern "C" fn process_error(
             _: CPluginHandle,
             _: *const std::os::raw::c_char,
             _: *const CPacket,
             _: *const CNodeCallbacks,
         ) -> CResult {
-            // Intentional leak: the returned pointer must outlive the CResult.
-            // Test-only; avoids CString::into_raw which would need from_raw.
-            let leaked: &'static std::ffi::CStr =
-                Box::leak(CString::new("plugin exploded").unwrap().into_boxed_c_str());
-            CResult { success: false, error_message: leaked.as_ptr() }
+            CResult { success: false, error_message: PROCESS_ERROR_MSG.as_ptr() }
         }
 
         pub extern "C" fn process_slow(
