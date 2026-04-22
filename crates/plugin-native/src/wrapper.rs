@@ -20,11 +20,13 @@
 //! that receives [`WorkerRequest`] messages over a bounded channel and
 //! replies via oneshot channels.  This replaces the previous
 //! `spawn_blocking` approach, eliminating per-packet thread-pool
-//! dispatch and ~7 `Arc::clone` operations per packet.  The worker
-//! owns reusable [`CallbackContext`] buffers and hoisted `Arc`
-//! clones, amortising allocation across the instance lifetime.
-//! The reusable output `Vec`'s *capacity* is preserved across calls;
-//! each reply still allocates a `Vec` sized to the actual outputs.
+//! dispatch overhead.  The worker owns a reusable output `Vec` whose
+//! *capacity* is preserved across calls (high-water-mark; a one-time
+//! flush burst keeps the large `Vec` around for the instance lifetime).
+//! Per-request `Arc::clone`s of `telemetry_tx`, `session_id`,
+//! `node_id`, `video_pool`, and `audio_pool` into `CallbackContext`
+//! still occur on the worker thread — the amortisation is of the
+//! tokio-task-spawn and channel setup, not of those clones.
 //!
 //! Timeout behaviour is preserved: the async side applies
 //! `tokio::time::timeout` on the oneshot reply channel rather than on
@@ -32,6 +34,22 @@
 //! is not cancelled — it continues running until the FFI call returns.
 //! `NativeNodeWrapper::drop` calls `request_drop` →
 //! `destroy_instance` which is deferred if a call is in flight.
+//!
+//! ## Limitations
+//!
+//! - **Capacity-1 channel behind wedged FFI**: if a plugin FFI call
+//!   hangs, the bounded channel blocks further sends until the call
+//!   returns.  Timeouts fire on the reply side, but the next send
+//!   will wait for the worker to drain the channel.  For hints, this
+//!   is handled by `try_send` (drop hints when worker is busy).
+//! - **Detached workers**: `InstanceWorker::Drop` closes the channel
+//!   but does not join the thread (doing so on a tokio worker would
+//!   block the runtime).  A worker stuck in a long FFI call is
+//!   detached and will run to completion; a warn-level log is emitted.
+//! - **One OS thread per instance**: each plugin instance consumes an
+//!   OS thread for its entire lifetime.  This is acceptable for the
+//!   expected instance counts but would not scale to thousands of
+//!   concurrent instances.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -309,6 +327,12 @@ impl Drop for InstanceState {
     }
 }
 
+/// Consistent error returned when the worker channel is closed (the worker
+/// thread has exited, either normally or via a panic).
+fn worker_died_error(op: &str, node: &str) -> StreamKitError {
+    StreamKitError::Runtime(format!("Worker thread for node {node} died during {op}"))
+}
+
 // ── Per-instance worker thread types ───────────────────────────────────────
 
 /// Message sent from the async side to the worker thread.
@@ -327,32 +351,21 @@ struct WorkerReply {
 }
 
 struct InstanceWorker {
-    tx: Option<tokio::sync::mpsc::Sender<WorkerRequest>>,
-}
-
-impl InstanceWorker {
-    /// Returns a reference to the worker channel sender.
-    ///
-    /// The sender is `Some` from construction until [`Drop`] runs;
-    /// all call-sites execute before `Drop`.
-    #[allow(clippy::missing_const_for_fn)] // intentionally non-const for readability
-    fn tx(&self) -> &tokio::sync::mpsc::Sender<WorkerRequest> {
-        #[allow(clippy::unwrap_used)]
-        self.tx.as_ref().unwrap()
-    }
+    tx: tokio::sync::mpsc::Sender<WorkerRequest>,
+    node_id: String,
 }
 
 impl Drop for InstanceWorker {
     fn drop(&mut self) {
-        // Close the channel so the worker's `blocking_recv` returns `None`.
-        drop(self.tx.take());
-        // Detach the worker thread — do NOT join synchronously.  This Drop
-        // runs on a tokio worker thread (inside async run_processor/run_source),
-        // so a blocking join would stall the async runtime if the worker is
-        // stuck in a long FFI call (e.g. after a timeout).  The worker holds
-        // an Arc<InstanceState> which ensures the plugin instance stays alive
-        // until the FFI call completes; request_drop/destroy_instance handle
-        // deferred cleanup.
+        // Dropping `tx` closes the channel so the worker's `blocking_recv`
+        // returns `None`.  The worker thread is detached — do NOT join
+        // synchronously.  This Drop runs on a tokio worker thread (inside
+        // async run_processor/run_source), so a blocking join would stall the
+        // async runtime if the worker is stuck in a long FFI call (e.g. after
+        // a timeout).  The worker holds an Arc<InstanceState> which ensures the
+        // plugin instance stays alive until the FFI call completes;
+        // request_drop/destroy_instance handle deferred cleanup.
+        warn!(node = %self.node_id, "Detaching plugin worker thread");
     }
 }
 
@@ -373,6 +386,8 @@ fn worker_thread_main(
     video_pool: Option<Arc<VideoFramePool>>,
     audio_pool: Option<Arc<AudioFramePool>>,
 ) {
+    // High-water-mark: capacity grows to the largest output batch seen and
+    // stays there for the instance lifetime (e.g. a one-time flush burst).
     let mut reusable_outputs: Vec<(String, Packet)> = Vec::new();
 
     while let Some(request) = rx.blocking_recv() {
@@ -615,9 +630,30 @@ fn worker_thread_main(
                 if let Some(on_hint_fn) = state.api().on_upstream_hint {
                     for c_str in &hints {
                         if let Some(guard) = state.begin_call() {
-                            let _ = catch_unwind(AssertUnwindSafe(|| {
+                            match catch_unwind(AssertUnwindSafe(|| {
                                 on_hint_fn(guard.handle(), c_str.as_ptr())
-                            }));
+                            })) {
+                                Ok(result) if !result.success => {
+                                    let msg = if result.error_message.is_null() {
+                                        "on_upstream_hint failed".to_string()
+                                    } else {
+                                        unsafe {
+                                            conversions::c_str_to_string(result.error_message)
+                                                .unwrap_or_else(|_| {
+                                                    "on_upstream_hint failed".to_string()
+                                                })
+                                        }
+                                    };
+                                    warn!(node = %node_id, "on_upstream_hint error: {msg}");
+                                },
+                                Err(payload) => {
+                                    let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(
+                                        &*payload,
+                                    );
+                                    error!("Plugin on_upstream_hint panicked: {msg}");
+                                },
+                                Ok(_) => {},
+                            }
                         }
                     }
                 }
@@ -797,8 +833,11 @@ impl NativeNodeWrapper {
         audio_pool: Option<Arc<AudioFramePool>>,
     ) -> Result<InstanceWorker, StreamKitError> {
         let (tx, rx) = tokio::sync::mpsc::channel::<WorkerRequest>(1);
-        // Linux caps prctl(PR_SET_NAME) at 15 bytes; keep prefix short.
-        let thread_name = format!("skit-plg-{node_id}");
+        // Linux caps prctl(PR_SET_NAME) at 15 bytes.  "skp-" is 4 bytes,
+        // leaving 11 for the node_id tail (most distinguishing part).
+        let id_suffix = if node_id.len() > 11 { &node_id[node_id.len() - 11..] } else { &node_id };
+        let thread_name = format!("skp-{id_suffix}");
+        let worker_node_id = node_id.clone();
         std::thread::Builder::new()
             .name(thread_name)
             .spawn(move || {
@@ -816,15 +855,20 @@ impl NativeNodeWrapper {
             .map_err(|e| {
                 StreamKitError::Runtime(format!("Failed to spawn plugin worker thread: {e}"))
             })?;
-        Ok(InstanceWorker { tx: Some(tx) })
+        Ok(InstanceWorker { tx, node_id: worker_node_id })
     }
 
     /// Await a oneshot reply from the worker, applying the configured timeout.
+    ///
+    /// When `state_tx` is provided and the call times out, emits
+    /// [`NodeState::Failed`] so the pipeline coordinator sees the failure
+    /// even though the worker thread continues running.
     async fn await_reply<T>(
         &self,
         op: &str,
         node: &str,
         reply_rx: tokio::sync::oneshot::Receiver<T>,
+        state_tx: Option<&tokio::sync::mpsc::Sender<NodeStateUpdate>>,
     ) -> Result<T, StreamKitError> {
         match self.state.call_timeout {
             Some(d) => tokio::time::timeout(d, reply_rx)
@@ -836,9 +880,14 @@ impl NativeNodeWrapper {
                             "Plugin {op} timed out after {d:?}"
                         );
                     }
-                    StreamKitError::Runtime(format!(
-                        "Plugin {op} on node {node} timed out after {d:?}"
-                    ))
+                    let reason = format!("Plugin {op} on node {node} timed out after {d:?}");
+                    if let Some(tx) = state_tx {
+                        let _ = tx.try_send(NodeStateUpdate::new(
+                            node.to_string(),
+                            NodeState::Failed { reason: reason.clone() },
+                        ));
+                    }
+                    StreamKitError::Runtime(reason)
                 })?
                 .map_err(|_| StreamKitError::Runtime("Worker reply channel dropped".into())),
             None => reply_rx
@@ -964,7 +1013,7 @@ impl NativeNodeWrapper {
                             self.apply_params_update(
                                 &node_name,
                                 &params_value,
-                                worker.tx(),
+                                &worker.tx,
                             )
                             .await?;
                         }
@@ -988,13 +1037,11 @@ impl NativeNodeWrapper {
 
                         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                         worker
-                            .tx()
+                            .tx
                             .send(WorkerRequest::Flush { reply: reply_tx })
                             .await
-                            .map_err(|_| {
-                                StreamKitError::Runtime("Worker thread died".into())
-                            })?;
-                        let reply = self.await_reply("flush", &node_name, reply_rx).await?;
+                            .map_err(|_| worker_died_error("flush", &node_name))?;
+                        let reply = self.await_reply("flush", &node_name, reply_rx, Some(&context.state_tx)).await?;
 
                         // Send flush outputs
                         for (pin, pkt) in reply.outputs {
@@ -1012,14 +1059,12 @@ impl NativeNodeWrapper {
 
                     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                     worker
-                        .tx()
+                        .tx
                         .send(WorkerRequest::Process { pin_index, packet, reply: reply_tx })
                         .await
-                        .map_err(|_| {
-                            StreamKitError::Runtime("Worker thread died".into())
-                        })?;
+                        .map_err(|_| worker_died_error("process_packet", &node_name))?;
                     let reply = self
-                        .await_reply("process_packet", &node_name, reply_rx)
+                        .await_reply("process_packet", &node_name, reply_rx, Some(&context.state_tx))
                         .await?;
                     let (outputs, error) = (reply.outputs, reply.error);
 
@@ -1165,7 +1210,7 @@ impl NativeNodeWrapper {
                             self.apply_params_update(
                                 &node_name,
                                 &params_value,
-                                worker.tx(),
+                                &worker.tx,
                             )
                             .await?;
                         }
@@ -1237,7 +1282,7 @@ impl NativeNodeWrapper {
             tokio::sync::mpsc::Receiver<streamkit_core::UpstreamHint>,
         )> = Vec::new();
 
-        let worker_tx = worker.tx();
+        let worker_tx = &worker.tx;
 
         loop {
             // Check tick limit
@@ -1307,16 +1352,27 @@ impl NativeNodeWrapper {
                     }
                 });
                 if !pending_hints.is_empty() {
-                    let (hint_reply_tx, hint_reply_rx) = tokio::sync::oneshot::channel();
-                    let _ = worker_tx
-                        .send(WorkerRequest::OnUpstreamHint {
-                            hints: pending_hints,
-                            reply: hint_reply_tx,
-                        })
-                        .await;
-                    // Best-effort: apply timeout so a wedged plugin doesn't
-                    // stall the tick loop indefinitely.
-                    let _ = self.await_reply("on_upstream_hint", &node_name, hint_reply_rx).await;
+                    let (hint_reply_tx, _hint_reply_rx) = tokio::sync::oneshot::channel();
+                    // Use try_send: if the worker is busy (channel full), drop
+                    // the hints rather than blocking.  This prevents a wedged
+                    // on_upstream_hint from stalling the tick loop — the
+                    // capacity-1 channel would otherwise block the send until
+                    // the worker drains the previous request.
+                    match worker_tx.try_send(WorkerRequest::OnUpstreamHint {
+                        hints: pending_hints,
+                        reply: hint_reply_tx,
+                    }) {
+                        Ok(()) => {
+                            // Hint enqueued; we don't await the reply — the
+                            // worker will process it before the next Tick.
+                        },
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            warn!(node = %node_name, "Dropping upstream hints: worker busy");
+                        },
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                            warn!(node = %node_name, "Dropping upstream hints: worker died");
+                        },
+                    }
                 }
             }
 
@@ -1325,8 +1381,9 @@ impl NativeNodeWrapper {
             worker_tx
                 .send(WorkerRequest::Tick { reply: reply_tx })
                 .await
-                .map_err(|_| StreamKitError::Runtime("Worker thread died".into()))?;
-            let reply = self.await_reply("tick", &node_name, reply_rx).await?;
+                .map_err(|_| worker_died_error("tick", &node_name))?;
+            let reply =
+                self.await_reply("tick", &node_name, reply_rx, Some(&context.state_tx)).await?;
 
             // Send outputs produced by tick.  If the output channel is closed,
             // stop ticking — source nodes have no input-close backstop so we must
@@ -1414,9 +1471,9 @@ impl NativeNodeWrapper {
         worker_tx
             .send(WorkerRequest::UpdateParams { params_cstr, reply: reply_tx })
             .await
-            .map_err(|_| StreamKitError::Runtime("Worker thread died".into()))?;
+            .map_err(|_| worker_died_error("update_params", node_name))?;
 
-        let error_msg = self.await_reply("update_params", node_name, reply_rx).await?;
+        let error_msg = self.await_reply("update_params", node_name, reply_rx, None).await?;
 
         if let Some(err) = error_msg {
             warn!(node = %node_name, error = %err, "Parameter update failed");
@@ -2011,5 +2068,258 @@ mod ffi_guard_tests {
             original_addr, recovered,
             "ApiPtr must round-trip the pointer without losing provenance"
         );
+    }
+
+    // ── Worker thread tests ────────────────────────────────────────────
+
+    /// Additional stubs for worker tests (error-returning, slow variants).
+    mod worker_stubs {
+        use super::*;
+        use streamkit_plugin_sdk_native::types::CNodeCallbacks;
+
+        pub extern "C" fn process_error(
+            _: CPluginHandle,
+            _: *const std::os::raw::c_char,
+            _: *const CPacket,
+            _: *const CNodeCallbacks,
+        ) -> CResult {
+            let msg = CString::new("plugin exploded").unwrap();
+            let ptr = msg.into_raw();
+            CResult { success: false, error_message: ptr }
+        }
+
+        pub extern "C" fn process_slow(
+            _: CPluginHandle,
+            _: *const std::os::raw::c_char,
+            _: *const CPacket,
+            _: *const CNodeCallbacks,
+        ) -> CResult {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            CResult::success()
+        }
+    }
+
+    fn dummy_api_error() -> CNativePluginAPI {
+        let mut api = dummy_api();
+        api.process_packet = worker_stubs::process_error;
+        api
+    }
+
+    fn dummy_api_slow() -> CNativePluginAPI {
+        let mut api = dummy_api();
+        api.process_packet = worker_stubs::process_slow;
+        api
+    }
+
+    fn test_instance_state_with_api(api: CNativePluginAPI) -> Arc<InstanceState> {
+        let lib = unsafe { Library::new("libc.so.6").expect("libc must be loadable") };
+        let api: &'static CNativePluginAPI = Box::leak(Box::new(api));
+        Arc::new(InstanceState::new(
+            Arc::new(lib),
+            api,
+            std::ptr::without_provenance_mut::<c_void>(1),
+            8,
+            None,
+        ))
+    }
+
+    fn test_instance_state_with_timeout(
+        api: CNativePluginAPI,
+        timeout: std::time::Duration,
+    ) -> Arc<InstanceState> {
+        let lib = unsafe { Library::new("libc.so.6").expect("libc must be loadable") };
+        let api: &'static CNativePluginAPI = Box::leak(Box::new(api));
+        Arc::new(InstanceState::new(
+            Arc::new(lib),
+            api,
+            std::ptr::without_provenance_mut::<c_void>(1),
+            8,
+            Some(timeout),
+        ))
+    }
+
+    /// Spawn a worker, send a Process request, verify successful round-trip.
+    #[test]
+    fn worker_happy_path_process() {
+        let state = test_instance_state();
+        let (tx, rx) = tokio::sync::mpsc::channel::<WorkerRequest>(1);
+        let pin_names = vec![CString::new("input").unwrap()];
+
+        let s = Arc::clone(&state);
+        let handle = std::thread::Builder::new()
+            .name("test-worker".into())
+            .spawn(move || {
+                worker_thread_main(rx, s, pin_names, None, None, "test".into(), None, None);
+            })
+            .unwrap();
+
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        tx.blocking_send(WorkerRequest::Process {
+            pin_index: 0,
+            packet: Packet::Text("hello".into()),
+            reply: reply_tx,
+        })
+        .unwrap();
+
+        let reply = reply_rx.blocking_recv().unwrap();
+        assert!(reply.error.is_none(), "expected no error, got: {:?}", reply.error);
+        assert!(!reply.done);
+
+        drop(tx);
+        handle.join().unwrap();
+    }
+
+    /// Send a Process to an error-returning stub — the worker propagates
+    /// the plugin's error message in the reply, and survives for the next call.
+    #[test]
+    fn worker_error_propagation() {
+        let state = test_instance_state_with_api(dummy_api_error());
+        let (tx, rx) = tokio::sync::mpsc::channel::<WorkerRequest>(1);
+        let pin_names = vec![CString::new("input").unwrap()];
+
+        let s = Arc::clone(&state);
+        let handle = std::thread::Builder::new()
+            .name("test-worker-error".into())
+            .spawn(move || {
+                worker_thread_main(rx, s, pin_names, None, None, "test".into(), None, None);
+            })
+            .unwrap();
+
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        tx.blocking_send(WorkerRequest::Process {
+            pin_index: 0,
+            packet: Packet::Text("trigger-error".into()),
+            reply: reply_tx,
+        })
+        .unwrap();
+
+        let reply = reply_rx.blocking_recv().unwrap();
+        let err = reply.error.expect("expected error from plugin");
+        assert!(err.contains("plugin exploded"), "expected plugin error message, got: {err}");
+
+        // Worker should still be alive after returning an error.
+        let (flush_tx, flush_rx) = tokio::sync::oneshot::channel();
+        tx.blocking_send(WorkerRequest::Flush { reply: flush_tx }).unwrap();
+        let flush_reply = flush_rx.blocking_recv().unwrap();
+        assert!(flush_reply.error.is_none(), "worker should survive after error reply");
+
+        drop(tx);
+        handle.join().unwrap();
+    }
+
+    /// Drop the channel while the worker is idle — the worker exits
+    /// cleanly via `blocking_recv` returning `None`.
+    #[test]
+    fn worker_channel_close_exits_cleanly() {
+        let state = test_instance_state();
+        let (tx, rx) = tokio::sync::mpsc::channel::<WorkerRequest>(1);
+
+        let s = Arc::clone(&state);
+        let handle = std::thread::Builder::new()
+            .name("test-worker-close".into())
+            .spawn(move || {
+                worker_thread_main(rx, s, Vec::new(), None, None, "test".into(), None, None);
+            })
+            .unwrap();
+
+        drop(tx);
+        // Worker should join cleanly.
+        handle.join().expect("worker should exit cleanly when channel closes");
+    }
+
+    /// request_drop while the worker is processing — the worker finishes
+    /// its current call and subsequent begin_call returns None.
+    #[test]
+    fn worker_request_drop_during_processing() {
+        let state = test_instance_state_with_api(dummy_api_slow());
+        let (tx, rx) = tokio::sync::mpsc::channel::<WorkerRequest>(1);
+        let pin_names = vec![CString::new("input").unwrap()];
+
+        let s = Arc::clone(&state);
+        let handle = std::thread::Builder::new()
+            .name("test-worker-detach".into())
+            .spawn(move || {
+                worker_thread_main(rx, s, pin_names, None, None, "test".into(), None, None);
+            })
+            .unwrap();
+
+        // Send a slow process request.
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        tx.blocking_send(WorkerRequest::Process {
+            pin_index: 0,
+            packet: Packet::Text("slow".into()),
+            reply: reply_tx,
+        })
+        .unwrap();
+
+        // Request drop while the worker is processing.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        state.request_drop();
+
+        // The slow process should still complete its reply.
+        let reply = reply_rx.blocking_recv().unwrap();
+        assert!(reply.error.is_none(), "slow process should succeed");
+
+        // Next process should get "Instance destroyed" error.
+        let (post_drop_tx, post_drop_rx) = tokio::sync::oneshot::channel();
+        tx.blocking_send(WorkerRequest::Process {
+            pin_index: 0,
+            packet: Packet::Text("after-drop".into()),
+            reply: post_drop_tx,
+        })
+        .unwrap();
+        let post_drop_reply = post_drop_rx.blocking_recv().unwrap();
+        assert!(
+            post_drop_reply.error.as_ref().is_some_and(|e| e.contains("destroyed")),
+            "expected destroyed error, got: {:?}",
+            post_drop_reply.error
+        );
+
+        drop(tx);
+        handle.join().unwrap();
+    }
+
+    /// Configure a short timeout and a slow stub — verify the reply
+    /// channel times out but the worker survives for the next request.
+    #[tokio::test]
+    async fn worker_timeout_then_next_send() {
+        let state = test_instance_state_with_timeout(
+            dummy_api_slow(),
+            std::time::Duration::from_millis(50),
+        );
+        let (tx, rx) = tokio::sync::mpsc::channel::<WorkerRequest>(1);
+        let pin_names = vec![CString::new("input").unwrap()];
+
+        let s = Arc::clone(&state);
+        std::thread::Builder::new()
+            .name("test-worker-timeout".into())
+            .spawn(move || {
+                worker_thread_main(rx, s, pin_names, None, None, "test".into(), None, None);
+            })
+            .unwrap();
+
+        // Send a request that will take 500ms — timeout is 50ms.
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel::<WorkerReply>();
+        tx.send(WorkerRequest::Process {
+            pin_index: 0,
+            packet: Packet::Text("slow".into()),
+            reply: reply_tx,
+        })
+        .await
+        .unwrap();
+
+        let result = tokio::time::timeout(std::time::Duration::from_millis(50), reply_rx).await;
+        assert!(result.is_err(), "expected timeout");
+
+        // Wait for worker to finish the slow call.
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+
+        // Worker should accept the next request.
+        let (flush_tx, flush_rx) = tokio::sync::oneshot::channel();
+        tx.send(WorkerRequest::Flush { reply: flush_tx }).await.unwrap();
+        let flush_reply = flush_rx.await.unwrap();
+        assert!(flush_reply.error.is_none(), "worker should survive after timeout");
+
+        drop(tx);
     }
 }
