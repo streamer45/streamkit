@@ -522,6 +522,7 @@ fn worker_thread_main(
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
                         error!("Plugin flush panicked: {msg}");
+                        // reusable_outputs capacity is lost on panic.
                         (Vec::new(), Some(format!("Plugin flush panicked: {msg}")))
                     },
                 };
@@ -587,6 +588,7 @@ fn worker_thread_main(
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
                         error!("Plugin tick panicked: {msg}");
+                        // reusable_outputs capacity is lost on panic.
                         (Vec::new(), Some(format!("Plugin tick panicked: {msg}")), false)
                     },
                 };
@@ -638,31 +640,33 @@ fn worker_thread_main(
             WorkerRequest::OnUpstreamHint { hints, reply } => {
                 if let Some(on_hint_fn) = state.api().on_upstream_hint {
                     for c_str in &hints {
-                        if let Some(guard) = state.begin_call() {
-                            match catch_unwind(AssertUnwindSafe(|| {
-                                on_hint_fn(guard.handle(), c_str.as_ptr())
-                            })) {
-                                Ok(result) if !result.success => {
-                                    let msg = if result.error_message.is_null() {
-                                        "on_upstream_hint failed".to_string()
-                                    } else {
-                                        unsafe {
-                                            conversions::c_str_to_string(result.error_message)
-                                                .unwrap_or_else(|_| {
-                                                    "on_upstream_hint failed".to_string()
-                                                })
-                                        }
-                                    };
-                                    warn!(node = %node_id, "on_upstream_hint error: {msg}");
-                                },
-                                Err(payload) => {
-                                    let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(
-                                        &*payload,
-                                    );
-                                    error!("Plugin on_upstream_hint panicked: {msg}");
-                                },
-                                Ok(_) => {},
-                            }
+                        let Some(guard) = state.begin_call() else {
+                            tracing::trace!(node = %node_id, "Dropping hint: instance being destroyed");
+                            break;
+                        };
+                        match catch_unwind(AssertUnwindSafe(|| {
+                            on_hint_fn(guard.handle(), c_str.as_ptr())
+                        })) {
+                            Ok(result) if !result.success => {
+                                let msg = if result.error_message.is_null() {
+                                    "on_upstream_hint failed".to_string()
+                                } else {
+                                    unsafe {
+                                        conversions::c_str_to_string(result.error_message)
+                                            .unwrap_or_else(|_| {
+                                                "on_upstream_hint failed".to_string()
+                                            })
+                                    }
+                                };
+                                warn!(node = %node_id, "on_upstream_hint error: {msg}");
+                            },
+                            Err(payload) => {
+                                let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(
+                                    &*payload,
+                                );
+                                error!("Plugin on_upstream_hint panicked: {msg}");
+                            },
+                            Ok(_) => {},
                         }
                     }
                 }
@@ -2176,7 +2180,12 @@ mod ffi_guard_tests {
             streamkit_plugin_sdk_native::types::CTickResult::ok()
         }
 
+        /// Counter incremented each time `on_hint_ok` is called.
+        pub static HINT_CALL_COUNT: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+
         pub extern "C" fn on_hint_ok(_: CPluginHandle, _: *const std::os::raw::c_char) -> CResult {
+            HINT_CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             CResult::success()
         }
     }
@@ -2493,6 +2502,9 @@ mod ffi_guard_tests {
     /// OnUpstreamHint is delivered without blocking the caller.
     #[test]
     fn worker_on_upstream_hint() {
+        // Reset counter before test.
+        worker_stubs::HINT_CALL_COUNT.store(0, Ordering::Relaxed);
+
         let state = test_instance_state_with_api(dummy_api_with_hint());
         let (tx, rx) = tokio::sync::mpsc::channel::<WorkerRequest>(1);
 
@@ -2508,8 +2520,13 @@ mod ffi_guard_tests {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         tx.blocking_send(WorkerRequest::OnUpstreamHint { hints: vec![hint], reply: reply_tx })
             .unwrap();
-        // Should complete without error (reply is () on success).
         reply_rx.blocking_recv().expect("on_upstream_hint should complete");
+
+        assert_eq!(
+            worker_stubs::HINT_CALL_COUNT.load(Ordering::Relaxed),
+            1,
+            "on_hint_fn should have been called exactly once"
+        );
 
         drop(tx);
         handle.join().unwrap();
