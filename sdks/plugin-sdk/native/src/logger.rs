@@ -19,22 +19,32 @@ pub struct Logger {
     user_data: *mut c_void,
     enabled_user_data: *mut c_void,
     target: Arc<str>,
+    /// Cached C-string of `target` for the enabled callback, avoiding
+    /// a `CString::new` allocation on every `enabled()` call.
+    /// `None` if the target contains a null byte (always returns
+    /// "enabled" in that edge case).
+    target_cstr: Option<Arc<CString>>,
 }
 
-// SAFETY: The callback is a C function pointer which is thread-safe,
-// and user_data is managed by the host which ensures thread-safety
+// SAFETY: The callbacks are C function pointers which are thread-safe,
+// and both `user_data` and `enabled_user_data` are managed by the host
+// which ensures thread-safety.  Note that `Clone` performs a shallow
+// copy of these pointers — the host must ensure that the pointed-to
+// data is safe to share across threads (or that the pointers are null).
 unsafe impl Send for Logger {}
 unsafe impl Sync for Logger {}
 
 impl Logger {
     /// Create a new logger
     pub fn new(callback: CLogCallback, user_data: *mut c_void, target: &str) -> Self {
+        let target_cstr = CString::new(target).ok().map(Arc::new);
         Self {
             callback,
             enabled_callback: None,
             user_data,
             enabled_user_data: std::ptr::null_mut(),
             target: Arc::from(target),
+            target_cstr,
         }
     }
 
@@ -53,10 +63,10 @@ impl Logger {
     pub fn enabled(&self, level: CLogLevel) -> bool {
         match self.enabled_callback {
             Some(cb) => {
-                let Ok(target_cstr) = CString::new(self.target.as_ref()) else {
+                let Some(ref cstr) = self.target_cstr else {
                     return true;
                 };
-                cb(level, target_cstr.as_ptr(), self.enabled_user_data)
+                cb(level, cstr.as_ptr(), self.enabled_user_data)
             },
             None => true,
         }

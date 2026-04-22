@@ -35,6 +35,11 @@ use std::os::raw::{c_char, c_void};
 /// v9: Zero-copy binary packets (`CBinaryPacket::buffer_handle` + `free_fn`)
 ///     and logger overhaul (`CLogEnabledCallback`, `set_log_enabled_callback`,
 ///     logger target set to plugin kind instead of `module_path!()`).
+///     **Wire change:** For v9 hosts, plain `Binary` packets are upgraded to
+///     `BinaryWithMeta` (with null `content_type` / `metadata`) on the wire
+///     to attach the zero-copy buffer handle.  C plugins that `switch` on
+///     `packet_type` must handle `BinaryWithMeta` even when those fields
+///     are null.
 pub const NATIVE_PLUGIN_API_VERSION: u32 = 9;
 
 /// Opaque handle to a plugin instance

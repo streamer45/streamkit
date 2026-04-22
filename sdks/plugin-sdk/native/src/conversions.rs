@@ -404,8 +404,16 @@ impl CPacketRepr {
     /// The plugin SDK's `packet_from_c` reclaims the box via
     /// `Box::from_raw`, avoiding a memcpy.
     ///
-    /// Ownership of the boxed `Bytes` transfers to the plugin — the host
-    /// must NOT attempt to free it after the FFI call returns.
+    /// Ownership of the boxed `Bytes` is guarded by
+    /// [`BinaryWithMetaOwned`]'s `Drop` impl: if the plugin never reclaims
+    /// the handle (e.g. it drops/filters the packet), the `Drop` calls
+    /// `free_fn` to release the box.
+    ///
+    /// **Wire note (S2):** For plain `Binary` packets this method upgrades
+    /// the wire type to `BinaryWithMeta` (with null content_type/metadata)
+    /// so that the `CBinaryPacket` struct is available for the handle.
+    /// C plugins on v9 must handle `BinaryWithMeta` even when those
+    /// fields are null.
     ///
     /// No-op for non-binary packet types.
     pub fn set_binary_buffer_handle(&mut self, source_bytes: &bytes::Bytes) {
@@ -440,7 +448,6 @@ impl CPacketRepr {
                     content_type: None,
                     metadata: None,
                     binary: bp,
-                    buffer_handle_box: None,
                 });
             },
             _ => {},
@@ -484,11 +491,17 @@ struct BinaryWithMetaOwned {
     content_type: Option<CString>,
     metadata: Option<Box<CPacketMetadata>>,
     binary: Box<CBinaryPacket>,
-    /// Boxed `Bytes` clone for v9 zero-copy transfer.  When the plugin
-    /// reclaims the `buffer_handle`, this becomes `None` (ownership moved).
-    /// If the plugin never reclaims it, dropping this field releases the
-    /// `Bytes` (cheap ref-count decrement).
-    buffer_handle_box: Option<Box<bytes::Bytes>>,
+}
+
+impl Drop for BinaryWithMetaOwned {
+    fn drop(&mut self) {
+        if !self.binary.buffer_handle.is_null() {
+            if let Some(free_fn) = self.binary.free_fn {
+                free_fn(self.binary.buffer_handle);
+            }
+            self.binary.buffer_handle = std::ptr::null_mut();
+        }
+    }
 }
 
 pub fn metadata_to_c(meta: &PacketMetadata) -> CPacketMetadata {
@@ -513,6 +526,20 @@ fn metadata_from_c(meta: &CPacketMetadata) -> PacketMetadata {
 
 fn cstring_sanitize(s: &str) -> CString {
     CString::new(s).unwrap_or_else(|_| CString::new(s.replace('\0', " ")).unwrap_or_default())
+}
+
+/// Null out the `buffer_handle` of a [`CBinaryPacket`] through its parent
+/// [`CPacket`]'s data pointer.
+///
+/// Called after reclaiming or freeing the handle in [`packet_from_c`] so
+/// that the host-side [`BinaryWithMetaOwned::Drop`] won't double-free.
+///
+/// # Safety
+///
+/// `data_ptr` must point to a valid, mutable `CBinaryPacket`.
+unsafe fn null_binary_buffer_handle(data_ptr: *const c_void) {
+    let bp = data_ptr.cast::<CBinaryPacket>().cast_mut();
+    std::ptr::addr_of_mut!((*bp).buffer_handle).write(std::ptr::null_mut());
 }
 
 /// Free a boxed `bytes::Bytes` stored as a `buffer_handle` in [`CBinaryPacket`].
@@ -641,7 +668,6 @@ pub fn packet_to_c(packet: &Packet) -> CPacketRepr {
                         content_type: ct_cstring,
                         metadata: meta_box,
                         binary: bp,
-                        buffer_handle_box: None,
                     }),
                 }
             } else {
@@ -794,34 +820,58 @@ pub unsafe fn packet_from_c(c_packet: *const CPacket) -> Result<Packet, String> 
         },
         CPacketType::BinaryWithMeta => {
             let bp = &*c_pkt.data.cast::<CBinaryPacket>();
-            if bp.data.is_null() && bp.data_len > 0 {
-                // Free buffer_handle if present to avoid leaking.
-                if !bp.buffer_handle.is_null() {
-                    drop(Box::from_raw(bp.buffer_handle.cast::<bytes::Bytes>()));
+
+            // Snapshot all fields before any mutable write through the
+            // pointer (avoids a Stacked-Borrows violation when we null
+            // out buffer_handle below).
+            let data_ptr = bp.data;
+            let data_len = bp.data_len;
+            let content_type_ptr = bp.content_type;
+            let metadata_ptr = bp.metadata;
+            let buffer_handle = bp.buffer_handle;
+            let free_fn = bp.free_fn;
+            let has_handle = !buffer_handle.is_null();
+            // `bp` is not read after this point.
+
+            if data_ptr.is_null() && data_len > 0 {
+                // Free buffer_handle via free_fn to honour the contract.
+                if has_handle {
+                    if let Some(f) = free_fn {
+                        f(buffer_handle);
+                    }
+                    null_binary_buffer_handle(c_pkt.data);
                 }
                 return Err("BinaryWithMeta packet has null data pointer".to_string());
             }
-            let data = if bp.data_len == 0 {
-                // Free buffer_handle if present — the host may have set one
-                // even for an empty payload.
-                if !bp.buffer_handle.is_null() {
-                    drop(Box::from_raw(bp.buffer_handle.cast::<bytes::Bytes>()));
+
+            let data = if data_len == 0 {
+                // Free buffer_handle via free_fn — the host may have set
+                // one even for an empty payload.
+                if has_handle {
+                    if let Some(f) = free_fn {
+                        f(buffer_handle);
+                    }
+                    null_binary_buffer_handle(c_pkt.data);
                 }
                 bytes::Bytes::new()
-            } else if !bp.buffer_handle.is_null() {
+            } else if has_handle {
                 // v9 zero-copy path: reclaim the Bytes from the handle.
-                *Box::from_raw(bp.buffer_handle.cast::<bytes::Bytes>())
+                let bytes = *Box::from_raw(buffer_handle.cast::<bytes::Bytes>());
+                // Null out so the host-side BinaryWithMetaOwned::Drop
+                // won't double-free.
+                null_binary_buffer_handle(c_pkt.data);
+                bytes
             } else {
                 // Legacy copy path (v8 host or null handle).
-                bytes::Bytes::copy_from_slice(std::slice::from_raw_parts(bp.data, bp.data_len))
+                bytes::Bytes::copy_from_slice(std::slice::from_raw_parts(data_ptr, data_len))
             };
-            let content_type = if bp.content_type.is_null() {
+            let content_type = if content_type_ptr.is_null() {
                 None
             } else {
-                Some(std::borrow::Cow::Owned(c_str_to_string(bp.content_type)?))
+                Some(std::borrow::Cow::Owned(c_str_to_string(content_type_ptr)?))
             };
             let metadata =
-                if bp.metadata.is_null() { None } else { Some(metadata_from_c(&*bp.metadata)) };
+                if metadata_ptr.is_null() { None } else { Some(metadata_from_c(&*metadata_ptr)) };
             Ok(Packet::Binary { data, content_type, metadata })
         },
         CPacketType::RawVideo => {
@@ -867,11 +917,11 @@ pub unsafe fn packet_from_c(c_packet: *const CPacket) -> Result<Packet, String> 
             }
         },
         CPacketType::EncodedVideo | CPacketType::EncodedAudio => {
-            // Encoded video/audio is carried as opaque bytes across the C ABI.
-            // EncodedAudio is a *type-level* discriminant used in pin
-            // declarations.  At runtime, encoded audio packets travel as
-            // BinaryWithMeta (preserving content_type and metadata).
-            // If we receive one here, treat it as opaque bytes.
+            // Both discriminants are type-level tags for pin declarations.
+            // At runtime, encoded packets normally travel as BinaryWithMeta
+            // (preserving content_type and metadata).  If we receive one
+            // here (e.g. a plugin declared the raw discriminant), treat it
+            // as opaque bytes.
             let data = std::slice::from_raw_parts(c_pkt.data.cast::<u8>(), c_pkt.len);
             Ok(Packet::Binary {
                 data: bytes::Bytes::copy_from_slice(data),
@@ -1295,5 +1345,70 @@ mod tests {
             },
             other => panic!("expected Binary, got {other:?}"),
         }
+    }
+
+    /// Dropping a `CPacketRepr` with an unreclaimed buffer_handle must
+    /// free the handle via `BinaryWithMetaOwned::Drop` — no leak.
+    #[test]
+    fn dropping_packet_repr_frees_unreclaimed_handle() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        static FREED: AtomicBool = AtomicBool::new(false);
+
+        extern "C" fn track_free(handle: *mut c_void) {
+            if !handle.is_null() {
+                FREED.store(true, Ordering::SeqCst);
+                // Also actually free the box to avoid real leak.
+                drop(unsafe { Box::from_raw(handle.cast::<bytes::Bytes>()) });
+            }
+        }
+
+        FREED.store(false, Ordering::SeqCst);
+
+        let payload = bytes::Bytes::from_static(b"drop-test");
+        let packet = Packet::Binary {
+            data: payload.clone(),
+            content_type: Some(std::borrow::Cow::Borrowed("application/octet-stream")),
+            metadata: None,
+        };
+
+        {
+            let mut repr = packet_to_c(&packet);
+            repr.set_binary_buffer_handle(&payload);
+
+            // Overwrite the free_fn to our tracker.
+            if let CPacketOwned::BinaryWithMeta(ref mut bwm) = repr.owned {
+                bwm.binary.free_fn = Some(track_free);
+            }
+
+            // Drop repr WITHOUT calling packet_from_c — simulates plugin
+            // dropping/filtering the packet.
+        }
+
+        assert!(FREED.load(Ordering::SeqCst), "buffer_handle must be freed on drop");
+    }
+
+    /// After `packet_from_c` reclaims the handle, `BinaryWithMetaOwned::Drop`
+    /// must NOT double-free (handle is nulled out).
+    #[test]
+    fn packet_from_c_nulls_handle_prevents_double_free() {
+        let payload = bytes::Bytes::from_static(b"reclaim-test");
+        let packet = Packet::Binary { data: payload.clone(), content_type: None, metadata: None };
+
+        let mut repr = packet_to_c(&packet);
+        repr.set_binary_buffer_handle(&payload);
+
+        // Reclaim via packet_from_c — this should null out buffer_handle.
+        let result = unsafe { packet_from_c(&raw const repr.packet) };
+        assert!(result.is_ok(), "reclaim should succeed");
+
+        // Verify the handle was nulled out.
+        if let CPacketOwned::BinaryWithMeta(ref bwm) = repr.owned {
+            assert!(bwm.binary.buffer_handle.is_null(), "buffer_handle must be null after reclaim");
+        } else {
+            panic!("expected BinaryWithMeta owned variant");
+        }
+
+        // repr drops here — Drop should see null handle and be a no-op.
     }
 }

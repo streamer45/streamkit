@@ -688,9 +688,11 @@ fn worker_thread_main(
 
 /// Callsite anchor for dynamically-constructed [`tracing::Metadata`].
 ///
-/// Only used as a [`tracing::callsite::Identifier`] target; never registered
-/// with the tracing infrastructure, so `set_interest` and `metadata()` are
-/// unreachable stubs.
+/// Only used as a [`tracing::callsite::Identifier`] target; intentionally
+/// NOT registered with the tracing infrastructure because the per-call
+/// target string is dynamic (varies per plugin).  `EnvFilter` therefore
+/// evaluates directives on every `enabled()` call rather than caching a
+/// static `Interest`.
 struct PluginLogCallsite;
 
 impl tracing::callsite::Callsite for PluginLogCallsite {
@@ -712,35 +714,43 @@ extern "C" fn plugin_log_enabled_callback(
     target: *const std::os::raw::c_char,
     _user_data: *mut c_void,
 ) -> bool {
-    use streamkit_plugin_sdk_native::types::CLogLevel;
+    ffi_guard_with(
+        "plugin_log_enabled_callback panicked",
+        |_| true,
+        || {
+            use streamkit_plugin_sdk_native::types::CLogLevel;
 
-    let tracing_level = match level {
-        CLogLevel::Trace => tracing::Level::TRACE,
-        CLogLevel::Debug => tracing::Level::DEBUG,
-        CLogLevel::Info => tracing::Level::INFO,
-        CLogLevel::Warn => tracing::Level::WARN,
-        CLogLevel::Error => tracing::Level::ERROR,
-    };
+            let tracing_level = match level {
+                CLogLevel::Trace => tracing::Level::TRACE,
+                CLogLevel::Debug => tracing::Level::DEBUG,
+                CLogLevel::Info => tracing::Level::INFO,
+                CLogLevel::Warn => tracing::Level::WARN,
+                CLogLevel::Error => tracing::Level::ERROR,
+            };
 
-    let target_str = if target.is_null() {
-        "plugin"
-    } else {
-        unsafe { std::ffi::CStr::from_ptr(target) }.to_str().unwrap_or("plugin")
-    };
+            let target_str = if target.is_null() {
+                "plugin"
+            } else {
+                unsafe { std::ffi::CStr::from_ptr(target) }.to_str().unwrap_or("plugin")
+            };
 
-    let field_set =
-        tracing::field::FieldSet::new(&[], tracing::callsite::Identifier(&PLUGIN_LOG_CALLSITE));
-    let metadata = tracing::Metadata::new(
-        "plugin_log",
-        target_str,
-        tracing_level,
-        None,
-        None,
-        None,
-        field_set,
-        tracing::metadata::Kind::EVENT,
-    );
-    tracing::dispatcher::get_default(|d| d.enabled(&metadata))
+            let field_set = tracing::field::FieldSet::new(
+                &[],
+                tracing::callsite::Identifier(&PLUGIN_LOG_CALLSITE),
+            );
+            let metadata = tracing::Metadata::new(
+                "plugin_log",
+                target_str,
+                tracing_level,
+                None,
+                None,
+                None,
+                field_set,
+                tracing::metadata::Kind::EVENT,
+            );
+            tracing::dispatcher::get_default(|d| d.enabled(&metadata))
+        },
+    )
 }
 
 /// C callback function for plugin logging.
@@ -838,9 +848,18 @@ impl NativeNodeWrapper {
 
         // For v9 plugins, inject the log-enabled callback so the plugin
         // can short-circuit log formatting when the level is filtered.
+        //
+        // SAFETY: `handle` is valid (checked above), `plugin_log_enabled_callback`
+        // is an `extern "C"` fn, and `null_mut()` matches the `enabled_user_data`
+        // contract.  Both `user_data` and `enabled_user_data` are host-managed
+        // pointers; if a future host stores per-instance state in
+        // `enabled_user_data`, it must ensure the pointed-to data is
+        // Send+Sync-safe.
         if api.version >= 9 {
             if let Some(set_cb) = api.set_log_enabled_callback {
-                set_cb(handle, plugin_log_enabled_callback, std::ptr::null_mut());
+                ffi_guard_unit(|| {
+                    set_cb(handle, plugin_log_enabled_callback, std::ptr::null_mut());
+                });
             }
         }
 
