@@ -835,7 +835,12 @@ impl NativeNodeWrapper {
         let (tx, rx) = tokio::sync::mpsc::channel::<WorkerRequest>(1);
         // Linux caps prctl(PR_SET_NAME) at 15 bytes.  "skp-" is 4 bytes,
         // leaving 11 for the node_id tail (most distinguishing part).
-        let id_suffix = if node_id.len() > 11 { &node_id[node_id.len() - 11..] } else { &node_id };
+        // Use char_indices to avoid panicking on non-ASCII node IDs.
+        let id_suffix = if node_id.len() > 11 {
+            node_id.char_indices().rev().nth(10).map_or(&*node_id, |(i, _)| &node_id[i..])
+        } else {
+            &node_id
+        };
         let thread_name = format!("skp-{id_suffix}");
         let worker_node_id = node_id.clone();
         std::thread::Builder::new()
@@ -881,6 +886,10 @@ impl NativeNodeWrapper {
                         );
                     }
                     let reason = format!("Plugin {op} on node {node} timed out after {d:?}");
+                    // Best-effort notification — try_send may drop if the
+                    // state channel is full, but that is acceptable because
+                    // the Err returned from await_reply is the real guarantee
+                    // that the caller observes the timeout.
                     if let Some(tx) = state_tx {
                         let _ = tx.try_send(NodeStateUpdate::new(
                             node.to_string(),
@@ -992,117 +1001,124 @@ impl NativeNodeWrapper {
 
         let mut control_channel_open = true;
 
-        // Main processing loop
-        loop {
-            tokio::select! {
-                biased;
+        // Run the main processing loop, capturing the result so that
+        // input_tasks are always aborted on exit — including early returns
+        // from worker_died_error or timeout.
+        let loop_result: Result<(), StreamKitError> = async {
+            loop {
+                tokio::select! {
+                    biased;
 
-                () = async {
-                    match &context.cancellation_token {
-                        Some(token) => token.cancelled().await,
-                        None => std::future::pending().await,
+                    () = async {
+                        match &context.cancellation_token {
+                            Some(token) => token.cancelled().await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        tracing::info!("Native plugin cancelled");
+                        break;
                     }
-                } => {
-                    tracing::info!("Native plugin cancelled");
-                    break;
-                }
 
-                maybe_control = context.control_rx.recv(), if control_channel_open => {
-                    match maybe_control {
-                        Some(NodeControlMessage::UpdateParams(params_value)) => {
-                            self.apply_params_update(
-                                &node_name,
-                                &params_value,
-                                &worker.tx,
-                            )
-                            .await?;
+                    maybe_control = context.control_rx.recv(), if control_channel_open => {
+                        match maybe_control {
+                            Some(NodeControlMessage::UpdateParams(params_value)) => {
+                                self.apply_params_update(
+                                    &node_name,
+                                    &params_value,
+                                    &worker.tx,
+                                )
+                                .await?;
+                            }
+                            Some(NodeControlMessage::Start) => {
+                                // Native plugins don't implement ready/start lifecycle - ignore
+                            }
+                            Some(NodeControlMessage::Shutdown) => {
+                                tracing::info!("Native plugin received shutdown signal");
+                                break;
+                            }
+                            None => {
+                                control_channel_open = false;
+                            }
                         }
-                        Some(NodeControlMessage::Start) => {
-                            // Native plugins don't implement ready/start lifecycle - ignore
-                        }
-                        Some(NodeControlMessage::Shutdown) => {
-                            tracing::info!("Native plugin received shutdown signal");
+                    }
+
+                    maybe_packet = merged_rx.recv() => {
+                        let Some((pin_index, packet)) = maybe_packet else {
+                            // Input closed - flush any buffered data before shutting down
+                            tracing::debug!(node = %node_name, "Native plugin input closed, flushing buffers");
+
+                            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                            worker
+                                .tx
+                                .send(WorkerRequest::Flush { reply: reply_tx })
+                                .await
+                                .map_err(|_| worker_died_error("flush", &node_name))?;
+                            let reply = self.await_reply("flush", &node_name, reply_rx, Some(&context.state_tx)).await?;
+
+                            // Send flush outputs
+                            for (pin, pkt) in reply.outputs {
+                                if context.output_sender.send(&pin, pkt).await.is_err() {
+                                    tracing::debug!("Output channel closed during flush");
+                                }
+                            }
+
+                            if let Some(error_msg) = reply.error {
+                                warn!(node = %node_name, error = %error_msg, "Plugin flush failed");
+                            }
+
                             break;
-                        }
-                        None => {
-                            control_channel_open = false;
-                        }
-                    }
-                }
-
-                maybe_packet = merged_rx.recv() => {
-                    let Some((pin_index, packet)) = maybe_packet else {
-                        // Input closed - flush any buffered data before shutting down
-                        tracing::debug!(node = %node_name, "Native plugin input closed, flushing buffers");
+                        };
 
                         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                         worker
                             .tx
-                            .send(WorkerRequest::Flush { reply: reply_tx })
+                            .send(WorkerRequest::Process { pin_index, packet, reply: reply_tx })
                             .await
-                            .map_err(|_| worker_died_error("flush", &node_name))?;
-                        let reply = self.await_reply("flush", &node_name, reply_rx, Some(&context.state_tx)).await?;
+                            .map_err(|_| worker_died_error("process_packet", &node_name))?;
+                        let reply = self
+                            .await_reply("process_packet", &node_name, reply_rx, Some(&context.state_tx))
+                            .await?;
+                        let (outputs, error) = (reply.outputs, reply.error);
 
-                        // Send flush outputs
-                        for (pin, pkt) in reply.outputs {
+                        // Send outputs
+                        for (pin, pkt) in outputs {
                             if context.output_sender.send(&pin, pkt).await.is_err() {
-                                tracing::debug!("Output channel closed during flush");
+                                tracing::debug!("Output channel closed, stopping node");
+                                break;
                             }
                         }
 
-                        if let Some(error_msg) = reply.error {
-                            warn!(node = %node_name, error = %error_msg, "Plugin flush failed");
+                        // Handle errors
+                        if let Some(error_msg) = error {
+                            error!(node = %node_name, error = %error_msg, "Plugin process failed");
+
+                            if let Err(e) = context
+                                .state_tx
+                                .send(NodeStateUpdate::new(
+                                    node_name.clone(),
+                                    NodeState::Failed { reason: error_msg.clone() },
+                                ))
+                                .await
+                            {
+                                warn!(error = %e, node = %node_name, "Failed to send failed state");
+                            }
+
+                            return Err(StreamKitError::Runtime(error_msg));
                         }
-
-                        break;
-                    };
-
-                    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                    worker
-                        .tx
-                        .send(WorkerRequest::Process { pin_index, packet, reply: reply_tx })
-                        .await
-                        .map_err(|_| worker_died_error("process_packet", &node_name))?;
-                    let reply = self
-                        .await_reply("process_packet", &node_name, reply_rx, Some(&context.state_tx))
-                        .await?;
-                    let (outputs, error) = (reply.outputs, reply.error);
-
-                    // Send outputs
-                    for (pin, pkt) in outputs {
-                        if context.output_sender.send(&pin, pkt).await.is_err() {
-                            tracing::debug!("Output channel closed, stopping node");
-                            break;
-                        }
-                    }
-
-                    // Handle errors
-                    if let Some(error_msg) = error {
-                        error!(node = %node_name, error = %error_msg, "Plugin process failed");
-
-                        if let Err(e) = context
-                            .state_tx
-                            .send(NodeStateUpdate::new(
-                                node_name.clone(),
-                                NodeState::Failed { reason: error_msg.clone() },
-                            ))
-                            .await
-                        {
-                            warn!(error = %e, node = %node_name, "Failed to send failed state");
-                        }
-
-                        for handle in &input_tasks {
-                            handle.abort();
-                        }
-                        return Err(StreamKitError::Runtime(error_msg));
                     }
                 }
             }
+            Ok(())
         }
+        .await;
 
+        // Always abort input-forwarder tasks — including on early-return
+        // from worker_died_error or timeout.
         for handle in &input_tasks {
             handle.abort();
         }
+
+        loop_result?;
 
         // Input closed, emit stopped state
         info!(node = %node_name, "Input closed, shutting down");
@@ -2083,9 +2099,11 @@ mod ffi_guard_tests {
             _: *const CPacket,
             _: *const CNodeCallbacks,
         ) -> CResult {
-            let msg = CString::new("plugin exploded").unwrap();
-            let ptr = msg.into_raw();
-            CResult { success: false, error_message: ptr }
+            // Intentional leak: the returned pointer must outlive the CResult.
+            // Test-only; avoids CString::into_raw which would need from_raw.
+            let leaked: &'static std::ffi::CStr =
+                Box::leak(CString::new("plugin exploded").unwrap().into_boxed_c_str());
+            CResult { success: false, error_message: leaked.as_ptr() }
         }
 
         pub extern "C" fn process_slow(
@@ -2095,6 +2113,23 @@ mod ffi_guard_tests {
             _: *const CNodeCallbacks,
         ) -> CResult {
             std::thread::sleep(std::time::Duration::from_millis(500));
+            CResult::success()
+        }
+
+        // NOTE: A panicking `extern "C"` stub cannot be used to test catch_unwind
+        // because Rust inserts an abort shim at extern "C" boundaries — the panic
+        // never reaches catch_unwind, it terminates the process.  The catch_unwind
+        // in worker_thread_main guards against panics in *Rust* code around the FFI
+        // call (e.g. inside AssertUnwindSafe closures or callback shims).
+
+        pub extern "C" fn tick_ok(
+            _: CPluginHandle,
+            _: *const CNodeCallbacks,
+        ) -> streamkit_plugin_sdk_native::types::CTickResult {
+            streamkit_plugin_sdk_native::types::CTickResult::ok()
+        }
+
+        pub extern "C" fn on_hint_ok(_: CPluginHandle, _: *const std::os::raw::c_char) -> CResult {
             CResult::success()
         }
     }
@@ -2108,6 +2143,18 @@ mod ffi_guard_tests {
     fn dummy_api_slow() -> CNativePluginAPI {
         let mut api = dummy_api();
         api.process_packet = worker_stubs::process_slow;
+        api
+    }
+
+    fn dummy_api_with_tick() -> CNativePluginAPI {
+        let mut api = dummy_api();
+        api.tick = Some(worker_stubs::tick_ok);
+        api
+    }
+
+    fn dummy_api_with_hint() -> CNativePluginAPI {
+        let mut api = dummy_api();
+        api.on_upstream_hint = Some(worker_stubs::on_hint_ok);
         api
     }
 
@@ -2322,4 +2369,105 @@ mod ffi_guard_tests {
 
         drop(tx);
     }
+
+    /// Flush round-trip through the worker.
+    #[test]
+    fn worker_flush_round_trip() {
+        let state = test_instance_state();
+        let (tx, rx) = tokio::sync::mpsc::channel::<WorkerRequest>(1);
+
+        let s = Arc::clone(&state);
+        let handle = std::thread::Builder::new()
+            .name("test-worker-flush".into())
+            .spawn(move || {
+                worker_thread_main(rx, s, Vec::new(), None, None, "test".into(), None, None);
+            })
+            .unwrap();
+
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        tx.blocking_send(WorkerRequest::Flush { reply: reply_tx }).unwrap();
+        let reply = reply_rx.blocking_recv().unwrap();
+        assert!(reply.error.is_none(), "flush should succeed");
+
+        drop(tx);
+        handle.join().unwrap();
+    }
+
+    /// Tick round-trip through the worker (source plugin path).
+    #[test]
+    fn worker_tick_round_trip() {
+        let state = test_instance_state_with_api(dummy_api_with_tick());
+        let (tx, rx) = tokio::sync::mpsc::channel::<WorkerRequest>(1);
+
+        let s = Arc::clone(&state);
+        let handle = std::thread::Builder::new()
+            .name("test-worker-tick".into())
+            .spawn(move || {
+                worker_thread_main(rx, s, Vec::new(), None, None, "test".into(), None, None);
+            })
+            .unwrap();
+
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        tx.blocking_send(WorkerRequest::Tick { reply: reply_tx }).unwrap();
+        let reply = reply_rx.blocking_recv().unwrap();
+        assert!(reply.error.is_none(), "tick should succeed");
+        assert!(!reply.done, "tick should not signal done");
+
+        drop(tx);
+        handle.join().unwrap();
+    }
+
+    /// UpdateParams round-trip through the worker.
+    #[test]
+    fn worker_update_params_round_trip() {
+        let state = test_instance_state();
+        let (tx, rx) = tokio::sync::mpsc::channel::<WorkerRequest>(1);
+
+        let s = Arc::clone(&state);
+        let handle = std::thread::Builder::new()
+            .name("test-worker-params".into())
+            .spawn(move || {
+                worker_thread_main(rx, s, Vec::new(), None, None, "test".into(), None, None);
+            })
+            .unwrap();
+
+        let params = CString::new(r#"{"key": "value"}"#).unwrap();
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        tx.blocking_send(WorkerRequest::UpdateParams { params_cstr: params, reply: reply_tx })
+            .unwrap();
+        let reply = reply_rx.blocking_recv().unwrap();
+        assert!(reply.is_none(), "update_params should succeed with no error");
+
+        drop(tx);
+        handle.join().unwrap();
+    }
+
+    /// OnUpstreamHint is delivered without blocking the caller.
+    #[test]
+    fn worker_on_upstream_hint() {
+        let state = test_instance_state_with_api(dummy_api_with_hint());
+        let (tx, rx) = tokio::sync::mpsc::channel::<WorkerRequest>(1);
+
+        let s = Arc::clone(&state);
+        let handle = std::thread::Builder::new()
+            .name("test-worker-hint".into())
+            .spawn(move || {
+                worker_thread_main(rx, s, Vec::new(), None, None, "test".into(), None, None);
+            })
+            .unwrap();
+
+        let hint = CString::new("audio/opus").unwrap();
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        tx.blocking_send(WorkerRequest::OnUpstreamHint { hints: vec![hint], reply: reply_tx })
+            .unwrap();
+        // Should complete without error (reply is () on success).
+        reply_rx.blocking_recv().expect("on_upstream_hint should complete");
+
+        drop(tx);
+        handle.join().unwrap();
+    }
+
+    // NOTE: worker_thread_main wraps each FFI call in catch_unwind, but
+    // we cannot test that path with an extern "C" stub because Rust aborts
+    // on panic-across-FFI.  See the comment in worker_stubs above.
 }
