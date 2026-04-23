@@ -699,6 +699,8 @@ fn worker_thread_main(
                 let _ = reply.send(error);
             },
 
+            // Hints are best-effort advisory signals, not perf-critical FFI
+            // calls — intentionally not instrumented with metrics.
             WorkerRequest::OnUpstreamHint { hints, reply } => {
                 if let Some(on_hint_fn) = state.api().on_upstream_hint {
                     for c_str in &hints {

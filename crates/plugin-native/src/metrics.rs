@@ -29,6 +29,7 @@ pub struct PluginMetrics {
     calls_total: Counter<u64>,
     errors_total: Counter<u64>,
     panics_total: Counter<u64>,
+    timeouts_total: Counter<u64>,
 }
 
 impl PluginMetrics {
@@ -55,6 +56,10 @@ impl PluginMetrics {
                 .u64_counter("plugin.panics")
                 .with_description("Native plugin FFI call panics")
                 .build(),
+            timeouts_total: meter
+                .u64_counter("plugin.timeouts")
+                .with_description("Native plugin FFI call timeouts (caller-side)")
+                .build(),
         }
     }
 
@@ -74,8 +79,18 @@ impl PluginMetrics {
     }
 
     /// Record a timeout observed from the caller (async) side.
+    ///
+    /// Bumps `plugin.calls` (so the call attempt is counted) and
+    /// `plugin.timeouts` (so timeouts are distinguishable from FFI
+    /// errors).  Does **not** bump `plugin.errors`.
+    ///
+    /// If the worker eventually completes the wedged FFI call, the
+    /// worker will record a second `plugin.calls` entry for the same
+    /// logical call.  This is acceptable: `calls_total` counts
+    /// observed completions + timeout attempts, not unique call IDs.
     pub fn record_timeout(&self, labels: &[KeyValue; 2]) {
-        self.errors_total.add(1, labels);
+        self.calls_total.add(1, labels);
+        self.timeouts_total.add(1, labels);
     }
 
     /// Build a set of metric labels for a given plugin kind and operation.
