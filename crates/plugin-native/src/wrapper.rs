@@ -494,7 +494,7 @@ fn worker_thread_main(
                     },
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
-                        error!("Plugin process_packet panicked: {msg}");
+                        error!(plugin.kind = %plugin_kind, node.id = %node_id, "Plugin process_packet panicked: {msg}");
                         metrics.record_call(
                             plugin_kind,
                             "process_packet",
@@ -567,7 +567,7 @@ fn worker_thread_main(
                     },
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
-                        error!("Plugin flush panicked: {msg}");
+                        error!(plugin.kind = %plugin_kind, node.id = %node_id, "Plugin flush panicked: {msg}");
                         metrics.record_call(plugin_kind, "flush", duration.as_secs_f64(), false);
                         metrics.record_panic(plugin_kind, "flush");
                         // reusable_outputs capacity is lost on panic.
@@ -639,7 +639,7 @@ fn worker_thread_main(
                     },
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
-                        error!("Plugin tick panicked: {msg}");
+                        error!(plugin.kind = %plugin_kind, node.id = %node_id, "Plugin tick panicked: {msg}");
                         metrics.record_call(plugin_kind, "tick", duration.as_secs_f64(), false);
                         metrics.record_panic(plugin_kind, "tick");
                         // reusable_outputs capacity is lost on panic.
@@ -691,7 +691,7 @@ fn worker_thread_main(
                     },
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
-                        error!("Plugin update_params panicked: {msg}");
+                        error!(plugin.kind = %plugin_kind, node.id = %node_id, "Plugin update_params panicked: {msg}");
                         metrics.record_call(
                             plugin_kind,
                             "update_params",
@@ -733,7 +733,7 @@ fn worker_thread_main(
                                 let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(
                                     &*payload,
                                 );
-                                error!("Plugin on_upstream_hint panicked: {msg}");
+                                error!(plugin.kind = %plugin_kind, node.id = %node_id, "Plugin on_upstream_hint panicked: {msg}");
                             },
                             Ok(_) => {},
                         }

@@ -3,6 +3,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //! OpenTelemetry metrics for native plugin FFI calls.
+//!
+//! Instruments are built against the OTel global meter on first access.
+//! The OTel meter provider must be initialized before the first plugin load.
 
 use opentelemetry::metrics::{Counter, Histogram};
 use opentelemetry::KeyValue;
@@ -31,23 +34,22 @@ impl PluginMetrics {
                 )
                 .build(),
             calls_total: meter
-                .u64_counter("plugin.calls.total")
+                .u64_counter("plugin.calls")
                 .with_description("Total native plugin FFI calls")
                 .build(),
             errors_total: meter
-                .u64_counter("plugin.errors.total")
+                .u64_counter("plugin.errors")
                 .with_description("Native plugin FFI call errors")
                 .build(),
             panics_total: meter
-                .u64_counter("plugin.panics.total")
+                .u64_counter("plugin.panics")
                 .with_description("Native plugin FFI call panics")
                 .build(),
         }
     }
 
-    pub fn record_call(&self, kind: &str, op: &str, duration_secs: f64, success: bool) {
-        let labels =
-            [KeyValue::new("plugin.kind", kind.to_string()), KeyValue::new("op", op.to_string())];
+    pub fn record_call(&self, kind: &str, op: &'static str, duration_secs: f64, success: bool) {
+        let labels = [KeyValue::new("plugin.kind", kind.to_string()), KeyValue::new("op", op)];
         self.call_duration.record(duration_secs, &labels);
         self.calls_total.add(1, &labels);
         if !success {
@@ -55,9 +57,8 @@ impl PluginMetrics {
         }
     }
 
-    pub fn record_panic(&self, kind: &str, op: &str) {
-        let labels =
-            [KeyValue::new("plugin.kind", kind.to_string()), KeyValue::new("op", op.to_string())];
+    pub fn record_panic(&self, kind: &str, op: &'static str) {
+        let labels = [KeyValue::new("plugin.kind", kind.to_string()), KeyValue::new("op", op)];
         self.panics_total.add(1, &labels);
     }
 }

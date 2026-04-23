@@ -47,9 +47,6 @@ pub struct LoadedNativePlugin {
     api: &'static CNativePluginAPI,
     metadata: PluginMetadata,
     call_timeout: Option<std::time::Duration>,
-    /// Path to the loaded `.so` — retained for the [`LoadedPluginRegistry`].
-    #[allow(dead_code)]
-    plugin_path: std::path::PathBuf,
 }
 
 /// Metadata extracted from a plugin
@@ -186,7 +183,6 @@ impl LoadedNativePlugin {
             api,
             metadata,
             call_timeout: Some(wrapper::DEFAULT_CALL_TIMEOUT),
-            plugin_path: path.to_path_buf(),
         })
     }
 
@@ -368,6 +364,12 @@ impl LoadedNativePlugin {
     }
 }
 
+impl Drop for LoadedNativePlugin {
+    fn drop(&mut self) {
+        PLUGIN_REGISTRY.unregister(&self.metadata.kind);
+    }
+}
+
 /// Register a list of native plugins with the node registry
 ///
 /// Returns the number of plugins registered
@@ -460,12 +462,12 @@ pub struct PluginInfo {
     pub kind: String,
     pub plugin_path: std::path::PathBuf,
     pub api_version: u32,
-    pub instance_count: usize,
+    pub load_count: usize,
 }
 
 /// Registry tracking all currently loaded native plugins.
 ///
-/// Used for diagnostics (e.g. a `/debug/plugins` endpoint).
+/// Intended for future diagnostics endpoints (e.g. `/debug/plugins`).
 /// Thread-safe via interior `RwLock`.
 pub struct LoadedPluginRegistry {
     plugins: RwLock<HashMap<String, PluginInfo>>,
@@ -485,9 +487,9 @@ impl LoadedPluginRegistry {
             kind: kind.to_string(),
             plugin_path: path.to_path_buf(),
             api_version,
-            instance_count: 0,
+            load_count: 0,
         });
-        entry.instance_count += 1;
+        entry.load_count += 1;
     }
 
     pub fn unregister(&self, kind: &str) {
@@ -496,8 +498,8 @@ impl LoadedPluginRegistry {
             return;
         };
         if let Some(info) = map.get_mut(kind) {
-            info.instance_count = info.instance_count.saturating_sub(1);
-            if info.instance_count == 0 {
+            info.load_count = info.load_count.saturating_sub(1);
+            if info.load_count == 0 {
                 map.remove(kind);
             }
         }
