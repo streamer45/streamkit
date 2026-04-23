@@ -13,9 +13,7 @@
 //! [`crate::streamkit_core::ResourceManager`] provides server-side LRU
 //! eviction and memory-budget accounting.  `ResourceCache` is intentionally
 //! simpler: it lives inside the plugin `.so` and owns resources for the
-//! lifetime of the process.  A future bridge between the two (e.g. having
-//! `ResourceManager` call [`ResourceCache::clear`]) is planned but not yet
-//! implemented.
+//! lifetime of the process — there is currently no bridge between the two.
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -124,6 +122,10 @@ impl<K, V> ResourceCache<K, V> {
     }
 
     /// Returns `true` if the cache contains no entries.
+    ///
+    /// Returns `true` on a poisoned mutex (same as [`len`](Self::len)
+    /// returning `0`).  Use [`is_poisoned`](Self::is_poisoned) first if
+    /// the distinction matters.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -145,6 +147,9 @@ impl<K, V> ResourceCache<K, V> {
     /// acquisition).  This is fine for the intended "process-lifetime"
     /// usage; callers that need stronger guarantees should coordinate
     /// externally.
+    ///
+    /// No-ops silently if the mutex is poisoned.  Use
+    /// [`is_poisoned`](Self::is_poisoned) to check beforehand.
     pub fn clear(&self) {
         if let Ok(mut guard) = self.inner.lock() {
             guard.clear();
@@ -152,6 +157,14 @@ impl<K, V> ResourceCache<K, V> {
     }
 
     /// Returns current cache statistics.
+    ///
+    /// Counters are read with `Relaxed` ordering independently of one
+    /// another and of `entries` (which acquires the mutex), so the
+    /// returned snapshot is **not** globally consistent — e.g. `hits +
+    /// misses + init_races` may not equal the total number of
+    /// `get_or_init` calls observed so far.  This is acceptable for
+    /// diagnostic dashboards; callers needing exact accounting should
+    /// synchronize externally.
     pub fn stats(&self) -> CacheStats {
         CacheStats {
             hits: self.hits.load(Ordering::Relaxed),
@@ -272,20 +285,19 @@ mod tests {
         use std::sync::Barrier;
         use std::thread;
 
-        static CACHE: ResourceCache<u32, String> = ResourceCache::new();
+        let cache = Arc::new(ResourceCache::<u32, String>::new());
         let barrier = Arc::new(Barrier::new(10));
         let handles: Vec<_> = (0..10)
             .map(|i| {
                 let b = barrier.clone();
+                let c = cache.clone();
                 thread::spawn(move || {
                     b.wait();
-                    // All threads try to init the same key
-                    CACHE.get_or_init(0, |_| Ok(format!("from-thread-{i}"))).unwrap()
+                    c.get_or_init(0, |_| Ok(format!("from-thread-{i}"))).unwrap()
                 })
             })
             .collect();
         let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-        // All threads should get the same Arc
         for r in &results {
             assert!(Arc::ptr_eq(r, &results[0]));
         }
@@ -296,24 +308,22 @@ mod tests {
         use std::sync::Barrier;
         use std::thread;
 
-        static RACE_CACHE: ResourceCache<u32, String> = ResourceCache::new();
+        let cache = Arc::new(ResourceCache::<u32, String>::new());
         let thread_count = 10;
-        // Two barriers: one to start together, one inside init to force overlap.
         let start = Arc::new(Barrier::new(thread_count));
         let inside_init = Arc::new(Barrier::new(thread_count));
         let handles: Vec<_> = (0..thread_count)
             .map(|i| {
                 let s = start.clone();
                 let ii = inside_init.clone();
+                let c = cache.clone();
                 thread::spawn(move || {
                     s.wait();
-                    RACE_CACHE
-                        .get_or_init(42, |_| {
-                            // All threads enter init and wait here, guaranteeing overlap.
-                            ii.wait();
-                            Ok(format!("from-{i}"))
-                        })
-                        .unwrap()
+                    c.get_or_init(42, |_| {
+                        ii.wait();
+                        Ok(format!("from-{i}"))
+                    })
+                    .unwrap()
                 })
             })
             .collect();
@@ -321,10 +331,9 @@ mod tests {
         for r in &results {
             assert!(Arc::ptr_eq(r, &results[0]));
         }
-        let stats = RACE_CACHE.stats();
+        let stats = cache.stats();
         assert_eq!(stats.entries, 1);
         assert_eq!(stats.misses, 1);
-        // All threads entered init; all but the winner are races.
         assert!(stats.init_races >= 1, "expected at least 1 init race, got {}", stats.init_races);
         assert_eq!(stats.misses + stats.init_races, thread_count as u64);
     }

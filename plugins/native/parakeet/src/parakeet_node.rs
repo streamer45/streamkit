@@ -69,9 +69,14 @@ pub struct ParakeetNode {
     logger: Logger,
 }
 
-// SAFETY: We ensure thread-safety through Arc
-unsafe impl Send for ParakeetNode {}
-unsafe impl Sync for ParakeetNode {}
+// All fields are Send+Sync: Logger and RecognizerWrapper have their
+// own manual impls in their respective modules; the remaining fields
+// are standard library types that auto-derive Send+Sync.
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    // Compilation fails here if any field stops being Send+Sync.
+    assert_send_sync::<ParakeetNode>();
+};
 
 impl NativeProcessorNode for ParakeetNode {
     fn metadata() -> NodeMetadata {
