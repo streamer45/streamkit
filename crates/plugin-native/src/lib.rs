@@ -20,14 +20,9 @@ use streamkit_plugin_sdk_native::types::{CNativePluginAPI, NATIVE_PLUGIN_API_VER
 use streamkit_plugin_sdk_native::{conversions, types::PLUGIN_API_SYMBOL};
 use tracing::{info, warn};
 
-/// Global registry of loaded native plugins, used for diagnostics.
+/// Global registry of loaded native plugins.
 static PLUGIN_REGISTRY: std::sync::LazyLock<LoadedPluginRegistry> =
     std::sync::LazyLock::new(LoadedPluginRegistry::new);
-
-/// Returns a reference to the global [`LoadedPluginRegistry`].
-pub fn plugin_registry() -> &'static LoadedPluginRegistry {
-    &PLUGIN_REGISTRY
-}
 
 /// Silent log callback used only during source-config probing (no actual instance work).
 // Cannot be `const`: `const extern "C" fn` is not supported by the compiler.
@@ -176,7 +171,7 @@ impl LoadedNativePlugin {
 
         info!(kind = %metadata.kind, "Successfully loaded native plugin");
 
-        PLUGIN_REGISTRY.register(&metadata.kind, path, api.version);
+        PLUGIN_REGISTRY.register(&metadata.kind);
 
         Ok(Self {
             library: Arc::new(library),
@@ -456,43 +451,33 @@ pub fn namespaced_kind(original_kind: &str) -> Result<String> {
 
 // ── Loaded Plugin Registry ─────────────────────────────────────────────────
 
-/// Information about a loaded native plugin.
-#[derive(Debug, Clone)]
-pub struct PluginInfo {
-    pub kind: String,
-    pub plugin_path: std::path::PathBuf,
-    pub api_version: u32,
-    pub load_count: usize,
+/// Internal registry tracking load/unload of native plugin libraries.
+struct LoadedPluginRegistry {
+    plugins: RwLock<HashMap<String, LoadedPluginEntry>>,
 }
 
-/// Registry tracking all currently loaded native plugins.
-///
-/// Intended for future diagnostics endpoints (e.g. `/debug/plugins`).
-/// Thread-safe via interior `RwLock`.
-pub struct LoadedPluginRegistry {
-    plugins: RwLock<HashMap<String, PluginInfo>>,
+/// Internal bookkeeping entry for a loaded plugin kind.
+struct LoadedPluginEntry {
+    load_count: usize,
 }
 
 impl LoadedPluginRegistry {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self { plugins: RwLock::new(HashMap::new()) }
     }
 
-    pub fn register(&self, kind: &str, path: &std::path::Path, api_version: u32) {
+    fn register(&self, kind: &str) {
         let Ok(mut map) = self.plugins.write() else {
             warn!("LoadedPluginRegistry: write lock poisoned during register");
             return;
         };
-        let entry = map.entry(kind.to_string()).or_insert_with(|| PluginInfo {
-            kind: kind.to_string(),
-            plugin_path: path.to_path_buf(),
-            api_version,
+        let entry = map.entry(kind.to_string()).or_insert_with(|| LoadedPluginEntry {
             load_count: 0,
         });
         entry.load_count += 1;
     }
 
-    pub fn unregister(&self, kind: &str) {
+    fn unregister(&self, kind: &str) {
         let Ok(mut map) = self.plugins.write() else {
             warn!("LoadedPluginRegistry: write lock poisoned during unregister");
             return;
@@ -503,19 +488,5 @@ impl LoadedPluginRegistry {
                 map.remove(kind);
             }
         }
-    }
-
-    pub fn list(&self) -> Vec<PluginInfo> {
-        let Ok(map) = self.plugins.read() else {
-            warn!("LoadedPluginRegistry: read lock poisoned during list");
-            return Vec::new();
-        };
-        map.values().cloned().collect()
-    }
-}
-
-impl Default for LoadedPluginRegistry {
-    fn default() -> Self {
-        Self::new()
     }
 }

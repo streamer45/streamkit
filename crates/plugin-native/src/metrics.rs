@@ -10,15 +10,23 @@
 use opentelemetry::metrics::{Counter, Histogram};
 use opentelemetry::KeyValue;
 
+/// Outcome of an FFI call, used by [`PluginMetrics::record`].
+#[derive(Clone, Copy)]
+pub enum CallOutcome {
+    Success,
+    Error,
+    Panic,
+}
+
 /// Per-plugin metrics for FFI call instrumentation.
 ///
 /// A single global instance is shared across all plugin instances;
 /// individual calls are distinguished by `plugin.kind` and `op` labels.
 pub struct PluginMetrics {
-    pub call_duration: Histogram<f64>,
-    pub calls_total: Counter<u64>,
-    pub errors_total: Counter<u64>,
-    pub panics_total: Counter<u64>,
+    call_duration: Histogram<f64>,
+    calls_total: Counter<u64>,
+    errors_total: Counter<u64>,
+    panics_total: Counter<u64>,
 }
 
 impl PluginMetrics {
@@ -48,18 +56,30 @@ impl PluginMetrics {
         }
     }
 
-    pub fn record_call(&self, kind: &str, op: &'static str, duration_secs: f64, success: bool) {
-        let labels = [KeyValue::new("plugin.kind", kind.to_string()), KeyValue::new("op", op)];
-        self.call_duration.record(duration_secs, &labels);
-        self.calls_total.add(1, &labels);
-        if !success {
-            self.errors_total.add(1, &labels);
+    /// Record a completed FFI call with pre-built labels.
+    pub fn record(&self, labels: &[KeyValue; 2], duration_secs: f64, outcome: CallOutcome) {
+        self.call_duration.record(duration_secs, labels);
+        self.calls_total.add(1, labels);
+        match outcome {
+            CallOutcome::Success => {},
+            CallOutcome::Error => {
+                self.errors_total.add(1, labels);
+            },
+            CallOutcome::Panic => {
+                self.errors_total.add(1, labels);
+                self.panics_total.add(1, labels);
+            },
         }
     }
 
-    pub fn record_panic(&self, kind: &str, op: &'static str) {
-        let labels = [KeyValue::new("plugin.kind", kind.to_string()), KeyValue::new("op", op)];
-        self.panics_total.add(1, &labels);
+    /// Record a timeout observed from the caller (async) side.
+    pub fn record_timeout(&self, labels: &[KeyValue; 2]) {
+        self.errors_total.add(1, labels);
+    }
+
+    /// Build a set of metric labels for a given plugin kind and operation.
+    pub fn build_labels(kind: &str, op: &'static str) -> [KeyValue; 2] {
+        [KeyValue::new("plugin.kind", kind.to_string()), KeyValue::new("op", op)]
     }
 }
 

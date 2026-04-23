@@ -78,10 +78,11 @@ use streamkit_plugin_sdk_native::{
         CPluginHandle, CResult,
     },
 };
-use tracing::{error, info, warn};
+use tracing::{error, info, warn, Instrument};
 
-use crate::metrics::PluginMetrics;
+use crate::metrics::{CallOutcome, PluginMetrics};
 use crate::PluginMetadata;
+use opentelemetry::KeyValue;
 
 /// Global metrics instance for native plugin FFI calls.
 static PLUGIN_METRICS: std::sync::OnceLock<PluginMetrics> = std::sync::OnceLock::new();
@@ -226,10 +227,14 @@ struct InstanceState {
     call_timeout: Option<std::time::Duration>,
     /// Plugin kind string, used for metrics labels on the worker thread.
     plugin_kind: String,
+    /// Pre-built metric labels per operation, avoiding per-call heap allocation.
+    labels_process: [KeyValue; 2],
+    labels_flush: [KeyValue; 2],
+    labels_tick: [KeyValue; 2],
+    labels_update_params: [KeyValue; 2],
 }
 
 impl InstanceState {
-    #[allow(clippy::missing_const_for_fn)]
     fn new(
         library: Arc<Library>,
         api: &'static CNativePluginAPI,
@@ -238,6 +243,10 @@ impl InstanceState {
         call_timeout: Option<std::time::Duration>,
         plugin_kind: String,
     ) -> Self {
+        let labels_process = PluginMetrics::build_labels(&plugin_kind, "process_packet");
+        let labels_flush = PluginMetrics::build_labels(&plugin_kind, "flush");
+        let labels_tick = PluginMetrics::build_labels(&plugin_kind, "tick");
+        let labels_update_params = PluginMetrics::build_labels(&plugin_kind, "update_params");
         Self {
             library,
             api: ApiPtr(std::ptr::from_ref(api)),
@@ -248,6 +257,10 @@ impl InstanceState {
             api_version,
             call_timeout,
             plugin_kind,
+            labels_process,
+            labels_flush,
+            labels_tick,
+            labels_update_params,
         }
     }
 
@@ -469,12 +482,8 @@ fn worker_thread_main(
                 let (reply_outputs, error) = match panic_result {
                     Ok((result, mut callback_ctx)) => {
                         let success = result.success && callback_ctx.error.is_none();
-                        metrics.record_call(
-                            plugin_kind,
-                            "process_packet",
-                            duration.as_secs_f64(),
-                            success,
-                        );
+                        let outcome = if success { CallOutcome::Success } else { CallOutcome::Error };
+                        metrics.record(&state.labels_process, duration.as_secs_f64(), outcome);
                         let err = if result.success {
                             callback_ctx.error
                         } else {
@@ -495,13 +504,7 @@ fn worker_thread_main(
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
                         error!(plugin.kind = %plugin_kind, node.id = %node_id, "Plugin process_packet panicked: {msg}");
-                        metrics.record_call(
-                            plugin_kind,
-                            "process_packet",
-                            duration.as_secs_f64(),
-                            false,
-                        );
-                        metrics.record_panic(plugin_kind, "process_packet");
+                        metrics.record(&state.labels_process, duration.as_secs_f64(), CallOutcome::Panic);
                         // reusable_outputs capacity is lost on panic.
                         (Vec::new(), Some(format!("Plugin process_packet panicked: {msg}")))
                     },
@@ -547,7 +550,8 @@ fn worker_thread_main(
                 let (reply_outputs, error) = match panic_result {
                     Ok((result, mut callback_ctx)) => {
                         let success = result.success && callback_ctx.error.is_none();
-                        metrics.record_call(plugin_kind, "flush", duration.as_secs_f64(), success);
+                        let outcome = if success { CallOutcome::Success } else { CallOutcome::Error };
+                        metrics.record(&state.labels_flush, duration.as_secs_f64(), outcome);
                         let err = if result.success {
                             callback_ctx.error
                         } else {
@@ -568,8 +572,7 @@ fn worker_thread_main(
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
                         error!(plugin.kind = %plugin_kind, node.id = %node_id, "Plugin flush panicked: {msg}");
-                        metrics.record_call(plugin_kind, "flush", duration.as_secs_f64(), false);
-                        metrics.record_panic(plugin_kind, "flush");
+                        metrics.record(&state.labels_flush, duration.as_secs_f64(), CallOutcome::Panic);
                         // reusable_outputs capacity is lost on panic.
                         (Vec::new(), Some(format!("Plugin flush panicked: {msg}")))
                     },
@@ -622,7 +625,8 @@ fn worker_thread_main(
                 let (reply_outputs, error, done) = match panic_result {
                     Ok((result, mut callback_ctx)) => {
                         let success = result.result.success && callback_ctx.error.is_none();
-                        metrics.record_call(plugin_kind, "tick", duration.as_secs_f64(), success);
+                        let outcome = if success { CallOutcome::Success } else { CallOutcome::Error };
+                        metrics.record(&state.labels_tick, duration.as_secs_f64(), outcome);
                         let err = if result.result.success {
                             callback_ctx.error
                         } else if result.result.error_message.is_null() {
@@ -640,8 +644,7 @@ fn worker_thread_main(
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
                         error!(plugin.kind = %plugin_kind, node.id = %node_id, "Plugin tick panicked: {msg}");
-                        metrics.record_call(plugin_kind, "tick", duration.as_secs_f64(), false);
-                        metrics.record_panic(plugin_kind, "tick");
+                        metrics.record(&state.labels_tick, duration.as_secs_f64(), CallOutcome::Panic);
                         // reusable_outputs capacity is lost on panic.
                         (Vec::new(), Some(format!("Plugin tick panicked: {msg}")), false)
                     },
@@ -668,12 +671,8 @@ fn worker_thread_main(
 
                 let error = match panic_msg {
                     Ok(result) => {
-                        metrics.record_call(
-                            plugin_kind,
-                            "update_params",
-                            duration.as_secs_f64(),
-                            result.success,
-                        );
+                        let outcome = if result.success { CallOutcome::Success } else { CallOutcome::Error };
+                        metrics.record(&state.labels_update_params, duration.as_secs_f64(), outcome);
                         if result.success {
                             None
                         } else if result.error_message.is_null() {
@@ -692,13 +691,7 @@ fn worker_thread_main(
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
                         error!(plugin.kind = %plugin_kind, node.id = %node_id, "Plugin update_params panicked: {msg}");
-                        metrics.record_call(
-                            plugin_kind,
-                            "update_params",
-                            duration.as_secs_f64(),
-                            false,
-                        );
-                        metrics.record_panic(plugin_kind, "update_params");
+                        metrics.record(&state.labels_update_params, duration.as_secs_f64(), CallOutcome::Panic);
                         Some(format!("Plugin update_params panicked: {msg}"))
                     },
                 };
@@ -1012,8 +1005,6 @@ impl ProcessorNode for NativeNodeWrapper {
     // control messages, and packet processing. Breaking it up would make the logic harder to follow.
     #[allow(clippy::too_many_lines)]
     async fn run(self: Box<Self>, context: NodeContext) -> Result<(), StreamKitError> {
-        use tracing::Instrument;
-
         let node_name = context.output_sender.node_name().to_string();
         let mode = if self.metadata.is_source { "source" } else { "processor" };
         let span = tracing::info_span!("native_plugin",
@@ -1071,12 +1062,17 @@ impl NativeNodeWrapper {
     /// When `state_tx` is provided and the call times out, emits
     /// [`NodeState::Failed`] so the pipeline coordinator sees the failure
     /// even though the worker thread continues running.
+    ///
+    /// When `metric_labels` is provided, a timeout bumps `plugin.errors`
+    /// from the caller (async) side so timeouts are distinguishable from
+    /// successful-but-slow calls recorded by the worker.
     async fn await_reply<T>(
         &self,
         op: &str,
         node: &str,
         reply_rx: tokio::sync::oneshot::Receiver<T>,
         state_tx: Option<&tokio::sync::mpsc::Sender<NodeStateUpdate>>,
+        metric_labels: Option<&[KeyValue; 2]>,
     ) -> Result<T, StreamKitError> {
         match self.state.call_timeout {
             Some(d) => tokio::time::timeout(d, reply_rx)
@@ -1087,6 +1083,9 @@ impl NativeNodeWrapper {
                             node = %node,
                             "Plugin {op} timed out after {d:?}"
                         );
+                    }
+                    if let Some(labels) = metric_labels {
+                        global_metrics().record_timeout(labels);
                     }
                     let reason = format!("Plugin {op} on node {node} timed out after {d:?}");
                     // Best-effort notification — try_send may drop if the
@@ -1288,7 +1287,7 @@ impl NativeNodeWrapper {
 
                             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                             self.send_to_worker("flush", &node_name, &worker.tx, WorkerRequest::Flush { reply: reply_tx }).await?;
-                            let reply = self.await_reply("flush", &node_name, reply_rx, Some(&context.state_tx)).await?;
+                            let reply = self.await_reply("flush", &node_name, reply_rx, Some(&context.state_tx), Some(&self.state.labels_flush)).await?;
 
                             // Send flush outputs
                             for (pin, pkt) in reply.outputs {
@@ -1307,7 +1306,7 @@ impl NativeNodeWrapper {
                         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                         self.send_to_worker("process_packet", &node_name, &worker.tx, WorkerRequest::Process { pin_index, packet, reply: reply_tx }).await?;
                         let reply = self
-                            .await_reply("process_packet", &node_name, reply_rx, Some(&context.state_tx))
+                            .await_reply("process_packet", &node_name, reply_rx, Some(&context.state_tx), Some(&self.state.labels_process))
                             .await?;
                         let (outputs, error) = (reply.outputs, reply.error);
 
@@ -1655,7 +1654,7 @@ impl NativeNodeWrapper {
             )
             .await?;
             let reply =
-                self.await_reply("tick", &node_name, reply_rx, Some(&context.state_tx)).await?;
+                self.await_reply("tick", &node_name, reply_rx, Some(&context.state_tx), Some(&self.state.labels_tick)).await?;
 
             // Send outputs produced by tick.  If the output channel is closed,
             // stop ticking — source nodes have no input-close backstop so we must
@@ -1761,7 +1760,7 @@ impl NativeNodeWrapper {
         )
         .await?;
 
-        let error_msg = self.await_reply("update_params", node_name, reply_rx, None).await?;
+        let error_msg = self.await_reply("update_params", node_name, reply_rx, None, Some(&self.state.labels_update_params)).await?;
 
         if let Some(err) = error_msg {
             warn!(node = %node_name, error = %err, "Parameter update failed");
