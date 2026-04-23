@@ -46,10 +46,8 @@ impl PluginMetrics {
     }
 
     pub fn record_call(&self, kind: &str, op: &str, duration_secs: f64, success: bool) {
-        let labels = [
-            KeyValue::new("plugin.kind", kind.to_string()),
-            KeyValue::new("op", op.to_string()),
-        ];
+        let labels =
+            [KeyValue::new("plugin.kind", kind.to_string()), KeyValue::new("op", op.to_string())];
         self.call_duration.record(duration_secs, &labels);
         self.calls_total.add(1, &labels);
         if !success {
@@ -58,10 +56,8 @@ impl PluginMetrics {
     }
 
     pub fn record_panic(&self, kind: &str, op: &str) {
-        let labels = [
-            KeyValue::new("plugin.kind", kind.to_string()),
-            KeyValue::new("op", op.to_string()),
-        ];
+        let labels =
+            [KeyValue::new("plugin.kind", kind.to_string()), KeyValue::new("op", op.to_string())];
         self.panics_total.add(1, &labels);
     }
 }

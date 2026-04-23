@@ -473,9 +473,7 @@ pub struct LoadedPluginRegistry {
 
 impl LoadedPluginRegistry {
     pub fn new() -> Self {
-        Self {
-            plugins: RwLock::new(HashMap::new()),
-        }
+        Self { plugins: RwLock::new(HashMap::new()) }
     }
 
     pub fn register(&self, kind: &str, path: &std::path::Path, api_version: u32) {

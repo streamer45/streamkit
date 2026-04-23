@@ -469,7 +469,12 @@ fn worker_thread_main(
                 let (reply_outputs, error) = match panic_result {
                     Ok((result, mut callback_ctx)) => {
                         let success = result.success && callback_ctx.error.is_none();
-                        metrics.record_call(plugin_kind, "process_packet", duration.as_secs_f64(), success);
+                        metrics.record_call(
+                            plugin_kind,
+                            "process_packet",
+                            duration.as_secs_f64(),
+                            success,
+                        );
                         let err = if result.success {
                             callback_ctx.error
                         } else {
@@ -490,7 +495,12 @@ fn worker_thread_main(
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
                         error!("Plugin process_packet panicked: {msg}");
-                        metrics.record_call(plugin_kind, "process_packet", duration.as_secs_f64(), false);
+                        metrics.record_call(
+                            plugin_kind,
+                            "process_packet",
+                            duration.as_secs_f64(),
+                            false,
+                        );
                         metrics.record_panic(plugin_kind, "process_packet");
                         // reusable_outputs capacity is lost on panic.
                         (Vec::new(), Some(format!("Plugin process_packet panicked: {msg}")))
@@ -658,7 +668,12 @@ fn worker_thread_main(
 
                 let error = match panic_msg {
                     Ok(result) => {
-                        metrics.record_call(plugin_kind, "update_params", duration.as_secs_f64(), result.success);
+                        metrics.record_call(
+                            plugin_kind,
+                            "update_params",
+                            duration.as_secs_f64(),
+                            result.success,
+                        );
                         if result.success {
                             None
                         } else if result.error_message.is_null() {
@@ -677,7 +692,12 @@ fn worker_thread_main(
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
                         error!("Plugin update_params panicked: {msg}");
-                        metrics.record_call(plugin_kind, "update_params", duration.as_secs_f64(), false);
+                        metrics.record_call(
+                            plugin_kind,
+                            "update_params",
+                            duration.as_secs_f64(),
+                            false,
+                        );
                         metrics.record_panic(plugin_kind, "update_params");
                         Some(format!("Plugin update_params panicked: {msg}"))
                     },
