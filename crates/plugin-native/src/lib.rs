@@ -12,17 +12,12 @@ pub mod wrapper;
 
 use anyhow::{anyhow, Context, Result};
 use libloading::{Library, Symbol};
-use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use streamkit_core::{NodeRegistry, PinCardinality};
 use streamkit_plugin_sdk_native::types::{CNativePluginAPI, NATIVE_PLUGIN_API_VERSION};
 use streamkit_plugin_sdk_native::{conversions, types::PLUGIN_API_SYMBOL};
 use tracing::{info, warn};
-
-/// Global registry of loaded native plugins.
-static PLUGIN_REGISTRY: std::sync::LazyLock<LoadedPluginRegistry> =
-    std::sync::LazyLock::new(LoadedPluginRegistry::new);
 
 /// Silent log callback used only during source-config probing (no actual instance work).
 // Cannot be `const`: `const extern "C" fn` is not supported by the compiler.
@@ -170,8 +165,6 @@ impl LoadedNativePlugin {
         }
 
         info!(kind = %metadata.kind, "Successfully loaded native plugin");
-
-        PLUGIN_REGISTRY.register(&metadata.kind);
 
         Ok(Self {
             library: Arc::new(library),
@@ -359,12 +352,6 @@ impl LoadedNativePlugin {
     }
 }
 
-impl Drop for LoadedNativePlugin {
-    fn drop(&mut self) {
-        PLUGIN_REGISTRY.unregister(&self.metadata.kind);
-    }
-}
-
 /// Register a list of native plugins with the node registry
 ///
 /// Returns the number of plugins registered
@@ -449,44 +436,4 @@ pub fn namespaced_kind(original_kind: &str) -> Result<String> {
     Ok(format!("{PLUGIN_KIND_PREFIX}{original_kind}"))
 }
 
-// ── Loaded Plugin Registry ─────────────────────────────────────────────────
 
-/// Internal registry tracking load/unload of native plugin libraries.
-struct LoadedPluginRegistry {
-    plugins: RwLock<HashMap<String, LoadedPluginEntry>>,
-}
-
-/// Internal bookkeeping entry for a loaded plugin kind.
-struct LoadedPluginEntry {
-    load_count: usize,
-}
-
-impl LoadedPluginRegistry {
-    fn new() -> Self {
-        Self { plugins: RwLock::new(HashMap::new()) }
-    }
-
-    fn register(&self, kind: &str) {
-        let Ok(mut map) = self.plugins.write() else {
-            warn!("LoadedPluginRegistry: write lock poisoned during register");
-            return;
-        };
-        let entry = map.entry(kind.to_string()).or_insert_with(|| LoadedPluginEntry {
-            load_count: 0,
-        });
-        entry.load_count += 1;
-    }
-
-    fn unregister(&self, kind: &str) {
-        let Ok(mut map) = self.plugins.write() else {
-            warn!("LoadedPluginRegistry: write lock poisoned during unregister");
-            return;
-        };
-        if let Some(info) = map.get_mut(kind) {
-            info.load_count = info.load_count.saturating_sub(1);
-            if info.load_count == 0 {
-                map.remove(kind);
-            }
-        }
-    }
-}

@@ -481,9 +481,6 @@ fn worker_thread_main(
 
                 let (reply_outputs, error) = match panic_result {
                     Ok((result, mut callback_ctx)) => {
-                        let success = result.success && callback_ctx.error.is_none();
-                        let outcome = if success { CallOutcome::Success } else { CallOutcome::Error };
-                        metrics.record(&state.labels_process, duration.as_secs_f64(), outcome);
                         let err = if result.success {
                             callback_ctx.error
                         } else {
@@ -497,6 +494,9 @@ fn worker_thread_main(
                             };
                             Some(error_msg)
                         };
+                        let outcome =
+                            if err.is_none() { CallOutcome::Success } else { CallOutcome::Error };
+                        metrics.record(&state.labels_process, duration.as_secs_f64(), outcome);
                         let outputs: Vec<_> = callback_ctx.output_packets.drain(..).collect();
                         reusable_outputs = callback_ctx.output_packets;
                         (outputs, err)
@@ -549,9 +549,6 @@ fn worker_thread_main(
 
                 let (reply_outputs, error) = match panic_result {
                     Ok((result, mut callback_ctx)) => {
-                        let success = result.success && callback_ctx.error.is_none();
-                        let outcome = if success { CallOutcome::Success } else { CallOutcome::Error };
-                        metrics.record(&state.labels_flush, duration.as_secs_f64(), outcome);
                         let err = if result.success {
                             callback_ctx.error
                         } else {
@@ -565,6 +562,9 @@ fn worker_thread_main(
                             };
                             Some(error_msg)
                         };
+                        let outcome =
+                            if err.is_none() { CallOutcome::Success } else { CallOutcome::Error };
+                        metrics.record(&state.labels_flush, duration.as_secs_f64(), outcome);
                         let outputs: Vec<_> = callback_ctx.output_packets.drain(..).collect();
                         reusable_outputs = callback_ctx.output_packets;
                         (outputs, err)
@@ -624,9 +624,6 @@ fn worker_thread_main(
 
                 let (reply_outputs, error, done) = match panic_result {
                     Ok((result, mut callback_ctx)) => {
-                        let success = result.result.success && callback_ctx.error.is_none();
-                        let outcome = if success { CallOutcome::Success } else { CallOutcome::Error };
-                        metrics.record(&state.labels_tick, duration.as_secs_f64(), outcome);
                         let err = if result.result.success {
                             callback_ctx.error
                         } else if result.result.error_message.is_null() {
@@ -637,6 +634,9 @@ fn worker_thread_main(
                                     .unwrap_or_else(|_| "Source tick failed".to_string())
                             })
                         };
+                        let outcome =
+                            if err.is_none() { CallOutcome::Success } else { CallOutcome::Error };
+                        metrics.record(&state.labels_tick, duration.as_secs_f64(), outcome);
                         let outputs: Vec<_> = callback_ctx.output_packets.drain(..).collect();
                         reusable_outputs = callback_ctx.output_packets;
                         (outputs, err, result.done)
@@ -1007,7 +1007,7 @@ impl ProcessorNode for NativeNodeWrapper {
     async fn run(self: Box<Self>, context: NodeContext) -> Result<(), StreamKitError> {
         let node_name = context.output_sender.node_name().to_string();
         let mode = if self.metadata.is_source { "source" } else { "processor" };
-        let span = tracing::info_span!("native_plugin",
+        let span = tracing::info_span!("native_plugin.run",
             plugin.kind = %self.metadata.kind,
             node.id = %node_name,
             mode = %mode,
@@ -1063,16 +1063,16 @@ impl NativeNodeWrapper {
     /// [`NodeState::Failed`] so the pipeline coordinator sees the failure
     /// even though the worker thread continues running.
     ///
-    /// When `metric_labels` is provided, a timeout bumps `plugin.errors`
-    /// from the caller (async) side so timeouts are distinguishable from
-    /// successful-but-slow calls recorded by the worker.
+    /// Bumps `plugin.errors` from the caller (async) side on timeout so
+    /// timeouts are distinguishable from successful-but-slow calls
+    /// recorded by the worker.
     async fn await_reply<T>(
         &self,
         op: &str,
         node: &str,
         reply_rx: tokio::sync::oneshot::Receiver<T>,
         state_tx: Option<&tokio::sync::mpsc::Sender<NodeStateUpdate>>,
-        metric_labels: Option<&[KeyValue; 2]>,
+        metric_labels: &[KeyValue; 2],
     ) -> Result<T, StreamKitError> {
         match self.state.call_timeout {
             Some(d) => tokio::time::timeout(d, reply_rx)
@@ -1084,9 +1084,7 @@ impl NativeNodeWrapper {
                             "Plugin {op} timed out after {d:?}"
                         );
                     }
-                    if let Some(labels) = metric_labels {
-                        global_metrics().record_timeout(labels);
-                    }
+                    global_metrics().record_timeout(metric_labels);
                     let reason = format!("Plugin {op} on node {node} timed out after {d:?}");
                     // Best-effort notification — try_send may drop if the
                     // state channel is full, but that is acceptable because
@@ -1287,7 +1285,7 @@ impl NativeNodeWrapper {
 
                             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                             self.send_to_worker("flush", &node_name, &worker.tx, WorkerRequest::Flush { reply: reply_tx }).await?;
-                            let reply = self.await_reply("flush", &node_name, reply_rx, Some(&context.state_tx), Some(&self.state.labels_flush)).await?;
+                            let reply = self.await_reply("flush", &node_name, reply_rx, Some(&context.state_tx), &self.state.labels_flush).await?;
 
                             // Send flush outputs
                             for (pin, pkt) in reply.outputs {
@@ -1306,7 +1304,7 @@ impl NativeNodeWrapper {
                         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                         self.send_to_worker("process_packet", &node_name, &worker.tx, WorkerRequest::Process { pin_index, packet, reply: reply_tx }).await?;
                         let reply = self
-                            .await_reply("process_packet", &node_name, reply_rx, Some(&context.state_tx), Some(&self.state.labels_process))
+                            .await_reply("process_packet", &node_name, reply_rx, Some(&context.state_tx), &self.state.labels_process)
                             .await?;
                         let (outputs, error) = (reply.outputs, reply.error);
 
@@ -1654,7 +1652,7 @@ impl NativeNodeWrapper {
             )
             .await?;
             let reply =
-                self.await_reply("tick", &node_name, reply_rx, Some(&context.state_tx), Some(&self.state.labels_tick)).await?;
+                self.await_reply("tick", &node_name, reply_rx, Some(&context.state_tx), &self.state.labels_tick).await?;
 
             // Send outputs produced by tick.  If the output channel is closed,
             // stop ticking — source nodes have no input-close backstop so we must
@@ -1760,7 +1758,7 @@ impl NativeNodeWrapper {
         )
         .await?;
 
-        let error_msg = self.await_reply("update_params", node_name, reply_rx, None, Some(&self.state.labels_update_params)).await?;
+        let error_msg = self.await_reply("update_params", node_name, reply_rx, None, &self.state.labels_update_params).await?;
 
         if let Some(err) = error_msg {
             warn!(node = %node_name, error = %err, "Parameter update failed");

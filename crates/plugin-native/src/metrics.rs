@@ -11,10 +11,12 @@ use opentelemetry::metrics::{Counter, Histogram};
 use opentelemetry::KeyValue;
 
 /// Outcome of an FFI call, used by [`PluginMetrics::record`].
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum CallOutcome {
     Success,
     Error,
+    /// FFI call panicked.  Only bumps `plugin.panics` (not `plugin.errors`)
+    /// so dashboards can sum `errors + panics` without double-counting.
     Panic,
 }
 
@@ -66,7 +68,6 @@ impl PluginMetrics {
                 self.errors_total.add(1, labels);
             },
             CallOutcome::Panic => {
-                self.errors_total.add(1, labels);
                 self.panics_total.add(1, labels);
             },
         }
@@ -78,6 +79,9 @@ impl PluginMetrics {
     }
 
     /// Build a set of metric labels for a given plugin kind and operation.
+    ///
+    /// Allocates `kind` into a `String`; intended to be called once per
+    /// instance (at construction time) and cached on [`InstanceState`].
     pub fn build_labels(kind: &str, op: &'static str) -> [KeyValue; 2] {
         [KeyValue::new("plugin.kind", kind.to_string()), KeyValue::new("op", op)]
     }
