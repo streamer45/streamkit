@@ -1134,12 +1134,15 @@ impl NativeNodeWrapper {
     /// Send a request to the worker with timeout, preventing indefinite
     /// blocking when a prior FFI call has wedged the worker.
     ///
-    /// Uses [`Self::state.call_timeout`] (or [`DEFAULT_CALL_TIMEOUT`]) so the
-    /// send side cannot park longer than one FFI timeout period.
+    /// Uses [`Self::state.call_timeout`] when configured; otherwise falls back
+    /// to [`DEFAULT_CALL_TIMEOUT`] so the send side stays bounded even when
+    /// reply-side waiting is disabled with `set_call_timeout(None)`.
     async fn send_to_worker(
         &self,
         op: &str,
         node: &str,
+        state_tx: Option<&tokio::sync::mpsc::Sender<NodeStateUpdate>>,
+        metric_labels: &[KeyValue; 2],
         tx: &tokio::sync::mpsc::Sender<WorkerRequest>,
         request: WorkerRequest,
     ) -> Result<(), StreamKitError> {
@@ -1147,10 +1150,24 @@ impl NativeNodeWrapper {
         tokio::time::timeout(timeout_dur, tx.send(request))
             .await
             .map_err(|_| {
-                StreamKitError::Runtime(format!(
+                if !self.state.timeout_warned.swap(true, Ordering::Relaxed) {
+                    warn!(
+                        node = %node,
+                        "Plugin {op} send to worker timed out after {timeout_dur:?}"
+                    );
+                }
+                global_metrics().record_timeout(metric_labels);
+                let reason = format!(
                     "Plugin {op} on node {node}: send to worker timed out \
                      (worker likely wedged in prior FFI call)"
-                ))
+                );
+                if let Some(tx) = state_tx {
+                    let _ = tx.try_send(NodeStateUpdate::new(
+                        node.to_string(),
+                        NodeState::Failed { reason: reason.clone() },
+                    ));
+                }
+                StreamKitError::Runtime(reason)
             })?
             .map_err(|_| worker_died_error(op, node))
     }
@@ -1310,7 +1327,7 @@ impl NativeNodeWrapper {
                             tracing::debug!(node = %node_name, "Native plugin input closed, flushing buffers");
 
                             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                            self.send_to_worker("flush", &node_name, &worker.tx, WorkerRequest::Flush { reply: reply_tx }).await?;
+                            self.send_to_worker("flush", &node_name, Some(&context.state_tx), &self.state.labels_flush, &worker.tx, WorkerRequest::Flush { reply: reply_tx }).await?;
                             let reply = self.await_reply("flush", &node_name, reply_rx, Some(&context.state_tx), &self.state.labels_flush).await?;
 
                             // Send flush outputs
@@ -1328,7 +1345,7 @@ impl NativeNodeWrapper {
                         };
 
                         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                        self.send_to_worker("process_packet", &node_name, &worker.tx, WorkerRequest::Process { pin_index, packet, reply: reply_tx }).await?;
+                        self.send_to_worker("process_packet", &node_name, Some(&context.state_tx), &self.state.labels_process, &worker.tx, WorkerRequest::Process { pin_index, packet, reply: reply_tx }).await?;
                         let reply = self
                             .await_reply("process_packet", &node_name, reply_rx, Some(&context.state_tx), &self.state.labels_process)
                             .await?;
@@ -1673,6 +1690,8 @@ impl NativeNodeWrapper {
             self.send_to_worker(
                 "tick",
                 &node_name,
+                Some(&context.state_tx),
+                &self.state.labels_tick,
                 worker_tx,
                 WorkerRequest::Tick { reply: reply_tx },
             )
@@ -1786,6 +1805,8 @@ impl NativeNodeWrapper {
         self.send_to_worker(
             "update_params",
             node_name,
+            None,
+            &self.state.labels_update_params,
             worker_tx,
             WorkerRequest::UpdateParams { params_cstr, reply: reply_tx },
         )
@@ -2132,6 +2153,7 @@ fn build_node_callbacks(callback_data: *mut c_void) -> CNodeCallbacks {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod ffi_guard_tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
 
     #[test]
     fn host_guard_result_catches_panic_and_preserves_message() {
@@ -2514,6 +2536,100 @@ mod ffi_guard_tests {
             Some(timeout),
             "test".to_string(),
         ))
+    }
+
+    fn test_wrapper_with_timeout(timeout: Option<std::time::Duration>) -> NativeNodeWrapper {
+        let lib = unsafe { Library::new("libc.so.6").expect("libc must be loadable") };
+        let api: &'static CNativePluginAPI = Box::leak(Box::new(dummy_api()));
+        NativeNodeWrapper {
+            state: Arc::new(InstanceState::new(
+                Arc::new(lib),
+                api,
+                std::ptr::without_provenance_mut::<c_void>(1),
+                8,
+                timeout,
+                "test".to_string(),
+            )),
+            metadata: PluginMetadata {
+                kind: "test".to_string(),
+                description: None,
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                param_schema: serde_json::json!({}),
+                categories: Vec::new(),
+                is_source: false,
+                tick_interval_us: 0,
+                max_ticks: 0,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn send_to_worker_timeout_emits_failed_state() {
+        let wrapper = test_wrapper_with_timeout(Some(std::time::Duration::from_millis(10)));
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<WorkerRequest>(1);
+        let (state_tx, mut state_rx) = tokio::sync::mpsc::channel::<NodeStateUpdate>(1);
+
+        let (first_reply, _first_rx) = tokio::sync::oneshot::channel();
+        tx.send(WorkerRequest::Flush { reply: first_reply }).await.unwrap();
+
+        let (second_reply, _second_rx) = tokio::sync::oneshot::channel();
+        let result = wrapper
+            .send_to_worker(
+                "flush",
+                "node-a",
+                Some(&state_tx),
+                &wrapper.state.labels_flush,
+                &tx,
+                WorkerRequest::Flush { reply: second_reply },
+            )
+            .await;
+
+        assert!(result.is_err(), "send should time out while channel is full");
+        let update = state_rx.recv().await.expect("failed state should be emitted");
+        assert_eq!(update.node_id, "node-a");
+        assert!(matches!(update.state, NodeState::Failed { .. }));
+
+        drop(rx.recv().await);
+    }
+
+    #[tokio::test]
+    async fn send_to_worker_none_timeout_still_bounds_send_side() {
+        let wrapper = test_wrapper_with_timeout(None);
+        let (tx, _rx) = tokio::sync::mpsc::channel::<WorkerRequest>(1);
+        let (first_reply, _first_rx) = tokio::sync::oneshot::channel();
+        tx.send(WorkerRequest::Flush { reply: first_reply }).await.unwrap();
+
+        let completed = Arc::new(AtomicUsize::new(0));
+        let completed_in_task = Arc::clone(&completed);
+        let (second_reply, _second_rx) = tokio::sync::oneshot::channel();
+        let wrapper_task = NativeNodeWrapper {
+            state: Arc::clone(&wrapper.state),
+            metadata: wrapper.metadata.clone(),
+        };
+        let tx_task = tx.clone();
+        let task = tokio::spawn(async move {
+            let result = wrapper_task
+                .send_to_worker(
+                    "flush",
+                    "node-a",
+                    None,
+                    &wrapper_task.state.labels_flush,
+                    &tx_task,
+                    WorkerRequest::Flush { reply: second_reply },
+                )
+                .await;
+            completed_in_task.fetch_add(1, Ordering::Relaxed);
+            result
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(
+            completed.load(Ordering::Relaxed),
+            0,
+            "None reply timeout must not make send_to_worker unboundedly complete early"
+        );
+        task.abort();
     }
 
     /// Spawn a worker, send a Process request, verify successful round-trip.

@@ -146,24 +146,24 @@ impl PluginMetadataStorage {
         }
 
         // ── Convert outputs ─────────────────────────────────────────
-        let mut c_outputs = Vec::new();
-        let mut output_names = Vec::new();
-        let mut output_audio_formats: Vec<Option<CAudioFormat>> = Vec::new();
-        let mut output_custom_type_ids: Vec<Option<CString>> = Vec::new();
-        let mut output_video_formats: Vec<Option<CRawVideoFormat>> = Vec::new();
+        let mut c_outputs = Vec::with_capacity(meta.outputs.len());
+        let mut output_names = Vec::with_capacity(meta.outputs.len());
+        let mut output_audio_formats: Vec<Option<CAudioFormat>> =
+            Vec::with_capacity(meta.outputs.len());
+        let mut output_custom_type_ids: Vec<Option<CString>> =
+            Vec::with_capacity(meta.outputs.len());
+        let mut output_video_formats: Vec<Option<CRawVideoFormat>> =
+            Vec::with_capacity(meta.outputs.len());
 
         for output in &meta.outputs {
-            let name = ffi_guard::cstring_lossy(output.name.as_str(), "output pin name");
-
-            let audio_format = match &output.produces_type {
+            output_names.push(ffi_guard::cstring_lossy(output.name.as_str(), "output pin name"));
+            output_audio_formats.push(match &output.produces_type {
                 streamkit_core::types::PacketType::RawAudio(af) => {
                     Some(conversions::audio_format_to_c(af))
                 },
                 _ => None,
-            };
-            output_audio_formats.push(audio_format);
-
-            let output_custom_type_id = match &output.produces_type {
+            });
+            output_custom_type_ids.push(match &output.produces_type {
                 streamkit_core::types::PacketType::Custom { type_id } => {
                     Some(ffi_guard::cstring_lossy(type_id.as_str(), "output custom type_id"))
                 },
@@ -174,41 +174,31 @@ impl PluginMetadataStorage {
                     Some(conversions::codec_name_to_cstring(format.codec.as_c_name()))
                 },
                 _ => None,
-            };
-            output_custom_type_ids.push(output_custom_type_id);
-
-            let video_format = match &output.produces_type {
+            });
+            output_video_formats.push(match &output.produces_type {
                 streamkit_core::types::PacketType::RawVideo(vf) => {
                     Some(conversions::raw_video_format_to_c(vf))
                 },
                 _ => None,
-            };
-            output_video_formats.push(video_format);
+            });
+        }
 
+        for (idx, output) in meta.outputs.iter().enumerate() {
             let type_discriminant = packet_type_to_c_discriminant(&output.produces_type);
 
-            // SAFETY: We just pushed an element, so last() is guaranteed to be Some.
-            #[allow(clippy::unwrap_used)]
             let audio_format_ptr = output_audio_formats
-                .last()
-                .unwrap()
-                .as_ref()
+                .get(idx)
+                .and_then(Option::as_ref)
                 .map_or(std::ptr::null(), std::ptr::from_ref);
 
-            // SAFETY: We just pushed an element, so last() is guaranteed to be Some.
-            #[allow(clippy::unwrap_used)]
             let custom_type_id_ptr = output_custom_type_ids
-                .last()
-                .unwrap()
-                .as_ref()
+                .get(idx)
+                .and_then(Option::as_ref)
                 .map_or(std::ptr::null(), |s| s.as_ptr());
 
-            // SAFETY: We just pushed an element, so last() is guaranteed to be Some.
-            #[allow(clippy::unwrap_used)]
             let video_format_ptr = output_video_formats
-                .last()
-                .unwrap()
-                .as_ref()
+                .get(idx)
+                .and_then(Option::as_ref)
                 .map_or(std::ptr::null(), std::ptr::from_ref);
 
             let type_info = CPacketTypeInfo {
@@ -218,8 +208,9 @@ impl PluginMetadataStorage {
                 raw_video_format: video_format_ptr,
             };
 
-            c_outputs.push(COutputPin { name: name.as_ptr(), produces_type: type_info });
-            output_names.push(name);
+            let name = output_names.get(idx).as_ref().map_or(std::ptr::null(), |s| s.as_ptr());
+
+            c_outputs.push(COutputPin { name, produces_type: type_info });
         }
 
         // ── Convert categories ──────────────────────────────────────
@@ -295,5 +286,57 @@ fn packet_type_to_c_discriminant(pt: &streamkit_core::types::PacketType) -> CPac
         streamkit_core::types::PacketType::Any | streamkit_core::types::PacketType::Passthrough => {
             CPacketType::Any
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use streamkit_core::types::{
+        AudioFormat, PacketType, PixelFormat, RawVideoFormat, SampleFormat,
+    };
+
+    use super::*;
+
+    #[test]
+    fn output_format_pointers_reference_final_storage() {
+        let meta = NodeMetadata::builder("multi_output")
+            .output(
+                "audio",
+                PacketType::RawAudio(AudioFormat {
+                    sample_rate: 48_000,
+                    channels: 2,
+                    sample_format: SampleFormat::F32,
+                }),
+            )
+            .output(
+                "video",
+                PacketType::RawVideo(RawVideoFormat {
+                    width: Some(1920),
+                    height: Some(1080),
+                    pixel_format: PixelFormat::Rgba8,
+                }),
+            )
+            .build();
+
+        let storage = PluginMetadataStorage::from_node_metadata(&meta);
+
+        let audio_ptr = storage.outputs[0].produces_type.audio_format;
+        let expected_audio_ptr =
+            storage.output_audio_formats[0].as_ref().map_or(std::ptr::null(), std::ptr::from_ref);
+        assert_eq!(audio_ptr, expected_audio_ptr);
+
+        let video_ptr = storage.outputs[1].produces_type.raw_video_format;
+        let expected_video_ptr =
+            storage.output_video_formats[1].as_ref().map_or(std::ptr::null(), std::ptr::from_ref);
+        assert_eq!(video_ptr, expected_video_ptr);
+
+        assert!(matches!(
+            conversions::packet_type_from_c(storage.outputs[0].produces_type),
+            Ok(PacketType::RawAudio(_))
+        ));
+        assert!(matches!(
+            conversions::packet_type_from_c(storage.outputs[1].produces_type),
+            Ok(PacketType::RawVideo(_))
+        ));
     }
 }

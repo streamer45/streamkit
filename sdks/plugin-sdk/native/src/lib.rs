@@ -814,7 +814,7 @@ macro_rules! __plugin_shared_ffi {
         }
 
         extern "C" fn __plugin_destroy_instance(handle: $crate::types::CPluginHandle) {
-            $crate::ffi_guard::guard_unit(|| {
+            $crate::ffi_guard::guard_unit("destroy_instance", || {
                 if !handle.is_null() {
                     let mut instance = unsafe { Box::from_raw(handle as *mut $plugin_type) };
                     // Run cleanup() in a nested catch_unwind so that a
@@ -839,7 +839,7 @@ macro_rules! __plugin_shared_ffi {
             callback: $crate::types::CLogEnabledCallback,
             user_data: *mut std::os::raw::c_void,
         ) {
-            $crate::ffi_guard::guard_unit(|| {
+            $crate::ffi_guard::guard_unit("set_log_enabled_callback", || {
                 if handle.is_null() {
                     return;
                 }

@@ -67,8 +67,7 @@ pub fn guard_handle<F: FnOnce() -> types::CPluginHandle>(f: F) -> types::CPlugin
 
 /// Guard a trampoline that returns `*const T` (null on panic).
 ///
-/// `label` identifies the trampoline in the log message (e.g.
-/// `"get_metadata"`).
+/// `label` identifies the trampoline in the log message (e.g. `"get_metadata"`).
 ///
 /// The host receives a null pointer and must treat it as a load-time
 /// failure.  The panic message is logged via [`tracing::error!`].
@@ -130,20 +129,17 @@ pub fn guard_source_config<F: FnOnce() -> types::CSourceConfig>(f: F) -> types::
     }
 }
 
-/// Guard a trampoline that returns nothing (e.g. `destroy_instance`).
+/// Guard a trampoline that returns nothing.
 ///
 /// # Double-panic risk
 ///
-/// In `__plugin_destroy_instance`, `cleanup()` runs first and then the
-/// plugin value is dropped.  If `cleanup()` panics **and** `Drop` also
-/// panics, the process aborts (Rust double-panic rule).  To mitigate
-/// this, `__plugin_destroy_instance` wraps `cleanup()` in its own
-/// nested `catch_unwind`, so a `cleanup` panic does not propagate into
-/// the `Drop`.  Plugin authors should still avoid panicking in `Drop`.
-pub fn guard_unit<F: FnOnce()>(f: F) {
+/// `__plugin_destroy_instance` wraps `cleanup()` in its own nested
+/// `catch_unwind`, so a `cleanup` panic does not propagate into `Drop`.
+/// Plugin authors should still avoid panicking in `Drop`.
+pub fn guard_unit<F: FnOnce()>(label: &str, f: F) {
     if let Err(payload) = catch_unwind(AssertUnwindSafe(f)) {
         let msg = panic_message(&*payload);
-        tracing::error!("plugin panicked in cleanup: {msg}");
+        tracing::error!("plugin panicked in {label}: {msg}");
     }
 }
 
@@ -226,7 +222,7 @@ mod tests {
 
     #[test]
     fn guard_unit_catches_panic() {
-        guard_unit(|| panic!("unit boom"));
+        guard_unit("test_trampoline", || panic!("unit boom"));
     }
 
     #[test]
