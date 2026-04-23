@@ -4393,11 +4393,20 @@ pub fn create_app(
     }
 
     // Mount MCP (Model Context Protocol) endpoint when the feature is enabled
-    // and the config has it turned on.  Sits under /api so auth_guard_middleware,
+    // and the config has it turned on.
+    //
+    // SECURITY: The endpoint MUST live under /api/ so that auth_guard_middleware,
     // origin_guard_middleware, CORS, tracing, and metrics all apply automatically.
+    // We enforce this at startup to prevent misconfiguration.
     #[cfg(feature = "mcp")]
     {
         if app_state.config.mcp.enabled {
+            assert!(
+                app_state.config.mcp.endpoint.starts_with("/api/"),
+                "mcp.endpoint must start with /api/ to ensure auth and origin guards apply. \
+                 Got: '{}'",
+                app_state.config.mcp.endpoint
+            );
             info!(
                 endpoint = %app_state.config.mcp.endpoint,
                 "MCP endpoint enabled"
