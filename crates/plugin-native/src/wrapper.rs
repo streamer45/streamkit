@@ -506,7 +506,11 @@ fn worker_thread_main(
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
                         error!(plugin_kind = %plugin_kind, node_id = %node_id, "Plugin process_packet panicked: {msg}");
-                        metrics.record(&state.labels_process, duration.as_secs_f64(), CallOutcome::Panic);
+                        metrics.record(
+                            &state.labels_process,
+                            duration.as_secs_f64(),
+                            CallOutcome::Panic,
+                        );
                         // reusable_outputs capacity is lost on panic.
                         (Vec::new(), Some(format!("Plugin process_packet panicked: {msg}")))
                     },
@@ -574,7 +578,11 @@ fn worker_thread_main(
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
                         error!(plugin_kind = %plugin_kind, node_id = %node_id, "Plugin flush panicked: {msg}");
-                        metrics.record(&state.labels_flush, duration.as_secs_f64(), CallOutcome::Panic);
+                        metrics.record(
+                            &state.labels_flush,
+                            duration.as_secs_f64(),
+                            CallOutcome::Panic,
+                        );
                         // reusable_outputs capacity is lost on panic.
                         (Vec::new(), Some(format!("Plugin flush panicked: {msg}")))
                     },
@@ -646,7 +654,11 @@ fn worker_thread_main(
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
                         error!(plugin_kind = %plugin_kind, node_id = %node_id, "Plugin tick panicked: {msg}");
-                        metrics.record(&state.labels_tick, duration.as_secs_f64(), CallOutcome::Panic);
+                        metrics.record(
+                            &state.labels_tick,
+                            duration.as_secs_f64(),
+                            CallOutcome::Panic,
+                        );
                         // reusable_outputs capacity is lost on panic.
                         (Vec::new(), Some(format!("Plugin tick panicked: {msg}")), false)
                     },
@@ -673,8 +685,13 @@ fn worker_thread_main(
 
                 let error = match panic_msg {
                     Ok(result) => {
-                        let outcome = if result.success { CallOutcome::Success } else { CallOutcome::Error };
-                        metrics.record(&state.labels_update_params, duration.as_secs_f64(), outcome);
+                        let outcome =
+                            if result.success { CallOutcome::Success } else { CallOutcome::Error };
+                        metrics.record(
+                            &state.labels_update_params,
+                            duration.as_secs_f64(),
+                            outcome,
+                        );
                         if result.success {
                             None
                         } else if result.error_message.is_null() {
@@ -693,7 +710,11 @@ fn worker_thread_main(
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
                         error!(plugin_kind = %plugin_kind, node_id = %node_id, "Plugin update_params panicked: {msg}");
-                        metrics.record(&state.labels_update_params, duration.as_secs_f64(), CallOutcome::Panic);
+                        metrics.record(
+                            &state.labels_update_params,
+                            duration.as_secs_f64(),
+                            CallOutcome::Panic,
+                        );
                         Some(format!("Plugin update_params panicked: {msg}"))
                     },
                 };
@@ -1655,8 +1676,15 @@ impl NativeNodeWrapper {
                 WorkerRequest::Tick { reply: reply_tx },
             )
             .await?;
-            let reply =
-                self.await_reply("tick", &node_name, reply_rx, Some(&context.state_tx), &self.state.labels_tick).await?;
+            let reply = self
+                .await_reply(
+                    "tick",
+                    &node_name,
+                    reply_rx,
+                    Some(&context.state_tx),
+                    &self.state.labels_tick,
+                )
+                .await?;
 
             // Send outputs produced by tick.  If the output channel is closed,
             // stop ticking — source nodes have no input-close backstop so we must
@@ -1762,7 +1790,15 @@ impl NativeNodeWrapper {
         )
         .await?;
 
-        let error_msg = self.await_reply("update_params", node_name, reply_rx, None, &self.state.labels_update_params).await?;
+        let error_msg = self
+            .await_reply(
+                "update_params",
+                node_name,
+                reply_rx,
+                None,
+                &self.state.labels_update_params,
+            )
+            .await?;
 
         if let Some(err) = error_msg {
             warn!(node = %node_name, error = %err, "Parameter update failed");
