@@ -7,16 +7,27 @@
 //! This crate provides the host-side runtime for loading and executing native plugins
 //! that use the C ABI interface.
 
+pub mod metrics;
 pub mod wrapper;
 
 use anyhow::{anyhow, Context, Result};
 use libloading::{Library, Symbol};
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use streamkit_core::{NodeRegistry, PinCardinality};
 use streamkit_plugin_sdk_native::types::{CNativePluginAPI, NATIVE_PLUGIN_API_VERSION};
 use streamkit_plugin_sdk_native::{conversions, types::PLUGIN_API_SYMBOL};
 use tracing::{info, warn};
+
+/// Global registry of loaded native plugins, used for diagnostics.
+static PLUGIN_REGISTRY: std::sync::LazyLock<LoadedPluginRegistry> =
+    std::sync::LazyLock::new(LoadedPluginRegistry::new);
+
+/// Returns a reference to the global [`LoadedPluginRegistry`].
+pub fn plugin_registry() -> &'static LoadedPluginRegistry {
+    &PLUGIN_REGISTRY
+}
 
 /// Silent log callback used only during source-config probing (no actual instance work).
 // Cannot be `const`: `const extern "C" fn` is not supported by the compiler.
@@ -36,6 +47,9 @@ pub struct LoadedNativePlugin {
     api: &'static CNativePluginAPI,
     metadata: PluginMetadata,
     call_timeout: Option<std::time::Duration>,
+    /// Path to the loaded `.so` — retained for the [`LoadedPluginRegistry`].
+    #[allow(dead_code)]
+    plugin_path: std::path::PathBuf,
 }
 
 /// Metadata extracted from a plugin
@@ -165,11 +179,14 @@ impl LoadedNativePlugin {
 
         info!(kind = %metadata.kind, "Successfully loaded native plugin");
 
+        PLUGIN_REGISTRY.register(&metadata.kind, path, api.version);
+
         Ok(Self {
             library: Arc::new(library),
             api,
             metadata,
             call_timeout: Some(wrapper::DEFAULT_CALL_TIMEOUT),
+            plugin_path: path.to_path_buf(),
         })
     }
 
@@ -433,4 +450,72 @@ pub fn namespaced_kind(original_kind: &str) -> Result<String> {
     }
 
     Ok(format!("{PLUGIN_KIND_PREFIX}{original_kind}"))
+}
+
+// ── Loaded Plugin Registry ─────────────────────────────────────────────────
+
+/// Information about a loaded native plugin.
+#[derive(Debug, Clone)]
+pub struct PluginInfo {
+    pub kind: String,
+    pub plugin_path: std::path::PathBuf,
+    pub api_version: u32,
+    pub instance_count: usize,
+}
+
+/// Registry tracking all currently loaded native plugins.
+///
+/// Used for diagnostics (e.g. a `/debug/plugins` endpoint).
+/// Thread-safe via interior `RwLock`.
+pub struct LoadedPluginRegistry {
+    plugins: RwLock<HashMap<String, PluginInfo>>,
+}
+
+impl LoadedPluginRegistry {
+    pub fn new() -> Self {
+        Self {
+            plugins: RwLock::new(HashMap::new()),
+        }
+    }
+
+    pub fn register(&self, kind: &str, path: &std::path::Path, api_version: u32) {
+        let Ok(mut map) = self.plugins.write() else {
+            warn!("LoadedPluginRegistry: write lock poisoned during register");
+            return;
+        };
+        let entry = map.entry(kind.to_string()).or_insert_with(|| PluginInfo {
+            kind: kind.to_string(),
+            plugin_path: path.to_path_buf(),
+            api_version,
+            instance_count: 0,
+        });
+        entry.instance_count += 1;
+    }
+
+    pub fn unregister(&self, kind: &str) {
+        let Ok(mut map) = self.plugins.write() else {
+            warn!("LoadedPluginRegistry: write lock poisoned during unregister");
+            return;
+        };
+        if let Some(info) = map.get_mut(kind) {
+            info.instance_count = info.instance_count.saturating_sub(1);
+            if info.instance_count == 0 {
+                map.remove(kind);
+            }
+        }
+    }
+
+    pub fn list(&self) -> Vec<PluginInfo> {
+        let Ok(map) = self.plugins.read() else {
+            warn!("LoadedPluginRegistry: read lock poisoned during list");
+            return Vec::new();
+        };
+        map.values().cloned().collect()
+    }
+}
+
+impl Default for LoadedPluginRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }

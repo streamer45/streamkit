@@ -80,7 +80,15 @@ use streamkit_plugin_sdk_native::{
 };
 use tracing::{error, info, warn};
 
+use crate::metrics::PluginMetrics;
 use crate::PluginMetadata;
+
+/// Global metrics instance for native plugin FFI calls.
+static PLUGIN_METRICS: std::sync::OnceLock<PluginMetrics> = std::sync::OnceLock::new();
+
+fn global_metrics() -> &'static PluginMetrics {
+    PLUGIN_METRICS.get_or_init(PluginMetrics::new)
+}
 
 // ── Host-side FFI panic guards ─────────────────────────────────────────────
 //
@@ -216,15 +224,19 @@ struct InstanceState {
     /// - v9+: enable zero-copy binary buffer_handle
     api_version: u32,
     call_timeout: Option<std::time::Duration>,
+    /// Plugin kind string, used for metrics labels on the worker thread.
+    plugin_kind: String,
 }
 
 impl InstanceState {
-    const fn new(
+    #[allow(clippy::missing_const_for_fn)]
+    fn new(
         library: Arc<Library>,
         api: &'static CNativePluginAPI,
         handle: CPluginHandle,
         api_version: u32,
         call_timeout: Option<std::time::Duration>,
+        plugin_kind: String,
     ) -> Self {
         Self {
             library,
@@ -235,6 +247,7 @@ impl InstanceState {
             timeout_warned: AtomicBool::new(false),
             api_version,
             call_timeout,
+            plugin_kind,
         }
     }
 
@@ -395,6 +408,9 @@ fn worker_thread_main(
     // stays there for the instance lifetime (e.g. a one-time flush burst).
     let mut reusable_outputs: Vec<(String, Packet)> = Vec::new();
 
+    let metrics = global_metrics();
+    let plugin_kind = &state.plugin_kind;
+
     while let Some(request) = rx.blocking_recv() {
         match request {
             WorkerRequest::Process { pin_index, packet, reply } => {
@@ -414,6 +430,7 @@ fn worker_thread_main(
                 // of these steps produces a clean error instead of
                 // poisoning the worker.
                 let mut ctx_out = std::mem::take(&mut reusable_outputs);
+                let start = std::time::Instant::now();
                 let panic_result = catch_unwind(AssertUnwindSafe(|| {
                     let mut packet_repr = conversions::packet_to_c(&packet);
                     if state.api_version < 7 {
@@ -447,9 +464,12 @@ fn worker_thread_main(
 
                     (result, callback_ctx)
                 }));
+                let duration = start.elapsed();
 
                 let (reply_outputs, error) = match panic_result {
                     Ok((result, mut callback_ctx)) => {
+                        let success = result.success && callback_ctx.error.is_none();
+                        metrics.record_call(plugin_kind, "process_packet", duration.as_secs_f64(), success);
                         let err = if result.success {
                             callback_ctx.error
                         } else {
@@ -470,6 +490,8 @@ fn worker_thread_main(
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
                         error!("Plugin process_packet panicked: {msg}");
+                        metrics.record_call(plugin_kind, "process_packet", duration.as_secs_f64(), false);
+                        metrics.record_panic(plugin_kind, "process_packet");
                         // reusable_outputs capacity is lost on panic.
                         (Vec::new(), Some(format!("Plugin process_packet panicked: {msg}")))
                     },
@@ -492,6 +514,7 @@ fn worker_thread_main(
                 let api = state.api();
 
                 let mut ctx_out = std::mem::take(&mut reusable_outputs);
+                let start = std::time::Instant::now();
                 let panic_result = catch_unwind(AssertUnwindSafe(|| {
                     let mut callback_ctx = CallbackContext {
                         output_packets: std::mem::take(&mut ctx_out),
@@ -509,9 +532,12 @@ fn worker_thread_main(
                     let result = (api.flush)(guard.handle(), &raw const node_callbacks);
                     (result, callback_ctx)
                 }));
+                let duration = start.elapsed();
 
                 let (reply_outputs, error) = match panic_result {
                     Ok((result, mut callback_ctx)) => {
+                        let success = result.success && callback_ctx.error.is_none();
+                        metrics.record_call(plugin_kind, "flush", duration.as_secs_f64(), success);
                         let err = if result.success {
                             callback_ctx.error
                         } else {
@@ -532,6 +558,8 @@ fn worker_thread_main(
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
                         error!("Plugin flush panicked: {msg}");
+                        metrics.record_call(plugin_kind, "flush", duration.as_secs_f64(), false);
+                        metrics.record_panic(plugin_kind, "flush");
                         // reusable_outputs capacity is lost on panic.
                         (Vec::new(), Some(format!("Plugin flush panicked: {msg}")))
                     },
@@ -561,6 +589,7 @@ fn worker_thread_main(
                 };
 
                 let mut ctx_out = std::mem::take(&mut reusable_outputs);
+                let start = std::time::Instant::now();
                 let panic_result = catch_unwind(AssertUnwindSafe(|| {
                     let mut callback_ctx = CallbackContext {
                         output_packets: std::mem::take(&mut ctx_out),
@@ -578,9 +607,12 @@ fn worker_thread_main(
                     let result = tick_fn(guard.handle(), &raw const node_callbacks);
                     (result, callback_ctx)
                 }));
+                let duration = start.elapsed();
 
                 let (reply_outputs, error, done) = match panic_result {
                     Ok((result, mut callback_ctx)) => {
+                        let success = result.result.success && callback_ctx.error.is_none();
+                        metrics.record_call(plugin_kind, "tick", duration.as_secs_f64(), success);
                         let err = if result.result.success {
                             callback_ctx.error
                         } else if result.result.error_message.is_null() {
@@ -598,6 +630,8 @@ fn worker_thread_main(
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
                         error!("Plugin tick panicked: {msg}");
+                        metrics.record_call(plugin_kind, "tick", duration.as_secs_f64(), false);
+                        metrics.record_panic(plugin_kind, "tick");
                         // reusable_outputs capacity is lost on panic.
                         (Vec::new(), Some(format!("Plugin tick panicked: {msg}")), false)
                     },
@@ -615,13 +649,16 @@ fn worker_thread_main(
 
                 let api = state.api();
 
+                let start = std::time::Instant::now();
                 let panic_msg = catch_unwind(AssertUnwindSafe(|| {
                     (api.update_params)(guard.handle(), params_cstr.as_ptr())
                 }));
+                let duration = start.elapsed();
                 drop(guard);
 
                 let error = match panic_msg {
                     Ok(result) => {
+                        metrics.record_call(plugin_kind, "update_params", duration.as_secs_f64(), result.success);
                         if result.success {
                             None
                         } else if result.error_message.is_null() {
@@ -640,6 +677,8 @@ fn worker_thread_main(
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
                         error!("Plugin update_params panicked: {msg}");
+                        metrics.record_call(plugin_kind, "update_params", duration.as_secs_f64(), false);
+                        metrics.record_panic(plugin_kind, "update_params");
                         Some(format!("Plugin update_params panicked: {msg}"))
                     },
                 };
@@ -890,7 +929,14 @@ impl NativeNodeWrapper {
         }
 
         Ok(Self {
-            state: Arc::new(InstanceState::new(library, api, handle, api.version, call_timeout)),
+            state: Arc::new(InstanceState::new(
+                library,
+                api,
+                handle,
+                api.version,
+                call_timeout,
+                metadata.kind.clone(),
+            )),
             metadata,
         })
     }
@@ -946,10 +992,20 @@ impl ProcessorNode for NativeNodeWrapper {
     // control messages, and packet processing. Breaking it up would make the logic harder to follow.
     #[allow(clippy::too_many_lines)]
     async fn run(self: Box<Self>, context: NodeContext) -> Result<(), StreamKitError> {
+        use tracing::Instrument;
+
+        let node_name = context.output_sender.node_name().to_string();
+        let mode = if self.metadata.is_source { "source" } else { "processor" };
+        let span = tracing::info_span!("native_plugin",
+            plugin.kind = %self.metadata.kind,
+            node.id = %node_name,
+            mode = %mode,
+        );
+
         if self.metadata.is_source {
-            return self.run_source(context).await;
+            return self.run_source(context).instrument(span).await;
         }
-        self.run_processor(context).await
+        self.run_processor(context).instrument(span).await
     }
 }
 
@@ -2177,6 +2233,7 @@ mod ffi_guard_tests {
             std::ptr::without_provenance_mut::<c_void>(1), // non-null dummy handle
             8,
             None,
+            "test".to_string(),
         ))
     }
 
@@ -2382,6 +2439,7 @@ mod ffi_guard_tests {
             std::ptr::without_provenance_mut::<c_void>(1),
             8,
             None,
+            "test".to_string(),
         ))
     }
 
@@ -2397,6 +2455,7 @@ mod ffi_guard_tests {
             std::ptr::without_provenance_mut::<c_void>(1),
             8,
             Some(timeout),
+            "test".to_string(),
         ))
     }
 

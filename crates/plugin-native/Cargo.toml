@@ -18,6 +18,7 @@ streamkit-plugin-sdk-native = { workspace = true }
 
 libloading = "0.9"
 anyhow = "1.0"
+opentelemetry = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true, features = ["sync", "macros", "rt", "time"] }
 async-trait = { workspace = true }
