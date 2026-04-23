@@ -304,7 +304,7 @@ impl OutputSender {
     /// Check if a callback field at the given byte offset is within the
     /// host-provided `CNodeCallbacks` struct.  Returns `false` when the
     /// host is older and doesn't include this field.
-    #[allow(clippy::missing_const_for_fn)] // offset_of! result is not usable in const context for callers.
+    #[allow(clippy::missing_const_for_fn)] // Not const because self.cb() dereferences a raw pointer.
     fn callback_available(&self, field_end_offset: usize) -> bool {
         self.cb().struct_size >= field_end_offset
     }
