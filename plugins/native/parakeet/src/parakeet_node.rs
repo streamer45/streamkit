@@ -203,11 +203,13 @@ impl NativeProcessorNode for ParakeetNode {
             cache_key.2
         );
 
-        let recognizer = RECOGNIZER_CACHE.get_or_init(cache_key, |_key| {
-            plugin_info!(logger, "CACHE MISS: Creating new recognizer");
-            let recognizer_ptr = unsafe { create_recognizer(&logger, &model_dir, &config)? };
-            Ok(RecognizerWrapper::new(recognizer_ptr))
-        })?;
+        let recognizer = RECOGNIZER_CACHE
+            .get_or_init(cache_key, |_key| {
+                plugin_info!(logger, "CACHE MISS: Creating new recognizer");
+                let recognizer_ptr = unsafe { create_recognizer(&logger, &model_dir, &config)? };
+                Ok(RecognizerWrapper::new(recognizer_ptr))
+            })
+            .map_err(|e| e.to_string())?;
 
         // Initialize VAD if enabled
         let vad = if config.use_vad {

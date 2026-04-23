@@ -25,18 +25,53 @@
 //! cached value, and the `Resource` trait bound is replaced by `Send + Sync`
 //! to remove the coupling to the server-side resource manager.
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::fmt;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
+/// Errors returned by [`ResourceCache`] operations.
+#[derive(Debug)]
+pub enum CacheError {
+    /// The internal mutex is poisoned (a thread panicked while holding it).
+    Poisoned,
+    /// The user-supplied init closure failed.
+    Init(String),
+}
+
+impl fmt::Display for CacheError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Poisoned => write!(f, "resource cache mutex poisoned"),
+            Self::Init(msg) => write!(f, "resource init failed: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for CacheError {}
+
 /// Statistics for a resource cache instance.
+///
+/// # Counter semantics
+///
+/// * **`hits`** — `get_or_init` found the key in the map and returned
+///   immediately without calling the init closure.
+/// * **`misses`** — `get_or_init` did **not** find the key on the fast
+///   path, called the init closure, and inserted the result (no race).
+/// * **`init_races`** — the init closure ran, but another thread had
+///   already inserted the same key by the time re-lock occurred.  The
+///   losing value is dropped.  This counter lets dashboards spot
+///   redundant resource loads under contention.
 #[derive(Debug, Clone, Default)]
 pub struct CacheStats {
-    /// Number of cache hits (get_or_init returned existing value).
+    /// Number of cache hits (returned existing value without calling init).
     pub hits: u64,
-    /// Number of cache misses (get_or_init called init closure).
+    /// Number of cache misses (called init and inserted the result).
     pub misses: u64,
+    /// Number of init races (called init but another thread won insertion).
+    pub init_races: u64,
     /// Current number of cached entries.
     pub entries: usize,
 }
@@ -55,15 +90,16 @@ pub struct CacheStats {
 ///
 /// static ENGINE_CACHE: ResourceCache<String, MyEngine> = ResourceCache::new();
 ///
-/// let engine: Arc<MyEngine> = ENGINE_CACHE.get_or_init(
-///     "model-v2".to_string(),
-///     |key| Ok(MyEngine::load(key)?),
-/// )?;
+/// let engine: Arc<MyEngine> = ENGINE_CACHE
+///     .get_or_init("model-v2".to_string(), |key| {
+///         MyEngine::load(key).map_err(|e| e.to_string())
+///     })?;
 /// ```
 pub struct ResourceCache<K, V> {
     inner: LazyLock<Mutex<HashMap<K, Arc<V>>>>,
     hits: AtomicU64,
     misses: AtomicU64,
+    init_races: AtomicU64,
 }
 
 impl<K, V> Default for ResourceCache<K, V> {
@@ -81,6 +117,7 @@ impl<K, V> ResourceCache<K, V> {
             inner: LazyLock::new(|| Mutex::new(HashMap::new())),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
+            init_races: AtomicU64::new(0),
         }
     }
 
@@ -89,7 +126,7 @@ impl<K, V> ResourceCache<K, V> {
     /// Returns `0` if the internal mutex is poisoned (a thread panicked
     /// while holding the lock).  Callers that need to distinguish
     /// "empty" from "poisoned" should use [`stats`](Self::stats) or
-    /// inspect `get_or_init` errors instead.
+    /// inspect [`get_or_init`](Self::get_or_init) errors instead.
     pub fn len(&self) -> usize {
         self.inner.lock().map(|guard| guard.len()).unwrap_or(0)
     }
@@ -100,6 +137,12 @@ impl<K, V> ResourceCache<K, V> {
     }
 
     /// Removes all cached entries.
+    ///
+    /// An init closure that started **before** this call may re-insert its
+    /// key after `clear` returns (the insert happens under a second lock
+    /// acquisition).  This is fine for the intended "process-lifetime"
+    /// usage; callers that need stronger guarantees should coordinate
+    /// externally.
     pub fn clear(&self) {
         if let Ok(mut guard) = self.inner.lock() {
             guard.clear();
@@ -111,6 +154,7 @@ impl<K, V> ResourceCache<K, V> {
         CacheStats {
             hits: self.hits.load(Ordering::Relaxed),
             misses: self.misses.load(Ordering::Relaxed),
+            init_races: self.init_races.load(Ordering::Relaxed),
             entries: self.len(),
         }
     }
@@ -122,20 +166,20 @@ impl<K: Eq + Hash + Clone, V> ResourceCache<K, V> {
     /// The init closure runs **outside** the mutex lock so that slow
     /// resource loads (model files, GPU init) do not block other threads.
     /// If two threads race on the same key, both may call `init` but only
-    /// one value is stored; the other is dropped.  Both threads are
-    /// counted as **misses** because each paid the full init cost.
+    /// one value is stored; the other is dropped.  See [`CacheStats`] for
+    /// the precise hit / miss / init-race counting semantics.
     ///
     /// # Errors
     ///
-    /// Returns an error if the mutex is poisoned or if `init` fails.
-    pub fn get_or_init<F>(&self, key: K, init: F) -> Result<Arc<V>, String>
+    /// Returns [`CacheError::Poisoned`] if the mutex is poisoned, or
+    /// [`CacheError::Init`] if `init` fails.
+    pub fn get_or_init<F>(&self, key: K, init: F) -> Result<Arc<V>, CacheError>
     where
         F: FnOnce(&K) -> Result<V, String>,
     {
         // Fast path: check if key already exists.
         {
-            let guard =
-                self.inner.lock().map_err(|e| format!("Failed to lock resource cache: {e}"))?;
+            let guard = self.inner.lock().map_err(|_| CacheError::Poisoned)?;
             if let Some(value) = guard.get(&key) {
                 self.hits.fetch_add(1, Ordering::Relaxed);
                 return Ok(Arc::clone(value));
@@ -143,22 +187,22 @@ impl<K: Eq + Hash + Clone, V> ResourceCache<K, V> {
         }
         // Lock dropped — run init outside the lock.
 
-        let value = init(&key)?;
+        let value = init(&key).map_err(CacheError::Init)?;
 
         // Re-lock and insert if still missing (another thread may have won).
-        let mut guard =
-            self.inner.lock().map_err(|e| format!("Failed to lock resource cache: {e}"))?;
+        let mut guard = self.inner.lock().map_err(|_| CacheError::Poisoned)?;
 
-        // Another thread may have inserted while we were initializing.
-        // Count as a miss regardless — this thread paid the full init cost.
-        self.misses.fetch_add(1, Ordering::Relaxed);
-        #[allow(clippy::option_if_let_else)]
-        let arc = if let Some(existing) = guard.get(&key) {
-            Arc::clone(existing)
-        } else {
-            let arc = Arc::new(value);
-            guard.insert(key, Arc::clone(&arc));
-            arc
+        let arc = match guard.entry(key) {
+            Entry::Occupied(e) => {
+                self.init_races.fetch_add(1, Ordering::Relaxed);
+                Arc::clone(e.get())
+            },
+            Entry::Vacant(e) => {
+                self.misses.fetch_add(1, Ordering::Relaxed);
+                let arc = Arc::new(value);
+                e.insert(Arc::clone(&arc));
+                arc
+            },
         };
         drop(guard);
 
@@ -217,6 +261,7 @@ mod tests {
         let stats = cache.stats();
         assert_eq!(stats.misses, 2);
         assert_eq!(stats.hits, 1);
+        assert_eq!(stats.init_races, 0);
         assert_eq!(stats.entries, 2);
     }
 

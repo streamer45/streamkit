@@ -51,7 +51,6 @@ pub mod resource_cache;
 pub mod types;
 
 use std::ffi::CString;
-use std::sync::Arc;
 use streamkit_core::types::{Packet, PacketType};
 use streamkit_core::{InputPin, OutputPin, PinCardinality};
 
@@ -82,12 +81,12 @@ pub use types::*;
 /// Re-export commonly used types
 pub mod prelude {
     pub use crate::logger::Logger;
-    pub use crate::resource_cache::ResourceCache;
+    pub use crate::resource_cache::{CacheError, ResourceCache};
     pub use crate::types::{CLogCallback, CLogLevel};
     pub use crate::{
         native_plugin_entry, native_source_plugin_entry, plugin_debug, plugin_error, plugin_info,
         plugin_log, plugin_trace, plugin_warn, NativeProcessorNode, NativeSourceNode, NodeMetadata,
-        OutputSender, PooledAudioBuffer, PooledVideoBuffer, ResourceSupport, SourceConfig,
+        OutputSender, PooledAudioBuffer, PooledVideoBuffer, SourceConfig,
     };
     pub use streamkit_core::types::{AudioFrame, Packet, PacketType};
     pub use streamkit_core::{InputPin, OutputPin, PinCardinality, Resource, UpstreamHint};
@@ -776,97 +775,6 @@ pub trait NativeSourceNode: Sized + Send + 'static {
     /// Default: `None` (no short-circuit — all levels always "enabled").
     fn logger_mut(&mut self) -> Option<&mut Logger> {
         None
-    }
-}
-
-/// Optional trait for plugins that need shared resource caching (e.g., ML models).
-///
-/// Provides a default [`get_or_init_resource`](Self::get_or_init_resource)
-/// implementation that uses a [`ResourceCache`] to deduplicate expensive
-/// resource loads across instances.
-///
-/// Plugins can also use [`ResourceCache`] directly without implementing this
-/// trait (as the parakeet plugin does today).  The trait exists so that future
-/// SDK infrastructure (e.g. `native_plugin_entry!` auto-wiring, server-side
-/// eviction hooks) can discover and manage plugin caches generically.
-///
-/// # Migration notes
-///
-/// * The previous `Resource: Resource + 'static` bound (requiring
-///   `size_bytes()` / `resource_type()`) has been replaced by
-///   `Send + Sync + 'static`.  Integration with the server-side
-///   [`ResourceManager`](crate::streamkit_core::ResourceManager) is
-///   tracked separately.
-/// * The `deinit_resource` hook has been removed.  Cleanup should be
-///   handled via [`Drop`] on the cached value type.
-///
-/// # Example
-///
-/// ```ignore
-/// use streamkit_plugin_sdk_native::prelude::*;
-/// use streamkit_plugin_sdk_native::resource_cache::ResourceCache;
-/// use std::sync::Arc;
-///
-/// static MODEL_CACHE: ResourceCache<String, MyModel> = ResourceCache::new();
-///
-/// impl ResourceSupport for MyPlugin {
-///     type Resource = MyModel;
-///     type Key = String;
-///
-///     fn resource_cache() -> &'static ResourceCache<Self::Key, Self::Resource> {
-///         &MODEL_CACHE
-///     }
-///
-///     fn compute_resource_key(params: Option<&serde_json::Value>) -> Result<Self::Key, String> {
-///         Ok(format!("{:?}", params))
-///     }
-///
-///     fn init_resource(_key: &Self::Key, params: Option<&serde_json::Value>) -> Result<Self::Resource, String> {
-///         Ok(MyModel::load(params)?)
-///     }
-/// }
-/// ```
-pub trait ResourceSupport: NativeProcessorNode {
-    /// The cached resource type.
-    type Resource: Send + Sync + 'static;
-
-    /// Cache key type. Use a tuple for composite keys, e.g. `(String, i32, String)`.
-    type Key: Eq + std::hash::Hash + Clone + Send + Sync;
-
-    /// Returns a reference to the global cache for this plugin type.
-    fn resource_cache() -> &'static crate::resource_cache::ResourceCache<Self::Key, Self::Resource>;
-
-    /// Compute a cache key from node parameters.
-    ///
-    /// Only parameters that affect resource creation should contribute to the key
-    /// (e.g., model path, GPU device ID, thread count).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the parameters are invalid or missing required fields.
-    fn compute_resource_key(params: Option<&serde_json::Value>) -> Result<Self::Key, String>;
-
-    /// Create a new resource instance. Called on cache miss only.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if resource initialization fails (e.g., model file not
-    /// found, GPU initialization error).
-    fn init_resource(
-        key: &Self::Key,
-        params: Option<&serde_json::Value>,
-    ) -> Result<Self::Resource, String>;
-
-    /// Get or create the cached resource (provided default implementation).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if key computation or resource initialization fails.
-    fn get_or_init_resource(
-        params: Option<&serde_json::Value>,
-    ) -> Result<Arc<Self::Resource>, String> {
-        let key = Self::compute_resource_key(params)?;
-        Self::resource_cache().get_or_init(key, |k| Self::init_resource(k, params))
     }
 }
 
