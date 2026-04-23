@@ -1065,9 +1065,9 @@ impl NativeNodeWrapper {
     /// [`NodeState::Failed`] so the pipeline coordinator sees the failure
     /// even though the worker thread continues running.
     ///
-    /// Bumps `plugin.errors` from the caller (async) side on timeout so
-    /// timeouts are distinguishable from successful-but-slow calls
-    /// recorded by the worker.
+    /// Bumps `plugin.calls` + `plugin.timeouts` (not `plugin.errors`) so
+    /// timeouts are distinguishable from FFI errors and from
+    /// successful-but-slow calls recorded by the worker.
     async fn await_reply<T>(
         &self,
         op: &str,
