@@ -435,4 +435,3 @@ pub fn namespaced_kind(original_kind: &str) -> Result<String> {
 
     Ok(format!("{PLUGIN_KIND_PREFIX}{original_kind}"))
 }
-

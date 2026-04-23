@@ -225,7 +225,9 @@ struct InstanceState {
     /// - v9+: enable zero-copy binary buffer_handle
     api_version: u32,
     call_timeout: Option<std::time::Duration>,
-    /// Plugin kind string, used for metrics labels on the worker thread.
+    /// Raw plugin kind (e.g. `whisper`), not the namespaced form
+    /// (`plugin::native::whisper`) used in pipeline YAML / server logs.
+    /// Used for metric labels and worker-thread error!() fields.
     plugin_kind: String,
     /// Pre-built metric labels per operation, avoiding per-call heap allocation.
     labels_process: [KeyValue; 2],
@@ -503,7 +505,7 @@ fn worker_thread_main(
                     },
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
-                        error!(plugin.kind = %plugin_kind, node.id = %node_id, "Plugin process_packet panicked: {msg}");
+                        error!(plugin_kind = %plugin_kind, node_id = %node_id, "Plugin process_packet panicked: {msg}");
                         metrics.record(&state.labels_process, duration.as_secs_f64(), CallOutcome::Panic);
                         // reusable_outputs capacity is lost on panic.
                         (Vec::new(), Some(format!("Plugin process_packet panicked: {msg}")))
@@ -571,7 +573,7 @@ fn worker_thread_main(
                     },
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
-                        error!(plugin.kind = %plugin_kind, node.id = %node_id, "Plugin flush panicked: {msg}");
+                        error!(plugin_kind = %plugin_kind, node_id = %node_id, "Plugin flush panicked: {msg}");
                         metrics.record(&state.labels_flush, duration.as_secs_f64(), CallOutcome::Panic);
                         // reusable_outputs capacity is lost on panic.
                         (Vec::new(), Some(format!("Plugin flush panicked: {msg}")))
@@ -643,7 +645,7 @@ fn worker_thread_main(
                     },
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
-                        error!(plugin.kind = %plugin_kind, node.id = %node_id, "Plugin tick panicked: {msg}");
+                        error!(plugin_kind = %plugin_kind, node_id = %node_id, "Plugin tick panicked: {msg}");
                         metrics.record(&state.labels_tick, duration.as_secs_f64(), CallOutcome::Panic);
                         // reusable_outputs capacity is lost on panic.
                         (Vec::new(), Some(format!("Plugin tick panicked: {msg}")), false)
@@ -690,7 +692,7 @@ fn worker_thread_main(
                     },
                     Err(payload) => {
                         let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
-                        error!(plugin.kind = %plugin_kind, node.id = %node_id, "Plugin update_params panicked: {msg}");
+                        error!(plugin_kind = %plugin_kind, node_id = %node_id, "Plugin update_params panicked: {msg}");
                         metrics.record(&state.labels_update_params, duration.as_secs_f64(), CallOutcome::Panic);
                         Some(format!("Plugin update_params panicked: {msg}"))
                     },
@@ -728,7 +730,7 @@ fn worker_thread_main(
                                 let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(
                                     &*payload,
                                 );
-                                error!(plugin.kind = %plugin_kind, node.id = %node_id, "Plugin on_upstream_hint panicked: {msg}");
+                                error!(plugin_kind = %plugin_kind, node_id = %node_id, "Plugin on_upstream_hint panicked: {msg}");
                             },
                             Ok(_) => {},
                         }
