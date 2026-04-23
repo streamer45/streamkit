@@ -209,7 +209,7 @@ impl NativeProcessorNode for ParakeetNode {
                 let recognizer_ptr = unsafe { create_recognizer(&logger, &model_dir, &config)? };
                 Ok(RecognizerWrapper::new(recognizer_ptr))
             })
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("recognizer cache: {e}"))?;
 
         // Initialize VAD if enabled
         let vad = if config.use_vad {

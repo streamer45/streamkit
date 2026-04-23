@@ -89,7 +89,7 @@ pub mod prelude {
         OutputSender, PooledAudioBuffer, PooledVideoBuffer, SourceConfig,
     };
     pub use streamkit_core::types::{AudioFrame, Packet, PacketType};
-    pub use streamkit_core::{InputPin, OutputPin, PinCardinality, Resource, UpstreamHint};
+    pub use streamkit_core::{InputPin, OutputPin, PinCardinality, UpstreamHint};
 }
 
 /// Metadata about a node type

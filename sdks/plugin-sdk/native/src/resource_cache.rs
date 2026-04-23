@@ -16,14 +16,6 @@
 //! lifetime of the process.  A future bridge between the two (e.g. having
 //! `ResourceManager` call [`ResourceCache::clear`]) is planned but not yet
 //! implemented.
-//!
-//! # Migration note
-//!
-//! The previous `ResourceSupport` trait required `Resource: Resource + 'static`
-//! (with `size_bytes()` / `resource_type()`) and offered a `deinit_resource`
-//! hook.  The new design drops both: cleanup is handled via `Drop` on the
-//! cached value, and the `Resource` trait bound is replaced by `Send + Sync`
-//! to remove the coupling to the server-side resource manager.
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -134,6 +126,16 @@ impl<K, V> ResourceCache<K, V> {
     /// Returns `true` if the cache contains no entries.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Returns `true` if the internal mutex has been poisoned.
+    ///
+    /// A poisoned mutex means a thread panicked while holding the lock.
+    /// After poisoning, [`len`](Self::len) and [`stats`](Self::stats)
+    /// return zero-valued results and [`get_or_init`](Self::get_or_init)
+    /// returns [`CacheError::Poisoned`].
+    pub fn is_poisoned(&self) -> bool {
+        self.inner.is_poisoned()
     }
 
     /// Removes all cached entries.
@@ -287,5 +289,43 @@ mod tests {
         for r in &results {
             assert!(Arc::ptr_eq(r, &results[0]));
         }
+    }
+
+    #[test]
+    fn init_races_counted() {
+        use std::sync::Barrier;
+        use std::thread;
+
+        static RACE_CACHE: ResourceCache<u32, String> = ResourceCache::new();
+        let thread_count = 10;
+        // Two barriers: one to start together, one inside init to force overlap.
+        let start = Arc::new(Barrier::new(thread_count));
+        let inside_init = Arc::new(Barrier::new(thread_count));
+        let handles: Vec<_> = (0..thread_count)
+            .map(|i| {
+                let s = start.clone();
+                let ii = inside_init.clone();
+                thread::spawn(move || {
+                    s.wait();
+                    RACE_CACHE
+                        .get_or_init(42, |_| {
+                            // All threads enter init and wait here, guaranteeing overlap.
+                            ii.wait();
+                            Ok(format!("from-{i}"))
+                        })
+                        .unwrap()
+                })
+            })
+            .collect();
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        for r in &results {
+            assert!(Arc::ptr_eq(r, &results[0]));
+        }
+        let stats = RACE_CACHE.stats();
+        assert_eq!(stats.entries, 1);
+        assert_eq!(stats.misses, 1);
+        // All threads entered init; all but the winner are races.
+        assert!(stats.init_races >= 1, "expected at least 1 init race, got {}", stats.init_races);
+        assert_eq!(stats.misses + stats.init_races, thread_count as u64);
     }
 }
