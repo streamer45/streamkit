@@ -47,6 +47,17 @@ impl Drop for RecognizerWrapper {
 static RECOGNIZER_CACHE: ResourceCache<(String, i32, String), RecognizerWrapper> =
     ResourceCache::new();
 
+struct ParakeetResources;
+
+impl ResourceSupport for ParakeetResources {
+    type Key = (String, i32, String);
+    type Resource = RecognizerWrapper;
+
+    fn resource_cache() -> &'static ResourceCache<Self::Key, Self::Resource> {
+        &RECOGNIZER_CACHE
+    }
+}
+
 pub struct ParakeetNode {
     config: ParakeetConfig,
     recognizer: Arc<RecognizerWrapper>,
@@ -208,13 +219,12 @@ impl NativeProcessorNode for ParakeetNode {
             cache_key.2
         );
 
-        let recognizer = RECOGNIZER_CACHE
-            .get_or_init(cache_key, |_key| {
-                plugin_info!(logger, "CACHE MISS: Creating new recognizer");
-                let recognizer_ptr = unsafe { create_recognizer(&logger, &model_dir, &config)? };
-                Ok(RecognizerWrapper::new(recognizer_ptr))
-            })
-            .map_err(|e| format!("recognizer cache: {e}"))?;
+        let recognizer = ParakeetResources::get_or_init_resource(cache_key, |_| {
+            plugin_info!(logger, "CACHE MISS: Creating new recognizer");
+            let recognizer_ptr = unsafe { create_recognizer(&logger, &model_dir, &config)? };
+            Ok(RecognizerWrapper::new(recognizer_ptr))
+        })
+        .map_err(|e| format!("recognizer cache: {e}"))?;
 
         // Initialize VAD if enabled
         let vad = if config.use_vad {

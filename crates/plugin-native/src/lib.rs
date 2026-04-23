@@ -15,7 +15,10 @@ use libloading::{Library, Symbol};
 use std::path::Path;
 use std::sync::Arc;
 use streamkit_core::{NodeRegistry, PinCardinality};
-use streamkit_plugin_sdk_native::types::{CNativePluginAPI, NATIVE_PLUGIN_API_VERSION};
+use streamkit_plugin_sdk_native::types::PLUGIN_SET_LOG_ENABLED_SYMBOL;
+use streamkit_plugin_sdk_native::types::{
+    CNativePluginAPI, CSetLogEnabledCallback, NATIVE_PLUGIN_API_VERSION,
+};
 use streamkit_plugin_sdk_native::{conversions, types::PLUGIN_API_SYMBOL};
 use tracing::{info, warn};
 
@@ -37,6 +40,7 @@ pub struct LoadedNativePlugin {
     api: &'static CNativePluginAPI,
     metadata: PluginMetadata,
     call_timeout: Option<std::time::Duration>,
+    set_log_enabled_callback: Option<CSetLogEnabledCallback>,
 }
 
 /// Metadata extracted from a plugin
@@ -129,6 +133,24 @@ impl LoadedNativePlugin {
         // Extract metadata
         let mut metadata = Self::extract_metadata(api)?;
 
+        let set_log_enabled_callback = if api.version >= 9 {
+            // SAFETY: Optional extension symbol. When present, the SDK macro
+            // exports it with the exact `CSetLogEnabledCallback` signature.
+            match unsafe { library.get::<CSetLogEnabledCallback>(PLUGIN_SET_LOG_ENABLED_SYMBOL) } {
+                Ok(symbol) => Some(*symbol),
+                Err(e) => {
+                    warn!(
+                        kind = %metadata.kind,
+                        error = %e,
+                        "v9 plugin did not export log-enabled callback symbol"
+                    );
+                    None
+                },
+            }
+        } else {
+            None
+        };
+
         // Detect source plugin capability from the v3 API fields.
         // If the plugin provides `get_source_config`, we probe it with a temporary
         // instance to read tick parameters.  If instance creation fails we fall back
@@ -171,6 +193,7 @@ impl LoadedNativePlugin {
             api,
             metadata,
             call_timeout: Some(wrapper::DEFAULT_CALL_TIMEOUT),
+            set_log_enabled_callback,
         })
     }
 
@@ -346,6 +369,7 @@ impl LoadedNativePlugin {
             self.metadata.clone(),
             params,
             self.call_timeout,
+            self.set_log_enabled_callback,
         )?;
 
         Ok(Box::new(wrapper))

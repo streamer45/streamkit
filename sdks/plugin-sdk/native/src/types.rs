@@ -82,6 +82,9 @@ pub type CLogCallback = extern "C" fn(CLogLevel, *const c_char, *const c_char, *
 /// entirely.
 pub type CLogEnabledCallback = extern "C" fn(CLogLevel, *const c_char, *mut c_void) -> bool;
 
+/// Function exported by v9 plugins to install the host's log-enabled callback.
+pub type CSetLogEnabledCallback = extern "C" fn(CPluginHandle, CLogEnabledCallback, *mut c_void);
+
 /// Result type for C ABI functions
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -459,8 +462,12 @@ impl CTickResult {
 /// The main plugin API structure.
 ///
 /// Plugins export a function that returns a pointer to this struct.
-/// Fields added in v3 (`get_source_config`, `tick`) are `Option` for
-/// backward compatibility; processor plugins set them to `None`.
+/// Fields added after the required v6 layout are `Option` for backward
+/// compatibility; processor plugins set source-only functions to `None`.
+///
+/// v9 extensions that would grow this struct live behind separate exported
+/// symbols so a v9 host can safely load v6–v8 plugins compiled with the
+/// smaller layout.
 #[repr(C)]
 pub struct CNativePluginAPI {
     /// API version for compatibility checking.
@@ -544,15 +551,6 @@ pub struct CNativePluginAPI {
     /// `None` for processor plugins or source plugins that don't handle
     /// hints.
     pub on_upstream_hint: Option<extern "C" fn(CPluginHandle, *const c_char) -> CResult>,
-
-    // ── v9 additions ──────────────────────────────────────────────────────
-    /// Set the log-enabled callback on a plugin instance.
-    ///
-    /// The host calls this after `create_instance` for v9 plugins so the
-    /// plugin can short-circuit log formatting when the level is disabled.
-    /// `None` when not supported (v8 and earlier).
-    pub set_log_enabled_callback:
-        Option<extern "C" fn(CPluginHandle, CLogEnabledCallback, *mut c_void)>,
 }
 
 // ── v6 additions: frame pool allocation ────────────────────────────────
@@ -654,3 +652,23 @@ pub struct CNodeCallbacks {
 
 /// Symbol name that plugins must export
 pub const PLUGIN_API_SYMBOL: &[u8] = b"streamkit_native_plugin_api\0";
+
+/// Optional v9 symbol for installing the log-enabled callback.
+pub const PLUGIN_SET_LOG_ENABLED_SYMBOL: &[u8] =
+    b"streamkit_native_plugin_set_log_enabled_callback\0";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_plugin_api_layout_stays_v8_sized_for_old_plugins() {
+        let pointer_size = std::mem::size_of::<*const ()>();
+        let version_with_padding = pointer_size;
+        let function_fields = 10;
+        assert_eq!(
+            std::mem::size_of::<CNativePluginAPI>(),
+            version_with_padding + function_fields * pointer_size
+        );
+    }
+}

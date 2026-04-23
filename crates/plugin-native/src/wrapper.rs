@@ -75,7 +75,7 @@ use streamkit_plugin_sdk_native::{
     conversions,
     types::{
         CAllocAudioResult, CAllocVideoResult, CNativePluginAPI, CNodeCallbacks, CPacket,
-        CPluginHandle, CResult,
+        CPluginHandle, CResult, CSetLogEnabledCallback,
     },
 };
 use tracing::{error, info, warn, Instrument};
@@ -923,6 +923,7 @@ impl NativeNodeWrapper {
         metadata: PluginMetadata,
         params: Option<&serde_json::Value>,
         call_timeout: Option<std::time::Duration>,
+        set_log_enabled_callback: Option<CSetLogEnabledCallback>,
     ) -> Result<Self, StreamKitError> {
         // Convert params to JSON string if provided
         let params_json = params
@@ -959,7 +960,7 @@ impl NativeNodeWrapper {
         // `enabled_user_data`, it must ensure the pointed-to data is
         // Send+Sync-safe.
         if api.version >= 9 {
-            if let Some(set_cb) = api.set_log_enabled_callback {
+            if let Some(set_cb) = set_log_enabled_callback {
                 ffi_guard_unit(|| {
                     set_cb(handle, plugin_log_enabled_callback, std::ptr::null_mut());
                 });
@@ -2275,7 +2276,6 @@ mod ffi_guard_tests {
             tick: None,
             get_runtime_param_schema: None,
             on_upstream_hint: None,
-            set_log_enabled_callback: None,
         }
     }
 

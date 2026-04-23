@@ -92,6 +92,30 @@ pub struct ResourceCache<K, V> {
     init_races: AtomicU64,
 }
 
+/// Convenience trait for plugin types that expose a shared [`ResourceCache`].
+pub trait ResourceSupport {
+    /// Cache lookup key.
+    type Key: Eq + Hash + Clone + 'static;
+    /// Cached resource type.
+    type Resource: 'static;
+
+    /// Return the static cache backing this resource.
+    fn resource_cache() -> &'static ResourceCache<Self::Key, Self::Resource>;
+
+    /// Return the cached value for `key`, initializing it if missing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CacheError::Poisoned`] if the cache mutex is poisoned, or
+    /// [`CacheError::Init`] if the initializer returns an error.
+    fn get_or_init_resource<F>(key: Self::Key, init: F) -> Result<Arc<Self::Resource>, CacheError>
+    where
+        F: FnOnce(&Self::Key) -> Result<Self::Resource, String>,
+    {
+        Self::resource_cache().get_or_init(key, init)
+    }
+}
+
 impl<K, V> Default for ResourceCache<K, V> {
     fn default() -> Self {
         Self::new()
@@ -336,5 +360,33 @@ mod tests {
         assert_eq!(stats.misses, 1);
         assert!(stats.init_races >= 1, "expected at least 1 init race, got {}", stats.init_races);
         assert_eq!(stats.misses + stats.init_races, thread_count as u64);
+    }
+
+    #[test]
+    fn resource_support_delegates_to_static_cache() {
+        struct TestResources;
+
+        static CACHE: ResourceCache<&'static str, String> = ResourceCache::new();
+
+        impl ResourceSupport for TestResources {
+            type Key = &'static str;
+            type Resource = String;
+
+            fn resource_cache() -> &'static ResourceCache<Self::Key, Self::Resource> {
+                &CACHE
+            }
+        }
+
+        CACHE.clear();
+
+        let first =
+            TestResources::get_or_init_resource("model", |_| Ok("loaded".to_string())).unwrap();
+        let second = TestResources::get_or_init_resource("model", |_| {
+            Err("initializer should not be called on cache hit".to_string())
+        })
+        .unwrap();
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(CACHE.stats().hits, 1);
     }
 }

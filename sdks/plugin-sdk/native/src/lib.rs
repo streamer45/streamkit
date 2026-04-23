@@ -81,7 +81,7 @@ pub use types::*;
 /// Re-export commonly used types
 pub mod prelude {
     pub use crate::logger::Logger;
-    pub use crate::resource_cache::{CacheError, ResourceCache};
+    pub use crate::resource_cache::{CacheError, ResourceCache, ResourceSupport};
     pub use crate::types::{CLogCallback, CLogLevel};
     pub use crate::{
         native_plugin_entry, native_source_plugin_entry, plugin_debug, plugin_error, plugin_info,
@@ -888,9 +888,17 @@ macro_rules! native_plugin_entry {
                 tick: None,
                 get_runtime_param_schema: Some(__plugin_get_runtime_param_schema),
                 on_upstream_hint: None,
-                set_log_enabled_callback: Some(__plugin_set_log_enabled_callback),
             };
             &API
+        }
+
+        #[no_mangle]
+        pub extern "C" fn streamkit_native_plugin_set_log_enabled_callback(
+            handle: $crate::types::CPluginHandle,
+            callback: $crate::types::CLogEnabledCallback,
+            user_data: *mut std::os::raw::c_void,
+        ) {
+            __plugin_set_log_enabled_callback(handle, callback, user_data);
         }
 
         extern "C" fn __plugin_get_metadata() -> *const $crate::types::CNodeMetadata {
@@ -1096,9 +1104,17 @@ macro_rules! native_source_plugin_entry {
                 tick: Some(__plugin_tick),
                 get_runtime_param_schema: Some(__plugin_get_runtime_param_schema),
                 on_upstream_hint: Some(__plugin_on_upstream_hint),
-                set_log_enabled_callback: Some(__plugin_set_log_enabled_callback),
             };
             &API
+        }
+
+        #[no_mangle]
+        pub extern "C" fn streamkit_native_plugin_set_log_enabled_callback(
+            handle: $crate::types::CPluginHandle,
+            callback: $crate::types::CLogEnabledCallback,
+            user_data: *mut std::os::raw::c_void,
+        ) {
+            __plugin_set_log_enabled_callback(handle, callback, user_data);
         }
 
         extern "C" fn __plugin_get_metadata() -> *const $crate::types::CNodeMetadata {
