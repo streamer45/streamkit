@@ -3953,6 +3953,178 @@ async fn metrics_middleware(req: axum::http::Request<Body>, next: Next) -> Respo
     response
 }
 
+// ---------------------------------------------------------------------------
+// MCP helpers — public API surface for crate::mcp
+// ---------------------------------------------------------------------------
+
+/// Validate a pipeline YAML string with optional mode, returning the result as
+/// a serialized JSON value.
+///
+/// This is the shared implementation behind `POST /api/v1/validate` and the MCP
+/// `validate_pipeline` tool.
+///
+/// # Errors
+///
+/// Returns a serialization error only if the internal response cannot be
+/// serialized to JSON (should never happen in practice).
+#[cfg(feature = "mcp")]
+pub fn validate_pipeline_yaml(
+    app_state: &Arc<AppState>,
+    perms: &crate::permissions::Permissions,
+    yaml: &str,
+    mode: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let mut errors: Vec<ValidateDiagnostic> = Vec::new();
+    let mut warnings: Vec<ValidateDiagnostic> = Vec::new();
+
+    let user_pipeline = match streamkit_api::yaml::parse_yaml(yaml) {
+        Ok(p) => p,
+        Err(e) => {
+            errors.push(ValidateDiagnostic {
+                kind: DiagnosticKind::Parse,
+                message: e,
+                node_id: None,
+                connection_id: None,
+            });
+            let resp = ValidateResponse { valid: false, errors, warnings, graph: None };
+            return serde_json::to_value(resp).map_err(|e| format!("serialization error: {e}"));
+        },
+    };
+
+    let pipeline = match compile(user_pipeline) {
+        Ok(p) => p,
+        Err(e) => {
+            errors.push(ValidateDiagnostic {
+                kind: DiagnosticKind::Parse,
+                message: e,
+                node_id: None,
+                connection_id: None,
+            });
+            let resp = ValidateResponse { valid: false, errors, warnings, graph: None };
+            return serde_json::to_value(resp).map_err(|e| format!("serialization error: {e}"));
+        },
+    };
+
+    if pipeline.nodes.is_empty() {
+        errors.push(ValidateDiagnostic {
+            kind: DiagnosticKind::Schema,
+            message: "Pipeline is empty. Add some nodes before validating.".into(),
+            node_id: None,
+            connection_id: None,
+        });
+        let resp = ValidateResponse { valid: false, errors, warnings, graph: None };
+        return serde_json::to_value(resp).map_err(|e| format!("serialization error: {e}"));
+    }
+
+    let registry_guard =
+        read_registry(app_state).map_err(|_| "Failed to read node registry".to_string())?;
+    let node_defs =
+        validate_nodes(&pipeline, &registry_guard, Some(perms), &mut errors, &mut warnings);
+    drop(registry_guard);
+
+    let pipeline_mode = match mode {
+        Some("dynamic") => Some(PipelineMode::Dynamic),
+        Some("oneshot") => Some(PipelineMode::Oneshot),
+        _ => None,
+    };
+    check_mode(&pipeline, pipeline_mode, &mut errors);
+    validate_connections(&pipeline, &node_defs, &mut errors);
+    collect_file_path_errors(&pipeline, &app_state.config.security, &mut errors);
+
+    let graph = Some(ValidateGraph {
+        nodes: pipeline
+            .nodes
+            .iter()
+            .map(|(id, n)| ValidateGraphNode {
+                id: id.clone(),
+                kind: n.kind.clone(),
+                params: n.params.clone(),
+            })
+            .collect(),
+        connections: pipeline
+            .connections
+            .iter()
+            .map(|c| ValidateGraphConnection {
+                from_node: c.from_node.clone(),
+                from_pin: c.from_pin.clone(),
+                to_node: c.to_node.clone(),
+                to_pin: c.to_pin.clone(),
+            })
+            .collect(),
+    });
+
+    let valid = errors.is_empty();
+    let resp = ValidateResponse { valid, errors, warnings, graph };
+    serde_json::to_value(resp).map_err(|e| format!("serialization error: {e}"))
+}
+
+/// Run all file-path security checks against a pipeline.
+///
+/// # Errors
+///
+/// Returns a human-readable error message if any path violates the security
+/// policy.
+#[cfg(feature = "mcp")]
+pub fn check_file_path_security(
+    pipeline: &Pipeline,
+    security_config: &crate::config::SecurityConfig,
+) -> Result<(), String> {
+    for result in [
+        validate_file_reader_paths(pipeline, security_config),
+        validate_file_writer_paths(pipeline, security_config),
+        validate_script_paths(pipeline, security_config),
+    ] {
+        if let Err(e) = result {
+            return Err(app_error_message(e));
+        }
+    }
+    Ok(())
+}
+
+/// Build synthetic `NodeDefinition`s for oneshot-only virtual nodes.
+///
+/// Public wrapper for the MCP `list_nodes` tool.
+#[cfg(feature = "mcp")]
+pub fn mcp_synthetic_node_definitions() -> Vec<streamkit_core::NodeDefinition> {
+    synthetic_node_definitions()
+}
+
+/// Read the node registry, returning an error string on failure.
+///
+/// Public wrapper for the MCP `list_nodes` tool.
+///
+/// # Errors
+///
+/// Returns an error string if the registry `RwLock` is poisoned.
+#[cfg(feature = "mcp")]
+pub fn mcp_read_registry(
+    app_state: &Arc<AppState>,
+) -> Result<std::sync::RwLockReadGuard<'_, streamkit_core::NodeRegistry>, String> {
+    read_registry(app_state).map_err(|_| "Failed to read node registry".to_string())
+}
+
+/// Populate a session's in-memory pipeline from a compiled engine pipeline.
+///
+/// Public wrapper for the MCP `create_session` tool.
+#[cfg(feature = "mcp")]
+pub async fn mcp_populate_session_pipeline(
+    session: &crate::session::Session,
+    engine_pipeline: &Pipeline,
+) {
+    populate_session_pipeline(session, engine_pipeline).await;
+}
+
+/// Send all node and connection control messages to the engine actor.
+///
+/// Public wrapper for the MCP `create_session` tool.
+#[cfg(feature = "mcp")]
+pub async fn mcp_send_pipeline_to_engine(
+    session: &crate::session::Session,
+    engine_pipeline: &Pipeline,
+) {
+    send_pipeline_to_engine(session, engine_pipeline).await;
+}
+
 /// Creates the Axum application with all routes and middleware.
 ///
 /// # Arguments
@@ -4130,7 +4302,7 @@ pub fn create_app(
         oneshot_route = oneshot_route.layer(ConcurrencyLimitLayer::new(max));
     }
 
-    #[cfg_attr(not(feature = "moq"), allow(unused_mut))]
+    #[cfg_attr(not(any(feature = "moq", feature = "mcp")), allow(unused_mut))]
     let mut router = Router::new()
         .route("/healthz", get(health_handler))
         .route("/health", get(health_handler))
@@ -4218,6 +4390,23 @@ pub fn create_app(
     {
         router = router.route("/api/v1/moq/fingerprints", get(get_moq_fingerprints_handler));
         router = router.route("/certificate.sha256", get(get_certificate_sha256_handler));
+    }
+
+    // Mount MCP (Model Context Protocol) endpoint when the feature is enabled
+    // and the config has it turned on.  Sits under /api so auth_guard_middleware,
+    // origin_guard_middleware, CORS, tracing, and metrics all apply automatically.
+    #[cfg(feature = "mcp")]
+    {
+        if app_state.config.mcp.enabled {
+            info!(
+                endpoint = %app_state.config.mcp.endpoint,
+                "MCP endpoint enabled"
+            );
+            router = router.nest_service(
+                &app_state.config.mcp.endpoint,
+                crate::mcp::streamable_http_service(Arc::clone(&app_state)),
+            );
+        }
     }
 
     // Add MSE streaming route.

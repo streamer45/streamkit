@@ -137,6 +137,17 @@ moq-lite = { version = "0.15.13", optional = true }
 blake2 = "0.10.6"
 async-stream = "0.3.6"
 
+# MCP (Model Context Protocol) server (optional)
+rmcp = { version = "1.5", features = [
+  "server",
+  "transport-streamable-http-server",
+  "transport-streamable-http-server-session",
+  "macros",
+  "schemars",
+], optional = true }
+# Used by the MCP module to extract HTTP request parts from rmcp's request context.
+http = { version = "1", optional = true }
+
 [features]
 default = ["script", "compositor", "gpu", "moq"]
 tokio-console = ["console-subscriber"]
@@ -145,6 +156,7 @@ profiling = ["dep:pprof", "dep:tikv-jemallocator", "dep:jemalloc_pprof"]
 # Use this to find hot allocation sites. Output is written on graceful shutdown.
 dhat-heap = ["dep:dhat"]
 moq = ["dep:moq-native", "dep:moq-lite"]
+mcp = ["dep:rmcp", "dep:http"]
 script = ["streamkit-nodes/script", "streamkit-engine/script"]
 compositor = ["streamkit-nodes/compositor", "streamkit-engine/compositor"]
 gpu = ["compositor", "streamkit-nodes/gpu", "streamkit-engine/gpu"]

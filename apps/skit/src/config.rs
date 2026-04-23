@@ -824,6 +824,27 @@ impl Default for SecurityConfig {
     }
 }
 
+fn default_mcp_endpoint() -> String {
+    "/api/v1/mcp".to_string()
+}
+
+/// MCP (Model Context Protocol) server configuration.
+#[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
+pub struct McpConfig {
+    /// Enable the embedded MCP endpoint (default: false).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Streamable HTTP endpoint path (default: "/api/v1/mcp").
+    #[serde(default = "default_mcp_endpoint")]
+    pub endpoint: String,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self { enabled: false, endpoint: default_mcp_endpoint() }
+    }
+}
+
 /// Root configuration for the StreamKit server.
 #[derive(Deserialize, Serialize, Default, Debug, Clone, JsonSchema)]
 pub struct Config {
@@ -859,6 +880,9 @@ pub struct Config {
 
     #[serde(default)]
     pub auth: AuthConfig,
+
+    #[serde(default)]
+    pub mcp: McpConfig,
 }
 
 #[derive(Debug)]

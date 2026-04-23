@@ -40,6 +40,8 @@ mod logging;
 mod marketplace;
 mod marketplace_installer;
 mod marketplace_security;
+#[cfg(feature = "mcp")]
+mod mcp;
 #[cfg(feature = "moq")]
 mod moq_gateway;
 mod mse_gateway;
