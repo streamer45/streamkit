@@ -781,8 +781,24 @@ pub trait NativeSourceNode: Sized + Send + 'static {
 
 /// Optional trait for plugins that need shared resource caching (e.g., ML models).
 ///
-/// Provides a default `get_or_init_resource` implementation that uses a
-/// [`ResourceCache`] to deduplicate expensive resource loads across instances.
+/// Provides a default [`get_or_init_resource`](Self::get_or_init_resource)
+/// implementation that uses a [`ResourceCache`] to deduplicate expensive
+/// resource loads across instances.
+///
+/// Plugins can also use [`ResourceCache`] directly without implementing this
+/// trait (as the parakeet plugin does today).  The trait exists so that future
+/// SDK infrastructure (e.g. `native_plugin_entry!` auto-wiring, server-side
+/// eviction hooks) can discover and manage plugin caches generically.
+///
+/// # Migration notes
+///
+/// * The previous `Resource: Resource + 'static` bound (requiring
+///   `size_bytes()` / `resource_type()`) has been replaced by
+///   `Send + Sync + 'static`.  Integration with the server-side
+///   [`ResourceManager`](crate::streamkit_core::ResourceManager) is
+///   tracked separately.
+/// * The `deinit_resource` hook has been removed.  Cleanup should be
+///   handled via [`Drop`] on the cached value type.
 ///
 /// # Example
 ///
@@ -850,7 +866,7 @@ pub trait ResourceSupport: NativeProcessorNode {
         params: Option<&serde_json::Value>,
     ) -> Result<Arc<Self::Resource>, String> {
         let key = Self::compute_resource_key(params)?;
-        Self::resource_cache().get_or_init(key.clone(), || Self::init_resource(&key, params))
+        Self::resource_cache().get_or_init(key, |k| Self::init_resource(k, params))
     }
 }
 

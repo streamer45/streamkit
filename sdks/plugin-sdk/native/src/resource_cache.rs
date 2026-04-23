@@ -7,6 +7,23 @@
 //! Replaces the hand-rolled `LazyLock<Mutex<HashMap<K, Arc<V>>>>` pattern
 //! used across all native plugins for caching expensive shared resources
 //! (ML models, inference engines, etc.).
+//!
+//! # Relationship to `ResourceManager`
+//!
+//! [`crate::streamkit_core::ResourceManager`] provides server-side LRU
+//! eviction and memory-budget accounting.  `ResourceCache` is intentionally
+//! simpler: it lives inside the plugin `.so` and owns resources for the
+//! lifetime of the process.  A future bridge between the two (e.g. having
+//! `ResourceManager` call [`ResourceCache::clear`]) is planned but not yet
+//! implemented.
+//!
+//! # Migration note
+//!
+//! The previous `ResourceSupport` trait required `Resource: Resource + 'static`
+//! (with `size_bytes()` / `resource_type()`) and offered a `deinit_resource`
+//! hook.  The new design drops both: cleanup is handled via `Drop` on the
+//! cached value, and the `Resource` trait bound is replaced by `Send + Sync`
+//! to remove the coupling to the server-side resource manager.
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -40,7 +57,7 @@ pub struct CacheStats {
 ///
 /// let engine: Arc<MyEngine> = ENGINE_CACHE.get_or_init(
 ///     "model-v2".to_string(),
-///     || Ok(MyEngine::load("model-v2")?),
+///     |key| Ok(MyEngine::load(key)?),
 /// )?;
 /// ```
 pub struct ResourceCache<K, V> {
@@ -48,12 +65,6 @@ pub struct ResourceCache<K, V> {
     hits: AtomicU64,
     misses: AtomicU64,
 }
-
-// SAFETY: `LazyLock<Mutex<HashMap<K, Arc<V>>>>` is `Send` when `K: Send` and
-// `V: Send + Sync` (because `Arc<V>` requires `Send + Sync`).  The atomic
-// counters are unconditionally `Send + Sync`.
-unsafe impl<K: Send, V: Send + Sync> Send for ResourceCache<K, V> {}
-unsafe impl<K: Send + Sync, V: Send + Sync> Sync for ResourceCache<K, V> {}
 
 impl<K, V> Default for ResourceCache<K, V> {
     fn default() -> Self {
@@ -74,6 +85,11 @@ impl<K, V> ResourceCache<K, V> {
     }
 
     /// Returns the number of cached entries.
+    ///
+    /// Returns `0` if the internal mutex is poisoned (a thread panicked
+    /// while holding the lock).  Callers that need to distinguish
+    /// "empty" from "poisoned" should use [`stats`](Self::stats) or
+    /// inspect `get_or_init` errors instead.
     pub fn len(&self) -> usize {
         self.inner.lock().map(|guard| guard.len()).unwrap_or(0)
     }
@@ -106,14 +122,15 @@ impl<K: Eq + Hash + Clone, V> ResourceCache<K, V> {
     /// The init closure runs **outside** the mutex lock so that slow
     /// resource loads (model files, GPU init) do not block other threads.
     /// If two threads race on the same key, both may call `init` but only
-    /// one value is stored; the other is dropped.
+    /// one value is stored; the other is dropped.  Both threads are
+    /// counted as **misses** because each paid the full init cost.
     ///
     /// # Errors
     ///
     /// Returns an error if the mutex is poisoned or if `init` fails.
     pub fn get_or_init<F>(&self, key: K, init: F) -> Result<Arc<V>, String>
     where
-        F: FnOnce() -> Result<V, String>,
+        F: FnOnce(&K) -> Result<V, String>,
     {
         // Fast path: check if key already exists.
         {
@@ -126,21 +143,21 @@ impl<K: Eq + Hash + Clone, V> ResourceCache<K, V> {
         }
         // Lock dropped — run init outside the lock.
 
-        let value = init()?;
+        let value = init(&key)?;
 
         // Re-lock and insert if still missing (another thread may have won).
         let mut guard =
             self.inner.lock().map_err(|e| format!("Failed to lock resource cache: {e}"))?;
 
         // Another thread may have inserted while we were initializing.
+        // Count as a miss regardless — this thread paid the full init cost.
+        self.misses.fetch_add(1, Ordering::Relaxed);
         #[allow(clippy::option_if_let_else)]
         let arc = if let Some(existing) = guard.get(&key) {
-            self.hits.fetch_add(1, Ordering::Relaxed);
             Arc::clone(existing)
         } else {
             let arc = Arc::new(value);
             guard.insert(key, Arc::clone(&arc));
-            self.misses.fetch_add(1, Ordering::Relaxed);
             arc
         };
         drop(guard);
@@ -157,16 +174,16 @@ mod tests {
     #[test]
     fn get_or_init_caches_value() {
         let cache: ResourceCache<String, String> = ResourceCache::new();
-        let v1 = cache.get_or_init("key".into(), || Ok("value".into())).unwrap();
-        let v2 = cache.get_or_init("key".into(), || panic!("should not be called")).unwrap();
+        let v1 = cache.get_or_init("key".into(), |_| Ok("value".into())).unwrap();
+        let v2 = cache.get_or_init("key".into(), |_| panic!("should not be called")).unwrap();
         assert!(Arc::ptr_eq(&v1, &v2));
     }
 
     #[test]
     fn different_keys_different_values() {
         let cache: ResourceCache<String, i32> = ResourceCache::new();
-        let a = cache.get_or_init("a".into(), || Ok(1)).unwrap();
-        let b = cache.get_or_init("b".into(), || Ok(2)).unwrap();
+        let a = cache.get_or_init("a".into(), |_| Ok(1)).unwrap();
+        let b = cache.get_or_init("b".into(), |_| Ok(2)).unwrap();
         assert_eq!(*a, 1);
         assert_eq!(*b, 2);
         assert!(!Arc::ptr_eq(&a, &b));
@@ -175,17 +192,17 @@ mod tests {
     #[test]
     fn init_error_not_cached() {
         let cache: ResourceCache<String, String> = ResourceCache::new();
-        let err = cache.get_or_init("key".into(), || Err("fail".into()));
+        let err = cache.get_or_init("key".into(), |_| Err("fail".into()));
         assert!(err.is_err());
         // Should retry on next call
-        let ok = cache.get_or_init("key".into(), || Ok("recovered".into())).unwrap();
+        let ok = cache.get_or_init("key".into(), |_| Ok("recovered".into())).unwrap();
         assert_eq!(&*ok, "recovered");
     }
 
     #[test]
     fn clear_removes_entries() {
         let cache: ResourceCache<String, String> = ResourceCache::new();
-        cache.get_or_init("a".into(), || Ok("x".into())).unwrap();
+        cache.get_or_init("a".into(), |_| Ok("x".into())).unwrap();
         assert_eq!(cache.len(), 1);
         cache.clear();
         assert_eq!(cache.len(), 0);
@@ -194,9 +211,9 @@ mod tests {
     #[test]
     fn stats_tracks_hits_and_misses() {
         let cache: ResourceCache<String, String> = ResourceCache::new();
-        cache.get_or_init("a".into(), || Ok("x".into())).unwrap();
-        cache.get_or_init("a".into(), || panic!("no")).unwrap();
-        cache.get_or_init("b".into(), || Ok("y".into())).unwrap();
+        cache.get_or_init("a".into(), |_| Ok("x".into())).unwrap();
+        cache.get_or_init("a".into(), |_| panic!("no")).unwrap();
+        cache.get_or_init("b".into(), |_| Ok("y".into())).unwrap();
         let stats = cache.stats();
         assert_eq!(stats.misses, 2);
         assert_eq!(stats.hits, 1);
@@ -216,7 +233,7 @@ mod tests {
                 thread::spawn(move || {
                     b.wait();
                     // All threads try to init the same key
-                    CACHE.get_or_init(0, || Ok(format!("from-thread-{i}"))).unwrap()
+                    CACHE.get_or_init(0, |_| Ok(format!("from-thread-{i}"))).unwrap()
                 })
             })
             .collect();
