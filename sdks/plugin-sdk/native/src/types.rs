@@ -32,7 +32,24 @@ use std::os::raw::{c_char, c_void};
 ///     with MoQ transport nodes.  The codec name is carried as a
 ///     null-terminated string via the `custom_type_id` pointer in
 ///     [`CPacketTypeInfo`].
-pub const NATIVE_PLUGIN_API_VERSION: u32 = 8;
+/// v9: Zero-copy binary packets (`CBinaryPacket::buffer_handle` + `free_fn`)
+///     and logger overhaul (`CLogEnabledCallback`, `set_log_enabled_callback`,
+///     logger target set to plugin kind instead of `module_path!()`).
+///     **Wire change:** For v9 hosts, plain `Binary` packets are upgraded to
+///     `BinaryWithMeta` (with null `content_type` / `metadata`) on the wire
+///     to attach the zero-copy buffer handle.  C plugins that `switch` on
+///     `packet_type` must handle `BinaryWithMeta` even when those fields
+///     are null.
+///     **ABI note:** `CBinaryPacket` grew by 16 bytes (buffer_handle +
+///     free_fn).  v8 plugins compiled against the old 40-byte layout that
+///     validate `len == sizeof(CBinaryPacket)` will reject BinaryWithMeta
+///     packets from a v9 host.  Plugins using `len >= sizeof(…)` or bare
+///     pointer casts are unaffected.
+///     **Logger target change:** The logger target moved from
+///     `module_path!()` (e.g. `whisper_plugin::inner`) to
+///     `metadata().kind` (e.g. `whisper`).  Existing `RUST_LOG` directives
+///     that filter on the old module path will need updating.
+pub const NATIVE_PLUGIN_API_VERSION: u32 = 9;
 
 /// Opaque handle to a plugin instance
 pub type CPluginHandle = *mut c_void;
@@ -56,6 +73,18 @@ pub enum CLogLevel {
 /// - user_data: Opaque pointer passed by host
 pub type CLogCallback = extern "C" fn(CLogLevel, *const c_char, *const c_char, *mut c_void);
 
+/// Callback to check whether a given log level is enabled for a target.
+///
+/// Parameters: (level, target, user_data) -> bool
+///
+/// The host implements this by consulting the tracing subscriber.  If
+/// this returns `false`, the plugin can skip formatting the log message
+/// entirely.
+pub type CLogEnabledCallback = extern "C" fn(CLogLevel, *const c_char, *mut c_void) -> bool;
+
+/// Function exported by v9 plugins to install the host's log-enabled callback.
+pub type CSetLogEnabledCallback = extern "C" fn(CPluginHandle, CLogEnabledCallback, *mut c_void);
+
 /// Result type for C ABI functions
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -65,8 +94,9 @@ pub struct CResult {
     ///
     /// # Ownership
     ///
-    /// This pointer is **borrowed** and must not be freed by the caller.
-    /// Callers should copy it immediately if they need to keep it.
+    /// In both plugin→host and host→plugin directions, this pointer is
+    /// **borrowed** and must not be freed by the caller.  Callers should copy
+    /// it immediately if they need to keep it.
     pub error_message: *const c_char,
 }
 
@@ -306,6 +336,11 @@ pub struct CAudioFrame {
 /// `packet_type == BinaryWithMeta`.  Unlike the plain `Binary` variant this
 /// preserves MIME content-type (e.g. `"audio/aac"`) and timing metadata
 /// across the plugin ↔ host boundary.
+///
+/// When `buffer_handle` is non-null (v9 host), the plugin can reclaim the
+/// original `bytes::Bytes` via `Box::from_raw` for zero-copy transfer.
+/// When null (v8 host or legacy), the plugin falls back to
+/// `Bytes::copy_from_slice`.
 #[repr(C)]
 pub struct CBinaryPacket {
     pub data: *const u8,
@@ -314,6 +349,15 @@ pub struct CBinaryPacket {
     pub content_type: *const c_char,
     /// Nullable.  Per-packet timing metadata.
     pub metadata: *const CPacketMetadata,
+    /// Opaque handle to a `Box<bytes::Bytes>` for zero-copy transfer.
+    /// NULL for v8 hosts or when the packet was not allocated from a
+    /// `Bytes` buffer.  The plugin reclaims the `Bytes` via
+    /// `Box::from_raw(handle.cast::<bytes::Bytes>())`.
+    pub buffer_handle: *mut c_void,
+    /// Releases the `buffer_handle` without using the buffer (e.g. on
+    /// error paths where `packet_from_c` is never called).  NULL when
+    /// `buffer_handle` is NULL.
+    pub free_fn: Option<extern "C" fn(*mut c_void)>,
 }
 
 /// Generic packet container
@@ -419,8 +463,12 @@ impl CTickResult {
 /// The main plugin API structure.
 ///
 /// Plugins export a function that returns a pointer to this struct.
-/// Fields added in v3 (`get_source_config`, `tick`) are `Option` for
-/// backward compatibility; processor plugins set them to `None`.
+/// Fields added after the required v6 layout are `Option` for backward
+/// compatibility; processor plugins set source-only functions to `None`.
+///
+/// v9 extensions that would grow this struct live behind separate exported
+/// symbols so a v9 host can safely load v6–v8 plugins compiled with the
+/// smaller layout.
 #[repr(C)]
 pub struct CNativePluginAPI {
     /// API version for compatibility checking.
@@ -605,3 +653,23 @@ pub struct CNodeCallbacks {
 
 /// Symbol name that plugins must export
 pub const PLUGIN_API_SYMBOL: &[u8] = b"streamkit_native_plugin_api\0";
+
+/// Optional v9 symbol for installing the log-enabled callback.
+pub const PLUGIN_SET_LOG_ENABLED_SYMBOL: &[u8] =
+    b"streamkit_native_plugin_set_log_enabled_callback\0";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_plugin_api_layout_stays_v8_sized_for_old_plugins() {
+        let pointer_size = std::mem::size_of::<*const ()>();
+        let version_with_padding = pointer_size;
+        let function_fields = 10;
+        assert_eq!(
+            std::mem::size_of::<CNativePluginAPI>(),
+            version_with_padding + function_fields * pointer_size
+        );
+    }
+}

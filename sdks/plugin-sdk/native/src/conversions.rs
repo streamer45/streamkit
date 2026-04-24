@@ -366,7 +366,7 @@ pub fn packet_type_to_c(pt: &PacketType) -> (CPacketTypeInfo, CPacketTypeOwned) 
 
 pub struct CPacketRepr {
     pub packet: CPacket,
-    _owned: CPacketOwned,
+    owned: CPacketOwned,
 }
 
 impl CPacketRepr {
@@ -378,10 +378,9 @@ impl CPacketRepr {
     /// `metadata` that the older plugin cannot interpret.
     ///
     /// No-op if the packet is not `BinaryWithMeta`.
-    #[allow(clippy::used_underscore_binding)]
     pub fn downgrade_binary_with_meta(&mut self) {
         if self.packet.packet_type == CPacketType::BinaryWithMeta {
-            if let CPacketOwned::BinaryWithMeta(ref bwm) = self._owned {
+            if let CPacketOwned::BinaryWithMeta(ref bwm) = self.owned {
                 // Point directly at the raw data buffer, same as the plain
                 // Binary path in `packet_to_c`.
                 self.packet = CPacket {
@@ -389,8 +388,91 @@ impl CPacketRepr {
                     data: bwm.binary.data.cast::<c_void>(),
                     len: bwm.binary.data_len,
                 };
-                // Keep _owned alive — the data pointer still references it.
+                // Keep owned alive — the data pointer still references it.
             }
+        }
+    }
+
+    /// Enable zero-copy binary transfer for v9 plugins.
+    ///
+    /// For `BinaryWithMeta` packets, clones the `Bytes` (cheap Arc bump),
+    /// boxes it, and sets `buffer_handle` + `free_fn` on the underlying
+    /// `CBinaryPacket`.  For plain `Binary` packets, first upgrades to
+    /// `BinaryWithMeta` format (with null content_type/metadata) so that
+    /// the `CBinaryPacket` struct is available for the handle.
+    ///
+    /// The plugin SDK's `packet_from_c` reclaims the box via
+    /// `Box::from_raw`, avoiding a memcpy.
+    ///
+    /// Ownership of the boxed `Bytes` is guarded by
+    /// [`BinaryWithMetaOwned`]'s `Drop` impl: if the plugin never reclaims
+    /// the handle (e.g. it drops/filters the packet), the `Drop` calls
+    /// `free_fn` to release the box.
+    ///
+    /// **Wire note (S2):** For plain `Binary` packets this method upgrades
+    /// the wire type to `BinaryWithMeta` (with null content_type/metadata)
+    /// so that the `CBinaryPacket` struct is available for the handle.
+    /// C plugins on v9 must handle `BinaryWithMeta` even when those
+    /// fields are null.
+    ///
+    /// **Lifetime:** For the `Binary` upgrade path, `self.packet.data`
+    /// (inherited from the original `CPacketRepr`) is stored into the
+    /// new `CBinaryPacket`.  The caller must keep `self` (and thus the
+    /// original `CPacketOwned` backing storage) alive for the duration
+    /// of the FFI callback.  This is satisfied by `CPacketRepr`'s
+    /// normal ownership model — the repr lives on the stack across the
+    /// FFI call.
+    ///
+    /// No-op for non-binary packet types.
+    pub fn set_binary_buffer_handle(&mut self, source_bytes: &bytes::Bytes) {
+        match self.packet.packet_type {
+            CPacketType::BinaryWithMeta => {
+                if let CPacketOwned::BinaryWithMeta(ref mut bwm) = self.owned {
+                    // Free any previously-set handle to avoid a leak
+                    // if this method is called more than once.
+                    if !bwm.binary.buffer_handle.is_null() {
+                        if let Some(f) = bwm.binary.free_fn {
+                            f(bwm.binary.buffer_handle);
+                        }
+                    }
+                    let cloned = Box::new(source_bytes.clone());
+                    bwm.binary.buffer_handle = Box::into_raw(cloned).cast::<c_void>();
+                    bwm.binary.free_fn = Some(free_binary_buffer_handle);
+                }
+            },
+            CPacketType::Binary => {
+                // Upgrade to BinaryWithMeta so we have a CBinaryPacket to
+                // attach the zero-copy handle to.
+                //
+                // `bp.data` inherits the original `self.packet.data` pointer,
+                // while `buffer_handle` holds a `Bytes::clone()` (Arc bump —
+                // same underlying buffer).  This relies on `Bytes::clone()`
+                // preserving `as_ptr()` identity, which holds for the
+                // current `bytes` crate implementation (shared-reference
+                // Bytes always clones the Arc, not the data).
+                let mut bp = Box::new(CBinaryPacket {
+                    data: self.packet.data.cast::<u8>(),
+                    data_len: self.packet.len,
+                    content_type: std::ptr::null(),
+                    metadata: std::ptr::null(),
+                    buffer_handle: std::ptr::null_mut(),
+                    free_fn: None,
+                });
+                let cloned = Box::new(source_bytes.clone());
+                bp.buffer_handle = Box::into_raw(cloned).cast::<c_void>();
+                bp.free_fn = Some(free_binary_buffer_handle);
+                self.packet = CPacket {
+                    packet_type: CPacketType::BinaryWithMeta,
+                    data: std::ptr::from_mut::<CBinaryPacket>(&mut *bp).cast::<c_void>(),
+                    len: std::mem::size_of::<CBinaryPacket>(),
+                };
+                self.owned = CPacketOwned::BinaryWithMeta(BinaryWithMetaOwned {
+                    content_type: None,
+                    metadata: None,
+                    binary: bp,
+                });
+            },
+            _ => {},
         }
     }
 }
@@ -433,6 +515,17 @@ struct BinaryWithMetaOwned {
     binary: Box<CBinaryPacket>,
 }
 
+impl Drop for BinaryWithMetaOwned {
+    fn drop(&mut self) {
+        if !self.binary.buffer_handle.is_null() {
+            if let Some(free_fn) = self.binary.free_fn {
+                free_fn(self.binary.buffer_handle);
+            }
+            self.binary.buffer_handle = std::ptr::null_mut();
+        }
+    }
+}
+
 pub fn metadata_to_c(meta: &PacketMetadata) -> CPacketMetadata {
     CPacketMetadata {
         timestamp_us: meta.timestamp_us.unwrap_or_default(),
@@ -457,6 +550,43 @@ fn cstring_sanitize(s: &str) -> CString {
     CString::new(s).unwrap_or_else(|_| CString::new(s.replace('\0', " ")).unwrap_or_default())
 }
 
+/// Null out the `buffer_handle` of a [`CBinaryPacket`] through its parent
+/// [`CPacket`]'s data pointer.
+///
+/// Called after reclaiming or freeing the handle in [`packet_from_c`] so
+/// that the host-side [`BinaryWithMetaOwned::Drop`] won't double-free.
+///
+/// # Safety
+///
+/// `data_ptr` must point to a valid, **heap-allocated** `CBinaryPacket`
+/// owned by the caller for the duration of this call.  Although
+/// `CPacket::data` is typed as `*const` for ABI compatibility, this helper
+/// writes through the pointer via `addr_of_mut!`; passing a packet whose
+/// `data` field points into read-only memory (e.g. `.rodata`) is undefined
+/// behavior.
+///
+/// In practice, the host always constructs `CBinaryPacket` via
+/// `Box::new(…)` in [`CPacketRepr`], so the writable-storage
+/// precondition is satisfied.
+unsafe fn null_binary_buffer_handle(data_ptr: *const c_void) {
+    let bp = data_ptr.cast::<CBinaryPacket>().cast_mut();
+    std::ptr::addr_of_mut!((*bp).buffer_handle).write(std::ptr::null_mut());
+}
+
+/// Free a boxed `bytes::Bytes` stored as a `buffer_handle` in [`CBinaryPacket`].
+///
+/// Used as the `free_fn` field value — called if the plugin discards the
+/// packet without reclaiming the buffer (e.g. on error paths).
+extern "C" fn free_binary_buffer_handle(handle: *mut c_void) {
+    crate::ffi_guard::guard_unit("free_binary_buffer_handle", || {
+        if !handle.is_null() {
+            // SAFETY: handle was created by `Box::into_raw(Box::new(bytes))` in
+            // `set_binary_buffer_handle` and has not been reclaimed yet.
+            drop(unsafe { Box::from_raw(handle.cast::<bytes::Bytes>()) });
+        }
+    });
+}
+
 /// Convert Rust Packet to C representation.
 ///
 /// The returned representation owns any allocations needed for the duration of the C callback.
@@ -479,7 +609,7 @@ pub fn packet_to_c(packet: &Packet) -> CPacketRepr {
             };
             CPacketRepr {
                 packet,
-                _owned: CPacketOwned::Audio(AudioOwned { frame: c_frame, metadata }),
+                owned: CPacketOwned::Audio(AudioOwned { frame: c_frame, metadata }),
             }
         },
         Packet::Text(text) => {
@@ -500,7 +630,7 @@ pub fn packet_to_c(packet: &Packet) -> CPacketRepr {
                 data: c_str.as_ptr().cast::<c_void>(),
                 len: c_str.as_bytes_with_nul().len(),
             };
-            CPacketRepr { packet, _owned: CPacketOwned::Text(c_str) }
+            CPacketRepr { packet, owned: CPacketOwned::Text(c_str) }
         },
         Packet::Transcription(trans_data) => {
             let json = serde_json::to_vec(trans_data).unwrap_or_else(|e| {
@@ -512,7 +642,7 @@ pub fn packet_to_c(packet: &Packet) -> CPacketRepr {
                 data: json.as_ptr().cast::<c_void>(),
                 len: json.len(),
             };
-            CPacketRepr { packet, _owned: CPacketOwned::Bytes(json) }
+            CPacketRepr { packet, owned: CPacketOwned::Bytes(json) }
         },
         Packet::Custom(custom) => {
             let type_id = cstring_sanitize(custom.type_id.as_str());
@@ -540,7 +670,7 @@ pub fn packet_to_c(packet: &Packet) -> CPacketRepr {
 
             CPacketRepr {
                 packet,
-                _owned: CPacketOwned::Custom(CustomOwned {
+                owned: CPacketOwned::Custom(CustomOwned {
                     type_id,
                     data_json,
                     metadata,
@@ -557,6 +687,8 @@ pub fn packet_to_c(packet: &Packet) -> CPacketRepr {
                     data_len: data.len(),
                     content_type: ct_cstring.as_ref().map_or(std::ptr::null(), |cs| cs.as_ptr()),
                     metadata: meta_box.as_deref().map_or(std::ptr::null(), std::ptr::from_ref),
+                    buffer_handle: std::ptr::null_mut(),
+                    free_fn: None,
                 });
                 let packet = CPacket {
                     packet_type: CPacketType::BinaryWithMeta,
@@ -565,7 +697,7 @@ pub fn packet_to_c(packet: &Packet) -> CPacketRepr {
                 };
                 CPacketRepr {
                     packet,
-                    _owned: CPacketOwned::BinaryWithMeta(BinaryWithMetaOwned {
+                    owned: CPacketOwned::BinaryWithMeta(BinaryWithMetaOwned {
                         content_type: ct_cstring,
                         metadata: meta_box,
                         binary: bp,
@@ -578,7 +710,7 @@ pub fn packet_to_c(packet: &Packet) -> CPacketRepr {
                         data: data.as_ref().as_ptr().cast::<c_void>(),
                         len: data.len(),
                     },
-                    _owned: CPacketOwned::None,
+                    owned: CPacketOwned::None,
                 }
             }
         },
@@ -600,7 +732,7 @@ pub fn packet_to_c(packet: &Packet) -> CPacketRepr {
             };
             CPacketRepr {
                 packet,
-                _owned: CPacketOwned::Video(VideoOwned { frame: c_frame, metadata }),
+                owned: CPacketOwned::Video(VideoOwned { frame: c_frame, metadata }),
             }
         },
     }
@@ -720,22 +852,68 @@ pub unsafe fn packet_from_c(c_packet: *const CPacket) -> Result<Packet, String> 
             })
         },
         CPacketType::BinaryWithMeta => {
-            let bp = &*c_pkt.data.cast::<CBinaryPacket>();
-            if bp.data.is_null() && bp.data_len > 0 {
+            // Read all fields via raw-pointer dereference — no shared
+            // reference is created, so the subsequent write through
+            // null_binary_buffer_handle has no parent tag to conflict
+            // with under Stacked Borrows.
+            let bp = c_pkt.data.cast::<CBinaryPacket>();
+            let data_ptr = (*bp).data;
+            let data_len = (*bp).data_len;
+            let content_type_ptr = (*bp).content_type;
+            let metadata_ptr = (*bp).metadata;
+
+            // ABI compat: v7/v8 plugins allocate a smaller CBinaryPacket
+            // (4 fields, no buffer_handle/free_fn).  CPacket::len is set
+            // to size_of::<CBinaryPacket>() by the sender at their SDK
+            // version.  If it's smaller than the v9 struct, the new fields
+            // are past the allocation — reading them would be UB.
+            let is_v9_binary = c_pkt.len >= std::mem::size_of::<CBinaryPacket>();
+            let (buffer_handle, free_fn) = if is_v9_binary {
+                ((*bp).buffer_handle, (*bp).free_fn)
+            } else {
+                (std::ptr::null_mut(), None)
+            };
+            let has_handle = !buffer_handle.is_null();
+
+            if data_ptr.is_null() && data_len > 0 {
+                // Free buffer_handle via free_fn to honour the contract.
+                if has_handle {
+                    if let Some(f) = free_fn {
+                        f(buffer_handle);
+                    }
+                    null_binary_buffer_handle(c_pkt.data);
+                }
                 return Err("BinaryWithMeta packet has null data pointer".to_string());
             }
-            let data = if bp.data_len == 0 {
+
+            let data = if data_len == 0 {
+                // Free buffer_handle via free_fn — the host may have set
+                // one even for an empty payload.
+                if has_handle {
+                    if let Some(f) = free_fn {
+                        f(buffer_handle);
+                    }
+                    null_binary_buffer_handle(c_pkt.data);
+                }
                 bytes::Bytes::new()
+            } else if has_handle {
+                // v9 zero-copy path: reclaim the Bytes from the handle.
+                let bytes = *Box::from_raw(buffer_handle.cast::<bytes::Bytes>());
+                // Null out so the host-side BinaryWithMetaOwned::Drop
+                // won't double-free.
+                null_binary_buffer_handle(c_pkt.data);
+                bytes
             } else {
-                bytes::Bytes::copy_from_slice(std::slice::from_raw_parts(bp.data, bp.data_len))
+                // Legacy copy path (v8 host or null handle).
+                bytes::Bytes::copy_from_slice(std::slice::from_raw_parts(data_ptr, data_len))
             };
-            let content_type = if bp.content_type.is_null() {
+            let content_type = if content_type_ptr.is_null() {
                 None
             } else {
-                Some(std::borrow::Cow::Owned(c_str_to_string(bp.content_type)?))
+                Some(std::borrow::Cow::Owned(c_str_to_string(content_type_ptr)?))
             };
             let metadata =
-                if bp.metadata.is_null() { None } else { Some(metadata_from_c(&*bp.metadata)) };
+                if metadata_ptr.is_null() { None } else { Some(metadata_from_c(&*metadata_ptr)) };
             Ok(Packet::Binary { data, content_type, metadata })
         },
         CPacketType::RawVideo => {
@@ -780,20 +958,12 @@ pub unsafe fn packet_from_c(c_packet: *const CPacket) -> Result<Packet, String> 
                 .map_err(|e| format!("Invalid video frame: {e}"))
             }
         },
-        CPacketType::EncodedVideo => {
-            // Encoded video is carried as opaque bytes across the C ABI.
-            let data = std::slice::from_raw_parts(c_pkt.data.cast::<u8>(), c_pkt.len);
-            Ok(Packet::Binary {
-                data: bytes::Bytes::copy_from_slice(data),
-                content_type: None,
-                metadata: None,
-            })
-        },
-        CPacketType::EncodedAudio => {
-            // EncodedAudio is a *type-level* discriminant used in pin
-            // declarations.  At runtime, encoded audio packets travel as
-            // BinaryWithMeta (preserving content_type and metadata).
-            // If we somehow receive one here, treat it as opaque bytes.
+        CPacketType::EncodedVideo | CPacketType::EncodedAudio => {
+            // Both discriminants are type-level tags for pin declarations.
+            // At runtime, encoded packets normally travel as BinaryWithMeta
+            // (preserving content_type and metadata).  If we receive one
+            // here (e.g. a plugin declared the raw discriminant), treat it
+            // as opaque bytes.
             let data = std::slice::from_raw_parts(c_pkt.data.cast::<u8>(), c_pkt.len);
             Ok(Packet::Binary {
                 data: bytes::Bytes::copy_from_slice(data),
@@ -837,10 +1007,18 @@ pub fn string_to_c(s: &str) -> *const c_char {
 
 /// Convert an error message to a C string for returning across the C ABI.
 ///
+/// Despite the name, this is a generic "String → thread-local CString"
+/// helper and is also used for non-error payloads (e.g. the JSON string
+/// returned by `get_runtime_param_schema`).  A rename to e.g.
+/// `thread_local_c_str` would clarify intent but touches many call-sites.
+///
 /// # Ownership and lifetime
 ///
 /// The returned pointer is **borrowed** and **must not be freed** by the caller.
-/// It remains valid until the next `error_to_c()` call on the same OS thread.
+/// It remains valid until the next `error_to_c()` call **on the same OS
+/// thread**.  The host (or any nested FFI call back into the plugin) may
+/// call `error_to_c` again and invalidate the previous pointer — callers
+/// must copy the string into owned storage immediately after receiving it.
 ///
 /// This design:
 /// - Prevents host-side leaks when the host copies the message into an owned string.
@@ -1111,6 +1289,236 @@ mod tests {
                 },
                 other => panic!("expected EncodedAudio, got {other:?}"),
             }
+        }
+    }
+
+    // ── Zero-copy binary handle tests ──────────────────────────────────
+
+    /// Valid `buffer_handle` with invalid `content_type` UTF-8: the handle
+    /// must be reclaimed (no leak) even though content_type parsing fails.
+    #[test]
+    fn packet_from_c_valid_handle_invalid_content_type() {
+        let original = bytes::Bytes::from_static(b"test-payload");
+        let handle = Box::into_raw(Box::new(original.clone())).cast::<c_void>();
+
+        // Invalid UTF-8 followed by a null terminator.
+        let invalid_utf8: [u8; 3] = [0xFF, 0xFE, 0x00];
+        let bp = CBinaryPacket {
+            data: original.as_ptr(),
+            data_len: original.len(),
+            content_type: invalid_utf8.as_ptr().cast::<std::os::raw::c_char>(),
+            metadata: std::ptr::null(),
+            buffer_handle: handle,
+            free_fn: Some(free_binary_buffer_handle),
+        };
+
+        let c_pkt = CPacket {
+            packet_type: CPacketType::BinaryWithMeta,
+            data: std::ptr::from_ref(&bp).cast(),
+            len: std::mem::size_of::<CBinaryPacket>(),
+        };
+
+        let result = unsafe { packet_from_c(&raw const c_pkt) };
+        // The handle was reclaimed (zero-copy path) before the content_type
+        // error.  If it weren't, this test would leak under miri/valgrind.
+        match result {
+            Err(msg) => assert!(msg.contains("Invalid UTF-8"), "unexpected error: {msg}"),
+            Ok(_) => panic!("expected error from invalid UTF-8 content_type"),
+        }
+    }
+
+    /// Empty `BinaryWithMeta` (data_len == 0) with a non-null `buffer_handle`:
+    /// the handle must be freed even though data is empty.
+    #[test]
+    fn packet_from_c_empty_binary_with_handle_freed() {
+        let empty = bytes::Bytes::new();
+        let handle = Box::into_raw(Box::new(empty)).cast::<c_void>();
+
+        let bp = CBinaryPacket {
+            data: std::ptr::null(),
+            data_len: 0,
+            content_type: std::ptr::null(),
+            metadata: std::ptr::null(),
+            buffer_handle: handle,
+            free_fn: Some(free_binary_buffer_handle),
+        };
+
+        let c_pkt = CPacket {
+            packet_type: CPacketType::BinaryWithMeta,
+            data: std::ptr::from_ref(&bp).cast(),
+            len: std::mem::size_of::<CBinaryPacket>(),
+        };
+
+        let result = unsafe { packet_from_c(&raw const c_pkt) };
+        let pkt = result
+            .unwrap_or_else(|e| panic!("empty BinaryWithMeta with handle should succeed: {e}"));
+        match pkt {
+            Packet::Binary { data, content_type, metadata } => {
+                assert!(data.is_empty());
+                assert!(content_type.is_none());
+                assert!(metadata.is_none());
+            },
+            other => panic!("expected Binary, got {other:?}"),
+        }
+    }
+
+    /// `set_binary_buffer_handle` upgrades a plain `Binary` packet to
+    /// `BinaryWithMeta` and attaches the zero-copy handle.
+    #[test]
+    fn set_binary_buffer_handle_upgrades_plain_binary() {
+        let payload = bytes::Bytes::from_static(b"plain-data");
+        let packet = Packet::Binary { data: payload.clone(), content_type: None, metadata: None };
+
+        let mut repr = packet_to_c(&packet);
+        assert_eq!(repr.packet.packet_type, CPacketType::Binary, "should start as Binary");
+
+        repr.set_binary_buffer_handle(&payload);
+        assert_eq!(
+            repr.packet.packet_type,
+            CPacketType::BinaryWithMeta,
+            "should be upgraded to BinaryWithMeta"
+        );
+
+        // Verify the packet round-trips through packet_from_c with zero-copy.
+        let result = unsafe { packet_from_c(&raw const repr.packet) };
+        let pkt = result.unwrap_or_else(|e| panic!("upgraded packet should round-trip: {e}"));
+        match pkt {
+            Packet::Binary { data, content_type, metadata } => {
+                assert_eq!(data.as_ref(), b"plain-data");
+                assert!(content_type.is_none());
+                assert!(metadata.is_none());
+            },
+            other => panic!("expected Binary, got {other:?}"),
+        }
+    }
+
+    /// Dropping a `CPacketRepr` with an unreclaimed buffer_handle must
+    /// free the handle via `BinaryWithMetaOwned::Drop` — no leak.
+    #[test]
+    fn dropping_packet_repr_frees_unreclaimed_handle() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        static FREED: AtomicBool = AtomicBool::new(false);
+
+        extern "C" fn track_free(handle: *mut c_void) {
+            if !handle.is_null() {
+                FREED.store(true, Ordering::SeqCst);
+                // Also actually free the box to avoid real leak.
+                drop(unsafe { Box::from_raw(handle.cast::<bytes::Bytes>()) });
+            }
+        }
+
+        FREED.store(false, Ordering::SeqCst);
+
+        let payload = bytes::Bytes::from_static(b"drop-test");
+        let packet = Packet::Binary {
+            data: payload.clone(),
+            content_type: Some(std::borrow::Cow::Borrowed("application/octet-stream")),
+            metadata: None,
+        };
+
+        {
+            let mut repr = packet_to_c(&packet);
+            repr.set_binary_buffer_handle(&payload);
+
+            // Overwrite the free_fn to our tracker.
+            if let CPacketOwned::BinaryWithMeta(ref mut bwm) = repr.owned {
+                bwm.binary.free_fn = Some(track_free);
+            }
+
+            // Drop repr WITHOUT calling packet_from_c — simulates plugin
+            // dropping/filtering the packet.
+        }
+
+        assert!(FREED.load(Ordering::SeqCst), "buffer_handle must be freed on drop");
+    }
+
+    /// v8 ABI compat: a `BinaryWithMeta` packet with `CPacket::len` smaller
+    /// than the v9 `CBinaryPacket` size must NOT read `buffer_handle`/`free_fn`
+    /// — those fields are past the allocation boundary.
+    #[test]
+    fn packet_from_c_v8_binary_with_meta_ignores_new_fields() {
+        // Simulate a v8-sized CBinaryPacket (4 fields, no buffer_handle/free_fn).
+        // We allocate a full v9 struct but set garbage in the new fields to
+        // prove they are NOT read when len < size_of::<CBinaryPacket>().
+        let payload = bytes::Bytes::from_static(b"v8-payload");
+        let bp = CBinaryPacket {
+            data: payload.as_ptr(),
+            data_len: payload.len(),
+            content_type: std::ptr::null(),
+            metadata: std::ptr::null(),
+            // Poison: if packet_from_c reads these, it would crash or
+            // enter the zero-copy path with an invalid pointer.
+            buffer_handle: 0xDEAD_BEEF_usize as *mut c_void,
+            free_fn: Some(free_binary_buffer_handle),
+        };
+
+        // v8 CBinaryPacket has 4 pointer-sized fields = 32 bytes on 64-bit.
+        let v8_size = 4 * std::mem::size_of::<usize>();
+        assert!(
+            v8_size < std::mem::size_of::<CBinaryPacket>(),
+            "test assumes v9 CBinaryPacket is larger than v8"
+        );
+
+        let c_pkt = CPacket {
+            packet_type: CPacketType::BinaryWithMeta,
+            data: std::ptr::from_ref(&bp).cast(),
+            len: v8_size, // v8 size — smaller than v9
+        };
+
+        // Must take the legacy copy path, not touch buffer_handle.
+        let result = unsafe { packet_from_c(&raw const c_pkt) };
+        let pkt = result.unwrap_or_else(|e| panic!("v8 BinaryWithMeta should succeed: {e}"));
+        match pkt {
+            Packet::Binary { data, content_type, metadata } => {
+                assert_eq!(data.as_ref(), b"v8-payload");
+                assert!(content_type.is_none());
+                assert!(metadata.is_none());
+            },
+            other => panic!("expected Binary, got {other:?}"),
+        }
+    }
+
+    /// After `packet_from_c` reclaims the handle, `BinaryWithMetaOwned::Drop`
+    /// must NOT double-free (handle is nulled out).
+    #[test]
+    fn packet_from_c_nulls_handle_prevents_double_free() {
+        let payload = bytes::Bytes::from_static(b"reclaim-test");
+        let packet = Packet::Binary { data: payload.clone(), content_type: None, metadata: None };
+
+        let mut repr = packet_to_c(&packet);
+        repr.set_binary_buffer_handle(&payload);
+
+        // Reclaim via packet_from_c — this should null out buffer_handle.
+        let result = unsafe { packet_from_c(&raw const repr.packet) };
+        assert!(result.is_ok(), "reclaim should succeed");
+
+        // Verify the handle was nulled out.
+        if let CPacketOwned::BinaryWithMeta(ref bwm) = repr.owned {
+            assert!(bwm.binary.buffer_handle.is_null(), "buffer_handle must be null after reclaim");
+        } else {
+            panic!("expected BinaryWithMeta owned variant");
+        }
+
+        // repr drops here — Drop should see null handle and be a no-op.
+    }
+
+    #[test]
+    fn binary_buffer_handle_clone_preserves_bytes_pointer() {
+        let payload = bytes::Bytes::from_static(b"pointer-identity");
+        let packet = Packet::Binary { data: payload.clone(), content_type: None, metadata: None };
+
+        let mut repr = packet_to_c(&packet);
+        repr.set_binary_buffer_handle(&payload);
+
+        if let CPacketOwned::BinaryWithMeta(ref bwm) = repr.owned {
+            assert_eq!(bwm.binary.data, payload.as_ptr());
+            assert!(!bwm.binary.buffer_handle.is_null());
+            let cloned = unsafe { &*bwm.binary.buffer_handle.cast::<bytes::Bytes>() };
+            assert_eq!(cloned.as_ptr(), payload.as_ptr());
+            assert_eq!(cloned.len(), payload.len());
+        } else {
+            panic!("expected BinaryWithMeta owned variant");
         }
     }
 }

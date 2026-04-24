@@ -44,12 +44,15 @@
 //! ```
 
 pub mod conversions;
+pub mod ffi_guard;
 pub mod logger;
+pub mod metadata_storage;
+pub mod resource_cache;
 pub mod types;
 
 use std::ffi::CString;
 use streamkit_core::types::{Packet, PacketType};
-use streamkit_core::{InputPin, OutputPin, PinCardinality, Resource};
+use streamkit_core::{InputPin, OutputPin, PinCardinality};
 
 use logger::Logger;
 
@@ -78,14 +81,15 @@ pub use types::*;
 /// Re-export commonly used types
 pub mod prelude {
     pub use crate::logger::Logger;
+    pub use crate::resource_cache::{CacheError, ResourceCache};
     pub use crate::types::{CLogCallback, CLogLevel};
     pub use crate::{
         native_plugin_entry, native_source_plugin_entry, plugin_debug, plugin_error, plugin_info,
         plugin_log, plugin_trace, plugin_warn, NativeProcessorNode, NativeSourceNode, NodeMetadata,
-        OutputSender, PooledAudioBuffer, PooledVideoBuffer, ResourceSupport, SourceConfig,
+        OutputSender, PooledAudioBuffer, PooledVideoBuffer, SourceConfig,
     };
     pub use streamkit_core::types::{AudioFrame, Packet, PacketType};
-    pub use streamkit_core::{InputPin, OutputPin, PinCardinality, Resource, UpstreamHint};
+    pub use streamkit_core::{InputPin, OutputPin, PinCardinality, UpstreamHint};
 }
 
 /// Metadata about a node type
@@ -299,6 +303,14 @@ impl OutputSender {
         unsafe { &*self.callbacks }
     }
 
+    /// Check if a callback field at the given byte offset is within the
+    /// host-provided `CNodeCallbacks` struct.  Returns `false` when the
+    /// host is older and doesn't include this field.
+    #[allow(clippy::missing_const_for_fn)] // Not const because self.cb() dereferences a raw pointer.
+    fn callback_available(&self, field_end_offset: usize) -> bool {
+        self.cb().struct_size >= field_end_offset
+    }
+
     /// Send a packet to an output pin
     ///
     /// # Errors
@@ -327,18 +339,23 @@ impl OutputSender {
     ///
     /// Returns `None` if the host has no video pool or allocation fails.
     pub fn alloc_video(&self, min_bytes: usize) -> Option<PooledVideoBuffer> {
+        let end = std::mem::offset_of!(types::CNodeCallbacks, alloc_video)
+            + std::mem::size_of::<Option<types::CAllocVideoFn>>();
+        if !self.callback_available(end) {
+            return None;
+        }
         let cb = self.cb();
         let alloc_fn = cb.alloc_video?;
         let res = alloc_fn(min_bytes, cb.alloc_user_data);
-        if res.data.is_null() || res.free_fn.is_none() {
+        let free_fn = res.free_fn?;
+        if res.data.is_null() {
             return None;
         }
         Some(PooledVideoBuffer {
             data: res.data,
             len: res.len,
             handle: res.handle,
-            // SAFETY: free_fn is guaranteed to be Some by the check above.
-            free_fn: unsafe { res.free_fn.unwrap_unchecked() },
+            free_fn,
             consumed: false,
         })
     }
@@ -347,18 +364,23 @@ impl OutputSender {
     ///
     /// Returns `None` if the host has no audio pool or allocation fails.
     pub fn alloc_audio(&self, min_samples: usize) -> Option<PooledAudioBuffer> {
+        let end = std::mem::offset_of!(types::CNodeCallbacks, alloc_audio)
+            + std::mem::size_of::<Option<types::CAllocAudioFn>>();
+        if !self.callback_available(end) {
+            return None;
+        }
         let cb = self.cb();
         let alloc_fn = cb.alloc_audio?;
         let res = alloc_fn(min_samples, cb.alloc_user_data);
-        if res.data.is_null() || res.free_fn.is_none() {
+        let free_fn = res.free_fn?;
+        if res.data.is_null() {
             return None;
         }
         Some(PooledAudioBuffer {
             data: res.data,
             sample_count: res.sample_count,
             handle: res.handle,
-            // SAFETY: free_fn is guaranteed to be Some by the check above.
-            free_fn: unsafe { res.free_fn.unwrap_unchecked() },
+            free_fn,
             consumed: false,
         })
     }
@@ -546,7 +568,14 @@ pub trait NativeProcessorNode: Sized + Send + 'static {
         Ok(())
     }
 
-    /// Clean up resources (optional)
+    /// Clean up resources (optional).
+    ///
+    /// # Panics
+    ///
+    /// This method **must not panic**.  It runs inside a `catch_unwind`
+    /// guard, but the plugin value is dropped immediately afterwards.
+    /// If both `cleanup()` and the type's `Drop` impl panic, the process
+    /// aborts (Rust double-panic rule).
     fn cleanup(&mut self) {}
 
     /// Return a runtime-discovered param schema after initialization (optional).
@@ -559,6 +588,37 @@ pub trait NativeProcessorNode: Sized + Send + 'static {
     ///
     /// Default: `None` (use static schema only).
     fn runtime_param_schema(&self) -> Option<serde_json::Value> {
+        None
+    }
+
+    /// Return a mutable reference to the plugin's [`Logger`] (v9).
+    ///
+    /// Override this to enable the host's log-enabled callback, allowing
+    /// `plugin_trace!` / `plugin_debug!` / etc. to short-circuit before
+    /// formatting when the level is disabled by the tracing subscriber.
+    ///
+    /// The host calls `set_log_enabled_callback` immediately after instance
+    /// creation; the SDK trampoline uses this method to inject the callback.
+    ///
+    /// **Clone caveat:** If the plugin clones the [`Logger`] before the
+    /// host injects the callback (i.e. during `create`), those clones
+    /// will **not** see the enabled callback.  Recommended patterns for
+    /// multi-threaded plugins:
+    ///
+    /// - **Single owner + shared ref:** Store the `Logger` in the plugin
+    ///   struct and pass `&Logger` to spawned tasks (requires scoped
+    ///   threads or an `Arc<Mutex<Logger>>`).
+    /// - **Re-clone after create:** Clone the logger only after `create`
+    ///   returns, at which point the callback is already injected.
+    /// - **`Arc<Mutex<Logger>>`:** Wrap in a mutex so all threads see
+    ///   the injected callback.  The lock is uncontended in practice
+    ///   (only `logger_mut` needs `&mut`).
+    ///
+    /// Avoid `Arc<Logger>` (without interior mutability) — `logger_mut`
+    /// cannot reach through an `Arc` to inject the callback.
+    ///
+    /// Default: `None` (no short-circuit — all levels always "enabled").
+    fn logger_mut(&mut self) -> Option<&mut Logger> {
         None
     }
 }
@@ -664,6 +724,13 @@ pub trait NativeSourceNode: Sized + Send + 'static {
     }
 
     /// Clean up resources (optional).
+    ///
+    /// # Panics
+    ///
+    /// This method **must not panic**.  It runs inside a `catch_unwind`
+    /// guard, but the plugin value is dropped immediately afterwards.
+    /// If both `cleanup()` and the type's `Drop` impl panic, the process
+    /// aborts (Rust double-panic rule).
     fn cleanup(&mut self) {}
 
     /// Return a runtime-discovered param schema after initialization (optional).
@@ -687,83 +754,22 @@ pub trait NativeSourceNode: Sized + Send + 'static {
     fn on_upstream_hint(&mut self, _hint: streamkit_core::UpstreamHint) {
         // default: ignore
     }
-}
 
-/// Optional trait for plugins that need shared resource management (e.g., ML models).
-///
-/// Plugins that implement this trait can have their resources (models) automatically
-/// cached and shared across multiple node instances. This avoids loading the same
-/// model multiple times in memory.
-///
-/// # Example
-///
-/// ```ignore
-/// use streamkit_plugin_sdk_native::prelude::*;
-/// use std::sync::Arc;
-///
-/// pub struct MyModelResource {
-///     model_data: Vec<f32>,
-/// }
-///
-/// impl Resource for MyModelResource {
-///     fn size_bytes(&self) -> usize {
-///         self.model_data.len() * std::mem::size_of::<f32>()
-///     }
-///     fn resource_type(&self) -> &str { "ml_model" }
-/// }
-///
-/// pub struct MyPlugin {
-///     resource: Arc<MyModelResource>,
-/// }
-///
-/// // Note: MyPlugin must also implement NativeProcessorNode for this to compile
-/// impl ResourceSupport for MyPlugin {
-///     type Resource = MyModelResource;
-///
-///     fn compute_resource_key(params: Option<&serde_json::Value>) -> String {
-///         // Hash only the params that affect resource creation
-///         format!("{:?}", params)
-///     }
-///
-///     fn init_resource(params: Option<serde_json::Value>) -> Result<Self::Resource, String> {
-///         // Load model (can be expensive, but only happens once per unique params)
-///         Ok(MyModelResource { model_data: vec![0.0; 1000] })
-///     }
-/// }
-/// ```
-pub trait ResourceSupport: NativeProcessorNode {
-    /// The type of resource this plugin uses
-    type Resource: Resource + 'static;
-
-    /// Compute a cache key from parameters.
+    /// Return a mutable reference to the plugin's [`Logger`] (v9).
     ///
-    /// This should hash only the parameters that affect resource initialization
-    /// (e.g., model path, GPU device ID). Different parameters that produce the
-    /// same key will share the same cached resource.
-    fn compute_resource_key(params: Option<&serde_json::Value>) -> String;
-
-    /// Initialize/load the resource.
+    /// Override this to enable the host's log-enabled callback, allowing
+    /// `plugin_trace!` / `plugin_debug!` / etc. to short-circuit before
+    /// formatting when the level is disabled by the tracing subscriber.
     ///
-    /// This is called once per unique cache key. The result is cached and shared
-    /// across all node instances with matching parameters.
+    /// **Clone caveat:** If the plugin clones the [`Logger`] before the
+    /// host injects the callback (i.e. during `create`), those clones
+    /// will **not** see the enabled callback.  See
+    /// [`NativeProcessorNode::logger_mut`] for recommended multi-thread
+    /// patterns (`Arc<Mutex<Logger>>`, re-clone after create, etc.).
     ///
-    /// # Errors
-    ///
-    /// Returns an error if resource initialization fails (e.g., model file not found,
-    /// GPU initialization error).
-    ///
-    /// # Note
-    ///
-    /// This method may be called from a blocking thread pool to avoid blocking
-    /// async execution during model loading.
-    fn init_resource(params: Option<serde_json::Value>) -> Result<Self::Resource, String>;
-
-    /// Optional cleanup when the resource is being unloaded.
-    ///
-    /// This is called when the last reference to the resource is dropped
-    /// (typically during plugin unload or LRU eviction).
-    fn deinit_resource(_resource: Self::Resource) {
-        // Default: just drop it
+    /// Default: `None` (no short-circuit — all levels always "enabled").
+    fn logger_mut(&mut self) -> Option<&mut Logger> {
+        None
     }
 }
 
@@ -778,37 +784,65 @@ macro_rules! __plugin_shared_ffi {
         extern "C" fn __plugin_get_runtime_param_schema(
             handle: $crate::types::CPluginHandle,
         ) -> $crate::types::CSchemaResult {
-            if handle.is_null() {
-                return $crate::types::CSchemaResult::none();
-            }
+            $crate::ffi_guard::guard_schema(|| {
+                if handle.is_null() {
+                    return $crate::types::CSchemaResult::none();
+                }
 
-            let instance = unsafe { &*(handle as *const $plugin_type) };
-            match instance.runtime_param_schema() {
-                None => $crate::types::CSchemaResult::none(),
-                Some(schema) => match serde_json::to_string(&schema) {
-                    Ok(json) => {
-                        // NOTE: error_to_c is a misnomer here — it's a generic
-                        // "String → thread-local CString" helper reused for the
-                        // success payload.  A rename to e.g. `thread_local_c_str`
-                        // would clarify intent but touches many call-sites.
-                        let c_str = $crate::conversions::error_to_c(json);
-                        $crate::types::CSchemaResult::schema(c_str)
+                let instance = unsafe { &*(handle as *const $plugin_type) };
+                match instance.runtime_param_schema() {
+                    None => $crate::types::CSchemaResult::none(),
+                    Some(schema) => match serde_json::to_string(&schema) {
+                        Ok(json) => {
+                            let c_str = $crate::conversions::error_to_c(json);
+                            $crate::types::CSchemaResult::schema(c_str)
+                        },
+                        Err(e) => {
+                            let err_msg = $crate::conversions::error_to_c(format!(
+                                "Failed to serialize runtime param schema: {e}"
+                            ));
+                            $crate::types::CSchemaResult::error(err_msg)
+                        },
                     },
-                    Err(e) => {
-                        let err_msg = $crate::conversions::error_to_c(format!(
-                            "Failed to serialize runtime param schema: {e}"
-                        ));
-                        $crate::types::CSchemaResult::error(err_msg)
-                    },
-                },
-            }
+                }
+            })
         }
 
         extern "C" fn __plugin_destroy_instance(handle: $crate::types::CPluginHandle) {
-            if !handle.is_null() {
-                let mut instance = unsafe { Box::from_raw(handle as *mut $plugin_type) };
-                instance.cleanup();
-            }
+            $crate::ffi_guard::guard_unit("destroy_instance", || {
+                if !handle.is_null() {
+                    let mut instance = unsafe { Box::from_raw(handle as *mut $plugin_type) };
+                    // Run cleanup() in a nested catch_unwind so that a
+                    // panic here does not cause a double-panic abort if
+                    // Drop also panics.
+                    if let Err(payload) =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            instance.cleanup()
+                        }))
+                    {
+                        let msg = $crate::ffi_guard::panic_message(&*payload);
+                        tracing::error!("plugin cleanup() panicked: {msg}");
+                    }
+                    // instance (Box) is dropped here — if Drop panics,
+                    // the outer guard_unit catches it.
+                }
+            })
+        }
+
+        extern "C" fn __plugin_set_log_enabled_callback(
+            handle: $crate::types::CPluginHandle,
+            callback: $crate::types::CLogEnabledCallback,
+            user_data: *mut std::os::raw::c_void,
+        ) {
+            $crate::ffi_guard::guard_unit("set_log_enabled_callback", || {
+                if handle.is_null() {
+                    return;
+                }
+                let instance = unsafe { &mut *(handle as *mut $plugin_type) };
+                if let Some(logger) = instance.logger_mut() {
+                    logger.set_enabled_callback(callback, user_data);
+                }
+            })
         }
     };
 }
@@ -832,26 +866,8 @@ macro_rules! __plugin_shared_ffi {
 #[macro_export]
 macro_rules! native_plugin_entry {
     ($plugin_type:ty) => {
-        // Static metadata storage
-        static mut METADATA: std::sync::OnceLock<(
-            $crate::types::CNodeMetadata,
-            Vec<$crate::types::CInputPin>,
-            Vec<$crate::types::COutputPin>,
-            Vec<std::ffi::CString>,
-            Vec<Vec<$crate::types::CPacketTypeInfo>>,
-            Vec<Vec<Option<$crate::types::CAudioFormat>>>,
-            Vec<Vec<Option<std::ffi::CString>>>,
-            Vec<Vec<Option<$crate::types::CRawVideoFormat>>>,
-            Vec<std::ffi::CString>,
-            Vec<Option<$crate::types::CAudioFormat>>,
-            Vec<Option<std::ffi::CString>>,
-            Vec<Option<$crate::types::CRawVideoFormat>>,
-            Vec<std::ffi::CString>,
-            Vec<*const std::os::raw::c_char>,
-            std::ffi::CString,
-            Option<std::ffi::CString>,
-            std::ffi::CString,
-        )> = std::sync::OnceLock::new();
+        static METADATA: std::sync::OnceLock<$crate::metadata_storage::PluginMetadataStorage> =
+            std::sync::OnceLock::new();
 
         #[no_mangle]
         pub extern "C" fn streamkit_native_plugin_api() -> *const $crate::types::CNativePluginAPI {
@@ -871,318 +887,23 @@ macro_rules! native_plugin_entry {
             &API
         }
 
+        #[no_mangle]
+        pub extern "C" fn streamkit_native_plugin_set_log_enabled_callback(
+            handle: $crate::types::CPluginHandle,
+            callback: $crate::types::CLogEnabledCallback,
+            user_data: *mut std::os::raw::c_void,
+        ) {
+            __plugin_set_log_enabled_callback(handle, callback, user_data);
+        }
+
         extern "C" fn __plugin_get_metadata() -> *const $crate::types::CNodeMetadata {
-            unsafe {
-                let metadata = METADATA.get_or_init(|| {
+            $crate::ffi_guard::guard_ptr("get_metadata", || {
+                let storage = METADATA.get_or_init(|| {
                     let meta = <$plugin_type as $crate::NativeProcessorNode>::metadata();
-
-                    // Convert inputs
-                    let mut c_inputs = Vec::new();
-                    let mut input_names = Vec::new();
-                    let mut input_types = Vec::new();
-                    let mut input_audio_formats = Vec::new();
-                    let mut input_custom_type_ids = Vec::new();
-                    let mut input_video_formats = Vec::new();
-
-                    for input in &meta.inputs {
-                        let name = std::ffi::CString::new(input.name.as_str())
-                            .expect("Input pin name should not contain null bytes");
-                        let mut types_info = Vec::new();
-                        let mut audio_formats = Vec::new();
-                        let mut custom_type_ids = Vec::new();
-                        let mut video_formats = Vec::new();
-
-                        for pt in &input.accepts_types {
-                            let audio_format = match pt {
-                                $crate::streamkit_core::types::PacketType::RawAudio(af) => {
-                                    Some($crate::conversions::audio_format_to_c(af))
-                                }
-                                _ => None,
-                            };
-                            audio_formats.push(audio_format);
-                            let custom_type_id = match pt {
-                                $crate::streamkit_core::types::PacketType::Custom { type_id } => {
-                                    Some(std::ffi::CString::new(type_id.as_str()).expect(
-                                        "Custom type_id should not contain null bytes",
-                                    ))
-                                }
-                                $crate::streamkit_core::types::PacketType::EncodedAudio(format) => {
-                                    Some($crate::conversions::codec_name_to_cstring(format.codec.as_c_name()))
-                                }
-                                $crate::streamkit_core::types::PacketType::EncodedVideo(format) => {
-                                    Some($crate::conversions::codec_name_to_cstring(format.codec.as_c_name()))
-                                }
-                                _ => None,
-                            };
-                            custom_type_ids.push(custom_type_id);
-                            let video_format = match pt {
-                                $crate::streamkit_core::types::PacketType::RawVideo(vf) => {
-                                    Some($crate::conversions::raw_video_format_to_c(vf))
-                                }
-                                _ => None,
-                            };
-                            video_formats.push(video_format);
-                        }
-
-                        // Now create CPacketTypeInfo with stable pointers to the stored formats
-                        for (idx, pt) in input.accepts_types.iter().enumerate() {
-                            let type_discriminant = match pt {
-                                $crate::streamkit_core::types::PacketType::RawAudio(_) => {
-                                    $crate::types::CPacketType::RawAudio
-                                }
-                                $crate::streamkit_core::types::PacketType::EncodedAudio(format) => {
-                                    if format.codec
-                                        == $crate::streamkit_core::types::AudioCodec::Opus
-                                        && format.codec_private.is_none()
-                                    {
-                                        $crate::types::CPacketType::OpusAudio
-                                    } else {
-                                        $crate::types::CPacketType::EncodedAudio
-                                    }
-                                }
-                                $crate::streamkit_core::types::PacketType::RawVideo(_) => {
-                                    $crate::types::CPacketType::RawVideo
-                                }
-                                $crate::streamkit_core::types::PacketType::EncodedVideo(_) => {
-                                    $crate::types::CPacketType::EncodedVideo
-                                }
-                                $crate::streamkit_core::types::PacketType::Text => {
-                                    $crate::types::CPacketType::Text
-                                }
-                                $crate::streamkit_core::types::PacketType::Transcription => {
-                                    $crate::types::CPacketType::Transcription
-                                }
-                                $crate::streamkit_core::types::PacketType::Custom { .. } => {
-                                    $crate::types::CPacketType::Custom
-                                }
-                                $crate::streamkit_core::types::PacketType::Binary => {
-                                    $crate::types::CPacketType::Binary
-                                }
-                                $crate::streamkit_core::types::PacketType::Any => {
-                                    $crate::types::CPacketType::Any
-                                }
-                                $crate::streamkit_core::types::PacketType::Passthrough => {
-                                    $crate::types::CPacketType::Any
-                                }
-                            };
-
-                            let audio_format_ptr = if let Some(ref fmt) = audio_formats[idx] {
-                                fmt as *const $crate::types::CAudioFormat
-                            } else {
-                                std::ptr::null()
-                            };
-
-                            let custom_type_id_ptr = if let Some(ref s) = custom_type_ids[idx] {
-                                s.as_ptr()
-                            } else {
-                                std::ptr::null()
-                            };
-
-                            let video_format_ptr = if let Some(ref vf) = video_formats[idx] {
-                                vf as *const $crate::types::CRawVideoFormat
-                            } else {
-                                std::ptr::null()
-                            };
-
-                            types_info.push($crate::types::CPacketTypeInfo {
-                                type_discriminant,
-                                audio_format: audio_format_ptr,
-                                custom_type_id: custom_type_id_ptr,
-                                raw_video_format: video_format_ptr,
-                            });
-                        }
-
-                        c_inputs.push($crate::types::CInputPin {
-                            name: name.as_ptr(),
-                            accepts_types: types_info.as_ptr(),
-                            accepts_types_count: types_info.len(),
-                        });
-
-                        input_names.push(name);
-                        input_types.push(types_info);
-                        input_audio_formats.push(audio_formats);
-                        input_custom_type_ids.push(custom_type_ids);
-                        input_video_formats.push(video_formats);
-                    }
-
-                    // Convert outputs
-                    let mut c_outputs = Vec::new();
-                    let mut output_names = Vec::new();
-                    let mut output_audio_formats = Vec::new();
-                    let mut output_custom_type_ids = Vec::new();
-                    let mut output_video_formats = Vec::new();
-
-                    for output in &meta.outputs {
-                        let name = std::ffi::CString::new(output.name.as_str())
-                            .expect("Output pin name should not contain null bytes");
-
-                        let audio_format = match &output.produces_type {
-                            $crate::streamkit_core::types::PacketType::RawAudio(af) => {
-                                Some($crate::conversions::audio_format_to_c(af))
-                            }
-                            _ => None,
-                        };
-                        output_audio_formats.push(audio_format);
-                        let output_custom_type_id = match &output.produces_type {
-                            $crate::streamkit_core::types::PacketType::Custom { type_id } => {
-                                Some(std::ffi::CString::new(type_id.as_str()).expect(
-                                    "Custom type_id should not contain null bytes",
-                                ))
-                            }
-                            $crate::streamkit_core::types::PacketType::EncodedAudio(format) => {
-                                Some($crate::conversions::codec_name_to_cstring(format.codec.as_c_name()))
-                            }
-                            $crate::streamkit_core::types::PacketType::EncodedVideo(format) => {
-                                Some($crate::conversions::codec_name_to_cstring(format.codec.as_c_name()))
-                            }
-                            _ => None,
-                        };
-                        output_custom_type_ids.push(output_custom_type_id);
-                        let video_format = match &output.produces_type {
-                            $crate::streamkit_core::types::PacketType::RawVideo(vf) => {
-                                Some($crate::conversions::raw_video_format_to_c(vf))
-                            }
-                            _ => None,
-                        };
-                        output_video_formats.push(video_format);
-
-                        // Now create CPacketTypeInfo with stable pointer to the stored format
-                        let type_discriminant = match &output.produces_type {
-                            $crate::streamkit_core::types::PacketType::RawAudio(_) => {
-                                $crate::types::CPacketType::RawAudio
-                            }
-                            $crate::streamkit_core::types::PacketType::EncodedAudio(format) => {
-                                if format.codec
-                                    == $crate::streamkit_core::types::AudioCodec::Opus
-                                    && format.codec_private.is_none()
-                                {
-                                    $crate::types::CPacketType::OpusAudio
-                                } else {
-                                    $crate::types::CPacketType::EncodedAudio
-                                }
-                            }
-                            $crate::streamkit_core::types::PacketType::RawVideo(_) => {
-                                $crate::types::CPacketType::RawVideo
-                            }
-                            $crate::streamkit_core::types::PacketType::EncodedVideo(_) => {
-                                $crate::types::CPacketType::EncodedVideo
-                            }
-                            $crate::streamkit_core::types::PacketType::Text => {
-                                $crate::types::CPacketType::Text
-                            }
-                            $crate::streamkit_core::types::PacketType::Transcription => {
-                                $crate::types::CPacketType::Transcription
-                            }
-                            $crate::streamkit_core::types::PacketType::Custom { .. } => {
-                                $crate::types::CPacketType::Custom
-                            }
-                            $crate::streamkit_core::types::PacketType::Binary => {
-                                $crate::types::CPacketType::Binary
-                            }
-                            $crate::streamkit_core::types::PacketType::Any => {
-                                $crate::types::CPacketType::Any
-                            }
-                            $crate::streamkit_core::types::PacketType::Passthrough => {
-                                $crate::types::CPacketType::Any
-                            }
-                        };
-
-                        // SAFETY: We just pushed an element, so last() is guaranteed to be Some
-                        #[allow(clippy::unwrap_used)]
-                        let audio_format_ptr =
-                            if let Some(ref fmt) = output_audio_formats.last().unwrap() {
-                                fmt as *const $crate::types::CAudioFormat
-                            } else {
-                                std::ptr::null()
-                            };
-
-                        // SAFETY: We just pushed an element, so last() is guaranteed to be Some
-                        #[allow(clippy::unwrap_used)]
-                        let custom_type_id_ptr =
-                            if let Some(ref s) = output_custom_type_ids.last().unwrap() {
-                                s.as_ptr()
-                            } else {
-                                std::ptr::null()
-                            };
-
-                        // SAFETY: We just pushed an element, so last() is guaranteed to be Some
-                        #[allow(clippy::unwrap_used)]
-                        let video_format_ptr =
-                            if let Some(ref vf) = output_video_formats.last().unwrap() {
-                                vf as *const $crate::types::CRawVideoFormat
-                            } else {
-                                std::ptr::null()
-                            };
-
-                        let type_info = $crate::types::CPacketTypeInfo {
-                            type_discriminant,
-                            audio_format: audio_format_ptr,
-                            custom_type_id: custom_type_id_ptr,
-                            raw_video_format: video_format_ptr,
-                        };
-
-                        c_outputs.push($crate::types::COutputPin {
-                            name: name.as_ptr(),
-                            produces_type: type_info,
-                        });
-                        output_names.push(name);
-                    }
-
-                    // Convert categories
-                    let mut category_strings = Vec::new();
-                    let mut category_ptrs = Vec::new();
-
-                    for cat in &meta.categories {
-                        let c_str = std::ffi::CString::new(cat.as_str())
-                            .expect("Category name should not contain null bytes");
-                        category_ptrs.push(c_str.as_ptr());
-                        category_strings.push(c_str);
-                    }
-
-                    let kind = std::ffi::CString::new(meta.kind.as_str())
-                        .expect("Node kind should not contain null bytes");
-                    let description = meta.description.as_ref().map(|d| {
-                        std::ffi::CString::new(d.as_str())
-                            .expect("Description should not contain null bytes")
-                    });
-                    let param_schema = std::ffi::CString::new(meta.param_schema.to_string())
-                        .expect("Param schema JSON should not contain null bytes");
-
-                    let c_metadata = $crate::types::CNodeMetadata {
-                        kind: kind.as_ptr(),
-                        description: description.as_ref().map_or(std::ptr::null(), |d| d.as_ptr()),
-                        inputs: c_inputs.as_ptr(),
-                        inputs_count: c_inputs.len(),
-                        outputs: c_outputs.as_ptr(),
-                        outputs_count: c_outputs.len(),
-                        param_schema: param_schema.as_ptr(),
-                        categories: category_ptrs.as_ptr(),
-                        categories_count: category_ptrs.len(),
-                    };
-
-                    (
-                        c_metadata,
-                        c_inputs,
-                        c_outputs,
-                        input_names,
-                        input_types,
-                        input_audio_formats,
-                        input_custom_type_ids,
-                        input_video_formats,
-                        output_names,
-                        output_audio_formats,
-                        output_custom_type_ids,
-                        output_video_formats,
-                        category_strings,
-                        category_ptrs,
-                        kind,
-                        description,
-                        param_schema,
-                    )
+                    $crate::metadata_storage::PluginMetadataStorage::from_node_metadata(&meta)
                 });
-
-                &metadata.0
-            }
+                &storage.c_metadata
+            })
         }
 
         extern "C" fn __plugin_create_instance(
@@ -1190,26 +911,30 @@ macro_rules! native_plugin_entry {
             log_callback: $crate::types::CLogCallback,
             log_user_data: *mut std::os::raw::c_void,
         ) -> $crate::types::CPluginHandle {
-            let params_json = if params.is_null() {
-                None
-            } else {
-                match unsafe { $crate::conversions::c_str_to_string(params) } {
-                    Ok(s) if s.is_empty() => None,
-                    Ok(s) => match serde_json::from_str(&s) {
-                        Ok(v) => Some(v),
+            $crate::ffi_guard::guard_handle(|| {
+                let params_json = if params.is_null() {
+                    None
+                } else {
+                    match unsafe { $crate::conversions::c_str_to_string(params) } {
+                        Ok(s) if s.is_empty() => None,
+                        Ok(s) => match serde_json::from_str(&s) {
+                            Ok(v) => Some(v),
+                            Err(_) => return std::ptr::null_mut(),
+                        },
                         Err(_) => return std::ptr::null_mut(),
-                    },
-                    Err(_) => return std::ptr::null_mut(),
+                    }
+                };
+
+                // Create logger using the plugin's kind as target (e.g. "whisper")
+                // instead of module_path! which is opaque to the user.
+                let kind = <$plugin_type as $crate::NativeProcessorNode>::metadata().kind;
+                let logger = $crate::logger::Logger::new(log_callback, log_user_data, &kind);
+
+                match <$plugin_type as $crate::NativeProcessorNode>::new(params_json, logger) {
+                    Ok(instance) => Box::into_raw(Box::new(instance)) as $crate::types::CPluginHandle,
+                    Err(_) => std::ptr::null_mut(),
                 }
-            };
-
-            // Create logger for this plugin instance
-            let logger = $crate::logger::Logger::new(log_callback, log_user_data, module_path!());
-
-            match <$plugin_type as $crate::NativeProcessorNode>::new(params_json, logger) {
-                Ok(instance) => Box::into_raw(Box::new(instance)) as $crate::types::CPluginHandle,
-                Err(_) => std::ptr::null_mut(),
-            }
+            })
         }
 
         extern "C" fn __plugin_process_packet(
@@ -1218,108 +943,114 @@ macro_rules! native_plugin_entry {
             packet: *const $crate::types::CPacket,
             callbacks: *const $crate::types::CNodeCallbacks,
         ) -> $crate::types::CResult {
-            if handle.is_null() || input_pin.is_null() || packet.is_null() || callbacks.is_null() {
-                return $crate::types::CResult::error(std::ptr::null());
-            }
-
-            let instance = unsafe { &mut *(handle as *mut $plugin_type) };
-
-            let pin_name = match unsafe { $crate::conversions::c_str_to_string(input_pin) } {
-                Ok(s) => s,
-                Err(e) => {
-                    let err_msg = $crate::conversions::error_to_c(format!("Invalid pin name: {}", e));
-                    return $crate::types::CResult::error(err_msg);
+            $crate::ffi_guard::guard_result(|| {
+                if handle.is_null() || input_pin.is_null() || packet.is_null() || callbacks.is_null() {
+                    return $crate::types::CResult::error(std::ptr::null());
                 }
-            };
 
-            let rust_packet = match unsafe { $crate::conversions::packet_from_c(packet) } {
-                Ok(p) => p,
-                Err(e) => {
-                    let err_msg = $crate::conversions::error_to_c(format!("Invalid packet: {}", e));
-                    return $crate::types::CResult::error(err_msg);
+                let instance = unsafe { &mut *(handle as *mut $plugin_type) };
+
+                let pin_name = match unsafe { $crate::conversions::c_str_to_string(input_pin) } {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let err_msg = $crate::conversions::error_to_c(format!("Invalid pin name: {}", e));
+                        return $crate::types::CResult::error(err_msg);
+                    }
+                };
+
+                let rust_packet = match unsafe { $crate::conversions::packet_from_c(packet) } {
+                    Ok(p) => p,
+                    Err(e) => {
+                        let err_msg = $crate::conversions::error_to_c(format!("Invalid packet: {}", e));
+                        return $crate::types::CResult::error(err_msg);
+                    }
+                };
+
+                let output = unsafe { $crate::OutputSender::from_node_callbacks(callbacks) };
+
+                match instance.process(&pin_name, rust_packet, &output) {
+                    Ok(()) => $crate::types::CResult::success(),
+                    Err(e) => {
+                        let err_msg = $crate::conversions::error_to_c(e);
+                        $crate::types::CResult::error(err_msg)
+                    }
                 }
-            };
-
-            let output = unsafe { $crate::OutputSender::from_node_callbacks(callbacks) };
-
-            match instance.process(&pin_name, rust_packet, &output) {
-                Ok(()) => $crate::types::CResult::success(),
-                Err(e) => {
-                    let err_msg = $crate::conversions::error_to_c(e);
-                    $crate::types::CResult::error(err_msg)
-                }
-            }
+            })
         }
 
         extern "C" fn __plugin_update_params(
             handle: $crate::types::CPluginHandle,
             params: *const std::os::raw::c_char,
         ) -> $crate::types::CResult {
-            if handle.is_null() {
-                let err_msg = $crate::conversions::error_to_c("Invalid handle (null)");
-                return $crate::types::CResult::error(err_msg);
-            }
+            $crate::ffi_guard::guard_result(|| {
+                if handle.is_null() {
+                    let err_msg = $crate::conversions::error_to_c("Invalid handle (null)");
+                    return $crate::types::CResult::error(err_msg);
+                }
 
-            let instance = unsafe { &mut *(handle as *mut $plugin_type) };
+                let instance = unsafe { &mut *(handle as *mut $plugin_type) };
 
-            let params_json = if params.is_null() {
-                None
-            } else {
-                match unsafe { $crate::conversions::c_str_to_string(params) } {
-                    Ok(s) if s.is_empty() => None,
-                    Ok(s) => match serde_json::from_str(&s) {
-                        Ok(v) => Some(v),
+                let params_json = if params.is_null() {
+                    None
+                } else {
+                    match unsafe { $crate::conversions::c_str_to_string(params) } {
+                        Ok(s) if s.is_empty() => None,
+                        Ok(s) => match serde_json::from_str(&s) {
+                            Ok(v) => Some(v),
+                            Err(e) => {
+                                let err_msg =
+                                    $crate::conversions::error_to_c(format!("Invalid params JSON: {e}"));
+                                return $crate::types::CResult::error(err_msg);
+                            },
+                        },
                         Err(e) => {
                             let err_msg =
-                                $crate::conversions::error_to_c(format!("Invalid params JSON: {e}"));
+                                $crate::conversions::error_to_c(format!("Invalid params string: {e}"));
                             return $crate::types::CResult::error(err_msg);
                         },
-                    },
+                    }
+                };
+
+                match instance.update_params(params_json) {
+                    Ok(()) => $crate::types::CResult::success(),
                     Err(e) => {
-                        let err_msg =
-                            $crate::conversions::error_to_c(format!("Invalid params string: {e}"));
-                        return $crate::types::CResult::error(err_msg);
+                        let err_msg = $crate::conversions::error_to_c(e);
+                        $crate::types::CResult::error(err_msg)
                     },
                 }
-            };
-
-            match instance.update_params(params_json) {
-                Ok(()) => $crate::types::CResult::success(),
-                Err(e) => {
-                    let err_msg = $crate::conversions::error_to_c(e);
-                    $crate::types::CResult::error(err_msg)
-                },
-            }
+            })
         }
 
         extern "C" fn __plugin_flush(
             handle: $crate::types::CPluginHandle,
             callbacks: *const $crate::types::CNodeCallbacks,
         ) -> $crate::types::CResult {
-            tracing::trace!("__plugin_flush called");
-            if handle.is_null() || callbacks.is_null() {
-                tracing::error!("Handle or callbacks is null");
-                let err_msg = $crate::conversions::error_to_c("Invalid handle or callbacks (null)");
-                return $crate::types::CResult::error(err_msg);
-            }
+            $crate::ffi_guard::guard_result(|| {
+                tracing::trace!("__plugin_flush called");
+                if handle.is_null() || callbacks.is_null() {
+                    tracing::error!("Handle or callbacks is null");
+                    let err_msg = $crate::conversions::error_to_c("Invalid handle or callbacks (null)");
+                    return $crate::types::CResult::error(err_msg);
+                }
 
-            let instance = unsafe { &mut *(handle as *mut $plugin_type) };
-            tracing::trace!("Got instance pointer");
+                let instance = unsafe { &mut *(handle as *mut $plugin_type) };
+                tracing::trace!("Got instance pointer");
 
-            let output_sender = unsafe { $crate::OutputSender::from_node_callbacks(callbacks) };
-            tracing::trace!("Created OutputSender, calling instance.flush()");
+                let output_sender = unsafe { $crate::OutputSender::from_node_callbacks(callbacks) };
+                tracing::trace!("Created OutputSender, calling instance.flush()");
 
-            match instance.flush(&output_sender) {
-                Ok(()) => {
-                    tracing::trace!("instance.flush() returned Ok");
-                    $crate::types::CResult::success()
-                },
-                Err(e) => {
-                    tracing::error!(error = %e, "instance.flush() returned Err");
-                    let err_msg = $crate::conversions::error_to_c(e);
-                    $crate::types::CResult::error(err_msg)
-                },
-            }
+                match instance.flush(&output_sender) {
+                    Ok(()) => {
+                        tracing::trace!("instance.flush() returned Ok");
+                        $crate::types::CResult::success()
+                    },
+                    Err(e) => {
+                        tracing::error!(error = %e, "instance.flush() returned Err");
+                        let err_msg = $crate::conversions::error_to_c(e);
+                        $crate::types::CResult::error(err_msg)
+                    },
+                }
+            })
         }
 
         $crate::__plugin_shared_ffi!($plugin_type);
@@ -1351,26 +1082,8 @@ macro_rules! native_plugin_entry {
 #[macro_export]
 macro_rules! native_source_plugin_entry {
     ($plugin_type:ty) => {
-        // Static metadata storage (same layout as processor macro + video format vecs)
-        static mut METADATA: std::sync::OnceLock<(
-            $crate::types::CNodeMetadata,
-            Vec<$crate::types::CInputPin>,
-            Vec<$crate::types::COutputPin>,
-            Vec<std::ffi::CString>,
-            Vec<Vec<$crate::types::CPacketTypeInfo>>,
-            Vec<Vec<Option<$crate::types::CAudioFormat>>>,
-            Vec<Vec<Option<std::ffi::CString>>>,
-            Vec<Vec<Option<$crate::types::CRawVideoFormat>>>,
-            Vec<std::ffi::CString>,
-            Vec<Option<$crate::types::CAudioFormat>>,
-            Vec<Option<std::ffi::CString>>,
-            Vec<Option<$crate::types::CRawVideoFormat>>,
-            Vec<std::ffi::CString>,
-            Vec<*const std::os::raw::c_char>,
-            std::ffi::CString,
-            Option<std::ffi::CString>,
-            std::ffi::CString,
-        )> = std::sync::OnceLock::new();
+        static METADATA: std::sync::OnceLock<$crate::metadata_storage::PluginMetadataStorage> =
+            std::sync::OnceLock::new();
 
         #[no_mangle]
         pub extern "C" fn streamkit_native_plugin_api() -> *const $crate::types::CNativePluginAPI {
@@ -1390,327 +1103,23 @@ macro_rules! native_source_plugin_entry {
             &API
         }
 
-        // ── Metadata ────────────────────────────────────────────────────
-        // Reuse the same metadata-building logic as the processor macro.
-        // Source nodes typically have zero inputs and one or more outputs.
+        #[no_mangle]
+        pub extern "C" fn streamkit_native_plugin_set_log_enabled_callback(
+            handle: $crate::types::CPluginHandle,
+            callback: $crate::types::CLogEnabledCallback,
+            user_data: *mut std::os::raw::c_void,
+        ) {
+            __plugin_set_log_enabled_callback(handle, callback, user_data);
+        }
 
         extern "C" fn __plugin_get_metadata() -> *const $crate::types::CNodeMetadata {
-            unsafe {
-                let metadata = METADATA.get_or_init(|| {
+            $crate::ffi_guard::guard_ptr("get_metadata", || {
+                let storage = METADATA.get_or_init(|| {
                     let meta = <$plugin_type as $crate::NativeSourceNode>::metadata();
-
-                    // Convert inputs (usually empty for source nodes)
-                    let mut c_inputs = Vec::new();
-                    let mut input_names = Vec::new();
-                    let mut input_types = Vec::new();
-                    let mut input_audio_formats = Vec::new();
-                    let mut input_custom_type_ids = Vec::new();
-                    let mut input_video_formats = Vec::new();
-
-                    for input in &meta.inputs {
-                        let name = std::ffi::CString::new(input.name.as_str())
-                            .expect("Input pin name should not contain null bytes");
-                        let mut types_info = Vec::new();
-                        let mut audio_formats = Vec::new();
-                        let mut custom_type_ids = Vec::new();
-                        let mut video_formats = Vec::new();
-
-                        for pt in &input.accepts_types {
-                            let audio_format = match pt {
-                                $crate::streamkit_core::types::PacketType::RawAudio(af) => {
-                                    Some($crate::conversions::audio_format_to_c(af))
-                                },
-                                _ => None,
-                            };
-                            audio_formats.push(audio_format);
-                            let custom_type_id = match pt {
-                                $crate::streamkit_core::types::PacketType::Custom { type_id } => {
-                                    Some(
-                                        std::ffi::CString::new(type_id.as_str())
-                                            .expect("Custom type_id should not contain null bytes"),
-                                    )
-                                },
-                                $crate::streamkit_core::types::PacketType::EncodedAudio(format) => {
-                                    Some($crate::conversions::codec_name_to_cstring(
-                                        format.codec.as_c_name(),
-                                    ))
-                                },
-                                $crate::streamkit_core::types::PacketType::EncodedVideo(format) => {
-                                    Some($crate::conversions::codec_name_to_cstring(
-                                        format.codec.as_c_name(),
-                                    ))
-                                },
-                                _ => None,
-                            };
-                            custom_type_ids.push(custom_type_id);
-                            let video_format = match pt {
-                                $crate::streamkit_core::types::PacketType::RawVideo(vf) => {
-                                    Some($crate::conversions::raw_video_format_to_c(vf))
-                                },
-                                _ => None,
-                            };
-                            video_formats.push(video_format);
-                        }
-
-                        for (idx, pt) in input.accepts_types.iter().enumerate() {
-                            let type_discriminant = match pt {
-                                $crate::streamkit_core::types::PacketType::RawAudio(_) => {
-                                    $crate::types::CPacketType::RawAudio
-                                },
-                                $crate::streamkit_core::types::PacketType::EncodedAudio(format) => {
-                                    if format.codec
-                                        == $crate::streamkit_core::types::AudioCodec::Opus
-                                        && format.codec_private.is_none()
-                                    {
-                                        $crate::types::CPacketType::OpusAudio
-                                    } else {
-                                        $crate::types::CPacketType::EncodedAudio
-                                    }
-                                },
-                                $crate::streamkit_core::types::PacketType::RawVideo(_) => {
-                                    $crate::types::CPacketType::RawVideo
-                                },
-                                $crate::streamkit_core::types::PacketType::EncodedVideo(_) => {
-                                    $crate::types::CPacketType::EncodedVideo
-                                },
-                                $crate::streamkit_core::types::PacketType::Text => {
-                                    $crate::types::CPacketType::Text
-                                },
-                                $crate::streamkit_core::types::PacketType::Transcription => {
-                                    $crate::types::CPacketType::Transcription
-                                },
-                                $crate::streamkit_core::types::PacketType::Custom { .. } => {
-                                    $crate::types::CPacketType::Custom
-                                },
-                                $crate::streamkit_core::types::PacketType::Binary => {
-                                    $crate::types::CPacketType::Binary
-                                },
-                                $crate::streamkit_core::types::PacketType::Any => {
-                                    $crate::types::CPacketType::Any
-                                },
-                                $crate::streamkit_core::types::PacketType::Passthrough => {
-                                    $crate::types::CPacketType::Any
-                                },
-                            };
-
-                            let audio_format_ptr = if let Some(ref fmt) = audio_formats[idx] {
-                                fmt as *const $crate::types::CAudioFormat
-                            } else {
-                                std::ptr::null()
-                            };
-
-                            let custom_type_id_ptr = if let Some(ref s) = custom_type_ids[idx] {
-                                s.as_ptr()
-                            } else {
-                                std::ptr::null()
-                            };
-
-                            let video_format_ptr = if let Some(ref vf) = video_formats[idx] {
-                                vf as *const $crate::types::CRawVideoFormat
-                            } else {
-                                std::ptr::null()
-                            };
-
-                            types_info.push($crate::types::CPacketTypeInfo {
-                                type_discriminant,
-                                audio_format: audio_format_ptr,
-                                custom_type_id: custom_type_id_ptr,
-                                raw_video_format: video_format_ptr,
-                            });
-                        }
-
-                        c_inputs.push($crate::types::CInputPin {
-                            name: name.as_ptr(),
-                            accepts_types: types_info.as_ptr(),
-                            accepts_types_count: types_info.len(),
-                        });
-
-                        input_names.push(name);
-                        input_types.push(types_info);
-                        input_audio_formats.push(audio_formats);
-                        input_custom_type_ids.push(custom_type_ids);
-                        input_video_formats.push(video_formats);
-                    }
-
-                    // Convert outputs
-                    let mut c_outputs = Vec::new();
-                    let mut output_names = Vec::new();
-                    let mut output_audio_formats = Vec::new();
-                    let mut output_custom_type_ids = Vec::new();
-                    let mut output_video_formats = Vec::new();
-
-                    for output in &meta.outputs {
-                        let name = std::ffi::CString::new(output.name.as_str())
-                            .expect("Output pin name should not contain null bytes");
-
-                        let audio_format = match &output.produces_type {
-                            $crate::streamkit_core::types::PacketType::RawAudio(af) => {
-                                Some($crate::conversions::audio_format_to_c(af))
-                            },
-                            _ => None,
-                        };
-                        output_audio_formats.push(audio_format);
-                        let output_custom_type_id = match &output.produces_type {
-                            $crate::streamkit_core::types::PacketType::Custom { type_id } => Some(
-                                std::ffi::CString::new(type_id.as_str())
-                                    .expect("Custom type_id should not contain null bytes"),
-                            ),
-                            $crate::streamkit_core::types::PacketType::EncodedAudio(format) => {
-                                Some($crate::conversions::codec_name_to_cstring(
-                                    format.codec.as_c_name(),
-                                ))
-                            },
-                            $crate::streamkit_core::types::PacketType::EncodedVideo(format) => {
-                                Some($crate::conversions::codec_name_to_cstring(
-                                    format.codec.as_c_name(),
-                                ))
-                            },
-                            _ => None,
-                        };
-                        output_custom_type_ids.push(output_custom_type_id);
-                        let video_format = match &output.produces_type {
-                            $crate::streamkit_core::types::PacketType::RawVideo(vf) => {
-                                Some($crate::conversions::raw_video_format_to_c(vf))
-                            },
-                            _ => None,
-                        };
-                        output_video_formats.push(video_format);
-
-                        let type_discriminant = match &output.produces_type {
-                            $crate::streamkit_core::types::PacketType::RawAudio(_) => {
-                                $crate::types::CPacketType::RawAudio
-                            },
-                            $crate::streamkit_core::types::PacketType::EncodedAudio(format) => {
-                                if format.codec == $crate::streamkit_core::types::AudioCodec::Opus
-                                    && format.codec_private.is_none()
-                                {
-                                    $crate::types::CPacketType::OpusAudio
-                                } else {
-                                    $crate::types::CPacketType::EncodedAudio
-                                }
-                            },
-                            $crate::streamkit_core::types::PacketType::RawVideo(_) => {
-                                $crate::types::CPacketType::RawVideo
-                            },
-                            $crate::streamkit_core::types::PacketType::EncodedVideo(_) => {
-                                $crate::types::CPacketType::EncodedVideo
-                            },
-                            $crate::streamkit_core::types::PacketType::Text => {
-                                $crate::types::CPacketType::Text
-                            },
-                            $crate::streamkit_core::types::PacketType::Transcription => {
-                                $crate::types::CPacketType::Transcription
-                            },
-                            $crate::streamkit_core::types::PacketType::Custom { .. } => {
-                                $crate::types::CPacketType::Custom
-                            },
-                            $crate::streamkit_core::types::PacketType::Binary => {
-                                $crate::types::CPacketType::Binary
-                            },
-                            $crate::streamkit_core::types::PacketType::Any => {
-                                $crate::types::CPacketType::Any
-                            },
-                            $crate::streamkit_core::types::PacketType::Passthrough => {
-                                $crate::types::CPacketType::Any
-                            },
-                        };
-
-                        // SAFETY: We just pushed an element, so last() is guaranteed to be Some
-                        #[allow(clippy::unwrap_used)]
-                        let audio_format_ptr =
-                            if let Some(ref fmt) = output_audio_formats.last().unwrap() {
-                                fmt as *const $crate::types::CAudioFormat
-                            } else {
-                                std::ptr::null()
-                            };
-
-                        // SAFETY: We just pushed an element, so last() is guaranteed to be Some
-                        #[allow(clippy::unwrap_used)]
-                        let custom_type_id_ptr =
-                            if let Some(ref s) = output_custom_type_ids.last().unwrap() {
-                                s.as_ptr()
-                            } else {
-                                std::ptr::null()
-                            };
-
-                        // SAFETY: We just pushed an element, so last() is guaranteed to be Some
-                        #[allow(clippy::unwrap_used)]
-                        let video_format_ptr =
-                            if let Some(ref vf) = output_video_formats.last().unwrap() {
-                                vf as *const $crate::types::CRawVideoFormat
-                            } else {
-                                std::ptr::null()
-                            };
-
-                        let type_info = $crate::types::CPacketTypeInfo {
-                            type_discriminant,
-                            audio_format: audio_format_ptr,
-                            custom_type_id: custom_type_id_ptr,
-                            raw_video_format: video_format_ptr,
-                        };
-
-                        c_outputs.push($crate::types::COutputPin {
-                            name: name.as_ptr(),
-                            produces_type: type_info,
-                        });
-                        output_names.push(name);
-                    }
-
-                    // Convert categories
-                    let mut category_strings = Vec::new();
-                    let mut category_ptrs = Vec::new();
-
-                    for cat in &meta.categories {
-                        let c_str = std::ffi::CString::new(cat.as_str())
-                            .expect("Category name should not contain null bytes");
-                        category_ptrs.push(c_str.as_ptr());
-                        category_strings.push(c_str);
-                    }
-
-                    let kind = std::ffi::CString::new(meta.kind.as_str())
-                        .expect("Node kind should not contain null bytes");
-                    let description = meta.description.as_ref().map(|d| {
-                        std::ffi::CString::new(d.as_str())
-                            .expect("Description should not contain null bytes")
-                    });
-                    let param_schema = std::ffi::CString::new(meta.param_schema.to_string())
-                        .expect("Param schema JSON should not contain null bytes");
-
-                    let c_metadata = $crate::types::CNodeMetadata {
-                        kind: kind.as_ptr(),
-                        description: description.as_ref().map_or(std::ptr::null(), |d| d.as_ptr()),
-                        inputs: c_inputs.as_ptr(),
-                        inputs_count: c_inputs.len(),
-                        outputs: c_outputs.as_ptr(),
-                        outputs_count: c_outputs.len(),
-                        param_schema: param_schema.as_ptr(),
-                        categories: category_ptrs.as_ptr(),
-                        categories_count: category_ptrs.len(),
-                    };
-
-                    (
-                        c_metadata,
-                        c_inputs,
-                        c_outputs,
-                        input_names,
-                        input_types,
-                        input_audio_formats,
-                        input_custom_type_ids,
-                        input_video_formats,
-                        output_names,
-                        output_audio_formats,
-                        output_custom_type_ids,
-                        output_video_formats,
-                        category_strings,
-                        category_ptrs,
-                        kind,
-                        description,
-                        param_schema,
-                    )
+                    $crate::metadata_storage::PluginMetadataStorage::from_node_metadata(&meta)
                 });
-
-                &metadata.0
-            }
+                &storage.c_metadata
+            })
         }
 
         // ── Instance lifecycle ──────────────────────────────────────────
@@ -1720,25 +1129,32 @@ macro_rules! native_source_plugin_entry {
             log_callback: $crate::types::CLogCallback,
             log_user_data: *mut std::os::raw::c_void,
         ) -> $crate::types::CPluginHandle {
-            let params_json = if params.is_null() {
-                None
-            } else {
-                match unsafe { $crate::conversions::c_str_to_string(params) } {
-                    Ok(s) if s.is_empty() => None,
-                    Ok(s) => match serde_json::from_str(&s) {
-                        Ok(v) => Some(v),
+            $crate::ffi_guard::guard_handle(|| {
+                let params_json = if params.is_null() {
+                    None
+                } else {
+                    match unsafe { $crate::conversions::c_str_to_string(params) } {
+                        Ok(s) if s.is_empty() => None,
+                        Ok(s) => match serde_json::from_str(&s) {
+                            Ok(v) => Some(v),
+                            Err(_) => return std::ptr::null_mut(),
+                        },
                         Err(_) => return std::ptr::null_mut(),
+                    }
+                };
+
+                // Create logger using the plugin's kind as target (e.g. "my_source")
+                // instead of module_path! which is opaque to the user.
+                let kind = <$plugin_type as $crate::NativeSourceNode>::metadata().kind;
+                let logger = $crate::logger::Logger::new(log_callback, log_user_data, &kind);
+
+                match <$plugin_type as $crate::NativeSourceNode>::new(params_json, logger) {
+                    Ok(instance) => {
+                        Box::into_raw(Box::new(instance)) as $crate::types::CPluginHandle
                     },
-                    Err(_) => return std::ptr::null_mut(),
+                    Err(_) => std::ptr::null_mut(),
                 }
-            };
-
-            let logger = $crate::logger::Logger::new(log_callback, log_user_data, module_path!());
-
-            match <$plugin_type as $crate::NativeSourceNode>::new(params_json, logger) {
-                Ok(instance) => Box::into_raw(Box::new(instance)) as $crate::types::CPluginHandle,
-                Err(_) => std::ptr::null_mut(),
-            }
+            })
         }
 
         // ── Source-specific entry points ─────────────────────────────────
@@ -1746,47 +1162,51 @@ macro_rules! native_source_plugin_entry {
         extern "C" fn __plugin_get_source_config(
             handle: $crate::types::CPluginHandle,
         ) -> $crate::types::CSourceConfig {
-            if handle.is_null() {
-                return $crate::types::CSourceConfig {
-                    is_source: false,
-                    tick_interval_us: 0,
-                    max_ticks: 0,
-                };
-            }
-            let instance = unsafe { &*(handle as *const $plugin_type) };
-            let cfg = instance.source_config();
-            $crate::types::CSourceConfig {
-                is_source: true,
-                tick_interval_us: cfg.tick_interval_us,
-                max_ticks: cfg.max_ticks,
-            }
+            $crate::ffi_guard::guard_source_config(|| {
+                if handle.is_null() {
+                    return $crate::types::CSourceConfig {
+                        is_source: false,
+                        tick_interval_us: 0,
+                        max_ticks: 0,
+                    };
+                }
+                let instance = unsafe { &*(handle as *const $plugin_type) };
+                let cfg = instance.source_config();
+                $crate::types::CSourceConfig {
+                    is_source: true,
+                    tick_interval_us: cfg.tick_interval_us,
+                    max_ticks: cfg.max_ticks,
+                }
+            })
         }
 
         extern "C" fn __plugin_tick(
             handle: $crate::types::CPluginHandle,
             callbacks: *const $crate::types::CNodeCallbacks,
         ) -> $crate::types::CTickResult {
-            if handle.is_null() || callbacks.is_null() {
-                let err = $crate::conversions::error_to_c("Invalid handle or callbacks (null)");
-                return $crate::types::CTickResult::error(err);
-            }
+            $crate::ffi_guard::guard_tick(|| {
+                if handle.is_null() || callbacks.is_null() {
+                    let err = $crate::conversions::error_to_c("Invalid handle or callbacks (null)");
+                    return $crate::types::CTickResult::error(err);
+                }
 
-            let instance = unsafe { &mut *(handle as *mut $plugin_type) };
-            let output = unsafe { $crate::OutputSender::from_node_callbacks(callbacks) };
+                let instance = unsafe { &mut *(handle as *mut $plugin_type) };
+                let output = unsafe { $crate::OutputSender::from_node_callbacks(callbacks) };
 
-            match instance.tick(&output) {
-                Ok(done) => {
-                    if done {
-                        $crate::types::CTickResult::done()
-                    } else {
-                        $crate::types::CTickResult::ok()
-                    }
-                },
-                Err(e) => {
-                    let err = $crate::conversions::error_to_c(e);
-                    $crate::types::CTickResult::error(err)
-                },
-            }
+                match instance.tick(&output) {
+                    Ok(done) => {
+                        if done {
+                            $crate::types::CTickResult::done()
+                        } else {
+                            $crate::types::CTickResult::ok()
+                        }
+                    },
+                    Err(e) => {
+                        let err = $crate::conversions::error_to_c(e);
+                        $crate::types::CTickResult::error(err)
+                    },
+                }
+            })
         }
 
         // ── No-op processor stubs (required by CNativePluginAPI) ────────
@@ -1797,17 +1217,19 @@ macro_rules! native_source_plugin_entry {
             _packet: *const $crate::types::CPacket,
             _callbacks: *const $crate::types::CNodeCallbacks,
         ) -> $crate::types::CResult {
-            let err = $crate::conversions::error_to_c(
-                "process_packet called on source plugin (not supported)",
-            );
-            $crate::types::CResult::error(err)
+            $crate::ffi_guard::guard_result(|| {
+                let err = $crate::conversions::error_to_c(
+                    "process_packet called on source plugin (not supported)",
+                );
+                $crate::types::CResult::error(err)
+            })
         }
 
         extern "C" fn __plugin_flush_noop(
             _handle: $crate::types::CPluginHandle,
             _callbacks: *const $crate::types::CNodeCallbacks,
         ) -> $crate::types::CResult {
-            $crate::types::CResult::success()
+            $crate::ffi_guard::guard_result(|| $crate::types::CResult::success())
         }
 
         // ── Upstream hint delivery (v5) ─────────────────────────────────
@@ -1816,27 +1238,33 @@ macro_rules! native_source_plugin_entry {
             handle: $crate::types::CPluginHandle,
             hint_json: *const std::os::raw::c_char,
         ) -> $crate::types::CResult {
-            if handle.is_null() {
-                let err = $crate::conversions::error_to_c("Invalid handle (null)");
-                return $crate::types::CResult::error(err);
-            }
-            let hint_str = match unsafe { $crate::conversions::c_str_to_string(hint_json) } {
-                Ok(s) => s,
-                Err(e) => {
-                    let err = $crate::conversions::error_to_c(format!("Invalid hint JSON: {e}"));
+            $crate::ffi_guard::guard_result(|| {
+                if handle.is_null() {
+                    let err = $crate::conversions::error_to_c("Invalid handle (null)");
                     return $crate::types::CResult::error(err);
-                },
-            };
-            let hint: $crate::streamkit_core::UpstreamHint = match serde_json::from_str(&hint_str) {
-                Ok(h) => h,
-                Err(e) => {
-                    let err = $crate::conversions::error_to_c(format!("Failed to parse hint: {e}"));
-                    return $crate::types::CResult::error(err);
-                },
-            };
-            let instance = unsafe { &mut *(handle as *mut $plugin_type) };
-            instance.on_upstream_hint(hint);
-            $crate::types::CResult::success()
+                }
+                let hint_str = match unsafe { $crate::conversions::c_str_to_string(hint_json) } {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let err =
+                            $crate::conversions::error_to_c(format!("Invalid hint JSON: {e}"));
+                        return $crate::types::CResult::error(err);
+                    },
+                };
+                let hint: $crate::streamkit_core::UpstreamHint =
+                    match serde_json::from_str(&hint_str) {
+                        Ok(h) => h,
+                        Err(e) => {
+                            let err = $crate::conversions::error_to_c(format!(
+                                "Failed to parse hint: {e}"
+                            ));
+                            return $crate::types::CResult::error(err);
+                        },
+                    };
+                let instance = unsafe { &mut *(handle as *mut $plugin_type) };
+                instance.on_upstream_hint(hint);
+                $crate::types::CResult::success()
+            })
         }
 
         // ── Shared ──────────────────────────────────────────────────────
@@ -1845,42 +1273,45 @@ macro_rules! native_source_plugin_entry {
             handle: $crate::types::CPluginHandle,
             params: *const std::os::raw::c_char,
         ) -> $crate::types::CResult {
-            if handle.is_null() {
-                let err_msg = $crate::conversions::error_to_c("Invalid handle (null)");
-                return $crate::types::CResult::error(err_msg);
-            }
+            $crate::ffi_guard::guard_result(|| {
+                if handle.is_null() {
+                    let err_msg = $crate::conversions::error_to_c("Invalid handle (null)");
+                    return $crate::types::CResult::error(err_msg);
+                }
 
-            let instance = unsafe { &mut *(handle as *mut $plugin_type) };
+                let instance = unsafe { &mut *(handle as *mut $plugin_type) };
 
-            let params_json = if params.is_null() {
-                None
-            } else {
-                match unsafe { $crate::conversions::c_str_to_string(params) } {
-                    Ok(s) if s.is_empty() => None,
-                    Ok(s) => match serde_json::from_str(&s) {
-                        Ok(v) => Some(v),
+                let params_json = if params.is_null() {
+                    None
+                } else {
+                    match unsafe { $crate::conversions::c_str_to_string(params) } {
+                        Ok(s) if s.is_empty() => None,
+                        Ok(s) => match serde_json::from_str(&s) {
+                            Ok(v) => Some(v),
+                            Err(e) => {
+                                let err_msg = $crate::conversions::error_to_c(format!(
+                                    "Invalid params JSON: {e}"
+                                ));
+                                return $crate::types::CResult::error(err_msg);
+                            },
+                        },
                         Err(e) => {
                             let err_msg = $crate::conversions::error_to_c(format!(
-                                "Invalid params JSON: {e}"
+                                "Invalid params string: {e}"
                             ));
                             return $crate::types::CResult::error(err_msg);
                         },
-                    },
+                    }
+                };
+
+                match instance.update_params(params_json) {
+                    Ok(()) => $crate::types::CResult::success(),
                     Err(e) => {
-                        let err_msg =
-                            $crate::conversions::error_to_c(format!("Invalid params string: {e}"));
-                        return $crate::types::CResult::error(err_msg);
+                        let err_msg = $crate::conversions::error_to_c(e);
+                        $crate::types::CResult::error(err_msg)
                     },
                 }
-            };
-
-            match instance.update_params(params_json) {
-                Ok(()) => $crate::types::CResult::success(),
-                Err(e) => {
-                    let err_msg = $crate::conversions::error_to_c(e);
-                    $crate::types::CResult::error(err_msg)
-                },
-            }
+            })
         }
 
         $crate::__plugin_shared_ffi!($plugin_type);

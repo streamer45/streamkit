@@ -2,11 +2,12 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::ffi::{CStr, CString};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use streamkit_plugin_sdk_native::prelude::*;
+use streamkit_plugin_sdk_native::resource_cache::ResourceCache;
 use streamkit_plugin_sdk_native::streamkit_core::types::{
     AudioFormat, SampleFormat, TranscriptionData, TranscriptionSegment,
 };
@@ -43,18 +44,8 @@ impl Drop for RecognizerWrapper {
     }
 }
 
-/// Cached recognizer
-struct CachedRecognizer {
-    recognizer: Arc<RecognizerWrapper>,
-}
-
-/// Global cache of recognizers
-/// Key: (model_dir, num_threads, execution_provider)
-// Allow: Type complexity is acceptable here - composite key for caching recognizers
-#[allow(clippy::type_complexity)]
-static RECOGNIZER_CACHE: std::sync::LazyLock<
-    Mutex<HashMap<(String, i32, String), CachedRecognizer>>,
-> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+static RECOGNIZER_CACHE: ResourceCache<(String, i32, String), RecognizerWrapper> =
+    ResourceCache::new();
 
 pub struct ParakeetNode {
     config: ParakeetConfig,
@@ -78,9 +69,14 @@ pub struct ParakeetNode {
     logger: Logger,
 }
 
-// SAFETY: We ensure thread-safety through Arc
-unsafe impl Send for ParakeetNode {}
-unsafe impl Sync for ParakeetNode {}
+// All fields are Send+Sync: Logger and RecognizerWrapper have their
+// own manual impls in their respective modules; the remaining fields
+// are standard library types that auto-derive Send+Sync.
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    // Compilation fails here if any field stops being Send+Sync.
+    assert_send_sync::<ParakeetNode>();
+};
 
 impl NativeProcessorNode for ParakeetNode {
     fn metadata() -> NodeMetadata {
@@ -212,39 +208,13 @@ impl NativeProcessorNode for ParakeetNode {
             cache_key.2
         );
 
-        // Check cache
-        let cached_recognizer = {
-            let cache = RECOGNIZER_CACHE
-                .lock()
-                .map_err(|e| format!("Failed to lock recognizer cache: {e}"))?;
-
-            plugin_info!(logger, "Cache has {} entries", cache.len());
-            cache.get(&cache_key).map(|cached| cached.recognizer.clone())
-        };
-
-        let recognizer = if let Some(rec) = cached_recognizer {
-            plugin_info!(logger, "CACHE HIT: Reusing cached recognizer");
-            rec
-        } else {
-            plugin_info!(logger, "CACHE MISS: Creating new recognizer");
-
-            let recognizer_ptr = unsafe { create_recognizer(&logger, &model_dir, &config)? };
-            let recognizer_arc = Arc::new(RecognizerWrapper::new(recognizer_ptr));
-
-            // Insert into cache
-            plugin_info!(logger, "Inserting recognizer into cache");
-            let cache_size = {
-                let mut cache = RECOGNIZER_CACHE
-                    .lock()
-                    .map_err(|e| format!("Failed to lock recognizer cache: {e}"))?;
-
-                cache.insert(cache_key, CachedRecognizer { recognizer: recognizer_arc.clone() });
-                cache.len()
-            };
-            plugin_info!(logger, "Cache now has {} entries", cache_size);
-
-            recognizer_arc
-        };
+        let recognizer = RECOGNIZER_CACHE
+            .get_or_init(cache_key, |_| {
+                plugin_info!(logger, "CACHE MISS: Creating new recognizer");
+                let recognizer_ptr = unsafe { create_recognizer(&logger, &model_dir, &config)? };
+                Ok(RecognizerWrapper::new(recognizer_ptr))
+            })
+            .map_err(|e| format!("recognizer cache: {e}"))?;
 
         // Initialize VAD if enabled
         let vad = if config.use_vad {
