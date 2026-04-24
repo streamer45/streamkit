@@ -55,6 +55,30 @@ fn extract_auth(
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct OneshotInput {
+    /// Input field name matching a node ID in the pipeline (e.g., "input").
+    pub field: String,
+    /// Path to the input file on the local filesystem.
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GenerateOneshotCommandArgs {
+    /// Pipeline YAML for the oneshot run.
+    pub yaml: String,
+    /// Input file(s) to include in the request.
+    pub inputs: Vec<OneshotInput>,
+    /// Path where the output should be saved.
+    pub output: String,
+    /// Server URL (defaults to "http://localhost:4545").
+    #[serde(default)]
+    pub server_url: Option<String>,
+    /// Command format: "curl" or "skit-cli". Defaults to "curl".
+    #[serde(default)]
+    pub format: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ValidatePipelineArgs {
     /// Pipeline YAML to validate.
     pub yaml: String,
@@ -428,6 +452,66 @@ impl StreamKitMcp {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
+    // -- generate_oneshot_command -------------------------------------------
+
+    #[tool(
+        description = "Generate a curl or skit-cli command to execute a oneshot (batch processing) pipeline. The oneshot runs through the HTTP data plane (POST /api/v1/process), not through MCP. Use validate_pipeline with mode='oneshot' first to ensure the YAML is valid."
+    )]
+    async fn generate_oneshot_command(
+        &self,
+        Parameters(args): Parameters<GenerateOneshotCommandArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let (_role_name, perms) = extract_auth(&ctx, &self.app_state)?;
+
+        if !perms.create_sessions {
+            return Err(McpError::invalid_request(
+                "Permission denied: create_sessions required",
+                None,
+            ));
+        }
+
+        // Validate the YAML before generating a command.
+        let validation = crate::server::validate_pipeline_yaml(
+            &self.app_state,
+            &perms,
+            &args.yaml,
+            Some(crate::server::PipelineMode::Oneshot),
+        )
+        .map_err(|e| McpError::internal_error(e, None))?;
+
+        let validation_json = serde_json::to_value(&validation)
+            .map_err(|e| McpError::internal_error(format!("serialization error: {e}"), None))?;
+
+        if validation_json["valid"] == false {
+            let pretty = serde_json::to_string_pretty(&validation_json)
+                .map_err(|e| McpError::internal_error(format!("serialization error: {e}"), None))?;
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Pipeline validation failed. Fix the errors before generating a command:\n{pretty}"
+            ))]));
+        }
+
+        let server_url = args.server_url.as_deref().unwrap_or("http://localhost:4545");
+        let format = args.format.as_deref().unwrap_or("curl");
+
+        let command = match format {
+            "curl" => generate_curl_command(&args.yaml, &args.inputs, &args.output, server_url),
+            "skit-cli" => {
+                generate_skit_cli_command(&args.yaml, &args.inputs, &args.output, server_url)
+            },
+            other => {
+                return Err(McpError::invalid_params(
+                    format!("Invalid format '{other}'. Must be 'curl' or 'skit-cli'."),
+                    None,
+                ));
+            },
+        };
+
+        info!(format, "MCP generate_oneshot_command");
+
+        Ok(CallToolResult::success(vec![Content::text(command)]))
+    }
+
     // -- destroy_session ---------------------------------------------------
 
     #[tool(
@@ -524,6 +608,82 @@ impl StreamKitMcp {
 }
 
 // ---------------------------------------------------------------------------
+// Command generation helpers
+// ---------------------------------------------------------------------------
+
+fn generate_curl_command(
+    yaml: &str,
+    inputs: &[OneshotInput],
+    output: &str,
+    server_url: &str,
+) -> String {
+    use std::fmt::Write;
+
+    let mut cmd = String::new();
+    let _ = writeln!(cmd, "# Save pipeline YAML to a temporary file, then run curl.");
+    let _ = writeln!(cmd, "cat > /tmp/pipeline.yaml <<'PIPELINE_EOF'");
+    let _ = writeln!(cmd, "{yaml}");
+    let _ = writeln!(cmd, "PIPELINE_EOF");
+    let _ = writeln!(cmd);
+    let _ = write!(
+        cmd,
+        "curl -X POST {server_url}/api/v1/process \\\n  -F \"config=</tmp/pipeline.yaml\""
+    );
+    for input in inputs {
+        let _ = write!(cmd, " \\\n  -F \"{}=@{}\"", input.field, input.path);
+    }
+    let _ = write!(cmd, " \\\n  -o {output}");
+    cmd
+}
+
+fn generate_skit_cli_command(
+    yaml: &str,
+    inputs: &[OneshotInput],
+    output: &str,
+    server_url: &str,
+) -> String {
+    use std::fmt::Write;
+
+    let mut cmd = String::new();
+    let _ = writeln!(cmd, "# Save pipeline YAML to a temporary file, then run the CLI.");
+    let _ = writeln!(cmd, "cat > /tmp/pipeline.yaml <<'PIPELINE_EOF'");
+    let _ = writeln!(cmd, "{yaml}");
+    let _ = writeln!(cmd, "PIPELINE_EOF");
+    let _ = writeln!(cmd);
+
+    // The CLI takes one positional input mapped to the "media" field,
+    // plus optional --input field=path for additional inputs.
+    let (primary, extras): (Vec<_>, Vec<_>) = inputs.iter().partition(|i| i.field == "media");
+
+    if let Some(primary_input) = primary.first() {
+        let _ = write!(cmd, "streamkit-client oneshot /tmp/pipeline.yaml {}", primary_input.path);
+    } else if let Some(first) = inputs.first() {
+        // No input named "media" — use the first as positional and re-add
+        // it via --input so the server receives the correct field name.
+        let _ = write!(cmd, "streamkit-client oneshot /tmp/pipeline.yaml {}", first.path);
+    } else {
+        let _ = write!(cmd, "streamkit-client oneshot /tmp/pipeline.yaml <INPUT_FILE>");
+    }
+
+    let _ = write!(cmd, " {output}");
+
+    // Emit --input flags for non-primary inputs.
+    for input in &extras {
+        let _ = write!(cmd, " --input {}={}", input.field, input.path);
+    }
+    // If the first input was not "media" and was used as positional,
+    // add all original inputs via --input flags.
+    if primary.is_empty() {
+        for input in inputs {
+            let _ = write!(cmd, " --input {}={}", input.field, input.path);
+        }
+    }
+
+    let _ = write!(cmd, " --server {server_url}");
+    cmd
+}
+
+// ---------------------------------------------------------------------------
 // ServerHandler trait impl
 // ---------------------------------------------------------------------------
 
@@ -532,9 +692,11 @@ impl ServerHandler for StreamKitMcp {
         let capabilities = ServerCapabilities::builder().enable_tools().build();
         let mut info = ServerInfo::new(capabilities).with_instructions(
             "StreamKit MCP server. Use list_nodes to discover available \
-             processing nodes, validate_pipeline to check YAML, and \
+             processing nodes, validate_pipeline to check YAML, \
              create_session / list_sessions / get_pipeline / destroy_session \
-             to manage dynamic pipeline sessions.",
+             to manage dynamic pipeline sessions, and \
+             generate_oneshot_command to get a curl or skit-cli command for \
+             batch processing via the HTTP data plane.",
         );
         info.server_info = rmcp::model::Implementation::new("streamkit", env!("CARGO_PKG_VERSION"));
         info
