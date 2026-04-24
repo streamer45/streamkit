@@ -617,6 +617,21 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// Return a heredoc delimiter that does not appear in `content`.
+fn unique_heredoc_delimiter(content: &str) -> String {
+    let base = "PIPELINE_EOF";
+    if !content.contains(base) {
+        return base.to_string();
+    }
+    for i in 0u32.. {
+        let candidate = format!("{base}_{i}");
+        if !content.contains(&candidate) {
+            return candidate;
+        }
+    }
+    unreachable!()
+}
+
 fn generate_curl_command(
     yaml: &str,
     inputs: &[OneshotInput],
@@ -625,11 +640,13 @@ fn generate_curl_command(
 ) -> String {
     use std::fmt::Write;
 
+    let delim = unique_heredoc_delimiter(yaml);
+
     let mut cmd = String::new();
     let _ = writeln!(cmd, "# Save pipeline YAML to a temporary file, then run curl.");
-    let _ = writeln!(cmd, "cat > /tmp/pipeline.yaml <<'PIPELINE_EOF'");
+    let _ = writeln!(cmd, "cat > /tmp/pipeline.yaml <<'{delim}'");
     let _ = writeln!(cmd, "{yaml}");
-    let _ = writeln!(cmd, "PIPELINE_EOF");
+    let _ = writeln!(cmd, "{delim}");
     let _ = writeln!(cmd);
     let url = format!("{server_url}/api/v1/process");
     let _ = write!(cmd, "curl -X POST {} \\\n  -F 'config=</tmp/pipeline.yaml'", shell_quote(&url));
@@ -649,11 +666,13 @@ fn generate_skit_cli_command(
 ) -> String {
     use std::fmt::Write;
 
+    let delim = unique_heredoc_delimiter(yaml);
+
     let mut cmd = String::new();
     let _ = writeln!(cmd, "# Save pipeline YAML to a temporary file, then run the CLI.");
-    let _ = writeln!(cmd, "cat > /tmp/pipeline.yaml <<'PIPELINE_EOF'");
+    let _ = writeln!(cmd, "cat > /tmp/pipeline.yaml <<'{delim}'");
     let _ = writeln!(cmd, "{yaml}");
-    let _ = writeln!(cmd, "PIPELINE_EOF");
+    let _ = writeln!(cmd, "{delim}");
     let _ = writeln!(cmd);
 
     // The CLI takes one positional input mapped to the "media" field,
