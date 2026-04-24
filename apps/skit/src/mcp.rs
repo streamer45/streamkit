@@ -16,8 +16,9 @@ use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Content, ListToolsResult, PaginatedRequestParams,
-    ServerCapabilities, ServerInfo,
+    CallToolRequestParams, CallToolResult, Content, GetPromptRequestParams, GetPromptResult,
+    ListPromptsResult, ListToolsResult, PaginatedRequestParams, Prompt, PromptArgument,
+    PromptMessage, PromptMessageRole, ServerCapabilities, ServerInfo,
 };
 use rmcp::schemars;
 use rmcp::service::RequestContext;
@@ -99,6 +100,23 @@ pub struct CreateSessionArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SessionIdArgs {
     /// Session ID or name.
+    pub session_id: String,
+}
+
+// ---------------------------------------------------------------------------
+// MCP prompt argument structs
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DesignPipelinePromptArgs {
+    /// Optional natural language description of the desired pipeline.
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DebugPipelinePromptArgs {
+    /// Session ID or name to debug.
     pub session_id: String,
 }
 
@@ -719,16 +737,356 @@ fn generate_skit_cli_command(
 // ServerHandler trait impl
 // ---------------------------------------------------------------------------
 
+impl StreamKitMcp {
+    // -- prompt helpers ----------------------------------------------------
+
+    /// Build the prompt metadata list exposed via `prompts/list`.
+    fn prompt_metadata() -> Vec<Prompt> {
+        vec![
+            Prompt::new(
+                "design_pipeline",
+                Some(
+                    "Generate a StreamKit pipeline YAML from a natural-language \
+                     description. Returns the full node catalogue (permission-filtered) \
+                     together with format rules and a design workflow.",
+                ),
+                Some(vec![PromptArgument::new("description")
+                    .with_description("Natural language description of the desired pipeline.")
+                    .with_required(false)]),
+            ),
+            Prompt::new(
+                "debug_pipeline",
+                Some(
+                    "Diagnose a running StreamKit session. Returns the current \
+                     pipeline structure, per-node states, errors, and suggested \
+                     diagnostic steps.",
+                ),
+                Some(vec![PromptArgument::new("session_id")
+                    .with_description("Session ID or name to debug.")
+                    .with_required(true)]),
+            ),
+        ]
+    }
+
+    /// Build the `design_pipeline` prompt content.
+    async fn build_design_pipeline_prompt(
+        &self,
+        args: DesignPipelinePromptArgs,
+        ctx: &RequestContext<RoleServer>,
+    ) -> Result<GetPromptResult, McpError> {
+        let (_role_name, perms) = extract_auth(ctx, &self.app_state)?;
+
+        let mut definitions = self
+            .app_state
+            .engine
+            .registry
+            .read()
+            .map_err(|e| {
+                McpError::internal_error(format!("Failed to read node registry: {e}"), None)
+            })?
+            .definitions();
+
+        definitions.extend(crate::server::synthetic_node_definitions());
+
+        definitions.retain(|def| {
+            if !perms.is_node_allowed(&def.kind) {
+                return false;
+            }
+            if def.kind.starts_with("plugin::") {
+                return perms.is_plugin_allowed(&def.kind);
+            }
+            true
+        });
+
+        // Group definitions by first category (or "uncategorized").
+        let mut by_category: std::collections::BTreeMap<
+            String,
+            Vec<&streamkit_core::NodeDefinition>,
+        > = std::collections::BTreeMap::new();
+        for def in &definitions {
+            let cat =
+                def.categories.first().cloned().unwrap_or_else(|| "uncategorized".to_string());
+            by_category.entry(cat).or_default().push(def);
+        }
+
+        let mut content = String::with_capacity(8192);
+
+        content.push_str(
+            "You are helping design a StreamKit pipeline. StreamKit pipelines are \
+             defined in YAML with two sections: `nodes` and `connections`.\n\n",
+        );
+
+        // YAML format explanation
+        content.push_str("## YAML Format\n\n");
+        content.push_str("```yaml\nnodes:\n  <node_id>:\n    kind: <node_kind>\n");
+        content.push_str("    params:  # optional, node-specific\n      <key>: <value>\n");
+        content.push_str("connections:\n  - from_node: <id>\n    from_pin: <pin_name>\n");
+        content.push_str("    to_node: <id>\n    to_pin: <pin_name>\n");
+        content.push_str("    mode: reliable  # or best_effort\n```\n\n");
+
+        // Available nodes by category
+        content.push_str("## Available Nodes (by category)\n\n");
+
+        for (category, defs) in &by_category {
+            content.push_str(&format!("### {category}\n\n"));
+            for def in defs {
+                content.push_str(&format!("- **`{}`**", def.kind));
+                if let Some(desc) = &def.description {
+                    content.push_str(&format!(" — {desc}"));
+                }
+                content.push('\n');
+
+                if !def.inputs.is_empty() {
+                    let pins: Vec<String> = def
+                        .inputs
+                        .iter()
+                        .map(|p| format!("`{}` ({:?})", p.name, p.accepts_types))
+                        .collect();
+                    content.push_str(&format!("  - Inputs: {}\n", pins.join(", ")));
+                }
+                if !def.outputs.is_empty() {
+                    let pins: Vec<String> = def
+                        .outputs
+                        .iter()
+                        .map(|p| format!("`{}` ({:?})", p.name, p.produces_type))
+                        .collect();
+                    content.push_str(&format!("  - Outputs: {}\n", pins.join(", ")));
+                }
+                // Param schema summary (skip trivially empty schemas)
+                if def.param_schema != serde_json::json!({})
+                    && def.param_schema != serde_json::json!(null)
+                {
+                    if let Some(props) = def.param_schema.get("properties") {
+                        if let Some(obj) = props.as_object() {
+                            if !obj.is_empty() {
+                                let keys: Vec<&String> = obj.keys().collect();
+                                content.push_str(&format!(
+                                    "  - Params: {}\n",
+                                    keys.iter()
+                                        .map(|k| format!("`{k}`"))
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            content.push('\n');
+        }
+
+        // Connection rules
+        content.push_str("## Connection Rules\n\n");
+        content.push_str(
+            "- Pins have types (RawAudio, RawVideo, EncodedAudio, EncodedVideo, \
+             Text, Transcription, Binary, Any, Passthrough, Custom) — only \
+             matching types can connect. `Any` accepts all types; `Passthrough` \
+             adapts to the connected input type.\n",
+        );
+        content.push_str(
+            "- Pin cardinality: `One` (single connection), `Broadcast` (fan-out \
+             to many), `Dynamic` (runtime-created pin family, e.g. mixer inputs).\n",
+        );
+        content.push_str(
+            "- Connection modes: `reliable` (backpressure — sender blocks if \
+             receiver is slow), `best_effort` (drop packets if the receiver \
+             can't keep up).\n\n",
+        );
+
+        // Pipeline modes
+        content.push_str("## Pipeline Modes\n\n");
+        content.push_str(
+            "- **dynamic**: Real-time, hot-reconfigurable pipeline. Nodes run \
+             continuously and the graph can be mutated at runtime.\n",
+        );
+        content.push_str(
+            "- **oneshot**: Stateless batch/request-response pipeline. Processes \
+             a single request and exits. Uses synthetic `streamkit::http_input` / \
+             `streamkit::http_output` nodes.\n\n",
+        );
+
+        // Workflow
+        content.push_str("## Workflow\n\n");
+        content.push_str("1. Design the YAML based on user requirements.\n");
+        content.push_str(
+            "2. Call the `validate_pipeline` tool to check for errors before creating a session.\n",
+        );
+        content.push_str("3. Fix any issues reported by validation.\n");
+        content.push_str("4. Call `create_session` to start the pipeline.\n");
+
+        // Optional user description
+        if let Some(desc) = &args.description {
+            content.push_str(&format!("\n## User Request\n\n{desc}\n"));
+        }
+
+        Ok(GetPromptResult::new(vec![PromptMessage::new_text(PromptMessageRole::User, content)])
+            .with_description("Design a StreamKit pipeline"))
+    }
+
+    /// Build the `debug_pipeline` prompt content.
+    async fn build_debug_pipeline_prompt(
+        &self,
+        args: DebugPipelinePromptArgs,
+        ctx: &RequestContext<RoleServer>,
+    ) -> Result<GetPromptResult, McpError> {
+        let (role_name, perms) = extract_auth(ctx, &self.app_state)?;
+
+        if !perms.list_sessions {
+            return Err(McpError::invalid_request("Permission denied: cannot view sessions", None));
+        }
+
+        let session = {
+            let sm = self.app_state.session_manager.lock().await;
+            sm.get_session_by_name_or_id(&args.session_id)
+        };
+
+        let Some(session) = session else {
+            return Err(McpError::invalid_params(
+                format!("Session '{}' not found", args.session_id),
+                None,
+            ));
+        };
+
+        if !perms.access_all_sessions
+            && session.created_by.as_ref().is_some_and(|c| c != &role_name)
+        {
+            return Err(McpError::invalid_request(
+                "Permission denied: you do not own this session",
+                None,
+            ));
+        }
+
+        let node_states = session.get_node_states().await.unwrap_or_default();
+        let node_view_data = session.get_node_view_data().await.unwrap_or_default();
+        let runtime_schemas = session.get_runtime_schemas().await.unwrap_or_default();
+
+        let mut api_pipeline = {
+            let pipeline = session.pipeline.lock().await;
+            pipeline.clone()
+        };
+        for (id, node) in &mut api_pipeline.nodes {
+            node.state = node_states.get(id).cloned();
+        }
+        if !node_view_data.is_empty() {
+            api_pipeline.view_data = Some(Arc::unwrap_or_clone(node_view_data));
+        }
+        if !runtime_schemas.is_empty() {
+            api_pipeline.runtime_schemas = Some(runtime_schemas);
+        }
+
+        let pipeline_json = serde_json::to_string_pretty(&api_pipeline)
+            .map_err(|e| McpError::internal_error(format!("serialization error: {e}"), None))?;
+
+        let mut content = String::with_capacity(4096);
+
+        content
+            .push_str(&format!("You are debugging StreamKit session `{}`.\n\n", args.session_id));
+
+        // Current pipeline state
+        content.push_str("## Current Pipeline State\n\n");
+        content.push_str("```json\n");
+        content.push_str(&pipeline_json);
+        content.push_str("\n```\n\n");
+
+        // Per-node state summary
+        content.push_str("## Node States\n\n");
+        let mut has_errors = false;
+        for (id, node) in &api_pipeline.nodes {
+            let state_str = node
+                .state
+                .as_ref()
+                .map(|s| format!("{s:?}"))
+                .unwrap_or_else(|| "unknown".to_string());
+            content.push_str(&format!("- **`{id}`** (`{}`): {state_str}", node.kind));
+            if let Some(ref state) = node.state {
+                match state {
+                    streamkit_core::NodeState::Failed { reason } => {
+                        has_errors = true;
+                        content.push_str(&format!(" — error: {reason}"));
+                    },
+                    streamkit_core::NodeState::Recovering { reason, .. } => {
+                        content.push_str(&format!(" — recovering: {reason}"));
+                    },
+                    streamkit_core::NodeState::Degraded { reason, .. } => {
+                        content.push_str(&format!(" — degraded: {reason}"));
+                    },
+                    _ => {},
+                }
+            }
+            content.push('\n');
+        }
+
+        // Connection summary
+        if !api_pipeline.connections.is_empty() {
+            content.push_str("\n## Connections\n\n");
+            for conn in &api_pipeline.connections {
+                content.push_str(&format!(
+                    "- `{}`.`{}` → `{}`.`{}` ({})\n",
+                    conn.from_node,
+                    conn.from_pin,
+                    conn.to_node,
+                    conn.to_pin,
+                    match conn.mode {
+                        streamkit_core::control::ConnectionMode::Reliable => "reliable",
+                        streamkit_core::control::ConnectionMode::BestEffort => "best_effort",
+                    },
+                ));
+            }
+        }
+
+        // Diagnostic guidance
+        content.push_str("\n## Diagnostic Checklist\n\n");
+        content.push_str("1. Are all nodes in a **running** state?\n");
+        if has_errors {
+            content.push_str(
+                "2. **Errors detected** — review the error messages above and \
+                 check node parameters.\n",
+            );
+        } else {
+            content.push_str("2. No errors reported so far.\n");
+        }
+        content.push_str(
+            "3. Are all connections type-compatible? (Check that output pin types \
+             match the connected input pin's accepted types.)\n",
+        );
+        content.push_str("4. Are all required node parameters set correctly?\n");
+        content.push_str(
+            "5. Are connection modes appropriate? (`reliable` for lossless \
+             processing, `best_effort` for real-time streaming where drops are \
+             acceptable.)\n\n",
+        );
+
+        // Remediation tools
+        content.push_str("## Available Tools for Fixing Issues\n\n");
+        content.push_str(
+            "- `validate_pipeline` — re-validate the pipeline YAML to catch \
+             structural issues.\n",
+        );
+        content.push_str(
+            "- `get_pipeline` — fetch the latest pipeline state (node states may \
+             change over time).\n",
+        );
+        content.push_str("- `destroy_session` — tear down the session if it is unrecoverable.\n");
+
+        info!(session_id = %args.session_id, "MCP debug_pipeline prompt");
+
+        Ok(GetPromptResult::new(vec![PromptMessage::new_text(PromptMessageRole::User, content)])
+            .with_description(format!("Debug StreamKit session '{}'", args.session_id)))
+    }
+}
+
 impl ServerHandler for StreamKitMcp {
     fn get_info(&self) -> ServerInfo {
-        let capabilities = ServerCapabilities::builder().enable_tools().build();
+        let capabilities = ServerCapabilities::builder().enable_tools().enable_prompts().build();
         let mut info = ServerInfo::new(capabilities).with_instructions(
             "StreamKit MCP server. Use list_nodes to discover available \
              processing nodes, validate_pipeline to check YAML, \
              create_session / list_sessions / get_pipeline / destroy_session \
              to manage dynamic pipeline sessions, and \
              generate_oneshot_command to get a curl or skit-cli command for \
-             batch processing via the HTTP data plane.",
+             batch processing via the HTTP data plane. Two built-in prompts \
+             are available: design_pipeline (guided pipeline creation) and \
+             debug_pipeline (session diagnostics).",
         );
         info.server_info = rmcp::model::Implementation::new("streamkit", env!("CARGO_PKG_VERSION"));
         info
@@ -749,6 +1107,55 @@ impl ServerHandler for StreamKitMcp {
     ) -> Result<CallToolResult, McpError> {
         let ctx = ToolCallContext::new(self, request, context);
         self.tool_router.call(ctx).await
+    }
+
+    fn list_prompts(
+        &self,
+        _: Option<PaginatedRequestParams>,
+        _: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListPromptsResult, McpError>> + Send + '_ {
+        std::future::ready(Ok(ListPromptsResult::with_all_items(Self::prompt_metadata())))
+    }
+
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResult, McpError> {
+        match request.name.as_str() {
+            "design_pipeline" => {
+                let args: DesignPipelinePromptArgs = match &request.arguments {
+                    Some(map) => serde_json::from_value(serde_json::Value::Object(map.clone()))
+                        .map_err(|e| {
+                            McpError::invalid_params(
+                                format!("Invalid design_pipeline arguments: {e}"),
+                                None,
+                            )
+                        })?,
+                    None => DesignPipelinePromptArgs { description: None },
+                };
+                self.build_design_pipeline_prompt(args, &context).await
+            },
+            "debug_pipeline" => {
+                let args: DebugPipelinePromptArgs = match &request.arguments {
+                    Some(map) => serde_json::from_value(serde_json::Value::Object(map.clone()))
+                        .map_err(|e| {
+                            McpError::invalid_params(
+                                format!("Invalid debug_pipeline arguments: {e}"),
+                                None,
+                            )
+                        })?,
+                    None => {
+                        return Err(McpError::invalid_params(
+                            "debug_pipeline requires a 'session_id' argument",
+                            None,
+                        ));
+                    },
+                };
+                self.build_debug_pipeline_prompt(args, &context).await
+            },
+            other => Err(McpError::invalid_params(format!("Unknown prompt: '{other}'"), None)),
+        }
     }
 }
 

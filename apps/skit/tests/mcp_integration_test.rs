@@ -714,3 +714,255 @@ async fn mcp_generate_oneshot_command_permission_denied() {
         "expected permission error, got: {error_msg}"
     );
 }
+
+// -----------------------------------------------------------------------
+// Prompt tests
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn mcp_list_prompts_returns_both_prompts() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let session_id = init_mcp_session(&client, addr, &token).await;
+
+    let list = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "prompts/list",
+        "params": {}
+    });
+    let res = mcp_post_with_session(&client, addr, &list, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let result = &body["result"];
+    assert!(!result.is_null(), "expected result from prompts/list, got: {body}");
+
+    let prompts = result["prompts"].as_array().expect("expected prompts array");
+    assert_eq!(prompts.len(), 2, "expected exactly 2 prompts, got: {prompts:?}");
+
+    let names: Vec<&str> = prompts.iter().filter_map(|p| p["name"].as_str()).collect();
+    assert!(names.contains(&"design_pipeline"), "missing design_pipeline in: {names:?}");
+    assert!(names.contains(&"debug_pipeline"), "missing debug_pipeline in: {names:?}");
+
+    // Verify design_pipeline has optional description argument
+    let design = prompts.iter().find(|p| p["name"] == "design_pipeline").unwrap();
+    let design_args = design["arguments"].as_array().expect("expected arguments array");
+    assert_eq!(design_args.len(), 1);
+    assert_eq!(design_args[0]["name"], "description");
+    assert_eq!(design_args[0]["required"], false);
+
+    // Verify debug_pipeline has required session_id argument
+    let debug = prompts.iter().find(|p| p["name"] == "debug_pipeline").unwrap();
+    let debug_args = debug["arguments"].as_array().expect("expected arguments array");
+    assert_eq!(debug_args.len(), 1);
+    assert_eq!(debug_args[0]["name"], "session_id");
+    assert_eq!(debug_args[0]["required"], true);
+}
+
+#[tokio::test]
+async fn mcp_get_prompt_design_pipeline_returns_node_info() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let session_id = init_mcp_session(&client, addr, &token).await;
+
+    // Call get_prompt without arguments (description is optional)
+    let get = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "prompts/get",
+        "params": {
+            "name": "design_pipeline"
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &get, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let result = &body["result"];
+    assert!(!result.is_null(), "expected result from prompts/get, got: {body}");
+
+    let messages = result["messages"].as_array().expect("expected messages array");
+    assert!(!messages.is_empty(), "expected at least one message");
+
+    let text = messages[0]["content"]["text"].as_str().expect("expected text content");
+    // Verify it contains key sections
+    assert!(text.contains("YAML Format"), "missing YAML format section");
+    assert!(text.contains("Available Nodes"), "missing available nodes section");
+    assert!(text.contains("Connection Rules"), "missing connection rules section");
+    assert!(text.contains("core::passthrough"), "missing core::passthrough node");
+    assert!(text.contains("validate_pipeline"), "missing workflow reference to validate_pipeline");
+}
+
+#[tokio::test]
+async fn mcp_get_prompt_design_pipeline_with_description() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let session_id = init_mcp_session(&client, addr, &token).await;
+
+    let get = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "prompts/get",
+        "params": {
+            "name": "design_pipeline",
+            "arguments": {
+                "description": "Build a pipeline that mixes two audio streams"
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &get, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let result = &body["result"];
+    assert!(!result.is_null(), "expected result, got: {body}");
+
+    let text = result["messages"][0]["content"]["text"].as_str().expect("expected text content");
+    assert!(
+        text.contains("Build a pipeline that mixes two audio streams"),
+        "expected user description in prompt content"
+    );
+    assert!(text.contains("User Request"), "expected User Request section header");
+}
+
+#[tokio::test]
+async fn mcp_get_prompt_debug_pipeline_with_session() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let session_id = init_mcp_session(&client, addr, &token).await;
+
+    // 1. Create a session to debug
+    let create = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "create_session",
+            "arguments": {
+                "yaml": PASSTHROUGH_YAML,
+                "name": "debug-prompt-test"
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &create, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let text = body["result"]["content"][0]["text"]
+        .as_str()
+        .expect("expected text content from create_session");
+    let created: serde_json::Value = serde_json::from_str(text).expect("expected JSON");
+    let skit_session_id = created["session_id"].as_str().expect("missing session_id");
+
+    // 2. Call debug_pipeline prompt with the session ID
+    let get = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "prompts/get",
+        "params": {
+            "name": "debug_pipeline",
+            "arguments": {
+                "session_id": skit_session_id
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &get, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let result = &body["result"];
+    assert!(!result.is_null(), "expected result from debug_pipeline prompt, got: {body}");
+
+    let messages = result["messages"].as_array().expect("expected messages array");
+    assert!(!messages.is_empty(), "expected at least one message");
+
+    let text = messages[0]["content"]["text"].as_str().expect("expected text content");
+    // Verify it includes pipeline state and diagnostic sections
+    assert!(text.contains("Current Pipeline State"), "missing pipeline state section");
+    assert!(text.contains("Node States"), "missing node states section");
+    assert!(text.contains("Diagnostic Checklist"), "missing diagnostic checklist");
+    assert!(text.contains("core::passthrough"), "missing passthrough node reference");
+
+    // 3. Clean up — destroy the session
+    let destroy = json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": {
+            "name": "destroy_session",
+            "arguments": {
+                "session_id": skit_session_id
+            }
+        }
+    });
+    let _ = mcp_post_with_session(&client, addr, &destroy, &token, &session_id).await;
+}
+
+#[tokio::test]
+async fn mcp_get_prompt_debug_pipeline_missing_session_returns_error() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let session_id = init_mcp_session(&client, addr, &token).await;
+
+    let get = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "prompts/get",
+        "params": {
+            "name": "debug_pipeline",
+            "arguments": {
+                "session_id": "nonexistent-session-12345"
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &get, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let error = &body["error"];
+    assert!(!error.is_null(), "expected error for nonexistent session, got: {body}");
+    let error_msg = error["message"].as_str().unwrap_or("");
+    assert!(error_msg.contains("not found"), "expected 'not found' in error, got: {error_msg}");
+}
+
+#[tokio::test]
+async fn mcp_get_prompt_unknown_returns_error() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let session_id = init_mcp_session(&client, addr, &token).await;
+
+    let get = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "prompts/get",
+        "params": {
+            "name": "nonexistent_prompt"
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &get, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let error = &body["error"];
+    assert!(!error.is_null(), "expected error for unknown prompt, got: {body}");
+}
