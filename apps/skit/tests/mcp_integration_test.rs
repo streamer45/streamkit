@@ -27,6 +27,19 @@ use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::time::Duration;
 
+/// Poll `/healthz` until the server is ready (up to 2 s).
+async fn wait_for_healthz(addr: SocketAddr) {
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/healthz");
+    for _ in 0..40 {
+        if client.get(&url).send().await.is_ok() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("Server at {addr} did not become healthy within 2 s");
+}
+
 /// Start a test server with MCP enabled and built-in auth.
 ///
 /// # Panics
@@ -58,7 +71,7 @@ async fn start_mcp_server() -> (SocketAddr, tokio::task::JoinHandle<()>, String,
         axum::serve(listener, app.into_make_service()).await.unwrap();
     });
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_for_healthz(addr).await;
     (addr, server_handle, admin_token, temp_dir)
 }
 
@@ -96,7 +109,7 @@ async fn start_restricted_mcp_server() -> (SocketAddr, tokio::task::JoinHandle<(
         axum::serve(listener, app.into_make_service()).await.unwrap();
     });
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_for_healthz(addr).await;
     (addr, server_handle, admin_token, temp_dir)
 }
 
@@ -380,4 +393,164 @@ async fn mcp_config_endpoint_validation() {
     // Valid with subpath should pass
     mcp_config.endpoint = "/api/v2/mcp/extra".to_string();
     assert!(mcp_config.validate().is_ok());
+}
+
+// -----------------------------------------------------------------------
+// Positive-path tests
+// -----------------------------------------------------------------------
+
+/// Minimal valid pipeline YAML for dynamic sessions.
+const PASSTHROUGH_YAML: &str = "nodes:\n  pass:\n    kind: core::passthrough";
+
+#[tokio::test]
+async fn mcp_list_nodes_returns_definitions() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let session_id = init_mcp_session(&client, addr, &token).await;
+
+    let list = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "list_nodes",
+            "arguments": {}
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &list, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let result = &body["result"];
+    assert!(!result.is_null(), "expected result, got: {body}");
+
+    let text = result["content"][0]["text"].as_str().expect("expected text content");
+    let defs: Vec<serde_json::Value> = serde_json::from_str(text).expect("expected JSON array");
+    assert!(!defs.is_empty(), "list_nodes should return at least one definition");
+
+    // Verify passthrough and synthetic nodes are present
+    let kinds: Vec<&str> = defs.iter().filter_map(|d| d["kind"].as_str()).collect();
+    assert!(kinds.contains(&"core::passthrough"), "missing core::passthrough in: {kinds:?}");
+    assert!(
+        kinds.contains(&"streamkit::http_input"),
+        "missing synthetic http_input in: {kinds:?}"
+    );
+}
+
+#[tokio::test]
+async fn mcp_create_list_get_destroy_session_round_trip() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let session_id = init_mcp_session(&client, addr, &token).await;
+
+    // 1. Create a session
+    let create = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "create_session",
+            "arguments": {
+                "yaml": PASSTHROUGH_YAML,
+                "name": "mcp-roundtrip-test"
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &create, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let result = &body["result"];
+    assert!(!result.is_null(), "expected result from create_session, got: {body}");
+
+    let text = result["content"][0]["text"].as_str().expect("expected text content");
+    let created: serde_json::Value = serde_json::from_str(text).expect("expected JSON");
+    let skit_session_id = created["session_id"].as_str().expect("missing session_id");
+    assert_eq!(created["name"].as_str(), Some("mcp-roundtrip-test"));
+    assert!(created["created_at"].as_str().is_some());
+
+    // 2. List sessions — our session should appear
+    let list = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "list_sessions",
+            "arguments": {}
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &list, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let text = body["result"]["content"][0]["text"].as_str().expect("expected text");
+    let sessions: Vec<serde_json::Value> = serde_json::from_str(text).expect("expected JSON array");
+    assert!(
+        sessions.iter().any(|s| s["id"].as_str() == Some(skit_session_id)),
+        "created session not found in list_sessions"
+    );
+
+    // 3. Get pipeline — should return the passthrough node
+    let get = json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": {
+            "name": "get_pipeline",
+            "arguments": {
+                "session_id": skit_session_id
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &get, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let text = body["result"]["content"][0]["text"].as_str().expect("expected text");
+    let pipeline: serde_json::Value = serde_json::from_str(text).expect("expected JSON");
+    assert!(pipeline["nodes"]["pass"].is_object(), "expected 'pass' node in pipeline");
+
+    // 4. Destroy the session
+    let destroy = json!({
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "tools/call",
+        "params": {
+            "name": "destroy_session",
+            "arguments": {
+                "session_id": skit_session_id
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &destroy, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let result = &body["result"];
+    assert!(!result.is_null(), "expected result from destroy_session, got: {body}");
+    let text = result["content"][0]["text"].as_str().expect("expected text");
+    let destroyed: serde_json::Value = serde_json::from_str(text).expect("expected JSON");
+    assert_eq!(destroyed["session_id"].as_str(), Some(skit_session_id));
+
+    // 5. Verify session is gone
+    let res = mcp_post_with_session(&client, addr, &list, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let text = body["result"]["content"][0]["text"].as_str().expect("expected text");
+    let sessions: Vec<serde_json::Value> = serde_json::from_str(text).expect("expected JSON array");
+    assert!(
+        !sessions.iter().any(|s| s["id"].as_str() == Some(skit_session_id)),
+        "destroyed session should not appear in list_sessions"
+    );
 }

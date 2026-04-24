@@ -611,7 +611,7 @@ pub fn is_synthetic_kind(kind: &str) -> bool {
 ///
 /// Used by both `list_node_definitions_handler` and the validate endpoint so
 /// there is a single source of truth for these definitions.
-fn synthetic_node_definitions() -> Vec<streamkit_core::NodeDefinition> {
+pub fn synthetic_node_definitions() -> Vec<streamkit_core::NodeDefinition> {
     use streamkit_core::types::PacketType;
     use streamkit_core::{InputPin, NodeDefinition, OutputPin, PinCardinality};
 
@@ -2442,7 +2442,7 @@ struct CreateSessionResponse {
 
 /// Helper function to populate the session's in-memory pipeline representation
 /// from the compiled engine pipeline definition.
-async fn populate_session_pipeline(session: &crate::session::Session, engine_pipeline: &Pipeline) {
+pub async fn populate_session_pipeline(session: &crate::session::Session, engine_pipeline: &Pipeline) {
     let mut pipeline = session.pipeline.lock().await;
 
     // Forward top-level metadata so the UI can read it from the session snapshot.
@@ -2476,7 +2476,7 @@ async fn populate_session_pipeline(session: &crate::session::Session, engine_pip
 }
 
 /// Helper function to send all node and connection control messages to the engine actor.
-async fn send_pipeline_to_engine(session: &crate::session::Session, engine_pipeline: &Pipeline) {
+pub async fn send_pipeline_to_engine(session: &crate::session::Session, engine_pipeline: &Pipeline) {
     // Send control messages to engine actor (asynchronous)
     // The engine will actually instantiate the nodes
     for (node_id, node_spec) in &engine_pipeline.nodes {
@@ -3998,49 +3998,7 @@ pub fn check_file_path_security(
     }
 }
 
-/// Build synthetic `NodeDefinition`s for oneshot-only virtual nodes.
-///
-/// Public wrapper for the MCP `list_nodes` tool.
-#[cfg(feature = "mcp")]
-pub fn mcp_synthetic_node_definitions() -> Vec<streamkit_core::NodeDefinition> {
-    synthetic_node_definitions()
-}
 
-/// Read the node registry, returning an error string on failure.
-///
-/// Public wrapper for the MCP `list_nodes` tool.
-///
-/// # Errors
-///
-/// Returns an error string if the registry `RwLock` is poisoned.
-#[cfg(feature = "mcp")]
-pub fn mcp_read_registry(
-    app_state: &Arc<AppState>,
-) -> Result<std::sync::RwLockReadGuard<'_, streamkit_core::NodeRegistry>, String> {
-    read_registry(app_state).map_err(|_| "Failed to read node registry".to_string())
-}
-
-/// Populate a session's in-memory pipeline from a compiled engine pipeline.
-///
-/// Public wrapper for the MCP `create_session` tool.
-#[cfg(feature = "mcp")]
-pub async fn mcp_populate_session_pipeline(
-    session: &crate::session::Session,
-    engine_pipeline: &Pipeline,
-) {
-    populate_session_pipeline(session, engine_pipeline).await;
-}
-
-/// Send all node and connection control messages to the engine actor.
-///
-/// Public wrapper for the MCP `create_session` tool.
-#[cfg(feature = "mcp")]
-pub async fn mcp_send_pipeline_to_engine(
-    session: &crate::session::Session,
-    engine_pipeline: &Pipeline,
-) {
-    send_pipeline_to_engine(session, engine_pipeline).await;
-}
 
 /// Creates the Axum application with all routes and middleware.
 ///

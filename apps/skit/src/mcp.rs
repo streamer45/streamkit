@@ -106,11 +106,17 @@ impl StreamKitMcp {
     ) -> Result<CallToolResult, McpError> {
         let (_role_name, perms) = extract_auth(&ctx, &self.app_state)?;
 
-        let mut definitions = crate::server::mcp_read_registry(&self.app_state)
-            .map_err(|e| McpError::internal_error(e, None))?
+        let mut definitions = self
+            .app_state
+            .engine
+            .registry
+            .read()
+            .map_err(|e| {
+                McpError::internal_error(format!("Failed to read node registry: {e}"), None)
+            })?
             .definitions();
 
-        definitions.extend(crate::server::mcp_synthetic_node_definitions());
+        definitions.extend(crate::server::synthetic_node_definitions());
 
         definitions.retain(|def| {
             if !perms.is_node_allowed(&def.kind) {
@@ -239,8 +245,28 @@ impl StreamKitMcp {
         crate::server::check_file_path_security(&engine_pipeline, &self.app_state.config.security)
             .map_err(|e| McpError::invalid_params(e, None))?;
 
-        // Create the session (name uniqueness and session-limit are rechecked
-        // under the lock inside add_session, so no racy pre-flight needed).
+        // Pre-flight: reject early if over the session limit or name is taken,
+        // avoiding wasted engine allocation.  The checks are re-verified under
+        // the lock inside add_session for correctness.
+        let (current_count, name_taken) = {
+            let sm = self.app_state.session_manager.lock().await;
+            (sm.session_count(), args.name.as_deref().is_some_and(|n| sm.is_name_taken(n)))
+        };
+        if let Some(ref session_name) = args.name {
+            if name_taken {
+                return Err(McpError::invalid_request(
+                    format!("Session with name '{session_name}' already exists"),
+                    None,
+                ));
+            }
+        }
+        if !self.app_state.config.permissions.can_accept_session(current_count) {
+            return Err(McpError::invalid_request(
+                "Maximum concurrent sessions limit reached",
+                None,
+            ));
+        }
+
         let session = crate::session::Session::create(
             &self.app_state.engine,
             &self.app_state.config,
@@ -251,7 +277,7 @@ impl StreamKitMcp {
         .await
         .map_err(|e| McpError::internal_error(format!("Failed to create session: {e}"), None))?;
 
-        // Insert with race-check
+        // Insert under the lock (re-checks limit and name uniqueness).
         let insert_result = {
             let mut sm = self.app_state.session_manager.lock().await;
             let count = sm.session_count();
@@ -264,7 +290,7 @@ impl StreamKitMcp {
         if let Err(msg) = insert_result {
             warn!(error = %msg, "MCP create_session failed during insert");
             let _ = session.shutdown_and_wait().await;
-            return Err(McpError::internal_error(msg, None));
+            return Err(McpError::invalid_request(msg, None));
         }
 
         let session_id = session.id.clone();
@@ -274,8 +300,8 @@ impl StreamKitMcp {
         info!(session_id = %session_id, name = ?session_name, "MCP create_session");
 
         // Populate pipeline and send to engine
-        crate::server::mcp_populate_session_pipeline(&session, &engine_pipeline).await;
-        crate::server::mcp_send_pipeline_to_engine(&session, &engine_pipeline).await;
+        crate::server::populate_session_pipeline(&session, &engine_pipeline).await;
+        crate::server::send_pipeline_to_engine(&session, &engine_pipeline).await;
 
         // Broadcast event
         let event = streamkit_api::Event {
@@ -522,15 +548,13 @@ impl ServerHandler for StreamKitMcp {
         std::future::ready(Ok(ListToolsResult::with_all_items(self.tool_router.list_all())))
     }
 
-    fn call_tool(
+    async fn call_tool(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
-        async move {
-            let ctx = ToolCallContext::new(self, request, context);
-            self.tool_router.call(ctx).await
-        }
+    ) -> Result<CallToolResult, McpError> {
+        let ctx = ToolCallContext::new(self, request, context);
+        self.tool_router.call(ctx).await
     }
 }
 
