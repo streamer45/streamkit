@@ -7,6 +7,7 @@
 //! This crate provides the host-side runtime for loading and executing native plugins
 //! that use the C ABI interface.
 
+pub mod metrics;
 pub mod wrapper;
 
 use anyhow::{anyhow, Context, Result};
@@ -14,7 +15,10 @@ use libloading::{Library, Symbol};
 use std::path::Path;
 use std::sync::Arc;
 use streamkit_core::{NodeRegistry, PinCardinality};
-use streamkit_plugin_sdk_native::types::{CNativePluginAPI, NATIVE_PLUGIN_API_VERSION};
+use streamkit_plugin_sdk_native::types::PLUGIN_SET_LOG_ENABLED_SYMBOL;
+use streamkit_plugin_sdk_native::types::{
+    CNativePluginAPI, CSetLogEnabledCallback, NATIVE_PLUGIN_API_VERSION,
+};
 use streamkit_plugin_sdk_native::{conversions, types::PLUGIN_API_SYMBOL};
 use tracing::{info, warn};
 
@@ -35,6 +39,8 @@ pub struct LoadedNativePlugin {
     library: Arc<Library>,
     api: &'static CNativePluginAPI,
     metadata: PluginMetadata,
+    call_timeout: Option<std::time::Duration>,
+    set_log_enabled_callback: Option<CSetLogEnabledCallback>,
 }
 
 /// Metadata extracted from a plugin
@@ -106,12 +112,16 @@ impl LoadedNativePlugin {
         // the lifetime of the loaded library, which we keep alive via Arc<Library>.
         let api = unsafe { &*api_ptr };
 
-        // Check API version compatibility — accept v6 (pre-BinaryWithMeta),
-        // v7 (added BinaryWithMeta), and v8 (added EncodedAudio metadata).
-        // All are wire-compatible; v6 plugins never emit BinaryWithMeta
-        // packets, v7 plugins don't declare EncodedAudio pin types (they
-        // fall back to Binary), but runtime packet transport is unaffected
-        // since EncodedAudio is a metadata-only discriminant.
+        // Check API version compatibility — accept v6 through v9.
+        // v6: pre-BinaryWithMeta.
+        // v7: added BinaryWithMeta.
+        // v8: added EncodedAudio metadata.
+        // v9: zero-copy binary packets (buffer_handle), logger overhaul
+        //     (set_log_enabled_callback, target = plugin kind).
+        // v6–v8 are wire-compatible; v9 adds a Binary→BinaryWithMeta wire
+        // upgrade (see v9 notes in types.rs).  Version-gated features use
+        // runtime api_version checks (e.g. buffer_handle for v9, downgrade
+        // for v6).
         if api.version < MIN_SUPPORTED_API_VERSION || api.version > NATIVE_PLUGIN_API_VERSION {
             let plugin_version = api.version;
             return Err(anyhow!(
@@ -122,6 +132,25 @@ impl LoadedNativePlugin {
 
         // Extract metadata
         let mut metadata = Self::extract_metadata(api)?;
+
+        let set_log_enabled_callback = if api.version >= 9 {
+            // SAFETY: Optional extension symbol. When present, the SDK macro
+            // exports it with the exact `CSetLogEnabledCallback` signature.
+            match unsafe { library.get::<CSetLogEnabledCallback>(PLUGIN_SET_LOG_ENABLED_SYMBOL) } {
+                Ok(symbol) => Some(*symbol),
+                Err(e) => {
+                    warn!(
+                        kind = %metadata.kind,
+                        api_version = api.version,
+                        error = %e,
+                        "v9 plugin did not export log-enabled callback symbol"
+                    );
+                    None
+                },
+            }
+        } else {
+            None
+        };
 
         // Detect source plugin capability from the v3 API fields.
         // If the plugin provides `get_source_config`, we probe it with a temporary
@@ -160,7 +189,13 @@ impl LoadedNativePlugin {
 
         info!(kind = %metadata.kind, "Successfully loaded native plugin");
 
-        Ok(Self { library: Arc::new(library), api, metadata })
+        Ok(Self {
+            library: Arc::new(library),
+            api,
+            metadata,
+            call_timeout: Some(wrapper::DEFAULT_CALL_TIMEOUT),
+            set_log_enabled_callback,
+        })
     }
 
     /// Extract metadata from the plugin
@@ -300,6 +335,21 @@ impl LoadedNativePlugin {
         &self.library
     }
 
+    /// Override the reply-side timeout for FFI calls (process_packet, flush,
+    /// tick).  This controls how long the async side waits for the worker
+    /// thread's oneshot reply.
+    ///
+    /// Pass `None` to fall back to the default backstop timeout
+    /// ([`DEFAULT_CALL_TIMEOUT`](crate::wrapper::DEFAULT_CALL_TIMEOUT),
+    /// 300 s) instead of a caller-chosen duration.  The reply side is
+    /// **never** truly unbounded — the backstop always applies.
+    ///
+    /// The channel-send timeout (backpressure guard) also uses
+    /// `DEFAULT_CALL_TIMEOUT` when this is `None`.
+    pub const fn set_call_timeout(&mut self, timeout: Option<std::time::Duration>) {
+        self.call_timeout = timeout;
+    }
+
     /// Create a new node instance from this plugin
     ///
     /// # Errors
@@ -316,6 +366,8 @@ impl LoadedNativePlugin {
             self.api,
             self.metadata.clone(),
             params,
+            self.call_timeout,
+            self.set_log_enabled_callback,
         )?;
 
         Ok(Box::new(wrapper))

@@ -143,6 +143,7 @@ pub struct UnifiedPluginManager {
     plugin_base_dir: PathBuf,
     wasm_directory: PathBuf,
     native_directory: PathBuf,
+    native_call_timeout: Option<std::time::Duration>,
     engine: Arc<Engine>,
     #[allow(dead_code)] // Will be used when plugins are migrated to new resource system
     resource_manager: Arc<streamkit_core::ResourceManager>,
@@ -165,6 +166,7 @@ impl UnifiedPluginManager {
         plugin_base_dir: PathBuf,
         wasm_directory: PathBuf,
         native_directory: PathBuf,
+        native_call_timeout: Option<std::time::Duration>,
     ) -> Result<Self> {
         if !wasm_directory.exists() {
             std::fs::create_dir_all(&wasm_directory).with_context(|| {
@@ -188,6 +190,7 @@ impl UnifiedPluginManager {
             plugin_base_dir,
             wasm_directory,
             native_directory,
+            native_call_timeout,
             engine,
             resource_manager,
             plugins_loaded_gauge: meter
@@ -776,12 +779,13 @@ impl UnifiedPluginManager {
             return Err(anyhow!("Native plugin file {} does not exist", path.to_string_lossy()));
         }
 
-        let plugin = LoadedNativePlugin::load(path)
+        let mut plugin = LoadedNativePlugin::load(path)
             .map_err(|e| {
                 tracing::error!(error = %e, path = ?path, "Detailed native plugin load error");
                 e
             })
             .with_context(|| format!("failed to load native plugin {}", path.to_string_lossy()))?;
+        plugin.set_call_timeout(self.native_call_timeout);
 
         let metadata = plugin.metadata();
         let original_kind = metadata.kind.clone();

@@ -6261,6 +6261,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "libloading 0.9.0",
+ "opentelemetry",
  "serde-saphyr",
  "serde_json",
  "streamkit-core",

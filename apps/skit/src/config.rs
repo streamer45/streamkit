@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: © 2025 StreamKit Contributors
 //
 // SPDX-License-Identifier: MPL-2.0
-
 use figment::{
     providers::{Env, Format, Toml},
     Figment,
@@ -15,6 +14,15 @@ use crate::permissions::PermissionsConfig;
 
 const fn default_engine_batch_size() -> usize {
     32
+}
+
+/// Deserialize `Option<u64>` with a minimum clamp of 1 for timeout values.
+fn deserialize_clamp_timeout<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let val: Option<u64> = Option::deserialize(deserializer)?;
+    Ok(val.map(|v| v.max(1)))
 }
 
 /// Preset tuning profiles for the engine.
@@ -187,6 +195,10 @@ const fn default_max_body_size() -> usize {
     100 * 1024 * 1024
 }
 
+const fn default_native_call_timeout_value() -> u64 {
+    300
+}
+
 fn default_cors_allowed_origins() -> Vec<String> {
     vec![
         // Portless localhost (e.g., reverse proxy on 80/443)
@@ -354,6 +366,17 @@ impl Default for ServerConfig {
 #[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
 pub struct PluginConfig {
     pub directory: String,
+    /// Native plugin FFI call timeout in seconds (default: 300, minimum: 1).
+    ///
+    /// Set to `null` to use only the default backstop timeout on the reply
+    /// side; the send-side backpressure guard remains bounded regardless.
+    ///
+    /// Values below 1 are clamped to 1 to prevent instant timeouts.
+    #[serde(
+        default = "PluginConfig::default_native_call_timeout_secs",
+        deserialize_with = "deserialize_clamp_timeout"
+    )]
+    pub native_call_timeout_secs: Option<u64>,
     #[serde(flatten, default)]
     pub http_management: PluginHttpConfig,
     #[serde(flatten, default)]
@@ -450,6 +473,7 @@ impl Default for PluginConfig {
     fn default() -> Self {
         Self {
             directory: ".plugins".to_string(),
+            native_call_timeout_secs: Some(default_native_call_timeout_value()),
             http_management: PluginHttpConfig::default(),
             marketplace: PluginMarketplaceConfig::default(),
             trusted_pubkeys: Vec::new(),
@@ -457,6 +481,15 @@ impl Default for PluginConfig {
             models_dir: None,
             huggingface_token: None,
         }
+    }
+}
+
+impl PluginConfig {
+    // Serde default hooks must return the exact field type; the wrapped value
+    // distinguishes missing config from explicit null.
+    #[allow(clippy::unnecessary_wraps)]
+    const fn default_native_call_timeout_secs() -> Option<u64> {
+        Some(default_native_call_timeout_value())
     }
 }
 
