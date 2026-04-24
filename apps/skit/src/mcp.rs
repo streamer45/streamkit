@@ -149,13 +149,15 @@ impl StreamKitMcp {
             ));
         }
 
-        let response = crate::server::validate_pipeline_yaml(
-            &self.app_state,
-            &perms,
-            &args.yaml,
-            args.mode.as_deref(),
-        )
-        .map_err(|e| McpError::internal_error(e, None))?;
+        let mode = match args.mode.as_deref() {
+            Some("dynamic") => Some(crate::server::PipelineMode::Dynamic),
+            Some("oneshot") => Some(crate::server::PipelineMode::Oneshot),
+            _ => None,
+        };
+
+        let response =
+            crate::server::validate_pipeline_yaml(&self.app_state, &perms, &args.yaml, mode)
+                .map_err(|e| McpError::internal_error(e, None))?;
 
         let json = serde_json::to_string_pretty(&response)
             .map_err(|e| McpError::internal_error(format!("serialization error: {e}"), None))?;
@@ -197,7 +199,11 @@ impl StreamKitMcp {
             ));
         }
 
-        // Per-node permission and security checks
+        // Per-node permission and security checks.
+        // Dynamic-mode rules are intentionally hard-coded here rather than
+        // going through `check_mode`, which operates on a ValidateDiagnostic
+        // list.  create_session must reject forbidden nodes with an immediate
+        // error, not a deferred diagnostic.
         for (node_id, node) in &engine_pipeline.nodes {
             if node.kind == "streamkit::http_input" || node.kind == "streamkit::http_output" {
                 return Err(McpError::invalid_params(
@@ -229,27 +235,8 @@ impl StreamKitMcp {
         crate::server::check_file_path_security(&engine_pipeline, &self.app_state.config.security)
             .map_err(|e| McpError::invalid_params(e, None))?;
 
-        // Session limit check
-        let (current_count, name_taken) = {
-            let sm = self.app_state.session_manager.lock().await;
-            (sm.session_count(), args.name.as_deref().is_some_and(|n| sm.is_name_taken(n)))
-        };
-        if let Some(ref session_name) = args.name {
-            if name_taken {
-                return Err(McpError::invalid_params(
-                    format!("Session with name '{session_name}' already exists"),
-                    None,
-                ));
-            }
-        }
-        if !self.app_state.config.permissions.can_accept_session(current_count) {
-            return Err(McpError::internal_error(
-                "Maximum concurrent sessions limit reached",
-                None,
-            ));
-        }
-
-        // Create the session
+        // Create the session (name uniqueness and session-limit are rechecked
+        // under the lock inside add_session, so no racy pre-flight needed).
         let session = crate::session::Session::create(
             &self.app_state.engine,
             &self.app_state.config,
@@ -546,12 +533,28 @@ impl ServerHandler for StreamKitMcp {
 
 /// Create the `StreamableHttpService` tower service for mounting in the Axum
 /// router via `nest_service`.
+///
+/// ## `StreamableHttpServerConfig` defaults (rmcp 1.5)
+///
+/// | Field              | Default                              |
+/// |--------------------|--------------------------------------|
+/// | `sse_keep_alive`   | 15 s                                 |
+/// | `sse_retry`        | 3 s                                  |
+/// | `stateful_mode`    | true                                 |
+/// | `json_response`    | false                                |
+/// | `allowed_hosts`    | localhost, 127.0.0.1, ::1            |
+///
+/// We disable `allowed_hosts` because the endpoint sits behind Axum's
+/// `auth_guard_middleware` and `origin_guard_middleware`, which already
+/// enforce authentication and origin checks.  Leaving the default
+/// loopback-only list would reject requests arriving via a reverse proxy.
 pub fn streamable_http_service(
     app_state: Arc<AppState>,
 ) -> StreamableHttpService<StreamKitMcp, LocalSessionManager> {
+    let config = StreamableHttpServerConfig::default().disable_allowed_hosts();
     StreamableHttpService::new(
         move || Ok(StreamKitMcp::new(Arc::clone(&app_state))),
         Arc::new(LocalSessionManager::default()),
-        StreamableHttpServerConfig::default(),
+        config,
     )
 }

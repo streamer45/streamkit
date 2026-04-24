@@ -519,7 +519,7 @@ async fn list_node_definitions_handler(
 
 /// A single node in the validated graph.
 #[derive(Serialize)]
-struct ValidateGraphNode {
+pub struct ValidateGraphNode {
     id: String,
     kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -528,7 +528,7 @@ struct ValidateGraphNode {
 
 /// A single connection in the validated graph.
 #[derive(Serialize)]
-struct ValidateGraphConnection {
+pub struct ValidateGraphConnection {
     from_node: String,
     from_pin: String,
     to_node: String,
@@ -537,7 +537,7 @@ struct ValidateGraphConnection {
 
 /// The parsed graph structure — always returned so the UI can highlight nodes.
 #[derive(Serialize)]
-struct ValidateGraph {
+pub struct ValidateGraph {
     nodes: Vec<ValidateGraphNode>,
     connections: Vec<ValidateGraphConnection>,
 }
@@ -545,7 +545,7 @@ struct ValidateGraph {
 /// Diagnostic category.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum DiagnosticKind {
+pub enum DiagnosticKind {
     Parse,
     Schema,
     Connection,
@@ -555,7 +555,7 @@ enum DiagnosticKind {
 
 /// A single validation diagnostic.
 #[derive(Debug, Serialize)]
-struct ValidateDiagnostic {
+pub struct ValidateDiagnostic {
     kind: DiagnosticKind,
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -564,9 +564,10 @@ struct ValidateDiagnostic {
     connection_id: Option<String>,
 }
 
-/// Top-level response for `POST /api/v1/validate`.
+/// Top-level response for `POST /api/v1/validate` and the MCP
+/// `validate_pipeline` tool.
 #[derive(Serialize)]
-struct ValidateResponse {
+pub struct ValidateResponse {
     valid: bool,
     errors: Vec<ValidateDiagnostic>,
     warnings: Vec<ValidateDiagnostic>,
@@ -576,7 +577,7 @@ struct ValidateResponse {
 /// Pipeline mode for validation — determines which synthetic-node rules apply.
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-enum PipelineMode {
+pub enum PipelineMode {
     Dynamic,
     Oneshot,
 }
@@ -977,99 +978,17 @@ async fn validate_pipeline_handler(
         return Err((StatusCode::FORBIDDEN, "Permission denied: create_sessions required".into()));
     }
 
-    let mut errors: Vec<ValidateDiagnostic> = Vec::new();
-    let mut warnings: Vec<ValidateDiagnostic> = Vec::new();
-
-    // 1. YAML parsing
-    let user_pipeline = match streamkit_api::yaml::parse_yaml(&payload.yaml) {
-        Ok(p) => p,
-        Err(e) => {
-            debug!(error = %e, "Pipeline YAML parse error");
-            errors.push(ValidateDiagnostic {
-                kind: DiagnosticKind::Parse,
-                message: e,
-                node_id: None,
-                connection_id: None,
-            });
-            return Ok(Json(ValidateResponse { valid: false, errors, warnings, graph: None }));
-        },
-    };
-
-    // 2. Compile to internal Pipeline
-    let pipeline = match compile(user_pipeline) {
-        Ok(p) => p,
-        Err(e) => {
-            debug!(error = %e, "Pipeline compilation error");
-            errors.push(ValidateDiagnostic {
-                kind: DiagnosticKind::Parse,
-                message: e,
-                node_id: None,
-                connection_id: None,
-            });
-            return Ok(Json(ValidateResponse { valid: false, errors, warnings, graph: None }));
-        },
-    };
-
-    // 3. Reject empty pipelines (matches create_session_handler)
-    if pipeline.nodes.is_empty() {
-        errors.push(ValidateDiagnostic {
-            kind: DiagnosticKind::Schema,
-            message: "Pipeline is empty. Add some nodes before validating.".into(),
-            node_id: None,
-            connection_id: None,
-        });
-        return Ok(Json(ValidateResponse { valid: false, errors, warnings, graph: None }));
-    }
-
-    // 4. Validate nodes against the registry
-    let registry_guard =
-        read_registry(&app_state).map_err(|sc| (sc, "Failed to read node registry".to_string()))?;
-    let node_defs =
-        validate_nodes(&pipeline, &registry_guard, Some(&perms), &mut errors, &mut warnings);
-    drop(registry_guard);
-
-    // 5. Mode-specific checks: reject synthetic nodes in dynamic mode
-    check_mode(&pipeline, payload.mode, &mut errors);
-
-    // 6. Validate connections
-    validate_connections(&pipeline, &node_defs, &mut errors);
-
-    // 7. File-path security checks (reuse session/oneshot helpers)
-    collect_file_path_errors(&pipeline, &app_state.config.security, &mut errors);
-
-    // 8. Build graph (always included so the UI can highlight bad nodes)
-    let graph = Some(ValidateGraph {
-        nodes: pipeline
-            .nodes
-            .iter()
-            .map(|(id, n)| ValidateGraphNode {
-                id: id.clone(),
-                kind: n.kind.clone(),
-                params: n.params.clone(),
-            })
-            .collect(),
-        connections: pipeline
-            .connections
-            .iter()
-            .map(|c| ValidateGraphConnection {
-                from_node: c.from_node.clone(),
-                from_pin: c.from_pin.clone(),
-                to_node: c.to_node.clone(),
-                to_pin: c.to_pin.clone(),
-            })
-            .collect(),
-    });
-
-    let valid = errors.is_empty();
+    let response = validate_pipeline_yaml(&app_state, &perms, &payload.yaml, payload.mode)
+        .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e))?;
 
     debug!(
-        valid = valid,
-        error_count = errors.len(),
-        warning_count = warnings.len(),
+        valid = response.valid,
+        error_count = response.errors.len(),
+        warning_count = response.warnings.len(),
         "Pipeline validation completed"
     );
 
-    Ok(Json(ValidateResponse { valid, errors, warnings, graph }))
+    Ok(Json(response))
 }
 
 /// Extract a human-readable message from an `AppError`.
@@ -3954,26 +3873,23 @@ async fn metrics_middleware(req: axum::http::Request<Body>, next: Next) -> Respo
 }
 
 // ---------------------------------------------------------------------------
-// MCP helpers — public API surface for crate::mcp
+// Shared helpers — used by both HTTP handlers and crate::mcp
 // ---------------------------------------------------------------------------
 
-/// Validate a pipeline YAML string with optional mode, returning the result as
-/// a serialized JSON value.
+/// Validate a pipeline YAML string with optional mode.
 ///
-/// This is the shared implementation behind `POST /api/v1/validate` and the MCP
+/// Shared implementation behind `POST /api/v1/validate` and the MCP
 /// `validate_pipeline` tool.
 ///
 /// # Errors
 ///
-/// Returns a serialization error only if the internal response cannot be
-/// serialized to JSON (should never happen in practice).
-#[cfg(feature = "mcp")]
+/// Returns an error string only if the node registry lock is poisoned.
 pub fn validate_pipeline_yaml(
     app_state: &Arc<AppState>,
     perms: &crate::permissions::Permissions,
     yaml: &str,
-    mode: Option<&str>,
-) -> Result<serde_json::Value, String> {
+    mode: Option<PipelineMode>,
+) -> Result<ValidateResponse, String> {
     let mut errors: Vec<ValidateDiagnostic> = Vec::new();
     let mut warnings: Vec<ValidateDiagnostic> = Vec::new();
 
@@ -3986,8 +3902,7 @@ pub fn validate_pipeline_yaml(
                 node_id: None,
                 connection_id: None,
             });
-            let resp = ValidateResponse { valid: false, errors, warnings, graph: None };
-            return serde_json::to_value(resp).map_err(|e| format!("serialization error: {e}"));
+            return Ok(ValidateResponse { valid: false, errors, warnings, graph: None });
         },
     };
 
@@ -4000,8 +3915,7 @@ pub fn validate_pipeline_yaml(
                 node_id: None,
                 connection_id: None,
             });
-            let resp = ValidateResponse { valid: false, errors, warnings, graph: None };
-            return serde_json::to_value(resp).map_err(|e| format!("serialization error: {e}"));
+            return Ok(ValidateResponse { valid: false, errors, warnings, graph: None });
         },
     };
 
@@ -4012,8 +3926,7 @@ pub fn validate_pipeline_yaml(
             node_id: None,
             connection_id: None,
         });
-        let resp = ValidateResponse { valid: false, errors, warnings, graph: None };
-        return serde_json::to_value(resp).map_err(|e| format!("serialization error: {e}"));
+        return Ok(ValidateResponse { valid: false, errors, warnings, graph: None });
     }
 
     let registry_guard =
@@ -4022,12 +3935,7 @@ pub fn validate_pipeline_yaml(
         validate_nodes(&pipeline, &registry_guard, Some(perms), &mut errors, &mut warnings);
     drop(registry_guard);
 
-    let pipeline_mode = match mode {
-        Some("dynamic") => Some(PipelineMode::Dynamic),
-        Some("oneshot") => Some(PipelineMode::Oneshot),
-        _ => None,
-    };
-    check_mode(&pipeline, pipeline_mode, &mut errors);
+    check_mode(&pipeline, mode, &mut errors);
     validate_connections(&pipeline, &node_defs, &mut errors);
     collect_file_path_errors(&pipeline, &app_state.config.security, &mut errors);
 
@@ -4054,8 +3962,7 @@ pub fn validate_pipeline_yaml(
     });
 
     let valid = errors.is_empty();
-    let resp = ValidateResponse { valid, errors, warnings, graph };
-    serde_json::to_value(resp).map_err(|e| format!("serialization error: {e}"))
+    Ok(ValidateResponse { valid, errors, warnings, graph })
 }
 
 /// Run all file-path security checks against a pipeline.
