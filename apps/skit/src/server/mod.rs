@@ -568,7 +568,7 @@ pub struct ValidateDiagnostic {
 /// `validate_pipeline` tool.
 #[derive(Serialize)]
 pub struct ValidateResponse {
-    valid: bool,
+    pub(crate) valid: bool,
     errors: Vec<ValidateDiagnostic>,
     warnings: Vec<ValidateDiagnostic>,
     graph: Option<ValidateGraph>,
@@ -4009,6 +4009,31 @@ pub fn check_file_path_security(
 /// Returns a list of validation errors.  An empty list means all operations
 /// are valid.  Callers must perform session-level permission and ownership
 /// checks before calling this function.
+/// Check batch operations for duplicate node IDs by simulating the
+/// Add/Remove sequence.  Returns the IDs of nodes that would collide.
+async fn check_batch_node_id_uniqueness(
+    session: &crate::session::Session,
+    operations: &[streamkit_api::BatchOperation],
+) -> Vec<String> {
+    let mut live_ids: std::collections::HashSet<String> =
+        session.pipeline.lock().await.nodes.keys().cloned().collect();
+    let mut duplicates = Vec::new();
+    for op in operations {
+        match op {
+            streamkit_api::BatchOperation::AddNode { node_id, .. } => {
+                if !live_ids.insert(node_id.clone()) {
+                    duplicates.push(node_id.clone());
+                }
+            },
+            streamkit_api::BatchOperation::RemoveNode { node_id } => {
+                live_ids.remove(node_id.as_str());
+            },
+            _ => {},
+        }
+    }
+    duplicates
+}
+
 pub async fn validate_batch_operations(
     session: &crate::session::Session,
     operations: &[streamkit_api::BatchOperation],
@@ -4017,30 +4042,13 @@ pub async fn validate_batch_operations(
 ) -> Vec<streamkit_api::ValidationError> {
     let mut errors: Vec<streamkit_api::ValidationError> = Vec::new();
 
-    // Pre-validate duplicate node_ids against the pipeline model, simulating
-    // the Add/Remove sequence so that Remove→Add for the same ID within the
-    // batch is allowed, but duplicate Adds are rejected.
-    let mut live_ids: std::collections::HashSet<String> =
-        session.pipeline.lock().await.nodes.keys().cloned().collect();
-    for op in operations {
-        match op {
-            streamkit_api::BatchOperation::AddNode { node_id, .. } => {
-                if !live_ids.insert(node_id.clone()) {
-                    errors.push(streamkit_api::ValidationError {
-                        error_type: streamkit_api::ValidationErrorType::Error,
-                        message: format!(
-                            "Batch rejected: node '{node_id}' already exists in the pipeline"
-                        ),
-                        node_id: Some(node_id.clone()),
-                        connection_id: None,
-                    });
-                }
-            },
-            streamkit_api::BatchOperation::RemoveNode { node_id } => {
-                live_ids.remove(node_id.as_str());
-            },
-            _ => {},
-        }
+    for node_id in check_batch_node_id_uniqueness(session, operations).await {
+        errors.push(streamkit_api::ValidationError {
+            error_type: streamkit_api::ValidationErrorType::Error,
+            message: format!("Batch rejected: node '{node_id}' already exists in the pipeline"),
+            node_id: Some(node_id),
+            connection_id: None,
+        });
     }
 
     // Validate all AddNode operations against permission and security rules.
@@ -4082,24 +4090,9 @@ pub async fn apply_batch_operations(
     security_config: &crate::config::SecurityConfig,
 ) -> Result<(), String> {
     // Pre-validate duplicate node_ids.
-    {
-        let mut live_ids: std::collections::HashSet<String> =
-            session.pipeline.lock().await.nodes.keys().cloned().collect();
-        for op in &operations {
-            match op {
-                streamkit_api::BatchOperation::AddNode { node_id, .. } => {
-                    if !live_ids.insert(node_id.clone()) {
-                        return Err(format!(
-                            "Batch rejected: node '{node_id}' already exists in the pipeline"
-                        ));
-                    }
-                },
-                streamkit_api::BatchOperation::RemoveNode { node_id } => {
-                    live_ids.remove(node_id.as_str());
-                },
-                _ => {},
-            }
-        }
+    let duplicates = check_batch_node_id_uniqueness(session, &operations).await;
+    if let Some(node_id) = duplicates.first() {
+        return Err(format!("Batch rejected: node '{node_id}' already exists in the pipeline"));
     }
 
     // Validate permissions for all AddNode operations.
