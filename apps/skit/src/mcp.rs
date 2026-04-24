@@ -611,6 +611,12 @@ impl StreamKitMcp {
 // Command generation helpers
 // ---------------------------------------------------------------------------
 
+/// Shell-quote a value by wrapping it in single quotes and escaping any
+/// embedded single quotes (`'` → `'\''`).
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 fn generate_curl_command(
     yaml: &str,
     inputs: &[OneshotInput],
@@ -625,14 +631,13 @@ fn generate_curl_command(
     let _ = writeln!(cmd, "{yaml}");
     let _ = writeln!(cmd, "PIPELINE_EOF");
     let _ = writeln!(cmd);
-    let _ = write!(
-        cmd,
-        "curl -X POST {server_url}/api/v1/process \\\n  -F \"config=</tmp/pipeline.yaml\""
-    );
+    let url = format!("{server_url}/api/v1/process");
+    let _ = write!(cmd, "curl -X POST {} \\\n  -F 'config=</tmp/pipeline.yaml'", shell_quote(&url));
     for input in inputs {
-        let _ = write!(cmd, " \\\n  -F \"{}=@{}\"", input.field, input.path);
+        let _ =
+            write!(cmd, " \\\n  -F {}", shell_quote(&format!("{}=@{}", input.field, input.path)));
     }
-    let _ = write!(cmd, " \\\n  -o {output}");
+    let _ = write!(cmd, " \\\n  -o {}", shell_quote(output));
     cmd
 }
 
@@ -656,30 +661,36 @@ fn generate_skit_cli_command(
     let (primary, extras): (Vec<_>, Vec<_>) = inputs.iter().partition(|i| i.field == "media");
 
     if let Some(primary_input) = primary.first() {
-        let _ = write!(cmd, "streamkit-client oneshot /tmp/pipeline.yaml {}", primary_input.path);
+        let _ = write!(
+            cmd,
+            "streamkit-client oneshot /tmp/pipeline.yaml {}",
+            shell_quote(&primary_input.path)
+        );
     } else if let Some(first) = inputs.first() {
         // No input named "media" — use the first as positional and re-add
         // it via --input so the server receives the correct field name.
-        let _ = write!(cmd, "streamkit-client oneshot /tmp/pipeline.yaml {}", first.path);
+        let _ =
+            write!(cmd, "streamkit-client oneshot /tmp/pipeline.yaml {}", shell_quote(&first.path));
     } else {
         let _ = write!(cmd, "streamkit-client oneshot /tmp/pipeline.yaml <INPUT_FILE>");
     }
 
-    let _ = write!(cmd, " {output}");
+    let _ = write!(cmd, " {}", shell_quote(output));
 
-    // Emit --input flags for non-primary inputs.
-    for input in &extras {
-        let _ = write!(cmd, " --input {}={}", input.field, input.path);
-    }
-    // If the first input was not "media" and was used as positional,
-    // add all original inputs via --input flags.
-    if primary.is_empty() {
+    // Emit --input flags: when a "media" input exists, only extras need
+    // flags; otherwise all inputs are emitted (the first was used as the
+    // positional arg but with a non-"media" field name).
+    if !primary.is_empty() {
+        for input in &extras {
+            let _ = write!(cmd, " --input {}={}", input.field, shell_quote(&input.path));
+        }
+    } else {
         for input in inputs {
-            let _ = write!(cmd, " --input {}={}", input.field, input.path);
+            let _ = write!(cmd, " --input {}={}", input.field, shell_quote(&input.path));
         }
     }
 
-    let _ = write!(cmd, " --server {server_url}");
+    let _ = write!(cmd, " --server {}", shell_quote(server_url));
     cmd
 }
 

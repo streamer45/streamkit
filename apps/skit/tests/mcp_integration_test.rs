@@ -599,8 +599,8 @@ async fn mcp_generate_oneshot_command_curl() {
     assert!(text.contains("curl"), "curl command expected in output: {text}");
     assert!(text.contains("/api/v1/process"), "endpoint expected in output: {text}");
     assert!(text.contains("config="), "config field expected in output: {text}");
-    assert!(text.contains("media=@/tmp/input.wav"), "input field expected in output: {text}");
-    assert!(text.contains("-o /tmp/output.wav"), "output path expected in output: {text}");
+    assert!(text.contains("'media=@/tmp/input.wav'"), "input field expected in output: {text}");
+    assert!(text.contains("-o '/tmp/output.wav'"), "output path expected in output: {text}");
 }
 
 #[tokio::test]
@@ -639,10 +639,10 @@ async fn mcp_generate_oneshot_command_skit_cli() {
         text.contains("streamkit-client oneshot"),
         "skit-cli command expected in output: {text}"
     );
-    assert!(text.contains("/tmp/input.wav"), "input path expected in output: {text}");
-    assert!(text.contains("/tmp/output.wav"), "output path expected in output: {text}");
+    assert!(text.contains("'/tmp/input.wav'"), "input path expected in output: {text}");
+    assert!(text.contains("'/tmp/output.wav'"), "output path expected in output: {text}");
     assert!(
-        text.contains("--server http://localhost:9999"),
+        text.contains("--server 'http://localhost:9999'"),
         "server URL expected in output: {text}"
     );
 }
