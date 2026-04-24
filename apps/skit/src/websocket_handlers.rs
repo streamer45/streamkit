@@ -14,8 +14,7 @@ use crate::state::{AppState, BroadcastEvent};
 use opentelemetry::global;
 use std::sync::Arc;
 use streamkit_api::{
-    Event as ApiEvent, EventPayload, MessageType, RequestPayload, ResponsePayload, ValidationError,
-    ValidationErrorType,
+    Event as ApiEvent, EventPayload, MessageType, RequestPayload, ResponsePayload,
 };
 use streamkit_core::control::{EngineControlMessage, NodeControlMessage};
 use streamkit_core::registry::NodeDefinition;
@@ -41,7 +40,7 @@ fn can_access_session(session: &Session, role_name: &str, perms: &Permissions) -
 /// Returns `Some(error_message)` if the operation is not allowed, `None` if it passes.
 /// This is the single source of truth for AddNode validation, used by `handle_add_node`,
 /// `handle_validate_batch`, and `handle_apply_batch`.
-fn validate_add_node_op(
+pub fn validate_add_node_op(
     kind: &str,
     params: Option<&serde_json::Value>,
     perms: &Permissions,
@@ -776,18 +775,16 @@ async fn handle_tune_node(
     perms: &Permissions,
     role_name: &str,
 ) -> Option<ResponsePayload> {
-    // Check permission to tune nodes
     if !perms.tune_nodes {
         return Some(ResponsePayload::Error {
             message: "Permission denied: cannot tune nodes".to_string(),
         });
     }
 
-    // Get session with SHORT lock hold to avoid blocking other operations
     let session = {
         let session_manager = app_state.session_manager.lock().await;
         session_manager.get_session_by_name_or_id(&session_id)
-    }; // Session manager lock released here
+    };
 
     let Some(session) = session else {
         return Some(ResponsePayload::Error {
@@ -795,115 +792,30 @@ async fn handle_tune_node(
         });
     };
 
-    // Check ownership (session is cloned, doesn't need lock)
     if !can_access_session(&session, role_name, perms) {
         return Some(ResponsePayload::Error {
             message: "Permission denied: you do not own this session".to_string(),
         });
     }
 
-    // Handle UpdateParams specially for event broadcasting (and validate file paths)
-    if let NodeControlMessage::UpdateParams(ref params) = message {
-        let (kind, file_path, script_path) = {
-            let pipeline = session.pipeline.lock().await;
-            let kind = pipeline.nodes.get(&node_id).map(|n| n.kind.clone());
-            let file_path =
-                params.get("path").and_then(serde_json::Value::as_str).map(str::to_string);
-            let script_path =
-                params.get("script_path").and_then(serde_json::Value::as_str).map(str::to_string);
-            drop(pipeline);
-            (kind, file_path, script_path)
-        };
-
-        let file_path = file_path.as_deref();
-        let script_path = script_path.as_deref();
-
-        if kind.as_deref() == Some("core::file_reader") {
-            let Some(path) = file_path else {
-                return Some(ResponsePayload::Error {
-                    message: "Invalid file_reader params: expected params.path to be a string"
-                        .to_string(),
-                });
-            };
-            if let Err(e) = file_security::validate_file_path(path, &app_state.config.security) {
-                return Some(ResponsePayload::Error { message: format!("Invalid file path: {e}") });
-            }
-        }
-
-        if kind.as_deref() == Some("core::file_writer") {
-            if let Some(path) = file_path {
-                if let Err(e) = file_security::validate_write_path(path, &app_state.config.security)
-                {
-                    return Some(ResponsePayload::Error {
-                        message: format!("Invalid write path: {e}"),
-                    });
-                }
-            }
-        }
-
-        if kind.as_deref() == Some("core::script") {
-            if let Some(path) = script_path {
-                if !path.trim().is_empty() {
-                    if let Err(e) =
-                        file_security::validate_file_path(path, &app_state.config.security)
-                    {
-                        return Some(ResponsePayload::Error {
-                            message: format!("Invalid script_path: {e}"),
-                        });
-                    }
-                }
-            }
-        }
-
-        {
-            // Store sanitized params: strip transient sync metadata
-            // (_sender, _rev, etc.) for consistency with the
-            // fire-and-forget handler.
-            let mut durable_params = params.clone();
-            if let serde_json::Value::Object(ref mut map) = durable_params {
-                map.retain(|k, _| !k.starts_with('_'));
-            }
-            let mut pipeline = session.pipeline.lock().await;
-            if let Some(node) = pipeline.nodes.get_mut(&node_id) {
-                // Deep-merge the partial update into existing params so
-                // sibling keys are preserved (mirrors the async handler).
-                node.params = Some(match node.params.take() {
-                    Some(existing) => deep_merge_json(existing, durable_params),
-                    None => durable_params,
-                });
-            } else {
-                warn!(
-                    node_id = %node_id,
-                    "Attempted to tune params for non-existent node in pipeline model"
-                );
-            }
-        } // Lock released here
-
-        // Broadcast event to all clients
-        let event = ApiEvent {
-            message_type: MessageType::Event,
-            correlation_id: None,
-            payload: EventPayload::NodeParamsChanged {
-                session_id: session.id.clone(),
-                node_id: node_id.clone(),
-                params: params.clone(),
-            },
-        };
-        if let Err(e) = app_state.event_tx.send(BroadcastEvent::to_all(event)) {
-            error!("Failed to broadcast NodeParamsChanged event: {}", e);
-        }
+    match crate::server::tune_session_node(
+        &session,
+        node_id,
+        message,
+        &app_state.config.security,
+        &app_state.event_tx,
+    )
+    .await
+    {
+        Ok(()) => Some(ResponsePayload::Success),
+        Err(message) => Some(ResponsePayload::Error { message }),
     }
-
-    // Now safe to do async operations without holding session_manager lock
-    let control_msg = EngineControlMessage::TuneNode { node_id, message };
-    session.send_control_message(control_msg).await;
-    Some(ResponsePayload::Success)
 }
 
 /// Validate file/script paths in UpdateParams against security policy.
 ///
 /// Returns `true` if the params are allowed, `false` if they should be rejected.
-fn validate_update_params_security(
+pub fn validate_update_params_security(
     kind: Option<&str>,
     params: &serde_json::Value,
     security: &crate::config::SecurityConfig,
@@ -960,9 +872,7 @@ async fn handle_tune_node_fire_and_forget(
 ) -> Option<ResponsePayload> {
     let action_label = "TuneNodeAsync";
 
-    // Check permission to tune nodes
     if !perms.tune_nodes {
-        // For async operations, we don't send a response but we should still log
         warn!("Permission denied: attempted to tune node without permission via {action_label}");
         return None;
     }
@@ -970,10 +880,9 @@ async fn handle_tune_node_fire_and_forget(
     let session = {
         let session_manager = app_state.session_manager.lock().await;
         session_manager.get_session_by_name_or_id(&session_id)
-    }; // Session manager lock released here
+    };
 
     if let Some(session) = session {
-        // Check ownership
         if !can_access_session(&session, role_name, perms) {
             warn!(
                 session_id = %session_id,
@@ -983,71 +892,21 @@ async fn handle_tune_node_fire_and_forget(
             return None;
         }
 
-        // Handle UpdateParams specially for pipeline model updates and event broadcasting
-        if let NodeControlMessage::UpdateParams(ref params) = message {
-            let kind = {
-                let pipeline = session.pipeline.lock().await;
-                pipeline.nodes.get(&node_id).map(|n| n.kind.clone())
-            };
-
-            if !validate_update_params_security(kind.as_deref(), params, &app_state.config.security)
-            {
-                return None;
-            }
-
-            {
-                // Store sanitized params: strip transient sync metadata
-                // (_sender, _rev, etc.) from the durable pipeline model.
-                // Top-level keys prefixed with `_` are reserved for
-                // in-flight metadata and must not leak into persistence
-                // or GetPipeline responses.
-                let mut durable_params = params.clone();
-                if let serde_json::Value::Object(ref mut map) = durable_params {
-                    map.retain(|k, _| !k.starts_with('_'));
-                }
-                let mut pipeline = session.pipeline.lock().await;
-                if let Some(node) = pipeline.nodes.get_mut(&node_id) {
-                    // Deep-merge the partial update into existing params so
-                    // sibling keys are preserved.  Without this, a partial
-                    // nested update like `{ properties: { show: false } }`
-                    // would overwrite the entire params, losing keys such
-                    // as `fps`, `width`, or `properties.name`.
-                    node.params = Some(match node.params.take() {
-                        Some(existing) => deep_merge_json(existing, durable_params),
-                        None => durable_params,
-                    });
-                } else {
-                    warn!(
-                        node_id = %node_id,
-                        "Attempted to tune params for non-existent node in pipeline model via {action_label}"
-                    );
-                }
-            } // Lock released here
-
-            // Broadcast the *partial delta* (not merged state) to all clients.
-            // Correct deep-merge on receive depends on each client having a
-            // valid base state, which is guaranteed because every client
-            // fetches the full pipeline on connect.
-            let event = ApiEvent {
-                message_type: MessageType::Event,
-                correlation_id: None,
-                payload: EventPayload::NodeParamsChanged {
-                    session_id: session.id.clone(),
-                    node_id: node_id.clone(),
-                    params: params.clone(),
-                },
-            };
-            if let Err(e) = app_state.event_tx.send(BroadcastEvent::to_all(event)) {
-                error!("Failed to broadcast NodeParamsChanged event: {}", e);
-            }
+        if let Err(e) = crate::server::tune_session_node(
+            &session,
+            node_id,
+            message,
+            &app_state.config.security,
+            &app_state.event_tx,
+        )
+        .await
+        {
+            warn!("Security policy rejected tune via {action_label}: {e}");
         }
-
-        let control_msg = EngineControlMessage::TuneNode { node_id, message };
-        session.send_control_message(control_msg).await;
     } else {
         warn!("Could not tune non-existent session '{session_id}' via {action_label}");
     }
-    None // Do not send a response
+    None
 }
 
 /// Handle async node tuning (fire-and-forget, broadcasts to all).
@@ -1136,14 +995,12 @@ async fn handle_validate_batch(
     perms: &Permissions,
     role_name: &str,
 ) -> ResponsePayload {
-    // Validate that user has permission for modify_sessions
     if !perms.modify_sessions {
         return ResponsePayload::Error {
             message: "Permission denied: cannot modify sessions".to_string(),
         };
     }
 
-    // Verify session exists
     let session = {
         let session_manager = app_state.session_manager.lock().await;
         session_manager.get_session_by_name_or_id(&session_id)
@@ -1153,56 +1010,19 @@ async fn handle_validate_batch(
         return ResponsePayload::Error { message: format!("Session '{session_id}' not found") };
     };
 
-    // Check ownership
     if !can_access_session(&session, role_name, perms) {
         return ResponsePayload::Error {
             message: "Permission denied: you do not own this session".to_string(),
         };
     }
 
-    // Collect all validation errors so the caller sees every problem at once.
-    let mut errors: Vec<ValidationError> = Vec::new();
-
-    // Pre-validate duplicate node_ids against the pipeline model, mirroring
-    // the same simulation that handle_apply_batch performs.
-    let mut live_ids: std::collections::HashSet<String> =
-        session.pipeline.lock().await.nodes.keys().cloned().collect();
-    for op in operations {
-        match op {
-            streamkit_api::BatchOperation::AddNode { node_id, .. } => {
-                if !live_ids.insert(node_id.clone()) {
-                    errors.push(ValidationError {
-                        error_type: ValidationErrorType::Error,
-                        message: format!(
-                            "Batch rejected: node '{node_id}' already exists in the pipeline"
-                        ),
-                        node_id: Some(node_id.clone()),
-                        connection_id: None,
-                    });
-                }
-            },
-            streamkit_api::BatchOperation::RemoveNode { node_id } => {
-                live_ids.remove(node_id.as_str());
-            },
-            _ => {},
-        }
-    }
-
-    // Validate all AddNode operations against permission and security rules.
-    for op in operations {
-        if let streamkit_api::BatchOperation::AddNode { node_id, kind, params, .. } = op {
-            if let Some(message) =
-                validate_add_node_op(kind, params.as_ref(), perms, &app_state.config.security)
-            {
-                errors.push(ValidationError {
-                    error_type: ValidationErrorType::Error,
-                    message,
-                    node_id: Some(node_id.clone()),
-                    connection_id: None,
-                });
-            }
-        }
-    }
+    let errors = crate::server::validate_batch_operations(
+        &session,
+        operations,
+        perms,
+        &app_state.config.security,
+    )
+    .await;
 
     info!(
         operation_count = operations.len(),
@@ -1212,7 +1032,6 @@ async fn handle_validate_batch(
     ResponsePayload::ValidationResult { errors }
 }
 
-#[allow(clippy::significant_drop_tightening)]
 async fn handle_apply_batch(
     session_id: String,
     operations: Vec<streamkit_api::BatchOperation>,
@@ -1220,18 +1039,16 @@ async fn handle_apply_batch(
     perms: &Permissions,
     role_name: &str,
 ) -> Option<ResponsePayload> {
-    // Check permission to modify sessions
     if !perms.modify_sessions {
         return Some(ResponsePayload::Error {
             message: "Permission denied: cannot modify sessions".to_string(),
         });
     }
 
-    // Get session with SHORT lock hold to avoid blocking other operations
     let session = {
         let session_manager = app_state.session_manager.lock().await;
         session_manager.get_session_by_name_or_id(&session_id)
-    }; // Session manager lock released here
+    };
 
     let Some(session) = session else {
         return Some(ResponsePayload::Error {
@@ -1239,142 +1056,26 @@ async fn handle_apply_batch(
         });
     };
 
-    // Check ownership (session is cloned, doesn't need lock)
     if !can_access_session(&session, role_name, perms) {
         return Some(ResponsePayload::Error {
             message: "Permission denied: you do not own this session".to_string(),
         });
     }
 
-    // Pre-validate duplicate node_ids against the pipeline model.
-    // Simulate the batch's Add/Remove sequence so that Remove→Add for
-    // the same ID within the batch is allowed, but duplicate Adds
-    // (without intervening Remove) are rejected before any mutation.
+    match crate::server::apply_batch_operations(
+        &session,
+        operations,
+        perms,
+        &app_state.config.security,
+    )
+    .await
     {
-        let pipeline = session.pipeline.lock().await;
-        let mut live_ids: std::collections::HashSet<&str> =
-            pipeline.nodes.keys().map(String::as_str).collect();
-        for op in &operations {
-            match op {
-                streamkit_api::BatchOperation::AddNode { node_id, .. } => {
-                    if !live_ids.insert(node_id.as_str()) {
-                        return Some(ResponsePayload::Error {
-                            message: format!(
-                                "Batch rejected: node '{node_id}' already exists in the pipeline"
-                            ),
-                        });
-                    }
-                },
-                streamkit_api::BatchOperation::RemoveNode { node_id } => {
-                    live_ids.remove(node_id.as_str());
-                },
-                _ => {},
-            }
-        }
-    } // Pipeline lock released after pre-validation
-
-    // Validate permissions for all operations.
-    for op in &operations {
-        if let streamkit_api::BatchOperation::AddNode { kind, params, .. } = op {
-            if let Some(message) =
-                validate_add_node_op(kind, params.as_ref(), perms, &app_state.config.security)
-            {
-                return Some(ResponsePayload::Error { message });
-            }
-        }
+        Ok(()) => {
+            info!(session_id = %session_id, "Applied batch operations successfully");
+            Some(ResponsePayload::BatchApplied { success: true, errors: Vec::new() })
+        },
+        Err(message) => Some(ResponsePayload::Error { message }),
     }
-
-    // Apply all operations in order
-    let mut engine_operations = Vec::new();
-
-    {
-        let mut pipeline = session.pipeline.lock().await;
-
-        for op in operations {
-            match op {
-                streamkit_api::BatchOperation::AddNode { node_id, kind, params } => {
-                    pipeline.nodes.insert(
-                        node_id.clone(),
-                        streamkit_api::Node {
-                            kind: kind.clone(),
-                            params: params.clone(),
-                            state: None,
-                        },
-                    );
-                    engine_operations.push(EngineControlMessage::AddNode { node_id, kind, params });
-                },
-                streamkit_api::BatchOperation::RemoveNode { node_id } => {
-                    pipeline.nodes.shift_remove(&node_id);
-                    pipeline
-                        .connections
-                        .retain(|conn| conn.from_node != node_id && conn.to_node != node_id);
-                    engine_operations.push(EngineControlMessage::RemoveNode { node_id });
-                },
-                streamkit_api::BatchOperation::Connect {
-                    from_node,
-                    from_pin,
-                    to_node,
-                    to_pin,
-                    mode,
-                } => {
-                    pipeline.connections.push(streamkit_api::Connection {
-                        from_node: from_node.clone(),
-                        from_pin: from_pin.clone(),
-                        to_node: to_node.clone(),
-                        to_pin: to_pin.clone(),
-                        mode,
-                    });
-                    let core_mode = match mode {
-                        streamkit_api::ConnectionMode::Reliable => {
-                            streamkit_core::control::ConnectionMode::Reliable
-                        },
-                        streamkit_api::ConnectionMode::BestEffort => {
-                            streamkit_core::control::ConnectionMode::BestEffort
-                        },
-                    };
-                    engine_operations.push(EngineControlMessage::Connect {
-                        from_node,
-                        from_pin,
-                        to_node,
-                        to_pin,
-                        mode: core_mode,
-                    });
-                },
-                streamkit_api::BatchOperation::Disconnect {
-                    from_node,
-                    from_pin,
-                    to_node,
-                    to_pin,
-                } => {
-                    pipeline.connections.retain(|conn| {
-                        !(conn.from_node == from_node
-                            && conn.from_pin == from_pin
-                            && conn.to_node == to_node
-                            && conn.to_pin == to_pin)
-                    });
-                    engine_operations.push(EngineControlMessage::Disconnect {
-                        from_node,
-                        from_pin,
-                        to_node,
-                        to_pin,
-                    });
-                },
-            }
-        }
-        drop(pipeline);
-    } // Release pipeline lock
-
-    // Now safe to do async operations without holding session_manager lock
-    for msg in engine_operations {
-        session.send_control_message(msg).await;
-    }
-
-    info!(
-        session_id = %session_id,
-        "Applied batch operations successfully"
-    );
-
-    Some(ResponsePayload::BatchApplied { success: true, errors: Vec::new() })
 }
 
 fn handle_get_permissions(perms: &Permissions, role_name: &str) -> ResponsePayload {
@@ -1385,7 +1086,7 @@ fn handle_get_permissions(perms: &Permissions, role_name: &str) -> ResponsePaylo
 /// Recursively deep-merges `source` into `target`, returning the merged value.
 /// Only JSON objects are merged recursively; arrays and scalars in `source`
 /// replace the corresponding value in `target`.
-fn deep_merge_json(target: serde_json::Value, source: serde_json::Value) -> serde_json::Value {
+pub fn deep_merge_json(target: serde_json::Value, source: serde_json::Value) -> serde_json::Value {
     match (target, source) {
         (serde_json::Value::Object(mut t_map), serde_json::Value::Object(s_map)) => {
             for (key, s_val) in s_map {

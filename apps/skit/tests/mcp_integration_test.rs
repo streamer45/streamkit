@@ -966,3 +966,337 @@ async fn mcp_get_prompt_unknown_returns_error() {
     let error = &body["error"];
     assert!(!error.is_null(), "expected error for unknown prompt, got: {body}");
 }
+
+// -----------------------------------------------------------------------
+// Batch & Tune tests
+// -----------------------------------------------------------------------
+
+/// Helper: create a StreamKit session via MCP and return its session_id.
+async fn create_skit_session(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    token: &str,
+    mcp_session: &str,
+    yaml: &str,
+) -> String {
+    let create = json!({
+        "jsonrpc": "2.0",
+        "id": 100,
+        "method": "tools/call",
+        "params": {
+            "name": "create_session",
+            "arguments": { "yaml": yaml }
+        }
+    });
+    let res = mcp_post_with_session(client, addr, &create, token, mcp_session).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let text = body["result"]["content"][0]["text"].as_str().expect("create_session text");
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    parsed["session_id"].as_str().expect("session_id").to_string()
+}
+
+#[tokio::test]
+async fn mcp_validate_batch_valid_operations() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let mcp_session = init_mcp_session(&client, addr, &token).await;
+
+    let skit_session =
+        create_skit_session(&client, addr, &token, &mcp_session, PASSTHROUGH_YAML).await;
+
+    let validate = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "validate_batch",
+            "arguments": {
+                "session_id": skit_session,
+                "operations": [
+                    { "action": "addnode", "node_id": "new_pass", "kind": "core::passthrough" }
+                ]
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &validate, &token, &mcp_session).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let text = body["result"]["content"][0]["text"].as_str().expect("validate_batch text");
+    let errors: Vec<serde_json::Value> = serde_json::from_str(text).unwrap();
+    assert!(errors.is_empty(), "expected no validation errors, got: {errors:?}");
+}
+
+#[tokio::test]
+async fn mcp_validate_batch_invalid_duplicate_node() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let mcp_session = init_mcp_session(&client, addr, &token).await;
+
+    let skit_session =
+        create_skit_session(&client, addr, &token, &mcp_session, PASSTHROUGH_YAML).await;
+
+    // "pass" already exists in the pipeline — adding it again should fail.
+    let validate = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "validate_batch",
+            "arguments": {
+                "session_id": skit_session,
+                "operations": [
+                    { "action": "addnode", "node_id": "pass", "kind": "core::passthrough" }
+                ]
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &validate, &token, &mcp_session).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let text = body["result"]["content"][0]["text"].as_str().expect("validate_batch text");
+    let errors: Vec<serde_json::Value> = serde_json::from_str(text).unwrap();
+    assert!(!errors.is_empty(), "expected validation errors for duplicate node");
+    assert!(
+        errors[0]["message"].as_str().unwrap().contains("already exists"),
+        "expected 'already exists' error"
+    );
+}
+
+#[tokio::test]
+async fn mcp_apply_batch_add_node_round_trip() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let mcp_session = init_mcp_session(&client, addr, &token).await;
+
+    let skit_session =
+        create_skit_session(&client, addr, &token, &mcp_session, PASSTHROUGH_YAML).await;
+
+    // Apply: add a new node
+    let apply = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "apply_batch",
+            "arguments": {
+                "session_id": skit_session,
+                "operations": [
+                    { "action": "addnode", "node_id": "extra", "kind": "core::passthrough" }
+                ]
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &apply, &token, &mcp_session).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let text = body["result"]["content"][0]["text"].as_str().expect("apply_batch text");
+    let result: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(result["success"], true);
+
+    // Verify via get_pipeline that "extra" exists
+    let get = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "get_pipeline",
+            "arguments": { "session_id": skit_session }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &get, &token, &mcp_session).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let text = body["result"]["content"][0]["text"].as_str().expect("get_pipeline text");
+    let pipeline: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert!(pipeline["nodes"]["extra"].is_object(), "expected 'extra' node in pipeline");
+    assert!(pipeline["nodes"]["pass"].is_object(), "expected original 'pass' node in pipeline");
+
+    // Clean up
+    let destroy = json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": { "name": "destroy_session", "arguments": { "session_id": skit_session } }
+    });
+    let _ = mcp_post_with_session(&client, addr, &destroy, &token, &mcp_session).await;
+}
+
+#[tokio::test]
+async fn mcp_tune_node_update_params() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let mcp_session = init_mcp_session(&client, addr, &token).await;
+
+    let skit_session =
+        create_skit_session(&client, addr, &token, &mcp_session, PASSTHROUGH_YAML).await;
+
+    // Tune: send UpdateParams to the "pass" node
+    let tune = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "tune_node",
+            "arguments": {
+                "session_id": skit_session,
+                "node_id": "pass",
+                "message": { "UpdateParams": { "gain": 0.5 } }
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &tune, &token, &mcp_session).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let text = body["result"]["content"][0]["text"].as_str().expect("tune_node text");
+    let result: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(result["success"], true);
+
+    // Verify params persisted in pipeline model
+    let get = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "get_pipeline",
+            "arguments": { "session_id": skit_session }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &get, &token, &mcp_session).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let text = body["result"]["content"][0]["text"].as_str().expect("get_pipeline text");
+    let pipeline: serde_json::Value = serde_json::from_str(text).unwrap();
+    let pass_params = &pipeline["nodes"]["pass"]["params"];
+    assert_eq!(pass_params["gain"], 0.5, "expected tuned gain param");
+
+    // Clean up
+    let destroy = json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": { "name": "destroy_session", "arguments": { "session_id": skit_session } }
+    });
+    let _ = mcp_post_with_session(&client, addr, &destroy, &token, &mcp_session).await;
+}
+
+#[tokio::test]
+async fn mcp_modify_sessions_permission_denied() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    // Start a server where modify_sessions is disabled for admin
+    let listener =
+        TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind test server listener");
+    let addr = listener.local_addr().unwrap();
+    let temp_dir = TempDir::new().unwrap();
+
+    let mut config = Config::default();
+    config.mcp.enabled = true;
+    config.auth.mode = streamkit_server::config::AuthMode::Enabled;
+    config.auth.state_dir = temp_dir.path().to_string_lossy().to_string();
+
+    if let Some(admin_perms) = config.permissions.roles.get_mut("admin") {
+        admin_perms.modify_sessions = false;
+        admin_perms.tune_nodes = false;
+    }
+
+    let auth_state = streamkit_server::auth::AuthState::new(&config.auth, true)
+        .await
+        .expect("Failed to init auth state");
+    let auth_state = Arc::new(auth_state);
+
+    let admin_token_path = temp_dir.path().join("admin.token");
+    let admin_token =
+        tokio::fs::read_to_string(&admin_token_path).await.expect("Missing admin.token");
+    let admin_token = admin_token.trim().to_string();
+
+    let (app, _state) = streamkit_server::server::create_app(config, Some(auth_state));
+    let _server_handle = tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service()).await.unwrap();
+    });
+
+    wait_for_healthz(addr).await;
+
+    let client = reqwest::Client::new();
+    let mcp_session = init_mcp_session(&client, addr, &admin_token).await;
+
+    // validate_batch should be denied
+    let validate = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "validate_batch",
+            "arguments": {
+                "session_id": "any",
+                "operations": []
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &validate, &admin_token, &mcp_session).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let error = &body["error"];
+    assert!(!error.is_null(), "expected error for validate_batch, got: {body}");
+    assert!(
+        error["message"].as_str().unwrap_or("").contains("Permission denied"),
+        "expected permission denied"
+    );
+
+    // apply_batch should be denied
+    let apply = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "apply_batch",
+            "arguments": {
+                "session_id": "any",
+                "operations": []
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &apply, &admin_token, &mcp_session).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let error = &body["error"];
+    assert!(!error.is_null(), "expected error for apply_batch, got: {body}");
+    assert!(
+        error["message"].as_str().unwrap_or("").contains("Permission denied"),
+        "expected permission denied"
+    );
+
+    // tune_node should be denied
+    let tune = json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": {
+            "name": "tune_node",
+            "arguments": {
+                "session_id": "any",
+                "node_id": "any",
+                "message": { "UpdateParams": {} }
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &tune, &admin_token, &mcp_session).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let error = &body["error"];
+    assert!(!error.is_null(), "expected error for tune_node, got: {body}");
+    assert!(
+        error["message"].as_str().unwrap_or("").contains("Permission denied"),
+        "expected permission denied"
+    );
+}
