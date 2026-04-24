@@ -1477,4 +1477,23 @@ mod tests {
 
         // repr drops here — Drop should see null handle and be a no-op.
     }
+
+    #[test]
+    fn binary_buffer_handle_clone_preserves_bytes_pointer() {
+        let payload = bytes::Bytes::from_static(b"pointer-identity");
+        let packet = Packet::Binary { data: payload.clone(), content_type: None, metadata: None };
+
+        let mut repr = packet_to_c(&packet);
+        repr.set_binary_buffer_handle(&payload);
+
+        if let CPacketOwned::BinaryWithMeta(ref bwm) = repr.owned {
+            assert_eq!(bwm.binary.data, payload.as_ptr());
+            assert!(!bwm.binary.buffer_handle.is_null());
+            let cloned = unsafe { &*bwm.binary.buffer_handle.cast::<bytes::Bytes>() };
+            assert_eq!(cloned.as_ptr(), payload.as_ptr());
+            assert_eq!(cloned.len(), payload.len());
+        } else {
+            panic!("expected BinaryWithMeta owned variant");
+        }
+    }
 }

@@ -338,9 +338,9 @@ impl LoadedNativePlugin {
     /// tick).  This controls how long the async side waits for the worker
     /// thread's oneshot reply.
     ///
-    /// Pass `None` to wait indefinitely for the FFI call to complete.
-    /// The channel-send timeout (backpressure guard) is always bounded
-    /// regardless of this setting.
+    /// Pass `None` to wait indefinitely for the FFI call to complete. The
+    /// channel-send timeout (backpressure guard) remains bounded by the
+    /// default timeout.
     ///
     /// # Warning
     ///

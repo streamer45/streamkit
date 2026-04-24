@@ -93,6 +93,12 @@ impl PluginMetadataStorage {
                     streamkit_core::types::PacketType::Custom { type_id } => {
                         Some(ffi_guard::cstring_lossy(type_id.as_str(), "custom type_id"))
                     },
+                    streamkit_core::types::PacketType::EncodedAudio(format)
+                        if format.codec == streamkit_core::types::AudioCodec::Opus
+                            && format.codec_private.is_none() =>
+                    {
+                        None
+                    },
                     streamkit_core::types::PacketType::EncodedAudio(format) => {
                         Some(conversions::codec_name_to_cstring(format.codec.as_c_name()))
                     },
@@ -166,6 +172,12 @@ impl PluginMetadataStorage {
             output_custom_type_ids.push(match &output.produces_type {
                 streamkit_core::types::PacketType::Custom { type_id } => {
                     Some(ffi_guard::cstring_lossy(type_id.as_str(), "output custom type_id"))
+                },
+                streamkit_core::types::PacketType::EncodedAudio(format)
+                    if format.codec == streamkit_core::types::AudioCodec::Opus
+                        && format.codec_private.is_none() =>
+                {
+                    None
                 },
                 streamkit_core::types::PacketType::EncodedAudio(format) => {
                     Some(conversions::codec_name_to_cstring(format.codec.as_c_name()))
@@ -292,7 +304,8 @@ fn packet_type_to_c_discriminant(pt: &streamkit_core::types::PacketType) -> CPac
 #[cfg(test)]
 mod tests {
     use streamkit_core::types::{
-        AudioFormat, PacketType, PixelFormat, RawVideoFormat, SampleFormat,
+        AudioCodec, AudioFormat, EncodedAudioFormat, PacketType, PixelFormat, RawVideoFormat,
+        SampleFormat,
     };
 
     use super::*;
@@ -338,5 +351,34 @@ mod tests {
             conversions::packet_type_from_c(storage.outputs[1].produces_type),
             Ok(PacketType::RawVideo(_))
         ));
+    }
+
+    #[test]
+    fn legacy_opus_metadata_does_not_set_custom_type_id() {
+        let meta = NodeMetadata::builder("opus")
+            .input(
+                "in",
+                &[PacketType::EncodedAudio(EncodedAudioFormat {
+                    codec: AudioCodec::Opus,
+                    codec_private: None,
+                })],
+            )
+            .output(
+                "out",
+                PacketType::EncodedAudio(EncodedAudioFormat {
+                    codec: AudioCodec::Opus,
+                    codec_private: None,
+                }),
+            )
+            .build();
+
+        let storage = PluginMetadataStorage::from_node_metadata(&meta);
+
+        assert_eq!(storage.inputs[0].accepts_types_count, 1);
+        let input_type = unsafe { *storage.inputs[0].accepts_types };
+        assert_eq!(input_type.type_discriminant, CPacketType::OpusAudio);
+        assert!(input_type.custom_type_id.is_null());
+        assert_eq!(storage.outputs[0].produces_type.type_discriminant, CPacketType::OpusAudio);
+        assert!(storage.outputs[0].produces_type.custom_type_id.is_null());
     }
 }

@@ -150,19 +150,14 @@ pub fn guard_unit<F: FnOnce()>(label: &str, f: F) {
 /// avoids a panic inside `__plugin_get_metadata` that [`guard_ptr`] would
 /// silently turn into a null return.
 ///
-/// # Panics
-///
-/// Cannot panic in practice — after stripping all null bytes,
-/// `CString::new` is infallible.
 pub fn cstring_lossy(s: &str, context: &str) -> CString {
     match CString::new(s) {
         Ok(c) => c,
         Err(e) => {
             tracing::error!("metadata field '{context}' contains null bytes: {e}");
             let sanitized = s.replace('\0', "");
-            // After removing all null bytes CString::new cannot fail.
-            #[allow(clippy::unwrap_used)]
-            CString::new(sanitized).unwrap()
+            CString::new(sanitized)
+                .unwrap_or_else(|_| unreachable!("sanitized string must not contain null bytes"))
         },
     }
 }

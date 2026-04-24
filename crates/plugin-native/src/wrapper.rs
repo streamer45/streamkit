@@ -65,7 +65,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::Arc;
 use streamkit_core::control::NodeControlMessage;
-use streamkit_core::telemetry::TelemetryEvent;
+use streamkit_core::telemetry::{TelemetryEmitter, TelemetryEvent};
 use streamkit_core::types::Packet;
 use streamkit_core::{
     AudioFramePool, InputPin, NodeContext, NodeState, NodeStateUpdate, OutputPin, ProcessorNode,
@@ -153,9 +153,6 @@ fn ffi_guard_unit(f: impl FnOnce()) {
 
 /// Default timeout for plugin FFI calls (process_packet, flush, tick).
 /// 5 minutes — generous to support slow plugins (e.g. ML inference).
-// TODO: wire this through user configuration (e.g. pipeline YAML or server
-// config) instead of hard-coding.  `set_call_timeout` exists on
-// `LoadedNativePlugin` but nothing calls it yet.
 pub(crate) const DEFAULT_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Wrapper preserving pointer provenance for the plugin's API vtable.
@@ -318,7 +315,7 @@ impl InstanceState {
     /// is idempotent (atomic null-swap guard).
     fn finish_call(&self) {
         let prev = self.in_flight_calls.fetch_sub(1, Ordering::SeqCst);
-        debug_assert!(prev > 0, "finish_call called without begin_call");
+        assert!(prev > 0, "finish_call called without begin_call");
 
         if prev == 1 && self.drop_requested.load(Ordering::SeqCst) {
             self.destroy_instance();
@@ -763,28 +760,16 @@ fn worker_thread_main(
     }
 }
 
+const PLUGIN_LOG_FIELD_NAMES: &[&str] = &["message"];
+
 /// Callsite anchor for dynamically-constructed [`tracing::Metadata`].
-///
-/// Only used as a [`tracing::callsite::Identifier`] target; intentionally
-/// NOT registered with the tracing infrastructure because the per-call
-/// target string is dynamic (varies per plugin).  `EnvFilter` therefore
-/// evaluates directives on every `enabled()` call rather than caching a
-/// static `Interest`.
-///
-/// **Performance note:** Without registration, `EnvFilter` re-evaluates
-/// directives on every `enabled()` call.  For plugins that call
-/// `plugin_trace!` on a hot audio-frame path, this overhead (while still
-/// cheaper than formatting) narrows the win the short-circuit is meant to
-/// provide.  Registering a small set of per-level/per-kind static
-/// callsites (via `tracing::callsite!`) would restore `Interest` caching
-/// and should be done as a follow-up.
 struct PluginLogCallsite;
 
 impl tracing::callsite::Callsite for PluginLogCallsite {
     fn set_interest(&self, _: tracing::subscriber::Interest) {}
     fn metadata(&self) -> &tracing::Metadata<'_> {
-        // Return a harmless fallback so a future subscriber change
-        // degrades gracefully instead of panicking.
+        // Per-plugin targets are stored in `PLUGIN_LOG_METADATA_CACHE`; this
+        // fallback exists only to satisfy the `Callsite` trait.
         static FALLBACK: std::sync::LazyLock<tracing::Metadata<'static>> =
             std::sync::LazyLock::new(|| {
                 tracing::Metadata::new(
@@ -794,10 +779,7 @@ impl tracing::callsite::Callsite for PluginLogCallsite {
                     None,
                     None,
                     None,
-                    tracing::field::FieldSet::new(
-                        &[],
-                        tracing::callsite::Identifier(&PLUGIN_LOG_CALLSITE),
-                    ),
+                    plugin_log_field_set(),
                     tracing::metadata::Kind::EVENT,
                 )
             });
@@ -806,6 +788,68 @@ impl tracing::callsite::Callsite for PluginLogCallsite {
 }
 
 static PLUGIN_LOG_CALLSITE: PluginLogCallsite = PluginLogCallsite;
+
+struct PluginLogMetadata {
+    metadata: tracing::Metadata<'static>,
+    message_field: tracing::field::Field,
+}
+
+static PLUGIN_LOG_METADATA_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<
+        std::collections::HashMap<(String, tracing::Level), &'static PluginLogMetadata>,
+    >,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+fn plugin_log_field_set() -> tracing::field::FieldSet {
+    tracing::field::FieldSet::new(
+        PLUGIN_LOG_FIELD_NAMES,
+        tracing::callsite::Identifier(&PLUGIN_LOG_CALLSITE),
+    )
+}
+
+fn plugin_log_static_metadata(target: &str, level: tracing::Level) -> &'static PluginLogMetadata {
+    let mut cache =
+        PLUGIN_LOG_METADATA_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let key = (target.to_string(), level);
+    cache.entry(key).or_insert_with_key(|(target, level)| {
+        let target: &'static str = Box::leak(target.clone().into_boxed_str());
+        let metadata = plugin_log_metadata(target, *level, plugin_log_field_set());
+        let Some(message_field) = metadata.fields().field("message") else {
+            unreachable!("plugin log field set must contain message");
+        };
+        let entry = PluginLogMetadata { metadata, message_field };
+        Box::leak(Box::new(entry))
+    })
+}
+
+const fn plugin_log_metadata(
+    target: &str,
+    level: tracing::Level,
+    field_set: tracing::field::FieldSet,
+) -> tracing::Metadata<'_> {
+    tracing::Metadata::new(
+        "plugin_log",
+        target,
+        level,
+        None,
+        None,
+        None,
+        field_set,
+        tracing::metadata::Kind::EVENT,
+    )
+}
+
+const fn plugin_log_level(level: streamkit_plugin_sdk_native::types::CLogLevel) -> tracing::Level {
+    use streamkit_plugin_sdk_native::types::CLogLevel;
+
+    match level {
+        CLogLevel::Trace => tracing::Level::TRACE,
+        CLogLevel::Debug => tracing::Level::DEBUG,
+        CLogLevel::Info => tracing::Level::INFO,
+        CLogLevel::Warn => tracing::Level::WARN,
+        CLogLevel::Error => tracing::Level::ERROR,
+    }
+}
 
 /// C callback to check whether a log level is enabled for a given target.
 ///
@@ -821,36 +865,14 @@ extern "C" fn plugin_log_enabled_callback(
         "plugin_log_enabled_callback panicked",
         |_| true,
         || {
-            use streamkit_plugin_sdk_native::types::CLogLevel;
-
-            let tracing_level = match level {
-                CLogLevel::Trace => tracing::Level::TRACE,
-                CLogLevel::Debug => tracing::Level::DEBUG,
-                CLogLevel::Info => tracing::Level::INFO,
-                CLogLevel::Warn => tracing::Level::WARN,
-                CLogLevel::Error => tracing::Level::ERROR,
-            };
-
             let target_str = if target.is_null() {
                 "plugin"
             } else {
                 unsafe { std::ffi::CStr::from_ptr(target) }.to_str().unwrap_or("plugin")
             };
 
-            let field_set = tracing::field::FieldSet::new(
-                &[],
-                tracing::callsite::Identifier(&PLUGIN_LOG_CALLSITE),
-            );
-            let metadata = tracing::Metadata::new(
-                "plugin_log",
-                target_str,
-                tracing_level,
-                None,
-                None,
-                None,
-                field_set,
-                tracing::metadata::Kind::EVENT,
-            );
+            let metadata =
+                plugin_log_metadata(target_str, plugin_log_level(level), plugin_log_field_set());
             tracing::dispatcher::get_default(|d| d.enabled(&metadata))
         },
     )
@@ -858,7 +880,6 @@ extern "C" fn plugin_log_enabled_callback(
 
 /// C callback function for plugin logging.
 /// Routes plugin logs to the tracing infrastructure.
-#[allow(clippy::cognitive_complexity)]
 extern "C" fn plugin_log_callback(
     level: streamkit_plugin_sdk_native::types::CLogLevel,
     target: *const std::os::raw::c_char,
@@ -866,7 +887,7 @@ extern "C" fn plugin_log_callback(
     _user_data: *mut c_void,
 ) {
     ffi_guard_unit(|| {
-        use streamkit_plugin_sdk_native::{conversions, types::CLogLevel};
+        use streamkit_plugin_sdk_native::conversions;
 
         let target_str = if target.is_null() {
             "unknown".to_string()
@@ -882,23 +903,16 @@ extern "C" fn plugin_log_callback(
                 .unwrap_or_else(|_| "[invalid UTF-8]".to_string())
         };
 
-        match level {
-            CLogLevel::Trace => {
-                tracing::event!(tracing::Level::TRACE, target = %target_str, "{}", message_str);
-            },
-            CLogLevel::Debug => {
-                tracing::event!(tracing::Level::DEBUG, target = %target_str, "{}", message_str);
-            },
-            CLogLevel::Info => {
-                tracing::event!(tracing::Level::INFO, target = %target_str, "{}", message_str);
-            },
-            CLogLevel::Warn => {
-                tracing::event!(tracing::Level::WARN, target = %target_str, "{}", message_str);
-            },
-            CLogLevel::Error => {
-                tracing::event!(tracing::Level::ERROR, target = %target_str, "{}", message_str);
-            },
-        }
+        let log_meta = plugin_log_static_metadata(&target_str, plugin_log_level(level));
+        tracing::dispatcher::get_default(|d| {
+            d.register_callsite(&log_meta.metadata);
+            if d.enabled(&log_meta.metadata) {
+                let values =
+                    [(&log_meta.message_field, Some(&message_str as &dyn tracing::field::Value))];
+                let value_set = log_meta.metadata.fields().value_set(&values);
+                d.event(&tracing::Event::new(&log_meta.metadata, &value_set));
+            }
+        });
     });
 }
 
@@ -906,6 +920,14 @@ extern "C" fn plugin_log_callback(
 pub struct NativeNodeWrapper {
     state: Arc<InstanceState>,
     metadata: PluginMetadata,
+}
+
+struct WorkerCallContext<'a> {
+    op: &'a str,
+    node: &'a str,
+    state_tx: Option<&'a tokio::sync::mpsc::Sender<NodeStateUpdate>>,
+    telemetry: Option<&'a TelemetryEmitter>,
+    metric_labels: &'a [KeyValue; 2],
 }
 
 impl NativeNodeWrapper {
@@ -991,40 +1013,34 @@ impl ProcessorNode for NativeNodeWrapper {
         self.metadata.outputs.clone()
     }
 
-    // TODO: runtime_param_schema is synchronous and has no timeout protection —
-    // a hung plugin will stall the calling tokio worker.  Refactoring to
-    // async + call_with_timeout is a larger change (trait method is sync).
-    // NOTE: unlike async call sites, this path does not wrap the FFI call
-    // in catch_unwind — a panicking plugin will unwind into the caller.
-    // Closing this asymmetry requires moving to spawn_blocking + timeout.
     fn runtime_param_schema(&self) -> Option<serde_json::Value> {
-        let get_schema = self.state.api().get_runtime_param_schema?;
-        let guard = self.state.begin_call()?;
+        ffi_guard_with(
+            "runtime_param_schema panicked",
+            |_| None,
+            || {
+                let get_schema = self.state.api().get_runtime_param_schema?;
+                let guard = self.state.begin_call()?;
 
-        let result = get_schema(guard.handle());
+                let result = get_schema(guard.handle());
 
-        if !result.success {
-            // FFI call failed — log and return None.
-            if !result.error_message.is_null() {
-                let msg = unsafe { conversions::c_str_to_string(result.error_message) }
-                    .unwrap_or_default();
-                warn!(error = %msg, "Plugin runtime_param_schema failed");
-            }
-            return None;
-        }
+                if !result.success {
+                    if !result.error_message.is_null() {
+                        let msg = unsafe { conversions::c_str_to_string(result.error_message) }
+                            .unwrap_or_default();
+                        warn!(error = %msg, "Plugin runtime_param_schema failed");
+                    }
+                    return None;
+                }
 
-        // success=true, null json_schema → plugin has no runtime schema.
-        if result.json_schema.is_null() {
-            return None;
-        }
+                if result.json_schema.is_null() {
+                    return None;
+                }
 
-        // success=true, non-null json_schema → JSON string containing the schema.
-        // SAFETY: result.json_schema points to a thread-local CString managed
-        // by the plugin SDK.  We copy the string BEFORE dropping the guard so
-        // no subsequent FFI call can overwrite the thread-local buffer.
-        let json_str = unsafe { conversions::c_str_to_string(result.json_schema) }.ok();
-        drop(guard);
-        json_str.and_then(|s| serde_json::from_str(&s).ok())
+                let json_str = unsafe { conversions::c_str_to_string(result.json_schema) }.ok();
+                drop(guard);
+                json_str.and_then(|s| serde_json::from_str(&s).ok())
+            },
+        )
     }
 
     // The run method is complex by necessity - it's an async actor managing FFI calls,
@@ -1098,13 +1114,14 @@ impl NativeNodeWrapper {
         node: &str,
         reply_rx: tokio::sync::oneshot::Receiver<T>,
         state_tx: Option<&tokio::sync::mpsc::Sender<NodeStateUpdate>>,
+        telemetry: Option<&TelemetryEmitter>,
         metric_labels: &[KeyValue; 2],
     ) -> Result<T, StreamKitError> {
         match self.state.call_timeout {
             Some(d) => tokio::time::timeout(d, reply_rx)
                 .await
                 .map_err(|_| {
-                    if !self.state.timeout_warned.swap(true, Ordering::Relaxed) {
+                    if !self.state.timeout_warned.swap(true, Ordering::SeqCst) {
                         warn!(
                             node = %node,
                             "Plugin {op} timed out after {d:?}"
@@ -1121,6 +1138,9 @@ impl NativeNodeWrapper {
                             node.to_string(),
                             NodeState::Failed { reason: reason.clone() },
                         ));
+                    }
+                    if let Some(telemetry) = telemetry {
+                        telemetry.emit("plugin.call_timeout", serde_json::json!({ "op": op }));
                     }
                     StreamKitError::Runtime(reason)
                 })?
@@ -1139,10 +1159,7 @@ impl NativeNodeWrapper {
     /// reply-side waiting is disabled with `set_call_timeout(None)`.
     async fn send_to_worker(
         &self,
-        op: &str,
-        node: &str,
-        state_tx: Option<&tokio::sync::mpsc::Sender<NodeStateUpdate>>,
-        metric_labels: &[KeyValue; 2],
+        call: WorkerCallContext<'_>,
         tx: &tokio::sync::mpsc::Sender<WorkerRequest>,
         request: WorkerRequest,
     ) -> Result<(), StreamKitError> {
@@ -1150,26 +1167,34 @@ impl NativeNodeWrapper {
         tokio::time::timeout(timeout_dur, tx.send(request))
             .await
             .map_err(|_| {
-                if !self.state.timeout_warned.swap(true, Ordering::Relaxed) {
+                if !self.state.timeout_warned.swap(true, Ordering::SeqCst) {
                     warn!(
-                        node = %node,
-                        "Plugin {op} send to worker timed out after {timeout_dur:?}"
+                        node = %call.node,
+                        "Plugin {} send to worker timed out after {timeout_dur:?}",
+                        call.op,
                     );
                 }
-                global_metrics().record_timeout(metric_labels);
+                global_metrics().record_timeout(call.metric_labels);
                 let reason = format!(
-                    "Plugin {op} on node {node}: send to worker timed out \
-                     (worker likely wedged in prior FFI call)"
+                    "Plugin {} on node {}: send to worker timed out \
+                     (worker likely wedged in prior FFI call)",
+                    call.op, call.node
                 );
-                if let Some(tx) = state_tx {
+                if let Some(tx) = call.state_tx {
                     let _ = tx.try_send(NodeStateUpdate::new(
-                        node.to_string(),
+                        call.node.to_string(),
                         NodeState::Failed { reason: reason.clone() },
                     ));
                 }
+                if let Some(telemetry) = call.telemetry {
+                    telemetry.emit(
+                        "plugin.call_timeout",
+                        serde_json::json!({ "op": call.op, "phase": "send_to_worker" }),
+                    );
+                }
                 StreamKitError::Runtime(reason)
             })?
-            .map_err(|_| worker_died_error(op, node))
+            .map_err(|_| worker_died_error(call.op, call.node))
     }
 
     /// Input-driven processing loop (existing behaviour for processor plugins).
@@ -1270,6 +1295,11 @@ impl NativeNodeWrapper {
             inputs = ?input_pin_names,
             "Got input channels, entering main loop"
         );
+        let telemetry = TelemetryEmitter::new(
+            node_name.clone(),
+            context.session_id.clone(),
+            context.telemetry_tx.clone(),
+        );
 
         // Emit running state
         if let Err(e) =
@@ -1305,6 +1335,8 @@ impl NativeNodeWrapper {
                                     &node_name,
                                     &params_value,
                                     &worker.tx,
+                                    &context.state_tx,
+                                    Some(&telemetry),
                                 )
                                 .await?;
                             }
@@ -1327,8 +1359,8 @@ impl NativeNodeWrapper {
                             tracing::debug!(node = %node_name, "Native plugin input closed, flushing buffers");
 
                             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                            self.send_to_worker("flush", &node_name, Some(&context.state_tx), &self.state.labels_flush, &worker.tx, WorkerRequest::Flush { reply: reply_tx }).await?;
-                            let reply = self.await_reply("flush", &node_name, reply_rx, Some(&context.state_tx), &self.state.labels_flush).await?;
+                            self.send_to_worker(WorkerCallContext { op: "flush", node: &node_name, state_tx: Some(&context.state_tx), telemetry: Some(&telemetry), metric_labels: &self.state.labels_flush }, &worker.tx, WorkerRequest::Flush { reply: reply_tx }).await?;
+                            let reply = self.await_reply("flush", &node_name, reply_rx, Some(&context.state_tx), Some(&telemetry), &self.state.labels_flush).await?;
 
                             // Send flush outputs
                             for (pin, pkt) in reply.outputs {
@@ -1345,9 +1377,9 @@ impl NativeNodeWrapper {
                         };
 
                         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                        self.send_to_worker("process_packet", &node_name, Some(&context.state_tx), &self.state.labels_process, &worker.tx, WorkerRequest::Process { pin_index, packet, reply: reply_tx }).await?;
+                        self.send_to_worker(WorkerCallContext { op: "process_packet", node: &node_name, state_tx: Some(&context.state_tx), telemetry: Some(&telemetry), metric_labels: &self.state.labels_process }, &worker.tx, WorkerRequest::Process { pin_index, packet, reply: reply_tx }).await?;
                         let reply = self
-                            .await_reply("process_packet", &node_name, reply_rx, Some(&context.state_tx), &self.state.labels_process)
+                            .await_reply("process_packet", &node_name, reply_rx, Some(&context.state_tx), Some(&telemetry), &self.state.labels_process)
                             .await?;
                         let (outputs, error) = (reply.outputs, reply.error);
 
@@ -1413,6 +1445,11 @@ impl NativeNodeWrapper {
     #[allow(clippy::too_many_lines)]
     async fn run_source(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
         let node_name = context.output_sender.node_name().to_string();
+        let telemetry = TelemetryEmitter::new(
+            node_name.clone(),
+            context.session_id.clone(),
+            context.telemetry_tx.clone(),
+        );
 
         tracing::info!(node = %node_name, "Native source plugin wrapper starting");
 
@@ -1525,6 +1562,8 @@ impl NativeNodeWrapper {
                                 &node_name,
                                 &params_value,
                                 &worker.tx,
+                                &context.state_tx,
+                                Some(&telemetry),
                             )
                             .await?;
                         }
@@ -1561,20 +1600,20 @@ impl NativeNodeWrapper {
             let ti = std::time::Duration::from_micros(self.metadata.tick_interval_us.max(1));
             (ti, self.metadata.max_ticks)
         };
-        // TODO: get_source_config is synchronous (no timeout, no catch_unwind) —
-        // same concern as runtime_param_schema.  Needs async refactor for full coverage.
-        let (tick_interval, max_ticks) = self
-            .state
-            .api()
-            .get_source_config
-            .and_then(|get_source_config_fn| {
-                self.state.begin_call().map(|guard| {
-                    let cfg = get_source_config_fn(guard.handle());
-                    let ti = std::time::Duration::from_micros(cfg.tick_interval_us.max(1));
-                    (ti, cfg.max_ticks)
+        let (tick_interval, max_ticks) = ffi_guard_with(
+            "get_source_config panicked",
+            |_| None,
+            || {
+                self.state.api().get_source_config.and_then(|get_source_config_fn| {
+                    self.state.begin_call().map(|guard| {
+                        let cfg = get_source_config_fn(guard.handle());
+                        let ti = std::time::Duration::from_micros(cfg.tick_interval_us.max(1));
+                        (ti, cfg.max_ticks)
+                    })
                 })
-            })
-            .unwrap_or_else(fallback);
+            },
+        )
+        .unwrap_or_else(fallback);
         let mut tick_count: u64 = 0;
 
         let mut interval = tokio::time::interval(tick_interval);
@@ -1618,7 +1657,14 @@ impl NativeNodeWrapper {
                         return Ok(());
                     },
                     NodeControlMessage::UpdateParams(params_value) => {
-                        self.apply_params_update(&node_name, &params_value, worker_tx).await?;
+                        self.apply_params_update(
+                            &node_name,
+                            &params_value,
+                            worker_tx,
+                            &context.state_tx,
+                            Some(&telemetry),
+                        )
+                        .await?;
                     },
                     NodeControlMessage::Start => {
                         // Already started — ignore duplicate.
@@ -1688,10 +1734,13 @@ impl NativeNodeWrapper {
             // ── Tick ────────────────────────────────────────────────────
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             self.send_to_worker(
-                "tick",
-                &node_name,
-                Some(&context.state_tx),
-                &self.state.labels_tick,
+                WorkerCallContext {
+                    op: "tick",
+                    node: &node_name,
+                    state_tx: Some(&context.state_tx),
+                    telemetry: Some(&telemetry),
+                    metric_labels: &self.state.labels_tick,
+                },
                 worker_tx,
                 WorkerRequest::Tick { reply: reply_tx },
             )
@@ -1702,6 +1751,7 @@ impl NativeNodeWrapper {
                     &node_name,
                     reply_rx,
                     Some(&context.state_tx),
+                    Some(&telemetry),
                     &self.state.labels_tick,
                 )
                 .await?;
@@ -1785,6 +1835,8 @@ impl NativeNodeWrapper {
         node_name: &str,
         params_value: &serde_json::Value,
         worker_tx: &tokio::sync::mpsc::Sender<WorkerRequest>,
+        state_tx: &tokio::sync::mpsc::Sender<NodeStateUpdate>,
+        telemetry: Option<&TelemetryEmitter>,
     ) -> Result<(), StreamKitError> {
         let params_json = match serde_json::to_string(params_value) {
             Ok(json) => json,
@@ -1803,10 +1855,13 @@ impl NativeNodeWrapper {
 
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.send_to_worker(
-            "update_params",
-            node_name,
-            None,
-            &self.state.labels_update_params,
+            WorkerCallContext {
+                op: "update_params",
+                node: node_name,
+                state_tx: Some(state_tx),
+                telemetry,
+                metric_labels: &self.state.labels_update_params,
+            },
             worker_tx,
             WorkerRequest::UpdateParams { params_cstr, reply: reply_tx },
         )
@@ -1817,7 +1872,8 @@ impl NativeNodeWrapper {
                 "update_params",
                 node_name,
                 reply_rx,
-                None,
+                Some(state_tx),
+                telemetry,
                 &self.state.labels_update_params,
             )
             .await?;
@@ -2018,6 +2074,15 @@ extern "C" fn telemetry_callback_shim(
             }
         };
 
+        let fallback_timestamp_us = || {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .and_then(|d| u64::try_from(d.as_micros()).ok())
+                .unwrap_or(0)
+        };
+
         let timestamp_us = if metadata.is_null() {
             None
         } else {
@@ -2028,14 +2093,7 @@ extern "C" fn telemetry_callback_shim(
                 None
             }
         }
-        .unwrap_or_else(|| {
-            use std::time::{SystemTime, UNIX_EPOCH};
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .ok()
-                .and_then(|d| u64::try_from(d.as_micros()).ok())
-                .unwrap_or(0)
-        });
+        .unwrap_or_else(fallback_timestamp_us);
 
         let mut event_data = match data_value {
             serde_json::Value::Object(map) => serde_json::Value::Object(map),
@@ -2043,7 +2101,7 @@ extern "C" fn telemetry_callback_shim(
         };
 
         if let Some(obj) = event_data.as_object_mut() {
-            obj.insert("event_type".to_string(), serde_json::Value::String(event_type_str));
+            obj.insert("event_type".to_string(), serde_json::Value::String(event_type_str.clone()));
         }
 
         let event = TelemetryEvent::new(
@@ -2053,8 +2111,13 @@ extern "C" fn telemetry_callback_shim(
             timestamp_us,
         );
 
-        if tx.try_send(event).is_err() {
-            // Drop silently: best-effort.
+        if let Err(err) = tx.try_send(event) {
+            warn!(
+                node = %ctx.node_id,
+                event_type = %event_type_str,
+                reason = %err,
+                "Dropping plugin telemetry event"
+            );
         }
 
         CResult::success()
@@ -2576,10 +2639,13 @@ mod ffi_guard_tests {
         let (second_reply, _second_rx) = tokio::sync::oneshot::channel();
         let result = wrapper
             .send_to_worker(
-                "flush",
-                "node-a",
-                Some(&state_tx),
-                &wrapper.state.labels_flush,
+                WorkerCallContext {
+                    op: "flush",
+                    node: "node-a",
+                    state_tx: Some(&state_tx),
+                    telemetry: None,
+                    metric_labels: &wrapper.state.labels_flush,
+                },
                 &tx,
                 WorkerRequest::Flush { reply: second_reply },
             )
@@ -2591,6 +2657,29 @@ mod ffi_guard_tests {
         assert!(matches!(update.state, NodeState::Failed { .. }));
 
         drop(rx.recv().await);
+    }
+
+    #[tokio::test]
+    async fn await_reply_timeout_emits_failed_state() {
+        let wrapper = test_wrapper_with_timeout(Some(std::time::Duration::from_millis(10)));
+        let (_reply_tx, reply_rx) = tokio::sync::oneshot::channel::<()>();
+        let (state_tx, mut state_rx) = tokio::sync::mpsc::channel::<NodeStateUpdate>(1);
+
+        let result = wrapper
+            .await_reply(
+                "update_params",
+                "node-a",
+                reply_rx,
+                Some(&state_tx),
+                None,
+                &wrapper.state.labels_update_params,
+            )
+            .await;
+
+        assert!(result.is_err(), "reply should time out");
+        let update = state_rx.recv().await.expect("failed state should be emitted");
+        assert_eq!(update.node_id, "node-a");
+        assert!(matches!(update.state, NodeState::Failed { .. }));
     }
 
     #[tokio::test]
@@ -2611,10 +2700,13 @@ mod ffi_guard_tests {
         let task = tokio::spawn(async move {
             let result = wrapper_task
                 .send_to_worker(
-                    "flush",
-                    "node-a",
-                    None,
-                    &wrapper_task.state.labels_flush,
+                    WorkerCallContext {
+                        op: "flush",
+                        node: "node-a",
+                        state_tx: None,
+                        telemetry: None,
+                        metric_labels: &wrapper_task.state.labels_flush,
+                    },
                     &tx_task,
                     WorkerRequest::Flush { reply: second_reply },
                 )
@@ -2995,6 +3087,29 @@ mod ffi_guard_tests {
         fn exit(&self, _: &tracing::span::Id) {}
     }
 
+    struct CapturingTargetSubscriber {
+        expected_target: &'static str,
+        seen_target: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+        event_count: std::sync::Arc<AtomicUsize>,
+    }
+
+    impl tracing::Subscriber for CapturingTargetSubscriber {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            metadata.target() == self.expected_target
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            *self.seen_target.lock().unwrap() = Some(event.metadata().target().to_string());
+            self.event_count.fetch_add(1, Ordering::SeqCst);
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
     #[test]
     fn plugin_log_enabled_passes_target_to_subscriber() {
         use streamkit_plugin_sdk_native::types::CLogLevel;
@@ -3016,5 +3131,33 @@ mod ffi_guard_tests {
             kokoro.as_ptr(),
             std::ptr::null_mut(),
         ));
+    }
+
+    #[test]
+    fn plugin_log_callback_emits_event_with_plugin_target_metadata() {
+        use streamkit_plugin_sdk_native::types::CLogLevel;
+
+        let seen_target = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let event_count = std::sync::Arc::new(AtomicUsize::new(0));
+        let subscriber = CapturingTargetSubscriber {
+            expected_target: "whisper",
+            seen_target: std::sync::Arc::clone(&seen_target),
+            event_count: std::sync::Arc::clone(&event_count),
+        };
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let _guard = tracing::dispatcher::set_default(&dispatch);
+
+        let whisper = std::ffi::CString::new("whisper").unwrap();
+        let message = std::ffi::CString::new("hello from plugin").unwrap();
+
+        plugin_log_callback(
+            CLogLevel::Info,
+            whisper.as_ptr(),
+            message.as_ptr(),
+            std::ptr::null_mut(),
+        );
+
+        assert_eq!(event_count.load(Ordering::SeqCst), 1);
+        assert_eq!(*seen_target.lock().unwrap(), Some("whisper".to_string()));
     }
 }

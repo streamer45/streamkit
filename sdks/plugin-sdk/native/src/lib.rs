@@ -81,7 +81,7 @@ pub use types::*;
 /// Re-export commonly used types
 pub mod prelude {
     pub use crate::logger::Logger;
-    pub use crate::resource_cache::{CacheError, ResourceCache, ResourceSupport};
+    pub use crate::resource_cache::{CacheError, ResourceCache};
     pub use crate::types::{CLogCallback, CLogLevel};
     pub use crate::{
         native_plugin_entry, native_source_plugin_entry, plugin_debug, plugin_error, plugin_info,
@@ -347,15 +347,15 @@ impl OutputSender {
         let cb = self.cb();
         let alloc_fn = cb.alloc_video?;
         let res = alloc_fn(min_bytes, cb.alloc_user_data);
-        if res.data.is_null() || res.free_fn.is_none() {
+        let free_fn = res.free_fn?;
+        if res.data.is_null() {
             return None;
         }
         Some(PooledVideoBuffer {
             data: res.data,
             len: res.len,
             handle: res.handle,
-            // SAFETY: free_fn is guaranteed to be Some by the check above.
-            free_fn: unsafe { res.free_fn.unwrap_unchecked() },
+            free_fn,
             consumed: false,
         })
     }
@@ -372,15 +372,15 @@ impl OutputSender {
         let cb = self.cb();
         let alloc_fn = cb.alloc_audio?;
         let res = alloc_fn(min_samples, cb.alloc_user_data);
-        if res.data.is_null() || res.free_fn.is_none() {
+        let free_fn = res.free_fn?;
+        if res.data.is_null() {
             return None;
         }
         Some(PooledAudioBuffer {
             data: res.data,
             sample_count: res.sample_count,
             handle: res.handle,
-            // SAFETY: free_fn is guaranteed to be Some by the check above.
-            free_fn: unsafe { res.free_fn.unwrap_unchecked() },
+            free_fn,
             consumed: false,
         })
     }
@@ -493,11 +493,6 @@ impl OutputSender {
         data: &serde_json::Value,
         timestamp_us: Option<u64>,
     ) -> Result<(), String> {
-        let end = std::mem::offset_of!(types::CNodeCallbacks, telemetry_callback)
-            + std::mem::size_of::<types::CTelemetryCallback>();
-        if !self.callback_available(end) {
-            return Ok(());
-        }
         let cb = self.cb();
         let Some(telemetry_cb) = cb.telemetry_callback else {
             return Ok(());

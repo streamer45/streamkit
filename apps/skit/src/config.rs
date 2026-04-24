@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: © 2025 StreamKit Contributors
 //
 // SPDX-License-Identifier: MPL-2.0
-
 use figment::{
     providers::{Env, Format, Toml},
     Figment,
@@ -187,6 +186,10 @@ const fn default_max_body_size() -> usize {
     100 * 1024 * 1024
 }
 
+const fn default_native_call_timeout_value() -> u64 {
+    300
+}
+
 fn default_cors_allowed_origins() -> Vec<String> {
     vec![
         // Portless localhost (e.g., reverse proxy on 80/443)
@@ -354,6 +357,12 @@ impl Default for ServerConfig {
 #[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
 pub struct PluginConfig {
     pub directory: String,
+    /// Native plugin FFI call timeout in seconds (default: 300).
+    ///
+    /// Set to `null` to wait indefinitely for worker replies; the send-side
+    /// backpressure guard remains bounded by the default timeout.
+    #[serde(default = "PluginConfig::default_native_call_timeout_secs")]
+    pub native_call_timeout_secs: Option<u64>,
     #[serde(flatten, default)]
     pub http_management: PluginHttpConfig,
     #[serde(flatten, default)]
@@ -450,6 +459,7 @@ impl Default for PluginConfig {
     fn default() -> Self {
         Self {
             directory: ".plugins".to_string(),
+            native_call_timeout_secs: Some(default_native_call_timeout_value()),
             http_management: PluginHttpConfig::default(),
             marketplace: PluginMarketplaceConfig::default(),
             trusted_pubkeys: Vec::new(),
@@ -457,6 +467,15 @@ impl Default for PluginConfig {
             models_dir: None,
             huggingface_token: None,
         }
+    }
+}
+
+impl PluginConfig {
+    // Serde default hooks must return the exact field type; the wrapped value
+    // distinguishes missing config from explicit null.
+    #[allow(clippy::unnecessary_wraps)]
+    const fn default_native_call_timeout_secs() -> Option<u64> {
+        Some(default_native_call_timeout_value())
     }
 }
 
