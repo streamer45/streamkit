@@ -152,7 +152,13 @@ impl StreamKitMcp {
         let mode = match args.mode.as_deref() {
             Some("dynamic") => Some(crate::server::PipelineMode::Dynamic),
             Some("oneshot") => Some(crate::server::PipelineMode::Oneshot),
-            _ => None,
+            None => None,
+            Some(other) => {
+                return Err(McpError::invalid_params(
+                    format!("Invalid mode '{other}'. Must be 'dynamic' or 'oneshot'."),
+                    None,
+                ));
+            },
         };
 
         let response =
