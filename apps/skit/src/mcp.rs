@@ -682,11 +682,13 @@ fn generate_skit_cli_command(
     // positional arg but with a non-"media" field name).
     if !primary.is_empty() {
         for input in &extras {
-            let _ = write!(cmd, " --input {}={}", input.field, shell_quote(&input.path));
+            let _ =
+                write!(cmd, " --input {}", shell_quote(&format!("{}={}", input.field, input.path)));
         }
     } else {
         for input in inputs {
-            let _ = write!(cmd, " --input {}={}", input.field, shell_quote(&input.path));
+            let _ =
+                write!(cmd, " --input {}", shell_quote(&format!("{}={}", input.field, input.path)));
         }
     }
 
