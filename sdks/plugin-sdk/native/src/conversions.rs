@@ -415,6 +415,14 @@ impl CPacketRepr {
     /// C plugins on v9 must handle `BinaryWithMeta` even when those
     /// fields are null.
     ///
+    /// **Lifetime:** For the `Binary` upgrade path, `self.packet.data`
+    /// (inherited from the original `CPacketRepr`) is stored into the
+    /// new `CBinaryPacket`.  The caller must keep `self` (and thus the
+    /// original `CPacketOwned` backing storage) alive for the duration
+    /// of the FFI callback.  This is satisfied by `CPacketRepr`'s
+    /// normal ownership model — the repr lives on the stack across the
+    /// FFI call.
+    ///
     /// No-op for non-binary packet types.
     pub fn set_binary_buffer_handle(&mut self, source_bytes: &bytes::Bytes) {
         match self.packet.packet_type {
@@ -550,11 +558,16 @@ fn cstring_sanitize(s: &str) -> CString {
 ///
 /// # Safety
 ///
-/// `data_ptr` must point to a valid `CBinaryPacket` owned by the caller for
-/// the duration of this call.  Although `CPacket::data` is typed as `*const`
-/// for ABI compatibility, callers may only use this helper when that pointer
-/// actually refers to writable storage; passing a packet placed in read-only
-/// memory is undefined behavior.
+/// `data_ptr` must point to a valid, **heap-allocated** `CBinaryPacket`
+/// owned by the caller for the duration of this call.  Although
+/// `CPacket::data` is typed as `*const` for ABI compatibility, this helper
+/// writes through the pointer via `addr_of_mut!`; passing a packet whose
+/// `data` field points into read-only memory (e.g. `.rodata`) is undefined
+/// behavior.
+///
+/// In practice, the host always constructs `CBinaryPacket` via
+/// `Box::new(…)` in [`CPacketRepr`], so the writable-storage
+/// precondition is satisfied.
 unsafe fn null_binary_buffer_handle(data_ptr: *const c_void) {
     let bp = data_ptr.cast::<CBinaryPacket>().cast_mut();
     std::ptr::addr_of_mut!((*bp).buffer_handle).write(std::ptr::null_mut());
@@ -1002,7 +1015,10 @@ pub fn string_to_c(s: &str) -> *const c_char {
 /// # Ownership and lifetime
 ///
 /// The returned pointer is **borrowed** and **must not be freed** by the caller.
-/// It remains valid until the next `error_to_c()` call on the same OS thread.
+/// It remains valid until the next `error_to_c()` call **on the same OS
+/// thread**.  The host (or any nested FFI call back into the plugin) may
+/// call `error_to_c` again and invalidate the previous pointer — callers
+/// must copy the string into owned storage immediately after receiving it.
 ///
 /// This design:
 /// - Prevents host-side leaks when the host copies the message into an owned string.

@@ -26,11 +26,14 @@ pub struct Logger {
     target_cstr: Option<Arc<CString>>,
 }
 
-// SAFETY: The callbacks are C function pointers which are thread-safe,
-// and both `user_data` and `enabled_user_data` are managed by the host
-// which ensures thread-safety.  Note that `Clone` performs a shallow
-// copy of these pointers — the host must ensure that the pointed-to
-// data is safe to share across threads (or that the pointers are null).
+// SAFETY: `callback` and `enabled_callback` are plain C function
+// pointers (inherently Send+Sync).  The two raw-pointer fields —
+// `user_data` and `enabled_user_data` — are the sole reason this impl
+// is manual.  The host is responsible for ensuring the data they point
+// to is safe to share across threads; current hosts always pass null
+// for `enabled_user_data` and a thread-safe context for `user_data`.
+// `Clone` shallow-copies both pointers — the host contract applies
+// equally to the clone.
 unsafe impl Send for Logger {}
 unsafe impl Sync for Logger {}
 

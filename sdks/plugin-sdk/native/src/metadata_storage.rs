@@ -65,6 +65,17 @@ impl PluginMetadataStorage {
     /// Cannot panic in practice — the `unwrap()` calls on `last()` are
     /// reached only immediately after pushing an element to the same `Vec`.
     pub fn from_node_metadata(meta: &NodeMetadata) -> Self {
+        // Invariant: the raw pointers stored in `c_inputs`/`c_outputs`
+        // are captured via `.as_ptr()` on Vec elements immediately after
+        // pushing.  These pointers remain valid because:
+        //   1. Each Vec is only ever pushed to (never popped or cleared).
+        //   2. The Vecs are moved into the returned struct and never
+        //      reallocated after that.
+        //   3. The struct lives in a `OnceLock` and is never moved again.
+        // A future refactor that calls `.to_vec()`, sorts, or otherwise
+        // reallocates a Vec would invalidate these pointers — use this
+        // comment as a guard rail.
+        //
         // ── Convert inputs ──────────────────────────────────────────
         let mut c_inputs = Vec::new();
         let mut input_names = Vec::new();

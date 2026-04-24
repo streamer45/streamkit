@@ -2446,6 +2446,25 @@ mod ffi_guard_tests {
     }
 
     #[test]
+    fn call_guard_panic_then_destroy_invariant() {
+        let state = test_instance_state();
+        let state2 = Arc::clone(&state);
+        let _ = std::panic::catch_unwind(AssertUnwindSafe(move || {
+            let _guard = state2.begin_call().expect("begin_call should succeed");
+            panic!("mid-FFI panic");
+        }));
+        // After panic unwind, in_flight_calls must be 0.
+        assert_eq!(
+            state.in_flight_calls.load(Ordering::SeqCst),
+            0,
+            "in_flight_calls must be 0 after panic unwind drops CallGuard"
+        );
+        // request_drop + destroy must still work cleanly.
+        state.request_drop();
+        assert!(state.handle.load(Ordering::SeqCst).is_null(), "handle must be null after destroy");
+    }
+
+    #[test]
     fn finish_call_without_begin_does_not_panic() {
         let state = test_instance_state();
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
