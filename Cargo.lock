@@ -6118,6 +6118,7 @@ name = "streamkit-api"
 version = "0.2.0"
 dependencies = [
  "indexmap 2.14.0",
+ "schemars 1.2.1",
  "serde",
  "serde-saphyr",
  "serde_json",
