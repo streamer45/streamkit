@@ -14,6 +14,7 @@ env:
   RUST_BACKTRACE: 1
   RUSTC_WRAPPER: sccache
   SHERPA_ONNX_VERSION: "1.12.17"
+  ONNXRUNTIME_VERSION: "1.22.0"
 
 jobs:
   registry-check:
@@ -71,6 +72,31 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake pkg-config libclang-dev ${{ matrix.apt_extra }}
+
+      # --- ONNX Runtime (ort-dependent plugins: whisper, sensevoice, parakeet) ---
+      # Download from Microsoft's official GitHub releases instead of relying on
+      # the pyke.io CDN used by the ort-sys build script, which is intermittently
+      # unreliable (see https://github.com/pykeio/ort/issues/395).
+      - name: Cache ONNX Runtime
+        if: matrix.group == 'simple' || matrix.group == 'sherpa'
+        id: cache-ort
+        uses: actions/cache@v4
+        with:
+          path: /tmp/onnxruntime
+          key: onnxruntime-${{ env.ONNXRUNTIME_VERSION }}-linux-x64
+
+      - name: Download ONNX Runtime
+        if: (matrix.group == 'simple' || matrix.group == 'sherpa') && steps.cache-ort.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p /tmp/onnxruntime
+          curl -sSL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz" \
+            | tar xz -C /tmp/onnxruntime --strip-components=1
+
+      - name: Configure ONNX Runtime paths
+        if: matrix.group == 'simple' || matrix.group == 'sherpa'
+        run: |
+          echo "ORT_LIB_LOCATION=/tmp/onnxruntime" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=/tmp/onnxruntime/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
 
       # --- sherpa-onnx (sherpa group only) ---
       - name: Cache sherpa-onnx
