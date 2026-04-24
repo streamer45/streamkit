@@ -4004,6 +4004,286 @@ pub fn check_file_path_security(
     }
 }
 
+/// Validate a batch of operations against a session's pipeline without applying.
+///
+/// Returns a list of validation errors.  An empty list means all operations
+/// are valid.  Callers must perform session-level permission and ownership
+/// checks before calling this function.
+pub async fn validate_batch_operations(
+    session: &crate::session::Session,
+    operations: &[streamkit_api::BatchOperation],
+    perms: &crate::permissions::Permissions,
+    security_config: &crate::config::SecurityConfig,
+) -> Vec<streamkit_api::ValidationError> {
+    let mut errors: Vec<streamkit_api::ValidationError> = Vec::new();
+
+    // Pre-validate duplicate node_ids against the pipeline model, simulating
+    // the Add/Remove sequence so that Remove→Add for the same ID within the
+    // batch is allowed, but duplicate Adds are rejected.
+    let mut live_ids: std::collections::HashSet<String> =
+        session.pipeline.lock().await.nodes.keys().cloned().collect();
+    for op in operations {
+        match op {
+            streamkit_api::BatchOperation::AddNode { node_id, .. } => {
+                if !live_ids.insert(node_id.clone()) {
+                    errors.push(streamkit_api::ValidationError {
+                        error_type: streamkit_api::ValidationErrorType::Error,
+                        message: format!(
+                            "Batch rejected: node '{node_id}' already exists in the pipeline"
+                        ),
+                        node_id: Some(node_id.clone()),
+                        connection_id: None,
+                    });
+                }
+            },
+            streamkit_api::BatchOperation::RemoveNode { node_id } => {
+                live_ids.remove(node_id.as_str());
+            },
+            _ => {},
+        }
+    }
+
+    // Validate all AddNode operations against permission and security rules.
+    for op in operations {
+        if let streamkit_api::BatchOperation::AddNode { node_id, kind, params, .. } = op {
+            if let Some(message) = crate::websocket_handlers::validate_add_node_op(
+                kind,
+                params.as_ref(),
+                perms,
+                security_config,
+            ) {
+                errors.push(streamkit_api::ValidationError {
+                    error_type: streamkit_api::ValidationErrorType::Error,
+                    message,
+                    node_id: Some(node_id.clone()),
+                    connection_id: None,
+                });
+            }
+        }
+    }
+
+    errors
+}
+
+/// Apply a batch of graph mutations atomically to a running session.
+///
+/// Returns `Ok(())` on success, or `Err(message)` if pre-validation fails
+/// (e.g. duplicate node IDs or forbidden node kinds).  Callers must perform
+/// session-level permission and ownership checks before calling this function.
+///
+/// # Errors
+///
+/// Returns an error string when a batch operation fails pre-validation
+/// (duplicate node IDs or forbidden node kinds).
+pub async fn apply_batch_operations(
+    session: &crate::session::Session,
+    operations: Vec<streamkit_api::BatchOperation>,
+    perms: &crate::permissions::Permissions,
+    security_config: &crate::config::SecurityConfig,
+) -> Result<(), String> {
+    // Pre-validate duplicate node_ids.
+    {
+        let mut live_ids: std::collections::HashSet<String> =
+            session.pipeline.lock().await.nodes.keys().cloned().collect();
+        for op in &operations {
+            match op {
+                streamkit_api::BatchOperation::AddNode { node_id, .. } => {
+                    if !live_ids.insert(node_id.clone()) {
+                        return Err(format!(
+                            "Batch rejected: node '{node_id}' already exists in the pipeline"
+                        ));
+                    }
+                },
+                streamkit_api::BatchOperation::RemoveNode { node_id } => {
+                    live_ids.remove(node_id.as_str());
+                },
+                _ => {},
+            }
+        }
+    }
+
+    // Validate permissions for all AddNode operations.
+    for op in &operations {
+        if let streamkit_api::BatchOperation::AddNode { kind, params, .. } = op {
+            if let Some(message) = crate::websocket_handlers::validate_add_node_op(
+                kind,
+                params.as_ref(),
+                perms,
+                security_config,
+            ) {
+                return Err(message);
+            }
+        }
+    }
+
+    // Apply all operations in order.
+    let mut engine_operations = Vec::new();
+    {
+        let mut pipeline = session.pipeline.lock().await;
+        for op in operations {
+            match op {
+                streamkit_api::BatchOperation::AddNode { node_id, kind, params } => {
+                    pipeline.nodes.insert(
+                        node_id.clone(),
+                        streamkit_api::Node {
+                            kind: kind.clone(),
+                            params: params.clone(),
+                            state: None,
+                        },
+                    );
+                    engine_operations.push(
+                        streamkit_core::control::EngineControlMessage::AddNode {
+                            node_id,
+                            kind,
+                            params,
+                        },
+                    );
+                },
+                streamkit_api::BatchOperation::RemoveNode { node_id } => {
+                    pipeline.nodes.shift_remove(&node_id);
+                    pipeline
+                        .connections
+                        .retain(|conn| conn.from_node != node_id && conn.to_node != node_id);
+                    engine_operations.push(
+                        streamkit_core::control::EngineControlMessage::RemoveNode { node_id },
+                    );
+                },
+                streamkit_api::BatchOperation::Connect {
+                    from_node,
+                    from_pin,
+                    to_node,
+                    to_pin,
+                    mode,
+                } => {
+                    pipeline.connections.push(streamkit_api::Connection {
+                        from_node: from_node.clone(),
+                        from_pin: from_pin.clone(),
+                        to_node: to_node.clone(),
+                        to_pin: to_pin.clone(),
+                        mode,
+                    });
+                    let core_mode = match mode {
+                        streamkit_api::ConnectionMode::Reliable => {
+                            streamkit_core::control::ConnectionMode::Reliable
+                        },
+                        streamkit_api::ConnectionMode::BestEffort => {
+                            streamkit_core::control::ConnectionMode::BestEffort
+                        },
+                    };
+                    engine_operations.push(
+                        streamkit_core::control::EngineControlMessage::Connect {
+                            from_node,
+                            from_pin,
+                            to_node,
+                            to_pin,
+                            mode: core_mode,
+                        },
+                    );
+                },
+                streamkit_api::BatchOperation::Disconnect {
+                    from_node,
+                    from_pin,
+                    to_node,
+                    to_pin,
+                } => {
+                    pipeline.connections.retain(|conn| {
+                        !(conn.from_node == from_node
+                            && conn.from_pin == from_pin
+                            && conn.to_node == to_node
+                            && conn.to_pin == to_pin)
+                    });
+                    engine_operations.push(
+                        streamkit_core::control::EngineControlMessage::Disconnect {
+                            from_node,
+                            from_pin,
+                            to_node,
+                            to_pin,
+                        },
+                    );
+                },
+            }
+        }
+        drop(pipeline);
+    }
+
+    // Send control messages to the engine.
+    for msg in engine_operations {
+        session.send_control_message(msg).await;
+    }
+
+    Ok(())
+}
+
+/// Send a control message to a specific node in a running session.
+///
+/// For `UpdateParams` messages, this function also validates file-path
+/// security, updates the durable pipeline model, and broadcasts a
+/// `NodeParamsChanged` event.  Callers must perform session-level
+/// permission and ownership checks before calling this function.
+///
+/// # Errors
+///
+/// Returns an error string when the security policy rejects the
+/// `UpdateParams` payload.
+pub async fn tune_session_node(
+    session: &crate::session::Session,
+    node_id: String,
+    message: streamkit_core::control::NodeControlMessage,
+    security_config: &crate::config::SecurityConfig,
+    event_tx: &tokio::sync::broadcast::Sender<crate::state::BroadcastEvent>,
+) -> Result<(), String> {
+    use streamkit_core::control::NodeControlMessage;
+
+    if let NodeControlMessage::UpdateParams(ref params) = message {
+        let kind = {
+            let pipeline = session.pipeline.lock().await;
+            pipeline.nodes.get(&node_id).map(|n| n.kind.clone())
+        };
+
+        if !crate::websocket_handlers::validate_update_params_security(
+            kind.as_deref(),
+            params,
+            security_config,
+        ) {
+            return Err("Security policy rejected the UpdateParams payload".to_string());
+        }
+
+        {
+            let mut durable_params = params.clone();
+            if let serde_json::Value::Object(ref mut map) = durable_params {
+                map.retain(|k, _| !k.starts_with('_'));
+            }
+            let mut pipeline = session.pipeline.lock().await;
+            if let Some(node) = pipeline.nodes.get_mut(&node_id) {
+                node.params = Some(match node.params.take() {
+                    Some(existing) => {
+                        crate::websocket_handlers::deep_merge_json(existing, durable_params)
+                    },
+                    None => durable_params,
+                });
+            }
+        }
+
+        let event = streamkit_api::Event {
+            message_type: streamkit_api::MessageType::Event,
+            correlation_id: None,
+            payload: streamkit_api::EventPayload::NodeParamsChanged {
+                session_id: session.id.clone(),
+                node_id: node_id.clone(),
+                params: params.clone(),
+            },
+        };
+        if let Err(e) = event_tx.send(crate::state::BroadcastEvent::to_all(event)) {
+            tracing::error!("Failed to broadcast NodeParamsChanged event: {}", e);
+        }
+    }
+
+    let control_msg = streamkit_core::control::EngineControlMessage::TuneNode { node_id, message };
+    session.send_control_message(control_msg).await;
+
+    Ok(())
+}
+
 /// Creates the Axum application with all routes and middleware.
 ///
 /// # Arguments

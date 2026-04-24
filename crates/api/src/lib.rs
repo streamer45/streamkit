@@ -234,7 +234,7 @@ pub enum RequestPayload {
     GetPermissions,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, TS)]
+#[derive(Serialize, Deserialize, Debug, Clone, TS, schemars::JsonSchema)]
 #[ts(export)]
 #[serde(tag = "action")]
 #[serde(rename_all = "lowercase")]

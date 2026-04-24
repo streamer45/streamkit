@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 /// A message sent to a specific, running node to tune its parameters or control its lifecycle.
-#[derive(Debug, Deserialize, Serialize, TS)]
+#[derive(Debug, Deserialize, Serialize, TS, schemars::JsonSchema)]
 #[ts(export)]
 pub enum NodeControlMessage {
     UpdateParams(#[ts(type = "JsonValue")] serde_json::Value),
@@ -28,7 +28,9 @@ pub enum NodeControlMessage {
 }
 
 /// Specifies how a connection handles backpressure from slow consumers.
-#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default, TS)]
+#[derive(
+    Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default, TS, schemars::JsonSchema,
+)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionMode {
