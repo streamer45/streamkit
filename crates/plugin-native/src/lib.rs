@@ -339,16 +339,13 @@ impl LoadedNativePlugin {
     /// tick).  This controls how long the async side waits for the worker
     /// thread's oneshot reply.
     ///
-    /// Pass `None` to wait indefinitely for the FFI call to complete. The
-    /// channel-send timeout (backpressure guard) remains bounded by the
-    /// default timeout.
+    /// Pass `None` to fall back to the default backstop timeout
+    /// ([`DEFAULT_CALL_TIMEOUT`](crate::wrapper::DEFAULT_CALL_TIMEOUT),
+    /// 300 s) instead of a caller-chosen duration.  The reply side is
+    /// **never** truly unbounded — the backstop always applies.
     ///
-    /// # Warning
-    ///
-    /// Setting `None` (infinite wait) can wedge the host's async executor
-    /// (the main tokio runtime pool) if a plugin worker hangs or deadlocks.
-    /// Prefer a finite timeout in production and use `None` only for
-    /// debugging or known-slow operations (e.g. large-model ML inference).
+    /// The channel-send timeout (backpressure guard) also uses
+    /// `DEFAULT_CALL_TIMEOUT` when this is `None`.
     pub const fn set_call_timeout(&mut self, timeout: Option<std::time::Duration>) {
         self.call_timeout = timeout;
     }
