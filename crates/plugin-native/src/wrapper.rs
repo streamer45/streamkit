@@ -152,8 +152,19 @@ fn ffi_guard_unit(f: impl FnOnce()) {
 }
 
 /// Default timeout for plugin FFI calls (process_packet, flush, tick).
+///
 /// 5 minutes — generous to support slow plugins (e.g. ML inference).
+/// Overridden per-instance when `native_call_timeout_secs` is set in
+/// the skit config.  Also used as the backstop when the reply-side
+/// timeout is configured as `None` (see [`InstanceWorker::await_reply`]).
 pub(crate) const DEFAULT_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Capacity of the per-instance worker request channel.
+///
+/// A depth of 1 provides natural back-pressure: callers block on
+/// `send_to_worker` until the worker drains the previous request,
+/// which is the desired serialisation of FFI calls.
+const WORKER_CHANNEL_CAPACITY: usize = 1;
 
 /// Wrapper preserving pointer provenance for the plugin's API vtable.
 ///
@@ -813,6 +824,13 @@ static PLUGIN_LOG_METADATA_CACHE: std::sync::LazyLock<
     >,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
+/// Build the shared field set for plugin log events.
+///
+/// Called in both the early-out filter probe and the cached metadata
+/// path; the two calls must produce value-equal `FieldSet`s (same
+/// field names, same callsite identifier) so that `tracing`'s field
+/// lookup is consistent.  This is guaranteed as long as the inputs
+/// (`PLUGIN_LOG_FIELD_NAMES` and `PLUGIN_LOG_CALLSITE`) are unchanged.
 fn plugin_log_field_set() -> tracing::field::FieldSet {
     tracing::field::FieldSet::new(
         PLUGIN_LOG_FIELD_NAMES,
@@ -1095,7 +1113,7 @@ impl NativeNodeWrapper {
         video_pool: Option<Arc<VideoFramePool>>,
         audio_pool: Option<Arc<AudioFramePool>>,
     ) -> Result<InstanceWorker, StreamKitError> {
-        let (tx, rx) = tokio::sync::mpsc::channel::<WorkerRequest>(1);
+        let (tx, rx) = tokio::sync::mpsc::channel::<WorkerRequest>(WORKER_CHANNEL_CAPACITY);
         // Linux caps prctl(PR_SET_NAME) at 15 bytes; the OS silently
         // truncates longer names.  We just format and let the OS handle it.
         let thread_name = format!("skp-{node_id}");

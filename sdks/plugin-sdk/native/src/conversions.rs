@@ -565,15 +565,13 @@ unsafe fn null_binary_buffer_handle(data_ptr: *const c_void) {
 /// Used as the `free_fn` field value — called if the plugin discards the
 /// packet without reclaiming the buffer (e.g. on error paths).
 extern "C" fn free_binary_buffer_handle(handle: *mut c_void) {
-    // Guard against panics across the FFI boundary (Bytes::drop should
-    // never panic, but every other extern "C" at this boundary is wrapped).
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    crate::ffi_guard::guard_unit("free_binary_buffer_handle", || {
         if !handle.is_null() {
             // SAFETY: handle was created by `Box::into_raw(Box::new(bytes))` in
             // `set_binary_buffer_handle` and has not been reclaimed yet.
             drop(unsafe { Box::from_raw(handle.cast::<bytes::Bytes>()) });
         }
-    }));
+    });
 }
 
 /// Convert Rust Packet to C representation.
