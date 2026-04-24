@@ -599,7 +599,10 @@ static SYNTHETIC_KINDS: std::sync::LazyLock<Vec<String>> =
     std::sync::LazyLock::new(|| synthetic_node_definitions().into_iter().map(|d| d.kind).collect());
 
 /// Returns `true` for node kinds that are synthetic oneshot-only markers.
-fn is_synthetic_kind(kind: &str) -> bool {
+///
+/// Used by both the HTTP and MCP `create_session` paths to reject
+/// oneshot-only nodes in dynamic pipelines.
+pub fn is_synthetic_kind(kind: &str) -> bool {
     SYNTHETIC_KINDS.iter().any(|k| k == kind)
 }
 
@@ -2564,7 +2567,7 @@ async fn create_session_handler(
     }
 
     for (node_id, node) in &engine_pipeline.nodes {
-        if node.kind == "streamkit::http_input" || node.kind == "streamkit::http_output" {
+        if is_synthetic_kind(&node.kind) {
             return Err((
                 StatusCode::BAD_REQUEST,
                 format!(
@@ -3896,6 +3899,7 @@ pub fn validate_pipeline_yaml(
     let user_pipeline = match streamkit_api::yaml::parse_yaml(yaml) {
         Ok(p) => p,
         Err(e) => {
+            debug!(error = %e, "Pipeline YAML parse error");
             errors.push(ValidateDiagnostic {
                 kind: DiagnosticKind::Parse,
                 message: e,
@@ -3909,6 +3913,7 @@ pub fn validate_pipeline_yaml(
     let pipeline = match compile(user_pipeline) {
         Ok(p) => p,
         Err(e) => {
+            debug!(error = %e, "Pipeline compilation error");
             errors.push(ValidateDiagnostic {
                 kind: DiagnosticKind::Parse,
                 message: e,
@@ -3976,16 +3981,21 @@ pub fn check_file_path_security(
     pipeline: &Pipeline,
     security_config: &crate::config::SecurityConfig,
 ) -> Result<(), String> {
+    let mut msgs = Vec::new();
     for result in [
         validate_file_reader_paths(pipeline, security_config),
         validate_file_writer_paths(pipeline, security_config),
         validate_script_paths(pipeline, security_config),
     ] {
         if let Err(e) = result {
-            return Err(app_error_message(e));
+            msgs.push(app_error_message(e));
         }
     }
-    Ok(())
+    if msgs.is_empty() {
+        Ok(())
+    } else {
+        Err(msgs.join("; "))
+    }
 }
 
 /// Build synthetic `NodeDefinition`s for oneshot-only virtual nodes.
@@ -4304,16 +4314,10 @@ pub fn create_app(
     //
     // SECURITY: The endpoint MUST live under /api/ so that auth_guard_middleware,
     // origin_guard_middleware, CORS, tracing, and metrics all apply automatically.
-    // We enforce this at startup to prevent misconfiguration.
+    // Endpoint validation is enforced at config-load time (McpConfig::validate).
     #[cfg(feature = "mcp")]
     {
         if app_state.config.mcp.enabled {
-            assert!(
-                app_state.config.mcp.endpoint.starts_with("/api/"),
-                "mcp.endpoint must start with /api/ to ensure auth and origin guards apply. \
-                 Got: '{}'",
-                app_state.config.mcp.endpoint
-            );
             info!(
                 endpoint = %app_state.config.mcp.endpoint,
                 "MCP endpoint enabled"
@@ -4323,6 +4327,15 @@ pub fn create_app(
                 crate::mcp::streamable_http_service(Arc::clone(&app_state)),
             );
         }
+    }
+
+    // Warn if mcp.enabled is set but the binary was compiled without the mcp feature.
+    #[cfg(not(feature = "mcp"))]
+    if app_state.config.mcp.enabled {
+        warn!(
+            "mcp.enabled is true but the binary was compiled without the 'mcp' feature. \
+             The MCP endpoint will not be available. Rebuild with --features mcp."
+        );
     }
 
     // Add MSE streaming route.

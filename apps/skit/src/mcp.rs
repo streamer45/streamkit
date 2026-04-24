@@ -200,12 +200,10 @@ impl StreamKitMcp {
         }
 
         // Per-node permission and security checks.
-        // Dynamic-mode rules are intentionally hard-coded here rather than
-        // going through `check_mode`, which operates on a ValidateDiagnostic
-        // list.  create_session must reject forbidden nodes with an immediate
-        // error, not a deferred diagnostic.
+        // create_session must reject forbidden nodes with an immediate error,
+        // not the deferred diagnostic that check_mode produces.
         for (node_id, node) in &engine_pipeline.nodes {
-            if node.kind == "streamkit::http_input" || node.kind == "streamkit::http_output" {
+            if crate::server::is_synthetic_kind(&node.kind) {
                 return Err(McpError::invalid_params(
                     format!(
                         "Node '{node_id}' kind '{}' is oneshot-only and cannot be used in dynamic sessions",
@@ -258,6 +256,7 @@ impl StreamKitMcp {
             }
         };
         if let Err(msg) = insert_result {
+            warn!(error = %msg, "MCP create_session failed during insert");
             let _ = session.shutdown_and_wait().await;
             return Err(McpError::internal_error(msg, None));
         }
@@ -499,12 +498,14 @@ impl StreamKitMcp {
 impl ServerHandler for StreamKitMcp {
     fn get_info(&self) -> ServerInfo {
         let capabilities = ServerCapabilities::builder().enable_tools().build();
-        ServerInfo::new(capabilities).with_instructions(
+        let mut info = ServerInfo::new(capabilities).with_instructions(
             "StreamKit MCP server. Use list_nodes to discover available \
              processing nodes, validate_pipeline to check YAML, and \
              create_session / list_sessions / get_pipeline / destroy_session \
              to manage dynamic pipeline sessions.",
-        )
+        );
+        info.server_info = rmcp::model::Implementation::new("streamkit", env!("CARGO_PKG_VERSION"));
+        info
     }
 
     fn list_tools(
@@ -544,14 +545,34 @@ impl ServerHandler for StreamKitMcp {
 /// | `json_response`    | false                                |
 /// | `allowed_hosts`    | localhost, 127.0.0.1, ::1            |
 ///
-/// We disable `allowed_hosts` because the endpoint sits behind Axum's
-/// `auth_guard_middleware` and `origin_guard_middleware`, which already
-/// enforce authentication and origin checks.  Leaving the default
-/// loopback-only list would reject requests arriving via a reverse proxy.
+/// ## `SessionConfig` defaults (rmcp 1.5)
+///
+/// | Field                  | Default  |
+/// |------------------------|----------|
+/// | `channel_capacity`     | 16       |
+/// | `keep_alive`           | 5 min    |
+/// | `sse_retry`            | 3 s      |
+/// | `completed_cache_ttl`  | 60 s     |
+///
+/// The 5-minute `keep_alive` TTL automatically evicts idle MCP sessions,
+/// preventing unbounded growth from dropped connections.  All sessions
+/// require authentication, which further bounds creation rate.
+///
+/// `allowed_hosts` is configured from `mcp.allowed_hosts` in the config.
+/// When the list is empty (default), `allowed_hosts` is disabled — acceptable
+/// when the endpoint sits behind Axum's `auth_guard_middleware` and
+/// `origin_guard_middleware`.  For deployments exposed to untrusted
+/// networks, populate `mcp.allowed_hosts` to re-enable DNS rebinding
+/// protection on the `Host` header.
 pub fn streamable_http_service(
     app_state: Arc<AppState>,
 ) -> StreamableHttpService<StreamKitMcp, LocalSessionManager> {
-    let config = StreamableHttpServerConfig::default().disable_allowed_hosts();
+    let mut config = StreamableHttpServerConfig::default();
+    if app_state.config.mcp.allowed_hosts.is_empty() {
+        config = config.disable_allowed_hosts();
+    } else {
+        config = config.with_allowed_hosts(app_state.config.mcp.allowed_hosts.clone());
+    }
     StreamableHttpService::new(
         move || Ok(StreamKitMcp::new(Arc::clone(&app_state))),
         Arc::new(LocalSessionManager::default()),

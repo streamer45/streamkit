@@ -139,11 +139,11 @@ async-stream = "0.3.6"
 
 # MCP (Model Context Protocol) server (optional)
 rmcp = { version = "1.5", features = [
-  "server",
-  "transport-streamable-http-server",
-  "transport-streamable-http-server-session",
-  "macros",
-  "schemars",
+  "server",                                     # ServerHandler trait + service runner
+  "transport-streamable-http-server",            # Streamable HTTP transport (tower service)
+  "transport-streamable-http-server-session",    # Stateful session management (LocalSessionManager)
+  "macros",                                      # #[tool], #[tool_router] proc macros
+  "schemars",                                    # JSON Schema generation for tool arguments
 ], optional = true }
 # Used by the MCP module to extract HTTP request parts from rmcp's request context.
 http = { version = "1", optional = true }
