@@ -420,6 +420,13 @@ impl CPacketRepr {
         match self.packet.packet_type {
             CPacketType::BinaryWithMeta => {
                 if let CPacketOwned::BinaryWithMeta(ref mut bwm) = self.owned {
+                    // Free any previously-set handle to avoid a leak
+                    // if this method is called more than once.
+                    if !bwm.binary.buffer_handle.is_null() {
+                        if let Some(f) = bwm.binary.free_fn {
+                            f(bwm.binary.buffer_handle);
+                        }
+                    }
                     let cloned = Box::new(source_bytes.clone());
                     bwm.binary.buffer_handle = Box::into_raw(cloned).cast::<c_void>();
                     bwm.binary.free_fn = Some(free_binary_buffer_handle);

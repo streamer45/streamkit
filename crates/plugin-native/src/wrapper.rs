@@ -903,11 +903,21 @@ extern "C" fn plugin_log_callback(
         use streamkit_plugin_sdk_native::conversions;
 
         let target_str = if target.is_null() {
-            "unknown".to_string()
+            "unknown"
         } else {
-            unsafe { conversions::c_str_to_string(target) }
-                .unwrap_or_else(|_| "unknown".to_string())
+            // SAFETY: target is a valid C string from the plugin SDK.
+            unsafe { std::ffi::CStr::from_ptr(target) }.to_str().unwrap_or("unknown")
         };
+
+        // Check the subscriber filter *before* acquiring the metadata
+        // cache mutex.  This avoids contention on high-volume
+        // DEBUG/TRACE logs that the subscriber would discard anyway.
+        let tracing_level = plugin_log_level(level);
+        let probe = plugin_log_metadata(target_str, tracing_level, plugin_log_field_set());
+        let enabled = tracing::dispatcher::get_default(|d| d.enabled(&probe));
+        if !enabled {
+            return;
+        }
 
         let message_str = if message.is_null() {
             String::new()
@@ -916,15 +926,13 @@ extern "C" fn plugin_log_callback(
                 .unwrap_or_else(|_| "[invalid UTF-8]".to_string())
         };
 
-        let log_meta = plugin_log_static_metadata(&target_str, plugin_log_level(level));
+        let log_meta = plugin_log_static_metadata(target_str, tracing_level);
         tracing::dispatcher::get_default(|d| {
             d.register_callsite(&log_meta.metadata);
-            if d.enabled(&log_meta.metadata) {
-                let values =
-                    [(&log_meta.message_field, Some(&message_str as &dyn tracing::field::Value))];
-                let value_set = log_meta.metadata.fields().value_set(&values);
-                d.event(&tracing::Event::new(&log_meta.metadata, &value_set));
-            }
+            let values =
+                [(&log_meta.message_field, Some(&message_str as &dyn tracing::field::Value))];
+            let value_set = log_meta.metadata.fields().value_set(&values);
+            d.event(&tracing::Event::new(&log_meta.metadata, &value_set));
         });
     });
 }
@@ -1114,6 +1122,10 @@ impl NativeNodeWrapper {
 
     /// Await a oneshot reply from the worker, applying the configured timeout.
     ///
+    /// When `call_timeout` is `Some`, uses that duration; otherwise falls
+    /// back to [`DEFAULT_CALL_TIMEOUT`] as a backstop so the reply side
+    /// is never unbounded.
+    ///
     /// When `state_tx` is provided and the call times out, emits
     /// [`NodeState::Failed`] so the pipeline coordinator sees the failure
     /// even though the worker thread continues running.
@@ -1158,8 +1170,21 @@ impl NativeNodeWrapper {
                     StreamKitError::Runtime(reason)
                 })?
                 .map_err(|_| StreamKitError::Runtime("Worker reply channel dropped".into())),
-            None => reply_rx
+            None => tokio::time::timeout(DEFAULT_CALL_TIMEOUT, reply_rx)
                 .await
+                .map_err(|_| {
+                    let reason = format!(
+                        "Plugin {op} on node {node} timed out after {DEFAULT_CALL_TIMEOUT:?} (backstop)"
+                    );
+                    global_metrics().record_timeout(metric_labels);
+                    if let Some(tx) = state_tx {
+                        let _ = tx.try_send(NodeStateUpdate::new(
+                            node.to_string(),
+                            NodeState::Failed { reason: reason.clone() },
+                        ));
+                    }
+                    StreamKitError::Runtime(reason)
+                })?
                 .map_err(|_| StreamKitError::Runtime("Worker reply channel dropped".into())),
         }
     }
@@ -1930,72 +1955,44 @@ unsafe fn free_packet_buffer_handle(c_packet: *const CPacket) {
     use streamkit_core::frame_pool::{PooledSamples, PooledVideoData};
     use streamkit_plugin_sdk_native::types::CPacketType;
 
-    let pkt = &*c_packet;
-    if pkt.data.is_null() {
+    // Use raw-pointer reads throughout to stay consistent with the SDK's
+    // Stacked Borrows model (no intermediate references to FFI structs).
+    let data = (*c_packet).data;
+    if data.is_null() {
         return;
     }
-    match pkt.packet_type {
+    match (*c_packet).packet_type {
         CPacketType::RawVideo => {
-            let frame = &*pkt.data.cast::<streamkit_plugin_sdk_native::types::CVideoFrame>();
-            if !frame.buffer_handle.is_null() {
-                drop(Box::from_raw(frame.buffer_handle.cast::<PooledVideoData>()));
+            let frame = data.cast::<streamkit_plugin_sdk_native::types::CVideoFrame>();
+            let handle = (*frame).buffer_handle;
+            if !handle.is_null() {
+                drop(Box::from_raw(handle.cast::<PooledVideoData>()));
             }
         },
         CPacketType::RawAudio => {
-            let frame = &*pkt.data.cast::<streamkit_plugin_sdk_native::types::CAudioFrame>();
-            if !frame.buffer_handle.is_null() {
-                drop(Box::from_raw(frame.buffer_handle.cast::<PooledSamples>()));
+            let frame = data.cast::<streamkit_plugin_sdk_native::types::CAudioFrame>();
+            let handle = (*frame).buffer_handle;
+            if !handle.is_null() {
+                drop(Box::from_raw(handle.cast::<PooledSamples>()));
             }
         },
         CPacketType::BinaryWithMeta => {
             // ABI compat: v7/v8 plugins allocate a smaller CBinaryPacket
             // without buffer_handle/free_fn.  Only read those fields when
             // the struct is large enough (v9+).
-            if pkt.len >= std::mem::size_of::<streamkit_plugin_sdk_native::types::CBinaryPacket>() {
-                let bp = &*pkt.data.cast::<streamkit_plugin_sdk_native::types::CBinaryPacket>();
-                if !bp.buffer_handle.is_null() {
-                    if let Some(free_fn) = bp.free_fn {
-                        free_fn(bp.buffer_handle);
+            if (*c_packet).len
+                >= std::mem::size_of::<streamkit_plugin_sdk_native::types::CBinaryPacket>()
+            {
+                let bp = data.cast::<streamkit_plugin_sdk_native::types::CBinaryPacket>();
+                let handle = (*bp).buffer_handle;
+                if !handle.is_null() {
+                    if let Some(free_fn) = (*bp).free_fn {
+                        free_fn(handle);
                     }
                 }
             }
         },
         _ => {},
-    }
-}
-
-/// RAII guard for a converted [`Packet`].
-///
-/// Wraps the gap between [`ConvertedPacketGuard::new`] and
-/// [`consume()`](Self::consume).  In the current code that gap is a
-/// single expression (`push(guard.consume())`), so the guard
-/// effectively only fires if the `Vec::push` allocation itself panics
-/// — a narrow but real edge case.
-///
-/// If the guard is dropped without consuming (i.e. during panic
-/// unwinding), [`Packet::drop`] returns pooled buffers to their pool
-/// and a warning is logged.
-struct ConvertedPacketGuard(Option<(String, Packet)>);
-
-impl ConvertedPacketGuard {
-    const fn new(pin: String, packet: Packet) -> Self {
-        Self(Some((pin, packet)))
-    }
-
-    /// Take ownership of the guarded entry for pushing into output_packets.
-    fn consume(mut self) -> (String, Packet) {
-        // SAFETY: always constructed with Some; consumed at most once (self is moved).
-        #[allow(clippy::unwrap_used)]
-        self.0.take().unwrap()
-    }
-}
-
-impl Drop for ConvertedPacketGuard {
-    fn drop(&mut self) {
-        if self.0.is_some() {
-            // Panic unwinding — Packet::drop returns pooled buffers.
-            warn!("output_callback_shim: converted packet dropped by panic guard");
-        }
     }
 }
 
@@ -2037,9 +2034,9 @@ extern "C" fn output_callback_shim(
             },
         };
 
-        // RAII guard — see ConvertedPacketGuard doc for scope.
-        let guard = ConvertedPacketGuard::new(pin_str, packet);
-        ctx.output_packets.push(guard.consume());
+        // If Vec::push panics (OOM), Packet::drop runs during unwind and
+        // returns any pooled buffers — no separate RAII guard needed.
+        ctx.output_packets.push((pin_str, packet));
 
         CResult::success()
     })

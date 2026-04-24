@@ -16,6 +16,15 @@ const fn default_engine_batch_size() -> usize {
     32
 }
 
+/// Deserialize `Option<u64>` with a minimum clamp of 1 for timeout values.
+fn deserialize_clamp_timeout<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let val: Option<u64> = Option::deserialize(deserializer)?;
+    Ok(val.map(|v| v.max(1)))
+}
+
 /// Preset tuning profiles for the engine.
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -357,11 +366,16 @@ impl Default for ServerConfig {
 #[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
 pub struct PluginConfig {
     pub directory: String,
-    /// Native plugin FFI call timeout in seconds (default: 300).
+    /// Native plugin FFI call timeout in seconds (default: 300, minimum: 1).
     ///
-    /// Set to `null` to wait indefinitely for worker replies; the send-side
-    /// backpressure guard remains bounded by the default timeout.
-    #[serde(default = "PluginConfig::default_native_call_timeout_secs")]
+    /// Set to `null` to use only the default backstop timeout on the reply
+    /// side; the send-side backpressure guard remains bounded regardless.
+    ///
+    /// Values below 1 are clamped to 1 to prevent instant timeouts.
+    #[serde(
+        default = "PluginConfig::default_native_call_timeout_secs",
+        deserialize_with = "deserialize_clamp_timeout"
+    )]
     pub native_call_timeout_secs: Option<u64>,
     #[serde(flatten, default)]
     pub http_management: PluginHttpConfig,
