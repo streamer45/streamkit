@@ -434,10 +434,7 @@ async fn mcp_list_nodes_returns_definitions() {
     // Verify passthrough and synthetic nodes are present
     let kinds: Vec<&str> = defs.iter().filter_map(|d| d["kind"].as_str()).collect();
     assert!(kinds.contains(&"core::passthrough"), "missing core::passthrough in: {kinds:?}");
-    assert!(
-        kinds.contains(&"streamkit::http_input"),
-        "missing synthetic http_input in: {kinds:?}"
-    );
+    assert!(kinds.contains(&"streamkit::http_input"), "missing synthetic http_input in: {kinds:?}");
 }
 
 #[tokio::test]
