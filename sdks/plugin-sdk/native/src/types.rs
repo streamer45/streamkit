@@ -94,8 +94,9 @@ pub struct CResult {
     ///
     /// # Ownership
     ///
-    /// This pointer is **borrowed** and must not be freed by the caller.
-    /// Callers should copy it immediately if they need to keep it.
+    /// In both plugin→host and host→plugin directions, this pointer is
+    /// **borrowed** and must not be freed by the caller.  Callers should copy
+    /// it immediately if they need to keep it.
     pub error_message: *const c_char,
 }
 

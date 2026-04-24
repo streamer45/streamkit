@@ -543,7 +543,11 @@ fn cstring_sanitize(s: &str) -> CString {
 ///
 /// # Safety
 ///
-/// `data_ptr` must point to a valid, mutable `CBinaryPacket`.
+/// `data_ptr` must point to a valid `CBinaryPacket` owned by the caller for
+/// the duration of this call.  Although `CPacket::data` is typed as `*const`
+/// for ABI compatibility, callers may only use this helper when that pointer
+/// actually refers to writable storage; passing a packet placed in read-only
+/// memory is undefined behavior.
 unsafe fn null_binary_buffer_handle(data_ptr: *const c_void) {
     let bp = data_ptr.cast::<CBinaryPacket>().cast_mut();
     std::ptr::addr_of_mut!((*bp).buffer_handle).write(std::ptr::null_mut());

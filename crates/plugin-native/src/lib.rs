@@ -141,6 +141,7 @@ impl LoadedNativePlugin {
                 Err(e) => {
                     warn!(
                         kind = %metadata.kind,
+                        api_version = api.version,
                         error = %e,
                         "v9 plugin did not export log-enabled callback symbol"
                     );

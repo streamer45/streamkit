@@ -314,8 +314,16 @@ impl InstanceState {
     /// `destroy_instance` — this is benign because `destroy_instance`
     /// is idempotent (atomic null-swap guard).
     fn finish_call(&self) {
-        let prev = self.in_flight_calls.fetch_sub(1, Ordering::SeqCst);
-        assert!(prev > 0, "finish_call called without begin_call");
+        let prev =
+            match self.in_flight_calls.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                Some(current.saturating_sub(1))
+            }) {
+                Ok(prev) | Err(prev) => prev,
+            };
+        if prev == 0 {
+            error!(plugin_kind = %self.plugin_kind, "finish_call called without begin_call");
+            return;
+        }
 
         if prev == 1 && self.drop_requested.load(Ordering::SeqCst) {
             self.destroy_instance();
@@ -405,6 +413,11 @@ impl Drop for InstanceWorker {
 /// existing [`CallGuard`] / [`begin_call`](InstanceState::begin_call) pattern,
 /// and replies via oneshot channels.  A single reusable `Vec` for output
 /// packets is kept across calls to avoid per-packet allocation.
+///
+/// If the worker panics outside a per-call guard, Rust unwinding still drops any
+/// active [`CallGuard`] and the worker's `Arc<InstanceState>`.  Once all
+/// references are released, the idempotent [`InstanceState::drop`] path destroys
+/// the plugin instance.
 #[allow(clippy::too_many_lines, clippy::too_many_arguments, clippy::needless_pass_by_value)]
 fn worker_thread_main(
     mut rx: tokio::sync::mpsc::Receiver<WorkerRequest>,
@@ -2345,6 +2358,11 @@ mod ffi_guard_tests {
             CResult::success()
         }
         pub extern "C" fn destroy_instance(_: CPluginHandle) {}
+        pub static DESTROY_CALL_COUNT: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+        pub extern "C" fn destroy_instance_counted(_: CPluginHandle) {
+            DESTROY_CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
     /// Build a valid `CNativePluginAPI` populated with no-op stubs.
@@ -2362,6 +2380,12 @@ mod ffi_guard_tests {
             get_runtime_param_schema: None,
             on_upstream_hint: None,
         }
+    }
+
+    fn dummy_api_counted_destroy() -> CNativePluginAPI {
+        let mut api = dummy_api();
+        api.destroy_instance = test_stubs::destroy_instance_counted;
+        api
     }
 
     /// Helper: build a minimal `InstanceState` for guard tests.
@@ -2407,6 +2431,17 @@ mod ffi_guard_tests {
     }
 
     #[test]
+    fn finish_call_without_begin_does_not_panic() {
+        let state = test_instance_state();
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            state.finish_call();
+        }));
+
+        assert!(result.is_ok(), "finish_call must not panic from Drop paths");
+        assert_eq!(state.in_flight_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
     fn begin_call_returns_none_after_request_drop() {
         let state = test_instance_state();
         state.request_drop();
@@ -2417,6 +2452,30 @@ mod ffi_guard_tests {
             state.in_flight_calls.load(Ordering::Acquire),
             0,
             "failed begin_call must not leave in_flight_calls elevated"
+        );
+    }
+
+    #[test]
+    fn instance_state_drop_destroys_without_request_drop() {
+        test_stubs::DESTROY_CALL_COUNT.store(0, Ordering::SeqCst);
+        let lib = unsafe { Library::new("libc.so.6").expect("libc must be loadable") };
+        let api: &'static CNativePluginAPI = Box::leak(Box::new(dummy_api_counted_destroy()));
+
+        let state = InstanceState::new(
+            Arc::new(lib),
+            api,
+            std::ptr::without_provenance_mut::<c_void>(1),
+            8,
+            None,
+            "test".to_string(),
+        );
+
+        drop(state);
+
+        assert_eq!(
+            test_stubs::DESTROY_CALL_COUNT.load(Ordering::SeqCst),
+            1,
+            "InstanceState::drop must destroy an unreleased instance"
         );
     }
 
