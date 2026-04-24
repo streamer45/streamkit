@@ -402,6 +402,14 @@ async fn mcp_config_endpoint_validation() {
 /// Minimal valid pipeline YAML for dynamic sessions.
 const PASSTHROUGH_YAML: &str = "nodes:\n  pass:\n    kind: core::passthrough";
 
+/// Minimal valid pipeline YAML for oneshot (steps-based).
+const ONESHOT_PASSTHROUGH_YAML: &str = "\
+mode: oneshot\n\
+steps:\n\
+  - kind: streamkit::http_input\n\
+  - kind: core::passthrough\n\
+  - kind: streamkit::http_output";
+
 #[tokio::test]
 async fn mcp_list_nodes_returns_definitions() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -549,5 +557,160 @@ async fn mcp_create_list_get_destroy_session_round_trip() {
     assert!(
         !sessions.iter().any(|s| s["id"].as_str() == Some(skit_session_id)),
         "destroyed session should not appear in list_sessions"
+    );
+}
+
+// -----------------------------------------------------------------------
+// generate_oneshot_command tests
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn mcp_generate_oneshot_command_curl() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let session_id = init_mcp_session(&client, addr, &token).await;
+
+    let call = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "generate_oneshot_command",
+            "arguments": {
+                "yaml": ONESHOT_PASSTHROUGH_YAML,
+                "inputs": [{ "field": "media", "path": "/tmp/input.wav" }],
+                "output": "/tmp/output.wav",
+                "server_url": "http://localhost:4545",
+                "format": "curl"
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &call, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let result = &body["result"];
+    assert!(!result.is_null(), "expected result, got: {body}");
+
+    let text = result["content"][0]["text"].as_str().expect("expected text content");
+    assert!(text.contains("curl"), "curl command expected in output: {text}");
+    assert!(text.contains("/api/v1/process"), "endpoint expected in output: {text}");
+    assert!(text.contains("config="), "config field expected in output: {text}");
+    assert!(text.contains("'media=@/tmp/input.wav'"), "input field expected in output: {text}");
+    assert!(text.contains("-o '/tmp/output.wav'"), "output path expected in output: {text}");
+}
+
+#[tokio::test]
+async fn mcp_generate_oneshot_command_skit_cli() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let session_id = init_mcp_session(&client, addr, &token).await;
+
+    let call = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "generate_oneshot_command",
+            "arguments": {
+                "yaml": ONESHOT_PASSTHROUGH_YAML,
+                "inputs": [{ "field": "media", "path": "/tmp/input.wav" }],
+                "output": "/tmp/output.wav",
+                "server_url": "http://localhost:9999",
+                "format": "skit-cli"
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &call, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let result = &body["result"];
+    assert!(!result.is_null(), "expected result, got: {body}");
+
+    let text = result["content"][0]["text"].as_str().expect("expected text content");
+    assert!(
+        text.contains("streamkit-client oneshot"),
+        "skit-cli command expected in output: {text}"
+    );
+    assert!(text.contains("'/tmp/input.wav'"), "input path expected in output: {text}");
+    assert!(text.contains("'/tmp/output.wav'"), "output path expected in output: {text}");
+    assert!(
+        text.contains("--server 'http://localhost:9999'"),
+        "server URL expected in output: {text}"
+    );
+}
+
+#[tokio::test]
+async fn mcp_generate_oneshot_command_invalid_yaml() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let session_id = init_mcp_session(&client, addr, &token).await;
+
+    let call = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "generate_oneshot_command",
+            "arguments": {
+                "yaml": "not: valid: yaml: [[",
+                "inputs": [{ "field": "media", "path": "/tmp/input.wav" }],
+                "output": "/tmp/output.wav"
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &call, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let result = &body["result"];
+    assert!(!result.is_null(), "expected result (validation error), got: {body}");
+
+    let text = result["content"][0]["text"].as_str().expect("expected text content");
+    assert!(text.contains("validation failed"), "expected validation failure message, got: {text}");
+}
+
+#[tokio::test]
+async fn mcp_generate_oneshot_command_permission_denied() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let (addr, _handle, token, _dir) = start_restricted_mcp_server().await;
+    let client = reqwest::Client::new();
+    let session_id = init_mcp_session(&client, addr, &token).await;
+
+    let call = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "generate_oneshot_command",
+            "arguments": {
+                "yaml": ONESHOT_PASSTHROUGH_YAML,
+                "inputs": [{ "field": "media", "path": "/tmp/input.wav" }],
+                "output": "/tmp/output.wav"
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &call, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let error = &body["error"];
+    assert!(!error.is_null(), "expected error for permission denied, got: {body}");
+    let error_msg = error["message"].as_str().unwrap_or("");
+    assert!(
+        error_msg.contains("Permission denied") || error_msg.contains("permission"),
+        "expected permission error, got: {error_msg}"
     );
 }
