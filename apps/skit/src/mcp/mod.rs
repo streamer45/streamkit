@@ -31,7 +31,7 @@ use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
 use serde::{Deserialize, Serialize};
 use streamkit_api::Pipeline;
 use streamkit_core::NodeDefinition;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::permissions::Permissions;
 use crate::session::Session;
@@ -339,131 +339,30 @@ impl StreamKitMcp {
             ));
         }
 
-        // Parse & compile
-        let user_pipeline = streamkit_api::yaml::parse_yaml(&args.yaml)
-            .map_err(|e| McpError::invalid_params(format!("YAML parse error: {e}"), None))?;
-
-        let engine_pipeline = streamkit_api::yaml::compile(user_pipeline).map_err(|e| {
-            McpError::invalid_params(format!("Pipeline compilation error: {e}"), None)
-        })?;
-
-        if engine_pipeline.nodes.is_empty() {
-            return Err(McpError::invalid_params(
-                "Pipeline is empty. Add some nodes before creating a session.",
-                None,
-            ));
-        }
-
-        // Per-node permission and security checks.
-        // create_session must reject forbidden nodes with an immediate error,
-        // not the deferred diagnostic that check_mode produces.
-        for (node_id, node) in &engine_pipeline.nodes {
-            if crate::server::is_synthetic_kind(&node.kind) {
-                return Err(McpError::invalid_params(
-                    format!(
-                        "Node '{node_id}' kind '{}' is oneshot-only and cannot be used in dynamic sessions",
-                        node.kind
-                    ),
-                    None,
-                ));
-            }
-            if !perms.is_node_allowed(&node.kind) {
-                return Err(McpError::invalid_request(
-                    format!("Permission denied: node '{node_id}' kind '{}' not allowed", node.kind),
-                    None,
-                ));
-            }
-            if node.kind.starts_with("plugin::") && !perms.is_plugin_allowed(&node.kind) {
-                return Err(McpError::invalid_request(
-                    format!(
-                        "Permission denied: node '{node_id}' plugin '{}' not allowed",
-                        node.kind
-                    ),
-                    None,
-                ));
-            }
-        }
-
-        // File-path security
-        crate::server::check_file_path_security(&engine_pipeline, &self.app_state.config.security)
-            .map_err(|e| McpError::invalid_params(e, None))?;
-
-        // Pre-flight: reject early if over the session limit or name is taken,
-        // avoiding wasted engine allocation.  The checks are re-verified under
-        // the lock inside add_session for correctness.
-        let (current_count, name_taken) = {
-            let sm = self.app_state.session_manager.lock().await;
-            (sm.session_count(), args.name.as_deref().is_some_and(|n| sm.is_name_taken(n)))
-        };
-        if let Some(ref session_name) = args.name {
-            if name_taken {
-                return Err(McpError::invalid_request(
-                    format!("Session with name '{session_name}' already exists"),
-                    None,
-                ));
-            }
-        }
-        if !self.app_state.config.permissions.can_accept_session(current_count) {
-            return Err(McpError::invalid_request(
-                "Maximum concurrent sessions limit reached",
-                None,
-            ));
-        }
-
-        let session = crate::session::Session::create(
-            &self.app_state.engine,
-            &self.app_state.config,
-            args.name.clone(),
-            self.app_state.event_tx.clone(),
-            Some(role_name),
+        let r = crate::server::create_dynamic_session(
+            &self.app_state,
+            &args.yaml,
+            args.name,
+            role_name,
+            &perms,
         )
         .await
-        .map_err(|e| McpError::internal_error(format!("Failed to create session: {e}"), None))?;
-
-        // Insert under the lock (re-checks limit and name uniqueness).
-        let insert_result = {
-            let mut sm = self.app_state.session_manager.lock().await;
-            let count = sm.session_count();
-            if self.app_state.config.permissions.can_accept_session(count) {
-                sm.add_session(session.clone())
-            } else {
-                Err("Maximum concurrent sessions limit reached".to_string())
-            }
-        };
-        if let Err(msg) = insert_result {
-            warn!(error = %msg, "MCP create_session failed during insert");
-            let _ = session.shutdown_and_wait().await;
-            return Err(McpError::invalid_request(msg, None));
-        }
-
-        let session_id = session.id.clone();
-        let session_name = session.name.clone();
-        let created_at = crate::session::system_time_to_rfc3339(session.created_at);
-
-        info!(session_id = %session_id, name = ?session_name, "MCP create_session");
-
-        // Populate pipeline and send to engine
-        crate::server::populate_session_pipeline(&session, &engine_pipeline).await;
-        crate::server::send_pipeline_to_engine(&session, &engine_pipeline).await;
-
-        // Broadcast event
-        let event = streamkit_api::Event {
-            message_type: streamkit_api::MessageType::Event,
-            correlation_id: None,
-            payload: streamkit_api::EventPayload::SessionCreated {
-                session_id: session_id.clone(),
-                name: session_name.clone(),
-                created_at: created_at.clone(),
+        .map_err(|e| match e {
+            crate::server::CreateSessionError::InvalidInput(msg) => {
+                McpError::invalid_params(msg, None)
             },
-        };
-        if self.app_state.event_tx.send(crate::state::BroadcastEvent::to_all(event)).is_err() {
-            debug!("No WebSocket clients connected to receive SessionCreated event");
-        }
+            crate::server::CreateSessionError::Forbidden(msg)
+            | crate::server::CreateSessionError::Conflict(msg)
+            | crate::server::CreateSessionError::LimitReached(msg) => {
+                McpError::invalid_request(msg, None)
+            },
+            crate::server::CreateSessionError::Internal(msg) => McpError::internal_error(msg, None),
+        })?;
 
         let result = serde_json::json!({
-            "session_id": session_id,
-            "name": session_name,
-            "created_at": created_at,
+            "session_id": r.session_id,
+            "name": r.name,
+            "created_at": r.created_at,
         });
         json_tool_result(&result)
     }

@@ -2532,194 +2532,22 @@ async fn create_session_handler(
         ));
     }
 
-    // Global session limit
-    let (current_count, name_taken) = {
-        let session_manager = app_state.session_manager.lock().await;
-        let current_count = session_manager.session_count();
-        let name_taken = req.name.as_deref().is_some_and(|n| session_manager.is_name_taken(n));
-        drop(session_manager);
-        (current_count, name_taken)
-    };
-    if let Some(ref session_name) = req.name {
-        if name_taken {
-            return Err((
-                StatusCode::CONFLICT,
-                format!(
-                    "Failed to create session: Session with name '{session_name}' already exists"
-                ),
-            ));
-        }
+    let result = create_dynamic_session(&app_state, &req.yaml, req.name, role_name, &perms).await;
+
+    match result {
+        Ok(r) => Ok(Json(CreateSessionResponse {
+            session_id: r.session_id,
+            name: r.name,
+            created_at: r.created_at,
+        })),
+        Err(e) => Err(match e {
+            CreateSessionError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, msg),
+            CreateSessionError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
+            CreateSessionError::Conflict(msg) => (StatusCode::CONFLICT, msg),
+            CreateSessionError::LimitReached(msg) => (StatusCode::TOO_MANY_REQUESTS, msg),
+            CreateSessionError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+        }),
     }
-    if !app_state.config.permissions.can_accept_session(current_count) {
-        return Err((
-            StatusCode::TOO_MANY_REQUESTS,
-            "Maximum concurrent sessions limit reached".to_string(),
-        ));
-    }
-
-    // Parse and compile the YAML pipeline
-    let user_pipeline: UserPipeline =
-        streamkit_api::yaml::parse_yaml(&req.yaml).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
-
-    let engine_pipeline = compile(user_pipeline)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid pipeline: {e}")))?;
-
-    // Validate the pipeline has at least one node
-    if engine_pipeline.nodes.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "Pipeline is empty. Add some nodes before creating a session.".to_string(),
-        ));
-    }
-
-    for (node_id, node) in &engine_pipeline.nodes {
-        if is_synthetic_kind(&node.kind) {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "Node '{node_id}' kind '{}' is oneshot-only and cannot be used in dynamic sessions",
-                    node.kind
-                ),
-            ));
-        }
-
-        if !perms.is_node_allowed(&node.kind) {
-            return Err((
-                StatusCode::FORBIDDEN,
-                format!("Permission denied: node '{node_id}' kind '{}' not allowed", node.kind),
-            ));
-        }
-
-        if node.kind.starts_with("plugin::") && !perms.is_plugin_allowed(&node.kind) {
-            return Err((
-                StatusCode::FORBIDDEN,
-                format!("Permission denied: node '{node_id}' plugin '{}' not allowed", node.kind),
-            ));
-        }
-    }
-
-    validate_file_reader_paths(&engine_pipeline, &app_state.config.security).map_err(
-        |e| match e {
-            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
-            AppError::PipelineCompilation(msg) => {
-                (StatusCode::BAD_REQUEST, format!("Invalid pipeline: {msg}"))
-            },
-            AppError::Serde(err) => {
-                (StatusCode::BAD_REQUEST, format!("Invalid YAML config format: {err}"))
-            },
-            AppError::Multipart(err) => {
-                (StatusCode::BAD_REQUEST, format!("Invalid multipart payload: {err}"))
-            },
-            AppError::Engine(err) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, format!("Pipeline execution error: {err}"))
-            },
-            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
-        },
-    )?;
-
-    validate_file_writer_paths(&engine_pipeline, &app_state.config.security).map_err(
-        |e| match e {
-            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
-            AppError::PipelineCompilation(msg) => {
-                (StatusCode::BAD_REQUEST, format!("Invalid pipeline: {msg}"))
-            },
-            AppError::Serde(err) => {
-                (StatusCode::BAD_REQUEST, format!("Invalid YAML config format: {err}"))
-            },
-            AppError::Multipart(err) => {
-                (StatusCode::BAD_REQUEST, format!("Invalid multipart payload: {err}"))
-            },
-            AppError::Engine(err) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, format!("Pipeline execution error: {err}"))
-            },
-            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
-        },
-    )?;
-
-    validate_script_paths(&engine_pipeline, &app_state.config.security).map_err(|e| match e {
-        AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
-        AppError::PipelineCompilation(msg) => {
-            (StatusCode::BAD_REQUEST, format!("Invalid pipeline: {msg}"))
-        },
-        AppError::Serde(err) => {
-            (StatusCode::BAD_REQUEST, format!("Invalid YAML config format: {err}"))
-        },
-        AppError::Multipart(err) => {
-            (StatusCode::BAD_REQUEST, format!("Invalid multipart payload: {err}"))
-        },
-        AppError::Engine(err) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Pipeline execution error: {err}"))
-        },
-        AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
-    })?;
-
-    // Create the session without holding the session manager lock.
-    let session = crate::session::Session::create(
-        &app_state.engine,
-        &app_state.config,
-        req.name.clone(),
-        app_state.event_tx.clone(),
-        Some(role_name.clone()),
-    )
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create session: {e}")))?;
-
-    // Insert the session with short lock hold and re-check limits to avoid races.
-    let insert_result = {
-        let mut session_manager = app_state.session_manager.lock().await;
-        let current_count = session_manager.session_count();
-        if app_state.config.permissions.can_accept_session(current_count) {
-            session_manager.add_session(session.clone())
-        } else {
-            Err("Maximum concurrent sessions limit reached".to_string())
-        }
-    };
-    if let Err(error_msg) = insert_result {
-        let _ = session.shutdown_and_wait().await;
-        if error_msg == "Maximum concurrent sessions limit reached" {
-            return Err((StatusCode::TOO_MANY_REQUESTS, error_msg));
-        }
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to create session: {error_msg}"),
-        ));
-    }
-
-    let session_id = session.id.clone();
-    let session_name = session.name.clone();
-    let created_at_str = crate::session::system_time_to_rfc3339(session.created_at);
-
-    info!(session_id = %session_id, name = ?session_name, "Created new session via HTTP");
-
-    // Update the session pipeline immediately (synchronous)
-    // This ensures GET /sessions/{id}/pipeline returns the nodes right away
-    populate_session_pipeline(&session, &engine_pipeline).await;
-
-    // Send control messages to engine actor to instantiate nodes and connections
-    send_pipeline_to_engine(&session, &engine_pipeline).await;
-
-    info!(
-        "Session {} initialized with {} nodes and {} connections",
-        session_id,
-        engine_pipeline.nodes.len(),
-        engine_pipeline.connections.len()
-    );
-
-    // Broadcast event to all WebSocket clients
-    let event = ApiEvent {
-        message_type: MessageType::Event,
-        correlation_id: None,
-        payload: EventPayload::SessionCreated {
-            session_id: session_id.clone(),
-            name: session_name.clone(),
-            created_at: created_at_str.clone(),
-        },
-    };
-    if app_state.event_tx.send(crate::state::BroadcastEvent::to_all(event)).is_err() {
-        debug!("No WebSocket clients connected to receive SessionCreated event");
-    }
-
-    Ok(Json(CreateSessionResponse { session_id, name: session_name, created_at: created_at_str }))
 }
 
 /// Axum handler to get the list of active sessions.
@@ -3982,7 +3810,6 @@ pub fn validate_pipeline_yaml(
 ///
 /// Returns a human-readable error message if any path violates the security
 /// policy.
-#[cfg(feature = "mcp")]
 pub fn check_file_path_security(
     pipeline: &Pipeline,
     security_config: &crate::config::SecurityConfig,
@@ -4002,6 +3829,176 @@ pub fn check_file_path_security(
     } else {
         Err(msgs.join("; "))
     }
+}
+
+/// Error type returned by [`create_dynamic_session`].
+///
+/// Each variant carries enough semantic meaning for both HTTP and MCP callers
+/// to map to the appropriate protocol-level error (e.g. status codes for HTTP,
+/// `McpError` variants for MCP).
+pub enum CreateSessionError {
+    /// Invalid input (YAML parse, compile, empty pipeline, synthetic nodes,
+    /// bad file paths).
+    InvalidInput(String),
+    /// Permission denied (node or plugin not allowed).
+    Forbidden(String),
+    /// Session name already taken.
+    Conflict(String),
+    /// Maximum concurrent-session limit reached.
+    LimitReached(String),
+    /// Internal failure (engine allocation, session insert, etc.).
+    Internal(String),
+}
+
+/// Result returned by [`create_dynamic_session`] on success.
+pub struct CreateSessionResult {
+    pub session_id: String,
+    pub name: Option<String>,
+    pub created_at: String,
+}
+
+/// Shared implementation for creating a dynamic pipeline session.
+///
+/// Handles YAML parsing, compilation, permission checks, file-path security,
+/// session-limit pre-flight, engine allocation, session insertion, pipeline
+/// population, engine dispatch, and event broadcast.
+///
+/// Callers are responsible for extracting auth and checking
+/// `perms.create_sessions` before calling this function.
+///
+/// # Errors
+///
+/// Returns a [`CreateSessionError`] variant matching the failure category
+/// (invalid input, permission denied, name conflict, session limit, or
+/// internal error).
+pub async fn create_dynamic_session(
+    app_state: &Arc<AppState>,
+    yaml: &str,
+    name: Option<String>,
+    role_name: String,
+    perms: &crate::permissions::Permissions,
+) -> Result<CreateSessionResult, CreateSessionError> {
+    // Parse & compile
+    let user_pipeline: UserPipeline = streamkit_api::yaml::parse_yaml(yaml)
+        .map_err(|e| CreateSessionError::InvalidInput(format!("YAML parse error: {e}")))?;
+
+    let engine_pipeline = compile(user_pipeline).map_err(|e| {
+        CreateSessionError::InvalidInput(format!("Pipeline compilation error: {e}"))
+    })?;
+
+    if engine_pipeline.nodes.is_empty() {
+        return Err(CreateSessionError::InvalidInput(
+            "Pipeline is empty. Add some nodes before creating a session.".to_string(),
+        ));
+    }
+
+    // Per-node permission and security checks.
+    for (node_id, node) in &engine_pipeline.nodes {
+        if is_synthetic_kind(&node.kind) {
+            return Err(CreateSessionError::InvalidInput(format!(
+                "Node '{node_id}' kind '{}' is oneshot-only and cannot be used in dynamic sessions",
+                node.kind
+            )));
+        }
+        if !perms.is_node_allowed(&node.kind) {
+            return Err(CreateSessionError::Forbidden(format!(
+                "Permission denied: node '{node_id}' kind '{}' not allowed",
+                node.kind
+            )));
+        }
+        if node.kind.starts_with("plugin::") && !perms.is_plugin_allowed(&node.kind) {
+            return Err(CreateSessionError::Forbidden(format!(
+                "Permission denied: node '{node_id}' plugin '{}' not allowed",
+                node.kind
+            )));
+        }
+    }
+
+    // File-path security
+    check_file_path_security(&engine_pipeline, &app_state.config.security)
+        .map_err(CreateSessionError::InvalidInput)?;
+
+    // Pre-flight: reject early if over the session limit or name is taken,
+    // avoiding wasted engine allocation.  The checks are re-verified under
+    // the lock inside add_session for correctness.
+    let (current_count, name_taken) = {
+        let sm = app_state.session_manager.lock().await;
+        (sm.session_count(), name.as_deref().is_some_and(|n| sm.is_name_taken(n)))
+    };
+    if let Some(ref session_name) = name {
+        if name_taken {
+            return Err(CreateSessionError::Conflict(format!(
+                "Session with name '{session_name}' already exists"
+            )));
+        }
+    }
+    if !app_state.config.permissions.can_accept_session(current_count) {
+        return Err(CreateSessionError::LimitReached(
+            "Maximum concurrent sessions limit reached".to_string(),
+        ));
+    }
+
+    // Create session (engine allocation).
+    let session = crate::session::Session::create(
+        &app_state.engine,
+        &app_state.config,
+        name,
+        app_state.event_tx.clone(),
+        Some(role_name),
+    )
+    .await
+    .map_err(|e| CreateSessionError::Internal(format!("Failed to create session: {e}")))?;
+
+    // Insert under the lock (re-checks limit and name uniqueness).
+    let insert_result = {
+        let mut sm = app_state.session_manager.lock().await;
+        let count = sm.session_count();
+        if app_state.config.permissions.can_accept_session(count) {
+            sm.add_session(session.clone())
+        } else {
+            Err("Maximum concurrent sessions limit reached".to_string())
+        }
+    };
+    if let Err(msg) = insert_result {
+        warn!(error = %msg, "create_dynamic_session failed during insert");
+        let _ = session.shutdown_and_wait().await;
+        if msg.contains("limit reached") {
+            return Err(CreateSessionError::LimitReached(msg));
+        }
+        return Err(CreateSessionError::Internal(format!("Failed to create session: {msg}")));
+    }
+
+    let session_id = session.id.clone();
+    let session_name = session.name.clone();
+    let created_at = crate::session::system_time_to_rfc3339(session.created_at);
+
+    // Populate pipeline and send to engine
+    populate_session_pipeline(&session, &engine_pipeline).await;
+    send_pipeline_to_engine(&session, &engine_pipeline).await;
+
+    info!(
+        session_id = %session_id,
+        name = ?session_name,
+        nodes = engine_pipeline.nodes.len(),
+        connections = engine_pipeline.connections.len(),
+        "Created new session"
+    );
+
+    // Broadcast event
+    let event = ApiEvent {
+        message_type: MessageType::Event,
+        correlation_id: None,
+        payload: EventPayload::SessionCreated {
+            session_id: session_id.clone(),
+            name: session_name.clone(),
+            created_at: created_at.clone(),
+        },
+    };
+    if app_state.event_tx.send(crate::state::BroadcastEvent::to_all(event)).is_err() {
+        debug!("No WebSocket clients connected to receive SessionCreated event");
+    }
+
+    Ok(CreateSessionResult { session_id, name: session_name, created_at })
 }
 
 /// Validate a batch of operations against a session's pipeline without applying.
