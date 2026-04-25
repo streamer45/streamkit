@@ -3,7 +3,7 @@
     {
       "id": "aac-encoder",
       "name": "AAC Encoder",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "node_kind": "aac_encoder",
       "kind": "native",
       "entrypoint": "libaac_encoder.so",
@@ -15,7 +15,7 @@
     {
       "id": "helsinki",
       "name": "Helsinki",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "node_kind": "helsinki",
       "kind": "native",
       "entrypoint": "libhelsinki.so",
@@ -58,7 +58,7 @@
     {
       "id": "kokoro",
       "name": "Kokoro",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "node_kind": "kokoro",
       "kind": "native",
       "entrypoint": "libkokoro.so",
@@ -86,7 +86,7 @@
     {
       "id": "matcha",
       "name": "Matcha",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "node_kind": "matcha",
       "kind": "native",
       "entrypoint": "libmatcha.so",
@@ -118,7 +118,7 @@
     {
       "id": "nllb",
       "name": "NLLB",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "node_kind": "nllb",
       "kind": "native",
       "entrypoint": "libnllb.so",
@@ -146,7 +146,7 @@
     {
       "id": "parakeet",
       "name": "Parakeet TDT",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "node_kind": "parakeet",
       "kind": "native",
       "entrypoint": "libparakeet.so",
@@ -199,7 +199,7 @@
     {
       "id": "piper",
       "name": "Piper",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "node_kind": "piper",
       "kind": "native",
       "entrypoint": "libpiper.so",
@@ -242,7 +242,7 @@
     {
       "id": "pocket-tts",
       "name": "Pocket TTS",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "node_kind": "pocket-tts",
       "kind": "native",
       "entrypoint": "libpocket_tts.so",
@@ -270,7 +270,7 @@
     {
       "id": "sensevoice",
       "name": "SenseVoice",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "node_kind": "sensevoice",
       "kind": "native",
       "entrypoint": "libsensevoice.so",
@@ -324,7 +324,7 @@
     {
       "id": "slint",
       "name": "Slint",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "node_kind": "slint",
       "kind": "native",
       "entrypoint": "libslint.so",
@@ -349,7 +349,7 @@
     {
       "id": "supertonic",
       "name": "Supertonic",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "node_kind": "supertonic",
       "kind": "native",
       "entrypoint": "libsupertonic.so",
@@ -377,7 +377,7 @@
     {
       "id": "vad",
       "name": "VAD",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "node_kind": "vad",
       "kind": "native",
       "entrypoint": "libvad.so",
@@ -405,7 +405,7 @@
     {
       "id": "whisper",
       "name": "Whisper",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "node_kind": "whisper",
       "kind": "native",
       "entrypoint": "libwhisper.so",
