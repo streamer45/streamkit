@@ -50,9 +50,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/sccache
-          key: sccache-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: sccache-skit-lint-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            sccache-${{ runner.os }}-
+            sccache-skit-lint-${{ runner.os }}-
 
       - uses: mozilla-actions/sccache-action@v0.0.9
 
@@ -85,7 +85,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~/.cache/sccache
-          key: sccache-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: sccache-skit-lint-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
 
   test:
     name: Test
@@ -127,9 +127,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/sccache
-          key: sccache-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: sccache-skit-test-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            sccache-${{ runner.os }}-
+            sccache-skit-test-${{ runner.os }}-
 
       - uses: mozilla-actions/sccache-action@v0.0.9
 
@@ -150,7 +150,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~/.cache/sccache
-          key: sccache-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: sccache-skit-test-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
 
   test-gpu:
     name: Test (GPU)
@@ -242,9 +242,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/sccache
-          key: sccache-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: sccache-skit-build-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            sccache-${{ runner.os }}-
+            sccache-skit-build-${{ runner.os }}-
 
       - uses: mozilla-actions/sccache-action@v0.0.9
 
@@ -265,4 +265,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~/.cache/sccache
-          key: sccache-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: sccache-skit-build-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}

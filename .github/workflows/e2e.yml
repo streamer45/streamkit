@@ -49,9 +49,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/sccache
-          key: sccache-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: sccache-e2e-pipeline-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            sccache-${{ runner.os }}-
+            sccache-e2e-pipeline-${{ runner.os }}-
 
       - uses: mozilla-actions/sccache-action@v0.0.9
 
@@ -107,7 +107,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~/.cache/sccache
-          key: sccache-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: sccache-e2e-pipeline-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
 
   pipeline-validation-gpu:
     name: Pipeline Validation (GPU)
@@ -257,9 +257,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/sccache
-          key: sccache-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: sccache-e2e-playwright-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            sccache-${{ runner.os }}-
+            sccache-e2e-playwright-${{ runner.os }}-
 
       - uses: mozilla-actions/sccache-action@v0.0.9
 
@@ -359,4 +359,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~/.cache/sccache
-          key: sccache-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: sccache-e2e-playwright-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}

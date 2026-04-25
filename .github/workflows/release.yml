@@ -57,9 +57,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/sccache
-          key: sccache-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: sccache-release-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            sccache-${{ runner.os }}-
+            sccache-release-${{ runner.os }}-
 
       - uses: mozilla-actions/sccache-action@v0.0.9
 
@@ -117,7 +117,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~/.cache/sccache
-          key: sccache-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: sccache-release-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
