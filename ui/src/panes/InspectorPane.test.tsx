@@ -5,6 +5,8 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+import type { NodeDefinition } from '@/types/types';
+
 vi.mock('jotai/react', () => ({
   useAtomValue: () => ({}),
 }));
@@ -16,12 +18,14 @@ vi.mock('@/stores/sessionAtoms', () => ({
 // Import after mocks are set up
 const { default: InspectorPane } = await import('./InspectorPane');
 
-const baseNodeDefinition = {
+const baseNodeDefinition: NodeDefinition = {
   kind: 'test-node',
   description: 'A test node',
   inputs: [],
   outputs: [],
   param_schema: {},
+  categories: [],
+  bidirectional: false,
 };
 
 const baseNode = {
@@ -32,12 +36,12 @@ const baseNode = {
 };
 
 describe('InspectorPane', () => {
-  let onParamChange: ReturnType<typeof vi.fn>;
-  let onLabelChange: ReturnType<typeof vi.fn>;
+  let onParamChange: (nodeId: string, paramName: string, value: unknown) => void;
+  let onLabelChange: (nodeId: string, newLabel: string) => void;
 
   beforeEach(() => {
-    onParamChange = vi.fn();
-    onLabelChange = vi.fn();
+    onParamChange = vi.fn<(nodeId: string, paramName: string, value: unknown) => void>();
+    onLabelChange = vi.fn<(nodeId: string, newLabel: string) => void>();
   });
 
   it('renders a select dropdown for enum-constrained string properties', () => {
@@ -57,7 +61,7 @@ describe('InspectorPane', () => {
     render(
       <InspectorPane
         node={{ ...baseNode, data: { ...baseNode.data, params: { resolution: '1280x720' } } }}
-        nodeDefinition={definition}
+        nodeDefinition={definition as NodeDefinition}
         onParamChange={onParamChange}
         onLabelChange={onLabelChange}
       />
@@ -92,7 +96,7 @@ describe('InspectorPane', () => {
     render(
       <InspectorPane
         node={baseNode}
-        nodeDefinition={definition}
+        nodeDefinition={definition as NodeDefinition}
         onParamChange={onParamChange}
         onLabelChange={onLabelChange}
       />
@@ -120,7 +124,7 @@ describe('InspectorPane', () => {
     render(
       <InspectorPane
         node={{ ...baseNode, data: { ...baseNode.data, params: { mode: 'fast' } } }}
-        nodeDefinition={definition}
+        nodeDefinition={definition as NodeDefinition}
         onParamChange={onParamChange}
         onLabelChange={onLabelChange}
         isMonitorView
@@ -149,7 +153,7 @@ describe('InspectorPane', () => {
     render(
       <InspectorPane
         node={baseNode}
-        nodeDefinition={definition}
+        nodeDefinition={definition as NodeDefinition}
         onParamChange={onParamChange}
         onLabelChange={onLabelChange}
       />
@@ -177,7 +181,7 @@ describe('InspectorPane', () => {
     render(
       <InspectorPane
         node={{ ...baseNode, data: { ...baseNode.data, params: { resolution: '640x480' } } }}
-        nodeDefinition={definition}
+        nodeDefinition={definition as NodeDefinition}
         onParamChange={onParamChange}
         onLabelChange={onLabelChange}
         isMonitorView
