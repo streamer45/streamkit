@@ -916,9 +916,9 @@ impl ServerHandler for StreamKitMcp {
     ) -> Result<ReadResourceResult, McpError> {
         let (_role_name, perms) = extract_auth(&ctx, &self.app_state)?;
 
-        if !perms.list_samples {
+        if !perms.read_samples {
             return Err(McpError::invalid_request(
-                "Permission denied: list_samples required",
+                "Permission denied: read_samples required",
                 None,
             ));
         }
@@ -945,6 +945,13 @@ impl ServerHandler for StreamKitMcp {
         if !matches!(mode, "oneshot" | "dynamic" | "demo" | "user") {
             return Err(McpError::invalid_params(
                 format!("Unknown sample mode '{mode}' in URI '{uri}'"),
+                None,
+            ));
+        }
+
+        if id.contains("..") || id.contains('/') || id.contains('\\') {
+            return Err(McpError::invalid_params(
+                format!("Invalid resource ID in URI '{uri}'"),
                 None,
             ));
         }

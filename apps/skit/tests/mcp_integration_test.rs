@@ -2022,3 +2022,36 @@ async fn mcp_list_resource_templates() {
         "template should have YAML MIME type"
     );
 }
+
+#[tokio::test]
+async fn mcp_read_resource_rejects_path_traversal() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let (addr, _handle, token, _dir) = start_mcp_server_with_samples().await;
+    let client = reqwest::Client::new();
+    let session_id = init_mcp_session(&client, addr, &token).await;
+
+    let traversal_uris = [
+        "streamkit://samples/oneshot/../../etc/passwd",
+        "streamkit://samples/dynamic/..%2F..%2Fsecret",
+        "streamkit://samples/oneshot/sub/nested",
+    ];
+
+    for uri in &traversal_uris {
+        let read = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "resources/read",
+            "params": { "uri": uri }
+        });
+        let res = mcp_post_with_session(&client, addr, &read, &token, &session_id).await;
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let body_text = res.text().await.unwrap();
+        let body = extract_sse_json(&body_text);
+        assert!(
+            body.get("error").is_some_and(|e| !e.is_null()),
+            "expected error for traversal URI '{uri}', got: {body}"
+        );
+    }
+}
