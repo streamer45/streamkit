@@ -212,21 +212,27 @@ const SelectField: React.FC<{
   schema: JsonSchemaProperty;
   readOnly: boolean;
   onChange: (value: string) => void;
-}> = ({ inputId, value, schema, readOnly, onChange }) => (
-  <FormSelect
-    id={inputId}
-    value={String(value)}
-    onChange={(e) => onChange(e.target.value)}
-    disabled={readOnly}
-    aria-label={schema.description}
-  >
-    {(schema.enum ?? []).map((opt) => (
-      <option key={String(opt)} value={String(opt)}>
-        {String(opt)}
-      </option>
-    ))}
-  </FormSelect>
-);
+}> = ({ inputId, value, schema, readOnly, onChange }) => {
+  const options = (schema.enum ?? []).map(String);
+  const resolved = options.includes(String(value))
+    ? String(value)
+    : String(schema.default ?? options[0] ?? '');
+  return (
+    <FormSelect
+      id={inputId}
+      value={resolved}
+      onChange={(e) => onChange(e.target.value)}
+      disabled={readOnly}
+      aria-label={schema.description}
+    >
+      {options.map((opt) => (
+        <option key={opt} value={opt}>
+          {opt}
+        </option>
+      ))}
+    </FormSelect>
+  );
+};
 
 // Helper: Render number field
 const NumberField: React.FC<{
