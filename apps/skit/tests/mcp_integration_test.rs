@@ -354,11 +354,11 @@ async fn mcp_destroy_session_nonexistent_returns_error() {
 #[tokio::test]
 async fn mcp_config_endpoint_validation() {
     // Verify that McpConfig::validate rejects bad endpoints at config-load time
-    let mut mcp_config = streamkit_server::config::McpConfig::default();
-
-    // Disabled config should always pass
-    mcp_config.enabled = false;
-    mcp_config.endpoint = "/bad/path".to_string();
+    let mut mcp_config = streamkit_server::config::McpConfig {
+        enabled: false,
+        endpoint: "/bad/path".to_string(),
+        ..Default::default()
+    };
     assert!(mcp_config.validate().is_ok());
 
     // Enabled with bad prefix should fail
