@@ -221,6 +221,7 @@ test-skit:
     @echo "Testing skit..."
     @cargo test --workspace -- --skip gpu_tests::
     @cargo test -p streamkit-server --features "moq"
+    @cargo test -p streamkit-server --features "mcp"
 
 # Run GPU tests (requires a machine with a GPU)
 test-skit-gpu:
@@ -235,6 +236,7 @@ lint-skit:
     @echo "Linting skit..."
     @cargo fmt --all -- --check
     @cargo clippy -p streamkit-server --all-targets --features "moq" -- -D warnings
+    @cargo clippy -p streamkit-server --all-targets --features "mcp" -- -D warnings
     @cargo clippy --workspace --exclude streamkit-server --all-targets -- -D warnings
     @mkdir -p target
     @HOST=$(rustc -vV | sed -n 's/^host: //p'); \
