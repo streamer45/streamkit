@@ -78,6 +78,23 @@ the full architecture.
 - Standard images do not bundle ML models or plugins — mount them at runtime.
   Demo images (`Dockerfile.demo`, tagged `-demo`) include bundled models and plugins.
 
+## MCP (Model Context Protocol) Integration
+
+StreamKit embeds an MCP server (`apps/skit/src/mcp/`) that exposes the
+control plane as MCP tools, prompts, and resources. **Agents with MCP client
+support can use this directly** — no REST/WebSocket code needed.
+
+- **Endpoint:** `POST /api/v1/mcp` (Streamable HTTP) or `skit mcp` (STDIO)
+- **Config:** `[mcp]` section in `skit.toml` — set `enabled = true`
+- **Auth:** HTTP transport uses bearer tokens (same as REST API). STDIO is
+  unauthenticated (admin-level, local-only).
+- **Code:** `apps/skit/src/mcp/mod.rs` (tools + resources),
+  `apps/skit/src/mcp/prompts.rs` (prompts)
+- **Tests:** `apps/skit/tests/mcp_integration_test.rs`
+
+See [`agent_docs/mcp.md`](agent_docs/mcp.md) for the full tool/prompt/resource
+reference and usage patterns.
+
 ## Detailed Guides
 
 Read the relevant guide **before** starting work in that area:
@@ -85,6 +102,7 @@ Read the relevant guide **before** starting work in that area:
 | Guide | When to read |
 |-------|-------------|
 | [`agent_docs/architecture.md`](agent_docs/architecture.md) | Understanding crate relationships, data flow, key abstractions |
+| [`agent_docs/mcp.md`](agent_docs/mcp.md) | Using the MCP server — tools, prompts, resources, auth, permissions |
 | [`agent_docs/ui-development.md`](agent_docs/ui-development.md) | Working on React UI — state management, component patterns |
 | [`agent_docs/e2e-testing.md`](agent_docs/e2e-testing.md) | Running E2E tests, headless-browser pitfalls |
 | [`agent_docs/render-performance.md`](agent_docs/render-performance.md) | Compositor perf profiling, render regression testing |
