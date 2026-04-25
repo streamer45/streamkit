@@ -3914,9 +3914,11 @@ pub async fn create_dynamic_session(
         }
     }
 
-    // File-path security
+    // File-path security — policy violations are permission denials, not
+    // malformed input (preserves the 403 FORBIDDEN status the old HTTP
+    // handler returned for AppError::Forbidden from validate_file_*_paths).
     check_file_path_security(&engine_pipeline, &app_state.config.security)
-        .map_err(CreateSessionError::InvalidInput)?;
+        .map_err(CreateSessionError::Forbidden)?;
 
     // Pre-flight: reject early if over the session limit or name is taken,
     // avoiding wasted engine allocation.  The checks are re-verified under
