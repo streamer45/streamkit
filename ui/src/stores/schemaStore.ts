@@ -64,6 +64,19 @@ export function ensureSchemasLoaded(): Promise<void> {
   return inFlight;
 }
 
+/**
+ * Reloads schemas if any of the given plugin kinds are missing from the
+ * currently loaded node definitions.  This handles the race where the UI
+ * fetches schemas before the server finishes loading plugins in the background.
+ */
+export async function syncPluginSchemas(pluginKinds: Iterable<string>): Promise<void> {
+  const schemaKinds = new Set(useSchemaStore.getState().nodeDefinitions.map((d) => d.kind));
+  const missing = [...pluginKinds].some((kind) => !schemaKinds.has(kind));
+  if (missing) {
+    await reloadSchemas();
+  }
+}
+
 export async function reloadSchemas(): Promise<void> {
   const [typesRes, nodesRes] = await Promise.all([
     fetchApi('/api/v1/schema/packets'),
