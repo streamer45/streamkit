@@ -1796,3 +1796,229 @@ async fn mcp_get_logs_file_logging_disabled() {
         "expected file logging disabled error, got: {error_msg}"
     );
 }
+
+// -----------------------------------------------------------------------
+// Resource tests
+// -----------------------------------------------------------------------
+
+const SAMPLE_ONESHOT_YAML: &str = "\
+name: Test Oneshot Pipeline\n\
+description: A sample oneshot pipeline for testing\n\
+mode: oneshot\n\
+steps:\n\
+  - kind: streamkit::http_input\n\
+  - kind: core::passthrough\n\
+  - kind: streamkit::http_output";
+
+const SAMPLE_DYNAMIC_YAML: &str = "\
+name: Test Dynamic Pipeline\n\
+description: A sample dynamic pipeline for testing\n\
+nodes:\n\
+  pass:\n\
+    kind: core::passthrough";
+
+/// Start a test server with MCP enabled and sample pipeline files.
+async fn start_mcp_server_with_samples(
+) -> (SocketAddr, tokio::task::JoinHandle<()>, String, TempDir) {
+    let listener =
+        TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind test server listener");
+    let addr = listener.local_addr().unwrap();
+    let temp_dir = TempDir::new().unwrap();
+
+    // Create sample pipeline files in the temp dir
+    let samples_dir = temp_dir.path().join("samples");
+    let oneshot_dir = samples_dir.join("oneshot");
+    let dynamic_dir = samples_dir.join("dynamic");
+    tokio::fs::create_dir_all(&oneshot_dir).await.unwrap();
+    tokio::fs::create_dir_all(&dynamic_dir).await.unwrap();
+    tokio::fs::write(oneshot_dir.join("test-pipeline.yml"), SAMPLE_ONESHOT_YAML).await.unwrap();
+    tokio::fs::write(dynamic_dir.join("test-pipeline.yml"), SAMPLE_DYNAMIC_YAML).await.unwrap();
+
+    let mut config = Config::default();
+    config.mcp.enabled = true;
+    config.auth.mode = streamkit_server::config::AuthMode::Enabled;
+    config.auth.state_dir = temp_dir.path().to_string_lossy().to_string();
+    config.server.samples_dir = samples_dir.to_string_lossy().to_string();
+
+    let auth_state = streamkit_server::auth::AuthState::new(&config.auth, true)
+        .await
+        .expect("Failed to init auth state");
+    let auth_state = Arc::new(auth_state);
+
+    let admin_token_path = temp_dir.path().join("admin.token");
+    let admin_token =
+        tokio::fs::read_to_string(&admin_token_path).await.expect("Missing admin.token");
+    let admin_token = admin_token.trim().to_string();
+
+    let (app, _state) = streamkit_server::server::create_app(config, Some(auth_state));
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service()).await.unwrap();
+    });
+
+    wait_for_healthz(addr).await;
+    (addr, server_handle, admin_token, temp_dir)
+}
+
+#[tokio::test]
+async fn mcp_list_resources_returns_samples() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let (addr, _handle, token, _dir) = start_mcp_server_with_samples().await;
+    let client = reqwest::Client::new();
+    let session_id = init_mcp_session(&client, addr, &token).await;
+
+    let list = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "resources/list",
+        "params": {}
+    });
+    let res = mcp_post_with_session(&client, addr, &list, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let result = &body["result"];
+    assert!(!result.is_null(), "expected result from resources/list, got: {body}");
+
+    let resources = result["resources"].as_array().expect("expected resources array");
+    assert!(resources.len() >= 2, "expected at least 2 sample resources, got {}", resources.len());
+
+    // Verify URIs follow the expected pattern
+    let uris: Vec<&str> = resources.iter().filter_map(|r| r["uri"].as_str()).collect();
+    assert!(
+        uris.iter().any(|u| u.contains("oneshot/test-pipeline")),
+        "expected oneshot sample in resources, uris: {uris:?}"
+    );
+    assert!(
+        uris.iter().any(|u| u.contains("dynamic/test-pipeline")),
+        "expected dynamic sample in resources, uris: {uris:?}"
+    );
+
+    // Verify resource metadata
+    for resource in resources {
+        assert!(resource["name"].is_string(), "resource should have a name");
+        assert_eq!(
+            resource["mimeType"].as_str(),
+            Some("application/x-yaml"),
+            "resource should have YAML MIME type"
+        );
+        let uri = resource["uri"].as_str().unwrap();
+        assert!(
+            uri.starts_with("streamkit://samples/"),
+            "URI should start with streamkit://samples/, got: {uri}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn mcp_read_resource_returns_yaml() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let (addr, _handle, token, _dir) = start_mcp_server_with_samples().await;
+    let client = reqwest::Client::new();
+    let session_id = init_mcp_session(&client, addr, &token).await;
+
+    let read = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "resources/read",
+        "params": {
+            "uri": "streamkit://samples/oneshot/test-pipeline"
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &read, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let result = &body["result"];
+    assert!(!result.is_null(), "expected result from resources/read, got: {body}");
+
+    let contents = result["contents"].as_array().expect("expected contents array");
+    assert_eq!(contents.len(), 1, "expected exactly one content entry");
+
+    let content = &contents[0];
+    assert_eq!(
+        content["mimeType"].as_str(),
+        Some("application/x-yaml"),
+        "content should have YAML MIME type"
+    );
+
+    let text = content["text"].as_str().expect("expected text content");
+    assert!(text.contains("core::passthrough"), "YAML should contain pipeline node kinds");
+    assert!(text.contains("Test Oneshot Pipeline"), "YAML should contain the pipeline name");
+}
+
+#[tokio::test]
+async fn mcp_read_resource_not_found() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let (addr, _handle, token, _dir) = start_mcp_server_with_samples().await;
+    let client = reqwest::Client::new();
+    let session_id = init_mcp_session(&client, addr, &token).await;
+
+    let read = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "resources/read",
+        "params": {
+            "uri": "streamkit://samples/oneshot/nonexistent-pipeline"
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &read, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let error = &body["error"];
+    assert!(!error.is_null(), "expected error for nonexistent resource, got: {body}");
+    let error_msg = error["message"].as_str().unwrap_or("");
+    assert!(
+        error_msg.contains("not found") || error_msg.contains("Resource"),
+        "expected 'not found' in error message, got: {error_msg}"
+    );
+}
+
+#[tokio::test]
+async fn mcp_list_resource_templates() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let (addr, _handle, token, _dir) = start_mcp_server_with_samples().await;
+    let client = reqwest::Client::new();
+    let session_id = init_mcp_session(&client, addr, &token).await;
+
+    let list = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "resources/templates/list",
+        "params": {}
+    });
+    let res = mcp_post_with_session(&client, addr, &list, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let result = &body["result"];
+    assert!(!result.is_null(), "expected result from resources/templates/list, got: {body}");
+
+    let templates =
+        result["resourceTemplates"].as_array().expect("expected resourceTemplates array");
+    assert_eq!(templates.len(), 1, "expected exactly one resource template");
+
+    let template = &templates[0];
+    assert_eq!(
+        template["uriTemplate"].as_str(),
+        Some("streamkit://samples/{mode}/{id}"),
+        "expected template URI pattern"
+    );
+    assert!(
+        template["description"].as_str().is_some_and(|d| d.contains("oneshot")),
+        "template description should mention modes"
+    );
+    assert_eq!(
+        template["mimeType"].as_str(),
+        Some("application/x-yaml"),
+        "template should have YAML MIME type"
+    );
+}
