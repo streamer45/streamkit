@@ -1,6 +1,6 @@
 id: sensevoice
 name: SenseVoice
-version: 0.2.0
+version: 0.3.0
 node_kind: sensevoice
 kind: native
 entrypoint: libsensevoice.so

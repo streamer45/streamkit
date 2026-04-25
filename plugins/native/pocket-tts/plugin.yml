@@ -1,6 +1,6 @@
 id: pocket-tts
 name: Pocket TTS
-version: 0.2.0
+version: 0.3.0
 node_kind: pocket-tts
 kind: native
 entrypoint: libpocket_tts.so

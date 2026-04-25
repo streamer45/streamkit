@@ -1,6 +1,6 @@
 id: matcha
 name: Matcha
-version: 0.2.0
+version: 0.3.0
 node_kind: matcha
 kind: native
 entrypoint: libmatcha.so
