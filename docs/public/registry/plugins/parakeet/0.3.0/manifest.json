@@ -8,6 +8,7 @@
   "description": "Fast speech-to-text using NVIDIA Parakeet TDT via sherpa-onnx",
   "license": "MPL-2.0",
   "homepage": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3",
+  "repository": "https://github.com/streamer45/streamkit",
   "entrypoint": "libparakeet.so",
   "bundle": {
     "url": "https://github.com/streamer45/streamkit/releases/download/plugin-parakeet-v0.3.0/parakeet-0.3.0-bundle.tar.zst",
