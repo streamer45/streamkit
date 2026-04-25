@@ -159,7 +159,7 @@ fn build_design_pipeline_content(
                     .iter()
                     .map(|p| format!("`{}` ({:?})", p.name, p.accepts_types))
                     .collect();
-                let _ = write!(content, "  - Inputs: {}\n", pins.join(", "));
+                let _ = writeln!(content, "  - Inputs: {}", pins.join(", "));
             }
             if !def.outputs.is_empty() {
                 let pins: Vec<String> = def
@@ -167,7 +167,7 @@ fn build_design_pipeline_content(
                     .iter()
                     .map(|p| format!("`{}` ({:?})", p.name, p.produces_type))
                     .collect();
-                let _ = write!(content, "  - Outputs: {}\n", pins.join(", "));
+                let _ = writeln!(content, "  - Outputs: {}", pins.join(", "));
             }
             // Param schema summary (skip trivially empty schemas)
             if def.param_schema != serde_json::json!({})
@@ -177,9 +177,9 @@ fn build_design_pipeline_content(
                     if let Some(obj) = props.as_object() {
                         if !obj.is_empty() {
                             let keys: Vec<&String> = obj.keys().collect();
-                            let _ = write!(
+                            let _ = writeln!(
                                 content,
-                                "  - Params: {}\n",
+                                "  - Params: {}",
                                 keys.iter()
                                     .map(|k| format!("`{k}`"))
                                     .collect::<Vec<_>>()
@@ -287,9 +287,9 @@ fn build_debug_pipeline_content(
     if !api_pipeline.connections.is_empty() {
         content.push_str("\n## Connections\n\n");
         for conn in &api_pipeline.connections {
-            let _ = write!(
+            let _ = writeln!(
                 content,
-                "- `{}`.`{}` → `{}`.`{}` ({})\n",
+                "- `{}`.`{}` → `{}`.`{}` ({})",
                 conn.from_node,
                 conn.from_pin,
                 conn.to_node,
