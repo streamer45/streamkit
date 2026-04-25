@@ -12,23 +12,20 @@
 mod oneshot;
 mod prompts;
 
-use std::future::Future;
 use std::sync::Arc;
 
+use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::router::tool::ToolRouter;
-use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Content, GetPromptRequestParams, GetPromptResult,
-    ListPromptsResult, ListToolsResult, PaginatedRequestParams, PromptMessage, PromptMessageRole,
-    ServerCapabilities, ServerInfo,
+    CallToolResult, Content, GetPromptRequestParams, GetPromptResult, ListPromptsResult,
+    PaginatedRequestParams, ServerCapabilities, ServerInfo,
 };
 use rmcp::schemars;
 use rmcp::service::RequestContext;
-use rmcp::tool;
-use rmcp::tool_router;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
+use rmcp::{prompt_handler, tool, tool_handler, tool_router};
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
 
 use serde::{Deserialize, Serialize};
@@ -237,23 +234,6 @@ pub struct TuneNodeArgs {
 }
 
 // ---------------------------------------------------------------------------
-// MCP prompt argument structs
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct DesignPipelinePromptArgs {
-    /// Optional natural language description of the desired pipeline.
-    #[serde(default)]
-    pub description: Option<String>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct DebugPipelinePromptArgs {
-    /// Session ID or name to debug.
-    pub session_id: String,
-}
-
-// ---------------------------------------------------------------------------
 // StreamKit MCP service
 // ---------------------------------------------------------------------------
 
@@ -262,12 +242,17 @@ pub struct DebugPipelinePromptArgs {
 pub struct StreamKitMcp {
     app_state: Arc<AppState>,
     tool_router: ToolRouter<Self>,
+    prompt_router: PromptRouter<Self>,
 }
 
 #[tool_router]
 impl StreamKitMcp {
     pub fn new(app_state: Arc<AppState>) -> Self {
-        Self { app_state, tool_router: Self::tool_router() }
+        Self {
+            app_state,
+            tool_router: Self::tool_router(),
+            prompt_router: prompts::create_prompt_router(),
+        }
     }
 
     // -- list_nodes --------------------------------------------------------
@@ -800,137 +785,22 @@ impl StreamKitMcp {
 // ServerHandler trait impl
 // ---------------------------------------------------------------------------
 
-impl StreamKitMcp {
-    // -- prompt helpers ----------------------------------------------------
-
-    /// Build the `design_pipeline` prompt content.
-    async fn build_design_pipeline_prompt(
-        &self,
-        args: DesignPipelinePromptArgs,
-        ctx: &RequestContext<RoleServer>,
-    ) -> Result<GetPromptResult, McpError> {
-        let (_role_name, perms) = extract_auth(ctx, &self.app_state)?;
-
-        let definitions = filtered_node_definitions(&self.app_state, &perms)?;
-
-        let content =
-            prompts::build_design_pipeline_content(&definitions, args.description.as_deref());
-
-        Ok(GetPromptResult::new(vec![PromptMessage::new_text(PromptMessageRole::User, content)])
-            .with_description("Design a StreamKit pipeline"))
-    }
-
-    /// Build the `debug_pipeline` prompt content.
-    async fn build_debug_pipeline_prompt(
-        &self,
-        args: DebugPipelinePromptArgs,
-        ctx: &RequestContext<RoleServer>,
-    ) -> Result<GetPromptResult, McpError> {
-        let (session, _role_name, _perms) = resolve_session(
-            &self.app_state,
-            &args.session_id,
-            ctx,
-            |p| p.list_sessions,
-            "list_sessions",
-        )
-        .await?;
-
-        let api_pipeline = assemble_pipeline_state(&session).await;
-
-        let content = prompts::build_debug_pipeline_content(&args.session_id, &api_pipeline)
-            .map_err(|e| McpError::internal_error(e, None))?;
-
-        info!(session_id = %args.session_id, "MCP debug_pipeline prompt");
-
-        Ok(GetPromptResult::new(vec![PromptMessage::new_text(PromptMessageRole::User, content)])
-            .with_description(format!("Debug StreamKit session '{}'", args.session_id)))
-    }
-}
-
+#[tool_handler(router = self.tool_router)]
+#[prompt_handler(router = self.prompt_router)]
 impl ServerHandler for StreamKitMcp {
     fn get_info(&self) -> ServerInfo {
         let capabilities = ServerCapabilities::builder().enable_tools().enable_prompts().build();
         let mut info = ServerInfo::new(capabilities).with_instructions(
             "StreamKit MCP server. Use list_nodes to discover available \
-             processing nodes, validate_pipeline to check YAML, \
+             processing nodes, validate_pipeline to check YAML, and \
              create_session / list_sessions / get_pipeline / destroy_session \
-             to manage dynamic pipeline sessions, \
-             generate_oneshot_command to get a curl or skit-cli command for \
-             batch processing via the HTTP data plane, validate_batch and \
+             to manage dynamic pipeline sessions. Use validate_batch and \
              apply_batch to atomically mutate a running session's graph, \
-             and tune_node to send control messages (e.g. UpdateParams) to \
-             individual nodes at runtime. Two built-in prompts are available: \
-             design_pipeline (guided pipeline creation) and \
-             debug_pipeline (session diagnostics).",
+             tune_node to send control messages, and \
+             generate_oneshot_command to get a command for batch processing.",
         );
         info.server_info = rmcp::model::Implementation::new("streamkit", env!("CARGO_PKG_VERSION"));
         info
-    }
-
-    fn list_tools(
-        &self,
-        _: Option<PaginatedRequestParams>,
-        _: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
-        std::future::ready(Ok(ListToolsResult::with_all_items(self.tool_router.list_all())))
-    }
-
-    async fn call_tool(
-        &self,
-        request: CallToolRequestParams,
-        context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
-        let ctx = ToolCallContext::new(self, request, context);
-        self.tool_router.call(ctx).await
-    }
-
-    fn list_prompts(
-        &self,
-        _: Option<PaginatedRequestParams>,
-        _: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<ListPromptsResult, McpError>> + Send + '_ {
-        std::future::ready(Ok(ListPromptsResult::with_all_items(prompts::prompt_metadata())))
-    }
-
-    async fn get_prompt(
-        &self,
-        request: GetPromptRequestParams,
-        context: RequestContext<RoleServer>,
-    ) -> Result<GetPromptResult, McpError> {
-        match request.name.as_str() {
-            "design_pipeline" => {
-                let args: DesignPipelinePromptArgs = match &request.arguments {
-                    Some(map) => serde_json::from_value(serde_json::Value::Object(map.clone()))
-                        .map_err(|e| {
-                            McpError::invalid_params(
-                                format!("Invalid design_pipeline arguments: {e}"),
-                                None,
-                            )
-                        })?,
-                    None => DesignPipelinePromptArgs { description: None },
-                };
-                self.build_design_pipeline_prompt(args, &context).await
-            },
-            "debug_pipeline" => {
-                let args: DebugPipelinePromptArgs = match &request.arguments {
-                    Some(map) => serde_json::from_value(serde_json::Value::Object(map.clone()))
-                        .map_err(|e| {
-                            McpError::invalid_params(
-                                format!("Invalid debug_pipeline arguments: {e}"),
-                                None,
-                            )
-                        })?,
-                    None => {
-                        return Err(McpError::invalid_params(
-                            "debug_pipeline requires a 'session_id' argument",
-                            None,
-                        ));
-                    },
-                };
-                self.build_debug_pipeline_prompt(args, &context).await
-            },
-            other => Err(McpError::invalid_params(format!("Unknown prompt: '{other}'"), None)),
-        }
     }
 }
 

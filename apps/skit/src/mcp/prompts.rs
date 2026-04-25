@@ -2,39 +2,114 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! Prompt content builder functions for the MCP module.
+//! Prompt definitions and content builder helpers for the MCP module.
+//!
+//! The `#[prompt_router]` impl block defines the MCP prompts exposed via
+//! `prompts/list` and `prompts/get`.  Content builder functions remain as
+//! plain helpers called by the prompt methods.
 
-use rmcp::model::{Prompt, PromptArgument};
+use rmcp::handler::server::router::prompt::PromptRouter;
+use rmcp::handler::server::wrapper::Parameters;
+use rmcp::model::{GetPromptResult, PromptMessage, PromptMessageRole};
+use rmcp::service::RequestContext;
+use rmcp::{prompt, prompt_router, ErrorData as McpError, RoleServer};
+use serde::Deserialize;
 use streamkit_api::Pipeline;
 use streamkit_core::NodeDefinition;
+use tracing::info;
 
-/// Build the prompt metadata list exposed via `prompts/list`.
-pub(crate) fn prompt_metadata() -> Vec<Prompt> {
-    vec![
-        Prompt::new(
-            "design_pipeline",
-            Some(
-                "Generate a StreamKit pipeline YAML from a natural-language \
-                 description. Returns the full node catalogue (permission-filtered) \
-                 together with format rules and a design workflow.",
-            ),
-            Some(vec![PromptArgument::new("description")
-                .with_description("Natural language description of the desired pipeline.")
-                .with_required(false)]),
-        ),
-        Prompt::new(
-            "debug_pipeline",
-            Some(
-                "Diagnose a running StreamKit session. Returns the current \
-                 pipeline structure, per-node states, errors, and suggested \
-                 diagnostic steps.",
-            ),
-            Some(vec![PromptArgument::new("session_id")
-                .with_description("Session ID or name to debug.")
-                .with_required(true)]),
-        ),
-    ]
+use super::{
+    assemble_pipeline_state, extract_auth, filtered_node_definitions, resolve_session, StreamKitMcp,
+};
+
+/// Create a [`PromptRouter`] for [`StreamKitMcp`].
+///
+/// Exposed to the parent module so the struct constructor can store
+/// the router alongside the tool router.
+pub(super) fn create_prompt_router() -> PromptRouter<StreamKitMcp> {
+    StreamKitMcp::prompt_router()
 }
+
+// ---------------------------------------------------------------------------
+// Prompt argument structs
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, rmcp::schemars::JsonSchema)]
+pub(crate) struct DesignPipelinePromptArgs {
+    /// Optional natural language description of the desired pipeline.
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize, rmcp::schemars::JsonSchema)]
+pub(crate) struct DebugPipelinePromptArgs {
+    /// Session ID or name to debug.
+    pub session_id: String,
+}
+
+// ---------------------------------------------------------------------------
+// Prompt router
+// ---------------------------------------------------------------------------
+
+#[prompt_router]
+impl StreamKitMcp {
+    /// Design a StreamKit pipeline from scratch. Provides available node
+    /// definitions, YAML format, connection rules, and workflow steps.
+    #[prompt(
+        name = "design_pipeline",
+        description = "Design a StreamKit pipeline with available nodes and YAML format"
+    )]
+    async fn design_pipeline(
+        &self,
+        Parameters(args): Parameters<DesignPipelinePromptArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResult, McpError> {
+        let (_role_name, perms) = extract_auth(&ctx, &self.app_state)?;
+
+        let definitions = filtered_node_definitions(&self.app_state, &perms)?;
+
+        let content = build_design_pipeline_content(&definitions, args.description.as_deref());
+
+        let messages = vec![PromptMessage::new_text(PromptMessageRole::User, content)];
+        Ok(GetPromptResult::new(messages).with_description("Design a StreamKit pipeline"))
+    }
+
+    /// Debug a running StreamKit session. Shows pipeline state, node states,
+    /// connections, and diagnostic checklist.
+    #[prompt(
+        name = "debug_pipeline",
+        description = "Debug a running StreamKit session with pipeline state and diagnostics"
+    )]
+    async fn debug_pipeline(
+        &self,
+        Parameters(args): Parameters<DebugPipelinePromptArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResult, McpError> {
+        let (session, _role_name, _perms) = resolve_session(
+            &self.app_state,
+            &args.session_id,
+            &ctx,
+            |p| p.list_sessions,
+            "list_sessions",
+        )
+        .await?;
+
+        let api_pipeline = assemble_pipeline_state(&session).await;
+
+        let content = build_debug_pipeline_content(&args.session_id, &api_pipeline)
+            .map_err(|e| McpError::internal_error(e, None))?;
+
+        info!(session_id = %args.session_id, "MCP debug_pipeline prompt");
+
+        let messages = vec![PromptMessage::new_text(PromptMessageRole::User, content)];
+        Ok(GetPromptResult::new(messages)
+            .with_description(format!("Debug StreamKit session '{}'", args.session_id)))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Content builder helpers
+// ---------------------------------------------------------------------------
 
 /// Build the `design_pipeline` prompt content string.
 pub(crate) fn build_design_pipeline_content(
@@ -247,6 +322,18 @@ pub(crate) fn build_debug_pipeline_content(
 
     // Remediation tools
     content.push_str("## Available Tools for Fixing Issues\n\n");
+    content.push_str(
+        "- `validate_batch` — dry-run a set of graph mutations (add/remove \
+         nodes, connect/disconnect) without applying them.\n",
+    );
+    content.push_str(
+        "- `apply_batch` — atomically apply validated mutations to the \
+         running session.\n",
+    );
+    content.push_str(
+        "- `tune_node` — send a control message to a specific node \
+         (e.g. UpdateParams to change parameters at runtime).\n",
+    );
     content.push_str(
         "- `validate_pipeline` — re-validate the pipeline YAML to catch \
          structural issues.\n",
