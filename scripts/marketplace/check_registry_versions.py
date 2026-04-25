@@ -49,7 +49,7 @@ def build_manifest_from_plugin(plugin: dict, bundle_block: dict | None) -> dict:
         "license": plugin.get("license"),
         "license_url": plugin.get("license_url"),
         "homepage": plugin.get("homepage"),
-        "repository": plugin.get("repository"),
+        "repository": plugin.get("repo"),
         "entrypoint": plugin["entrypoint"],
         "bundle": bundle_block,
         "compatibility": plugin.get("compatibility"),
