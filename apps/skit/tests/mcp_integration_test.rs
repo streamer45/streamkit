@@ -2055,3 +2055,131 @@ async fn mcp_read_resource_rejects_path_traversal() {
         );
     }
 }
+
+// -----------------------------------------------------------------------
+// list_samples / get_server_info tests
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn mcp_list_samples_returns_pipelines() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let (addr, _handle, token, _dir) = start_mcp_server_with_samples().await;
+    let client = reqwest::Client::new();
+    let session_id = init_mcp_session(&client, addr, &token).await;
+
+    let call = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "list_samples",
+            "arguments": {}
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &call, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let result = &body["result"];
+    assert!(!result.is_null(), "expected result in response, got: {body}");
+
+    let content_text = result["content"][0]["text"].as_str().expect("expected text content");
+    let samples: Vec<serde_json::Value> =
+        serde_json::from_str(content_text).expect("expected JSON array");
+
+    assert!(
+        samples.len() >= 2,
+        "expected at least 2 samples (oneshot + dynamic), got {}",
+        samples.len()
+    );
+
+    // Verify each sample has the expected fields
+    for sample in &samples {
+        assert!(sample["id"].is_string(), "sample missing id");
+        assert!(sample["name"].is_string(), "sample missing name");
+        assert!(sample["mode"].is_string(), "sample missing mode");
+    }
+}
+
+#[tokio::test]
+async fn mcp_list_samples_filtered_by_mode() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let (addr, _handle, token, _dir) = start_mcp_server_with_samples().await;
+    let client = reqwest::Client::new();
+    let session_id = init_mcp_session(&client, addr, &token).await;
+
+    // Filter by "oneshot"
+    let call = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "list_samples",
+            "arguments": { "mode": "oneshot" }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &call, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let content_text = body["result"]["content"][0]["text"].as_str().expect("expected text");
+    let samples: Vec<serde_json::Value> =
+        serde_json::from_str(content_text).expect("expected JSON array");
+
+    assert!(!samples.is_empty(), "expected at least one oneshot sample");
+    for sample in &samples {
+        assert_eq!(sample["mode"].as_str().unwrap(), "oneshot", "expected only oneshot samples");
+    }
+}
+
+#[tokio::test]
+async fn mcp_get_server_info_returns_config() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let session_id = init_mcp_session(&client, addr, &token).await;
+
+    let call = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "get_server_info",
+            "arguments": {}
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &call, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let result = &body["result"];
+    assert!(!result.is_null(), "expected result in response, got: {body}");
+
+    let content_text = result["content"][0]["text"].as_str().expect("expected text content");
+    let info: serde_json::Value = serde_json::from_str(content_text).expect("expected valid JSON");
+
+    // Verify version is present
+    assert!(info["version"].is_string(), "expected version string");
+
+    // Verify features object
+    let features = &info["features"];
+    assert!(features.is_object(), "expected features object");
+    assert!(features["mcp"].is_boolean(), "expected mcp boolean");
+    assert!(features["oneshot"].is_boolean(), "expected oneshot boolean");
+    assert!(features["marketplace"].is_boolean(), "expected marketplace boolean");
+
+    // Verify limits
+    assert!(info["limits"]["max_body_size"].is_number(), "expected max_body_size number");
+
+    // Verify plugins
+    assert!(info["plugins"]["count"].is_number(), "expected plugins count");
+
+    // Verify auth
+    assert!(info["auth"]["enabled"].is_boolean(), "expected auth enabled boolean");
+}

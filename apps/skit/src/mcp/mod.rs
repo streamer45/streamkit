@@ -254,6 +254,13 @@ pub struct GetLogsArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListSamplesArgs {
+    /// Filter by mode: "oneshot", "dynamic", or omit for all.
+    #[serde(default)]
+    pub mode: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct TuneNodeArgs {
     /// Session ID or name.
     pub session_id: String,
@@ -749,6 +756,91 @@ impl StreamKitMcp {
         Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
+    // -- list_samples ------------------------------------------------------
+
+    #[tool(
+        description = "List available sample/template pipelines with their names, descriptions, and modes. Use these as starting points when designing new pipelines."
+    )]
+    async fn list_samples(
+        &self,
+        Parameters(args): Parameters<ListSamplesArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let (_role_name, perms) = extract_auth(&ctx, &self.app_state)?;
+
+        if !perms.list_samples {
+            return Err(McpError::invalid_request(
+                "Permission denied: list_samples required",
+                None,
+            ));
+        }
+
+        let samples = crate::samples::list_samples(&self.app_state, &perms)
+            .await
+            .map_err(|e| McpError::internal_error(format!("failed to list samples: {e}"), None))?;
+
+        let filtered: Vec<&streamkit_api::SamplePipeline> = match args.mode.as_deref() {
+            Some("oneshot") => samples.iter().filter(|s| s.mode == "oneshot").collect(),
+            Some("dynamic") => samples.iter().filter(|s| s.mode == "dynamic").collect(),
+            None => samples.iter().collect(),
+            Some(other) => {
+                return Err(McpError::invalid_params(
+                    format!("Invalid mode '{other}'. Must be 'oneshot' or 'dynamic'."),
+                    None,
+                ));
+            },
+        };
+
+        info!(count = filtered.len(), mode = ?args.mode, "MCP list_samples");
+
+        json_tool_result(&filtered)
+    }
+
+    // -- get_server_info ---------------------------------------------------
+
+    #[tool(
+        description = "Get StreamKit server configuration: enabled features (MoQ, marketplace, oneshot), limits, and version information. Useful for understanding the capabilities of the instance you're connected to."
+    )]
+    async fn get_server_info(
+        &self,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let (role_name, _perms) = extract_auth(&ctx, &self.app_state)?;
+
+        if role_name == "viewer" {
+            return Err(McpError::invalid_request(
+                "Permission denied: viewers cannot access server info",
+                None,
+            ));
+        }
+
+        let config = &self.app_state.config;
+        let plugin_count = self.app_state.plugin_manager.lock().await.list_plugins().len();
+
+        let info = serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "features": {
+                "moq": cfg!(feature = "moq"),
+                "mcp": config.mcp.enabled,
+                "oneshot": true,
+                "marketplace": config.plugins.marketplace.marketplace_enabled,
+            },
+            "limits": {
+                "max_body_size": config.server.max_body_size,
+            },
+            "plugins": {
+                "count": plugin_count,
+            },
+            "auth": {
+                "enabled": self.app_state.auth.is_enabled(),
+            },
+        });
+
+        tracing::info!("MCP get_server_info");
+
+        json_tool_result(&info)
+    }
+
     // -- tune_node ---------------------------------------------------------
 
     #[tool(
@@ -869,7 +961,10 @@ impl ServerHandler for StreamKitMcp {
              tune_node to send control messages, \
              generate_oneshot_command to get a command for batch processing, \
              get_logs to retrieve recent server logs for debugging, and \
-             resources/list to browse sample pipeline templates.",
+             resources/list to browse sample pipeline templates. \
+             Use list_samples to browse sample/template pipelines as starting \
+             points, and get_server_info to inspect server capabilities, \
+             enabled features, and limits.",
         );
         info.server_info = rmcp::model::Implementation::new("streamkit", env!("CARGO_PKG_VERSION"));
         info
