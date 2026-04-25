@@ -1587,3 +1587,212 @@ async fn test_mcp_stdio_tool_call() {
 
     child.kill().await.ok();
 }
+
+// -----------------------------------------------------------------------
+// get_logs tests
+// -----------------------------------------------------------------------
+
+/// Start a test server with MCP enabled, built-in auth, and file logging
+/// enabled pointing at a temp file.
+async fn start_mcp_server_with_file_logging(
+    log_file: &std::path::Path,
+) -> (SocketAddr, tokio::task::JoinHandle<()>, String, TempDir) {
+    let listener =
+        TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind test server listener");
+    let addr = listener.local_addr().unwrap();
+    let temp_dir = TempDir::new().unwrap();
+
+    let mut config = Config::default();
+    config.mcp.enabled = true;
+    config.auth.mode = streamkit_server::config::AuthMode::Enabled;
+    config.auth.state_dir = temp_dir.path().to_string_lossy().to_string();
+    config.log.file_enable = true;
+    config.log.file_path = log_file.to_string_lossy().to_string();
+
+    let auth_state = streamkit_server::auth::AuthState::new(&config.auth, true)
+        .await
+        .expect("Failed to init auth state");
+    let auth_state = Arc::new(auth_state);
+
+    let admin_token_path = temp_dir.path().join("admin.token");
+    let admin_token =
+        tokio::fs::read_to_string(&admin_token_path).await.expect("Missing admin.token");
+    let admin_token = admin_token.trim().to_string();
+
+    let (app, _state) = streamkit_server::server::create_app(config, Some(auth_state));
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service()).await.unwrap();
+    });
+
+    wait_for_healthz(addr).await;
+    (addr, server_handle, admin_token, temp_dir)
+}
+
+/// Start a test server with restricted permissions (no `access_all_sessions`).
+async fn start_no_admin_mcp_server() -> (SocketAddr, tokio::task::JoinHandle<()>, String, TempDir) {
+    let listener =
+        TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind test server listener");
+    let addr = listener.local_addr().unwrap();
+    let temp_dir = TempDir::new().unwrap();
+
+    let mut config = Config::default();
+    config.mcp.enabled = true;
+    config.auth.mode = streamkit_server::config::AuthMode::Enabled;
+    config.auth.state_dir = temp_dir.path().to_string_lossy().to_string();
+
+    if let Some(admin_perms) = config.permissions.roles.get_mut("admin") {
+        admin_perms.access_all_sessions = false;
+    }
+
+    let auth_state = streamkit_server::auth::AuthState::new(&config.auth, true)
+        .await
+        .expect("Failed to init auth state");
+    let auth_state = Arc::new(auth_state);
+
+    let admin_token_path = temp_dir.path().join("admin.token");
+    let admin_token =
+        tokio::fs::read_to_string(&admin_token_path).await.expect("Missing admin.token");
+    let admin_token = admin_token.trim().to_string();
+
+    let (app, _state) = streamkit_server::server::create_app(config, Some(auth_state));
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service()).await.unwrap();
+    });
+
+    wait_for_healthz(addr).await;
+    (addr, server_handle, admin_token, temp_dir)
+}
+
+#[tokio::test]
+async fn mcp_get_logs_returns_lines() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let log_dir = TempDir::new().unwrap();
+    let log_file = log_dir.path().join("test.log");
+
+    // Write sample log lines before starting the server.
+    let sample_lines = "\
+2024-01-01T00:00:00Z  INFO skit::server: Server started\n\
+2024-01-01T00:00:01Z  WARN skit::engine: Pipeline latency spike\n\
+2024-01-01T00:00:02Z ERROR skit::node: Node failed to process frame\n";
+    tokio::fs::write(&log_file, sample_lines).await.unwrap();
+
+    let (addr, _handle, token, _dir) = start_mcp_server_with_file_logging(&log_file).await;
+    let client = reqwest::Client::new();
+
+    let session_id = init_mcp_session(&client, addr, &token).await;
+
+    let call = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "get_logs",
+            "arguments": {}
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &call, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.expect("failed to read response body");
+    let body = extract_sse_json(&body_text);
+    let result = &body["result"];
+    assert!(!result.is_null(), "expected result in response, got: {body}");
+
+    let content = &result["content"][0]["text"];
+    assert!(content.is_string(), "expected text content in result");
+    let text = content.as_str().unwrap();
+    assert!(text.contains("Server started"), "expected log line about server start");
+    assert!(text.contains("Pipeline latency spike"), "expected log line about latency");
+    assert!(text.contains("Node failed"), "expected log line about node failure");
+}
+
+#[tokio::test]
+async fn mcp_get_logs_permission_denied() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let (addr, _handle, token, _dir) = start_no_admin_mcp_server().await;
+    let client = reqwest::Client::new();
+
+    let session_id = init_mcp_session(&client, addr, &token).await;
+
+    let call = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "get_logs",
+            "arguments": {}
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &call, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.expect("failed to read response body");
+    let body = extract_sse_json(&body_text);
+    let error = &body["error"];
+    assert!(!error.is_null(), "expected error in response, got: {body}");
+    let error_msg = error["message"].as_str().unwrap_or("");
+    assert!(
+        error_msg.contains("Permission denied") || error_msg.contains("access_all_sessions"),
+        "expected permission error, got: {error_msg}"
+    );
+}
+
+#[tokio::test]
+async fn mcp_get_logs_file_logging_disabled() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let listener =
+        TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind test server listener");
+    let addr = listener.local_addr().unwrap();
+    let temp_dir = TempDir::new().unwrap();
+
+    let mut config = Config::default();
+    config.mcp.enabled = true;
+    config.auth.mode = streamkit_server::config::AuthMode::Enabled;
+    config.auth.state_dir = temp_dir.path().to_string_lossy().to_string();
+    config.log.file_enable = false;
+
+    let auth_state = streamkit_server::auth::AuthState::new(&config.auth, true)
+        .await
+        .expect("Failed to init auth state");
+    let auth_state = Arc::new(auth_state);
+
+    let admin_token_path = temp_dir.path().join("admin.token");
+    let admin_token =
+        tokio::fs::read_to_string(&admin_token_path).await.expect("Missing admin.token");
+    let admin_token = admin_token.trim().to_string();
+
+    let (app, _state) = streamkit_server::server::create_app(config, Some(auth_state));
+    let _server_handle = tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service()).await.unwrap();
+    });
+
+    wait_for_healthz(addr).await;
+
+    let client = reqwest::Client::new();
+    let session_id = init_mcp_session(&client, addr, &admin_token).await;
+
+    let call = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "get_logs",
+            "arguments": {}
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &call, &admin_token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.expect("failed to read response body");
+    let body = extract_sse_json(&body_text);
+    let error = &body["error"];
+    assert!(!error.is_null(), "expected error in response, got: {body}");
+    let error_msg = error["message"].as_str().unwrap_or("");
+    assert!(
+        error_msg.contains("File logging is not enabled") || error_msg.contains("file_enable"),
+        "expected file logging disabled error, got: {error_msg}"
+    );
+}

@@ -51,13 +51,13 @@ pub struct LogQuery {
 #[derive(Serialize)]
 pub struct LogResponse {
     /// The log lines (after filtering).
-    lines: Vec<String>,
+    pub lines: Vec<String>,
     /// Byte offset for the next page in the current direction.
-    next_offset: u64,
+    pub next_offset: u64,
     /// Whether more data exists in the given direction.
-    has_more: bool,
+    pub has_more: bool,
     /// Total log file size in bytes.
-    file_size: u64,
+    pub file_size: u64,
 }
 
 /// Query parameters for the live-tail SSE stream.
@@ -70,7 +70,12 @@ pub struct LogStreamQuery {
 }
 
 /// Resolve the log file path from config, canonicalizing relative paths against cwd.
-fn resolve_log_path(config_path: &str) -> Result<PathBuf, StatusCode> {
+///
+/// # Errors
+///
+/// Returns `StatusCode::INTERNAL_SERVER_ERROR` if the current working directory
+/// cannot be determined (only relevant for relative paths).
+pub fn resolve_log_path(config_path: &str) -> Result<PathBuf, StatusCode> {
     let path = Path::new(config_path);
     if path.is_absolute() {
         Ok(path.to_path_buf())
@@ -115,7 +120,7 @@ fn matches_level(line: &str, level: &str) -> bool {
 }
 
 /// Check if a line passes both filters (level + substring).
-fn line_passes_filters(line: &str, level: Option<&str>, filter: Option<&str>) -> bool {
+pub fn line_passes_filters(line: &str, level: Option<&str>, filter: Option<&str>) -> bool {
     if let Some(lvl) = level {
         if !lvl.is_empty() && !matches_level(line, lvl) {
             return false;
@@ -290,7 +295,11 @@ async fn read_forward(
 /// byte position in the file. This ensures correct pagination across
 /// multiple requests: `next_offset` always points to the byte position of
 /// the oldest returned line, so the next backward page ends exactly before it.
-async fn read_backward(
+///
+/// # Errors
+///
+/// Returns `StatusCode::INTERNAL_SERVER_ERROR` on I/O failures (seek, read).
+pub async fn read_backward(
     mut file: tokio::fs::File,
     file_size: u64,
     offset: Option<u64>,

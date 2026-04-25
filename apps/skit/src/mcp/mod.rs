@@ -239,6 +239,19 @@ pub struct ApplyBatchArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetLogsArgs {
+    /// Maximum number of log lines to return (default: 100, max: 500).
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// Log level filter: "debug", "info", "warn", "error" (default: all levels).
+    #[serde(default)]
+    pub level: Option<String>,
+    /// Optional text filter to search within log messages.
+    #[serde(default)]
+    pub filter: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct TuneNodeArgs {
     /// Session ID or name.
     pub session_id: String,
@@ -665,6 +678,75 @@ impl StreamKitMcp {
         json_tool_result(&result)
     }
 
+    // -- get_logs ----------------------------------------------------------
+
+    #[tool(
+        description = "Retrieve recent server logs. Requires admin-level permissions (access_all_sessions). Returns the most recent log lines, optionally filtered by level and text. Useful for diagnosing pipeline and node errors that aren't visible in node states alone."
+    )]
+    async fn get_logs(
+        &self,
+        Parameters(args): Parameters<GetLogsArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        const DEFAULT_LIMIT: usize = 100;
+        const MAX_LIMIT: usize = 500;
+
+        let (_role_name, perms) = extract_auth(&ctx, &self.app_state)?;
+
+        if !perms.access_all_sessions {
+            return Err(McpError::invalid_request(
+                "Permission denied: access_all_sessions required",
+                None,
+            ));
+        }
+
+        if !self.app_state.config.log.file_enable {
+            return Err(McpError::invalid_request(
+                "File logging is not enabled. Set log.file_enable = true in server config.",
+                None,
+            ));
+        }
+
+        let log_path = crate::log_viewer::resolve_log_path(&self.app_state.config.log.file_path)
+            .map_err(|_| McpError::internal_error("Failed to resolve log file path", None))?;
+
+        if !log_path.exists() {
+            return Err(McpError::internal_error(
+                "Log file does not exist yet — the server may not have written any logs",
+                None,
+            ));
+        }
+
+        let limit = args.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
+
+        let file = tokio::fs::File::open(&log_path)
+            .await
+            .map_err(|e| McpError::internal_error(format!("Failed to open log file: {e}"), None))?;
+
+        let metadata = file.metadata().await.map_err(|e| {
+            McpError::internal_error(format!("Failed to read log file metadata: {e}"), None)
+        })?;
+        let file_size = metadata.len();
+
+        let response = crate::log_viewer::read_backward(
+            file,
+            file_size,
+            None,
+            limit,
+            args.level.as_deref(),
+            args.filter.as_deref(),
+        )
+        .await
+        .map_err(|status| {
+            McpError::internal_error(format!("Failed to read log file (HTTP {status})"), None)
+        })?;
+
+        info!(lines = response.lines.len(), "MCP get_logs");
+
+        let text = response.lines.join("\n");
+        Ok(CallToolResult::success(vec![Content::text(text)]))
+    }
+
     // -- tune_node ---------------------------------------------------------
 
     #[tool(
@@ -778,8 +860,9 @@ impl ServerHandler for StreamKitMcp {
              create_session / list_sessions / get_pipeline / destroy_session \
              to manage dynamic pipeline sessions. Use validate_batch and \
              apply_batch to mutate a running session's graph as a validated batch, \
-             tune_node to send control messages, and \
-             generate_oneshot_command to get a command for batch processing.",
+             tune_node to send control messages, \
+             generate_oneshot_command to get a command for batch processing, \
+             and get_logs to retrieve recent server logs for debugging.",
         );
         info.server_info = rmcp::model::Implementation::new("streamkit", env!("CARGO_PKG_VERSION"));
         info
