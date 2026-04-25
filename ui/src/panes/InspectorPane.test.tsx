@@ -60,7 +60,7 @@ describe('InspectorPane', () => {
         nodeDefinition={definition}
         onParamChange={onParamChange}
         onLabelChange={onLabelChange}
-      />,
+      />
     );
 
     const select = screen.getByRole('combobox', { name: 'Viewport resolution' });
@@ -95,7 +95,7 @@ describe('InspectorPane', () => {
         nodeDefinition={definition}
         onParamChange={onParamChange}
         onLabelChange={onLabelChange}
-      />,
+      />
     );
 
     const select = screen.getByRole('combobox', { name: 'Viewport resolution' });
@@ -124,7 +124,7 @@ describe('InspectorPane', () => {
         onParamChange={onParamChange}
         onLabelChange={onLabelChange}
         isMonitorView
-      />,
+      />
     );
 
     const select = screen.getByRole('combobox', { name: 'Processing mode' });
@@ -152,7 +152,7 @@ describe('InspectorPane', () => {
         nodeDefinition={definition}
         onParamChange={onParamChange}
         onLabelChange={onLabelChange}
-      />,
+      />
     );
 
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
@@ -181,7 +181,7 @@ describe('InspectorPane', () => {
         onParamChange={onParamChange}
         onLabelChange={onLabelChange}
         isMonitorView
-      />,
+      />
     );
 
     const select = screen.getByRole('combobox', { name: 'Viewport resolution' });
