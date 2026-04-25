@@ -26,6 +26,9 @@
 //!   is not received within the configured deadline.
 //! - Each instance caches the last successfully rendered frame; on render
 //!   failures the cached frame is returned instead of a blank.
+//! - After [`POISON_THRESHOLD`] consecutive render panics an instance is
+//!   *poisoned*: Servo calls are skipped entirely and the cached frame is
+//!   returned until a URL change (`UpdateConfig`) resets the state.
 //! - Frame render timing is emitted via `tracing` for observability.
 
 use std::cell::Cell;
@@ -43,6 +46,10 @@ use servo::{
 };
 
 use crate::config::ServoConfig;
+
+/// Number of consecutive render panics before an instance is marked as
+/// poisoned and Servo calls are skipped entirely.
+const POISON_THRESHOLD: u32 = 5;
 
 /// Opaque identifier for a plugin instance on the shared Servo thread.
 pub type NodeId = uuid::Uuid;
@@ -168,6 +175,12 @@ struct InstanceState {
     render_count: u64,
     /// Sum of render durations for average calculation.
     render_duration_sum: Duration,
+    /// Number of consecutive render panics for this instance.
+    consecutive_panic_count: u32,
+    /// When `true`, Servo calls are skipped and the cached frame is
+    /// returned directly.  Set after [`POISON_THRESHOLD`] consecutive
+    /// render panics; cleared on URL change (`UpdateConfig`).
+    poisoned: bool,
 }
 
 /// Entry point for the shared Servo thread.
@@ -201,20 +214,64 @@ fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
                 }
             },
             ServoWorkItem::Render { node_id } => {
+                // Poisoned instances skip Servo entirely and return the
+                // cached frame until a URL change resets the state.
+                if instances.get(&node_id).is_some_and(|s| s.poisoned) {
+                    send_fallback_frame(&instances, &node_id);
+                    continue;
+                }
+
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     handle_render(&mut instances, servo.as_ref(), &node_id);
                 }));
-                if let Err(panic) = result {
-                    let msg = panic_message(&panic);
-                    tracing::error!(
-                        node_id = %node_id,
-                        error = %msg,
-                        "Panic during Servo Render — sending fallback frame",
-                    );
-                    send_fallback_frame(&instances, &node_id);
+                match result {
+                    Ok(()) => {
+                        if let Some(state) = instances.get_mut(&node_id) {
+                            state.consecutive_panic_count = 0;
+                        }
+                    },
+                    Err(panic) => {
+                        let msg = panic_message(&panic);
+                        tracing::error!(
+                            node_id = %node_id,
+                            error = %msg,
+                            "Panic during Servo Render — sending fallback frame",
+                        );
+                        if let Some(state) = instances.get_mut(&node_id) {
+                            state.consecutive_panic_count += 1;
+                            if state.consecutive_panic_count >= POISON_THRESHOLD {
+                                state.poisoned = true;
+                                tracing::error!(
+                                    node_id = %node_id,
+                                    consecutive_panics = state.consecutive_panic_count,
+                                    "Servo instance poisoned after {} consecutive render \
+                                     panics — skipping Servo calls until URL change",
+                                    POISON_THRESHOLD,
+                                );
+                            }
+                        }
+                        send_fallback_frame(&instances, &node_id);
+                    },
                 }
             },
             ServoWorkItem::UpdateConfig { node_id, config } => {
+                // Reset poison state on URL change so the instance gets
+                // a fresh start with the new page.
+                if let Some(state) = instances.get_mut(&node_id) {
+                    let url_changed = !config.url.is_empty() && config.url != state.config.url;
+                    if url_changed && (state.poisoned || state.consecutive_panic_count > 0) {
+                        if state.poisoned {
+                            tracing::info!(
+                                node_id = %node_id,
+                                new_url = %config.url,
+                                "Resetting poisoned state on URL change",
+                            );
+                        }
+                        state.poisoned = false;
+                        state.consecutive_panic_count = 0;
+                    }
+                }
+
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     handle_update_config(&mut instances, servo.as_ref(), &node_id, &config);
                 }));
@@ -403,6 +460,8 @@ fn handle_register(
                     last_good_frame: None,
                     render_count: 0,
                     render_duration_sum: Duration::ZERO,
+                    consecutive_panic_count: 0,
+                    poisoned: false,
                 },
             );
         },
