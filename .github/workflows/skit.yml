@@ -7,6 +7,7 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
   lint:
@@ -49,6 +50,10 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.9
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: skit
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -106,6 +111,10 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.9
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: skit
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
 
       - name: Run tests (GPU tests run separately on self-hosted runner)
         run: |
@@ -137,6 +146,9 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.9
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: skit-gpu
+          cache-on-failure: true
 
       - name: Run GPU tests
         env:
@@ -198,6 +210,10 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.9
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: skit
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
 
       - name: Build all crates
         run: |
