@@ -111,9 +111,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/sccache
-          key: sccache-plugins-${{ runner.os }}-${{ hashFiles('plugins/**/Cargo.lock') }}
+          key: sccache-marketplace-${{ runner.os }}-${{ hashFiles('plugins/**/Cargo.lock') }}
           restore-keys: |
-            sccache-plugins-${{ runner.os }}-
+            sccache-marketplace-${{ runner.os }}-
 
       - uses: mozilla-actions/sccache-action@v0.0.9
 
@@ -208,7 +208,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~/.cache/sccache
-          key: sccache-plugins-${{ runner.os }}-${{ hashFiles('plugins/**/Cargo.lock') }}
+          key: sccache-marketplace-${{ runner.os }}-${{ hashFiles('plugins/**/Cargo.lock') }}
 
   publish-registry:
     name: Publish Registry (PR)
