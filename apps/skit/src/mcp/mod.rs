@@ -738,6 +738,13 @@ impl StreamKitMcp {
             ));
         }
 
+        if args.kind.starts_with("plugin::") && !perms.is_plugin_allowed(&args.kind) {
+            return Err(McpError::invalid_request(
+                format!("Permission denied: plugin '{}' is not allowed", args.kind),
+                None,
+            ));
+        }
+
         let definitions = filtered_node_definitions(&self.app_state, &perms)?;
         let definition = definitions.into_iter().find(|d| d.kind == args.kind);
 
