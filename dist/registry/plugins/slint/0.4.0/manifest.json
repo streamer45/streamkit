@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "slint",
+  "name": "Slint",
+  "version": "0.4.0",
+  "node_kind": "slint",
+  "kind": "native",
+  "description": "Slint UI rendering as a video source \u2014 render .slint files to RGBA8 frames at configurable resolution and frame rate",
+  "license": "MPL-2.0",
+  "entrypoint": "libslint.so",
+  "bundle": {
+    "url": "https://github.com/streamer45/streamkit/releases/download/plugin-slint-v0.4.0/slint-0.4.0-bundle.tar.zst",
+    "sha256": "2b33767cdd35b9eeba3bec4e1801aa020a59ef9a61c54b28f7c5d71fa087034d",
+    "size_bytes": 9718811
+  },
+  "models": []
+}

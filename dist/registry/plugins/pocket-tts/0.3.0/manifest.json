@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "pocket-tts",
+  "name": "Pocket TTS",
+  "version": "0.3.0",
+  "node_kind": "pocket-tts",
+  "kind": "native",
+  "description": "Lightweight CPU TTS using Kyutai Pocket TTS (Candle)",
+  "license": "MPL-2.0",
+  "entrypoint": "libpocket_tts.so",
+  "bundle": {
+    "url": "https://github.com/streamer45/streamkit/releases/download/plugin-pocket-tts-v0.3.0/pocket-tts-0.3.0-bundle.tar.zst",
+    "sha256": "9f86803c8fce08f84da8484f2e7c38037ed20215df10d0188a423631bc7f76b0",
+    "size_bytes": 3777767
+  },
+  "models": [
+    {
+      "id": "pocket-tts-b6369a24",
+      "name": "Pocket TTS b6369a24",
+      "default": true,
+      "source": "huggingface",
+      "repo_id": "streamkit/pocket-tts-models",
+      "revision": "main",
+      "files": [
+        "pocket-tts-b6369a24.tar.bz2"
+      ],
+      "expected_size_bytes": 169847585,
+      "license": "CC-BY-4.0",
+      "license_url": "https://huggingface.co/kyutai/pocket-tts",
+      "sha256": "7661d610217e8d2b0ae1d8739d384756e50c734fb136047679ca651385ed3035"
+    }
+  ]
+}

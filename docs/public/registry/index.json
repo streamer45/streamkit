@@ -5,8 +5,14 @@
       "id": "aac-encoder",
       "name": "AAC Encoder",
       "description": "AAC-LC audio encoder using FDK AAC (Fraunhofer). Accepts 48 kHz mono or stereo f32 PCM audio, outputs AAC-LC encoded stereo frames.  Mono input is automatically upmixed. Requires libfdk-aac.so.2 at runtime.",
-      "latest": "0.1.0",
+      "latest": "0.2.0",
       "versions": [
+        {
+          "version": "0.2.0",
+          "manifest_url": "https://streamkit.dev/registry/plugins/aac-encoder/0.2.0/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/aac-encoder/0.2.0/manifest.minisig",
+          "published_at": "2026-04-25"
+        },
         {
           "version": "0.1.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/aac-encoder/0.1.0/manifest.json",
@@ -19,8 +25,14 @@
       "id": "helsinki",
       "name": "Helsinki",
       "description": "Neural machine translation using OPUS-MT",
-      "latest": "0.2.0",
+      "latest": "0.3.0",
       "versions": [
+        {
+          "version": "0.3.0",
+          "manifest_url": "https://streamkit.dev/registry/plugins/helsinki/0.3.0/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/helsinki/0.3.0/manifest.minisig",
+          "published_at": "2026-04-25"
+        },
         {
           "version": "0.2.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/helsinki/0.2.0/manifest.json",
@@ -39,8 +51,14 @@
       "id": "kokoro",
       "name": "Kokoro",
       "description": "Text-to-speech using Sherpa-ONNX Kokoro models",
-      "latest": "0.2.0",
+      "latest": "0.3.0",
       "versions": [
+        {
+          "version": "0.3.0",
+          "manifest_url": "https://streamkit.dev/registry/plugins/kokoro/0.3.0/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/kokoro/0.3.0/manifest.minisig",
+          "published_at": "2026-04-25"
+        },
         {
           "version": "0.2.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/kokoro/0.2.0/manifest.json",
@@ -59,8 +77,14 @@
       "id": "matcha",
       "name": "Matcha",
       "description": "Text-to-speech using Matcha models",
-      "latest": "0.2.0",
+      "latest": "0.3.0",
       "versions": [
+        {
+          "version": "0.3.0",
+          "manifest_url": "https://streamkit.dev/registry/plugins/matcha/0.3.0/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/matcha/0.3.0/manifest.minisig",
+          "published_at": "2026-04-25"
+        },
         {
           "version": "0.2.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/matcha/0.2.0/manifest.json",
@@ -79,8 +103,14 @@
       "id": "nllb",
       "name": "NLLB",
       "description": "Neural machine translation using NLLB",
-      "latest": "0.2.0",
+      "latest": "0.3.0",
       "versions": [
+        {
+          "version": "0.3.0",
+          "manifest_url": "https://streamkit.dev/registry/plugins/nllb/0.3.0/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/nllb/0.3.0/manifest.minisig",
+          "published_at": "2026-04-25"
+        },
         {
           "version": "0.2.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/nllb/0.2.0/manifest.json",
@@ -99,8 +129,14 @@
       "id": "parakeet",
       "name": "Parakeet TDT",
       "description": "Fast speech-to-text using NVIDIA Parakeet TDT via sherpa-onnx",
-      "latest": "0.2.0",
+      "latest": "0.3.0",
       "versions": [
+        {
+          "version": "0.3.0",
+          "manifest_url": "https://streamkit.dev/registry/plugins/parakeet/0.3.0/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/parakeet/0.3.0/manifest.minisig",
+          "published_at": "2026-04-25"
+        },
         {
           "version": "0.2.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/parakeet/0.2.0/manifest.json",
@@ -119,8 +155,14 @@
       "id": "piper",
       "name": "Piper",
       "description": "Text-to-speech using Piper VITS models",
-      "latest": "0.2.0",
+      "latest": "0.3.0",
       "versions": [
+        {
+          "version": "0.3.0",
+          "manifest_url": "https://streamkit.dev/registry/plugins/piper/0.3.0/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/piper/0.3.0/manifest.minisig",
+          "published_at": "2026-04-25"
+        },
         {
           "version": "0.2.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/piper/0.2.0/manifest.json",
@@ -139,8 +181,14 @@
       "id": "pocket-tts",
       "name": "Pocket TTS",
       "description": "Lightweight CPU TTS using Kyutai Pocket TTS (Candle)",
-      "latest": "0.2.0",
+      "latest": "0.3.0",
       "versions": [
+        {
+          "version": "0.3.0",
+          "manifest_url": "https://streamkit.dev/registry/plugins/pocket-tts/0.3.0/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/pocket-tts/0.3.0/manifest.minisig",
+          "published_at": "2026-04-25"
+        },
         {
           "version": "0.2.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/pocket-tts/0.2.0/manifest.json",
@@ -159,8 +207,14 @@
       "id": "sensevoice",
       "name": "SenseVoice",
       "description": "Streaming speech-to-text using SenseVoice",
-      "latest": "0.2.0",
+      "latest": "0.3.0",
       "versions": [
+        {
+          "version": "0.3.0",
+          "manifest_url": "https://streamkit.dev/registry/plugins/sensevoice/0.3.0/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/sensevoice/0.3.0/manifest.minisig",
+          "published_at": "2026-04-25"
+        },
         {
           "version": "0.2.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/sensevoice/0.2.0/manifest.json",
@@ -176,11 +230,31 @@
       ]
     },
     {
+      "id": "servo",
+      "name": "Servo Web Renderer",
+      "description": "Render web pages to RGBA8 video frames via the Servo web engine",
+      "latest": "0.1.0",
+      "versions": [
+        {
+          "version": "0.1.0",
+          "manifest_url": "https://streamkit.dev/registry/plugins/servo/0.1.0/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/servo/0.1.0/manifest.minisig",
+          "published_at": "2026-04-25"
+        }
+      ]
+    },
+    {
       "id": "slint",
       "name": "Slint",
       "description": "Slint UI rendering as a video source \u2014 render .slint files to RGBA8 frames at configurable resolution and frame rate",
-      "latest": "0.3.0",
+      "latest": "0.4.0",
       "versions": [
+        {
+          "version": "0.4.0",
+          "manifest_url": "https://streamkit.dev/registry/plugins/slint/0.4.0/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/slint/0.4.0/manifest.minisig",
+          "published_at": "2026-04-25"
+        },
         {
           "version": "0.3.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/slint/0.3.0/manifest.json",
@@ -205,8 +279,14 @@
       "id": "supertonic",
       "name": "Supertonic",
       "description": "Multilingual TTS using Supertonic (66M params, 5 languages, up to 167x real-time)",
-      "latest": "0.2.0",
+      "latest": "0.3.0",
       "versions": [
+        {
+          "version": "0.3.0",
+          "manifest_url": "https://streamkit.dev/registry/plugins/supertonic/0.3.0/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/supertonic/0.3.0/manifest.minisig",
+          "published_at": "2026-04-25"
+        },
         {
           "version": "0.2.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/supertonic/0.2.0/manifest.json",
@@ -225,8 +305,14 @@
       "id": "vad",
       "name": "VAD",
       "description": "Voice activity detection",
-      "latest": "0.3.0",
+      "latest": "0.4.0",
       "versions": [
+        {
+          "version": "0.4.0",
+          "manifest_url": "https://streamkit.dev/registry/plugins/vad/0.4.0/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/vad/0.4.0/manifest.minisig",
+          "published_at": "2026-04-25"
+        },
         {
           "version": "0.3.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/vad/0.3.0/manifest.json",
@@ -251,8 +337,14 @@
       "id": "whisper",
       "name": "Whisper",
       "description": "Streaming speech-to-text using whisper.cpp",
-      "latest": "0.2.0",
+      "latest": "0.3.0",
       "versions": [
+        {
+          "version": "0.3.0",
+          "manifest_url": "https://streamkit.dev/registry/plugins/whisper/0.3.0/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/whisper/0.3.0/manifest.minisig",
+          "published_at": "2026-04-25"
+        },
         {
           "version": "0.2.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/whisper/0.2.0/manifest.json",

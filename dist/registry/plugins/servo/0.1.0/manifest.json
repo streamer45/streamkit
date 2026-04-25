@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "servo",
+  "name": "Servo Web Renderer",
+  "version": "0.1.0",
+  "node_kind": "servo",
+  "kind": "native",
+  "description": "Render web pages to RGBA8 video frames via the Servo web engine",
+  "license": "MPL-2.0",
+  "entrypoint": "libservo_web.so",
+  "bundle": {
+    "url": "https://github.com/streamer45/streamkit/releases/download/plugin-servo-v0.1.0/servo-0.1.0-bundle.tar.zst",
+    "sha256": "501c41957151aef10c11d68ec7cf07c43c064209376340db08ba7a40eb9a3a5f",
+    "size_bytes": 49393214
+  },
+  "models": []
+}
