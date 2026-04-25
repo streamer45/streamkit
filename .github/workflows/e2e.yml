@@ -45,6 +45,14 @@ jobs:
         with:
           toolchain: "1.92.0"
 
+      - name: Restore sccache cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/sccache
+          key: sccache-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            sccache-${{ runner.os }}-
+
       - uses: mozilla-actions/sccache-action@v0.0.9
 
       - uses: Swatinem/rust-cache@v2
@@ -93,6 +101,13 @@ jobs:
         run: |
           cd tests/pipeline-validation
           PIPELINE_TEST_URL=http://127.0.0.1:4545 cargo test --test validate
+
+      - name: Save sccache cache
+        if: always() && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/sccache
+          key: sccache-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
 
   pipeline-validation-gpu:
     name: Pipeline Validation (GPU)
@@ -238,6 +253,14 @@ jobs:
         with:
           toolchain: "1.92.0"
 
+      - name: Restore sccache cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/sccache
+          key: sccache-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            sccache-${{ runner.os }}-
+
       - uses: mozilla-actions/sccache-action@v0.0.9
 
       - uses: Swatinem/rust-cache@v2
@@ -330,3 +353,10 @@ jobs:
           name: playwright-results
           path: e2e/test-results/
           retention-days: 7
+
+      - name: Save sccache cache
+        if: always() && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/sccache
+          key: sccache-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
