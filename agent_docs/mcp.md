@@ -45,7 +45,7 @@ delegate to shared helper → result`.
 | `list_nodes` | All node definitions (kind, schema, pins, categories) | any role |
 | `get_node_definition` | Single node definition by kind | `is_node_allowed` + `is_plugin_allowed` |
 | `list_plugins` | Installed plugins (kind, version, type) | `is_plugin_allowed` filter |
-| `list_samples` | Sample pipelines with mode filter (`oneshot`/`dynamic`/`demo`/`user`) | `list_samples` |
+| `list_samples` | Sample pipelines with mode filter (`oneshot`/`dynamic`) | `list_samples` |
 | `get_server_info` | Server version, features, limits, plugin count | non-viewer role |
 
 ### Pipeline validation
@@ -95,8 +95,12 @@ Resources expose sample pipelines as browsable `streamkit://` URIs.
 | `read_resource` | Returns YAML content for a URI | `read_samples` |
 | `list_resource_templates` | URI template schema | none (static metadata) |
 
-Resource URIs follow `streamkit://samples/{mode}/{id}` where mode is
-`oneshot`, `dynamic`, `demo`, or `user`.
+Resource URIs follow `streamkit://samples/{subdir}/{id}` where subdir is
+`oneshot`, `dynamic`, `demo`, or `user` (the subdirectory the sample lives in).
+
+Note: `SamplePipeline.mode` is always `"oneshot"` or `"dynamic"` (from the
+pipeline's YAML `mode:` field). The `demo`/`user` prefixes in resource URIs
+refer to the *subdirectory*, not the pipeline mode.
 
 ## Permissions
 
