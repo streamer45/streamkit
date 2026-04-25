@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "vad",
+  "name": "VAD",
+  "version": "0.4.0",
+  "node_kind": "vad",
+  "kind": "native",
+  "description": "Voice activity detection",
+  "license": "MPL-2.0",
+  "entrypoint": "libvad.so",
+  "bundle": {
+    "url": "https://github.com/streamer45/streamkit/releases/download/plugin-vad-v0.4.0/vad-0.4.0-bundle.tar.zst",
+    "sha256": "5122e4a24598ad761b4dc385e7ebc2343cb7249f7714546a0d0a56d69ab9d957",
+    "size_bytes": 7629384
+  },
+  "models": [
+    {
+      "id": "ten-vad",
+      "name": "ten-vad",
+      "default": true,
+      "source": "huggingface",
+      "repo_id": "streamkit/vad-models",
+      "revision": "main",
+      "files": [
+        "ten-vad.onnx"
+      ],
+      "expected_size_bytes": 332211,
+      "license": "LicenseRef-ten-vad",
+      "license_url": "https://github.com/TEN-framework/ten-vad",
+      "sha256": "718cb7eef47e3cf5ddbe7e967a7503f46b8b469c0706872f494dfa921b486206"
+    }
+  ]
+}
