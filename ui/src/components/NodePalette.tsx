@@ -236,7 +236,7 @@ const ScrollArea = styled.div`
   }
 `;
 
-const PLUGIN_FILTER = 'plugin';
+const PLUGIN_FILTER = '__plugin__';
 
 interface NodePaletteProps {
   nodeDefinitions: NodeDefinition[];
@@ -340,23 +340,24 @@ const NodePalette: React.FC<NodePaletteProps> = ({
   const subtext = onNodeClick ? 'Drag to add · Click for details' : 'Drag to add';
 
   type Group = { _root: NodeDefinition[]; _subs: Map<string, NodeDefinition[]> };
-  const groups = sortedDefs.reduce<Record<string, Group>>((acc, def) => {
-    const cats =
-      def.categories.length > 0 ? def.categories : (['Uncategorized'] as readonly string[]);
-    const top = cats[0];
-    const sub = cats[1] ?? null;
-    if (!acc[top]) acc[top] = { _root: [], _subs: new Map() };
-    if (sub) {
-      const arr = acc[top]._subs.get(sub) ?? [];
-      arr.push(def);
-      acc[top]._subs.set(sub, arr);
-    } else {
-      acc[top]._root.push(def);
-    }
-    return acc;
-  }, {});
-
-  const topKeys = Object.keys(groups).sort();
+  const { groups, topKeys } = React.useMemo(() => {
+    const g = sortedDefs.reduce<Record<string, Group>>((acc, def) => {
+      const cats =
+        def.categories.length > 0 ? def.categories : (['Uncategorized'] as readonly string[]);
+      const top = cats[0];
+      const sub = cats[1] ?? null;
+      if (!acc[top]) acc[top] = { _root: [], _subs: new Map() };
+      if (sub) {
+        const arr = acc[top]._subs.get(sub) ?? [];
+        arr.push(def);
+        acc[top]._subs.set(sub, arr);
+      } else {
+        acc[top]._root.push(def);
+      }
+      return acc;
+    }, {});
+    return { groups: g, topKeys: Object.keys(g).sort() };
+  }, [sortedDefs]);
 
   const renderNodeCard = (def: NodeDefinition, showCategory?: boolean) => (
     <NodeCard

@@ -308,7 +308,9 @@ const ControlPane: React.FC<ControlPaneProps> = ({
     ensurePluginsLoaded()
       .then(() => {
         const kinds = usePluginStore.getState().plugins.map((p) => p.kind);
-        return syncPluginSchemas(kinds);
+        return syncPluginSchemas(kinds).catch((err) => {
+          logger.error('Failed to sync plugin schemas', err);
+        });
       })
       .catch((err) => {
         logger.error('Failed to load plugins', err);
