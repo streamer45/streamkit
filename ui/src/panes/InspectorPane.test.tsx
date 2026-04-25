@@ -106,6 +106,34 @@ describe('InspectorPane', () => {
     expect(select).toHaveValue('640x480');
   });
 
+  it('falls back to first enum value when schema.default is not in enum', () => {
+    const definition = {
+      ...baseNodeDefinition,
+      param_schema: {
+        properties: {
+          resolution: {
+            type: 'string',
+            enum: ['640x480', '1280x720'],
+            default: 'not-a-valid-option',
+            description: 'Viewport resolution',
+          },
+        },
+      },
+    };
+
+    render(
+      <InspectorPane
+        node={baseNode}
+        nodeDefinition={definition as NodeDefinition}
+        onParamChange={onParamChange}
+        onLabelChange={onLabelChange}
+      />
+    );
+
+    const select = screen.getByRole('combobox', { name: 'Viewport resolution' });
+    expect(select).toHaveValue('640x480');
+  });
+
   it('sends UpdateParams on selection change', () => {
     const definition = {
       ...baseNodeDefinition,

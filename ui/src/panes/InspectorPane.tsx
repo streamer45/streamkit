@@ -214,9 +214,9 @@ const SelectField: React.FC<{
   onChange: (value: string) => void;
 }> = ({ inputId, value, schema, readOnly, onChange }) => {
   const options = (schema.enum ?? []).map(String);
-  const resolved = options.includes(String(value))
-    ? String(value)
-    : String(schema.default ?? options[0] ?? '');
+  const defaultStr = schema.default != null ? String(schema.default) : undefined;
+  const fallback = (defaultStr && options.includes(defaultStr) ? defaultStr : options[0]) ?? '';
+  const resolved = options.includes(String(value)) ? String(value) : fallback;
   return (
     <FormSelect
       id={inputId}
