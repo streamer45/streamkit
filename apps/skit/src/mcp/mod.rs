@@ -24,8 +24,10 @@ use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
-    CallToolResult, Content, GetPromptRequestParams, GetPromptResult, ListPromptsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerInfo,
+    Annotated, CallToolResult, Content, GetPromptRequestParams, GetPromptResult, ListPromptsResult,
+    ListResourceTemplatesResult, ListResourcesResult, PaginatedRequestParams, RawResource,
+    RawResourceTemplate, ReadResourceRequestParams, ReadResourceResult, ResourceContents,
+    ServerCapabilities, ServerInfo,
 };
 use rmcp::schemars;
 use rmcp::service::RequestContext;
@@ -851,7 +853,11 @@ impl StreamKitMcp {
 #[prompt_handler(router = self.prompt_router)]
 impl ServerHandler for StreamKitMcp {
     fn get_info(&self) -> ServerInfo {
-        let capabilities = ServerCapabilities::builder().enable_tools().enable_prompts().build();
+        let capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_prompts()
+            .enable_resources()
+            .build();
         let mut info = ServerInfo::new(capabilities).with_instructions(
             "StreamKit MCP server. Use list_nodes to discover available \
              processing nodes, get_node_definition to look up a specific \
@@ -862,10 +868,123 @@ impl ServerHandler for StreamKitMcp {
              apply_batch to mutate a running session's graph as a validated batch, \
              tune_node to send control messages, \
              generate_oneshot_command to get a command for batch processing, \
-             and get_logs to retrieve recent server logs for debugging.",
+             get_logs to retrieve recent server logs for debugging, and \
+             resources/list to browse sample pipeline templates.",
         );
         info.server_info = rmcp::model::Implementation::new("streamkit", env!("CARGO_PKG_VERSION"));
         info
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        let (_role_name, perms) = extract_auth(&ctx, &self.app_state)?;
+
+        if !perms.list_samples {
+            return Err(McpError::invalid_request(
+                "Permission denied: list_samples required",
+                None,
+            ));
+        }
+
+        let samples = crate::samples::list_samples(&self.app_state, &perms)
+            .await
+            .map_err(|e| McpError::internal_error(format!("failed to list samples: {e}"), None))?;
+
+        let resources: Vec<_> = samples
+            .into_iter()
+            .map(|s| {
+                let uri = format!("streamkit://samples/{}", s.id);
+                let raw = RawResource::new(&uri, &s.name)
+                    .with_description(&s.description)
+                    .with_mime_type("application/x-yaml");
+                Annotated::new(raw, None)
+            })
+            .collect();
+
+        info!(count = resources.len(), "MCP list_resources");
+
+        Ok(ListResourcesResult::with_all_items(resources))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, McpError> {
+        let (_role_name, perms) = extract_auth(&ctx, &self.app_state)?;
+
+        if !perms.read_samples {
+            return Err(McpError::invalid_request(
+                "Permission denied: read_samples required",
+                None,
+            ));
+        }
+
+        let uri = &request.uri;
+        let path = uri.strip_prefix("streamkit://samples/").ok_or_else(|| {
+            McpError::invalid_params(
+                format!(
+                    "Invalid resource URI '{uri}': expected streamkit://samples/{{mode}}/{{id}}"
+                ),
+                None,
+            )
+        })?;
+
+        let (mode, id) = path.split_once('/').ok_or_else(|| {
+            McpError::invalid_params(
+                format!(
+                    "Malformed resource URI '{uri}': expected streamkit://samples/{{mode}}/{{id}}"
+                ),
+                None,
+            )
+        })?;
+
+        if !matches!(mode, "oneshot" | "dynamic" | "demo" | "user") {
+            return Err(McpError::invalid_params(
+                format!("Unknown sample mode '{mode}' in URI '{uri}'"),
+                None,
+            ));
+        }
+
+        if id.contains("..") || id.contains('/') || id.contains('\\') {
+            return Err(McpError::invalid_params(
+                format!("Invalid resource ID in URI '{uri}'"),
+                None,
+            ));
+        }
+
+        let sample_id = format!("{mode}/{id}");
+        let sample =
+            crate::samples::get_sample(&self.app_state, &sample_id, &perms).await.map_err(|e| {
+                warn!(uri = %uri, error = %e, "MCP read_resource failed");
+                McpError::invalid_params(format!("Resource not found: {uri}"), None)
+            })?;
+
+        info!(uri = %uri, "MCP read_resource");
+
+        Ok(ReadResourceResult::new(vec![
+            ResourceContents::text(sample.yaml, uri.clone()).with_mime_type("application/x-yaml")
+        ]))
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _ctx: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, McpError> {
+        let raw = RawResourceTemplate::new("streamkit://samples/{mode}/{id}", "Sample Pipeline")
+            .with_description(
+                "A curated sample pipeline template. Modes: 'oneshot' (batch processing), \
+             'dynamic' (real-time streaming), 'demo', or 'user'.",
+            )
+            .with_mime_type("application/x-yaml");
+
+        let template = Annotated::new(raw, None);
+
+        Ok(ListResourceTemplatesResult::with_all_items(vec![template]))
     }
 }
 

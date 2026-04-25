@@ -120,7 +120,12 @@ async fn list_dynamic_samples_handler(
     }
 }
 
-async fn list_samples(
+/// Lists all available sample pipelines, filtered by permissions.
+///
+/// # Errors
+///
+/// Returns [`SamplesError::Io`] if the samples directory cannot be read.
+pub async fn list_samples(
     app_state: &AppState,
     perms: &RolePermissions,
 ) -> Result<Vec<SamplePipeline>, SamplesError> {
@@ -316,7 +321,14 @@ async fn get_sample_handler(
     }
 }
 
-async fn get_sample(
+/// Gets a specific sample pipeline by ID (e.g. `"oneshot/test-pipeline"`).
+///
+/// # Errors
+///
+/// Returns [`SamplesError::NotFound`] if the sample does not exist,
+/// [`SamplesError::Forbidden`] if the caller lacks permission, or
+/// [`SamplesError::Io`] on filesystem errors.
+pub async fn get_sample(
     app_state: &AppState,
     id: &str,
     perms: &RolePermissions,
@@ -330,6 +342,15 @@ async fn get_sample(
         // Legacy ID format without prefix - try all directories
         (None, id)
     };
+
+    // Reject path-traversal attempts in the filename portion
+    if filename_base.is_empty()
+        || filename_base.contains("..")
+        || filename_base.contains('/')
+        || filename_base.contains('\\')
+    {
+        return Err(SamplesError::InvalidFilename("Invalid characters in sample ID".to_string()));
+    }
 
     // Determine which directories to search based on the prefix
     let subdirs_to_search: Vec<(&str, bool)> = if let Some(hint) = subdir_hint {
@@ -610,7 +631,7 @@ pub fn samples_router() -> Router<Arc<AppState>> {
 
 /// Error types for sample operations
 #[derive(Debug)]
-enum SamplesError {
+pub enum SamplesError {
     NotFound,
     InvalidFilename(String),
     FileTooLarge,
