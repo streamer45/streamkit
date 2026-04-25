@@ -71,6 +71,28 @@ const FormInput = styled.input`
   }
 `;
 
+const FormSelect = styled.select`
+  width: 100%;
+  max-width: 100%;
+  padding: 8px;
+  background: var(--sk-panel-bg);
+  border: 1px solid var(--sk-border);
+  border-radius: 4px;
+  color: var(--sk-text);
+  box-sizing: border-box;
+  font-family: inherit;
+  cursor: pointer;
+
+  &:focus-visible {
+    outline: 1px solid var(--sk-primary);
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+`;
+
 const FormTextarea = styled.textarea`
   width: 100%;
   max-width: 100%;
@@ -183,6 +205,29 @@ const StringField: React.FC<{
   );
 };
 
+// Helper: Render select field for enum-constrained strings
+const SelectField: React.FC<{
+  inputId: string;
+  value: unknown;
+  schema: JsonSchemaProperty;
+  readOnly: boolean;
+  onChange: (value: string) => void;
+}> = ({ inputId, value, schema, readOnly, onChange }) => (
+  <FormSelect
+    id={inputId}
+    value={String(value)}
+    onChange={(e) => onChange(e.target.value)}
+    disabled={readOnly}
+    aria-label={schema.description}
+  >
+    {(schema.enum ?? []).map((opt) => (
+      <option key={String(opt)} value={String(opt)}>
+        {String(opt)}
+      </option>
+    ))}
+  </FormSelect>
+);
+
 // Helper: Render number field
 const NumberField: React.FC<{
   inputId: string;
@@ -286,6 +331,17 @@ const InspectorPane: React.FC<InspectorPaneProps> = ({
 
     switch (schema.type) {
       case 'string':
+        if (schema.enum && schema.enum.length > 0) {
+          return (
+            <SelectField
+              inputId={inputId}
+              value={currentValue}
+              schema={schema}
+              readOnly={isDisabled}
+              onChange={(v) => handleInputChange(key, v, schema)}
+            />
+          );
+        }
         return (
           <StringField
             inputId={inputId}
