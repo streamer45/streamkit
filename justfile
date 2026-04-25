@@ -143,6 +143,10 @@ skit-profiling *args='':
     @echo "Note: Heap profiling configuration is embedded in the binary"
     @RUSTFLAGS="-C force-frame-pointers=yes -C target-cpu=native" cargo run --profile release-lto {{moq_features}} {{profiling_features}} -p streamkit-server --bin skit -- {{args}}
 
+# Start the MCP server over STDIO (for MCP client integration)
+skit-mcp *args='': check-ui-dist
+    @cargo run --features mcp {{moq_features}} {{extra_features}} -p streamkit-server --bin skit -- mcp {{args}}
+
 # Start the skit server with tokio-console support
 skit-console *args='':
     @echo "Starting skit with tokio-console support..."

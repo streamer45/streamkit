@@ -43,15 +43,26 @@ use crate::state::AppState;
 
 /// Extract `(role_name, permissions)` from the HTTP request parts that `rmcp`
 /// injects into the request-context extensions.
+///
+/// For STDIO transport there are no HTTP parts in the context — the caller is
+/// a local, trusted process.  In that case we fall back to admin-level
+/// permissions (resolved via the configured `default_role`, which defaults to
+/// `"admin"`).
+#[allow(clippy::unnecessary_wraps)]
 fn extract_auth(
     ctx: &RequestContext<RoleServer>,
     app_state: &Arc<AppState>,
 ) -> Result<(String, Permissions), McpError> {
-    let parts = ctx
-        .extensions
-        .get::<http::request::Parts>()
-        .ok_or_else(|| McpError::internal_error("missing HTTP request parts", None))?;
-    Ok(crate::role_extractor::get_role_and_permissions(&parts.headers, app_state))
+    match ctx.extensions.get::<http::request::Parts>() {
+        Some(parts) => {
+            Ok(crate::role_extractor::get_role_and_permissions(&parts.headers, app_state))
+        },
+        None => {
+            // STDIO transport — no HTTP context.  Treat as local/trusted.
+            let empty_headers = axum::http::HeaderMap::new();
+            Ok(crate::role_extractor::get_role_and_permissions(&empty_headers, app_state))
+        },
+    }
 }
 
 // ---------------------------------------------------------------------------

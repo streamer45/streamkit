@@ -142,6 +142,7 @@ rmcp = { version = "1.5", features = [
   "server",                                     # ServerHandler trait + service runner
   "transport-streamable-http-server",            # Streamable HTTP transport (tower service)
   "transport-streamable-http-server-session",    # Stateful session management (LocalSessionManager)
+  "transport-io",                                # STDIO transport (stdin/stdout)
   "macros",                                      # #[tool], #[tool_router] proc macros
   "schemars",                                    # JSON Schema generation for tool arguments
 ], optional = true }

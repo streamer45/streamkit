@@ -1300,3 +1300,89 @@ async fn mcp_modify_sessions_permission_denied() {
         "expected permission denied"
     );
 }
+
+// ---------------------------------------------------------------------------
+// STDIO transport tests
+// ---------------------------------------------------------------------------
+
+/// Spawn the `skit mcp` binary as a child process and verify it responds to
+/// a JSON-RPC `initialize` request over STDIO.
+#[tokio::test]
+async fn test_mcp_stdio_initialize() {
+    use std::process::Stdio;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::process::Command;
+
+    // Locate the skit binary built alongside the test binary.
+    let skit_bin = std::path::PathBuf::from(env!("CARGO_BIN_EXE_skit"));
+
+    let mut child = Command::new(&skit_bin)
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn skit mcp process");
+
+    let stdin = child.stdin.as_mut().expect("Failed to open stdin");
+    let stdout = child.stdout.take().expect("Failed to open stdout");
+    let mut reader = BufReader::new(stdout);
+
+    // Send a JSON-RPC initialize request (MCP protocol).
+    let init_request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {
+                "name": "test-client",
+                "version": "0.1.0"
+            }
+        }
+    });
+    let msg = serde_json::to_string(&init_request).unwrap();
+    stdin.write_all(msg.as_bytes()).await.unwrap();
+    stdin.write_all(b"\n").await.unwrap();
+    stdin.flush().await.unwrap();
+
+    // Read the response line (with a timeout).
+    let mut response_line = String::new();
+    let read_result =
+        tokio::time::timeout(Duration::from_secs(30), reader.read_line(&mut response_line)).await;
+
+    assert!(read_result.is_ok(), "Timed out waiting for initialize response");
+    let bytes_read = read_result.unwrap().expect("Failed to read response");
+    assert!(bytes_read > 0, "Empty response from MCP STDIO server");
+
+    let response: serde_json::Value =
+        serde_json::from_str(response_line.trim()).expect("Invalid JSON response");
+
+    // Verify it's a successful JSON-RPC response.
+    assert_eq!(response["jsonrpc"], "2.0");
+    assert_eq!(response["id"], 1);
+    assert!(
+        response.get("result").is_some(),
+        "Expected 'result' in initialize response, got: {}",
+        response
+    );
+
+    let result = &response["result"];
+    assert_eq!(result["protocolVersion"], "2024-11-05");
+    assert!(
+        result["serverInfo"]["name"].as_str().unwrap_or("").contains("streamkit"),
+        "Expected serverInfo.name to contain 'streamkit', got: {}",
+        result["serverInfo"]
+    );
+
+    // Verify capabilities include tools.
+    assert!(
+        result["capabilities"]["tools"].is_object(),
+        "Expected tools capability, got: {}",
+        result["capabilities"]
+    );
+
+    // Clean up: kill the child process.
+    child.kill().await.ok();
+}

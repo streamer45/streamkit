@@ -4277,39 +4277,27 @@ pub async fn tune_session_node(
     Ok(())
 }
 
-/// Creates the Axum application with all routes and middleware.
+/// Build the shared [`AppState`] without constructing any HTTP router.
 ///
-/// # Arguments
-///
-/// * `config` - The server configuration
-/// * `auth` - Optional pre-initialized AuthState. If None, creates a disabled auth state.
+/// This is the common initialisation path used by both the HTTP server
+/// (`create_app`) and the STDIO MCP server (`start_mcp_stdio`).
 ///
 /// # Panics
 ///
-/// Panics if the plugin manager fails to initialize. This can happen if:
-/// - Plugin directories cannot be created due to filesystem permissions
-/// - Plugin directories exist but are not accessible
-/// - CORS configuration is invalid (wildcard with auth enabled)
-///
-/// Since this occurs during application initialization, a panic here is acceptable
-/// as the server cannot function without proper configuration.
+/// See the panic documentation on [`create_app`] — the same invariants apply.
 #[allow(clippy::expect_used)]
-pub fn create_app(
+pub fn create_app_state(
     mut config: Config,
     auth: Option<Arc<crate::auth::AuthState>>,
-) -> (Router, Arc<AppState>) {
-    // --- Create the shared application state ---
+) -> Arc<AppState> {
     let (event_tx, _) = tokio::sync::broadcast::channel(128);
 
-    // Create ResourceManager for shared resources (ML models, etc.)
     let resource_policy = streamkit_core::ResourcePolicy {
         keep_loaded: config.resources.keep_models_loaded,
         max_memory_mb: config.resources.max_memory_mb,
     };
     let resource_manager = Arc::new(streamkit_core::ResourceManager::new(resource_policy));
 
-    // Set node buffer configuration for codec/container nodes
-    // This must be done before any nodes are created
     let node_buffer_config = streamkit_core::NodeBufferConfig {
         codec_channel_capacity: config
             .engine
@@ -4334,12 +4322,10 @@ pub fn create_app(
     };
     streamkit_core::set_node_buffer_config(node_buffer_config);
 
-    // Create engine with resource management support
     let plugin_base_dir = std::path::PathBuf::from(&config.plugins.directory);
     let wasm_plugin_dir = plugin_base_dir.join("wasm");
     let native_plugin_dir = plugin_base_dir.join("native");
 
-    // Build server-level node constraints from config
     let mut constraints = streamkit_core::GlobalNodeConstraints::new();
 
     #[cfg(feature = "script")]
@@ -4376,8 +4362,6 @@ pub fn create_app(
         &constraints,
     ));
 
-    // Initialize plugin manager - panic on failure since we can't proceed without it
-    // This expect is justified and documented in the function's # Panics section
     #[allow(clippy::expect_used)]
     let plugin_manager = UnifiedPluginManager::new(
         Arc::clone(&engine),
@@ -4392,7 +4376,6 @@ pub fn create_app(
 
     let plugin_asset_registry = crate::plugin_assets::PluginAssetRegistry::new();
 
-    // Spawn background task to load plugins asynchronously to avoid blocking startup
     UnifiedPluginManager::spawn_load_existing(
         Arc::clone(&plugin_manager),
         config.resources.prewarm.clone(),
@@ -4409,13 +4392,11 @@ pub fn create_app(
     #[cfg(feature = "moq")]
     let moq_gateway = {
         let gateway = Arc::new(crate::moq_gateway::MoqGateway::new());
-        // Initialize global gateway registry so nodes can access it
         let trait_obj: Arc<dyn streamkit_core::moq_gateway::MoqGatewayTrait> = gateway.clone();
         streamkit_core::moq_gateway::init_moq_gateway(trait_obj);
         Some(gateway)
     };
 
-    // Initialize MSE gateway for HTTP-based media streaming
     let mse_gateway = {
         let gateway = Arc::new(crate::mse_gateway::MseGateway::new());
         let trait_obj: Arc<dyn streamkit_core::mse_gateway::MseGatewayTrait> = gateway.clone();
@@ -4423,17 +4404,13 @@ pub fn create_app(
         gateway
     };
 
-    // Use provided auth state or create disabled auth
     let auth = auth.unwrap_or_else(|| Arc::new(crate::auth::AuthState::disabled()));
 
-    // When built-in auth is enabled, treat the injected role header as the trusted role source.
-    //
-    // SECURITY: This header is overwritten by `auth_guard_middleware` for every API request.
     if auth.is_enabled() {
         config.permissions.role_header = Some(BUILTIN_AUTH_ROLE_HEADER.to_string());
     }
 
-    let app_state = Arc::new(AppState {
+    Arc::new(AppState {
         engine,
         session_manager: Arc::new(tokio::sync::Mutex::new(SessionManager::default())),
         config: Arc::new(config),
@@ -4446,7 +4423,26 @@ pub fn create_app(
         #[cfg(feature = "moq")]
         moq_gateway,
         mse_gateway,
-    });
+    })
+}
+
+/// Create the full Axum application router and shared application state.
+///
+/// # Panics
+///
+/// - The unified plugin manager cannot be initialized (missing plugin directories, etc.)
+/// - Plugin directories cannot be created due to filesystem permissions
+/// - Plugin directories exist but are not accessible
+/// - CORS configuration is invalid (wildcard with auth enabled)
+///
+/// Since this occurs during application initialization, a panic here is acceptable
+/// as the server cannot function without proper configuration.
+#[allow(clippy::expect_used)]
+pub fn create_app(
+    config: Config,
+    auth: Option<Arc<crate::auth::AuthState>>,
+) -> (Router, Arc<AppState>) {
+    let app_state = create_app_state(config, auth);
 
     let mut oneshot_route = post(process_oneshot_pipeline_handler)
         // Use configurable body limit for oneshot processing
@@ -5140,6 +5136,71 @@ pub async fn start_server(config: &Config) -> Result<(), Box<dyn std::error::Err
             e.into()
         })
     }
+}
+
+/// Start the MCP server over STDIO transport (stdin/stdout).
+///
+/// This is the entry point for `skit mcp`.  It initialises the engine, node
+/// registry, and plugin manager (reusing [`create_app_state`]) and then
+/// serves the MCP protocol over stdin/stdout until the client disconnects
+/// or a shutdown signal (Ctrl-C / SIGTERM) is received.
+///
+/// # Errors
+///
+/// Returns an error if the MCP STDIO server fails to initialise or encounters
+/// a runtime error.
+///
+/// # Panics
+///
+/// Panics if the Ctrl-C or SIGTERM signal handler cannot be installed
+/// (critical OS failure).
+#[cfg(feature = "mcp")]
+pub async fn start_mcp_stdio(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+    let app_state = create_app_state(config.clone(), None);
+
+    let mcp = crate::mcp::StreamKitMcp::new(app_state);
+
+    let ct = tokio_util::sync::CancellationToken::new();
+
+    // Listen for Ctrl-C / SIGTERM and cancel the token so the STDIO
+    // transport shuts down gracefully.
+    // These expect() calls are justified and documented in the function's # Panics section.
+    let ct_clone = ct.clone();
+    tokio::spawn(async move {
+        let ctrl_c = tokio::signal::ctrl_c();
+
+        #[cfg(unix)]
+        {
+            #[allow(clippy::expect_used)]
+            let mut sigterm =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("failed to install SIGTERM handler");
+            tokio::select! {
+                _ = ctrl_c => {},
+                _ = sigterm.recv() => {},
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            #[allow(clippy::expect_used)]
+            ctrl_c.await.expect("failed to install Ctrl+C handler");
+        }
+
+        info!("Received shutdown signal, stopping MCP STDIO server");
+        ct_clone.cancel();
+    });
+
+    info!("Starting MCP server over STDIO transport");
+
+    let service = rmcp::service::serve_server_with_ct(mcp, rmcp::transport::io::stdio(), ct)
+        .await
+        .map_err(|e| format!("Failed to initialize MCP STDIO server: {e}"))?;
+
+    service.waiting().await?;
+
+    info!("MCP STDIO server stopped");
+    Ok(())
 }
 
 // --- A simple error type for the Axum handler ---
