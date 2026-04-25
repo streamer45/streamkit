@@ -343,6 +343,15 @@ pub async fn get_sample(
         (None, id)
     };
 
+    // Reject path-traversal attempts in the filename portion
+    if filename_base.is_empty()
+        || filename_base.contains("..")
+        || filename_base.contains('/')
+        || filename_base.contains('\\')
+    {
+        return Err(SamplesError::InvalidFilename("Invalid characters in sample ID".to_string()));
+    }
+
     // Determine which directories to search based on the prefix
     let subdirs_to_search: Vec<(&str, bool)> = if let Some(hint) = subdir_hint {
         // If prefix is present, search only that directory
