@@ -71,6 +71,28 @@ const FormInput = styled.input`
   }
 `;
 
+const FormSelect = styled.select`
+  width: 100%;
+  max-width: 100%;
+  padding: 8px;
+  background: var(--sk-panel-bg);
+  border: 1px solid var(--sk-border);
+  border-radius: 4px;
+  color: var(--sk-text);
+  box-sizing: border-box;
+  font-family: inherit;
+  cursor: pointer;
+
+  &:focus-visible {
+    outline: 1px solid var(--sk-primary);
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+`;
+
 const FormTextarea = styled.textarea`
   width: 100%;
   max-width: 100%;
@@ -183,6 +205,35 @@ const StringField: React.FC<{
   );
 };
 
+// Helper: Render select field for enum-constrained strings
+const SelectField: React.FC<{
+  inputId: string;
+  value: unknown;
+  schema: JsonSchemaProperty;
+  readOnly: boolean;
+  onChange: (value: string) => void;
+}> = ({ inputId, value, schema, readOnly, onChange }) => {
+  const options = (schema.enum ?? []).map(String);
+  const defaultStr = schema.default != null ? String(schema.default) : undefined;
+  const fallback = (defaultStr && options.includes(defaultStr) ? defaultStr : options[0]) ?? '';
+  const resolved = options.includes(String(value)) ? String(value) : fallback;
+  return (
+    <FormSelect
+      id={inputId}
+      value={resolved}
+      onChange={(e) => onChange(e.target.value)}
+      disabled={readOnly}
+      aria-label={schema.description}
+    >
+      {options.map((opt) => (
+        <option key={opt} value={opt}>
+          {opt}
+        </option>
+      ))}
+    </FormSelect>
+  );
+};
+
 // Helper: Render number field
 const NumberField: React.FC<{
   inputId: string;
@@ -286,6 +337,17 @@ const InspectorPane: React.FC<InspectorPaneProps> = ({
 
     switch (schema.type) {
       case 'string':
+        if (schema.enum && schema.enum.length > 0) {
+          return (
+            <SelectField
+              inputId={inputId}
+              value={currentValue}
+              schema={schema}
+              readOnly={isDisabled}
+              onChange={(v) => handleInputChange(key, v, schema)}
+            />
+          );
+        }
         return (
           <StringField
             inputId={inputId}
