@@ -519,7 +519,7 @@ async fn list_node_definitions_handler(
 
 /// A single node in the validated graph.
 #[derive(Serialize)]
-struct ValidateGraphNode {
+pub struct ValidateGraphNode {
     id: String,
     kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -528,7 +528,7 @@ struct ValidateGraphNode {
 
 /// A single connection in the validated graph.
 #[derive(Serialize)]
-struct ValidateGraphConnection {
+pub struct ValidateGraphConnection {
     from_node: String,
     from_pin: String,
     to_node: String,
@@ -537,7 +537,7 @@ struct ValidateGraphConnection {
 
 /// The parsed graph structure — always returned so the UI can highlight nodes.
 #[derive(Serialize)]
-struct ValidateGraph {
+pub struct ValidateGraph {
     nodes: Vec<ValidateGraphNode>,
     connections: Vec<ValidateGraphConnection>,
 }
@@ -545,7 +545,7 @@ struct ValidateGraph {
 /// Diagnostic category.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum DiagnosticKind {
+pub enum DiagnosticKind {
     Parse,
     Schema,
     Connection,
@@ -555,7 +555,7 @@ enum DiagnosticKind {
 
 /// A single validation diagnostic.
 #[derive(Debug, Serialize)]
-struct ValidateDiagnostic {
+pub struct ValidateDiagnostic {
     kind: DiagnosticKind,
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -564,10 +564,11 @@ struct ValidateDiagnostic {
     connection_id: Option<String>,
 }
 
-/// Top-level response for `POST /api/v1/validate`.
+/// Top-level response for `POST /api/v1/validate` and the MCP
+/// `validate_pipeline` tool.
 #[derive(Serialize)]
-struct ValidateResponse {
-    valid: bool,
+pub struct ValidateResponse {
+    pub(crate) valid: bool,
     errors: Vec<ValidateDiagnostic>,
     warnings: Vec<ValidateDiagnostic>,
     graph: Option<ValidateGraph>,
@@ -576,7 +577,7 @@ struct ValidateResponse {
 /// Pipeline mode for validation — determines which synthetic-node rules apply.
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-enum PipelineMode {
+pub enum PipelineMode {
     Dynamic,
     Oneshot,
 }
@@ -598,7 +599,10 @@ static SYNTHETIC_KINDS: std::sync::LazyLock<Vec<String>> =
     std::sync::LazyLock::new(|| synthetic_node_definitions().into_iter().map(|d| d.kind).collect());
 
 /// Returns `true` for node kinds that are synthetic oneshot-only markers.
-fn is_synthetic_kind(kind: &str) -> bool {
+///
+/// Used by both the HTTP and MCP `create_session` paths to reject
+/// oneshot-only nodes in dynamic pipelines.
+pub fn is_synthetic_kind(kind: &str) -> bool {
     SYNTHETIC_KINDS.iter().any(|k| k == kind)
 }
 
@@ -607,7 +611,7 @@ fn is_synthetic_kind(kind: &str) -> bool {
 ///
 /// Used by both `list_node_definitions_handler` and the validate endpoint so
 /// there is a single source of truth for these definitions.
-fn synthetic_node_definitions() -> Vec<streamkit_core::NodeDefinition> {
+pub fn synthetic_node_definitions() -> Vec<streamkit_core::NodeDefinition> {
     use streamkit_core::types::PacketType;
     use streamkit_core::{InputPin, NodeDefinition, OutputPin, PinCardinality};
 
@@ -977,99 +981,17 @@ async fn validate_pipeline_handler(
         return Err((StatusCode::FORBIDDEN, "Permission denied: create_sessions required".into()));
     }
 
-    let mut errors: Vec<ValidateDiagnostic> = Vec::new();
-    let mut warnings: Vec<ValidateDiagnostic> = Vec::new();
-
-    // 1. YAML parsing
-    let user_pipeline = match streamkit_api::yaml::parse_yaml(&payload.yaml) {
-        Ok(p) => p,
-        Err(e) => {
-            debug!(error = %e, "Pipeline YAML parse error");
-            errors.push(ValidateDiagnostic {
-                kind: DiagnosticKind::Parse,
-                message: e,
-                node_id: None,
-                connection_id: None,
-            });
-            return Ok(Json(ValidateResponse { valid: false, errors, warnings, graph: None }));
-        },
-    };
-
-    // 2. Compile to internal Pipeline
-    let pipeline = match compile(user_pipeline) {
-        Ok(p) => p,
-        Err(e) => {
-            debug!(error = %e, "Pipeline compilation error");
-            errors.push(ValidateDiagnostic {
-                kind: DiagnosticKind::Parse,
-                message: e,
-                node_id: None,
-                connection_id: None,
-            });
-            return Ok(Json(ValidateResponse { valid: false, errors, warnings, graph: None }));
-        },
-    };
-
-    // 3. Reject empty pipelines (matches create_session_handler)
-    if pipeline.nodes.is_empty() {
-        errors.push(ValidateDiagnostic {
-            kind: DiagnosticKind::Schema,
-            message: "Pipeline is empty. Add some nodes before validating.".into(),
-            node_id: None,
-            connection_id: None,
-        });
-        return Ok(Json(ValidateResponse { valid: false, errors, warnings, graph: None }));
-    }
-
-    // 4. Validate nodes against the registry
-    let registry_guard =
-        read_registry(&app_state).map_err(|sc| (sc, "Failed to read node registry".to_string()))?;
-    let node_defs =
-        validate_nodes(&pipeline, &registry_guard, Some(&perms), &mut errors, &mut warnings);
-    drop(registry_guard);
-
-    // 5. Mode-specific checks: reject synthetic nodes in dynamic mode
-    check_mode(&pipeline, payload.mode, &mut errors);
-
-    // 6. Validate connections
-    validate_connections(&pipeline, &node_defs, &mut errors);
-
-    // 7. File-path security checks (reuse session/oneshot helpers)
-    collect_file_path_errors(&pipeline, &app_state.config.security, &mut errors);
-
-    // 8. Build graph (always included so the UI can highlight bad nodes)
-    let graph = Some(ValidateGraph {
-        nodes: pipeline
-            .nodes
-            .iter()
-            .map(|(id, n)| ValidateGraphNode {
-                id: id.clone(),
-                kind: n.kind.clone(),
-                params: n.params.clone(),
-            })
-            .collect(),
-        connections: pipeline
-            .connections
-            .iter()
-            .map(|c| ValidateGraphConnection {
-                from_node: c.from_node.clone(),
-                from_pin: c.from_pin.clone(),
-                to_node: c.to_node.clone(),
-                to_pin: c.to_pin.clone(),
-            })
-            .collect(),
-    });
-
-    let valid = errors.is_empty();
+    let response = validate_pipeline_yaml(&app_state, &perms, &payload.yaml, payload.mode)
+        .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e))?;
 
     debug!(
-        valid = valid,
-        error_count = errors.len(),
-        warning_count = warnings.len(),
+        valid = response.valid,
+        error_count = response.errors.len(),
+        warning_count = response.warnings.len(),
         "Pipeline validation completed"
     );
 
-    Ok(Json(ValidateResponse { valid, errors, warnings, graph }))
+    Ok(Json(response))
 }
 
 /// Extract a human-readable message from an `AppError`.
@@ -2520,7 +2442,10 @@ struct CreateSessionResponse {
 
 /// Helper function to populate the session's in-memory pipeline representation
 /// from the compiled engine pipeline definition.
-async fn populate_session_pipeline(session: &crate::session::Session, engine_pipeline: &Pipeline) {
+pub async fn populate_session_pipeline(
+    session: &crate::session::Session,
+    engine_pipeline: &Pipeline,
+) {
     let mut pipeline = session.pipeline.lock().await;
 
     // Forward top-level metadata so the UI can read it from the session snapshot.
@@ -2554,7 +2479,10 @@ async fn populate_session_pipeline(session: &crate::session::Session, engine_pip
 }
 
 /// Helper function to send all node and connection control messages to the engine actor.
-async fn send_pipeline_to_engine(session: &crate::session::Session, engine_pipeline: &Pipeline) {
+pub async fn send_pipeline_to_engine(
+    session: &crate::session::Session,
+    engine_pipeline: &Pipeline,
+) {
     // Send control messages to engine actor (asynchronous)
     // The engine will actually instantiate the nodes
     for (node_id, node_spec) in &engine_pipeline.nodes {
@@ -2604,194 +2532,22 @@ async fn create_session_handler(
         ));
     }
 
-    // Global session limit
-    let (current_count, name_taken) = {
-        let session_manager = app_state.session_manager.lock().await;
-        let current_count = session_manager.session_count();
-        let name_taken = req.name.as_deref().is_some_and(|n| session_manager.is_name_taken(n));
-        drop(session_manager);
-        (current_count, name_taken)
-    };
-    if let Some(ref session_name) = req.name {
-        if name_taken {
-            return Err((
-                StatusCode::CONFLICT,
-                format!(
-                    "Failed to create session: Session with name '{session_name}' already exists"
-                ),
-            ));
-        }
+    let result = create_dynamic_session(&app_state, &req.yaml, req.name, role_name, &perms).await;
+
+    match result {
+        Ok(r) => Ok(Json(CreateSessionResponse {
+            session_id: r.session_id,
+            name: r.name,
+            created_at: r.created_at,
+        })),
+        Err(e) => Err(match e {
+            CreateSessionError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, msg),
+            CreateSessionError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
+            CreateSessionError::Conflict(msg) => (StatusCode::CONFLICT, msg),
+            CreateSessionError::LimitReached(msg) => (StatusCode::TOO_MANY_REQUESTS, msg),
+            CreateSessionError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+        }),
     }
-    if !app_state.config.permissions.can_accept_session(current_count) {
-        return Err((
-            StatusCode::TOO_MANY_REQUESTS,
-            "Maximum concurrent sessions limit reached".to_string(),
-        ));
-    }
-
-    // Parse and compile the YAML pipeline
-    let user_pipeline: UserPipeline =
-        streamkit_api::yaml::parse_yaml(&req.yaml).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
-
-    let engine_pipeline = compile(user_pipeline)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid pipeline: {e}")))?;
-
-    // Validate the pipeline has at least one node
-    if engine_pipeline.nodes.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "Pipeline is empty. Add some nodes before creating a session.".to_string(),
-        ));
-    }
-
-    for (node_id, node) in &engine_pipeline.nodes {
-        if node.kind == "streamkit::http_input" || node.kind == "streamkit::http_output" {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "Node '{node_id}' kind '{}' is oneshot-only and cannot be used in dynamic sessions",
-                    node.kind
-                ),
-            ));
-        }
-
-        if !perms.is_node_allowed(&node.kind) {
-            return Err((
-                StatusCode::FORBIDDEN,
-                format!("Permission denied: node '{node_id}' kind '{}' not allowed", node.kind),
-            ));
-        }
-
-        if node.kind.starts_with("plugin::") && !perms.is_plugin_allowed(&node.kind) {
-            return Err((
-                StatusCode::FORBIDDEN,
-                format!("Permission denied: node '{node_id}' plugin '{}' not allowed", node.kind),
-            ));
-        }
-    }
-
-    validate_file_reader_paths(&engine_pipeline, &app_state.config.security).map_err(
-        |e| match e {
-            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
-            AppError::PipelineCompilation(msg) => {
-                (StatusCode::BAD_REQUEST, format!("Invalid pipeline: {msg}"))
-            },
-            AppError::Serde(err) => {
-                (StatusCode::BAD_REQUEST, format!("Invalid YAML config format: {err}"))
-            },
-            AppError::Multipart(err) => {
-                (StatusCode::BAD_REQUEST, format!("Invalid multipart payload: {err}"))
-            },
-            AppError::Engine(err) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, format!("Pipeline execution error: {err}"))
-            },
-            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
-        },
-    )?;
-
-    validate_file_writer_paths(&engine_pipeline, &app_state.config.security).map_err(
-        |e| match e {
-            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
-            AppError::PipelineCompilation(msg) => {
-                (StatusCode::BAD_REQUEST, format!("Invalid pipeline: {msg}"))
-            },
-            AppError::Serde(err) => {
-                (StatusCode::BAD_REQUEST, format!("Invalid YAML config format: {err}"))
-            },
-            AppError::Multipart(err) => {
-                (StatusCode::BAD_REQUEST, format!("Invalid multipart payload: {err}"))
-            },
-            AppError::Engine(err) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, format!("Pipeline execution error: {err}"))
-            },
-            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
-        },
-    )?;
-
-    validate_script_paths(&engine_pipeline, &app_state.config.security).map_err(|e| match e {
-        AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
-        AppError::PipelineCompilation(msg) => {
-            (StatusCode::BAD_REQUEST, format!("Invalid pipeline: {msg}"))
-        },
-        AppError::Serde(err) => {
-            (StatusCode::BAD_REQUEST, format!("Invalid YAML config format: {err}"))
-        },
-        AppError::Multipart(err) => {
-            (StatusCode::BAD_REQUEST, format!("Invalid multipart payload: {err}"))
-        },
-        AppError::Engine(err) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Pipeline execution error: {err}"))
-        },
-        AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
-    })?;
-
-    // Create the session without holding the session manager lock.
-    let session = crate::session::Session::create(
-        &app_state.engine,
-        &app_state.config,
-        req.name.clone(),
-        app_state.event_tx.clone(),
-        Some(role_name.clone()),
-    )
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create session: {e}")))?;
-
-    // Insert the session with short lock hold and re-check limits to avoid races.
-    let insert_result = {
-        let mut session_manager = app_state.session_manager.lock().await;
-        let current_count = session_manager.session_count();
-        if app_state.config.permissions.can_accept_session(current_count) {
-            session_manager.add_session(session.clone())
-        } else {
-            Err("Maximum concurrent sessions limit reached".to_string())
-        }
-    };
-    if let Err(error_msg) = insert_result {
-        let _ = session.shutdown_and_wait().await;
-        if error_msg == "Maximum concurrent sessions limit reached" {
-            return Err((StatusCode::TOO_MANY_REQUESTS, error_msg));
-        }
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to create session: {error_msg}"),
-        ));
-    }
-
-    let session_id = session.id.clone();
-    let session_name = session.name.clone();
-    let created_at_str = crate::session::system_time_to_rfc3339(session.created_at);
-
-    info!(session_id = %session_id, name = ?session_name, "Created new session via HTTP");
-
-    // Update the session pipeline immediately (synchronous)
-    // This ensures GET /sessions/{id}/pipeline returns the nodes right away
-    populate_session_pipeline(&session, &engine_pipeline).await;
-
-    // Send control messages to engine actor to instantiate nodes and connections
-    send_pipeline_to_engine(&session, &engine_pipeline).await;
-
-    info!(
-        "Session {} initialized with {} nodes and {} connections",
-        session_id,
-        engine_pipeline.nodes.len(),
-        engine_pipeline.connections.len()
-    );
-
-    // Broadcast event to all WebSocket clients
-    let event = ApiEvent {
-        message_type: MessageType::Event,
-        correlation_id: None,
-        payload: EventPayload::SessionCreated {
-            session_id: session_id.clone(),
-            name: session_name.clone(),
-            created_at: created_at_str.clone(),
-        },
-    };
-    if app_state.event_tx.send(crate::state::BroadcastEvent::to_all(event)).is_err() {
-        debug!("No WebSocket clients connected to receive SessionCreated event");
-    }
-
-    Ok(Json(CreateSessionResponse { session_id, name: session_name, created_at: created_at_str }))
 }
 
 /// Axum handler to get the list of active sessions.
@@ -3953,39 +3709,594 @@ async fn metrics_middleware(req: axum::http::Request<Body>, next: Next) -> Respo
     response
 }
 
-/// Creates the Axum application with all routes and middleware.
+// ---------------------------------------------------------------------------
+// Shared helpers — used by both HTTP handlers and crate::mcp
+// ---------------------------------------------------------------------------
+
+/// Validate a pipeline YAML string with optional mode.
 ///
-/// # Arguments
+/// Shared implementation behind `POST /api/v1/validate` and the MCP
+/// `validate_pipeline` tool.
 ///
-/// * `config` - The server configuration
-/// * `auth` - Optional pre-initialized AuthState. If None, creates a disabled auth state.
+/// # Errors
+///
+/// Returns an error string only if the node registry lock is poisoned.
+pub fn validate_pipeline_yaml(
+    app_state: &Arc<AppState>,
+    perms: &crate::permissions::Permissions,
+    yaml: &str,
+    mode: Option<PipelineMode>,
+) -> Result<ValidateResponse, String> {
+    let mut errors: Vec<ValidateDiagnostic> = Vec::new();
+    let mut warnings: Vec<ValidateDiagnostic> = Vec::new();
+
+    let user_pipeline = match streamkit_api::yaml::parse_yaml(yaml) {
+        Ok(p) => p,
+        Err(e) => {
+            debug!(error = %e, "Pipeline YAML parse error");
+            errors.push(ValidateDiagnostic {
+                kind: DiagnosticKind::Parse,
+                message: e,
+                node_id: None,
+                connection_id: None,
+            });
+            return Ok(ValidateResponse { valid: false, errors, warnings, graph: None });
+        },
+    };
+
+    let pipeline = match compile(user_pipeline) {
+        Ok(p) => p,
+        Err(e) => {
+            debug!(error = %e, "Pipeline compilation error");
+            errors.push(ValidateDiagnostic {
+                kind: DiagnosticKind::Parse,
+                message: e,
+                node_id: None,
+                connection_id: None,
+            });
+            return Ok(ValidateResponse { valid: false, errors, warnings, graph: None });
+        },
+    };
+
+    if pipeline.nodes.is_empty() {
+        errors.push(ValidateDiagnostic {
+            kind: DiagnosticKind::Schema,
+            message: "Pipeline is empty. Add some nodes before validating.".into(),
+            node_id: None,
+            connection_id: None,
+        });
+        return Ok(ValidateResponse { valid: false, errors, warnings, graph: None });
+    }
+
+    let registry_guard =
+        read_registry(app_state).map_err(|_| "Failed to read node registry".to_string())?;
+    let node_defs =
+        validate_nodes(&pipeline, &registry_guard, Some(perms), &mut errors, &mut warnings);
+    drop(registry_guard);
+
+    check_mode(&pipeline, mode, &mut errors);
+    validate_connections(&pipeline, &node_defs, &mut errors);
+    collect_file_path_errors(&pipeline, &app_state.config.security, &mut errors);
+
+    let graph = Some(ValidateGraph {
+        nodes: pipeline
+            .nodes
+            .iter()
+            .map(|(id, n)| ValidateGraphNode {
+                id: id.clone(),
+                kind: n.kind.clone(),
+                params: n.params.clone(),
+            })
+            .collect(),
+        connections: pipeline
+            .connections
+            .iter()
+            .map(|c| ValidateGraphConnection {
+                from_node: c.from_node.clone(),
+                from_pin: c.from_pin.clone(),
+                to_node: c.to_node.clone(),
+                to_pin: c.to_pin.clone(),
+            })
+            .collect(),
+    });
+
+    let valid = errors.is_empty();
+    Ok(ValidateResponse { valid, errors, warnings, graph })
+}
+
+/// Run all file-path security checks against a pipeline.
+///
+/// # Errors
+///
+/// Returns a human-readable error message if any path violates the security
+/// policy.
+pub fn check_file_path_security(
+    pipeline: &Pipeline,
+    security_config: &crate::config::SecurityConfig,
+) -> Result<(), String> {
+    let mut msgs = Vec::new();
+    for result in [
+        validate_file_reader_paths(pipeline, security_config),
+        validate_file_writer_paths(pipeline, security_config),
+        validate_script_paths(pipeline, security_config),
+    ] {
+        if let Err(e) = result {
+            msgs.push(app_error_message(e));
+        }
+    }
+    if msgs.is_empty() {
+        Ok(())
+    } else {
+        Err(msgs.join("; "))
+    }
+}
+
+/// Error type returned by [`create_dynamic_session`].
+///
+/// Each variant carries enough semantic meaning for both HTTP and MCP callers
+/// to map to the appropriate protocol-level error (e.g. status codes for HTTP,
+/// `McpError` variants for MCP).
+pub enum CreateSessionError {
+    /// Invalid input (YAML parse, compile, empty pipeline, synthetic nodes,
+    /// bad file paths).
+    InvalidInput(String),
+    /// Permission denied (node or plugin not allowed).
+    Forbidden(String),
+    /// Session name already taken.
+    Conflict(String),
+    /// Maximum concurrent-session limit reached.
+    LimitReached(String),
+    /// Internal failure (engine allocation, session insert, etc.).
+    Internal(String),
+}
+
+/// Result returned by [`create_dynamic_session`] on success.
+pub struct CreateSessionResult {
+    pub session_id: String,
+    pub name: Option<String>,
+    pub created_at: String,
+}
+
+/// Shared implementation for creating a dynamic pipeline session.
+///
+/// Handles YAML parsing, compilation, permission checks, file-path security,
+/// session-limit pre-flight, engine allocation, session insertion, pipeline
+/// population, engine dispatch, and event broadcast.
+///
+/// Callers are responsible for extracting auth and checking
+/// `perms.create_sessions` before calling this function.
+///
+/// # Errors
+///
+/// Returns a [`CreateSessionError`] variant matching the failure category
+/// (invalid input, permission denied, name conflict, session limit, or
+/// internal error).
+pub async fn create_dynamic_session(
+    app_state: &Arc<AppState>,
+    yaml: &str,
+    name: Option<String>,
+    role_name: String,
+    perms: &crate::permissions::Permissions,
+) -> Result<CreateSessionResult, CreateSessionError> {
+    // Parse & compile
+    let user_pipeline: UserPipeline = streamkit_api::yaml::parse_yaml(yaml)
+        .map_err(|e| CreateSessionError::InvalidInput(format!("YAML parse error: {e}")))?;
+
+    let engine_pipeline = compile(user_pipeline).map_err(|e| {
+        CreateSessionError::InvalidInput(format!("Pipeline compilation error: {e}"))
+    })?;
+
+    if engine_pipeline.nodes.is_empty() {
+        return Err(CreateSessionError::InvalidInput(
+            "Pipeline is empty. Add some nodes before creating a session.".to_string(),
+        ));
+    }
+
+    // Per-node permission and security checks.
+    for (node_id, node) in &engine_pipeline.nodes {
+        if is_synthetic_kind(&node.kind) {
+            return Err(CreateSessionError::InvalidInput(format!(
+                "Node '{node_id}' kind '{}' is oneshot-only and cannot be used in dynamic sessions",
+                node.kind
+            )));
+        }
+        if !perms.is_node_allowed(&node.kind) {
+            return Err(CreateSessionError::Forbidden(format!(
+                "Permission denied: node '{node_id}' kind '{}' not allowed",
+                node.kind
+            )));
+        }
+        if node.kind.starts_with("plugin::") && !perms.is_plugin_allowed(&node.kind) {
+            return Err(CreateSessionError::Forbidden(format!(
+                "Permission denied: node '{node_id}' plugin '{}' not allowed",
+                node.kind
+            )));
+        }
+    }
+
+    // File-path security — policy violations are permission denials, not
+    // malformed input (preserves the 403 FORBIDDEN status the old HTTP
+    // handler returned for AppError::Forbidden from validate_file_*_paths).
+    check_file_path_security(&engine_pipeline, &app_state.config.security)
+        .map_err(CreateSessionError::Forbidden)?;
+
+    // Pre-flight: reject early if over the session limit or name is taken,
+    // avoiding wasted engine allocation.  The checks are re-verified under
+    // the lock inside add_session for correctness.
+    let (current_count, name_taken) = {
+        let sm = app_state.session_manager.lock().await;
+        (sm.session_count(), name.as_deref().is_some_and(|n| sm.is_name_taken(n)))
+    };
+    if let Some(ref session_name) = name {
+        if name_taken {
+            return Err(CreateSessionError::Conflict(format!(
+                "Session with name '{session_name}' already exists"
+            )));
+        }
+    }
+    if !app_state.config.permissions.can_accept_session(current_count) {
+        return Err(CreateSessionError::LimitReached(
+            "Maximum concurrent sessions limit reached".to_string(),
+        ));
+    }
+
+    // Create session (engine allocation).
+    let session = crate::session::Session::create(
+        &app_state.engine,
+        &app_state.config,
+        name,
+        app_state.event_tx.clone(),
+        Some(role_name),
+    )
+    .await
+    .map_err(|e| CreateSessionError::Internal(format!("Failed to create session: {e}")))?;
+
+    // Insert under the lock (re-checks limit and name uniqueness).
+    let insert_result = {
+        let mut sm = app_state.session_manager.lock().await;
+        let count = sm.session_count();
+        if app_state.config.permissions.can_accept_session(count) {
+            sm.add_session(session.clone())
+        } else {
+            Err("Maximum concurrent sessions limit reached".to_string())
+        }
+    };
+    if let Err(msg) = insert_result {
+        warn!(error = %msg, "create_dynamic_session failed during insert");
+        let _ = session.shutdown_and_wait().await;
+        if msg.contains("limit reached") {
+            return Err(CreateSessionError::LimitReached(msg));
+        }
+        return Err(CreateSessionError::Internal(format!("Failed to create session: {msg}")));
+    }
+
+    let session_id = session.id.clone();
+    let session_name = session.name.clone();
+    let created_at = crate::session::system_time_to_rfc3339(session.created_at);
+
+    // Populate pipeline and send to engine
+    populate_session_pipeline(&session, &engine_pipeline).await;
+    send_pipeline_to_engine(&session, &engine_pipeline).await;
+
+    info!(
+        session_id = %session_id,
+        name = ?session_name,
+        nodes = engine_pipeline.nodes.len(),
+        connections = engine_pipeline.connections.len(),
+        "Created new session"
+    );
+
+    // Broadcast event
+    let event = ApiEvent {
+        message_type: MessageType::Event,
+        correlation_id: None,
+        payload: EventPayload::SessionCreated {
+            session_id: session_id.clone(),
+            name: session_name.clone(),
+            created_at: created_at.clone(),
+        },
+    };
+    if app_state.event_tx.send(crate::state::BroadcastEvent::to_all(event)).is_err() {
+        debug!("No WebSocket clients connected to receive SessionCreated event");
+    }
+
+    Ok(CreateSessionResult { session_id, name: session_name, created_at })
+}
+
+/// Validate a batch of operations against a session's pipeline without applying.
+///
+/// Returns a list of validation errors.  An empty list means all operations
+/// are valid.  Callers must perform session-level permission and ownership
+/// checks before calling this function.
+/// Check batch operations for duplicate node IDs by simulating the
+/// Add/Remove sequence.  Returns the IDs of nodes that would collide.
+async fn check_batch_node_id_uniqueness(
+    session: &crate::session::Session,
+    operations: &[streamkit_api::BatchOperation],
+) -> Vec<String> {
+    let mut live_ids: std::collections::HashSet<String> =
+        session.pipeline.lock().await.nodes.keys().cloned().collect();
+    let mut duplicates = Vec::new();
+    for op in operations {
+        match op {
+            streamkit_api::BatchOperation::AddNode { node_id, .. } => {
+                if !live_ids.insert(node_id.clone()) {
+                    duplicates.push(node_id.clone());
+                }
+            },
+            streamkit_api::BatchOperation::RemoveNode { node_id } => {
+                live_ids.remove(node_id.as_str());
+            },
+            _ => {},
+        }
+    }
+    duplicates
+}
+
+pub async fn validate_batch_operations(
+    session: &crate::session::Session,
+    operations: &[streamkit_api::BatchOperation],
+    perms: &crate::permissions::Permissions,
+    security_config: &crate::config::SecurityConfig,
+) -> Vec<streamkit_api::ValidationError> {
+    let mut errors: Vec<streamkit_api::ValidationError> = Vec::new();
+
+    for node_id in check_batch_node_id_uniqueness(session, operations).await {
+        errors.push(streamkit_api::ValidationError {
+            error_type: streamkit_api::ValidationErrorType::Error,
+            message: format!("Batch rejected: node '{node_id}' already exists in the pipeline"),
+            node_id: Some(node_id),
+            connection_id: None,
+        });
+    }
+
+    // Validate all AddNode operations against permission and security rules.
+    for op in operations {
+        if let streamkit_api::BatchOperation::AddNode { node_id, kind, params, .. } = op {
+            if let Some(message) = crate::websocket_handlers::validate_add_node_op(
+                kind,
+                params.as_ref(),
+                perms,
+                security_config,
+            ) {
+                errors.push(streamkit_api::ValidationError {
+                    error_type: streamkit_api::ValidationErrorType::Error,
+                    message,
+                    node_id: Some(node_id.clone()),
+                    connection_id: None,
+                });
+            }
+        }
+    }
+
+    errors
+}
+
+/// Apply a batch of graph mutations atomically to a running session.
+///
+/// Returns `Ok(())` on success, or `Err(message)` if pre-validation fails
+/// (e.g. duplicate node IDs or forbidden node kinds).  Callers must perform
+/// session-level permission and ownership checks before calling this function.
+///
+/// # Errors
+///
+/// Returns an error string when a batch operation fails pre-validation
+/// (duplicate node IDs or forbidden node kinds).
+pub async fn apply_batch_operations(
+    session: &crate::session::Session,
+    operations: Vec<streamkit_api::BatchOperation>,
+    perms: &crate::permissions::Permissions,
+    security_config: &crate::config::SecurityConfig,
+) -> Result<(), String> {
+    // Pre-validate duplicate node_ids.
+    let duplicates = check_batch_node_id_uniqueness(session, &operations).await;
+    if let Some(node_id) = duplicates.first() {
+        return Err(format!("Batch rejected: node '{node_id}' already exists in the pipeline"));
+    }
+
+    // Validate permissions for all AddNode operations.
+    for op in &operations {
+        if let streamkit_api::BatchOperation::AddNode { kind, params, .. } = op {
+            if let Some(message) = crate::websocket_handlers::validate_add_node_op(
+                kind,
+                params.as_ref(),
+                perms,
+                security_config,
+            ) {
+                return Err(message);
+            }
+        }
+    }
+
+    // Apply all operations in order.
+    let mut engine_operations = Vec::new();
+    {
+        let mut pipeline = session.pipeline.lock().await;
+        for op in operations {
+            match op {
+                streamkit_api::BatchOperation::AddNode { node_id, kind, params } => {
+                    pipeline.nodes.insert(
+                        node_id.clone(),
+                        streamkit_api::Node {
+                            kind: kind.clone(),
+                            params: params.clone(),
+                            state: None,
+                        },
+                    );
+                    engine_operations.push(
+                        streamkit_core::control::EngineControlMessage::AddNode {
+                            node_id,
+                            kind,
+                            params,
+                        },
+                    );
+                },
+                streamkit_api::BatchOperation::RemoveNode { node_id } => {
+                    pipeline.nodes.shift_remove(&node_id);
+                    pipeline
+                        .connections
+                        .retain(|conn| conn.from_node != node_id && conn.to_node != node_id);
+                    engine_operations.push(
+                        streamkit_core::control::EngineControlMessage::RemoveNode { node_id },
+                    );
+                },
+                streamkit_api::BatchOperation::Connect {
+                    from_node,
+                    from_pin,
+                    to_node,
+                    to_pin,
+                    mode,
+                } => {
+                    pipeline.connections.push(streamkit_api::Connection {
+                        from_node: from_node.clone(),
+                        from_pin: from_pin.clone(),
+                        to_node: to_node.clone(),
+                        to_pin: to_pin.clone(),
+                        mode,
+                    });
+                    let core_mode = match mode {
+                        streamkit_api::ConnectionMode::Reliable => {
+                            streamkit_core::control::ConnectionMode::Reliable
+                        },
+                        streamkit_api::ConnectionMode::BestEffort => {
+                            streamkit_core::control::ConnectionMode::BestEffort
+                        },
+                    };
+                    engine_operations.push(
+                        streamkit_core::control::EngineControlMessage::Connect {
+                            from_node,
+                            from_pin,
+                            to_node,
+                            to_pin,
+                            mode: core_mode,
+                        },
+                    );
+                },
+                streamkit_api::BatchOperation::Disconnect {
+                    from_node,
+                    from_pin,
+                    to_node,
+                    to_pin,
+                } => {
+                    pipeline.connections.retain(|conn| {
+                        !(conn.from_node == from_node
+                            && conn.from_pin == from_pin
+                            && conn.to_node == to_node
+                            && conn.to_pin == to_pin)
+                    });
+                    engine_operations.push(
+                        streamkit_core::control::EngineControlMessage::Disconnect {
+                            from_node,
+                            from_pin,
+                            to_node,
+                            to_pin,
+                        },
+                    );
+                },
+            }
+        }
+        drop(pipeline);
+    }
+
+    // Send control messages to the engine.
+    for msg in engine_operations {
+        session.send_control_message(msg).await;
+    }
+
+    Ok(())
+}
+
+/// Send a control message to a specific node in a running session.
+///
+/// For `UpdateParams` messages, this function also validates file-path
+/// security, updates the durable pipeline model, and broadcasts a
+/// `NodeParamsChanged` event.  Callers must perform session-level
+/// permission and ownership checks before calling this function.
+///
+/// # Errors
+///
+/// Returns an error string when the security policy rejects the
+/// `UpdateParams` payload.
+pub async fn tune_session_node(
+    session: &crate::session::Session,
+    node_id: String,
+    message: streamkit_core::control::NodeControlMessage,
+    security_config: &crate::config::SecurityConfig,
+    event_tx: &tokio::sync::broadcast::Sender<crate::state::BroadcastEvent>,
+) -> Result<(), String> {
+    use streamkit_core::control::NodeControlMessage;
+
+    if let NodeControlMessage::UpdateParams(ref params) = message {
+        let kind = {
+            let pipeline = session.pipeline.lock().await;
+            pipeline.nodes.get(&node_id).map(|n| n.kind.clone())
+        };
+
+        if !crate::websocket_handlers::validate_update_params_security(
+            kind.as_deref(),
+            params,
+            security_config,
+        ) {
+            return Err("Security policy rejected the UpdateParams payload".to_string());
+        }
+
+        {
+            let mut durable_params = params.clone();
+            if let serde_json::Value::Object(ref mut map) = durable_params {
+                map.retain(|k, _| !k.starts_with('_'));
+            }
+            let mut pipeline = session.pipeline.lock().await;
+            if let Some(node) = pipeline.nodes.get_mut(&node_id) {
+                node.params = Some(match node.params.take() {
+                    Some(existing) => {
+                        crate::websocket_handlers::deep_merge_json(existing, durable_params)
+                    },
+                    None => durable_params,
+                });
+            }
+        }
+
+        let event = streamkit_api::Event {
+            message_type: streamkit_api::MessageType::Event,
+            correlation_id: None,
+            payload: streamkit_api::EventPayload::NodeParamsChanged {
+                session_id: session.id.clone(),
+                node_id: node_id.clone(),
+                params: params.clone(),
+            },
+        };
+        if let Err(e) = event_tx.send(crate::state::BroadcastEvent::to_all(event)) {
+            tracing::error!("Failed to broadcast NodeParamsChanged event: {}", e);
+        }
+    }
+
+    let control_msg = streamkit_core::control::EngineControlMessage::TuneNode { node_id, message };
+    session.send_control_message(control_msg).await;
+
+    Ok(())
+}
+
+/// Build the shared [`AppState`] without constructing any HTTP router.
+///
+/// This is the common initialisation path used by both the HTTP server
+/// (`create_app`) and the STDIO MCP server (`start_mcp_stdio`).
 ///
 /// # Panics
 ///
-/// Panics if the plugin manager fails to initialize. This can happen if:
-/// - Plugin directories cannot be created due to filesystem permissions
-/// - Plugin directories exist but are not accessible
-/// - CORS configuration is invalid (wildcard with auth enabled)
-///
-/// Since this occurs during application initialization, a panic here is acceptable
-/// as the server cannot function without proper configuration.
+/// See the panic documentation on [`create_app`] — the same invariants apply.
 #[allow(clippy::expect_used)]
-pub fn create_app(
+pub fn create_app_state(
     mut config: Config,
     auth: Option<Arc<crate::auth::AuthState>>,
-) -> (Router, Arc<AppState>) {
-    // --- Create the shared application state ---
+) -> Arc<AppState> {
     let (event_tx, _) = tokio::sync::broadcast::channel(128);
 
-    // Create ResourceManager for shared resources (ML models, etc.)
     let resource_policy = streamkit_core::ResourcePolicy {
         keep_loaded: config.resources.keep_models_loaded,
         max_memory_mb: config.resources.max_memory_mb,
     };
     let resource_manager = Arc::new(streamkit_core::ResourceManager::new(resource_policy));
 
-    // Set node buffer configuration for codec/container nodes
-    // This must be done before any nodes are created
     let node_buffer_config = streamkit_core::NodeBufferConfig {
         codec_channel_capacity: config
             .engine
@@ -4010,12 +4321,10 @@ pub fn create_app(
     };
     streamkit_core::set_node_buffer_config(node_buffer_config);
 
-    // Create engine with resource management support
     let plugin_base_dir = std::path::PathBuf::from(&config.plugins.directory);
     let wasm_plugin_dir = plugin_base_dir.join("wasm");
     let native_plugin_dir = plugin_base_dir.join("native");
 
-    // Build server-level node constraints from config
     let mut constraints = streamkit_core::GlobalNodeConstraints::new();
 
     #[cfg(feature = "script")]
@@ -4052,8 +4361,6 @@ pub fn create_app(
         &constraints,
     ));
 
-    // Initialize plugin manager - panic on failure since we can't proceed without it
-    // This expect is justified and documented in the function's # Panics section
     #[allow(clippy::expect_used)]
     let plugin_manager = UnifiedPluginManager::new(
         Arc::clone(&engine),
@@ -4068,7 +4375,6 @@ pub fn create_app(
 
     let plugin_asset_registry = crate::plugin_assets::PluginAssetRegistry::new();
 
-    // Spawn background task to load plugins asynchronously to avoid blocking startup
     UnifiedPluginManager::spawn_load_existing(
         Arc::clone(&plugin_manager),
         config.resources.prewarm.clone(),
@@ -4085,13 +4391,11 @@ pub fn create_app(
     #[cfg(feature = "moq")]
     let moq_gateway = {
         let gateway = Arc::new(crate::moq_gateway::MoqGateway::new());
-        // Initialize global gateway registry so nodes can access it
         let trait_obj: Arc<dyn streamkit_core::moq_gateway::MoqGatewayTrait> = gateway.clone();
         streamkit_core::moq_gateway::init_moq_gateway(trait_obj);
         Some(gateway)
     };
 
-    // Initialize MSE gateway for HTTP-based media streaming
     let mse_gateway = {
         let gateway = Arc::new(crate::mse_gateway::MseGateway::new());
         let trait_obj: Arc<dyn streamkit_core::mse_gateway::MseGatewayTrait> = gateway.clone();
@@ -4099,17 +4403,13 @@ pub fn create_app(
         gateway
     };
 
-    // Use provided auth state or create disabled auth
     let auth = auth.unwrap_or_else(|| Arc::new(crate::auth::AuthState::disabled()));
 
-    // When built-in auth is enabled, treat the injected role header as the trusted role source.
-    //
-    // SECURITY: This header is overwritten by `auth_guard_middleware` for every API request.
     if auth.is_enabled() {
         config.permissions.role_header = Some(BUILTIN_AUTH_ROLE_HEADER.to_string());
     }
 
-    let app_state = Arc::new(AppState {
+    Arc::new(AppState {
         engine,
         session_manager: Arc::new(tokio::sync::Mutex::new(SessionManager::default())),
         config: Arc::new(config),
@@ -4122,7 +4422,26 @@ pub fn create_app(
         #[cfg(feature = "moq")]
         moq_gateway,
         mse_gateway,
-    });
+    })
+}
+
+/// Create the full Axum application router and shared application state.
+///
+/// # Panics
+///
+/// - The unified plugin manager cannot be initialized (missing plugin directories, etc.)
+/// - Plugin directories cannot be created due to filesystem permissions
+/// - Plugin directories exist but are not accessible
+/// - CORS configuration is invalid (wildcard with auth enabled)
+///
+/// Since this occurs during application initialization, a panic here is acceptable
+/// as the server cannot function without proper configuration.
+#[allow(clippy::expect_used)]
+pub fn create_app(
+    config: Config,
+    auth: Option<Arc<crate::auth::AuthState>>,
+) -> (Router, Arc<AppState>) {
+    let app_state = create_app_state(config, auth);
 
     let mut oneshot_route = post(process_oneshot_pipeline_handler)
         // Use configurable body limit for oneshot processing
@@ -4131,7 +4450,7 @@ pub fn create_app(
         oneshot_route = oneshot_route.layer(ConcurrencyLimitLayer::new(max));
     }
 
-    #[cfg_attr(not(feature = "moq"), allow(unused_mut))]
+    #[cfg_attr(not(any(feature = "moq", feature = "mcp")), allow(unused_mut))]
     let mut router = Router::new()
         .route("/healthz", get(health_handler))
         .route("/health", get(health_handler))
@@ -4219,6 +4538,35 @@ pub fn create_app(
     {
         router = router.route("/api/v1/moq/fingerprints", get(get_moq_fingerprints_handler));
         router = router.route("/certificate.sha256", get(get_certificate_sha256_handler));
+    }
+
+    // Mount MCP (Model Context Protocol) endpoint when the feature is enabled
+    // and the config has it turned on.
+    //
+    // SECURITY: The endpoint MUST live under /api/ so that auth_guard_middleware,
+    // origin_guard_middleware, CORS, tracing, and metrics all apply automatically.
+    // Endpoint validation is enforced at config-load time (McpConfig::validate).
+    #[cfg(feature = "mcp")]
+    {
+        if app_state.config.mcp.enabled {
+            info!(
+                endpoint = %app_state.config.mcp.endpoint,
+                "MCP endpoint enabled"
+            );
+            router = router.nest_service(
+                &app_state.config.mcp.endpoint,
+                crate::mcp::streamable_http_service(Arc::clone(&app_state)),
+            );
+        }
+    }
+
+    // Warn if mcp.enabled is set but the binary was compiled without the mcp feature.
+    #[cfg(not(feature = "mcp"))]
+    if app_state.config.mcp.enabled {
+        warn!(
+            "mcp.enabled is true but the binary was compiled without the 'mcp' feature. \
+             The MCP endpoint will not be available. Rebuild with --features mcp."
+        );
     }
 
     // Add MSE streaming route.
@@ -4787,6 +5135,85 @@ pub async fn start_server(config: &Config) -> Result<(), Box<dyn std::error::Err
             e.into()
         })
     }
+}
+
+/// Start the MCP server over STDIO transport (stdin/stdout).
+///
+/// This is the entry point for `skit mcp`.  It initialises the engine, node
+/// registry, and plugin manager (reusing [`create_app_state`]) and then
+/// serves the MCP protocol over stdin/stdout until the client disconnects
+/// or a shutdown signal (Ctrl-C / SIGTERM) is received.
+///
+/// # Startup cost
+///
+/// `create_app_state` spawns full plugin loading and initialises MoQ + MSE
+/// gateways even though STDIO never serves media.  This is intentional —
+/// plugins must be loaded for `list_nodes` to surface them — but makes
+/// cold-start heavier than a minimal RPC server.
+///
+/// # Shutdown behaviour
+///
+/// On exit the process terminates without draining in-flight session
+/// shutdowns.  For STDIO this is acceptable (the OS reclaims resources),
+/// but a `destroy_session` issued moments before exit may not complete
+/// engine cleanup.
+///
+/// # Errors
+///
+/// Returns an error if the MCP STDIO server fails to initialise or encounters
+/// a runtime error.
+///
+/// # Panics
+///
+/// Panics if the Ctrl-C or SIGTERM signal handler cannot be installed
+/// (critical OS failure).
+#[cfg(feature = "mcp")]
+pub async fn start_mcp_stdio(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+    let app_state = create_app_state(config.clone(), None);
+
+    let mcp = crate::mcp::StreamKitMcp::new(app_state);
+
+    let ct = tokio_util::sync::CancellationToken::new();
+
+    // Listen for Ctrl-C / SIGTERM and cancel the token so the STDIO
+    // transport shuts down gracefully.
+    // These expect() calls are justified and documented in the function's # Panics section.
+    let ct_clone = ct.clone();
+    tokio::spawn(async move {
+        let ctrl_c = tokio::signal::ctrl_c();
+
+        #[cfg(unix)]
+        {
+            #[allow(clippy::expect_used)]
+            let mut sigterm =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("failed to install SIGTERM handler");
+            tokio::select! {
+                _ = ctrl_c => {},
+                _ = sigterm.recv() => {},
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            #[allow(clippy::expect_used)]
+            ctrl_c.await.expect("failed to install Ctrl+C handler");
+        }
+
+        info!("Received shutdown signal, stopping MCP STDIO server");
+        ct_clone.cancel();
+    });
+
+    info!("Starting MCP server over STDIO transport");
+
+    let service = rmcp::service::serve_server_with_ct(mcp, rmcp::transport::io::stdio(), ct)
+        .await
+        .map_err(|e| format!("Failed to initialize MCP STDIO server: {e}"))?;
+
+    service.waiting().await?;
+
+    info!("MCP STDIO server stopped");
+    Ok(())
 }
 
 // --- A simple error type for the Axum handler ---

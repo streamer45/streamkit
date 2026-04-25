@@ -51,6 +51,9 @@ pub struct Cli {
 pub enum Commands {
     /// Starts the skit server
     Serve,
+    /// Run the MCP server over STDIO (for MCP client integration)
+    #[cfg(feature = "mcp")]
+    Mcp,
     /// Manage configuration
     #[command(subcommand)]
     Config(ConfigCommands),
@@ -249,6 +252,39 @@ fn log_startup_info(config: &config::Config) {
         file_path = %config.log.file_path,
         "Starting skit server"
     );
+}
+
+/// Handle the "mcp" command — start the MCP server over STDIO.
+/// Exits the process on error with status code 1.
+///
+/// Uses [`crate::logging::init_logging_stderr`] so that tracing output goes
+/// to stderr, keeping stdout clean for the JSON-RPC message stream.
+#[cfg(feature = "mcp")]
+#[allow(clippy::disallowed_macros)]
+async fn handle_mcp_command(config_path: &str, _init_logging: LogInitFn) {
+    let config_result = match config::load(config_path) {
+        Ok(result) => result,
+        Err(e) => {
+            eprintln!("Failed to load configuration: {e}");
+            std::process::exit(1);
+        },
+    };
+
+    let _log_guard = match crate::logging::init_logging_stderr(
+        &config_result.config.log,
+        &config_result.config.telemetry,
+    ) {
+        Ok(guard) => guard,
+        Err(e) => {
+            eprintln!("Failed to initialize logging: {e}");
+            std::process::exit(1);
+        },
+    };
+
+    if let Err(e) = crate::server::start_mcp_stdio(&config_result.config).await {
+        error!(error = %e, "Failed to start MCP STDIO server");
+        std::process::exit(1);
+    }
 }
 
 /// Handle the "serve" command - start the server
@@ -723,6 +759,10 @@ pub async fn handle_command(cli: &Cli, init_logging: LogInitFn) {
     match cli.command.as_ref().unwrap_or(&Commands::Serve) {
         Commands::Serve => {
             handle_serve_command(&cli.config, init_logging).await;
+        },
+        #[cfg(feature = "mcp")]
+        Commands::Mcp => {
+            handle_mcp_command(&cli.config, init_logging).await;
         },
         Commands::Config(ConfigCommands::Default) => {
             handle_config_default_command();

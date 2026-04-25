@@ -31,6 +31,18 @@ fn make_console_layer(console_level: tracing::Level) -> DynLayer {
     tracing_subscriber::fmt::layer().with_filter(env_filter_or_level(console_level)).boxed()
 }
 
+/// Console layer that writes to **stderr** instead of stdout.
+///
+/// Used by the STDIO MCP transport so that tracing output does not interfere
+/// with the JSON-RPC message stream on stdout.
+#[cfg(feature = "mcp")]
+fn make_stderr_console_layer(console_level: tracing::Level) -> DynLayer {
+    tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_filter(env_filter_or_level(console_level))
+        .boxed()
+}
+
 fn make_file_layer(
     non_blocking: tracing_appender::non_blocking::NonBlocking,
     file_level: tracing::Level,
@@ -178,6 +190,82 @@ pub fn init_logging(
     if enable_otel {
         tracing::info!("OpenTelemetry tracing layer enabled");
     }
+
+    Ok(guard)
+}
+
+/// Variant of [`init_logging`] that sends console output to **stderr**.
+///
+/// This is required when stdout is reserved for a protocol stream (e.g. the
+/// MCP STDIO transport).  All other behaviour (file logging, OpenTelemetry,
+/// tokio-console) is identical to [`init_logging`].
+///
+/// # Errors
+///
+/// Same as [`init_logging`].
+#[cfg(feature = "mcp")]
+#[allow(clippy::too_many_lines)]
+pub fn init_logging_stderr(
+    log_config: &config::LogConfig,
+    telemetry_config: &config::TelemetryConfig,
+) -> Result<Option<tracing_appender::non_blocking::WorkerGuard>, Box<dyn std::error::Error>> {
+    let mut guard = None;
+
+    let enable_otel = should_enable_otel_tracing(telemetry_config);
+
+    let setup_file_appender = |log_config: &config::LogConfig| -> Result<
+        (tracing_appender::non_blocking::NonBlocking, tracing_appender::non_blocking::WorkerGuard),
+        Box<dyn std::error::Error>,
+    > {
+        let log_path = std::path::Path::new(&log_config.file_path);
+        let log_dir = log_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let log_filename = log_path.file_name().unwrap_or_else(|| std::ffi::OsStr::new("skit.log"));
+
+        if let Err(e) = std::fs::create_dir_all(log_dir) {
+            return Err(
+                format!("Failed to create log directory {}: {}", log_dir.display(), e).into()
+            );
+        }
+
+        let file_appender = tracing_appender::rolling::never(log_dir, log_filename);
+        Ok(tracing_appender::non_blocking(file_appender))
+    };
+
+    let mut layers: Vec<DynLayer> = Vec::new();
+
+    #[cfg(feature = "tokio-console")]
+    if telemetry_config.tokio_console {
+        let tokio_console_layer =
+            console_subscriber::ConsoleLayer::builder().with_default_env().spawn();
+        layers.push(tokio_console_layer.boxed());
+    }
+
+    if log_config.file_enable {
+        let (non_blocking, file_guard) = setup_file_appender(log_config)?;
+        guard = Some(file_guard);
+        let file_level: tracing::Level = log_config.file_level.clone().into();
+        layers.push(make_file_layer(non_blocking, file_level, log_config.file_format));
+    }
+
+    if log_config.console_enable {
+        let console_level: tracing::Level = log_config.console_level.clone().into();
+        layers.push(make_stderr_console_layer(console_level));
+    }
+
+    if !log_config.console_enable && !log_config.file_enable {
+        layers.push(make_stderr_console_layer(tracing::Level::INFO));
+    }
+
+    if enable_otel {
+        let telemetry_default_level = telemetry_default_level_for_config(log_config);
+        layers.push(
+            telemetry::init_tracing_with_otlp(telemetry_config)?
+                .with_filter(env_filter_or_level(telemetry_default_level))
+                .boxed(),
+        );
+    }
+
+    tracing_subscriber::registry().with(layers).init();
 
     Ok(guard)
 }

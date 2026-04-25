@@ -857,6 +857,103 @@ impl Default for SecurityConfig {
     }
 }
 
+fn default_mcp_endpoint() -> String {
+    "/api/v1/mcp".to_string()
+}
+
+/// MCP (Model Context Protocol) server configuration.
+#[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
+pub struct McpConfig {
+    /// Enable the embedded MCP endpoint (default: false).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Streamable HTTP endpoint path (default: "/api/v1/mcp").
+    #[serde(default = "default_mcp_endpoint")]
+    pub endpoint: String,
+    /// Hostnames accepted by the MCP transport's `Host` header check
+    /// (DNS rebinding protection).
+    ///
+    /// When empty (default), the check is disabled — acceptable when the
+    /// endpoint sits behind `auth_guard_middleware` and
+    /// `origin_guard_middleware`.  For deployments exposed to untrusted
+    /// networks, set this to the public hostname(s) of the server.
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self { enabled: false, endpoint: default_mcp_endpoint(), allowed_hosts: Vec::new() }
+    }
+}
+
+impl McpConfig {
+    /// Validate MCP configuration.
+    ///
+    /// The endpoint MUST live under `/api/` so that `auth_guard_middleware`,
+    /// `origin_guard_middleware`, CORS, tracing, and metrics all apply.
+    /// It must NOT start with `/api/v1/auth/` because that prefix is
+    /// short-circuited by the auth guard.  Only paths matching
+    /// `/api/v<digits>/mcp` (with optional trailing subpath) are accepted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string describing the misconfiguration.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.enabled {
+            return Ok(());
+        }
+
+        let ep = &self.endpoint;
+
+        // Must start with /api/
+        if !ep.starts_with("/api/") {
+            return Err(format!(
+                "mcp.endpoint must start with /api/ to ensure auth and origin guards apply. Got: '{ep}'"
+            ));
+        }
+
+        // Must not sit under the auth prefix (auth_guard_middleware short-circuits it)
+        if ep.starts_with("/api/v1/auth/") || ep == "/api/v1/auth" {
+            return Err(format!(
+                "mcp.endpoint must not start with /api/v1/auth/ (bypasses auth guard). Got: '{ep}'"
+            ));
+        }
+
+        // Reject unsafe path segments (e.g. ".." which could escape the
+        // intended mount point).  This is conservative — it also rejects
+        // legitimate paths like "/api/v1/mcp/foo..bar" — but mount paths
+        // should never need such patterns.
+        if ep.contains("..") {
+            return Err(format!("mcp.endpoint must not contain unsafe path segments (..): '{ep}'"));
+        }
+
+        // Must match /api/v<digits>/mcp or /api/v<digits>/mcp/...
+        let parts: Vec<&str> = ep.trim_start_matches('/').split('/').collect();
+        if parts.len() < 3 {
+            return Err(format!("mcp.endpoint must be at least /api/v<N>/mcp. Got: '{ep}'"));
+        }
+        // parts[0] = "api", parts[1] = "v<digits>", parts[2] = "mcp"
+        let version_part = parts[1];
+        if !version_part.starts_with('v')
+            || !version_part[1..].chars().all(|c| c.is_ascii_digit())
+            || version_part.len() < 2
+        {
+            return Err(format!(
+                "mcp.endpoint version segment must be v<digits> (e.g. v1). Got: '{version_part}' in '{ep}'"
+            ));
+        }
+        if parts[2] != "mcp" {
+            return Err(format!(
+                "mcp.endpoint third segment must be 'mcp'. Got: '{}' in '{ep}'",
+                parts[2]
+            ));
+        }
+
+        Ok(())
+    }
+}
+
 /// Root configuration for the StreamKit server.
 #[derive(Deserialize, Serialize, Default, Debug, Clone, JsonSchema)]
 pub struct Config {
@@ -892,6 +989,9 @@ pub struct Config {
 
     #[serde(default)]
     pub auth: AuthConfig,
+
+    #[serde(default)]
+    pub mcp: McpConfig,
 }
 
 #[derive(Debug)]
@@ -925,6 +1025,10 @@ pub fn load(config_path: &str) -> Result<ConfigLoadResult, Box<figment::Error>> 
         figment.merge(Env::prefixed("SK_").split("__")).extract().map_err(Box::new)?;
 
     normalize_permissions_config(&mut config);
+
+    if let Err(e) = config.mcp.validate() {
+        return Err(Box::new(figment::Error::from(e)));
+    }
 
     Ok(ConfigLoadResult { config, file_missing })
 }

@@ -143,6 +143,10 @@ skit-profiling *args='':
     @echo "Note: Heap profiling configuration is embedded in the binary"
     @RUSTFLAGS="-C force-frame-pointers=yes -C target-cpu=native" cargo run --profile release-lto {{moq_features}} {{profiling_features}} -p streamkit-server --bin skit -- {{args}}
 
+# Start the MCP server over STDIO (for MCP client integration)
+skit-mcp *args='': check-ui-dist
+    @cargo run --features mcp {{moq_features}} {{extra_features}} -p streamkit-server --bin skit -- mcp {{args}}
+
 # Start the skit server with tokio-console support
 skit-console *args='':
     @echo "Starting skit with tokio-console support..."
@@ -217,6 +221,7 @@ test-skit:
     @echo "Testing skit..."
     @cargo test --workspace -- --skip gpu_tests::
     @cargo test -p streamkit-server --features "moq"
+    @cargo test -p streamkit-server --features "mcp"
 
 # Run GPU tests (requires a machine with a GPU)
 test-skit-gpu:
@@ -231,6 +236,7 @@ lint-skit:
     @echo "Linting skit..."
     @cargo fmt --all -- --check
     @cargo clippy -p streamkit-server --all-targets --features "moq" -- -D warnings
+    @cargo clippy -p streamkit-server --all-targets --features "mcp" -- -D warnings
     @cargo clippy --workspace --exclude streamkit-server --all-targets -- -D warnings
     @mkdir -p target
     @HOST=$(rustc -vV | sed -n 's/^host: //p'); \

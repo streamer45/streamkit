@@ -12,6 +12,8 @@ pub mod logging;
 pub mod marketplace;
 pub mod marketplace_installer;
 pub mod marketplace_security;
+#[cfg(feature = "mcp")]
+pub mod mcp;
 #[cfg(feature = "moq")]
 pub mod moq_gateway;
 pub mod mse_gateway;

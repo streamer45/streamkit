@@ -57,6 +57,7 @@ jobs:
         run: |
           cargo clippy --locked --workspace --all-targets -- -D warnings
           cargo clippy --locked -p streamkit-server --all-targets --features "moq" -- -D warnings
+          cargo clippy --locked -p streamkit-server --all-targets --features "mcp" -- -D warnings
 
       - name: Install cargo-deny
         run: cargo install --locked cargo-deny
@@ -111,6 +112,7 @@ jobs:
         run: |
           cargo test --locked --workspace -- --skip gpu_tests::
           cargo test --locked -p streamkit-server --features "moq"
+          cargo test --locked -p streamkit-server --features "mcp"
 
   test-gpu:
     name: Test (GPU)
