@@ -107,6 +107,14 @@ jobs:
         with:
           toolchain: "1.92.0"
 
+      - name: Restore sccache cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/sccache
+          key: sccache-plugins-${{ runner.os }}-${{ hashFiles('plugins/**/Cargo.lock') }}
+          restore-keys: |
+            sccache-plugins-${{ runner.os }}-
+
       - uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Verify official plugins metadata is current
@@ -194,6 +202,13 @@ jobs:
         with:
           name: marketplace-registry
           path: dist/registry/**
+
+      - name: Save sccache cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/sccache
+          key: sccache-plugins-${{ runner.os }}-${{ hashFiles('plugins/**/Cargo.lock') }}
 
   publish-registry:
     name: Publish Registry (PR)

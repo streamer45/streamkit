@@ -53,6 +53,14 @@ jobs:
         with:
           toolchain: "1.92.0"
 
+      - name: Restore sccache cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/sccache
+          key: sccache-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            sccache-${{ runner.os }}-
+
       - uses: mozilla-actions/sccache-action@v0.0.9
 
       - uses: Swatinem/rust-cache@v2
@@ -103,6 +111,13 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           sha256sum streamkit-${VERSION}-linux-x64.tar.gz > streamkit-${VERSION}-linux-x64.tar.gz.sha256
+
+      - name: Save sccache cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/sccache
+          key: sccache-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

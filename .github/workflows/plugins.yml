@@ -162,6 +162,14 @@ jobs:
           toolchain: "1.92.0"
           components: rustfmt, clippy
 
+      - name: Restore sccache cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/sccache
+          key: sccache-plugins-${{ runner.os }}-${{ hashFiles('plugins/**/Cargo.lock') }}
+          restore-keys: |
+            sccache-plugins-${{ runner.os }}-
+
       - uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Build workspace list for cache
@@ -226,3 +234,10 @@ jobs:
             (cd "plugins/native/${plugin}" && CARGO_TARGET_DIR="${{ github.workspace }}/target/plugins" cargo test)
             echo "::endgroup::"
           done
+
+      - name: Save sccache cache
+        if: always() && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/sccache
+          key: sccache-plugins-${{ runner.os }}-${{ hashFiles('plugins/**/Cargo.lock') }}
