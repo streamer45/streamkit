@@ -368,6 +368,10 @@ impl KeyProvider for FileKeyProvider {
         let private_path = self.state_dir.join(PRIVATE_JWK_FILENAME);
         let jwks_path = self.state_dir.join(PUBLIC_JWKS_FILENAME);
 
+        // Cross-process file lock so the CLI and server cannot
+        // clobber each other's key writes during concurrent rotation.
+        let _flock = acquire_file_lock(&jwks_path).await?;
+
         let (private_jwk, new_signing_key, public_key_bytes) = generate_new_private_key()?;
 
         // Re-read JWKS from disk (not in-memory) to pick up any
@@ -402,6 +406,10 @@ impl KeyProvider for FileKeyProvider {
 
         let private_path = self.state_dir.join(PRIVATE_JWK_FILENAME);
         let jwks_path = self.state_dir.join(PUBLIC_JWKS_FILENAME);
+
+        // Cross-process file lock so reload doesn't read a
+        // partially-written file during a concurrent rotation.
+        let _flock = acquire_file_lock(&jwks_path).await?;
 
         Self::verify_permissions(&private_path)?;
         let content = tokio::fs::read_to_string(&private_path).await?;
@@ -1274,6 +1282,46 @@ mod tests {
                 "b-{i} missing"
             );
         }
+    }
+
+    // --- Tests for rotate() cross-process file locking ---
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_concurrent_rotations_no_lost_keys() {
+        // Simulate two independent KeyProvider instances (CLI + server)
+        // rotating concurrently.  With flock, all generated keys must
+        // appear in the final JWKS.
+        let temp_dir = TempDir::new().unwrap();
+        let provider_a = Arc::new(FileKeyProvider::load_or_init(temp_dir.path()).await.unwrap());
+        let provider_b = Arc::new(FileKeyProvider::load_or_init(temp_dir.path()).await.unwrap());
+
+        let pa = provider_a.clone();
+        let pb = provider_b.clone();
+        let (r1, r2) = tokio::join!(
+            tokio::spawn(async move {
+                for _ in 0..3 {
+                    pa.rotate().await.unwrap();
+                }
+            }),
+            tokio::spawn(async move {
+                for _ in 0..3 {
+                    pb.rotate().await.unwrap();
+                }
+            }),
+        );
+        r1.unwrap();
+        r2.unwrap();
+
+        // Re-read from disk with a fresh provider to verify.
+        let verifier = FileKeyProvider::load_or_init(temp_dir.path()).await.unwrap();
+        let jwks = verifier.jwks();
+        // 1 initial key + 6 rotations = 7 keys total.
+        assert_eq!(
+            jwks.keys.len(),
+            7,
+            "all rotated keys must survive concurrent writes (found {})",
+            jwks.keys.len()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
