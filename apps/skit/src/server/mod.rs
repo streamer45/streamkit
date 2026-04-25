@@ -5142,6 +5142,20 @@ pub async fn start_server(config: &Config) -> Result<(), Box<dyn std::error::Err
 /// serves the MCP protocol over stdin/stdout until the client disconnects
 /// or a shutdown signal (Ctrl-C / SIGTERM) is received.
 ///
+/// # Startup cost
+///
+/// `create_app_state` spawns full plugin loading and initialises MoQ + MSE
+/// gateways even though STDIO never serves media.  This is intentional —
+/// plugins must be loaded for `list_nodes` to surface them — but makes
+/// cold-start heavier than a minimal RPC server.
+///
+/// # Shutdown behaviour
+///
+/// On exit the process terminates without draining in-flight session
+/// shutdowns.  For STDIO this is acceptable (the OS reclaims resources),
+/// but a `destroy_session` issued moments before exit may not complete
+/// engine cleanup.
+///
 /// # Errors
 ///
 /// Returns an error if the MCP STDIO server fails to initialise or encounters

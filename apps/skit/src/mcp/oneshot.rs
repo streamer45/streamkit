@@ -39,12 +39,13 @@ pub(super) fn generate_curl_command(
 
     let mut cmd = String::new();
     let _ = writeln!(cmd, "# Save pipeline YAML to a temporary file, then run curl.");
-    let _ = writeln!(cmd, "cat > /tmp/pipeline.yaml <<'{delim}'");
+    let _ = writeln!(cmd, "PIPELINE=$(mktemp /tmp/pipeline-XXXXXX.yaml)");
+    let _ = writeln!(cmd, "cat > \"$PIPELINE\" <<'{delim}'");
     let _ = writeln!(cmd, "{yaml}");
     let _ = writeln!(cmd, "{delim}");
     let _ = writeln!(cmd);
     let url = format!("{server_url}/api/v1/process");
-    let _ = write!(cmd, "curl -X POST {} \\\n  -F 'config=</tmp/pipeline.yaml'", shell_quote(&url));
+    let _ = write!(cmd, "curl -X POST {} \\\n  -F 'config=<'\"$PIPELINE\"''", shell_quote(&url));
     for input in inputs {
         let _ =
             write!(cmd, " \\\n  -F {}", shell_quote(&format!("{}=@{}", input.field, input.path)));
@@ -63,7 +64,8 @@ pub(super) fn generate_skit_cli_command(
 
     let mut cmd = String::new();
     let _ = writeln!(cmd, "# Save pipeline YAML to a temporary file, then run the CLI.");
-    let _ = writeln!(cmd, "cat > /tmp/pipeline.yaml <<'{delim}'");
+    let _ = writeln!(cmd, "PIPELINE=$(mktemp /tmp/pipeline-XXXXXX.yaml)");
+    let _ = writeln!(cmd, "cat > \"$PIPELINE\" <<'{delim}'");
     let _ = writeln!(cmd, "{yaml}");
     let _ = writeln!(cmd, "{delim}");
     let _ = writeln!(cmd);
@@ -75,16 +77,15 @@ pub(super) fn generate_skit_cli_command(
     if let Some(primary_input) = primary.first() {
         let _ = write!(
             cmd,
-            "streamkit-client oneshot /tmp/pipeline.yaml {}",
+            "streamkit-client oneshot \"$PIPELINE\" {}",
             shell_quote(&primary_input.path)
         );
     } else if let Some(first) = inputs.first() {
         // No input named "media" — use the first as positional and re-add
         // it via --input so the server receives the correct field name.
-        let _ =
-            write!(cmd, "streamkit-client oneshot /tmp/pipeline.yaml {}", shell_quote(&first.path));
+        let _ = write!(cmd, "streamkit-client oneshot \"$PIPELINE\" {}", shell_quote(&first.path));
     } else {
-        let _ = write!(cmd, "streamkit-client oneshot /tmp/pipeline.yaml <INPUT_FILE>");
+        let _ = write!(cmd, "streamkit-client oneshot \"$PIPELINE\" <INPUT_FILE>");
     }
 
     let _ = write!(cmd, " {}", shell_quote(output));

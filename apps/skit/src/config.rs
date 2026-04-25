@@ -920,9 +920,12 @@ impl McpConfig {
             ));
         }
 
-        // Must not contain path traversal
+        // Reject unsafe path segments (e.g. ".." which could escape the
+        // intended mount point).  This is conservative — it also rejects
+        // legitimate paths like "/api/v1/mcp/foo..bar" — but mount paths
+        // should never need such patterns.
         if ep.contains("..") {
-            return Err(format!("mcp.endpoint must not contain path traversal (..): '{ep}'"));
+            return Err(format!("mcp.endpoint must not contain unsafe path segments (..): '{ep}'"));
         }
 
         // Must match /api/v<digits>/mcp or /api/v<digits>/mcp/...

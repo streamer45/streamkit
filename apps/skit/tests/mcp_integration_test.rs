@@ -599,6 +599,7 @@ async fn mcp_generate_oneshot_command_curl() {
     assert!(text.contains("curl"), "curl command expected in output: {text}");
     assert!(text.contains("/api/v1/process"), "endpoint expected in output: {text}");
     assert!(text.contains("config="), "config field expected in output: {text}");
+    assert!(text.contains("mktemp"), "mktemp expected in output: {text}");
     assert!(text.contains("'media=@/tmp/input.wav'"), "input field expected in output: {text}");
     assert!(text.contains("-o '/tmp/output.wav'"), "output path expected in output: {text}");
 }
@@ -1384,5 +1385,103 @@ async fn test_mcp_stdio_initialize() {
     );
 
     // Clean up: kill the child process.
+    child.kill().await.ok();
+}
+
+/// After initializing, invoke `tools/call` with `list_nodes` over STDIO to
+/// verify that the admin-fallback auth path grants tool access.
+#[tokio::test]
+async fn test_mcp_stdio_tool_call() {
+    use std::process::Stdio;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::process::Command;
+
+    let skit_bin = std::path::PathBuf::from(env!("CARGO_BIN_EXE_skit"));
+
+    let mut child = Command::new(&skit_bin)
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn skit mcp process");
+
+    let stdin = child.stdin.as_mut().expect("Failed to open stdin");
+    let stdout = child.stdout.take().expect("Failed to open stdout");
+    let mut reader = BufReader::new(stdout);
+
+    // 1. Initialize
+    let init_request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": { "name": "test-client", "version": "0.1.0" }
+        }
+    });
+    let msg = serde_json::to_string(&init_request).unwrap();
+    stdin.write_all(msg.as_bytes()).await.unwrap();
+    stdin.write_all(b"\n").await.unwrap();
+    stdin.flush().await.unwrap();
+
+    let mut line = String::new();
+    let read_result = tokio::time::timeout(Duration::from_secs(30), reader.read_line(&mut line))
+        .await
+        .expect("Timed out waiting for initialize response")
+        .expect("Failed to read initialize response");
+    assert!(read_result > 0, "Empty initialize response");
+
+    // 2. Send initialized notification (required by MCP protocol)
+    let initialized = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized"
+    });
+    let msg = serde_json::to_string(&initialized).unwrap();
+    stdin.write_all(msg.as_bytes()).await.unwrap();
+    stdin.write_all(b"\n").await.unwrap();
+    stdin.flush().await.unwrap();
+
+    // 3. Call list_nodes tool
+    let tool_call = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "list_nodes",
+            "arguments": {}
+        }
+    });
+    let msg = serde_json::to_string(&tool_call).unwrap();
+    stdin.write_all(msg.as_bytes()).await.unwrap();
+    stdin.write_all(b"\n").await.unwrap();
+    stdin.flush().await.unwrap();
+
+    let mut response_line = String::new();
+    let read_result =
+        tokio::time::timeout(Duration::from_secs(30), reader.read_line(&mut response_line))
+            .await
+            .expect("Timed out waiting for list_nodes response")
+            .expect("Failed to read list_nodes response");
+    assert!(read_result > 0, "Empty list_nodes response");
+
+    let response: serde_json::Value =
+        serde_json::from_str(response_line.trim()).expect("Invalid JSON response");
+
+    assert_eq!(response["jsonrpc"], "2.0");
+    assert_eq!(response["id"], 2);
+    assert!(
+        response.get("result").is_some(),
+        "Expected 'result' in list_nodes response, got: {}",
+        response
+    );
+
+    // The result should contain node definitions as text content.
+    let content = &response["result"]["content"];
+    assert!(content.is_array(), "Expected content array, got: {content}");
+    let text = content[0]["text"].as_str().unwrap_or("");
+    assert!(!text.is_empty(), "Expected non-empty node listing from list_nodes");
+
     child.kill().await.ok();
 }

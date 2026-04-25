@@ -5,9 +5,15 @@
 //! Embedded MCP (Model Context Protocol) server for StreamKit.
 //!
 //! Exposes StreamKit control-plane capabilities (node discovery, pipeline
-//! validation, session management) as MCP tools over Streamable HTTP.
-//! The endpoint reuses the existing Axum application state, auth, and
-//! permission model — no separate bridge process required.
+//! validation, session management) as MCP tools over Streamable HTTP or
+//! STDIO.  The endpoint reuses the existing Axum application state, auth,
+//! and permission model — no separate bridge process required.
+//!
+//! # Security — STDIO transport
+//!
+//! `skit mcp` runs unauthenticated: the STDIO caller is implicitly trusted
+//! with admin-level permissions (see [`extract_auth`]).  Only expose its
+//! stdin to trusted local processes (e.g. Devin, Claude Desktop, Cursor).
 
 mod oneshot;
 mod prompts;
@@ -622,7 +628,7 @@ impl StreamKitMcp {
     // -- apply_batch -------------------------------------------------------
 
     #[tool(
-        description = "Apply a batch of graph mutations atomically to a running session. All operations succeed or all fail together. Operations: addnode, removenode, connect, disconnect."
+        description = "Apply a batch of graph mutations to a running session as a single validated batch. All operations are validated before any are applied; if validation fails, none are applied. Note: engine-side errors after validation do not roll back already-applied operations. Operations: addnode, removenode, connect, disconnect."
     )]
     async fn apply_batch(
         &self,
@@ -703,7 +709,7 @@ impl ServerHandler for StreamKitMcp {
              processing nodes, validate_pipeline to check YAML, and \
              create_session / list_sessions / get_pipeline / destroy_session \
              to manage dynamic pipeline sessions. Use validate_batch and \
-             apply_batch to atomically mutate a running session's graph, \
+             apply_batch to mutate a running session's graph as a validated batch, \
              tune_node to send control messages, and \
              generate_oneshot_command to get a command for batch processing.",
         );
@@ -743,11 +749,13 @@ impl ServerHandler for StreamKitMcp {
 /// require authentication, which further bounds creation rate.
 ///
 /// `allowed_hosts` is configured from `mcp.allowed_hosts` in the config.
-/// When the list is empty (default), `allowed_hosts` is disabled — acceptable
-/// when the endpoint sits behind Axum's `auth_guard_middleware` and
-/// `origin_guard_middleware`.  For deployments exposed to untrusted
-/// networks, populate `mcp.allowed_hosts` to re-enable DNS rebinding
-/// protection on the `Host` header.
+/// When the list is empty (default), the `Host`-header check is disabled.
+/// This is acceptable because Axum's `auth_guard_middleware` (bearer-token
+/// validation) already prevents DNS rebinding exploitation — a rebound
+/// request cannot supply a valid token.  `origin_guard_middleware`
+/// additionally restricts browser-initiated cross-origin requests.
+/// For deployments exposed to untrusted networks *without* auth enabled,
+/// populate `mcp.allowed_hosts` to re-enable `Host`-header validation.
 pub fn streamable_http_service(
     app_state: Arc<AppState>,
 ) -> StreamableHttpService<StreamKitMcp, LocalSessionManager> {
