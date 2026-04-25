@@ -1303,6 +1303,108 @@ async fn mcp_modify_sessions_permission_denied() {
 }
 
 // ---------------------------------------------------------------------------
+// Plugin & node-definition tools
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn mcp_list_plugins_returns_results() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let session_id = init_mcp_session(&client, addr, &token).await;
+
+    let list = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "list_plugins",
+            "arguments": {}
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &list, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let result = &body["result"];
+    assert!(!result.is_null(), "expected result, got: {body}");
+
+    let text = result["content"][0]["text"].as_str().expect("expected text content");
+    let plugins: Vec<serde_json::Value> = serde_json::from_str(text).expect("expected JSON array");
+    // No plugins loaded in test server, but should return an empty array without error.
+    assert!(plugins.is_empty(), "expected empty plugin list in test server, got: {plugins:?}");
+}
+
+#[tokio::test]
+async fn mcp_get_node_definition_found() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let session_id = init_mcp_session(&client, addr, &token).await;
+
+    let get_def = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "get_node_definition",
+            "arguments": {
+                "kind": "core::passthrough"
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &get_def, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let result = &body["result"];
+    assert!(!result.is_null(), "expected result, got: {body}");
+
+    let text = result["content"][0]["text"].as_str().expect("expected text content");
+    let def: serde_json::Value = serde_json::from_str(text).expect("expected JSON object");
+    assert_eq!(def["kind"], "core::passthrough");
+    assert!(def["inputs"].is_array(), "expected inputs array in definition");
+    assert!(def["outputs"].is_array(), "expected outputs array in definition");
+}
+
+#[tokio::test]
+async fn mcp_get_node_definition_not_found() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let session_id = init_mcp_session(&client, addr, &token).await;
+
+    let get_def = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "get_node_definition",
+            "arguments": {
+                "kind": "nonexistent::node_kind"
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &get_def, &token, &session_id).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_text = res.text().await.unwrap();
+    let body = extract_sse_json(&body_text);
+    let error = &body["error"];
+    assert!(!error.is_null(), "expected error for nonexistent kind, got: {body}");
+    assert!(
+        error["message"].as_str().unwrap_or("").contains("not found"),
+        "expected 'not found' error message, got: {}",
+        error["message"]
+    );
+}
+
+// ---------------------------------------------------------------------------
 // STDIO transport tests
 // ---------------------------------------------------------------------------
 

@@ -248,6 +248,12 @@ pub struct TuneNodeArgs {
     pub message: streamkit_core::control::NodeControlMessage,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetNodeDefinitionArgs {
+    /// Node kind to look up (e.g., "audio::gain", "core::passthrough").
+    pub kind: String,
+}
+
 // ---------------------------------------------------------------------------
 // StreamKit MCP service
 // ---------------------------------------------------------------------------
@@ -693,6 +699,59 @@ impl StreamKitMcp {
         let result = serde_json::json!({ "success": true });
         json_tool_result(&result)
     }
+
+    // -- list_plugins ------------------------------------------------------
+
+    #[tool(
+        description = "List installed StreamKit plugins with their kind, version, type (native/wasm), and categories."
+    )]
+    async fn list_plugins(
+        &self,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let (_role_name, perms) = extract_auth(&ctx, &self.app_state)?;
+
+        let mut plugins = self.app_state.plugin_manager.lock().await.list_plugins();
+        plugins.retain(|plugin| perms.is_plugin_allowed(&plugin.kind));
+
+        info!(count = plugins.len(), "MCP list_plugins");
+
+        json_tool_result(&plugins)
+    }
+
+    // -- get_node_definition -----------------------------------------------
+
+    #[tool(
+        description = "Get the full definition (schema, pins, categories) for a specific node kind. Use this when you need the param schema or pin layout for a particular node."
+    )]
+    async fn get_node_definition(
+        &self,
+        Parameters(args): Parameters<GetNodeDefinitionArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let (_role_name, perms) = extract_auth(&ctx, &self.app_state)?;
+
+        if !perms.is_node_allowed(&args.kind) {
+            return Err(McpError::invalid_request(
+                format!("Permission denied: node kind '{}' is not allowed", args.kind),
+                None,
+            ));
+        }
+
+        let definitions = filtered_node_definitions(&self.app_state, &perms)?;
+        let definition = definitions.into_iter().find(|d| d.kind == args.kind);
+
+        let Some(definition) = definition else {
+            return Err(McpError::invalid_params(
+                format!("Node kind '{}' not found", args.kind),
+                None,
+            ));
+        };
+
+        info!(kind = %args.kind, "MCP get_node_definition");
+
+        json_tool_result(&definition)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -706,7 +765,9 @@ impl ServerHandler for StreamKitMcp {
         let capabilities = ServerCapabilities::builder().enable_tools().enable_prompts().build();
         let mut info = ServerInfo::new(capabilities).with_instructions(
             "StreamKit MCP server. Use list_nodes to discover available \
-             processing nodes, validate_pipeline to check YAML, and \
+             processing nodes, get_node_definition to look up a specific \
+             node's schema/pins/categories, list_plugins to see installed \
+             plugins, validate_pipeline to check YAML, and \
              create_session / list_sessions / get_pipeline / destroy_session \
              to manage dynamic pipeline sessions. Use validate_batch and \
              apply_batch to mutate a running session's graph as a validated batch, \
