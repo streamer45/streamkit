@@ -8,6 +8,8 @@
 //! `prompts/list` and `prompts/get`.  Content builder functions remain as
 //! plain helpers called by the prompt methods.
 
+use std::fmt::Write;
+
 use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{GetPromptResult, PromptMessage, PromptMessageRole};
@@ -35,14 +37,14 @@ pub(super) fn create_prompt_router() -> PromptRouter<StreamKitMcp> {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize, rmcp::schemars::JsonSchema)]
-pub(crate) struct DesignPipelinePromptArgs {
+pub(super) struct DesignPipelinePromptArgs {
     /// Optional natural language description of the desired pipeline.
     #[serde(default)]
     pub description: Option<String>,
 }
 
 #[derive(Debug, Deserialize, rmcp::schemars::JsonSchema)]
-pub(crate) struct DebugPipelinePromptArgs {
+pub(super) struct DebugPipelinePromptArgs {
     /// Session ID or name to debug.
     pub session_id: String,
 }
@@ -112,7 +114,7 @@ impl StreamKitMcp {
 // ---------------------------------------------------------------------------
 
 /// Build the `design_pipeline` prompt content string.
-pub(crate) fn build_design_pipeline_content(
+fn build_design_pipeline_content(
     definitions: &[NodeDefinition],
     description: Option<&str>,
 ) -> String {
@@ -143,11 +145,11 @@ pub(crate) fn build_design_pipeline_content(
     content.push_str("## Available Nodes (by category)\n\n");
 
     for (category, defs) in &by_category {
-        content.push_str(&format!("### {category}\n\n"));
+        let _ = write!(content, "### {category}\n\n");
         for def in defs {
-            content.push_str(&format!("- **`{}`**", def.kind));
+            let _ = write!(content, "- **`{}`**", def.kind);
             if let Some(desc) = &def.description {
-                content.push_str(&format!(" — {desc}"));
+                let _ = write!(content, " — {desc}");
             }
             content.push('\n');
 
@@ -157,7 +159,7 @@ pub(crate) fn build_design_pipeline_content(
                     .iter()
                     .map(|p| format!("`{}` ({:?})", p.name, p.accepts_types))
                     .collect();
-                content.push_str(&format!("  - Inputs: {}\n", pins.join(", ")));
+                let _ = write!(content, "  - Inputs: {}\n", pins.join(", "));
             }
             if !def.outputs.is_empty() {
                 let pins: Vec<String> = def
@@ -165,7 +167,7 @@ pub(crate) fn build_design_pipeline_content(
                     .iter()
                     .map(|p| format!("`{}` ({:?})", p.name, p.produces_type))
                     .collect();
-                content.push_str(&format!("  - Outputs: {}\n", pins.join(", ")));
+                let _ = write!(content, "  - Outputs: {}\n", pins.join(", "));
             }
             // Param schema summary (skip trivially empty schemas)
             if def.param_schema != serde_json::json!({})
@@ -175,13 +177,14 @@ pub(crate) fn build_design_pipeline_content(
                     if let Some(obj) = props.as_object() {
                         if !obj.is_empty() {
                             let keys: Vec<&String> = obj.keys().collect();
-                            content.push_str(&format!(
+                            let _ = write!(
+                                content,
                                 "  - Params: {}\n",
                                 keys.iter()
                                     .map(|k| format!("`{k}`"))
                                     .collect::<Vec<_>>()
                                     .join(", ")
-                            ));
+                            );
                         }
                     }
                 }
@@ -231,14 +234,14 @@ pub(crate) fn build_design_pipeline_content(
 
     // Optional user description
     if let Some(desc) = description {
-        content.push_str(&format!("\n## User Request\n\n{desc}\n"));
+        let _ = write!(content, "\n## User Request\n\n{desc}\n");
     }
 
     content
 }
 
 /// Build the `debug_pipeline` prompt content string.
-pub(crate) fn build_debug_pipeline_content(
+fn build_debug_pipeline_content(
     session_id: &str,
     api_pipeline: &Pipeline,
 ) -> Result<String, String> {
@@ -247,7 +250,7 @@ pub(crate) fn build_debug_pipeline_content(
 
     let mut content = String::with_capacity(4096);
 
-    content.push_str(&format!("You are debugging StreamKit session `{session_id}`.\n\n"));
+    let _ = write!(content, "You are debugging StreamKit session `{session_id}`.\n\n");
 
     // Current pipeline state
     content.push_str("## Current Pipeline State\n\n");
@@ -260,19 +263,19 @@ pub(crate) fn build_debug_pipeline_content(
     let mut has_errors = false;
     for (id, node) in &api_pipeline.nodes {
         let state_str =
-            node.state.as_ref().map(|s| format!("{s:?}")).unwrap_or_else(|| "unknown".to_string());
-        content.push_str(&format!("- **`{id}`** (`{}`): {state_str}", node.kind));
+            node.state.as_ref().map_or_else(|| "unknown".to_string(), |s| format!("{s:?}"));
+        let _ = write!(content, "- **`{id}`** (`{}`): {state_str}", node.kind);
         if let Some(ref state) = node.state {
             match state {
                 streamkit_core::NodeState::Failed { reason } => {
                     has_errors = true;
-                    content.push_str(&format!(" — error: {reason}"));
+                    let _ = write!(content, " — error: {reason}");
                 },
                 streamkit_core::NodeState::Recovering { reason, .. } => {
-                    content.push_str(&format!(" — recovering: {reason}"));
+                    let _ = write!(content, " — recovering: {reason}");
                 },
                 streamkit_core::NodeState::Degraded { reason, .. } => {
-                    content.push_str(&format!(" — degraded: {reason}"));
+                    let _ = write!(content, " — degraded: {reason}");
                 },
                 _ => {},
             }
@@ -284,7 +287,8 @@ pub(crate) fn build_debug_pipeline_content(
     if !api_pipeline.connections.is_empty() {
         content.push_str("\n## Connections\n\n");
         for conn in &api_pipeline.connections {
-            content.push_str(&format!(
+            let _ = write!(
+                content,
                 "- `{}`.`{}` → `{}`.`{}` ({})\n",
                 conn.from_node,
                 conn.from_pin,
@@ -294,7 +298,7 @@ pub(crate) fn build_debug_pipeline_content(
                     streamkit_core::control::ConnectionMode::Reliable => "reliable",
                     streamkit_core::control::ConnectionMode::BestEffort => "best_effort",
                 },
-            ));
+            );
         }
     }
 

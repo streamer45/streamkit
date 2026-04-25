@@ -53,16 +53,14 @@ fn extract_auth(
     ctx: &RequestContext<RoleServer>,
     app_state: &Arc<AppState>,
 ) -> Result<(String, Permissions), McpError> {
-    match ctx.extensions.get::<http::request::Parts>() {
-        Some(parts) => {
-            Ok(crate::role_extractor::get_role_and_permissions(&parts.headers, app_state))
-        },
-        None => {
+    Ok(ctx.extensions.get::<http::request::Parts>().map_or_else(
+        || {
             // STDIO transport — no HTTP context.  Treat as local/trusted.
             let empty_headers = axum::http::HeaderMap::new();
-            Ok(crate::role_extractor::get_role_and_permissions(&empty_headers, app_state))
+            crate::role_extractor::get_role_and_permissions(&empty_headers, app_state)
         },
-    }
+        |parts| crate::role_extractor::get_role_and_permissions(&parts.headers, app_state),
+    ))
 }
 
 // ---------------------------------------------------------------------------

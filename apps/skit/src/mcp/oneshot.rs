@@ -10,12 +10,12 @@ use super::OneshotInput;
 
 /// Shell-quote a value by wrapping it in single quotes and escaping any
 /// embedded single quotes (`'` → `'\''`).
-pub(crate) fn shell_quote(s: &str) -> String {
+pub(super) fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Return a heredoc delimiter that does not appear in `content`.
-pub(crate) fn unique_heredoc_delimiter(content: &str) -> String {
+pub(super) fn unique_heredoc_delimiter(content: &str) -> String {
     let base = "PIPELINE_EOF";
     if !content.contains(base) {
         return base.to_string();
@@ -29,7 +29,7 @@ pub(crate) fn unique_heredoc_delimiter(content: &str) -> String {
     unreachable!()
 }
 
-pub(crate) fn generate_curl_command(
+pub(super) fn generate_curl_command(
     yaml: &str,
     inputs: &[OneshotInput],
     output: &str,
@@ -53,7 +53,7 @@ pub(crate) fn generate_curl_command(
     cmd
 }
 
-pub(crate) fn generate_skit_cli_command(
+pub(super) fn generate_skit_cli_command(
     yaml: &str,
     inputs: &[OneshotInput],
     output: &str,
@@ -92,13 +92,13 @@ pub(crate) fn generate_skit_cli_command(
     // Emit --input flags: when a "media" input exists, only extras need
     // flags; otherwise all inputs are emitted (the first was used as the
     // positional arg but with a non-"media" field name).
-    if !primary.is_empty() {
-        for input in &extras {
+    if primary.is_empty() {
+        for input in inputs {
             let _ =
                 write!(cmd, " --input {}", shell_quote(&format!("{}={}", input.field, input.path)));
         }
     } else {
-        for input in inputs {
+        for input in &extras {
             let _ =
                 write!(cmd, " --input {}", shell_quote(&format!("{}={}", input.field, input.path)));
         }
