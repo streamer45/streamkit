@@ -878,7 +878,13 @@ const MonitorViewContent: React.FC = () => {
     for (const n of deleted) {
       if (draftNodesRef.current.has(n.id)) {
         removedDraft = true;
-        // Drafts are local-only — no `removenode` needed.
+        // Drafts are local-only — no `removenode` needed.  Clear the
+        // synchronous shadow refs so a future draft generated with the
+        // same id (or any id) starts from a clean slate (otherwise a
+        // stale promotionInFlight entry would silently block the new
+        // draft from ever being promoted).
+        latestDraftParamsRef.current.delete(n.id);
+        promotionInFlightRef.current.delete(n.id);
         continue;
       }
       removeNode(n.id);
