@@ -590,7 +590,19 @@ const MonitorViewContent: React.FC = () => {
   // before the browser paints; otherwise the topology effect would
   // briefly render the previous session's drafts on the new session's
   // canvas in the frame between the session switch and the cleanup.
+  // Track the previous session id so we can clear the corresponding
+  // Jotai atom entries; without this the atomFamily would accumulate
+  // entries keyed by `<oldSessionId>\0<draftNodeId>` across many
+  // session switches.
+  const prevDraftSessionIdRef = useRef<string | null>(selectedSessionId);
   React.useLayoutEffect(() => {
+    const prevSession = prevDraftSessionIdRef.current;
+    prevDraftSessionIdRef.current = selectedSessionId;
+    if (prevSession !== null) {
+      for (const id of draftNodesRef.current.keys()) {
+        clearNodeParams(id, prevSession);
+      }
+    }
     setDraftNodes((prev) => (prev.size === 0 ? prev : new Map()));
     latestDraftParamsRef.current.clear();
     promotionInFlightRef.current.clear();
