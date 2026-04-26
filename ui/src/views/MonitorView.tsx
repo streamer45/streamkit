@@ -1186,6 +1186,11 @@ const MonitorViewContent: React.FC = () => {
       // template; no incoming connections to reconstruct.
       const draftFinalInputs = draftBaseInputs;
       const draftFinalOutputs = draftBaseOutputs;
+      // Honour the user's drag — `draft.position` is just the original
+      // drop coordinate.  Topology rebuilds (e.g. when missingRequired
+      // shrinks on the first keystroke) would otherwise snap the draft
+      // back to that drop point.
+      const draftPos = prevPositions.get(draftId) ?? savedPositions[draftId] ?? draft.position;
       // No live state on a draft — the node does not exist in the
       // engine yet.  NodeFrame ignores `state` when `draft` is set
       // (it shows the draft banner instead of the state indicator).
@@ -1196,7 +1201,7 @@ const MonitorViewContent: React.FC = () => {
           params: draft.params as JsonValue,
           state: null,
         },
-        position: draft.position,
+        position: draftPos,
         nodeState: undefined,
         finalInputs: draftFinalInputs,
         finalOutputs: draftFinalOutputs,
