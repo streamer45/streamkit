@@ -358,8 +358,15 @@ const InspectorPane: React.FC<InspectorPaneProps> = ({
       schema.default ??
       '';
     const inputId = `param-${node.id}-${key}`;
-    // In monitor view, disable non-tunable params (they can't be changed at runtime)
-    const isDisabled = readOnly || (isMonitorView && !schema.tunable);
+    // In monitor view, non-tunable params are normally disabled (they
+    // can't be changed at runtime).  Drafts are the exception: the
+    // node does not exist in the engine yet, so the user must be able
+    // to fill required-but-not-tunable fields (e.g. slint's
+    // `slint_file`) to promote the draft.  All fields stay editable
+    // until the draft is committed; tunable gating resumes once the
+    // engine echoes back a real node.
+    const isDraft = !!node.data.draft;
+    const isDisabled = readOnly || (isMonitorView && !isDraft && !schema.tunable);
 
     switch (schema.type) {
       case 'string':

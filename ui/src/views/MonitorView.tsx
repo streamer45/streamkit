@@ -666,9 +666,15 @@ const MonitorViewContent: React.FC = () => {
       if (sourceDraft || targetDraft) {
         const draft = sourceDraft ?? targetDraft!;
         const draftId = sourceDraft ? connection.source : connection.target;
-        toast.error(
-          `Configure ${draft.missingRequired.join(', ')} on ${draftId} before connecting`
-        );
+        // After all required fields are filled the draft is held briefly
+        // with `missingRequired: []` until the engine echoes `nodeadded`.
+        // Surface that transitional state explicitly instead of an empty
+        // "Configure   on ..." message.
+        const message =
+          draft.missingRequired.length > 0
+            ? `Configure ${draft.missingRequired.join(', ')} on ${draftId} before connecting`
+            : `${draftId} is being added to the pipeline — try again in a moment`;
+        toast.error(message);
         return;
       }
       return createOnConnect(
@@ -717,12 +723,16 @@ const MonitorViewContent: React.FC = () => {
 
   // Deletion is handled by React Flow's built-in delete key via onNodesDelete/onEdgesDelete.
 
-  // Helpers to add nodes with sensible defaults
+  // Helpers to add nodes with sensible defaults.
+  // Considers both the live pipeline AND in-flight drafts so two drops
+  // of the same kind don't collide and silently overwrite each other in
+  // the drafts map.
   const generateName = (kind: string) => {
-    const existing = pipeline ? Object.keys(pipeline.nodes) : [];
+    const existing = new Set<string>(pipeline ? Object.keys(pipeline.nodes) : []);
+    for (const id of draftNodesRef.current.keys()) existing.add(id);
     let i = 1;
     let candidate = `${kind}_${i}`;
-    while (existing.includes(candidate)) {
+    while (existing.has(candidate)) {
       i += 1;
       candidate = `${kind}_${i}`;
     }
