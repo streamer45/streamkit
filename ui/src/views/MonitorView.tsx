@@ -209,9 +209,21 @@ const MonitorViewContent: React.FC = () => {
   };
   const [draftNodes, setDraftNodes] = useState<Map<string, DraftNode>>(new Map());
   const draftNodesRef = useRef(draftNodes);
-  useEffect(() => {
+  // Use useLayoutEffect so the ref is synchronised before the next paint
+  // (and therefore before any subsequent event handler runs).  The plain
+  // useEffect ran after paint, which left a window where two rapid
+  // edits to different param keys could each read the same stale
+  // snapshot of `draft.params` and the second setDraftNodes updater
+  // would silently overwrite the first's edit.
+  React.useLayoutEffect(() => {
     draftNodesRef.current = draftNodes;
   }, [draftNodes]);
+  // Synchronous shadow of the latest computed params per draft, so two
+  // rapid edits in the same JS task (before React renders) accumulate
+  // correctly instead of both reading `draft.params` from the
+  // last-rendered draft and clobbering each other.  Cleared lazily
+  // when a draft is dropped from `draftNodes`.
+  const latestDraftParamsRef = useRef(new Map<string, Record<string, unknown>>());
 
   // Auto-select session from navigation state (e.g., from Stream view)
   useEffect(() => {
@@ -457,6 +469,7 @@ const MonitorViewContent: React.FC = () => {
     for (const id of draftNodes.keys()) {
       if (pipeline?.nodes[id]) {
         next.delete(id);
+        latestDraftParamsRef.current.delete(id);
         changed = true;
       }
     }
@@ -524,6 +537,7 @@ const MonitorViewContent: React.FC = () => {
   // canvas in the frame between the session switch and the cleanup.
   React.useLayoutEffect(() => {
     setDraftNodes(new Map());
+    latestDraftParamsRef.current.clear();
   }, [selectedSessionId]);
 
   // Topology signature: only changes when nodes/kinds or connections change
@@ -685,6 +699,17 @@ const MonitorViewContent: React.FC = () => {
         writeNodeParam(nodeId, key, value, selectedSessionId ?? undefined);
       }
 
+      // Compute newParams from the synchronous shadow store so two
+      // edits in the same JS task (before React renders) don't both
+      // read the same stale snapshot and silently drop the earlier
+      // edit.  draftNodesRef is synced via useLayoutEffect, but that
+      // still fires after the current event handler returns — within a
+      // single tick we may be called multiple times against the same
+      // ref value, so accumulate edits in latestDraftParamsRef instead.
+      const baseParams = latestDraftParamsRef.current.get(nodeId) ?? draft.params;
+      const newParams = mergeDraftParam(baseParams, key, value);
+      latestDraftParamsRef.current.set(nodeId, newParams);
+
       // If the draft has already been promoted via addNode and we're
       // waiting for `nodeadded` to come back, do NOT re-call addNode on
       // every subsequent keystroke — the engine would reject the
@@ -693,12 +718,11 @@ const MonitorViewContent: React.FC = () => {
       // arrive on the nodeadded echo and clobber the atom.  Just
       // accumulate edits in draft.params; once nodeadded arrives the
       // cleanup effect drops the draft and live tuneNode takes over.
-      const newParams = mergeDraftParam(draft.params, key, value);
       if (draft.promotedAt !== undefined) {
         setDraftNodes((prev) => {
-          const next = new Map(prev);
-          const c = next.get(nodeId);
+          const c = prev.get(nodeId);
           if (!c) return prev;
+          const next = new Map(prev);
           next.set(nodeId, { ...c, params: newParams });
           return next;
         });
@@ -719,9 +743,11 @@ const MonitorViewContent: React.FC = () => {
         // promotedAt so the timeout effect can recover if the engine
         // never echoes back.
         setDraftNodes((prev) => {
+          const c = prev.get(nodeId);
+          if (!c) return prev;
           const next = new Map(prev);
           next.set(nodeId, {
-            ...draft,
+            ...c,
             params: newParams,
             missingRequired: [],
             promotedAt: Date.now(),
@@ -730,9 +756,11 @@ const MonitorViewContent: React.FC = () => {
         });
       } else {
         setDraftNodes((prev) => {
+          const c = prev.get(nodeId);
+          if (!c) return prev;
           const next = new Map(prev);
           next.set(nodeId, {
-            ...draft,
+            ...c,
             params: newParams,
             missingRequired: missing,
             promotedAt: undefined,
@@ -1344,6 +1372,7 @@ const MonitorViewContent: React.FC = () => {
 
   const handleDeleteNode = (nodeId: string) => {
     if (draftNodesRef.current.has(nodeId)) {
+      latestDraftParamsRef.current.delete(nodeId);
       setDraftNodes((prev) => {
         const next = new Map(prev);
         next.delete(nodeId);
