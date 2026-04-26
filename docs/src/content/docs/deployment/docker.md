@@ -9,8 +9,6 @@ StreamKit provides Docker images for easy deployment.
 
 ## Quick Start
 
-Official images are published publicly to GitHub Container Registry (GHCR). Pulls do not require `docker login`.
-
 ```bash
 TAG=v0.2.0 # replace with the latest release tag
 docker run --rm --name streamkit \
