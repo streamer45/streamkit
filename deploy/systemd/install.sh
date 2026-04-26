@@ -260,6 +260,7 @@ if ! id -u streamkit >/dev/null 2>&1; then
 fi
 
 install -d -m 0755 /etc/streamkit
+install -d -m 0755 /var/lib/streamkit/auth
 install -d -m 0755 /var/lib/streamkit/plugins
 chown -R streamkit:streamkit /var/lib/streamkit
 
