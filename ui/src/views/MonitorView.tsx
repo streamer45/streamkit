@@ -312,7 +312,11 @@ const MonitorViewContent: React.FC = () => {
     const prev = selectedNodeRef.current;
     const prevData = (prev?.data as Record<string, unknown> | undefined) ?? undefined;
     const nextData = selectedNode.data as Record<string, unknown>;
-    // Check if meaningful properties have changed (not just position)
+    // Check if meaningful properties have changed (not just position).
+    // `draft` is included so the inspector re-renders when the draft's
+    // missingRequired list changes (e.g. promotion timeout reverts a
+    // draft from `[]` back to the schema's required keys).  Without
+    // this, the DraftHint banner would show stale missing-required.
     if (
       !prev ||
       prev.id !== selectedNode.id ||
@@ -321,7 +325,8 @@ const MonitorViewContent: React.FC = () => {
       prevData?.['label'] !== nextData['label'] ||
       prevData?.['sessionId'] !== nextData['sessionId'] ||
       !deepEqual(prevData?.['state'], nextData['state']) ||
-      !deepEqual(prevData?.['params'], nextData['params'])
+      !deepEqual(prevData?.['params'], nextData['params']) ||
+      !deepEqual(prevData?.['draft'], nextData['draft'])
     ) {
       selectedNodeRef.current = selectedNode;
     }
@@ -482,18 +487,20 @@ const MonitorViewContent: React.FC = () => {
         const current = draftNodesRef.current.get(id);
         if (!current || current.promotedAt !== draft.promotedAt) return;
         if (pipelineRef.current?.nodes[id]) return;
-        const def = nodeDefinitions.find((d) => d.kind === current.kind);
-        const schema = def?.param_schema as Record<string, unknown> | undefined;
-        const requiredFromSchema = Array.isArray(schema?.['required'])
-          ? (schema['required'] as unknown[]).filter((k): k is string => typeof k === 'string')
-          : [];
+        // Recompute against the draft's actual params so we only mark
+        // truly-empty fields as missing.  If the user filled every
+        // required field (which is what triggered promotion in the
+        // first place) the list is empty and the draft is treated as
+        // re-promotable on the next edit; the toast tells them what
+        // happened either way.
+        const missing = computeMissingRequired(current.kind, current.params, nodeDefinitions);
         setDraftNodes((prev) => {
           const next = new Map(prev);
           const c = next.get(id);
           if (!c || c.promotedAt !== draft.promotedAt) return prev;
           next.set(id, {
             ...c,
-            missingRequired: requiredFromSchema,
+            missingRequired: missing,
             promotedAt: undefined,
           });
           return next;
@@ -662,18 +669,37 @@ const MonitorViewContent: React.FC = () => {
       const draft = draftNodesRef.current.get(nodeId);
       if (!draft) return;
 
-      // Compute the new params object and mirror it into the per-node
-      // Jotai atom so InspectorPane (which reads the atom first, then
+      // Always mirror the edit into the per-node Jotai atom so
+      // InspectorPane (which reads the atom first, then
       // node.data.params) sees every keystroke immediately rather than
       // freezing on the first character.  The topology rebuild only
       // fires when the set of param *keys* or missing-required
       // *changes*, so subsequent edits to the same key would otherwise
       // be invisible until the next structural change.
-      const newParams = mergeDraftParam(draft.params, key, value);
       if (key.includes('.')) {
         writeNodeParams(nodeId, buildParamUpdate(key, value), selectedSessionId ?? undefined);
       } else {
         writeNodeParam(nodeId, key, value, selectedSessionId ?? undefined);
+      }
+
+      // If the draft has already been promoted via addNode and we're
+      // waiting for `nodeadded` to come back, do NOT re-call addNode on
+      // every subsequent keystroke — the engine would reject the
+      // duplicate as "Node already exists" and the user's edits would
+      // be silently dropped when the original (pre-promotion) params
+      // arrive on the nodeadded echo and clobber the atom.  Just
+      // accumulate edits in draft.params; once nodeadded arrives the
+      // cleanup effect drops the draft and live tuneNode takes over.
+      const newParams = mergeDraftParam(draft.params, key, value);
+      if (draft.promotedAt !== undefined) {
+        setDraftNodes((prev) => {
+          const next = new Map(prev);
+          const c = next.get(nodeId);
+          if (!c) return prev;
+          next.set(nodeId, { ...c, params: newParams });
+          return next;
+        });
+        return;
       }
 
       const missing = computeMissingRequired(draft.kind, newParams, nodeDefinitions);
