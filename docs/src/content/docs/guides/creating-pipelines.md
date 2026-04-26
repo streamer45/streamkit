@@ -46,7 +46,7 @@ nodes:
     kind: transport::moq::peer
     params:
       gateway_path: /moq
-      input_broadcast: input
+      input_broadcasts: [input]
       output_broadcast: output
       allow_reconnect: true
     # Loopback: send processed output back into the peer's `in` pin.
@@ -71,6 +71,7 @@ nodes:
 
 Notes:
 
+- `transport::moq::peer` uses `input_broadcasts` (a list). The first entry is the primary publisher broadcast.
 - `needs` creates connections from each dependency's `out` pin to this node's input pin.
 - If a node has a single dependency, it connects to `in`. If it has multiple dependencies, they connect to `in_0`, `in_1`, ... in the same order as the `needs` list.
 - For pin cardinality (including dynamic pin families) and passthrough type inference rules, see [Pins & Type Inference](/reference/pins-and-types/).
@@ -105,7 +106,7 @@ nodes:
     kind: transport::moq::peer
     params:
       gateway_path: /moq
-      input_broadcast: input
+      input_broadcasts: [input]
       output_broadcast: output
       allow_reconnect: true
     needs: opus_encoder
@@ -226,9 +227,11 @@ Oneshot validation rules:
 - Always: the pipeline must contain `streamkit::http_output`
 
 ```bash
+# Add -H "Authorization: Bearer $TOKEN" if built-in auth is enabled.
 curl -X POST http://localhost:4545/api/v1/process \
-  -F config=@samples/pipelines/oneshot/speech_to_text.yml \
-  -F media=@samples/audio/system/sample.ogg
+  -F config=@samples/pipelines/oneshot/double_volume.yml \
+  -F media=@samples/audio/system/sample.ogg \
+  --output out.ogg
 ```
 
 ## Updating Parameters at Runtime

@@ -1,6 +1,6 @@
-# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
-#
-# SPDX-License-Identifier: MPL-2.0
+// SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+//
+// SPDX-License-Identifier: MPL-2.0
 
 module github.com/streamkit/streamkit-codex/plugin-sdk/go
 

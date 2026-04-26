@@ -7,15 +7,29 @@ description: Build, test, and iterate on StreamKit locally
 
 StreamKit standardizes local development through `just` (see `justfile` in the repo root).
 
+## Prerequisites
+
+`just skit`, `just build-skit`, and `just dev` compile the Rust server, which embeds the web UI at compile time. Run `just build-ui` first whenever `ui/dist/` is missing.
+
+```bash
+# Required once before compiling the server from a fresh checkout
+just build-ui
+
+# Required for hot reload (`just dev`)
+cargo install cargo-watch
+```
+
+On Ubuntu/Debian, install `libvpx-dev pkg-config` before enabling VP9/video builds or running VP9 sample pipelines.
+
 ## Common Commands
 
 ```bash
-just build-ui  # Build embedded web UI (ui/dist)
+just build-ui   # Build embedded web UI (ui/dist); run before compiling the server
 just build-skit # Release server build
-just build     # Full build: server + UI + plugins
-just test      # Rust + UI test suites
-just dev       # Server + UI hot reload
-just lint      # Lint Rust, UI, and plugins
+just build      # Full build: server + UI + plugins
+just test       # Rust + UI test suites
+just dev        # Server + UI hot reload (requires cargo-watch)
+just lint       # Lint Rust, UI, and plugins
 ```
 
 ## Run the Server

@@ -12,7 +12,7 @@ SDK for writing native (C ABI) StreamKit plugins.
 
 ```toml
 [dependencies]
-streamkit-plugin-sdk-native = "0.1.0"
+streamkit-plugin-sdk-native = "0.2.0"
 ```
 
 See the docs site for a full example: https://streamkit.dev/guides/writing-plugins/

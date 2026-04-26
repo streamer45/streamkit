@@ -215,7 +215,7 @@ trusted_pubkeys = [
 ]
 
 # Marketplace registry index URLs (e.g., https://example.com/index.json)
-registries = ["https://streamkit.dev/marketplace/index.json"]
+registries = ["https://streamkit.dev/registry/index.json"]
 
 # Marketplace security controls
 # allow_model_urls = false

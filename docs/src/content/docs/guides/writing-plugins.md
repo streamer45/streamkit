@@ -63,9 +63,10 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-streamkit-plugin-sdk-native = "0.1.0"
+streamkit-plugin-sdk-native = "0.2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+tracing = "0.1"
 ```
 
 > [!TIP]
@@ -113,7 +114,7 @@ impl NativeProcessorNode for GainPlugin {
     fn process(&mut self, _pin: &str, packet: Packet, output: &OutputSender) -> Result<(), String> {
         match packet {
             Packet::Audio(mut frame) => {
-                for sample in &mut frame.samples {
+                for sample in frame.make_samples_mut() {
                     *sample *= self.gain_linear;
                 }
                 output.send("out", &Packet::Audio(frame))?;
@@ -146,7 +147,10 @@ Telemetry is best-effort: it should never block or stall the main audio/data pat
 ### Build and Load
 
 ```bash
-# Build
+# Build an example plugin from the StreamKit repo
+just build-plugin-native-gain
+
+# Or, for your own standalone plugin crate
 cargo build --release
 
 # Upload to server (multipart field name must be "plugin")
@@ -156,6 +160,8 @@ curl -X POST \
 ```
 
 The node is now available as `plugin::native::gain` (the server applies the `plugin::native::` prefix).
+
+When adding an official native plugin to this repository, also add a `just` build target, a `plugin.yml` marketplace manifest, model download metadata if the plugin needs models, and a sample pipeline so marketplace installs work out of the box.
 
 ## WASM Plugins
 
