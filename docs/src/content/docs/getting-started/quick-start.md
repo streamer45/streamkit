@@ -12,7 +12,7 @@ This guide gets you from zero to a working StreamKit installation in minutes.
 - **Docker** (recommended), or **Rust** + **just** (build from source)
 
 > [!NOTE]
-> Official Docker images are published for `linux/amd64` (x86_64). On ARM hosts (Raspberry Pi, Apple Silicon, etc.), use “Build from Source” or run with amd64 emulation. If GHCR returns `unauthorized`, confirm the tag exists in GitHub Packages and run `docker login ghcr.io` with a GitHub token that has package read access.
+> Official Docker images are public and do not require `docker login`. They are published for `linux/amd64` (x86_64). On ARM hosts (Raspberry Pi, Apple Silicon, etc.), use “Build from Source” or run with amd64 emulation.
 
 ## Installation
 

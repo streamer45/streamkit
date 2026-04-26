@@ -9,11 +9,7 @@ StreamKit provides Docker images for easy deployment.
 
 ## Quick Start
 
-Official images are published to GitHub Container Registry (GHCR). They are intended to be public; if `docker pull` fails with `unauthorized`, first check that the tag exists in [GitHub Packages](https://github.com/streamer45/streamkit/pkgs/container/streamkit). If the package visibility is temporarily private, authenticate with a GitHub account/token that has package read access:
-
-```bash
-echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_USER" --password-stdin
-```
+Official images are published publicly to GitHub Container Registry (GHCR). Pulls do not require `docker login`.
 
 ```bash
 TAG=v0.2.0 # replace with the latest release tag
