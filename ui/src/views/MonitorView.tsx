@@ -60,6 +60,7 @@ import {
   nodeStateAtom,
   nodeParamsAtom,
   nodeKey,
+  clearNodeParams,
   writeNodeParam,
   writeNodeParams,
 } from '@/stores/sessionAtoms';
@@ -108,6 +109,24 @@ const PROMOTION_TIMEOUT_MS = 8000;
 // "https://…") would be sent verbatim and rejected by the engine's
 // per-kind validator.
 const PROMOTION_DEBOUNCE_MS = 600;
+
+// Nodes that have been dropped on the canvas but cannot yet be sent
+// to the engine because one or more `param_schema.required` fields
+// have no value (no schema default + nothing entered yet).  Drafts
+// live entirely in the UI; they are promoted to a real `addnode`
+// WebSocket call as soon as all required fields are filled, then
+// disappear from this map once the engine reports `nodeadded`.
+export type DraftNode = {
+  kind: string;
+  params: Record<string, unknown>;
+  position: { x: number; y: number };
+  missingRequired: string[];
+  /** Set when the draft has been promoted via addNode and we are
+   * waiting for the engine's `nodeadded` echo.  Used to detect
+   * server-side promotion failures and revert the draft to an
+   * editable state. */
+  promotedAt?: number;
+};
 
 /**
  * Main content component for the Monitor view.
@@ -181,6 +200,14 @@ const MonitorViewContent: React.FC = () => {
     [selectedSessionId, updateNodePosition]
   );
   const [selectedNodes, setSelectedNodes] = useState<string[]>([]);
+  // Mirror selection into a ref so the topology effect can preserve
+  // freshly-set selection (e.g. a just-dropped draft) without listing
+  // selectedNodes in its dep array — listing it would re-run the
+  // effect on every selection change.
+  const selectedNodesRef = useRef(selectedNodes);
+  React.useLayoutEffect(() => {
+    selectedNodesRef.current = selectedNodes;
+  }, [selectedNodes]);
   const [rightPaneView, setRightPaneView] = useState<'yaml' | 'inspector' | 'telemetry'>('yaml');
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [sessionToDelete, setSessionToDelete] = useState<string | null>(null);
@@ -198,23 +225,7 @@ const MonitorViewContent: React.FC = () => {
   const pendingNodePositions = React.useRef<Map<string, { x: number; y: number }>>(new Map());
 
   // ── Draft nodes ───────────────────────────────────────────────────────
-  // Nodes that have been dropped on the canvas but cannot yet be sent
-  // to the engine because one or more `param_schema.required` fields
-  // have no value (no schema default + nothing entered yet).  Drafts
-  // live entirely in the UI; they are promoted to a real `addnode`
-  // WebSocket call as soon as all required fields are filled, then
-  // disappear from this map once the engine reports `nodeadded`.
-  type DraftNode = {
-    kind: string;
-    params: Record<string, unknown>;
-    position: { x: number; y: number };
-    missingRequired: string[];
-    /** Set when the draft has been promoted via addNode and we are
-     * waiting for the engine's `nodeadded` echo.  Used to detect
-     * server-side promotion failures and revert the draft to an
-     * editable state. */
-    promotedAt?: number;
-  };
+  // See module-level DraftNode type for the full lifecycle.
   const [draftNodes, setDraftNodes] = useState<Map<string, DraftNode>>(new Map());
   const draftNodesRef = useRef(draftNodes);
   // Use useLayoutEffect so the ref is synchronised before the next paint
@@ -488,6 +499,20 @@ const MonitorViewContent: React.FC = () => {
     const next = new Map(draftNodes);
     for (const id of draftNodes.keys()) {
       if (pipeline?.nodes[id]) {
+        // Edits made between `addnode` and `nodeadded` (e.g. typing a
+        // few extra characters into url before the engine echoes
+        // back) are accumulated in latestDraftParamsRef.  The
+        // engine's nodeadded carries the *original* promoted params
+        // and overwrites the atom — without this flush, those late
+        // edits would be silently dropped.  Forwarding them via
+        // tuneNodeConfigDeep applies them as a normal post-create
+        // tune, so the engine state and the user's last-typed value
+        // converge.
+        const latest = latestDraftParamsRef.current.get(id);
+        const live = (pipeline.nodes[id].params ?? {}) as Record<string, unknown>;
+        if (latest && !deepEqual(latest, live)) {
+          tuneNodeConfigDeep(id, latest);
+        }
         next.delete(id);
         latestDraftParamsRef.current.delete(id);
         promotionInFlightRef.current.delete(id);
@@ -500,7 +525,7 @@ const MonitorViewContent: React.FC = () => {
       }
     }
     if (changed) setDraftNodes(next);
-  }, [pipeline, draftNodes]);
+  }, [pipeline, draftNodes, tuneNodeConfigDeep]);
 
   // Promotion-timeout recovery: `addNode` is fire-and-forget, so if the
   // engine rejects the request (e.g. unknown kind, malformed payload,
@@ -550,9 +575,7 @@ const MonitorViewContent: React.FC = () => {
           });
           return next;
         });
-        toast.error(
-          `${id} could not be added to the pipeline. Check the engine log and try again.`
-        );
+        toast.error(`${id} did not respond — edit a field to retry, or remove the node.`);
       }, remaining);
       timers.push(timer);
     }
@@ -592,14 +615,15 @@ const MonitorViewContent: React.FC = () => {
     // intentional — runtime_param_schema() is documented as immutable for the
     // node's lifetime (see crates/core ProcessorNode trait docs).
     const runtimeKeys = Object.keys(pipeline?.runtime_schemas ?? {}).sort();
-    // Drafts contribute their id, kind, set of currently-set params, and
-    // missing-required list so the canvas re-renders when the user fills
-    // in fields and the "needs ..." banner shrinks.
+    // Drafts contribute their id, kind, and missing-required list so
+    // the canvas re-renders when the user fills in a previously-empty
+    // required field and the "needs ..." banner shrinks.  Param keys
+    // are intentionally excluded: drafts read their displayed values
+    // from the Jotai atom (writeNodeParam mirrors every keystroke), so
+    // a topology rebuild on every new key would just churn React.memo
+    // for no visible effect.
     const draftFingerprint = Array.from(draftNodes.entries())
-      .map(
-        ([id, d]) =>
-          `${id}:${d.kind}:${Object.keys(d.params).sort().join(',')}:${d.missingRequired.join(',')}`
-      )
+      .map(([id, d]) => `${id}:${d.kind}:${d.missingRequired.join(',')}`)
       .sort();
     const key = JSON.stringify([kinds, conns, runtimeKeys, draftFingerprint]);
     viewsLogger.debug('topoKey recalculated:', key.substring(0, 100));
@@ -661,10 +685,17 @@ const MonitorViewContent: React.FC = () => {
   // falling back to a flat key lookup.
   const validateParamValue = useCallback(
     (nodeId: string, paramKey: string, value: unknown): string | null => {
+      // Drafts have no entry in pipeline.nodes yet — fall back to the
+      // draft's kind so out-of-range numbers / malformed enums are
+      // caught the same way as on live nodes.  Runtime schemas are
+      // not yet available for a draft (the engine hasn't run the
+      // node) so only the static schema participates.
       const node = pipeline?.nodes[nodeId];
-      if (!node) return null;
+      const draft = draftNodesRef.current.get(nodeId);
+      const kind = node?.kind ?? draft?.kind;
+      if (!kind) return null;
 
-      const nodeDef = nodeDefinitions.find((d) => d.kind === node.kind);
+      const nodeDef = nodeDefinitions.find((d) => d.kind === kind);
       if (!nodeDef) return null;
 
       // Merge runtime schema (if any) so dynamically discovered properties
@@ -721,13 +752,18 @@ const MonitorViewContent: React.FC = () => {
       const draft = draftNodesRef.current.get(nodeId);
       if (!draft) return;
 
-      // Note: unlike the live-node path (handleRightPaneParamChange /
-      // stableOnParamChange), draft edits skip validateParamValue.  The
-      // value is held locally until promotion, at which point the
-      // engine's per-kind validators run on `addnode` and surface any
-      // structural problem.  Surfacing a UI validation error during
-      // partial edits would be premature — required-but-empty fields
-      // are the *expected* state of a draft.
+      // Match live-node validation behaviour: out-of-range numbers,
+      // malformed enums, etc. are surfaced immediately instead of
+      // accumulating in the draft and only failing at promotion.
+      // Required-but-empty fields are deliberately not validation
+      // errors here — they're handled by computeMissingRequired below
+      // and visualised via the "needs ..." banner — so an empty value
+      // for a required field is allowed through.
+      const validationError = validateParamValueRef.current(nodeId, key, value);
+      if (validationError) {
+        toast.error(`Invalid value for ${key}: ${validationError}`);
+        return;
+      }
       // Always mirror the edit into the per-node Jotai atom so
       // InspectorPane (which reads the atom first, then
       // node.data.params) sees every keystroke immediately rather than
@@ -851,7 +887,7 @@ const MonitorViewContent: React.FC = () => {
       }, PROMOTION_DEBOUNCE_MS);
       promotionTimersRef.current.set(nodeId, timer);
     },
-    [nodeDefinitions, addNode, selectedSessionId]
+    [nodeDefinitions, addNode, selectedSessionId, toast]
   );
 
   // Cancel any outstanding promotion debounce timers when the
@@ -940,15 +976,17 @@ const MonitorViewContent: React.FC = () => {
   };
 
   const onNodesDelete = (deleted: RFNode[]) => {
-    let removedDraft = false;
+    const deletedDrafts: string[] = [];
     for (const n of deleted) {
       if (draftNodesRef.current.has(n.id)) {
-        removedDraft = true;
+        deletedDrafts.push(n.id);
         // Drafts are local-only — no `removenode` needed.  Clear the
         // synchronous shadow refs so a future draft generated with the
         // same id (or any id) starts from a clean slate (otherwise a
         // stale promotionInFlight entry would silently block the new
-        // draft from ever being promoted).
+        // draft from ever being promoted) and the Jotai atom doesn't
+        // surface the deleted draft's typed values as the "default"
+        // for the next draft minted with the same generated id.
         latestDraftParamsRef.current.delete(n.id);
         promotionInFlightRef.current.delete(n.id);
         const t = promotionTimersRef.current.get(n.id);
@@ -956,15 +994,16 @@ const MonitorViewContent: React.FC = () => {
           window.clearTimeout(t);
           promotionTimersRef.current.delete(n.id);
         }
+        clearNodeParams(n.id, selectedSessionId ?? undefined);
         continue;
       }
       removeNode(n.id);
     }
-    if (removedDraft) {
+    if (deletedDrafts.length > 0) {
       setDraftNodes((prev) => {
         const next = new Map(prev);
-        for (const n of deleted) {
-          next.delete(n.id);
+        for (const id of deletedDrafts) {
+          next.delete(id);
         }
         return next;
       });
@@ -988,9 +1027,6 @@ const MonitorViewContent: React.FC = () => {
     }
     return candidate;
   };
-
-  const defaultParamsForKind = (kind: string): Record<string, unknown> =>
-    draftDefaultParamsForKind(kind, nodeDefinitions);
 
   const onDragStart = useCallback(
     (event: React.DragEvent, nodeType: string) => {
@@ -1240,8 +1276,14 @@ const MonitorViewContent: React.FC = () => {
     // useOnSelectionChange fires with [] and the inspector pane snaps
     // back to YAML — particularly noticeable when typing into a draft
     // adds a new param key (which does change topoKey and triggers a
-    // rebuild).
-    const prevSelected = new Set(nodes.filter((n) => n.selected).map((n) => n.id));
+    // rebuild).  Also include selectedNodesRef so a just-dropped draft
+    // (where setSelectedNodes was called before the rebuild and React
+    // Flow has not yet committed the selection) still renders with a
+    // selection ring on its first paint.
+    const prevSelected = new Set<string>([
+      ...nodes.filter((n) => n.selected).map((n) => n.id),
+      ...selectedNodesRef.current,
+    ]);
 
     // Get saved positions from position store
     const savedPositions = selectedSessionId ? getNodePositions(selectedSessionId) : {};
@@ -1497,6 +1539,11 @@ const MonitorViewContent: React.FC = () => {
         window.clearTimeout(t);
         promotionTimersRef.current.delete(nodeId);
       }
+      // Drop the per-node Jotai atom so a subsequent draft minted
+      // with the same generated id (e.g. servo_1 → deleted → a fresh
+      // servo dropped) doesn't display the previous draft's typed
+      // values as its initial state.
+      clearNodeParams(nodeId, selectedSessionId ?? undefined);
       setDraftNodes((prev) => {
         const next = new Map(prev);
         next.delete(nodeId);
@@ -1526,7 +1573,7 @@ const MonitorViewContent: React.FC = () => {
 
     const kind = type;
     const nodeId = generateName(kind);
-    const params = defaultParamsForKind(kind);
+    const params = draftDefaultParamsForKind(kind, nodeDefinitions);
 
     // If any required params have no schema default, hold the node as a
     // local-only draft until the user fills them in.  This avoids
