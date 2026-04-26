@@ -72,6 +72,14 @@ sudo ./streamkit-install.sh --latest
 sudo systemctl restart streamkit
 ```
 
+The installer does not overwrite an existing `/etc/streamkit/skit.toml`. If you're upgrading an older systemd install created before the `[auth]` section was added, add this to your existing config so auth state persists under the systemd state directory:
+
+```toml
+[auth]
+mode = "auto"
+state_dir = "/var/lib/streamkit/auth"
+```
+
 ## Uninstall
 
 To remove StreamKit while preserving configuration and data:
