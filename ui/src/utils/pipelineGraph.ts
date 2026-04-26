@@ -175,6 +175,10 @@ export interface BuildNodeParams {
   stableOnParamChange: (nodeId: string, paramName: string, value: unknown) => void;
   stableOnConfigChange?: (nodeId: string, config: Record<string, unknown>) => void;
   selectedSessionId: string | null;
+  /** When set, the React Flow node is rendered as an unsubmitted draft
+   *  (dashed border + "needs <fields>" banner).  Used by Monitor view
+   *  for nodes the user has dropped but has not finished configuring. */
+  draft?: { missingRequired: string[] };
 }
 
 /** Determine the ReactFlow node type from the pipeline node kind */
@@ -206,6 +210,10 @@ export const buildNodeObject = (params: BuildNodeParams): RFNode => {
       // Full-config change callback for compositor nodes
       onConfigChange: params.stableOnConfigChange,
       sessionId: params.selectedSessionId || undefined,
+      // When the node is an unsubmitted draft, downstream renderers
+      // (NodeFrame) use this to show a dashed border + "Draft — needs
+      // <fields>" banner.  Live nodes leave this undefined.
+      draft: params.draft,
     },
   };
 };

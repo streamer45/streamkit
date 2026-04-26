@@ -73,6 +73,10 @@ import type {
 import { dispatchParamUpdate } from '@/utils/controlProps';
 import { topoLevelsFromPipeline, orderedNamesFromLevels } from '@/utils/dag';
 import { deepEqual } from '@/utils/deepEqual';
+import {
+  computeMissingRequired,
+  defaultParamsForKind as draftDefaultParamsForKind,
+} from '@/utils/draftNodes';
 import { deepMergeSchemas, validateValue } from '@/utils/jsonSchema';
 import type { JsonSchema, JsonSchemaProperty } from '@/utils/jsonSchema';
 import { viewsLogger } from '@/utils/logger';
@@ -174,6 +178,25 @@ const MonitorViewContent: React.FC = () => {
   // Cache for positions of nodes that are being added (to preserve drop location)
   const pendingNodePositions = React.useRef<Map<string, { x: number; y: number }>>(new Map());
 
+  // ── Draft nodes ───────────────────────────────────────────────────────
+  // Nodes that have been dropped on the canvas but cannot yet be sent
+  // to the engine because one or more `param_schema.required` fields
+  // have no value (no schema default + nothing entered yet).  Drafts
+  // live entirely in the UI; they are promoted to a real `addnode`
+  // WebSocket call as soon as all required fields are filled, then
+  // disappear from this map once the engine reports `nodeadded`.
+  type DraftNode = {
+    kind: string;
+    params: Record<string, unknown>;
+    position: { x: number; y: number };
+    missingRequired: string[];
+  };
+  const [draftNodes, setDraftNodes] = useState<Map<string, DraftNode>>(new Map());
+  const draftNodesRef = useRef(draftNodes);
+  useEffect(() => {
+    draftNodesRef.current = draftNodes;
+  }, [draftNodes]);
+
   // Auto-select session from navigation state (e.g., from Stream view)
   useEffect(() => {
     const state = location.state as { sessionId?: string } | null;
@@ -233,19 +256,25 @@ const MonitorViewContent: React.FC = () => {
   });
 
   // Keep YAML view as default when nodes are selected
-  // Inspector only opens on double-click
+  // Inspector only opens on double-click — except for drafts, which
+  // need the inspector to be visible so the user can fill the missing
+  // required fields.
   useEffect(() => {
+    if (selectedNodes.length === 1) {
+      const id = selectedNodes[0];
+      if (draftNodesRef.current.has(id)) {
+        setRightPaneView('inspector');
+        return;
+      }
+    }
     if (selectedNodes.length === 0) {
-      // No selection - keep YAML view
       setRightPaneView('yaml');
     } else if (selectedNodes.length > 1) {
-      // Multiple selection - show YAML view
       setRightPaneView('yaml');
-    } else if (selectedNodes.length === 1) {
-      // Single selection - switch to YAML view (with highlighting)
+    } else {
       setRightPaneView('yaml');
     }
-  }, [selectedNodes]);
+  }, [selectedNodes, draftNodes]);
 
   // Double-click handler to open inspector
   const handleNodeDoubleClick = React.useCallback(() => {
@@ -406,25 +435,58 @@ const MonitorViewContent: React.FC = () => {
   const pipelineRef = useRef(pipeline);
   pipelineRef.current = pipeline;
 
+  // Drop drafts from local state when the same id appears in the
+  // pipeline (i.e. the engine has accepted the promoted `addnode`).
+  useEffect(() => {
+    if (draftNodes.size === 0) return;
+    let changed = false;
+    const next = new Map(draftNodes);
+    for (const id of draftNodes.keys()) {
+      if (pipeline?.nodes[id]) {
+        next.delete(id);
+        changed = true;
+      }
+    }
+    if (changed) setDraftNodes(next);
+  }, [pipeline, draftNodes]);
+
+  // Discard drafts when the user switches away from the session they
+  // were authored on — they're tied to that canvas's coordinate space
+  // and naming context.
+  useEffect(() => {
+    setDraftNodes(new Map());
+  }, [selectedSessionId]);
+
   // Topology signature: only changes when nodes/kinds or connections change
   const topoKey = React.useMemo(() => {
-    if (!pipeline) return '';
-    const names = Object.keys(pipeline.nodes).sort();
-    const kinds = names.map((n) => `${n}:${pipeline.nodes[n].kind}`);
-    const conns = pipeline.connections
-      .map((c: Connection) => `${c.from_node}:${c.from_pin}>${c.to_node}:${c.to_pin}`)
-      .sort();
+    if (!pipeline && draftNodes.size === 0) return '';
+    const names = pipeline ? Object.keys(pipeline.nodes).sort() : [];
+    const kinds = names.map((n) => `${n}:${pipeline!.nodes[n].kind}`);
+    const conns = pipeline
+      ? pipeline.connections
+          .map((c: Connection) => `${c.from_node}:${c.from_pin}>${c.to_node}:${c.to_pin}`)
+          .sort()
+      : [];
     // Include runtime schema keys so topology rebuilds when schemas arrive
     // after the initial build (e.g. Slint property discovery).
     // NOTE: Only keys are tracked, not content.  If a schema's content changed
     // for an existing key (hot-reload), the effect would NOT re-run.  This is
     // intentional — runtime_param_schema() is documented as immutable for the
     // node's lifetime (see crates/core ProcessorNode trait docs).
-    const runtimeKeys = Object.keys(pipeline.runtime_schemas ?? {}).sort();
-    const key = JSON.stringify([kinds, conns, runtimeKeys]);
+    const runtimeKeys = Object.keys(pipeline?.runtime_schemas ?? {}).sort();
+    // Drafts contribute their id, kind, set of currently-set params, and
+    // missing-required list so the canvas re-renders when the user fills
+    // in fields and the "needs ..." banner shrinks.
+    const draftFingerprint = Array.from(draftNodes.entries())
+      .map(
+        ([id, d]) =>
+          `${id}:${d.kind}:${Object.keys(d.params).sort().join(',')}:${d.missingRequired.join(',')}`
+      )
+      .sort();
+    const key = JSON.stringify([kinds, conns, runtimeKeys, draftFingerprint]);
     viewsLogger.debug('topoKey recalculated:', key.substring(0, 100));
     return key;
-  }, [pipeline]);
+  }, [pipeline, draftNodes]);
 
   // Auto-layout + fit-view hook
   const { setNeedsAutoLayout, setNeedsFit, handleAutoLayout } = useAutoLayout({
@@ -524,9 +586,53 @@ const MonitorViewContent: React.FC = () => {
   const validateParamValueRef = useRef(validateParamValue);
   validateParamValueRef.current = validateParamValue;
 
+  // Apply a single param change to a draft node.  If the change clears
+  // the last missing-required field, promote the draft via `addnode`
+  // (the `nodeadded` echo from the engine then removes it from
+  // draftNodes via the cleanup effect below).
+  const handleDraftParamChange = useCallback(
+    (nodeId: string, key: string, value: unknown) => {
+      const draft = draftNodesRef.current.get(nodeId);
+      if (!draft) return;
+      // Only top-level required keys are tracked for promotion.  Nested
+      // dot-paths (e.g. "properties.show") are stored verbatim and have
+      // no effect on the missing-required computation, which only reads
+      // top-level schema keys.  This matches plugin authors' contract
+      // (`required` is always a top-level array).
+      const newParams = { ...draft.params, [key]: value };
+      const missing = computeMissingRequired(draft.kind, newParams, nodeDefinitions);
+      if (missing.length === 0) {
+        // Promote: hand off to the engine.  Cache position so the
+        // arriving live node lands where the draft was.
+        pendingNodePositions.current.set(nodeId, draft.position);
+        addNode(nodeId, draft.kind, newParams);
+        // Keep the draft visible until `nodeadded` arrives so there is
+        // no flicker; the cleanup effect deletes it once it appears in
+        // pipeline.nodes.  Mark missing as empty so the banner reads
+        // "configuring…" rather than the old field list.
+        setDraftNodes((prev) => {
+          const next = new Map(prev);
+          next.set(nodeId, { ...draft, params: newParams, missingRequired: [] });
+          return next;
+        });
+      } else {
+        setDraftNodes((prev) => {
+          const next = new Map(prev);
+          next.set(nodeId, { ...draft, params: newParams, missingRequired: missing });
+          return next;
+        });
+      }
+    },
+    [nodeDefinitions, addNode]
+  );
+
   // Memoized param change handler for right pane
   const handleRightPaneParamChange = useCallback(
     (nodeId: string, key: string, value: unknown) => {
+      if (draftNodesRef.current.has(nodeId)) {
+        handleDraftParamChange(nodeId, key, value);
+        return;
+      }
       // Validate before sending to server
       const error = validateParamValueRef.current(nodeId, key, value);
       if (error) {
@@ -538,7 +644,7 @@ const MonitorViewContent: React.FC = () => {
       // stableOnParamChange — see comment there for details).
       dispatchParamUpdate(nodeId, key, value, tuneNode, tuneNodeConfigDeep);
     },
-    [toast, tuneNode, tuneNodeConfigDeep]
+    [toast, tuneNode, tuneNodeConfigDeep, handleDraftParamChange]
   );
 
   // Memoized label change handler (currently no-op)
@@ -551,6 +657,20 @@ const MonitorViewContent: React.FC = () => {
 
   const onConnect = React.useCallback(
     (connection: RFConnection) => {
+      // Block connections that touch a draft — the node does not exist
+      // in the engine yet, so a `connect` would fail with "Source/Target
+      // node not found".  Steer the user to the inspector instead.
+      const drafts = draftNodesRef.current;
+      const sourceDraft = connection.source ? drafts.get(connection.source) : undefined;
+      const targetDraft = connection.target ? drafts.get(connection.target) : undefined;
+      if (sourceDraft || targetDraft) {
+        const draft = sourceDraft ?? targetDraft!;
+        const draftId = sourceDraft ? connection.source : connection.target;
+        toast.error(
+          `Configure ${draft.missingRequired.join(', ')} on ${draftId} before connecting`
+        );
+        return;
+      }
       return createOnConnect(
         nodesRefForCallbacks.current,
         setEdges,
@@ -563,7 +683,7 @@ const MonitorViewContent: React.FC = () => {
         setNodes
       )(connection);
     },
-    [createOnConnect, setEdges, connectPins, setNodes]
+    [createOnConnect, setEdges, connectPins, setNodes, toast]
   );
 
   const onEdgesDelete = (deleted: Edge[]) => {
@@ -575,9 +695,24 @@ const MonitorViewContent: React.FC = () => {
   };
 
   const onNodesDelete = (deleted: RFNode[]) => {
-    deleted.forEach((n) => {
+    let removedDraft = false;
+    for (const n of deleted) {
+      if (draftNodesRef.current.has(n.id)) {
+        removedDraft = true;
+        // Drafts are local-only — no `removenode` needed.
+        continue;
+      }
       removeNode(n.id);
-    });
+    }
+    if (removedDraft) {
+      setDraftNodes((prev) => {
+        const next = new Map(prev);
+        for (const n of deleted) {
+          next.delete(n.id);
+        }
+        return next;
+      });
+    }
   };
 
   // Deletion is handled by React Flow's built-in delete key via onNodesDelete/onEdgesDelete.
@@ -594,23 +729,8 @@ const MonitorViewContent: React.FC = () => {
     return candidate;
   };
 
-  const defaultParamsForKind = (kind: string): Record<string, unknown> => {
-    const def = nodeDefinitions.find((d) => d.kind === kind);
-    const params: Record<string, unknown> = {};
-    const schema = def?.param_schema as Record<string, unknown> | undefined;
-    const props = schema?.properties as Record<string, Record<string, unknown>> | undefined;
-    if (props) {
-      Object.entries(props).forEach(([key, propSchema]) => {
-        if (propSchema && typeof propSchema === 'object' && 'default' in propSchema) {
-          const defVal = propSchema.default;
-          if (defVal !== undefined) {
-            params[key] = defVal;
-          }
-        }
-      });
-    }
-    return params;
-  };
+  const defaultParamsForKind = (kind: string): Record<string, unknown> =>
+    draftDefaultParamsForKind(kind, nodeDefinitions);
 
   const onDragStart = useCallback(
     (event: React.DragEvent, nodeType: string) => {
@@ -835,7 +955,7 @@ const MonitorViewContent: React.FC = () => {
     }
     prevTopoKeyForTopologyRef.current = topoKey;
 
-    if (!pipeline) {
+    if (!pipeline && draftNodes.size === 0) {
       viewsLogger.debug('Topology effect: No pipeline, clearing nodes');
       setNodes([]);
       setEdges([]);
@@ -846,8 +966,12 @@ const MonitorViewContent: React.FC = () => {
     viewsLogger.debug('Topology effect triggered, topoKey:', topoKey.substring(0, 50) + '...');
 
     // Preserve existing node positions; do not auto-layout during edits.
-    const { levels, sortedLevels } = topoLevelsFromPipeline(pipeline);
-    const orderedNames = orderedNamesFromLevels(levels, sortedLevels);
+    const orderedNames: string[] = pipeline
+      ? (() => {
+          const { levels, sortedLevels } = topoLevelsFromPipeline(pipeline);
+          return orderedNamesFromLevels(levels, sortedLevels);
+        })()
+      : [];
 
     const prevPositions = new Map(nodes.map((n) => [n.id, n.position]));
 
@@ -856,7 +980,7 @@ const MonitorViewContent: React.FC = () => {
 
     const newNodes: RFNode[] = [];
     for (const nodeName of orderedNames) {
-      const apiNode = pipeline.nodes[nodeName];
+      const apiNode = pipeline!.nodes[nodeName];
       if (!apiNode) continue;
 
       // Resolve node position from various sources
@@ -887,7 +1011,7 @@ const MonitorViewContent: React.FC = () => {
       const { finalInputs, finalOutputs } = resolveDynamicPins(
         nodeDef,
         nodeName,
-        pipeline,
+        pipeline!,
         baseInputs,
         baseOutputs
       );
@@ -895,7 +1019,7 @@ const MonitorViewContent: React.FC = () => {
       // Merge runtime param schema (if any) with the static per-kind schema.
       // Runtime schemas are per-instance overrides discovered after node init
       // (e.g. Slint component properties enumerated from the compiled .slint).
-      const runtimeSchema = pipeline.runtime_schemas?.[nodeName] as JsonSchema | undefined;
+      const runtimeSchema = pipeline!.runtime_schemas?.[nodeName] as JsonSchema | undefined;
       const effectiveNodeDef =
         runtimeSchema && nodeDef
           ? {
@@ -924,8 +1048,43 @@ const MonitorViewContent: React.FC = () => {
       newNodes.push(node);
     }
 
-    // Build edges using helper function
-    const newEdges = buildEdgesFromConnections(pipeline.connections, newNodes);
+    // Append draft nodes (UI-only, not yet sent to engine).  Drafts use
+    // the same buildNodeObject path with a synthetic apiNode so they get
+    // the same React Flow node type, dynamic-pin support, and inspector
+    // integration as live nodes.
+    for (const [draftId, draft] of draftNodes) {
+      // Skip drafts that are now in the pipeline (just got promoted).
+      if (pipeline?.nodes[draftId]) continue;
+      const draftDef = defByKind.get(draft.kind);
+      const draftBaseInputs = draftDef?.inputs ?? [];
+      const draftBaseOutputs = draftDef?.outputs ?? [];
+      // Drafts have no engine-side state, so dynamic pins are just the
+      // template; no incoming connections to reconstruct.
+      const draftFinalInputs = draftBaseInputs;
+      const draftFinalOutputs = draftBaseOutputs;
+      const node = buildNodeObject({
+        nodeName: draftId,
+        apiNode: {
+          kind: draft.kind,
+          params: draft.params,
+          state: 'Creating',
+        } as unknown as Parameters<typeof buildNodeObject>[0]['apiNode'],
+        position: draft.position,
+        nodeState: undefined,
+        finalInputs: draftFinalInputs,
+        finalOutputs: draftFinalOutputs,
+        nodeDef: draftDef,
+        stableOnParamChange,
+        stableOnConfigChange,
+        selectedSessionId,
+        draft: { missingRequired: draft.missingRequired },
+      });
+      newNodes.push(node);
+    }
+
+    // Build edges using helper function (only from real pipeline
+    // connections — drafts cannot be connected).
+    const newEdges = buildEdgesFromConnections(pipeline?.connections ?? [], newNodes);
 
     viewsLogger.debug('Setting', newNodes.length, 'nodes and', newEdges.length, 'edges');
     // Batch node and edge updates to prevent double render
@@ -935,17 +1094,24 @@ const MonitorViewContent: React.FC = () => {
       topoEffectRanRef.current = true;
     });
 
-    // Generate YAML using helper function
-    const yamlString = generatePipelineYaml(pipeline, orderedNames);
+    // Generate YAML using helper function (drafts are excluded from YAML
+    // until they're committed — a draft has no real existence in the
+    // engine yet).
+    const yamlString = pipeline ? generatePipelineYaml(pipeline, orderedNames) : '';
     setYamlString(yamlString);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [topoKey, defByKind, selectedSessionId, tuneNode]);
 
   // Stable callback for param changes - always sends directly to server
+  // (or, for drafts, updates local draft state and possibly promotes).
   // Uses ref indirection for validateParamValue to keep identity stable
   // across pipeline reference changes (see validateParamValueRef above).
   const stableOnParamChange = useCallback(
     (nodeId: string, paramName: string, value: unknown) => {
+      if (draftNodesRef.current.has(nodeId)) {
+        handleDraftParamChange(nodeId, paramName, value);
+        return;
+      }
       // Validate before sending to server
       const error = validateParamValueRef.current(nodeId, paramName, value);
       if (error) {
@@ -959,7 +1125,7 @@ const MonitorViewContent: React.FC = () => {
       // properties) and sends only the partial to the server.
       dispatchParamUpdate(nodeId, paramName, value, tuneNode, tuneNodeConfigDeep);
     },
-    [toast, tuneNode, tuneNodeConfigDeep]
+    [toast, tuneNode, tuneNodeConfigDeep, handleDraftParamChange]
   );
 
   // Stable callback for full-config updates (compositor nodes).
@@ -1041,6 +1207,14 @@ const MonitorViewContent: React.FC = () => {
   };
 
   const handleDeleteNode = (nodeId: string) => {
+    if (draftNodesRef.current.has(nodeId)) {
+      setDraftNodes((prev) => {
+        const next = new Map(prev);
+        next.delete(nodeId);
+        return next;
+      });
+      return;
+    }
     removeNode(nodeId);
   };
 
@@ -1068,8 +1242,29 @@ const MonitorViewContent: React.FC = () => {
     // Cache the position for when the node appears in the pipeline
     pendingNodePositions.current.set(nodeId, position);
 
-    // Send to server immediately
-    addNode(nodeId, kind, params);
+    // If any required params have no schema default, hold the node as a
+    // local-only draft until the user fills them in.  This avoids
+    // round-tripping a guaranteed-to-fail `addnode` (e.g. servo without
+    // `url`, slint without `slint_file`, kokoro/piper/matcha without
+    // `model_dir`) and the cleanup churn that follows.  See the topology
+    // effect for how drafts are merged into the React Flow graph.
+    const missing = computeMissingRequired(kind, params, nodeDefinitions);
+    if (missing.length > 0) {
+      setDraftNodes((prev) => {
+        const next = new Map(prev);
+        next.set(nodeId, { kind, params, position, missingRequired: missing });
+        return next;
+      });
+      setSelectedNodes([nodeId]);
+      setRightPaneView('inspector');
+      if (rightCollapsed) {
+        setRightCollapsed(false);
+      }
+      toast.info(`Configure ${missing.join(', ')} before this node is added to the pipeline`);
+    } else {
+      // All required params satisfied — commit immediately.
+      addNode(nodeId, kind, params);
+    }
 
     setType(null);
   };

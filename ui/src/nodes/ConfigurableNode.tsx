@@ -123,6 +123,10 @@ interface ConfigurableNodeData {
   definition?: { bidirectional?: boolean };
   onParamChange?: (nodeId: string, paramName: string, value: unknown) => void;
   sessionId?: string;
+  /** Set when the node has been dropped on the canvas but not yet
+   *  committed via `addnode` because required params are still missing.
+   *  See `MonitorView`/`pipelineGraph.buildNodeObject`. */
+  draft?: { missingRequired: string[] };
 }
 
 interface ConfigurableNodeProps {
@@ -318,6 +322,7 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
       state={data.state}
       sessionId={data.sessionId}
       isBidirectional={isBidirectional}
+      draft={data.draft}
     >
       {hasControls && (
         <>

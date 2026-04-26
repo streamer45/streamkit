@@ -39,6 +39,26 @@ const PaneTitle = styled.h3`
   font-size: 14px;
   font-weight: 600;
   color: var(--sk-text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+`;
+
+const DraftPill = styled.span`
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--sk-warning, var(--sk-text-muted));
+  color: var(--sk-panel-bg);
+`;
+
+const DraftHint = styled.p`
+  margin: 4px 0 0 0;
+  font-size: 12px;
+  color: var(--sk-warning, var(--sk-text-muted));
 `;
 
 const PaneSubtitle = styled.p`
@@ -149,7 +169,13 @@ const ColorDot = styled.span<{ color: string }>`
 `;
 
 interface InspectorPaneProps {
-  node: Node<{ label: string; kind: string; params: Record<string, unknown>; sessionId?: string }>;
+  node: Node<{
+    label: string;
+    kind: string;
+    params: Record<string, unknown>;
+    sessionId?: string;
+    draft?: { missingRequired: string[] };
+  }>;
   nodeDefinition: NodeDefinition;
   onParamChange: (nodeId: string, paramName: string, value: unknown) => void;
   onLabelChange: (nodeId: string, newLabel: string) => void;
@@ -398,10 +424,18 @@ const InspectorPane: React.FC<InspectorPaneProps> = ({
   return (
     <PaneWrapper>
       <PaneHeader>
-        <PaneTitle>Inspector</PaneTitle>
+        <PaneTitle>
+          Inspector
+          {node.data.draft && <DraftPill aria-label="This node is a draft">Draft</DraftPill>}
+        </PaneTitle>
         <PaneSubtitle className="code-font">{node.data.label}</PaneSubtitle>
         {nodeDefinition.description && (
           <PaneSubtitle style={{ marginTop: 4 }}>{nodeDefinition.description}</PaneSubtitle>
+        )}
+        {node.data.draft && node.data.draft.missingRequired.length > 0 && (
+          <DraftHint>
+            Fill {node.data.draft.missingRequired.join(', ')} to add this node to the pipeline.
+          </DraftHint>
         )}
       </PaneHeader>
       <ContentWrapper>

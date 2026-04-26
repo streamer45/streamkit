@@ -48,6 +48,7 @@ interface CompositorNodeData {
   onParamChange?: (nodeId: string, paramName: string, value: unknown) => void;
   onConfigChange?: (nodeId: string, config: Record<string, unknown>) => void;
   sessionId?: string;
+  draft?: { missingRequired: string[] };
 }
 
 interface CompositorNodeProps {
@@ -358,6 +359,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(function Compos
       nodeDefinition={data.nodeDefinition}
       state={data.state}
       sessionId={data.sessionId}
+      draft={data.draft}
     >
       <Provider store={store}>
         <CompositorOuterWrapper

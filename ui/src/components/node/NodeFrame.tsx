@@ -18,9 +18,15 @@ import type {
 import { PinRow } from './PinRow';
 import { PlaceholderPinRow } from './PlaceholderPinRow';
 
-const NodeWrapper = styled.div<{ selected?: boolean; minWidth: number }>`
+const NodeWrapper = styled.div<{ selected?: boolean; minWidth: number; isDraft?: boolean }>`
   background: var(--sk-panel-bg);
-  border: 2px solid ${(props) => (props.selected ? 'var(--sk-primary)' : 'var(--sk-border-strong)')};
+  border: 2px ${(props) => (props.isDraft ? 'dashed' : 'solid')}
+    ${(props) =>
+      props.selected
+        ? 'var(--sk-primary)'
+        : props.isDraft
+          ? 'var(--sk-warning, var(--sk-text-muted))'
+          : 'var(--sk-border-strong)'};
   border-radius: 8px;
   padding: 8px;
   min-width: ${(props) => props.minWidth}px;
@@ -32,22 +38,64 @@ const NodeWrapper = styled.div<{ selected?: boolean; minWidth: number }>`
   outline: ${(props) => (props.selected ? '2px solid var(--sk-primary)' : 'none')};
   outline-offset: 2px;
   color: var(--sk-text);
+  opacity: ${(props) => (props.isDraft ? 0.85 : 1)};
 `;
 
-const BidirectionalWrapper = styled.div<{ selected?: boolean; minWidth: number }>`
+const BidirectionalWrapper = styled.div<{
+  selected?: boolean;
+  minWidth: number;
+  isDraft?: boolean;
+}>`
   display: flex;
   flex-direction: column;
   gap: 4px;
   padding: 8px;
   min-width: ${(props) => props.minWidth}px;
   background: var(--sk-panel-bg);
-  border: 2px solid ${(props) => (props.selected ? 'var(--sk-primary)' : 'var(--sk-border-strong)')};
+  border: 2px ${(props) => (props.isDraft ? 'dashed' : 'solid')}
+    ${(props) =>
+      props.selected
+        ? 'var(--sk-primary)'
+        : props.isDraft
+          ? 'var(--sk-warning, var(--sk-text-muted))'
+          : 'var(--sk-border-strong)'};
   border-radius: 8px;
   box-shadow: ${(props) =>
     props.selected ? 'var(--sk-focus-ring)' : `0 2px 8px var(--sk-shadow)`};
   outline: ${(props) => (props.selected ? '2px solid var(--sk-primary)' : 'none')};
   outline-offset: 2px;
   color: var(--sk-text);
+  opacity: ${(props) => (props.isDraft ? 0.85 : 1)};
+`;
+
+const DraftBanner = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  background: var(--sk-warning-bg, rgba(255, 170, 0, 0.12));
+  color: var(--sk-warning, var(--sk-text));
+  border: 1px dashed var(--sk-warning, var(--sk-text-muted));
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.3;
+`;
+
+const DraftBadge = styled.span`
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--sk-warning, var(--sk-text-muted));
+  color: var(--sk-panel-bg);
+  flex-shrink: 0;
+`;
+
+const DraftMessage = styled.span`
+  font-family: var(--sk-font-mono, ui-monospace, monospace);
+  word-break: break-word;
 `;
 
 const BidirectionalNodesRow = styled.div`
@@ -118,6 +166,14 @@ const Kind = styled.div`
   margin-top: 0;
 `;
 
+/** Draft state for a node that has been dropped on the canvas but not
+ *  yet committed via `addnode` because required schema params are still
+ *  missing.  Rendered with a dashed border and a banner listing the
+ *  outstanding fields. */
+export type DraftNodeState = {
+  missingRequired: string[];
+};
+
 type NodeFrameProps = {
   id: string;
   label: string;
@@ -132,6 +188,9 @@ type NodeFrameProps = {
   children?: React.ReactNode;
   isBidirectional?: boolean;
   sessionId?: string; // For fetching live stats
+  /** When set, render the node as an unsubmitted draft (dashed border +
+   *  "Draft" banner listing the missing required params). */
+  draft?: DraftNodeState;
 };
 
 // Helper: Check if node definition has dynamic pins
@@ -185,6 +244,7 @@ const BidirectionalNodeLayout: React.FC<{
   state?: NodeState;
   stats?: NodeStats;
   sessionId?: string;
+  draft?: DraftNodeState;
   children?: React.ReactNode;
 }> = ({
   id,
@@ -197,12 +257,18 @@ const BidirectionalNodeLayout: React.FC<{
   state,
   stats,
   sessionId,
+  draft,
   children,
 }) => (
-  <BidirectionalWrapper selected={selected} minWidth={minWidth} className="drag-handle nopan">
+  <BidirectionalWrapper
+    selected={selected}
+    minWidth={minWidth}
+    isDraft={!!draft}
+    className="drag-handle nopan"
+  >
     {/* Centered header with node name and type */}
     <Header>
-      {state && (
+      {state && !draft && (
         <StateIndicatorWrapper>
           <NodeStateIndicator state={state} stats={stats} nodeId={id} sessionId={sessionId} />
         </StateIndicatorWrapper>
@@ -210,6 +276,7 @@ const BidirectionalNodeLayout: React.FC<{
       <Label className="code-font">{label}</Label>
       <Kind>({kind})</Kind>
     </Header>
+    {draft && <DraftBannerSection draft={draft} />}
 
     {/* Two halves side by side */}
     <BidirectionalNodesRow>
@@ -239,9 +306,10 @@ const NodeHeader: React.FC<{
   state?: NodeState;
   stats?: NodeStats;
   sessionId?: string;
-}> = ({ id, label, kind, state, stats, sessionId }) => (
+  draft?: DraftNodeState;
+}> = ({ id, label, kind, state, stats, sessionId, draft }) => (
   <Header>
-    {state && (
+    {state && !draft && (
       <StateIndicatorWrapper>
         <NodeStateIndicator state={state} stats={stats} nodeId={id} sessionId={sessionId} />
       </StateIndicatorWrapper>
@@ -250,6 +318,20 @@ const NodeHeader: React.FC<{
     <Kind>({kind})</Kind>
   </Header>
 );
+
+// Sub-component: Draft banner shown above node controls when the node
+// has not yet been committed because required params are missing.
+const DraftBannerSection: React.FC<{ draft: DraftNodeState }> = ({ draft }) => {
+  const { missingRequired } = draft;
+  const message =
+    missingRequired.length > 0 ? `needs ${missingRequired.join(', ')}` : 'configuring\u2026';
+  return (
+    <DraftBanner role="status" aria-label={`Draft node — ${message}`}>
+      <DraftBadge>Draft</DraftBadge>
+      <DraftMessage className="code-font">{message}</DraftMessage>
+    </DraftBanner>
+  );
+};
 
 // Sub-component: Normal node layout with dynamic pin support
 const NormalNodeLayout: React.FC<{
@@ -264,6 +346,7 @@ const NormalNodeLayout: React.FC<{
   state?: NodeState;
   stats?: NodeStats;
   sessionId?: string;
+  draft?: DraftNodeState;
   children?: React.ReactNode;
 }> = ({
   id,
@@ -277,6 +360,7 @@ const NormalNodeLayout: React.FC<{
   state,
   stats,
   sessionId,
+  draft,
   children,
 }) => {
   // Show ghost pins for nodes that have any dynamic cardinality pins in their definition
@@ -300,7 +384,12 @@ const NormalNodeLayout: React.FC<{
   const totalOutputPins = runtimeOutputs.length + (showOutputGhost ? 1 : 0);
 
   return (
-    <NodeWrapper selected={selected} minWidth={minWidth} className="drag-handle nopan">
+    <NodeWrapper
+      selected={selected}
+      minWidth={minWidth}
+      isDraft={!!draft}
+      className="drag-handle nopan"
+    >
       {/* Show real pins AND ghost pin for inputs */}
       {runtimeInputs.length > 0 && (
         <PinRow nodeId={id} side="top" pins={runtimeInputs} isInput totalPins={totalInputPins} />
@@ -322,7 +411,10 @@ const NormalNodeLayout: React.FC<{
         state={state}
         stats={stats}
         sessionId={sessionId}
+        draft={draft}
       />
+
+      {draft && <DraftBannerSection draft={draft} />}
 
       {children}
 
@@ -363,6 +455,7 @@ export const NodeFrame: React.FC<NodeFrameProps> = ({
   children,
   isBidirectional = false,
   sessionId,
+  draft,
 }) => {
   if (isBidirectional) {
     return (
@@ -377,6 +470,7 @@ export const NodeFrame: React.FC<NodeFrameProps> = ({
         state={state}
         stats={stats}
         sessionId={sessionId}
+        draft={draft}
       >
         {children}
       </BidirectionalNodeLayout>
@@ -396,6 +490,7 @@ export const NodeFrame: React.FC<NodeFrameProps> = ({
       state={state}
       stats={stats}
       sessionId={sessionId}
+      draft={draft}
     >
       {children}
     </NormalNodeLayout>

@@ -930,9 +930,18 @@ macro_rules! native_plugin_entry {
                 let kind = <$plugin_type as $crate::NativeProcessorNode>::metadata().kind;
                 let logger = $crate::logger::Logger::new(log_callback, log_user_data, &kind);
 
+                // Clone the logger so we can still report on `Err` after
+                // ownership has been moved into `new()`.  Without this,
+                // plugin-side validation errors (e.g. "url must not be
+                // empty") were silently swallowed and the host only saw
+                // a generic "Plugin failed to create instance" message.
+                let err_logger = logger.clone();
                 match <$plugin_type as $crate::NativeProcessorNode>::new(params_json, logger) {
                     Ok(instance) => Box::into_raw(Box::new(instance)) as $crate::types::CPluginHandle,
-                    Err(_) => std::ptr::null_mut(),
+                    Err(e) => {
+                        err_logger.error(&format!("Plugin instance creation failed: {e}"));
+                        std::ptr::null_mut()
+                    }
                 }
             })
         }
@@ -1148,11 +1157,18 @@ macro_rules! native_source_plugin_entry {
                 let kind = <$plugin_type as $crate::NativeSourceNode>::metadata().kind;
                 let logger = $crate::logger::Logger::new(log_callback, log_user_data, &kind);
 
+                // Clone the logger so we can still report on `Err` after
+                // ownership has been moved into `new()`.  See the
+                // processor variant above for context.
+                let err_logger = logger.clone();
                 match <$plugin_type as $crate::NativeSourceNode>::new(params_json, logger) {
                     Ok(instance) => {
                         Box::into_raw(Box::new(instance)) as $crate::types::CPluginHandle
                     },
-                    Err(_) => std::ptr::null_mut(),
+                    Err(e) => {
+                        err_logger.error(&format!("Plugin instance creation failed: {e}"));
+                        std::ptr::null_mut()
+                    }
                 }
             })
         }
