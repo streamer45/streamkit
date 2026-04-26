@@ -44,7 +44,7 @@ Optional:
 - `cargo-deny` (`cargo install cargo-deny`) for license checks in `just lint`
 - `reuse` (`pip3 install --user reuse`) for SPDX license header checks in `just lint` (note: the apt package is too old)
 - `clang` and `libclang-dev` (`sudo apt install clang libclang-dev`) for building native ML plugins (e.g. whisper, sensevoice)
-- `libvpx` + `pkg-config` if building with `--features video` (VP9 nodes)
+- `libvpx-dev` + `pkg-config` (`sudo apt install libvpx-dev pkg-config`) if building with `--features video` or using VP9 sample pipelines
 - `cmake` + `nasm` + C compiler if building with `--features svt_av1_static` (SVT-AV1 encoder); see [`crates/nodes/SVT_AV1.md`](https://github.com/streamer45/streamkit/blob/main/crates/nodes/SVT_AV1.md) for details
 - `libdav1d-dev` if building with `--features dav1d` (C dav1d AV1 decoder); the pure-Rust rav1d decoder (`--features av1`) requires no extra deps
 
@@ -54,7 +54,7 @@ Optional:
 git clone https://github.com/streamer45/streamkit.git
 cd streamkit
 
-# Build the embedded web UI (creates ui/dist/)
+# Build the embedded web UI first (creates ui/dist/, required by RustEmbed)
 just build-ui
 
 # Build the server (release)
@@ -72,6 +72,14 @@ just install-plugins
 
 > [!NOTE]
 > Some native ML plugins require additional system dependencies to build (e.g. sherpa-onnx). If you only need the core server, skip plugin builds.
+
+For hot-reload development, install `cargo-watch` before running `just dev`:
+
+```bash
+cargo install cargo-watch
+just build-ui # one-time preflight so the server can compile
+just dev
+```
 
 ## Configuration
 

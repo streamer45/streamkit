@@ -73,9 +73,36 @@ Monitor View uses the same overall three-pane layout, but focuses on running ses
 
 Convert is for demoing/testing **oneshot** pipelines: load or author a pipeline, run it against input media, and review outputs.
 
+A reliable first run is the bundled audio-mixing template:
+
+1. Open `/convert`.
+2. Select **Audio Mixing (Upload + Music Track)**.
+3. Upload `samples/audio/system/sample.ogg` (or switch to **Select Existing Asset** and choose a bundled audio asset).
+4. Click **Convert File**.
+5. Wait for **Converted Audio** and play/download the output.
+
+Plugin-backed templates need their plugin and model files installed first. If a template references `plugin::native::*`, build/install that plugin before using the template.
+
 ## Stream View
 
-Stream is for demoing/testing **dynamic** (long-running) pipelines using MOQ-powered streaming sessions.
+Stream is for demoing/testing **dynamic** (long-running) pipelines using MoQ-powered streaming sessions.
+
+For local source builds, start the backend and hot-reload UI separately so the browser uses the current UI code and a local MoQ gateway URL:
+
+```bash
+SK_SERVER__MOQ_GATEWAY_URL=http://127.0.0.1:4545/moq SK_SERVER__ADDRESS=127.0.0.1:4545 just skit
+just ui
+```
+
+Then open `http://localhost:3045/stream`. A reliable first run is:
+
+1. Select **Video Color Bars (MoQ Stream)**.
+2. Click **Create Session**.
+3. Wait for **Session Active**.
+4. If it does not auto-connect, click **Connect & Stream**.
+5. Wait for **Relay: connected** and **Watch: live**, then verify the color-bars canvas is rendering.
+
+No HTTPS/TLS setup is required for local MoQ testing with the Vite dev UI.
 
 ## Telemetry Timeline
 

@@ -11,7 +11,7 @@ StreamKit provides Docker images for easy deployment.
 
 ```bash
 TAG=v0.2.0 # replace with the latest release tag
-docker run --rm \
+docker run --rm --name streamkit \
   -p 127.0.0.1:4545:4545/tcp \
   -p 127.0.0.1:4545:4545/udp \
   ghcr.io/streamer45/streamkit:${TAG} \
@@ -25,7 +25,7 @@ The official images bind to `0.0.0.0:4545` inside the container so published por
 Print the bootstrap admin token and paste it into the Web UI at `/login`:
 
 ```bash
-docker exec <container> skit auth print-admin-token
+docker exec streamkit skit auth print-admin-token --raw
 ```
 
 ### Local demo without login (Linux-only)
@@ -47,7 +47,7 @@ This mode is intended for local demos/dev only (it doesn’t work on Docker Desk
 StreamKit also publishes a `-demo` image intended for demos/evaluation. It bundles core plugins plus the models needed by the shipped sample pipelines, so it should work out of the box (but is much larger than the slim images).
 
 ```bash
-docker run --rm \
+docker run --rm --name streamkit-demo \
   -p 127.0.0.1:4545:4545/tcp \
   -p 127.0.0.1:4545:4545/udp \
   ghcr.io/streamer45/streamkit:${TAG}-demo
@@ -58,7 +58,7 @@ docker run --rm \
 > To log in, print the bootstrap admin token and paste it into the Web UI at `/login`:
 >
 > ```bash
-> docker exec <container> skit auth print-admin-token --raw
+> docker exec streamkit-demo skit auth print-admin-token --raw
 > ```
 
 If you want the OpenAI-powered sample pipelines, pass `OPENAI_API_KEY` without putting it directly in the command:
@@ -120,19 +120,15 @@ services:
       - "127.0.0.1:4545:4545/udp"
     command: ["skit", "serve"]
     restart: unless-stopped
+    volumes:
+      # Recommended: persist auth state (keys + token index) across restarts.
+      - streamkit-state:/opt/streamkit/.streamkit
+      # Optional: persist dynamically loaded plugins.
+      - streamkit-plugins:/opt/streamkit/plugins
 
-    # Recommended: persist auth state (keys + token index) across restarts.
-    # volumes:
-    #   - streamkit-state:/opt/streamkit/.streamkit
-
-    # Optional: persist dynamically loaded plugins
-    # Note: use a named volume so plugins persist across restarts.
-    # volumes:
-    #   - streamkit-plugins:/opt/streamkit/plugins
-
-# volumes:
-#   streamkit-state:
-#   streamkit-plugins:
+volumes:
+  streamkit-state:
+  streamkit-plugins:
 ```
 
 ### Demo Image with Secrets
@@ -173,6 +169,7 @@ docker build -f Dockerfile.gpu -t streamkit:gpu .
 | `SK_PLUGINS__DIRECTORY` | `/opt/streamkit/plugins` | Plugin directory (default in the official images) |
 | `SK_RESOURCES__KEEP_MODELS_LOADED` | `true` | Cache ML models |
 | `SK_SERVER__MOQ_GATEWAY_URL` | `http://127.0.0.1:4545/moq` | (MoQ builds) URL the frontend uses for WebTransport (override for non-local deployments) |
+| `SK_AUTH__STATE_DIR` | `/opt/streamkit/.streamkit/auth` | Auth state directory in official images; mount `/opt/streamkit/.streamkit` to persist it |
 
 ### Volume Mounts
 
@@ -265,6 +262,7 @@ TLS notes:
 
 - If you configure TLS via `[server].tls`, `[server].cert_path`, and `[server].key_path`, StreamKit uses those certificates for WebTransport.
 - Otherwise, StreamKit auto-generates a short-lived self-signed certificate (intended for local development). Fingerprints are exposed via `GET /api/v1/moq/fingerprints` (also `GET /certificate.sha256` for the first fingerprint).
+- For Docker-to-browser local testing, keep `SK_SERVER__MOQ_GATEWAY_URL=http://127.0.0.1:4545/moq` so the UI connects to the published host port, not the container-internal address.
 
 If you deploy MoQ in production, plan for a QUIC/WebTransport-aware gateway or an L4 load balancer to route UDP/QUIC traffic, alongside your normal HTTP reverse proxy for the UI/API.
 

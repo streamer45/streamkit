@@ -18,11 +18,13 @@ Enable marketplace browsing and install gates:
 [plugins]
 marketplace_enabled = true
 allow_native_marketplace = false # set true only if you trust the registry
-registries = ["https://streamkit.dev/marketplace/index.json"]
+registries = ["https://streamkit.dev/registry/index.json"]
 trusted_pubkeys = [
   "untrusted comment: minisign public key 81C485A94492F33F\nRWQ/85JEqYXEgX+2kl7Rwd8AcpVjYciSLzvLggzivbGyIrDPjfmcqjYP\n",
 ]
 ```
+
+Use `https://streamkit.dev/registry/index.json` for the official registry; the generated `docs/public/registry/index.json` file is what the docs site serves at that URL.
 
 RBAC must allow plugin operations:
 
