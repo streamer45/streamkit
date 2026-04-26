@@ -60,22 +60,26 @@ import {
   nodeStateAtom,
   nodeParamsAtom,
   nodeKey,
+  writeNodeParam,
+  writeNodeParams,
 } from '@/stores/sessionAtoms';
 import { useSessionStore } from '@/stores/sessionStore';
 import type {
   NodeDefinition,
   Connection,
+  JsonValue,
   Pipeline,
   MessageType,
   InputPin,
   OutputPin,
 } from '@/types/types';
-import { dispatchParamUpdate } from '@/utils/controlProps';
+import { buildParamUpdate, dispatchParamUpdate } from '@/utils/controlProps';
 import { topoLevelsFromPipeline, orderedNamesFromLevels } from '@/utils/dag';
 import { deepEqual } from '@/utils/deepEqual';
 import {
   computeMissingRequired,
   defaultParamsForKind as draftDefaultParamsForKind,
+  mergeDraftParam,
 } from '@/utils/draftNodes';
 import { deepMergeSchemas, validateValue } from '@/utils/jsonSchema';
 import type { JsonSchema, JsonSchemaProperty } from '@/utils/jsonSchema';
@@ -89,6 +93,13 @@ import { nodeTypes, defaultEdgeOptions } from '@/utils/reactFlowDefaults';
 
 // Memoized view title to prevent re-renders during drag
 const MonitorViewTitle = React.memo(() => <ViewTitle>Monitor</ViewTitle>);
+
+// How long to wait for an `addnode` to round-trip before assuming the
+// engine rejected it and reverting the draft to an editable state.
+// Picked to comfortably exceed normal nodeadded latency (sub-second
+// for most plugins) without keeping the user staring at a stale
+// "configuring…" banner if the request was dropped.
+const PROMOTION_TIMEOUT_MS = 8000;
 
 /**
  * Main content component for the Monitor view.
@@ -190,6 +201,11 @@ const MonitorViewContent: React.FC = () => {
     params: Record<string, unknown>;
     position: { x: number; y: number };
     missingRequired: string[];
+    /** Set when the draft has been promoted via addNode and we are
+     * waiting for the engine's `nodeadded` echo.  Used to detect
+     * server-side promotion failures and revert the draft to an
+     * editable state. */
+    promotedAt?: number;
   };
   const [draftNodes, setDraftNodes] = useState<Map<string, DraftNode>>(new Map());
   const draftNodesRef = useRef(draftNodes);
@@ -255,26 +271,18 @@ const MonitorViewContent: React.FC = () => {
     },
   });
 
-  // Keep YAML view as default when nodes are selected
-  // Inspector only opens on double-click — except for drafts, which
-  // need the inspector to be visible so the user can fill the missing
-  // required fields.
+  // Keep YAML view as default when nodes are selected.  Inspector only
+  // opens on double-click — except for drafts, which need the
+  // inspector to be visible so the user can fill the missing required
+  // fields.  We read drafts via the ref so the effect runs only when
+  // the selection changes, not on every keystroke into a draft.
   useEffect(() => {
-    if (selectedNodes.length === 1) {
-      const id = selectedNodes[0];
-      if (draftNodesRef.current.has(id)) {
-        setRightPaneView('inspector');
-        return;
-      }
+    if (selectedNodes.length === 1 && draftNodesRef.current.has(selectedNodes[0])) {
+      setRightPaneView('inspector');
+      return;
     }
-    if (selectedNodes.length === 0) {
-      setRightPaneView('yaml');
-    } else if (selectedNodes.length > 1) {
-      setRightPaneView('yaml');
-    } else {
-      setRightPaneView('yaml');
-    }
-  }, [selectedNodes, draftNodes]);
+    setRightPaneView('yaml');
+  }, [selectedNodes]);
 
   // Double-click handler to open inspector
   const handleNodeDoubleClick = React.useCallback(() => {
@@ -450,6 +458,57 @@ const MonitorViewContent: React.FC = () => {
     if (changed) setDraftNodes(next);
   }, [pipeline, draftNodes]);
 
+  // Promotion-timeout recovery: `addNode` is fire-and-forget, so if the
+  // engine rejects the request (e.g. unknown kind, malformed payload,
+  // transient transport error) no `nodeadded` event ever arrives and
+  // the cleanup effect above never runs.  Without this, a failed
+  // promotion would leave the draft stuck with `missingRequired: []`
+  // and the inspector showing "configuring…" forever.
+  //
+  // Schedule a per-draft timer when promotedAt is stamped.  If the
+  // pipeline still hasn't accepted the node after PROMOTION_TIMEOUT_MS,
+  // surface the schema's required-key list (so the user sees what to
+  // re-check) and clear promotedAt so the inspector exits the
+  // "configuring…" state.  The draft remains editable, and the next
+  // edit re-promotes via the normal handleDraftParamChange flow.
+  useEffect(() => {
+    const timers: number[] = [];
+    for (const [id, draft] of draftNodes) {
+      if (draft.promotedAt === undefined) continue;
+      if (pipeline?.nodes[id]) continue; // Already accepted; cleanup handles it.
+      const elapsed = Date.now() - draft.promotedAt;
+      const remaining = Math.max(0, PROMOTION_TIMEOUT_MS - elapsed);
+      const timer = window.setTimeout(() => {
+        const current = draftNodesRef.current.get(id);
+        if (!current || current.promotedAt !== draft.promotedAt) return;
+        if (pipelineRef.current?.nodes[id]) return;
+        const def = nodeDefinitions.find((d) => d.kind === current.kind);
+        const schema = def?.param_schema as Record<string, unknown> | undefined;
+        const requiredFromSchema = Array.isArray(schema?.['required'])
+          ? (schema['required'] as unknown[]).filter((k): k is string => typeof k === 'string')
+          : [];
+        setDraftNodes((prev) => {
+          const next = new Map(prev);
+          const c = next.get(id);
+          if (!c || c.promotedAt !== draft.promotedAt) return prev;
+          next.set(id, {
+            ...c,
+            missingRequired: requiredFromSchema,
+            promotedAt: undefined,
+          });
+          return next;
+        });
+        toast.error(
+          `${id} could not be added to the pipeline. Check the engine log and try again.`
+        );
+      }, remaining);
+      timers.push(timer);
+    }
+    return () => {
+      for (const t of timers) window.clearTimeout(t);
+    };
+  }, [draftNodes, pipeline, nodeDefinitions, toast]);
+
   // Discard drafts when the user switches away from the session they
   // were authored on — they're tied to that canvas's coordinate space
   // and naming context.
@@ -590,16 +649,33 @@ const MonitorViewContent: React.FC = () => {
   // the last missing-required field, promote the draft via `addnode`
   // (the `nodeadded` echo from the engine then removes it from
   // draftNodes via the cleanup effect below).
+  //
+  // Required keys in JSON schema are always top-level, so the
+  // missing-required computation only consults top-level keys of the
+  // draft's params.  Nested dot-paths (e.g. compositor's
+  // "properties.show") are merged into params via buildParamUpdate so
+  // the eventual addNode payload carries the correct shape — they
+  // contribute nothing to missing-required because schema `required`
+  // is always flat, but they must be persisted correctly for promotion.
   const handleDraftParamChange = useCallback(
     (nodeId: string, key: string, value: unknown) => {
       const draft = draftNodesRef.current.get(nodeId);
       if (!draft) return;
-      // Only top-level required keys are tracked for promotion.  Nested
-      // dot-paths (e.g. "properties.show") are stored verbatim and have
-      // no effect on the missing-required computation, which only reads
-      // top-level schema keys.  This matches plugin authors' contract
-      // (`required` is always a top-level array).
-      const newParams = { ...draft.params, [key]: value };
+
+      // Compute the new params object and mirror it into the per-node
+      // Jotai atom so InspectorPane (which reads the atom first, then
+      // node.data.params) sees every keystroke immediately rather than
+      // freezing on the first character.  The topology rebuild only
+      // fires when the set of param *keys* or missing-required
+      // *changes*, so subsequent edits to the same key would otherwise
+      // be invisible until the next structural change.
+      const newParams = mergeDraftParam(draft.params, key, value);
+      if (key.includes('.')) {
+        writeNodeParams(nodeId, buildParamUpdate(key, value), selectedSessionId ?? undefined);
+      } else {
+        writeNodeParam(nodeId, key, value, selectedSessionId ?? undefined);
+      }
+
       const missing = computeMissingRequired(draft.kind, newParams, nodeDefinitions);
       if (missing.length === 0) {
         // Promote: hand off to the engine.  Cache position so the
@@ -609,21 +685,33 @@ const MonitorViewContent: React.FC = () => {
         // Keep the draft visible until `nodeadded` arrives so there is
         // no flicker; the cleanup effect deletes it once it appears in
         // pipeline.nodes.  Mark missing as empty so the banner reads
-        // "configuring…" rather than the old field list.
+        // "configuring…" rather than the old field list, and stamp
+        // promotedAt so the timeout effect can recover if the engine
+        // never echoes back.
         setDraftNodes((prev) => {
           const next = new Map(prev);
-          next.set(nodeId, { ...draft, params: newParams, missingRequired: [] });
+          next.set(nodeId, {
+            ...draft,
+            params: newParams,
+            missingRequired: [],
+            promotedAt: Date.now(),
+          });
           return next;
         });
       } else {
         setDraftNodes((prev) => {
           const next = new Map(prev);
-          next.set(nodeId, { ...draft, params: newParams, missingRequired: missing });
+          next.set(nodeId, {
+            ...draft,
+            params: newParams,
+            missingRequired: missing,
+            promotedAt: undefined,
+          });
           return next;
         });
       }
     },
-    [nodeDefinitions, addNode]
+    [nodeDefinitions, addNode, selectedSessionId]
   );
 
   // Memoized param change handler for right pane
@@ -1072,13 +1160,16 @@ const MonitorViewContent: React.FC = () => {
       // template; no incoming connections to reconstruct.
       const draftFinalInputs = draftBaseInputs;
       const draftFinalOutputs = draftBaseOutputs;
+      // No live state on a draft — the node does not exist in the
+      // engine yet.  NodeFrame ignores `state` when `draft` is set
+      // (it shows the draft banner instead of the state indicator).
       const node = buildNodeObject({
         nodeName: draftId,
         apiNode: {
           kind: draft.kind,
-          params: draft.params,
-          state: 'Creating',
-        } as unknown as Parameters<typeof buildNodeObject>[0]['apiNode'],
+          params: draft.params as JsonValue,
+          state: null,
+        },
         position: draft.position,
         nodeState: undefined,
         finalInputs: draftFinalInputs,

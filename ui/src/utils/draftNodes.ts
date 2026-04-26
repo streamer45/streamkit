@@ -14,6 +14,7 @@
  */
 
 import type { NodeDefinition } from '@/types/types';
+import { buildParamUpdate, deepMerge } from '@/utils/controlProps';
 
 /** A param value is considered "missing" if it is undefined, null, or
  *  an empty / whitespace-only string.  Numbers and booleans always count
@@ -62,4 +63,23 @@ export const defaultParamsForKind = (
     }
   }
   return params;
+};
+
+/** Apply a single inspector edit to a draft's `params`.
+ *
+ *  Flat keys (no dot) replace the corresponding top-level entry.  Dotted
+ *  paths (e.g. `"properties.show"`) are converted into a nested partial
+ *  via `buildParamUpdate` and deep-merged into the existing params so
+ *  sibling fields are preserved — this matches the live-node code path
+ *  in `controlProps.dispatchParamUpdate` and ensures drafts produce the
+ *  same shape on promotion that a normal `tunenode` would have. */
+export const mergeDraftParam = (
+  params: Record<string, unknown>,
+  key: string,
+  value: unknown
+): Record<string, unknown> => {
+  if (key.includes('.')) {
+    return deepMerge(params, buildParamUpdate(key, value));
+  }
+  return { ...params, [key]: value };
 };

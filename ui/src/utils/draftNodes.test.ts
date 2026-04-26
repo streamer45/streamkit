@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { NodeDefinition } from '@/types/types';
 
-import { computeMissingRequired, defaultParamsForKind } from './draftNodes';
+import { computeMissingRequired, defaultParamsForKind, mergeDraftParam } from './draftNodes';
 
 const def = (kind: string, schema: Record<string, unknown>): NodeDefinition =>
   ({
@@ -106,5 +106,47 @@ describe('defaultParamsForKind', () => {
   it('round-trips with computeMissingRequired (defaults satisfy non-required keys only)', () => {
     const params = defaultParamsForKind('plugin::native::servo', defs);
     expect(computeMissingRequired('plugin::native::servo', params, defs)).toEqual(['url']);
+  });
+});
+
+describe('mergeDraftParam', () => {
+  it('replaces a flat top-level key', () => {
+    expect(mergeDraftParam({ width: 1280, height: 720 }, 'url', 'https://x')).toEqual({
+      width: 1280,
+      height: 720,
+      url: 'https://x',
+    });
+  });
+
+  it('overwrites an existing flat key with the new value (regression: stale-value bug)', () => {
+    // Simulates the second keystroke into the same field.  The
+    // returned object must reflect the new value so the inspector
+    // (driven by nodeParamsAtom mirroring this object) does not
+    // freeze on the previous character.
+    const after1 = mergeDraftParam({}, 'url', 'h');
+    const after2 = mergeDraftParam(after1, 'url', 'ht');
+    expect(after2['url']).toBe('ht');
+    expect(after1).not.toBe(after2); // new identity each call
+  });
+
+  it('writes a dotted path as a nested object instead of a flat key', () => {
+    // Regression for finding #2: previously the draft branch stored
+    // dot-paths verbatim ({ "properties.show": ... }) which would have
+    // been sent to the engine as-is.
+    const out = mergeDraftParam({}, 'properties.show', true);
+    expect(out).toEqual({ properties: { show: true } });
+    expect(out['properties.show']).toBeUndefined();
+  });
+
+  it('deep-merges sibling nested keys instead of clobbering them', () => {
+    const start = { properties: { show: true, color: 'red' } };
+    const out = mergeDraftParam(start, 'properties.color', 'blue');
+    expect(out).toEqual({ properties: { show: true, color: 'blue' } });
+  });
+
+  it('preserves unrelated top-level keys when editing a nested path', () => {
+    const start = { width: 1280 };
+    const out = mergeDraftParam(start, 'properties.show', true);
+    expect(out).toEqual({ width: 1280, properties: { show: true } });
   });
 });
