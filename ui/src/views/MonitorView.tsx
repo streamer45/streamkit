@@ -101,6 +101,14 @@ const MonitorViewTitle = React.memo(() => <ViewTitle>Monitor</ViewTitle>);
 // "configuring…" banner if the request was dropped.
 const PROMOTION_TIMEOUT_MS = 8000;
 
+// Debounce window between the user filling the last required field and
+// the actual `addnode` request.  Keystrokes within this window keep
+// resetting the timer, so a draft is only promoted after the user
+// stops typing — otherwise a partial value (e.g. "h" while typing
+// "https://…") would be sent verbatim and rejected by the engine's
+// per-kind validator.
+const PROMOTION_DEBOUNCE_MS = 600;
+
 /**
  * Main content component for the Monitor view.
  * This component has 114 statements which exceeds the max-statements limit.
@@ -230,6 +238,12 @@ const MonitorViewContent: React.FC = () => {
   // draft and both fire `addNode`.  This Set is set/cleared synchronously
   // alongside the addNode call so the second call short-circuits.
   const promotionInFlightRef = useRef(new Set<string>());
+  // Per-draft pending promotion timers.  We debounce the addNode call so
+  // promotion happens after the user stops typing — otherwise the first
+  // character into a previously-empty required field (e.g. "h" into a
+  // url) would fire addNode with a partial value and the engine's
+  // per-kind validator would reject it before the user finishes typing.
+  const promotionTimersRef = useRef(new Map<string, number>());
 
   // Auto-select session from navigation state (e.g., from Stream view)
   useEffect(() => {
@@ -477,6 +491,11 @@ const MonitorViewContent: React.FC = () => {
         next.delete(id);
         latestDraftParamsRef.current.delete(id);
         promotionInFlightRef.current.delete(id);
+        const t = promotionTimersRef.current.get(id);
+        if (t !== undefined) {
+          window.clearTimeout(t);
+          promotionTimersRef.current.delete(id);
+        }
         changed = true;
       }
     }
@@ -515,6 +534,11 @@ const MonitorViewContent: React.FC = () => {
         // happened either way.
         const missing = computeMissingRequired(current.kind, current.params, nodeDefinitions);
         promotionInFlightRef.current.delete(id);
+        const pendingTimer = promotionTimersRef.current.get(id);
+        if (pendingTimer !== undefined) {
+          window.clearTimeout(pendingTimer);
+          promotionTimersRef.current.delete(id);
+        }
         setDraftNodes((prev) => {
           const next = new Map(prev);
           const c = next.get(id);
@@ -547,6 +571,8 @@ const MonitorViewContent: React.FC = () => {
     setDraftNodes((prev) => (prev.size === 0 ? prev : new Map()));
     latestDraftParamsRef.current.clear();
     promotionInFlightRef.current.clear();
+    for (const t of promotionTimersRef.current.values()) window.clearTimeout(t);
+    promotionTimersRef.current.clear();
   }, [selectedSessionId]);
 
   // Topology signature: only changes when nodes/kinds or connections change
@@ -752,17 +778,58 @@ const MonitorViewContent: React.FC = () => {
       }
 
       const missing = computeMissingRequired(draft.kind, newParams, nodeDefinitions);
-      if (missing.length === 0) {
-        // Promote: hand off to the engine.  No need to seed
-        // pendingNodePositions — the draft is currently rendered, so
-        // its (possibly dragged) position is already in prevPositions
-        // when the live `nodeadded` arrives and the topology rebuilds.
-        //
-        // Mark in-flight synchronously *before* dispatching so a
-        // second call in the same task short-circuits at the
-        // promoted-guard above instead of firing addNode again.
+
+      // Always update the draft's local params + missingRequired
+      // immediately so the inspector banner ("needs <fields>") shrinks
+      // as the user fills fields and downstream effects (topoKey,
+      // NodeFrame banner) see fresh state on every keystroke.
+      setDraftNodes((prev) => {
+        const c = prev.get(nodeId);
+        if (!c) return prev;
+        const next = new Map(prev);
+        next.set(nodeId, {
+          ...c,
+          params: newParams,
+          missingRequired: missing,
+          promotedAt: undefined,
+        });
+        return next;
+      });
+
+      // Always cancel any prior pending promotion: either the user
+      // typed more characters (we want a fresh debounce window) or
+      // they backspaced into a missing-required state (no promotion
+      // should happen at all).
+      const prevTimer = promotionTimersRef.current.get(nodeId);
+      if (prevTimer !== undefined) {
+        window.clearTimeout(prevTimer);
+        promotionTimersRef.current.delete(nodeId);
+      }
+
+      // Still missing required fields → nothing to promote.
+      if (missing.length > 0) return;
+
+      // All required fields satisfied → schedule debounced promotion.
+      // If the user keeps typing, the next call will cancel this timer
+      // and re-schedule; only an idle pause of PROMOTION_DEBOUNCE_MS
+      // actually fires `addnode`, so the engine sees the final value
+      // rather than a partial one.
+      const timer = window.setTimeout(() => {
+        promotionTimersRef.current.delete(nodeId);
+        const cur = draftNodesRef.current.get(nodeId);
+        if (!cur) return;
+        if (cur.promotedAt !== undefined) return;
+        if (promotionInFlightRef.current.has(nodeId)) return;
+        const curParams = latestDraftParamsRef.current.get(nodeId) ?? cur.params;
+        const curMissing = computeMissingRequired(cur.kind, curParams, nodeDefinitions);
+        if (curMissing.length > 0) return;
+
+        // Promote: hand off to the engine.  Mark in-flight
+        // synchronously *before* dispatching so a concurrent call to
+        // handleDraftParamChange short-circuits at the promoted-guard
+        // above instead of firing addNode again.
         promotionInFlightRef.current.add(nodeId);
-        addNode(nodeId, draft.kind, newParams);
+        addNode(nodeId, cur.kind, curParams);
         // Keep the draft visible until `nodeadded` arrives so there is
         // no flicker; the cleanup effect deletes it once it appears in
         // pipeline.nodes.  Mark missing as empty so the banner reads
@@ -775,29 +842,28 @@ const MonitorViewContent: React.FC = () => {
           const next = new Map(prev);
           next.set(nodeId, {
             ...c,
-            params: newParams,
+            params: curParams,
             missingRequired: [],
             promotedAt: Date.now(),
           });
           return next;
         });
-      } else {
-        setDraftNodes((prev) => {
-          const c = prev.get(nodeId);
-          if (!c) return prev;
-          const next = new Map(prev);
-          next.set(nodeId, {
-            ...c,
-            params: newParams,
-            missingRequired: missing,
-            promotedAt: undefined,
-          });
-          return next;
-        });
-      }
+      }, PROMOTION_DEBOUNCE_MS);
+      promotionTimersRef.current.set(nodeId, timer);
     },
     [nodeDefinitions, addNode, selectedSessionId]
   );
+
+  // Cancel any outstanding promotion debounce timers when the
+  // component unmounts so we don't dispatch addNode against a torn-down
+  // session.
+  useEffect(() => {
+    const timers = promotionTimersRef.current;
+    return () => {
+      for (const t of timers.values()) window.clearTimeout(t);
+      timers.clear();
+    };
+  }, []);
 
   // Memoized param change handler for right pane
   const handleRightPaneParamChange = useCallback(
@@ -885,6 +951,11 @@ const MonitorViewContent: React.FC = () => {
         // draft from ever being promoted).
         latestDraftParamsRef.current.delete(n.id);
         promotionInFlightRef.current.delete(n.id);
+        const t = promotionTimersRef.current.get(n.id);
+        if (t !== undefined) {
+          window.clearTimeout(t);
+          promotionTimersRef.current.delete(n.id);
+        }
         continue;
       }
       removeNode(n.id);
@@ -1163,6 +1234,14 @@ const MonitorViewContent: React.FC = () => {
       : [];
 
     const prevPositions = new Map(nodes.map((n) => [n.id, n.position]));
+    // Preserve React Flow's per-node selection state across topology
+    // rebuilds.  setNodes(newNodes) below replaces the array; without
+    // copying `selected`, all nodes lose their selected flag,
+    // useOnSelectionChange fires with [] and the inspector pane snaps
+    // back to YAML — particularly noticeable when typing into a draft
+    // adds a new param key (which does change topoKey and triggers a
+    // rebuild).
+    const prevSelected = new Set(nodes.filter((n) => n.selected).map((n) => n.id));
 
     // Get saved positions from position store
     const savedPositions = selectedSessionId ? getNodePositions(selectedSessionId) : {};
@@ -1282,6 +1361,12 @@ const MonitorViewContent: React.FC = () => {
     // Build edges using helper function (only from real pipeline
     // connections — drafts cannot be connected).
     const newEdges = buildEdgesFromConnections(pipeline?.connections ?? [], newNodes);
+
+    // Re-apply the previous selected flag so React Flow's selection
+    // state survives the topology rebuild (see prevSelected comment).
+    for (const n of newNodes) {
+      if (prevSelected.has(n.id)) n.selected = true;
+    }
 
     viewsLogger.debug('Setting', newNodes.length, 'nodes and', newEdges.length, 'edges');
     // Batch node and edge updates to prevent double render
@@ -1407,6 +1492,11 @@ const MonitorViewContent: React.FC = () => {
     if (draftNodesRef.current.has(nodeId)) {
       latestDraftParamsRef.current.delete(nodeId);
       promotionInFlightRef.current.delete(nodeId);
+      const t = promotionTimersRef.current.get(nodeId);
+      if (t !== undefined) {
+        window.clearTimeout(t);
+        promotionTimersRef.current.delete(nodeId);
+      }
       setDraftNodes((prev) => {
         const next = new Map(prev);
         next.delete(nodeId);
