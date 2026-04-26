@@ -1168,7 +1168,7 @@ macro_rules! native_source_plugin_entry {
                     Err(e) => {
                         err_logger.error(&format!("Plugin instance creation failed: {e}"));
                         std::ptr::null_mut()
-                    }
+                    },
                 }
             })
         }
