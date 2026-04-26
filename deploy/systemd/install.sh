@@ -170,7 +170,7 @@ do_uninstall() {
 		fi
 	else
 		echo ""
-		echo "Note: Config (/etc/streamkit) and data (/var/lib/streamkit) preserved."
+		echo "Note: Config (/etc/streamkit), data (/var/lib/streamkit), and logs (/var/log/streamkit) preserved."
 		echo "Use --purge to remove everything including the streamkit user."
 	fi
 
