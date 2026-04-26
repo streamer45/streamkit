@@ -518,8 +518,11 @@ const MonitorViewContent: React.FC = () => {
 
   // Discard drafts when the user switches away from the session they
   // were authored on — they're tied to that canvas's coordinate space
-  // and naming context.
-  useEffect(() => {
+  // and naming context.  Use useLayoutEffect so the clear commits
+  // before the browser paints; otherwise the topology effect would
+  // briefly render the previous session's drafts on the new session's
+  // canvas in the frame between the session switch and the cleanup.
+  React.useLayoutEffect(() => {
     setDraftNodes(new Map());
   }, [selectedSessionId]);
 
@@ -704,9 +707,10 @@ const MonitorViewContent: React.FC = () => {
 
       const missing = computeMissingRequired(draft.kind, newParams, nodeDefinitions);
       if (missing.length === 0) {
-        // Promote: hand off to the engine.  Cache position so the
-        // arriving live node lands where the draft was.
-        pendingNodePositions.current.set(nodeId, draft.position);
+        // Promote: hand off to the engine.  No need to seed
+        // pendingNodePositions — the draft is currently rendered, so
+        // its (possibly dragged) position is already in prevPositions
+        // when the live `nodeadded` arrives and the topology rebuilds.
         addNode(nodeId, draft.kind, newParams);
         // Keep the draft visible until `nodeadded` arrives so there is
         // no flicker; the cleanup effect deletes it once it appears in
@@ -1371,15 +1375,18 @@ const MonitorViewContent: React.FC = () => {
     const nodeId = generateName(kind);
     const params = defaultParamsForKind(kind);
 
-    // Cache the position for when the node appears in the pipeline
-    pendingNodePositions.current.set(nodeId, position);
-
     // If any required params have no schema default, hold the node as a
     // local-only draft until the user fills them in.  This avoids
     // round-tripping a guaranteed-to-fail `addnode` (e.g. servo without
     // `url`, slint without `slint_file`, kokoro/piper/matcha without
     // `model_dir`) and the cleanup churn that follows.  See the topology
     // effect for how drafts are merged into the React Flow graph.
+    //
+    // Drafts carry their own position (rendered directly via the draft
+    // branch in the topology effect) so we only seed pendingNodePositions
+    // for the immediate-commit path.  When a draft is later promoted,
+    // its current rendered position is already in `prevPositions` — no
+    // need to round-trip through the pending map.
     const missing = computeMissingRequired(kind, params, nodeDefinitions);
     if (missing.length > 0) {
       setDraftNodes((prev) => {
@@ -1395,6 +1402,7 @@ const MonitorViewContent: React.FC = () => {
       toast.info(`Configure ${missing.join(', ')} before this node is added to the pipeline`);
     } else {
       // All required params satisfied — commit immediately.
+      pendingNodePositions.current.set(nodeId, position);
       addNode(nodeId, kind, params);
     }
 
