@@ -224,6 +224,12 @@ const MonitorViewContent: React.FC = () => {
   // last-rendered draft and clobbering each other.  Cleared lazily
   // when a draft is dropped from `draftNodes`.
   const latestDraftParamsRef = useRef(new Map<string, Record<string, unknown>>());
+  // Synchronous in-flight set for the same reason as latestDraftParamsRef:
+  // `draft.promotedAt` doesn't reach `draftNodesRef` until the next paint,
+  // so two keystrokes in the same JS task could both observe an unpromoted
+  // draft and both fire `addNode`.  This Set is set/cleared synchronously
+  // alongside the addNode call so the second call short-circuits.
+  const promotionInFlightRef = useRef(new Set<string>());
 
   // Auto-select session from navigation state (e.g., from Stream view)
   useEffect(() => {
@@ -470,6 +476,7 @@ const MonitorViewContent: React.FC = () => {
       if (pipeline?.nodes[id]) {
         next.delete(id);
         latestDraftParamsRef.current.delete(id);
+        promotionInFlightRef.current.delete(id);
         changed = true;
       }
     }
@@ -507,6 +514,7 @@ const MonitorViewContent: React.FC = () => {
         // re-promotable on the next edit; the toast tells them what
         // happened either way.
         const missing = computeMissingRequired(current.kind, current.params, nodeDefinitions);
+        promotionInFlightRef.current.delete(id);
         setDraftNodes((prev) => {
           const next = new Map(prev);
           const c = next.get(id);
@@ -536,8 +544,9 @@ const MonitorViewContent: React.FC = () => {
   // briefly render the previous session's drafts on the new session's
   // canvas in the frame between the session switch and the cleanup.
   React.useLayoutEffect(() => {
-    setDraftNodes(new Map());
+    setDraftNodes((prev) => (prev.size === 0 ? prev : new Map()));
     latestDraftParamsRef.current.clear();
+    promotionInFlightRef.current.clear();
   }, [selectedSessionId]);
 
   // Topology signature: only changes when nodes/kinds or connections change
@@ -686,6 +695,13 @@ const MonitorViewContent: React.FC = () => {
       const draft = draftNodesRef.current.get(nodeId);
       if (!draft) return;
 
+      // Note: unlike the live-node path (handleRightPaneParamChange /
+      // stableOnParamChange), draft edits skip validateParamValue.  The
+      // value is held locally until promotion, at which point the
+      // engine's per-kind validators run on `addnode` and surface any
+      // structural problem.  Surfacing a UI validation error during
+      // partial edits would be premature — required-but-empty fields
+      // are the *expected* state of a draft.
       // Always mirror the edit into the per-node Jotai atom so
       // InspectorPane (which reads the atom first, then
       // node.data.params) sees every keystroke immediately rather than
@@ -718,7 +734,13 @@ const MonitorViewContent: React.FC = () => {
       // arrive on the nodeadded echo and clobber the atom.  Just
       // accumulate edits in draft.params; once nodeadded arrives the
       // cleanup effect drops the draft and live tuneNode takes over.
-      if (draft.promotedAt !== undefined) {
+      //
+      // Check both the rendered draft (`draft.promotedAt`) and the
+      // synchronous in-flight set so that two keystrokes in the same
+      // JS task — where `draft.promotedAt` hasn't been committed yet —
+      // don't both reach the `missing.length === 0` branch and fire
+      // duplicate addNode calls.
+      if (draft.promotedAt !== undefined || promotionInFlightRef.current.has(nodeId)) {
         setDraftNodes((prev) => {
           const c = prev.get(nodeId);
           if (!c) return prev;
@@ -735,6 +757,11 @@ const MonitorViewContent: React.FC = () => {
         // pendingNodePositions — the draft is currently rendered, so
         // its (possibly dragged) position is already in prevPositions
         // when the live `nodeadded` arrives and the topology rebuilds.
+        //
+        // Mark in-flight synchronously *before* dispatching so a
+        // second call in the same task short-circuits at the
+        // promoted-guard above instead of firing addNode again.
+        promotionInFlightRef.current.add(nodeId);
         addNode(nodeId, draft.kind, newParams);
         // Keep the draft visible until `nodeadded` arrives so there is
         // no flicker; the cleanup effect deletes it once it appears in
@@ -1373,6 +1400,7 @@ const MonitorViewContent: React.FC = () => {
   const handleDeleteNode = (nodeId: string) => {
     if (draftNodesRef.current.has(nodeId)) {
       latestDraftParamsRef.current.delete(nodeId);
+      promotionInFlightRef.current.delete(nodeId);
       setDraftNodes((prev) => {
         const next = new Map(prev);
         next.delete(nodeId);
