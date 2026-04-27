@@ -176,9 +176,21 @@ export interface BuildNodeParams {
   stableOnConfigChange?: (nodeId: string, config: Record<string, unknown>) => void;
   selectedSessionId: string | null;
   /** When set, the React Flow node is rendered as an unsubmitted draft
-   *  (dashed border + "needs <fields>" banner).  Used by Monitor view
-   *  for nodes the user has dropped but has not finished configuring. */
-  draft?: { missingRequired: string[] };
+   *  (dashed border + "needs <fields>" banner + "Add to pipeline"
+   *  button).  Used by Monitor view for nodes the user has dropped
+   *  but not yet committed via the explicit promotion button.
+   *
+   *  - `missingRequired`: param keys still empty.  When non-empty, the
+   *    promote button is disabled and the banner shows the list.
+   *  - `isCreating`: true once the user has clicked Add and we are
+   *    waiting for the engine's `nodeadded`/`Failed` reply.  Banner
+   *    shows a spinner; button is disabled.
+   *  - `onPromote`: invoked when the user clicks the promote button. */
+  draft?: {
+    missingRequired: string[];
+    isCreating: boolean;
+    onPromote: () => void;
+  };
 }
 
 /** Determine the ReactFlow node type from the pipeline node kind */
@@ -211,8 +223,8 @@ export const buildNodeObject = (params: BuildNodeParams): RFNode => {
       onConfigChange: params.stableOnConfigChange,
       sessionId: params.selectedSessionId || undefined,
       // When the node is an unsubmitted draft, downstream renderers
-      // (NodeFrame) use this to show a dashed border + "Draft — needs
-      // <fields>" banner.  Live nodes leave this undefined.
+      // (NodeFrame) render the dashed-border draft banner with the
+      // promote button.  Live nodes leave this undefined.
       draft: params.draft,
     },
   };

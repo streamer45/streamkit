@@ -124,9 +124,8 @@ interface ConfigurableNodeData {
   onParamChange?: (nodeId: string, paramName: string, value: unknown) => void;
   sessionId?: string;
   /** Set when the node has been dropped on the canvas but not yet
-   *  committed via `addnode` because required params are still missing.
-   *  See `MonitorView`/`pipelineGraph.buildNodeObject`. */
-  draft?: { missingRequired: string[] };
+   *  committed via `addnode`.  See `MonitorView`/`pipelineGraph.buildNodeObject`. */
+  draft?: { missingRequired: string[]; isCreating: boolean; onPromote: () => void };
 }
 
 interface ConfigurableNodeProps {
@@ -291,7 +290,14 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
   const toggleConfigs = useMemo(() => extractToggleConfigs(schema), [schema]);
   const textConfigs = useMemo(() => extractTextConfigs(schema), [schema]);
   const controlCount = toggleConfigs.length + sliderConfigs.length + textConfigs.length;
-  const hasControls = controlCount > 0;
+  // Drafts hide the canvas-side tune controls entirely.  Those controls
+  // dispatch `tunenode` directly via `useTuneNode` (see SchemaControls)
+  // and so cannot route through the draft path — for a draft node the
+  // engine has no entry yet and would warn "Could not tune non-existent
+  // node".  Drafts are configured exclusively from the right-pane
+  // Inspector, whose `onParamChange` is wired to draft-aware routing.
+  const isDraft = !!data.draft;
+  const hasControls = controlCount > 0 && !isDraft;
 
   // Detect bidirectional nodes using the bidirectional property from node definition
   const isBidirectional = data.definition?.bidirectional ?? false;

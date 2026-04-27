@@ -11,7 +11,7 @@
 use crate::{
     constants::DEFAULT_SUBSCRIBER_CHANNEL_CAPACITY,
     dynamic_config::CONTROL_CAPACITY,
-    dynamic_messages::{PinConfigMsg, QueryMessage, RuntimeSchemaUpdate},
+    dynamic_messages::{NodeAddedNotification, PinConfigMsg, QueryMessage, RuntimeSchemaUpdate},
     dynamic_pin_distributor::PinDistributorActor,
     graph_builder,
 };
@@ -65,6 +65,11 @@ pub struct NodeCreatedEvent {
     node_id: String,
     kind: String,
     creation_id: u64,
+    /// Original params from the AddNode request, retained so the success
+    /// path can include them in the `NodeAddedNotification` it emits to
+    /// session-level forwarders.  `create_node` only borrows them, so we
+    /// keep the owned value alongside the result.
+    params: Option<serde_json::Value>,
     result: Result<Box<dyn streamkit_core::ProcessorNode>, StreamKitError>,
 }
 
@@ -157,6 +162,19 @@ pub struct DynamicEngine {
     /// a bounded channel risks silently dropping a notification that leaves
     /// the UI permanently stale.
     pub(super) runtime_schema_subscribers: Vec<mpsc::UnboundedSender<RuntimeSchemaUpdate>>,
+    /// Subscribers that want to receive a notification when a node is
+    /// fully created and initialized (i.e. transitioned from `Creating`
+    /// to `Initializing`).  This is what session-level forwarders turn
+    /// into the public `NodeAdded` event.  Failures are visible via the
+    /// existing state subscribers (`NodeState::Failed`) and never appear
+    /// here, so a `NodeAddedNotification` always means success.
+    ///
+    /// Unbounded because node creations are one-per-node and very
+    /// low-frequency; a bounded channel risks silently dropping a
+    /// notification that leaves the UI permanently without a
+    /// `nodeadded` event for that node.  Same model as
+    /// `runtime_schema_subscribers` above.
+    pub(super) node_added_subscribers: Vec<mpsc::UnboundedSender<NodeAddedNotification>>,
     // Metrics
     pub(super) nodes_active_gauge: opentelemetry::metrics::Gauge<u64>,
     pub(super) node_state_transitions_counter: opentelemetry::metrics::Counter<u64>,
@@ -289,6 +307,11 @@ impl DynamicEngine {
             QueryMessage::SubscribeRuntimeSchemas { response_tx } => {
                 let (tx, rx) = mpsc::unbounded_channel();
                 self.runtime_schema_subscribers.push(tx);
+                let _ = response_tx.send(rx).await;
+            },
+            QueryMessage::SubscribeNodeAdded { response_tx } => {
+                let (tx, rx) = mpsc::unbounded_channel();
+                self.node_added_subscribers.push(tx);
                 let _ = response_tx.send(rx).await;
             },
         }
@@ -1540,7 +1563,7 @@ impl DynamicEngine {
     /// On failure: transitions the node to `Failed`, drains pending connections
     /// referencing the failed node.
     async fn handle_node_created(&mut self, event: NodeCreatedEvent, channels: &NodeChannels) {
-        let NodeCreatedEvent { node_id, kind, creation_id, result } = event;
+        let NodeCreatedEvent { node_id, kind, creation_id, params, result } = event;
 
         // Check whether this creation result is still the active one.
         // A mismatch means either:
@@ -1603,6 +1626,22 @@ impl DynamicEngine {
 
                 // Replay any TuneNode messages that arrived while Creating.
                 self.flush_pending_tunes(&node_id).await;
+
+                // Notify subscribers that the node has been fully created.
+                // The session-level forwarder turns this into the public
+                // `NodeAdded` event — clients see `nodeadded` only after
+                // the plugin's constructor *and* `initialize_node` returned
+                // Ok, never speculatively while the FFI call is still in
+                // flight.  Failures don't reach here; they're observable
+                // via NodeStateUpdate { state: Failed }.
+                let notification = NodeAddedNotification { node_id: node_id.clone(), kind, params };
+                // Unbounded send; dropping a NodeAdded notification
+                // would leave the client without a `nodeadded` event
+                // for this node, which is worse than memory pressure
+                // for a dead receiver.  Closed receivers prune via
+                // `is_ok()` returning false.
+                self.node_added_subscribers
+                    .retain(|subscriber| subscriber.send(notification.clone()).is_ok());
             },
             Err(e) => {
                 tracing::error!(
@@ -1754,6 +1793,18 @@ impl DynamicEngine {
 
                 // Reject duplicate node IDs — the node already exists in
                 // node_states (either Creating or fully initialized).
+                //
+                // KNOWN GAP: this rejection is logged but no event is
+                // emitted to the originating WS client.  The WS handler
+                // returned `Success` (the request was accepted) and the
+                // client receives neither `NodeAdded` nor
+                // `NodeStateChanged(Failed)` for this id — broadcasting a
+                // synthetic Failed would clobber the pre-existing
+                // legitimate entry.  Most cases are caught by the WS
+                // handler's best-effort `pipeline.nodes` pre-check; the
+                // race only matters for two clients adding the same id
+                // simultaneously, which the UI's auto-generated
+                // `<kind>_<n>` naming makes vanishingly rare in practice.
                 if self.node_states.contains_key(&node_id) {
                     tracing::error!(
                         node_id = %node_id,
@@ -1794,6 +1845,12 @@ impl DynamicEngine {
                 let tx = self.node_created_tx.clone();
                 let spawn_node_id = node_id;
                 let spawn_kind = kind.clone();
+                // Clone params so the spawned closure can pass them by
+                // reference into create_node while the outer `params`
+                // remains owned and travels (via NodeCreatedEvent) to
+                // handle_node_created — which needs them to populate
+                // the NodeAddedNotification on success.
+                let spawn_params = params.clone();
                 tokio::spawn(async move {
                     let result = tokio::task::spawn_blocking(move || {
                         let guard = match registry.read() {
@@ -1804,7 +1861,7 @@ impl DynamicEngine {
                                 )));
                             },
                         };
-                        guard.create_node(&spawn_kind, params.as_ref())
+                        guard.create_node(&spawn_kind, spawn_params.as_ref())
                     })
                     .await;
 
@@ -1820,6 +1877,7 @@ impl DynamicEngine {
                             node_id: spawn_node_id,
                             kind,
                             creation_id,
+                            params,
                             result,
                         })
                         .await;

@@ -83,7 +83,7 @@ interface AudioGainNodeData {
   stats?: NodeStats;
   onParamChange?: (nodeId: string, paramName: string, value: unknown) => void;
   sessionId?: string;
-  draft?: { missingRequired: string[] };
+  draft?: { missingRequired: string[]; isCreating: boolean; onPromote: () => void };
 }
 
 interface AudioGainNodeProps {

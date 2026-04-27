@@ -81,6 +81,29 @@ const DraftBanner = styled.div`
   line-height: 1.3;
 `;
 
+// Primary call-to-action that promotes a draft into a real node.  The
+// only way to commit a draft — typing never does this implicitly.
+const DraftPromoteButton = styled.button`
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 4px;
+  border: 1px solid var(--sk-primary, var(--sk-text));
+  background: var(--sk-primary, var(--sk-text));
+  color: var(--sk-panel-bg);
+  cursor: pointer;
+  transition: filter 0.1s ease;
+  &:hover:not(:disabled) {
+    filter: brightness(1.1);
+  }
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+`;
+
 const DraftBadge = styled.span`
   font-weight: 700;
   text-transform: uppercase;
@@ -96,6 +119,26 @@ const DraftBadge = styled.span`
 const DraftMessage = styled.span`
   font-family: var(--sk-font-mono, ui-monospace, monospace);
   word-break: break-word;
+`;
+
+// Small CSS-only spinner shown while a fully-configured draft is
+// promoted (`addnode` dispatched) and we're waiting for the engine's
+// `nodeadded` echo or a `NodeStateChanged(Failed)` reply.  Replaces
+// the previous silent "configuring…" text — the user now has a clear
+// "something is happening on the server" signal.
+const DraftSpinner = styled.span`
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 1.5px solid var(--sk-warning, var(--sk-text-muted));
+  border-top-color: transparent;
+  animation: sk-draft-spin 0.8s linear infinite;
+  @keyframes sk-draft-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
 `;
 
 const BidirectionalNodesRow = styled.div`
@@ -167,11 +210,20 @@ const Kind = styled.div`
 `;
 
 /** Draft state for a node that has been dropped on the canvas but not
- *  yet committed via `addnode` because required schema params are still
- *  missing.  Rendered with a dashed border and a banner listing the
- *  outstanding fields. */
+ *  yet committed via `addnode`.  Rendered with a dashed border, a
+ *  banner listing any outstanding required fields, and an explicit
+ *  "Add to pipeline" button — the *only* way to promote a draft to a
+ *  real node.  Typing into fields never auto-promotes. */
 export type DraftNodeState = {
   missingRequired: string[];
+  /** True after the user has clicked "Add to pipeline" and we are
+   *  waiting for the engine's `nodeadded` (success) or
+   *  `NodeStateChanged(Failed)` (failure) reply.  Banner shows a
+   *  spinner; promote button is disabled. */
+  isCreating: boolean;
+  /** Click handler for the "Add to pipeline" button.  Disabled by the
+   *  component when missingRequired is non-empty or isCreating is true. */
+  onPromote: () => void;
 };
 
 type NodeFrameProps = {
@@ -319,16 +371,49 @@ const NodeHeader: React.FC<{
   </Header>
 );
 
-// Sub-component: Draft banner shown above node controls when the node
-// has not yet been committed because required params are missing.
+// Sub-component: Draft banner shown above node controls.  Three visual
+// states, all driven by the explicit-promotion model:
+//   - missingRequired > 0  -> 'needs <fields>', promote button disabled.
+//   - missingRequired = 0 && !isCreating -> 'ready', promote enabled.
+//   - isCreating           -> spinner + 'creating on server', button disabled.
+// The button is the *only* way to promote a draft to a real node.
 const DraftBannerSection: React.FC<{ draft: DraftNodeState }> = ({ draft }) => {
-  const { missingRequired } = draft;
-  const message =
-    missingRequired.length > 0 ? `needs ${missingRequired.join(', ')}` : 'configuring\u2026';
+  const { missingRequired, isCreating, onPromote } = draft;
+  const message = isCreating
+    ? 'creating on server\u2026'
+    : missingRequired.length > 0
+      ? `needs ${missingRequired.join(', ')}`
+      : 'ready';
+  const promoteDisabled = isCreating || missingRequired.length > 0;
+  // Stop the click from reaching React Flow's drag handler — the
+  // banner sits inside `.drag-handle` so without this the click
+  // would be interpreted as the start of a drag and the button
+  // never fires.
+  const handleClick = (event: React.MouseEvent) => {
+    event.stopPropagation();
+    if (promoteDisabled) return;
+    onPromote();
+  };
   return (
     <DraftBanner role="status" aria-label={`Draft node — ${message}`}>
       <DraftBadge>Draft</DraftBadge>
+      {isCreating && <DraftSpinner aria-hidden="true" />}
       <DraftMessage className="code-font">{message}</DraftMessage>
+      <DraftPromoteButton
+        type="button"
+        onClick={handleClick}
+        onMouseDown={(e) => e.stopPropagation()}
+        disabled={promoteDisabled}
+        title={
+          missingRequired.length > 0
+            ? `Fill ${missingRequired.join(', ')} to enable`
+            : isCreating
+              ? 'Waiting for server'
+              : 'Add this node to the pipeline'
+        }
+      >
+        Add to pipeline
+      </DraftPromoteButton>
     </DraftBanner>
   );
 };

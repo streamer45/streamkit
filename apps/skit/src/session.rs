@@ -375,6 +375,58 @@ impl Session {
             );
         });
 
+        // Subscribe to node-added notifications from the engine and use
+        // them as the trigger for both updating `pipeline.nodes` and
+        // emitting the public `NodeAdded` event.  Doing this here (and
+        // not in the WebSocket addnode handler) means clients only see
+        // `nodeadded` after the engine has confirmed the plugin's
+        // constructor and `initialize_node` returned Ok — never
+        // speculatively before the FFI call has even run.  Failures
+        // surface as `NodeStateChanged { state: Failed }` via the
+        // existing state forwarder above.
+        let pipeline = Arc::new(Mutex::new(Pipeline::default()));
+        let mut node_added_rx = engine_handle
+            .subscribe_node_added()
+            .await
+            .map_err(|e| format!("Failed to subscribe to node-added updates: {e}"))?;
+        let session_id_for_node_added = session_id.clone();
+        let event_tx_for_node_added = event_tx.clone();
+        let pipeline_for_node_added = pipeline.clone();
+        tokio::spawn(async move {
+            while let Some(notification) = node_added_rx.recv().await {
+                // Update the cached pipeline snapshot first, then
+                // broadcast — late subscribers (re-fetching the pipeline
+                // immediately after a `nodeadded` event) see a
+                // consistent view that already includes the new entry.
+                {
+                    let mut pip = pipeline_for_node_added.lock().await;
+                    pip.nodes.insert(
+                        notification.node_id.clone(),
+                        streamkit_api::Node {
+                            kind: notification.kind.clone(),
+                            params: notification.params.clone(),
+                            state: None,
+                        },
+                    );
+                }
+                let event = ApiEvent {
+                    message_type: MessageType::Event,
+                    correlation_id: None,
+                    payload: EventPayload::NodeAdded {
+                        session_id: session_id_for_node_added.clone(),
+                        node_id: notification.node_id,
+                        kind: notification.kind,
+                        params: notification.params,
+                    },
+                };
+                let _ = event_tx_for_node_added.send(BroadcastEvent::to_all(event));
+            }
+            tracing::debug!(
+                session_id = %session_id_for_node_added,
+                "Node-added forwarding task ended"
+            );
+        });
+
         // Subscribe to telemetry events from the engine
         let mut telemetry_rx = engine_handle
             .subscribe_telemetry()
@@ -408,7 +460,7 @@ impl Session {
             id: session_id,
             name,
             engine_handle: Arc::new(engine_handle),
-            pipeline: Arc::new(Mutex::new(Pipeline::default())),
+            pipeline,
             created_at: SystemTime::now(),
             created_by,
             #[cfg(feature = "moq")]

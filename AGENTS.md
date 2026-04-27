@@ -56,6 +56,40 @@ the full architecture.
   include a comment explaining the rationale.
 - **UI tooling**: Use `bun install` / `bunx` / `bun run` — never npm or pnpm.
 
+## Fix Root Causes, Not Symptoms
+
+Prefer a clean change that takes longer over a brittle stack of patches that
+ships sooner. If a feature requires defending against the same race in three
+places, layering synchronous shadow refs over async state, or "preferring
+draft over live" because two event sources disagree on timing — **stop and
+reconsider the contract**, don't add a fourth patch.
+
+Concrete signals you've crossed into workaround territory:
+
+- You're adding a *timeout* to recover from a missing event.
+- You need a synchronous shadow of state that already lives in an async store.
+- You catch yourself writing "the X event doesn't actually mean X, it means
+  *attempted* X, so we also have to listen for Y to know if it really
+  happened."
+- Tests are updated by adding sleeps or by relying on previously-broken
+  behavior (e.g. an invalid value being silently accepted).
+- The root cause is in a different layer than the one you're editing, and
+  fixing it there would invalidate most of your patch.
+
+When you spot this, surface the design issue to the user with a concrete
+proposal — even if it's more invasive — *before* writing the patch. State
+the tradeoff honestly: "this will take longer but produces something
+durable; vs. this short-term fix has these specific brittleness costs."
+
+Past incident worth remembering: the WebSocket `nodeadded` event used to fire
+before plugin construction had even started. The UI accumulated 13 commits of
+draft-state machinery (state-watchers, debounce timers, topology priority
+hacks) trying to reconstruct "did the node actually get created?" from
+out-of-band signals. The actual fix was a small server change — emit
+`nodeadded` from the engine actor's success path instead of the WS handler —
+which collapsed the UI back to the obvious cleanup. Code that exists to
+paper over a broken contract should be deleted, not refined.
+
 ## Verification Commands
 
 | Task | Command |

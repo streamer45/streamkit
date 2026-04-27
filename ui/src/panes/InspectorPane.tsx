@@ -174,7 +174,9 @@ interface InspectorPaneProps {
     kind: string;
     params: Record<string, unknown>;
     sessionId?: string;
-    draft?: { missingRequired: string[] };
+    /** Inspector reads only `missingRequired` for the hint text;
+     *  promotion happens via the canvas-side button (see NodeFrame). */
+    draft?: { missingRequired: string[]; isCreating: boolean; onPromote: () => void };
   }>;
   nodeDefinition: NodeDefinition;
   onParamChange: (nodeId: string, paramName: string, value: unknown) => void;
@@ -365,8 +367,18 @@ const InspectorPane: React.FC<InspectorPaneProps> = ({
     // `slint_file`) to promote the draft.  All fields stay editable
     // until the draft is committed; tunable gating resumes once the
     // engine echoes back a real node.
+    //
+    // While the draft is *in flight* (Add to pipeline clicked, waiting
+    // for `nodeadded` or `Failed`), disable everything: any keystroke
+    // would be racing the engine's response and either overwritten on
+    // success (the addnode payload is already on the wire) or wasted
+    // on failure (the entry is being torn down).  Disabling matches
+    // the spinner + disabled button on the canvas banner — the user
+    // sees a coherent "wait" state and the UI doesn't have to
+    // reconcile post-promote keystrokes.
     const isDraft = !!node.data.draft;
-    const isDisabled = readOnly || (isMonitorView && !isDraft && !schema.tunable);
+    const isInflight = node.data.draft?.isCreating ?? false;
+    const isDisabled = readOnly || isInflight || (isMonitorView && !isDraft && !schema.tunable);
 
     switch (schema.type) {
       case 'string':

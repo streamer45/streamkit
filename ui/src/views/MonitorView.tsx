@@ -69,6 +69,7 @@ import type {
   NodeDefinition,
   Connection,
   JsonValue,
+  NodeState,
   Pipeline,
   MessageType,
   InputPin,
@@ -95,37 +96,39 @@ import { nodeTypes, defaultEdgeOptions } from '@/utils/reactFlowDefaults';
 // Memoized view title to prevent re-renders during drag
 const MonitorViewTitle = React.memo(() => <ViewTitle>Monitor</ViewTitle>);
 
-// How long to wait for an `addnode` to round-trip before assuming the
-// engine rejected it and reverting the draft to an editable state.
-// Picked to comfortably exceed normal nodeadded latency (sub-second
-// for most plugins) without keeping the user staring at a stale
-// "configuring…" banner if the request was dropped.
-const PROMOTION_TIMEOUT_MS = 8000;
-
-// Debounce window between the user filling the last required field and
-// the actual `addnode` request.  Keystrokes within this window keep
-// resetting the timer, so a draft is only promoted after the user
-// stops typing — otherwise a partial value (e.g. "h" while typing
-// "https://…") would be sent verbatim and rejected by the engine's
-// per-kind validator.
-const PROMOTION_DEBOUNCE_MS = 600;
-
-// Nodes that have been dropped on the canvas but cannot yet be sent
-// to the engine because one or more `param_schema.required` fields
-// have no value (no schema default + nothing entered yet).  Drafts
-// live entirely in the UI; they are promoted to a real `addnode`
-// WebSocket call as soon as all required fields are filled, then
-// disappear from this map once the engine reports `nodeadded`.
+// Nodes that have been dropped on the canvas but not yet committed to
+// the engine.  Drafts live entirely in the UI; the user fills in
+// fields freely (drafts never round-trip through `tunenode`) and then
+// presses an explicit "Add to pipeline" button to promote — there is
+// no auto-promote on field-filled, no debounce, no timer.  An
+// explicit click is the *only* way a draft becomes a real node, which
+// keeps the UX deterministic ("typing into the URL didn't suddenly
+// fire creation") and removes a class of races between keystrokes
+// and the engine.
 export type DraftNode = {
   kind: string;
   params: Record<string, unknown>;
   position: { x: number; y: number };
   missingRequired: string[];
-  /** Set when the draft has been promoted via addNode and we are
-   * waiting for the engine's `nodeadded` echo.  Used to detect
-   * server-side promotion failures and revert the draft to an
-   * editable state. */
+  /** Set the moment the user clicks "Add to pipeline".  While set, the
+   * draft is in flight: the inspector shows a "creating on server" spinner,
+   * the button is disabled, and edits accumulate locally so they can be
+   * forwarded as a post-create tune once the engine confirms.  Cleared
+   * back to undefined on `NodeStateChanged(Failed)` so the user can
+   * fix the input and click again. */
   promotedAt?: number;
+};
+
+// Extract the failure reason from a `NodeState::Failed` value, if it is
+// one.  Returns undefined for any other variant of the NodeState union
+// (the unit variants like `Creating`/`Ready` are strings; data variants
+// are single-key objects like `{ Failed: { reason } }`).
+const nodeStateFailedReason = (s: NodeState | null | undefined): string | undefined => {
+  if (s && typeof s === 'object' && 'Failed' in s) {
+    const f = (s as { Failed: { reason?: string } }).Failed;
+    return f?.reason;
+  }
+  return undefined;
 };
 
 /**
@@ -237,25 +240,6 @@ const MonitorViewContent: React.FC = () => {
   React.useLayoutEffect(() => {
     draftNodesRef.current = draftNodes;
   }, [draftNodes]);
-  // Synchronous shadow of the latest computed params per draft, so two
-  // rapid edits in the same JS task (before React renders) accumulate
-  // correctly instead of both reading `draft.params` from the
-  // last-rendered draft and clobbering each other.  Cleared lazily
-  // when a draft is dropped from `draftNodes`.
-  const latestDraftParamsRef = useRef(new Map<string, Record<string, unknown>>());
-  // Synchronous in-flight set for the same reason as latestDraftParamsRef:
-  // `draft.promotedAt` doesn't reach `draftNodesRef` until the next paint,
-  // so two keystrokes in the same JS task could both observe an unpromoted
-  // draft and both fire `addNode`.  This Set is set/cleared synchronously
-  // alongside the addNode call so the second call short-circuits.
-  const promotionInFlightRef = useRef(new Set<string>());
-  // Per-draft pending promotion timers.  We debounce the addNode call so
-  // promotion happens after the user stops typing — otherwise the first
-  // character into a previously-empty required field (e.g. "h" into a
-  // url) would fire addNode with a partial value and the engine's
-  // per-kind validator would reject it before the user finishes typing.
-  const promotionTimersRef = useRef(new Map<string, number>());
-
   // Auto-select session from navigation state (e.g., from Stream view)
   useEffect(() => {
     const state = location.state as { sessionId?: string } | null;
@@ -491,83 +475,50 @@ const MonitorViewContent: React.FC = () => {
   const pipelineRef = useRef(pipeline);
   pipelineRef.current = pipeline;
 
-  // Drop drafts from local state when the same id appears in the
-  // pipeline (i.e. the engine has accepted the promoted `addnode`).
+  // Drop draft once the engine confirms successful creation.  With the
+  // new contract (see apps/skit/src/session.rs), `pipeline.nodes` only
+  // gets the entry after the engine actor's success path emits a
+  // NodeAddedNotification — i.e. after the plugin's constructor *and*
+  // initialize_node both returned Ok.  So the appearance of an entry
+  // here is itself the success signal; no state-watcher needed.
   useEffect(() => {
     if (draftNodes.size === 0) return;
     let changed = false;
     const next = new Map(draftNodes);
     for (const id of draftNodes.keys()) {
-      if (pipeline?.nodes[id]) {
-        // Edits made between `addnode` and `nodeadded` (e.g. typing a
-        // few extra characters into url before the engine echoes
-        // back) are accumulated in latestDraftParamsRef.  The
-        // engine's nodeadded carries the *original* promoted params
-        // and overwrites the atom — without this flush, those late
-        // edits would be silently dropped.  Forwarding them via
-        // tuneNodeConfigDeep applies them as a normal post-create
-        // tune, so the engine state and the user's last-typed value
-        // converge.
-        const latest = latestDraftParamsRef.current.get(id);
-        const live = (pipeline.nodes[id].params ?? {}) as Record<string, unknown>;
-        if (latest && !deepEqual(latest, live)) {
-          tuneNodeConfigDeep(id, latest);
-        }
-        next.delete(id);
-        latestDraftParamsRef.current.delete(id);
-        promotionInFlightRef.current.delete(id);
-        const t = promotionTimersRef.current.get(id);
-        if (t !== undefined) {
-          window.clearTimeout(t);
-          promotionTimersRef.current.delete(id);
-        }
-        changed = true;
-      }
+      if (!pipeline?.nodes[id]) continue;
+      // Inspector inputs are disabled while `isCreating`, so there is
+      // nothing to flush — the params on the wire match what the user
+      // last saw.  Just drop the draft.
+      next.delete(id);
+      changed = true;
     }
     if (changed) setDraftNodes(next);
-  }, [pipeline, draftNodes, tuneNodeConfigDeep]);
+  }, [pipeline, draftNodes]);
 
-  // Promotion-timeout recovery: `addNode` is fire-and-forget, so if the
-  // engine rejects the request (e.g. unknown kind, malformed payload,
-  // transient transport error) no `nodeadded` event ever arrives and
-  // the cleanup effect above never runs.  Without this, a failed
-  // promotion would leave the draft stuck with `missingRequired: []`
-  // and the inspector showing "configuring…" forever.
-  //
-  // Schedule a per-draft timer when promotedAt is stamped.  If the
-  // pipeline still hasn't accepted the node after PROMOTION_TIMEOUT_MS,
-  // surface the schema's required-key list (so the user sees what to
-  // re-check) and clear promotedAt so the inspector exits the
-  // "configuring…" state.  The draft remains editable, and the next
-  // edit re-promotes via the normal handleDraftParamChange flow.
+  // Revert a promoted draft when the engine reports `Failed` for it.
+  // The actor emits NodeStateChanged(Failed) without ever emitting
+  // NodeAdded, so the success-cleanup effect above never fires for
+  // failures — the draft stays up and editable, the engine's reason
+  // is shown via toast, and we send `removenode` so a retry with the
+  // same id doesn't trip the actor's duplicate-id guard.
   useEffect(() => {
-    const timers: number[] = [];
+    if (!selectedSessionId) return;
+    const unsubs: Array<() => void> = [];
     for (const [id, draft] of draftNodes) {
       if (draft.promotedAt === undefined) continue;
-      if (pipeline?.nodes[id]) continue; // Already accepted; cleanup handles it.
-      const elapsed = Date.now() - draft.promotedAt;
-      const remaining = Math.max(0, PROMOTION_TIMEOUT_MS - elapsed);
-      const timer = window.setTimeout(() => {
-        const current = draftNodesRef.current.get(id);
-        if (!current || current.promotedAt !== draft.promotedAt) return;
-        if (pipelineRef.current?.nodes[id]) return;
-        // Recompute against the draft's actual params so we only mark
-        // truly-empty fields as missing.  If the user filled every
-        // required field (which is what triggered promotion in the
-        // first place) the list is empty and the draft is treated as
-        // re-promotable on the next edit; the toast tells them what
-        // happened either way.
-        const missing = computeMissingRequired(current.kind, current.params, nodeDefinitions);
-        promotionInFlightRef.current.delete(id);
-        const pendingTimer = promotionTimersRef.current.get(id);
-        if (pendingTimer !== undefined) {
-          window.clearTimeout(pendingTimer);
-          promotionTimersRef.current.delete(id);
-        }
+      const stateAtom = nodeStateAtom(nodeKey(selectedSessionId, id));
+      const handle = () => {
+        const reason = nodeStateFailedReason(defaultSessionStore.get(stateAtom));
+        if (reason === undefined) return;
+        const cur = draftNodesRef.current.get(id);
+        if (!cur || cur.promotedAt === undefined) return;
+        const missing = computeMissingRequired(cur.kind, cur.params, nodeDefinitions);
+        removeNode(id);
         setDraftNodes((prev) => {
+          const c = prev.get(id);
+          if (!c || c.promotedAt === undefined) return prev;
           const next = new Map(prev);
-          const c = next.get(id);
-          if (!c || c.promotedAt !== draft.promotedAt) return prev;
           next.set(id, {
             ...c,
             missingRequired: missing,
@@ -575,14 +526,18 @@ const MonitorViewContent: React.FC = () => {
           });
           return next;
         });
-        toast.error(`${id} did not respond — edit a field to retry, or remove the node.`);
-      }, remaining);
-      timers.push(timer);
+        toast.error(`${id} failed: ${reason}`);
+      };
+      // The state may already be present at subscription time (e.g.
+      // the engine rejected creation before this effect re-ran after
+      // the promote setDraftNodes commit).
+      handle();
+      unsubs.push(defaultSessionStore.sub(stateAtom, handle));
     }
     return () => {
-      for (const t of timers) window.clearTimeout(t);
+      for (const u of unsubs) u();
     };
-  }, [draftNodes, pipeline, nodeDefinitions, toast]);
+  }, [draftNodes, selectedSessionId, nodeDefinitions, removeNode, toast]);
 
   // Discard drafts when the user switches away from the session they
   // were authored on — they're tied to that canvas's coordinate space
@@ -604,10 +559,6 @@ const MonitorViewContent: React.FC = () => {
       }
     }
     setDraftNodes((prev) => (prev.size === 0 ? prev : new Map()));
-    latestDraftParamsRef.current.clear();
-    promotionInFlightRef.current.clear();
-    for (const t of promotionTimersRef.current.values()) window.clearTimeout(t);
-    promotionTimersRef.current.clear();
   }, [selectedSessionId]);
 
   // Topology signature: only changes when nodes/kinds or connections change
@@ -627,15 +578,19 @@ const MonitorViewContent: React.FC = () => {
     // intentional — runtime_param_schema() is documented as immutable for the
     // node's lifetime (see crates/core ProcessorNode trait docs).
     const runtimeKeys = Object.keys(pipeline?.runtime_schemas ?? {}).sort();
-    // Drafts contribute their id, kind, and missing-required list so
-    // the canvas re-renders when the user fills in a previously-empty
-    // required field and the "needs ..." banner shrinks.  Param keys
-    // are intentionally excluded: drafts read their displayed values
-    // from the Jotai atom (writeNodeParam mirrors every keystroke), so
-    // a topology rebuild on every new key would just churn React.memo
-    // for no visible effect.
+    // Drafts contribute their id, kind, missing-required list, and an
+    // `isCreating` flag (derived from promotedAt) so the canvas
+    // re-renders when the banner needs to switch between "needs
+    // <fields>" / "Add to pipeline" / "creating on server".  Param
+    // keys are intentionally excluded: drafts read their displayed
+    // values from the Jotai atom (writeNodeParam mirrors every
+    // keystroke), so a topology rebuild on every new key would just
+    // churn React.memo for no visible effect.
     const draftFingerprint = Array.from(draftNodes.entries())
-      .map(([id, d]) => `${id}:${d.kind}:${d.missingRequired.join(',')}`)
+      .map(
+        ([id, d]) =>
+          `${id}:${d.kind}:${d.missingRequired.join(',')}:${d.promotedAt !== undefined ? '1' : '0'}`
+      )
       .sort();
     const key = JSON.stringify([kinds, conns, runtimeKeys, draftFingerprint]);
     viewsLogger.debug('topoKey recalculated:', key.substring(0, 100));
@@ -747,171 +702,98 @@ const MonitorViewContent: React.FC = () => {
   const validateParamValueRef = useRef(validateParamValue);
   validateParamValueRef.current = validateParamValue;
 
-  // Apply a single param change to a draft node.  If the change clears
-  // the last missing-required field, promote the draft via `addnode`
-  // (the `nodeadded` echo from the engine then removes it from
-  // draftNodes via the cleanup effect below).
+  // Apply a single param change to a draft node.  This only updates
+  // *local* draft state — promotion happens exclusively via the
+  // explicit `Add to pipeline` button (`promoteDraft` below), never as
+  // a side-effect of typing.  That's why there's no debounce, no
+  // shadow in-flight set, and no "did the last keystroke complete the
+  // required set?" branching here: typing is just typing.
   //
-  // Required keys in JSON schema are always top-level, so the
-  // missing-required computation only consults top-level keys of the
-  // draft's params.  Nested dot-paths (e.g. compositor's
-  // "properties.show") are merged into params via buildParamUpdate so
-  // the eventual addNode payload carries the correct shape — they
-  // contribute nothing to missing-required because schema `required`
-  // is always flat, but they must be persisted correctly for promotion.
+  // Nested dot-paths (e.g. compositor's "properties.show") are merged
+  // into params via `buildParamUpdate` so the eventual addNode payload
+  // carries the correct shape.  They contribute nothing to
+  // missing-required because schema `required` is always top-level,
+  // but they must be persisted correctly for promotion.
   const handleDraftParamChange = useCallback(
     (nodeId: string, key: string, value: unknown) => {
       const draft = draftNodesRef.current.get(nodeId);
       if (!draft) return;
+      // While the draft is in flight (Add clicked, awaiting nodeadded
+      // / Failed) the inspector inputs are disabled — see InspectorPane
+      // `isInflight` — so this callback shouldn't fire then, but guard
+      // defensively in case any other widget routes a change here.
+      if (draft.promotedAt !== undefined) return;
 
       // Match live-node validation behaviour: out-of-range numbers,
-      // malformed enums, etc. are surfaced immediately instead of
-      // accumulating in the draft and only failing at promotion.
-      // Required-but-empty fields are deliberately not validation
-      // errors here — they're handled by computeMissingRequired below
-      // and visualised via the "needs ..." banner — so an empty value
-      // for a required field is allowed through.
+      // malformed enums, etc. are surfaced immediately.  Required-but-
+      // empty fields are deliberately not validation errors here —
+      // they're handled by `computeMissingRequired` and visualised via
+      // the "needs ..." banner — so an empty value for a required
+      // field is allowed through.
       const validationError = validateParamValueRef.current(nodeId, key, value);
       if (validationError) {
         toast.error(`Invalid value for ${key}: ${validationError}`);
         return;
       }
-      // Always mirror the edit into the per-node Jotai atom so
-      // InspectorPane (which reads the atom first, then
-      // node.data.params) sees every keystroke immediately rather than
-      // freezing on the first character.  The topology rebuild only
-      // fires when the set of param *keys* or missing-required
-      // *changes*, so subsequent edits to the same key would otherwise
-      // be invisible until the next structural change.
+      // Mirror the edit into the per-node Jotai atom so InspectorPane
+      // sees every keystroke immediately rather than freezing on the
+      // first character.
       if (key.includes('.')) {
         writeNodeParams(nodeId, buildParamUpdate(key, value), selectedSessionId ?? undefined);
       } else {
         writeNodeParam(nodeId, key, value, selectedSessionId ?? undefined);
       }
 
-      // Compute newParams from the synchronous shadow store so two
-      // edits in the same JS task (before React renders) don't both
-      // read the same stale snapshot and silently drop the earlier
-      // edit.  draftNodesRef is synced via useLayoutEffect, but that
-      // still fires after the current event handler returns — within a
-      // single tick we may be called multiple times against the same
-      // ref value, so accumulate edits in latestDraftParamsRef instead.
-      const baseParams = latestDraftParamsRef.current.get(nodeId) ?? draft.params;
-      const newParams = mergeDraftParam(baseParams, key, value);
-      latestDraftParamsRef.current.set(nodeId, newParams);
-
-      // If the draft has already been promoted via addNode and we're
-      // waiting for `nodeadded` to come back, do NOT re-call addNode on
-      // every subsequent keystroke — the engine would reject the
-      // duplicate as "Node already exists" and the user's edits would
-      // be silently dropped when the original (pre-promotion) params
-      // arrive on the nodeadded echo and clobber the atom.  Just
-      // accumulate edits in draft.params; once nodeadded arrives the
-      // cleanup effect drops the draft and live tuneNode takes over.
-      //
-      // Check both the rendered draft (`draft.promotedAt`) and the
-      // synchronous in-flight set so that two keystrokes in the same
-      // JS task — where `draft.promotedAt` hasn't been committed yet —
-      // don't both reach the `missing.length === 0` branch and fire
-      // duplicate addNode calls.
-      if (draft.promotedAt !== undefined || promotionInFlightRef.current.has(nodeId)) {
-        setDraftNodes((prev) => {
-          const c = prev.get(nodeId);
-          if (!c) return prev;
-          const next = new Map(prev);
-          next.set(nodeId, { ...c, params: newParams });
-          return next;
-        });
-        return;
-      }
-
+      const newParams = mergeDraftParam(draft.params, key, value);
       const missing = computeMissingRequired(draft.kind, newParams, nodeDefinitions);
+      setDraftNodes((prev) => {
+        const c = prev.get(nodeId);
+        if (!c) return prev;
+        const next = new Map(prev);
+        next.set(nodeId, { ...c, params: newParams, missingRequired: missing });
+        return next;
+      });
+    },
+    [nodeDefinitions, selectedSessionId, toast]
+  );
 
-      // Always update the draft's local params + missingRequired
-      // immediately so the inspector banner ("needs <fields>") shrinks
-      // as the user fills fields and downstream effects (topoKey,
-      // NodeFrame banner) see fresh state on every keystroke.
+  // Promote a draft to a real node — the *only* place `addNode` fires
+  // for drafts.  Wired to the "Add to pipeline" button rendered in the
+  // node's draft banner (see NodeFrame).  No-ops if the draft has
+  // missing required fields or is already in flight; the button's
+  // disabled state mirrors those checks but the runtime guard is
+  // defensive.
+  const promoteDraft = useCallback(
+    (nodeId: string) => {
+      const draft = draftNodesRef.current.get(nodeId);
+      if (!draft) return;
+      if (draft.promotedAt !== undefined) return;
+      const missing = computeMissingRequired(draft.kind, draft.params, nodeDefinitions);
+      if (missing.length > 0) return;
+      addNode(nodeId, draft.kind, draft.params);
       setDraftNodes((prev) => {
         const c = prev.get(nodeId);
         if (!c) return prev;
         const next = new Map(prev);
         next.set(nodeId, {
           ...c,
-          params: newParams,
-          missingRequired: missing,
-          promotedAt: undefined,
+          missingRequired: [],
+          promotedAt: Date.now(),
         });
         return next;
       });
-
-      // Always cancel any prior pending promotion: either the user
-      // typed more characters (we want a fresh debounce window) or
-      // they backspaced into a missing-required state (no promotion
-      // should happen at all).
-      const prevTimer = promotionTimersRef.current.get(nodeId);
-      if (prevTimer !== undefined) {
-        window.clearTimeout(prevTimer);
-        promotionTimersRef.current.delete(nodeId);
-      }
-
-      // Still missing required fields → nothing to promote.
-      if (missing.length > 0) return;
-
-      // All required fields satisfied → schedule debounced promotion.
-      // If the user keeps typing, the next call will cancel this timer
-      // and re-schedule; only an idle pause of PROMOTION_DEBOUNCE_MS
-      // actually fires `addnode`, so the engine sees the final value
-      // rather than a partial one.
-      const timer = window.setTimeout(() => {
-        promotionTimersRef.current.delete(nodeId);
-        const cur = draftNodesRef.current.get(nodeId);
-        if (!cur) return;
-        if (cur.promotedAt !== undefined) return;
-        if (promotionInFlightRef.current.has(nodeId)) return;
-        const curParams = latestDraftParamsRef.current.get(nodeId) ?? cur.params;
-        const curMissing = computeMissingRequired(cur.kind, curParams, nodeDefinitions);
-        if (curMissing.length > 0) return;
-
-        // Promote: hand off to the engine.  Mark in-flight
-        // synchronously *before* dispatching so a concurrent call to
-        // handleDraftParamChange short-circuits at the promoted-guard
-        // above instead of firing addNode again.
-        promotionInFlightRef.current.add(nodeId);
-        addNode(nodeId, cur.kind, curParams);
-        // Keep the draft visible until `nodeadded` arrives so there is
-        // no flicker; the cleanup effect deletes it once it appears in
-        // pipeline.nodes.  Mark missing as empty so the banner reads
-        // "configuring…" rather than the old field list, and stamp
-        // promotedAt so the timeout effect can recover if the engine
-        // never echoes back.
-        setDraftNodes((prev) => {
-          const c = prev.get(nodeId);
-          if (!c) return prev;
-          const next = new Map(prev);
-          next.set(nodeId, {
-            ...c,
-            params: curParams,
-            missingRequired: [],
-            promotedAt: Date.now(),
-          });
-          return next;
-        });
-      }, PROMOTION_DEBOUNCE_MS);
-      promotionTimersRef.current.set(nodeId, timer);
     },
-    [nodeDefinitions, addNode, selectedSessionId, toast]
+    [addNode, nodeDefinitions]
   );
 
-  // Cancel any outstanding promotion debounce timers when the
-  // component unmounts so we don't dispatch addNode against a torn-down
-  // session.
-  useEffect(() => {
-    const timers = promotionTimersRef.current;
-    return () => {
-      for (const t of timers.values()) window.clearTimeout(t);
-      timers.clear();
-    };
-  }, []);
+  // Ref indirection: the topology effect builds onPromote arrows per
+  // draft, and we don't want a fresh `promoteDraft` identity (e.g.
+  // when nodeDefinitions changes) to invalidate every node's data
+  // object and force a React.memo bypass on every node.  Reading via
+  // the ref keeps the dispatched function up-to-date without
+  // re-creating the arrows.
+  const stablePromoteDraftRef = useRef(promoteDraft);
+  stablePromoteDraftRef.current = promoteDraft;
 
   // Memoized param change handler for right pane
   const handleRightPaneParamChange = useCallback(
@@ -993,19 +875,9 @@ const MonitorViewContent: React.FC = () => {
       if (draftNodesRef.current.has(n.id)) {
         deletedDrafts.push(n.id);
         // Drafts are local-only — no `removenode` needed.  Clear the
-        // synchronous shadow refs so a future draft generated with the
-        // same id (or any id) starts from a clean slate (otherwise a
-        // stale promotionInFlight entry would silently block the new
-        // draft from ever being promoted) and the Jotai atom doesn't
-        // surface the deleted draft's typed values as the "default"
-        // for the next draft minted with the same generated id.
-        latestDraftParamsRef.current.delete(n.id);
-        promotionInFlightRef.current.delete(n.id);
-        const t = promotionTimersRef.current.get(n.id);
-        if (t !== undefined) {
-          window.clearTimeout(t);
-          promotionTimersRef.current.delete(n.id);
-        }
+        // per-node Jotai atom so the next draft minted with the same
+        // generated id doesn't surface the deleted draft's typed
+        // values as its initial state.
         clearNodeParams(n.id, selectedSessionId ?? undefined);
         continue;
       }
@@ -1375,8 +1247,6 @@ const MonitorViewContent: React.FC = () => {
     // the same React Flow node type, dynamic-pin support, and inspector
     // integration as live nodes.
     for (const [draftId, draft] of draftNodes) {
-      // Skip drafts that are now in the pipeline (just got promoted).
-      if (pipeline?.nodes[draftId]) continue;
       const draftDef = defByKind.get(draft.kind);
       const draftBaseInputs = draftDef?.inputs ?? [];
       const draftBaseOutputs = draftDef?.outputs ?? [];
@@ -1407,7 +1277,11 @@ const MonitorViewContent: React.FC = () => {
         stableOnParamChange,
         stableOnConfigChange,
         selectedSessionId,
-        draft: { missingRequired: draft.missingRequired },
+        draft: {
+          missingRequired: draft.missingRequired,
+          isCreating: draft.promotedAt !== undefined,
+          onPromote: () => stablePromoteDraftRef.current(draftId),
+        },
       });
       newNodes.push(node);
     }
@@ -1544,13 +1418,6 @@ const MonitorViewContent: React.FC = () => {
 
   const handleDeleteNode = (nodeId: string) => {
     if (draftNodesRef.current.has(nodeId)) {
-      latestDraftParamsRef.current.delete(nodeId);
-      promotionInFlightRef.current.delete(nodeId);
-      const t = promotionTimersRef.current.get(nodeId);
-      if (t !== undefined) {
-        window.clearTimeout(t);
-        promotionTimersRef.current.delete(nodeId);
-      }
       // Drop the per-node Jotai atom so a subsequent draft minted
       // with the same generated id (e.g. servo_1 → deleted → a fresh
       // servo dropped) doesn't display the previous draft's typed

@@ -61,6 +61,7 @@ fn create_test_engine() -> DynamicEngine {
         node_state_gauge: meter.u64_gauge("test.state").build(),
         runtime_schemas: HashMap::new(),
         runtime_schema_subscribers: Vec::new(),
+        node_added_subscribers: Vec::new(),
         engine_control_tx,
         node_created_tx,
         node_created_rx,

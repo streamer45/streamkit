@@ -525,35 +525,26 @@ async fn handle_add_node(
         });
     }
 
+    // Best-effort duplicate check against the cached pipeline snapshot.
+    // The actor performs the authoritative check (against `node_states`,
+    // which also covers in-flight Creating entries) and rejects races
+    // there.  This early check catches the common case of "client adds
+    // a name that already exists" without a roundtrip to the actor.
     {
-        let mut pipeline = session.pipeline.lock().await;
+        let pipeline = session.pipeline.lock().await;
         if pipeline.nodes.contains_key(&node_id) {
             return Some(ResponsePayload::Error {
                 message: format!("Node '{node_id}' already exists in the pipeline"),
             });
         }
-        pipeline.nodes.insert(
-            node_id.clone(),
-            streamkit_api::Node { kind: kind.clone(), params: params.clone(), state: None },
-        );
     } // Lock released here
 
-    // Broadcast event to all clients
-    let event = ApiEvent {
-        message_type: MessageType::Event,
-        correlation_id: None,
-        payload: EventPayload::NodeAdded {
-            session_id: session.id.clone(),
-            node_id: node_id.clone(),
-            kind: kind.clone(),
-            params: params.clone(),
-        },
-    };
-    if let Err(e) = app_state.event_tx.send(BroadcastEvent::to_all(event)) {
-        error!("Failed to broadcast NodeAdded event: {}", e);
-    }
-
-    // Now safe to do async operations without holding session_manager lock
+    // Forward to the engine.  We deliberately do NOT insert into
+    // `pipeline.nodes` or broadcast `NodeAdded` here — both are
+    // emitted by the session-level node-added forwarder (see
+    // `session.rs`) once the engine confirms the plugin's constructor
+    // and `initialize_node` returned Ok.  This makes the public
+    // `nodeadded` event mean what it says: a node that exists.
     let control_msg = EngineControlMessage::AddNode { node_id, kind, params };
     session.send_control_message(control_msg).await;
     Some(ResponsePayload::Success)

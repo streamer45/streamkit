@@ -32,7 +32,7 @@ async fn read_response(
     expected_correlation_id: &str,
 ) -> Response {
     loop {
-        let message = timeout(Duration::from_secs(5), read.next())
+        let message = timeout(Duration::from_secs(15), read.next())
             .await
             .expect("Timeout waiting for response")
             .expect("No message received")
@@ -56,6 +56,43 @@ async fn read_response(
         // Check if correlation_id matches
         if response.correlation_id.as_deref() == Some(expected_correlation_id) {
             return response;
+        }
+    }
+}
+
+/// Drain WebSocket messages until a `NodeAdded` event for `expected_node_id`
+/// arrives.  Required because the WS `addnode` handler now returns Success
+/// as soon as the request is accepted; the public `nodeadded` event is
+/// emitted later by the engine actor's success path (after the plugin's
+/// constructor and `initialize_node` returned Ok).  Tests that read
+/// `pipeline.nodes` after `addnode` must wait for this event first,
+/// otherwise they race against the engine's background creation task.
+async fn wait_for_node_added(
+    read: &mut futures_util::stream::SplitStream<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    >,
+    expected_node_id: &str,
+) {
+    loop {
+        let message = timeout(Duration::from_secs(15), read.next())
+            .await
+            .expect("Timeout waiting for NodeAdded event")
+            .expect("No message received")
+            .expect("Failed to read message");
+        let text = message.to_text().expect("Expected text message");
+        let value: serde_json::Value = serde_json::from_str(text).expect("Failed to parse message");
+        let is_event = value.get("type").and_then(|v| v.as_str()) == Some("event");
+        let payload_event =
+            value.get("payload").and_then(|p| p.get("event")).and_then(|e| e.as_str());
+        let payload_node_id =
+            value.get("payload").and_then(|p| p.get("node_id")).and_then(|n| n.as_str());
+        if is_event
+            && payload_event == Some("nodeadded")
+            && payload_node_id == Some(expected_node_id)
+        {
+            return;
         }
     }
 }
@@ -305,8 +342,8 @@ async fn test_add_and_remove_nodes() {
         payload: RequestPayload::AddNode {
             session_id: session_id.clone(),
             node_id: "gain1".to_string(),
-            kind: "gain".to_string(),
-            params: Some(json!({"gain": 2.0})),
+            kind: "audio::gain".to_string(),
+            params: Some(json!({"gain_db": 2.0})),
         },
     };
 
@@ -321,6 +358,12 @@ async fn test_add_and_remove_nodes() {
         ResponsePayload::Error { message } => panic!("Failed to add node: {}", message),
         _ => panic!("Unexpected response"),
     }
+
+    // Wait for the engine to confirm creation before querying the
+    // pipeline — `addnode` now returns Success when the request is
+    // *accepted*, while the cached pipeline snapshot is updated by the
+    // session's node-added forwarder when the engine's `Ok` arrives.
+    wait_for_node_added(&mut read, "gain1").await;
 
     println!("✅ Added gain node");
 
@@ -341,7 +384,7 @@ async fn test_add_and_remove_nodes() {
         ResponsePayload::Pipeline { pipeline } => {
             assert_eq!(pipeline.nodes.len(), 1);
             assert!(pipeline.nodes.contains_key("gain1"));
-            assert_eq!(pipeline.nodes.get("gain1").unwrap().kind, "gain");
+            assert_eq!(pipeline.nodes.get("gain1").unwrap().kind, "audio::gain");
         },
         _ => panic!("Expected Pipeline response"),
     }
@@ -392,6 +435,103 @@ async fn test_add_and_remove_nodes() {
     }
 
     println!("✅ Pipeline is empty after node removal");
+}
+
+/// Locks in the public contract that `nodeadded` only fires on
+/// successful creation: when `addnode` is sent for an unregistered
+/// kind, the WebSocket request still returns Success (the *request*
+/// was accepted), but no `NodeAdded` event ever lands and the
+/// pipeline snapshot stays empty.  Failure surfaces only via
+/// `NodeStateChanged { state: Failed }`.
+#[tokio::test]
+async fn test_addnode_failure_leaves_pipeline_empty() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let Some((addr, _server_handle)) = start_test_server().await else {
+        eprintln!("Skipping session lifecycle tests: local TCP bind not permitted");
+        return;
+    };
+
+    let ws_url = format!("ws://{}/api/v1/control", addr);
+    let (ws_stream, _) = connect_async(&ws_url).await.unwrap();
+    let (mut write, mut read) = ws_stream.split();
+
+    // Create session
+    let create_request = Request {
+        message_type: MessageType::Request,
+        correlation_id: Some("create".to_string()),
+        payload: RequestPayload::CreateSession { name: None },
+    };
+    write
+        .send(WsMessage::Text(serde_json::to_string(&create_request).unwrap().into()))
+        .await
+        .unwrap();
+    let response = read_response(&mut read, "create").await;
+    let session_id = match response.payload {
+        ResponsePayload::SessionCreated { session_id, .. } => session_id,
+        _ => panic!("Expected SessionCreated"),
+    };
+
+    // Send addnode for a kind the registry has no entry for.  The WS
+    // handler accepts the request (forwards to the engine actor); the
+    // actor's spawn_blocking creation task fails and the actor
+    // broadcasts NodeState::Failed — but never NodeAdded, and the
+    // session-level forwarder therefore never inserts into
+    // pipeline.nodes.
+    let add_node_request = Request {
+        message_type: MessageType::Request,
+        correlation_id: Some("add-bad".to_string()),
+        payload: RequestPayload::AddNode {
+            session_id: session_id.clone(),
+            node_id: "bogus".to_string(),
+            kind: "this::kind::does::not::exist".to_string(),
+            params: None,
+        },
+    };
+    write
+        .send(WsMessage::Text(serde_json::to_string(&add_node_request).unwrap().into()))
+        .await
+        .unwrap();
+    let response = read_response(&mut read, "add-bad").await;
+    match response.payload {
+        ResponsePayload::Success => {},
+        ResponsePayload::Error { message } => {
+            panic!("Expected Success on dispatch, got Error: {}", message)
+        },
+        _ => panic!("Unexpected response"),
+    }
+
+    // Give the engine actor time to fail the spawn_blocking.  We
+    // can't `wait_for_node_added` here (none will ever arrive); a
+    // small sleep is sufficient because creation failure is
+    // synchronous registry lookup, not FFI.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Confirm pipeline.nodes is empty — the failed creation must NOT
+    // leave a phantom entry behind for clients to inspect.
+    let get_pipeline_request = Request {
+        message_type: MessageType::Request,
+        correlation_id: Some("get-pipeline".to_string()),
+        payload: RequestPayload::GetPipeline { session_id: session_id.clone() },
+    };
+    write
+        .send(WsMessage::Text(serde_json::to_string(&get_pipeline_request).unwrap().into()))
+        .await
+        .unwrap();
+    let response = read_response(&mut read, "get-pipeline").await;
+    match response.payload {
+        ResponsePayload::Pipeline { pipeline } => {
+            assert_eq!(
+                pipeline.nodes.len(),
+                0,
+                "pipeline.nodes must stay empty after a failed addnode; got {:?}",
+                pipeline.nodes.keys().collect::<Vec<_>>()
+            );
+        },
+        _ => panic!("Expected Pipeline response"),
+    }
+
+    println!("✅ Failed creation did not leak into pipeline.nodes");
 }
 
 #[tokio::test]
@@ -695,8 +835,8 @@ async fn test_concurrent_operations_no_lock_contention() {
         payload: RequestPayload::AddNode {
             session_id: session_id.clone(),
             node_id: "gain".to_string(),
-            kind: "gain".to_string(),
-            params: Some(json!({"gain": 1.0})),
+            kind: "audio::gain".to_string(),
+            params: Some(json!({"gain_db": 1.0})),
         },
     };
 
@@ -706,6 +846,7 @@ async fn test_concurrent_operations_no_lock_contention() {
         .unwrap();
 
     let _ = read_response(&mut read, "setup-add-node").await;
+    wait_for_node_added(&mut read, "gain").await;
 
     println!("✅ Setup complete: session {} with gain node", session_id);
 

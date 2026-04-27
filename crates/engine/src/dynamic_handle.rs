@@ -4,7 +4,7 @@
 
 //! Public client handle for controlling a running dynamic engine.
 
-use crate::dynamic_messages::{QueryMessage, RuntimeSchemaUpdate};
+use crate::dynamic_messages::{NodeAddedNotification, QueryMessage, RuntimeSchemaUpdate};
 use std::collections::HashMap;
 use std::sync::Arc;
 use streamkit_core::control::EngineControlMessage;
@@ -186,6 +186,28 @@ impl DynamicEngineHandle {
         let (response_tx, mut response_rx) = mpsc::channel(1);
         self.query_tx
             .send(QueryMessage::SubscribeRuntimeSchemas { response_tx })
+            .await
+            .map_err(|_| "Engine actor has shut down".to_string())?;
+
+        response_rx.recv().await.ok_or_else(|| "Failed to receive response from engine".to_string())
+    }
+
+    /// Subscribes to node-creation success notifications.
+    ///
+    /// Yields exactly one `NodeAddedNotification` per node whose
+    /// constructor *and* initialization succeeded.  Failures do not
+    /// appear on this channel — observe them via `subscribe_state` and
+    /// match `NodeState::Failed`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the engine actor has shut down or fails to respond.
+    pub async fn subscribe_node_added(
+        &self,
+    ) -> Result<mpsc::UnboundedReceiver<NodeAddedNotification>, String> {
+        let (response_tx, mut response_rx) = mpsc::channel(1);
+        self.query_tx
+            .send(QueryMessage::SubscribeNodeAdded { response_tx })
             .await
             .map_err(|_| "Engine actor has shut down".to_string())?;
 

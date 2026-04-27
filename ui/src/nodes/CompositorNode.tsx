@@ -48,7 +48,7 @@ interface CompositorNodeData {
   onParamChange?: (nodeId: string, paramName: string, value: unknown) => void;
   onConfigChange?: (nodeId: string, config: Record<string, unknown>) => void;
   sessionId?: string;
-  draft?: { missingRequired: string[] };
+  draft?: { missingRequired: string[]; isCreating: boolean; onPromote: () => void };
 }
 
 interface CompositorNodeProps {
