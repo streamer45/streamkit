@@ -14,8 +14,9 @@ curl http://localhost:4545/api/v1/plugins
 curl http://localhost:4545/api/v1/schema/nodes | jq '.[] | select(.kind | startswith("plugin::"))'
 ```
 
-## Official plugins (11)
+## Official plugins (14)
 
+- [`plugin::native::aac-encoder`](./plugin-native-aac-encoder/) (original kind: `aac-encoder`)
 - [`plugin::native::helsinki`](./plugin-native-helsinki/) (original kind: `helsinki`)
 - [`plugin::native::kokoro`](./plugin-native-kokoro/) (original kind: `kokoro`)
 - [`plugin::native::matcha`](./plugin-native-matcha/) (original kind: `matcha`)
@@ -24,6 +25,8 @@ curl http://localhost:4545/api/v1/schema/nodes | jq '.[] | select(.kind | starts
 - [`plugin::native::piper`](./plugin-native-piper/) (original kind: `piper`)
 - [`plugin::native::pocket-tts`](./plugin-native-pocket-tts/) (original kind: `pocket-tts`)
 - [`plugin::native::sensevoice`](./plugin-native-sensevoice/) (original kind: `sensevoice`)
+- [`plugin::native::servo`](./plugin-native-servo/) (original kind: `servo`)
 - [`plugin::native::slint`](./plugin-native-slint/) (original kind: `slint`)
+- [`plugin::native::supertonic`](./plugin-native-supertonic/) (original kind: `supertonic`)
 - [`plugin::native::vad`](./plugin-native-vad/) (original kind: `vad`)
 - [`plugin::native::whisper`](./plugin-native-whisper/) (original kind: `whisper`)

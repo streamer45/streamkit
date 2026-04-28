@@ -64,7 +64,7 @@ sudo ./streamkit-install.sh --tag ${TAG}
 git clone https://github.com/streamer45/streamkit.git
 cd streamkit
 
-# Build the embedded web UI (requires Bun)
+# Build the embedded web UI first (requires Bun; creates ui/dist/)
 just build-ui
 
 just build-skit
@@ -78,7 +78,7 @@ Open [http://localhost:4545](http://localhost:4545) in your browser.
 If you see the login screen, StreamKit’s built-in auth is enabled (Docker binds to `0.0.0.0` inside the container). Print the bootstrap admin token and paste it into the UI:
 
 ```bash
-docker exec streamkit skit auth print-admin-token
+docker exec streamkit skit auth print-admin-token --raw
 ```
 
 If you’re on **Linux** and want a frictionless demo (no login), you can run with host networking and bind to loopback inside the container. In `auth.mode = "auto"`, this keeps built-in auth **disabled**:
@@ -133,6 +133,7 @@ cp samples/audio/system/sample.ogg ./sample.ogg
 Run the oneshot pipeline:
 
 ```bash
+# Add -H "Authorization: Bearer $TOKEN" if built-in auth is enabled.
 curl -X POST http://localhost:4545/api/v1/process \
   -F config=@double_volume.yml \
   -F media=@sample.ogg \

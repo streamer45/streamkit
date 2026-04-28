@@ -105,6 +105,7 @@ do_uninstall() {
 	if [[ "$PURGE" == "1" ]]; then
 		echo "  - Configuration (/etc/streamkit)"
 		echo "  - Data and plugins (/var/lib/streamkit)"
+		echo "  - Service logs directory (/var/log/streamkit)"
 		echo "  - streamkit system user"
 	fi
 	echo ""
@@ -153,6 +154,11 @@ do_uninstall() {
 			rm -rf /var/lib/streamkit
 		fi
 
+		if [[ -d /var/log/streamkit ]]; then
+			echo "Removing /var/log/streamkit..."
+			rm -rf /var/log/streamkit
+		fi
+
 		if id -u streamkit >/dev/null 2>&1; then
 			echo "Removing streamkit user..."
 			userdel streamkit 2>/dev/null || true
@@ -164,7 +170,7 @@ do_uninstall() {
 		fi
 	else
 		echo ""
-		echo "Note: Config (/etc/streamkit) and data (/var/lib/streamkit) preserved."
+		echo "Note: Config (/etc/streamkit), data (/var/lib/streamkit), and logs (/var/log/streamkit) preserved."
 		echo "Use --purge to remove everything including the streamkit user."
 	fi
 
@@ -254,6 +260,7 @@ if ! id -u streamkit >/dev/null 2>&1; then
 fi
 
 install -d -m 0755 /etc/streamkit
+install -d -m 0700 /var/lib/streamkit/auth
 install -d -m 0755 /var/lib/streamkit/plugins
 chown -R streamkit:streamkit /var/lib/streamkit
 
@@ -308,7 +315,15 @@ install_config() {
 [server]
 address = "127.0.0.1:4545"
 
+[auth]
+# Built-in auth is disabled on loopback by default (auth.mode=auto), but will auto-enable if you
+# later bind to a non-loopback address. Keep auth state in the systemd StateDirectory so it
+# persists across upgrades.
+mode = "auto"
+state_dir = "/var/lib/streamkit/auth"
+
 [plugins]
+# Persist dynamically loaded plugins across upgrades.
 directory = "/var/lib/streamkit/plugins"
 
 [log]

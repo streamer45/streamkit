@@ -11,8 +11,9 @@ SPDX-License-Identifier: MPL-2.0
 ```bash
 git clone https://github.com/streamer45/streamkit.git
 cd streamkit
-just build-ui   # build the embedded web UI (required before compiling the server)
-just dev        # starts backend + frontend with hot reload
+just build-ui             # build the embedded web UI (required before compiling the server)
+cargo install cargo-watch # one-time prerequisite for just dev
+just dev                  # starts backend + frontend with hot reload
 ```
 
 **Prerequisites:** Rust 1.92+, Bun 1.3+, [Just](https://github.com/casey/just)
@@ -25,6 +26,8 @@ Run `just --list` to see all available commands.
 
 ```bash
 sudo apt install libopus-dev cmake pkg-config libssl-dev
+# Optional for VP9/video builds and VP9 sample pipelines:
+sudo apt install libvpx-dev
 ```
 
 ### Rust toolchain
