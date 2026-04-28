@@ -525,26 +525,26 @@ async fn handle_add_node(
         });
     }
 
-    // Best-effort duplicate check against the cached pipeline snapshot.
-    // The actor performs the authoritative check (against `node_states`,
-    // which also covers in-flight Creating entries) and rejects races
-    // there.  This early check catches the common case of "client adds
-    // a name that already exists" without a roundtrip to the actor.
-    {
-        let pipeline = session.pipeline.lock().await;
-        if pipeline.nodes.contains_key(&node_id) {
-            return Some(ResponsePayload::Error {
-                message: format!("Node '{node_id}' already exists in the pipeline"),
-            });
-        }
-    } // Lock released here
+    // Reject duplicates atomically against both the live pipeline and
+    // the in-flight set.  pipeline.nodes only contains confirmed
+    // entries; creating_nodes covers the gap between WS dispatch and
+    // the engine's `NodeAdded`/`Failed` reply.  Without the in-flight
+    // check, two clients (or one retrying client) could both pass the
+    // pipeline check, both reach the actor, and the second would be
+    // silently dropped by the actor's duplicate-id guard with no
+    // observable signal to the client.
+    if let Err(message) = session.reserve_node_id(&node_id).await {
+        return Some(ResponsePayload::Error { message });
+    }
 
     // Forward to the engine.  We deliberately do NOT insert into
     // `pipeline.nodes` or broadcast `NodeAdded` here — both are
     // emitted by the session-level node-added forwarder (see
     // `session.rs`) once the engine confirms the plugin's constructor
     // and `initialize_node` returned Ok.  This makes the public
-    // `nodeadded` event mean what it says: a node that exists.
+    // `nodeadded` event mean what it says: a node that exists.  The
+    // in-flight reservation taken above is drained by either the
+    // node-added forwarder (success) or the state forwarder (Failed).
     let control_msg = EngineControlMessage::AddNode { node_id, kind, params };
     session.send_control_message(control_msg).await;
     Some(ResponsePayload::Success)
@@ -588,6 +588,10 @@ async fn handle_remove_node(
         pipeline.nodes.shift_remove(&node_id);
         pipeline.connections.retain(|conn| conn.from_node != node_id && conn.to_node != node_id);
     }
+    // Release any in-flight reservation: removing a node mid-creation
+    // would otherwise leave the id wedged until the state forwarder
+    // observed a Failed transition for the cancelled creation.
+    session.release_node_id(&node_id).await;
 
     // Broadcast event to all clients
     let event = ApiEvent {

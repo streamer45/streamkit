@@ -1791,20 +1791,16 @@ impl DynamicEngine {
                 self.engine_operations_counter.add(1, &[KeyValue::new("operation", "add_node")]);
                 tracing::info!(name = %node_id, kind = %kind, "Adding node to graph (async)");
 
-                // Reject duplicate node IDs — the node already exists in
-                // node_states (either Creating or fully initialized).
-                //
-                // KNOWN GAP: this rejection is logged but no event is
-                // emitted to the originating WS client.  The WS handler
-                // returned `Success` (the request was accepted) and the
-                // client receives neither `NodeAdded` nor
-                // `NodeStateChanged(Failed)` for this id — broadcasting a
-                // synthetic Failed would clobber the pre-existing
-                // legitimate entry.  Most cases are caught by the WS
-                // handler's best-effort `pipeline.nodes` pre-check; the
-                // race only matters for two clients adding the same id
-                // simultaneously, which the UI's auto-generated
-                // `<kind>_<n>` naming makes vanishingly rare in practice.
+                // Defence-in-depth duplicate guard.  The WebSocket
+                // handler holds the session's `pipeline` + `creating_nodes`
+                // locks atomically and rejects duplicate ids before
+                // they ever reach this actor (see `handle_add_node` in
+                // `apps/skit/src/websocket_handlers.rs`).  This branch
+                // therefore only fires under abnormal control-plane
+                // paths (e.g. internal callers that bypass the WS
+                // layer).  In that case we drop the message and log;
+                // emitting a synthetic Failed here would clobber the
+                // legitimate node's state.
                 if self.node_states.contains_key(&node_id) {
                     tracing::error!(
                         node_id = %node_id,

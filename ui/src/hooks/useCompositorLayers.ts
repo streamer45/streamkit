@@ -143,6 +143,42 @@ export interface UseCompositorLayersResult {
   keyboardDeps: CompositorKeyboardDeps;
 }
 
+/**
+ * Promote auto-stub (`serverOnly`) layers to real layers when the user
+ * touches them.  A `serverOnly` layer is a stub materialized by
+ * `mapServerLayers` when the server reports a resolved layout for a
+ * pin that has no explicit `properties.layers` entry yet (e.g. a
+ * freshly connected source).  `serializeLayers` intentionally skips
+ * `serverOnly` layers so the server can keep resolving their
+ * geometry; that means dragging such a layer would never reach the
+ * server and the next view-data sync would revert the visual change.
+ * Clearing the flag the moment the user edits flips the layer into
+ * "explicit config" mode so the edit serialises and persists.
+ *
+ * Only promote layers whose object identity actually changed in this
+ * commit — callers mutate via `layers.map(l => l.id === id ?
+ * {...l, ...patch} : l)` which preserves the identity of unchanged
+ * entries.  Promoting *every* serverOnly layer on every commit would
+ * lock the server out of aspect-fitting sources the user never
+ * touched.
+ *
+ * Exported for unit-testing the per-layer scoping; not part of the
+ * public hook API.
+ */
+export const promoteEditedServerOnly = (
+  current: LayerState[],
+  next: LayerState[]
+): LayerState[] => {
+  const currentById = new Map(current.map((l) => [l.id, l]));
+  return next.map((l) => {
+    if (!l.serverOnly) return l;
+    if (currentById.get(l.id) === l) return l;
+    const cleared = { ...l };
+    delete cleared.serverOnly;
+    return cleared;
+  });
+};
+
 export const useCompositorLayers = (
   options: UseCompositorLayersOptions
 ): UseCompositorLayersResult => {
@@ -180,27 +216,7 @@ export const useCompositorLayers = (
     (action: React.SetStateAction<LayerState[]>) => {
       const current = getLayersFromStore(store);
       const next = typeof action === 'function' ? action(current) : action;
-      // Promote auto-stubs to real layers when the user touches them.
-      // `setLayers` is only called from user-driven mutations
-      // (compositorDragResize, compositorKeyboard, compositorOverlays);
-      // sync-from-props and server-driven sync write directly via
-      // `setLayersInStore`.  A `serverOnly` layer is a stub
-      // materialized by `mapServerLayers` when the server reports a
-      // resolved layout for a pin that has no explicit `properties.layers`
-      // entry yet (e.g. a freshly connected source).  `serializeLayers`
-      // intentionally skips `serverOnly` layers so the server can keep
-      // resolving geometry; that means dragging such a layer would
-      // never reach the server and the next view-data sync would
-      // revert the visual change.  Clearing the flag the moment the
-      // user edits flips the layer into "explicit config" mode so the
-      // edit serialises and persists.
-      const promoted = next.map((l) => {
-        if (!l.serverOnly) return l;
-        const cleared = { ...l };
-        delete cleared.serverOnly;
-        return cleared;
-      });
-      setLayersInStore(store, promoted);
+      setLayersInStore(store, promoteEditedServerOnly(current, next));
     },
     [store]
   );

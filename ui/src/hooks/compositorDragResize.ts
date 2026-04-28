@@ -249,8 +249,19 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
       if (state.layerKind === 'video') {
         if (!isZeroDelta) {
           setLayers((prev) => prev.map((l) => (l.id === updated.id ? updated : l)));
-          const newLayers = layersRef.current.map((l) => (l.id === updated.id ? updated : l));
-          throttledConfigChange?.(newLayers);
+          // Send the post-commit store state, NOT the closure-captured
+          // `updated`.  When the dragged layer is an auto-stub
+          // (`serverOnly: true`), `setLayers`' promotion logic clears
+          // the flag in the store, but `updated` still carries it from
+          // pointerdown's snapshot.  `serializeLayers` skips
+          // `serverOnly` layers — so reconstructing the array from
+          // `updated` would silently drop the user's first edit, the
+          // server would keep aspect-fitting, and the next view-data
+          // tick would snap the layer back.  `layersRef` is updated
+          // synchronously via the store subscription in
+          // useCompositorLayers, so by this line it already reflects
+          // the cleared state.
+          throttledConfigChange?.(layersRef.current);
         }
       } else if (state.layerKind === 'text') {
         if (!isZeroDelta) {

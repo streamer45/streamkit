@@ -203,14 +203,13 @@ const MonitorViewContent: React.FC = () => {
     [selectedSessionId, updateNodePosition]
   );
   const [selectedNodes, setSelectedNodes] = useState<string[]>([]);
-  // Mirror selection into a ref so the topology effect can preserve
-  // freshly-set selection (e.g. a just-dropped draft) without listing
-  // selectedNodes in its dep array — listing it would re-run the
-  // effect on every selection change.
-  const selectedNodesRef = useRef(selectedNodes);
-  React.useLayoutEffect(() => {
-    selectedNodesRef.current = selectedNodes;
-  }, [selectedNodes]);
+  // IDs of drafts that were just dropped on the canvas and should be
+  // marked `selected: true` on their first appearance in newNodes — so
+  // React Flow's own selection state picks them up via
+  // useOnSelectionChange and the inspector opens automatically.  The
+  // topology effect reads and clears entries; once cleared, selection
+  // is fully owned by React Flow.
+  const newDraftSelectionRef = useRef<Set<string>>(new Set());
   const [rightPaneView, setRightPaneView] = useState<'yaml' | 'inspector' | 'telemetry'>('yaml');
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [sessionToDelete, setSessionToDelete] = useState<string | null>(null);
@@ -224,20 +223,18 @@ const MonitorViewContent: React.FC = () => {
   );
   const [type, setType] = useDnD();
   const toast = useToast();
-  // Cache for positions of nodes that are being added (to preserve drop location)
-  const pendingNodePositions = React.useRef<Map<string, { x: number; y: number }>>(new Map());
 
   // ── Draft nodes ───────────────────────────────────────────────────────
   // See module-level DraftNode type for the full lifecycle.
   const [draftNodes, setDraftNodes] = useState<Map<string, DraftNode>>(new Map());
+  // Latest-snapshot ref for the many places that need to peek at drafts
+  // from inside callbacks/effects without taking a dependency on
+  // `draftNodes` (which would cause unwanted re-running).  The
+  // *modifying* paths (handleDraftParamChange / promoteDraft) commit
+  // via the functional `setDraftNodes((prev) => ...)` form so they
+  // always read the freshest state — the ref is for read-only routing.
   const draftNodesRef = useRef(draftNodes);
-  // Use useLayoutEffect so the ref is synchronised before the next paint
-  // (and therefore before any subsequent event handler runs).  The plain
-  // useEffect ran after paint, which left a window where two rapid
-  // edits to different param keys could each read the same stale
-  // snapshot of `draft.params` and the second setDraftNodes updater
-  // would silently overwrite the first's edit.
-  React.useLayoutEffect(() => {
+  useEffect(() => {
     draftNodesRef.current = draftNodes;
   }, [draftNodes]);
   // Auto-select session from navigation state (e.g., from Stream view)
@@ -496,48 +493,30 @@ const MonitorViewContent: React.FC = () => {
     if (changed) setDraftNodes(next);
   }, [pipeline, draftNodes]);
 
-  // Revert a promoted draft when the engine reports `Failed` for it.
-  // The actor emits NodeStateChanged(Failed) without ever emitting
-  // NodeAdded, so the success-cleanup effect above never fires for
-  // failures — the draft stays up and editable, the engine's reason
-  // is shown via toast, and we send `removenode` so a retry with the
-  // same id doesn't trip the actor's duplicate-id guard.
+  // Per-promotion failure subscriptions.  When `promoteDraft` calls
+  // `addNode`, it also subscribes to that node's state atom so a
+  // subsequent `NodeStateChanged(Failed)` (without a matching
+  // `NodeAdded`) reverts the draft to editable instead of leaving it
+  // stuck in the in-flight spinner.  The subscription lives only as
+  // long as the draft is in flight; the reaper effect below drops any
+  // unsub whose draft has been removed or cleared from in-flight.
+  const failureUnsubsRef = useRef<Map<string, () => void>>(new Map());
   useEffect(() => {
-    if (!selectedSessionId) return;
-    const unsubs: Array<() => void> = [];
-    for (const [id, draft] of draftNodes) {
-      if (draft.promotedAt === undefined) continue;
-      const stateAtom = nodeStateAtom(nodeKey(selectedSessionId, id));
-      const handle = () => {
-        const reason = nodeStateFailedReason(defaultSessionStore.get(stateAtom));
-        if (reason === undefined) return;
-        const cur = draftNodesRef.current.get(id);
-        if (!cur || cur.promotedAt === undefined) return;
-        const missing = computeMissingRequired(cur.kind, cur.params, nodeDefinitions);
-        removeNode(id);
-        setDraftNodes((prev) => {
-          const c = prev.get(id);
-          if (!c || c.promotedAt === undefined) return prev;
-          const next = new Map(prev);
-          next.set(id, {
-            ...c,
-            missingRequired: missing,
-            promotedAt: undefined,
-          });
-          return next;
-        });
-        toast.error(`${id} failed: ${reason}`);
-      };
-      // The state may already be present at subscription time (e.g.
-      // the engine rejected creation before this effect re-ran after
-      // the promote setDraftNodes commit).
-      handle();
-      unsubs.push(defaultSessionStore.sub(stateAtom, handle));
+    for (const [id, unsub] of failureUnsubsRef.current) {
+      const d = draftNodes.get(id);
+      if (!d || d.promotedAt === undefined) {
+        unsub();
+        failureUnsubsRef.current.delete(id);
+      }
     }
-    return () => {
-      for (const u of unsubs) u();
-    };
-  }, [draftNodes, selectedSessionId, nodeDefinitions, removeNode, toast]);
+  }, [draftNodes]);
+  useEffect(
+    () => () => {
+      for (const unsub of failureUnsubsRef.current.values()) unsub();
+      failureUnsubsRef.current.clear();
+    },
+    []
+  );
 
   // Discard drafts when the user switches away from the session they
   // were authored on — they're tied to that canvas's coordinate space
@@ -549,14 +528,20 @@ const MonitorViewContent: React.FC = () => {
   // Jotai atom entries; without this the atomFamily would accumulate
   // entries keyed by `<oldSessionId>\0<draftNodeId>` across many
   // session switches.
-  const prevDraftSessionIdRef = useRef<string | null>(selectedSessionId);
+  // Initialised to `null` so the first commit (which always sets the
+  // ref to the current `selectedSessionId`) is treated as a baseline,
+  // not a session change.  Otherwise the effect would fire on initial
+  // mount and call `clearNodeParams(id, selectedSessionId)` for the
+  // very session it was just initialised from — a no-op today
+  // (`draftNodesRef.current` is empty on first mount) but logically
+  // confusing if drafts ever ride along with auto-selected sessions.
+  const prevDraftSessionIdRef = useRef<string | null>(null);
   React.useLayoutEffect(() => {
     const prevSession = prevDraftSessionIdRef.current;
     prevDraftSessionIdRef.current = selectedSessionId;
-    if (prevSession !== null) {
-      for (const id of draftNodesRef.current.keys()) {
-        clearNodeParams(id, prevSession);
-      }
+    if (prevSession === null || prevSession === selectedSessionId) return;
+    for (const id of draftNodesRef.current.keys()) {
+      clearNodeParams(id, prevSession);
     }
     setDraftNodes((prev) => (prev.size === 0 ? prev : new Map()));
   }, [selectedSessionId]);
@@ -716,14 +701,6 @@ const MonitorViewContent: React.FC = () => {
   // but they must be persisted correctly for promotion.
   const handleDraftParamChange = useCallback(
     (nodeId: string, key: string, value: unknown) => {
-      const draft = draftNodesRef.current.get(nodeId);
-      if (!draft) return;
-      // While the draft is in flight (Add clicked, awaiting nodeadded
-      // / Failed) the inspector inputs are disabled — see InspectorPane
-      // `isInflight` — so this callback shouldn't fire then, but guard
-      // defensively in case any other widget routes a change here.
-      if (draft.promotedAt !== undefined) return;
-
       // Match live-node validation behaviour: out-of-range numbers,
       // malformed enums, etc. are surfaced immediately.  Required-but-
       // empty fields are deliberately not validation errors here —
@@ -744,11 +721,18 @@ const MonitorViewContent: React.FC = () => {
         writeNodeParam(nodeId, key, value, selectedSessionId ?? undefined);
       }
 
-      const newParams = mergeDraftParam(draft.params, key, value);
-      const missing = computeMissingRequired(draft.kind, newParams, nodeDefinitions);
+      // Read-modify-write inside the functional updater so two rapid
+      // edits to different keys each see the previous one's commit.
+      // While the draft is in flight (Add clicked, awaiting nodeadded /
+      // Failed) the inspector inputs are disabled, so this callback
+      // shouldn't fire then — but the inflight check is repeated here
+      // as a defensive guard against widgets routing changes through
+      // alternate paths.
       setDraftNodes((prev) => {
         const c = prev.get(nodeId);
-        if (!c) return prev;
+        if (!c || c.promotedAt !== undefined) return prev;
+        const newParams = mergeDraftParam(c.params, key, value);
+        const missing = computeMissingRequired(c.kind, newParams, nodeDefinitions);
         const next = new Map(prev);
         next.set(nodeId, { ...c, params: newParams, missingRequired: missing });
         return next;
@@ -770,6 +754,53 @@ const MonitorViewContent: React.FC = () => {
       if (draft.promotedAt !== undefined) return;
       const missing = computeMissingRequired(draft.kind, draft.params, nodeDefinitions);
       if (missing.length > 0) return;
+
+      // Subscribe to the engine's state atom *before* sending addNode so
+      // a synchronously-emitted Failed (e.g. duplicate-id rejection) is
+      // not missed.  Engine success path emits NodeAdded which triggers
+      // the success-cleanup effect; failure path emits
+      // NodeStateChanged(Failed), which the handler below catches to
+      // revert the draft to editable.
+      if (selectedSessionId) {
+        const stateAtom = nodeStateAtom(nodeKey(selectedSessionId, nodeId));
+        const handle = () => {
+          const reason = nodeStateFailedReason(defaultSessionStore.get(stateAtom));
+          if (reason === undefined) return;
+          // Tear down the subscription before any state writes so a
+          // re-promote with the same id can subscribe afresh without
+          // double-firing this handler.
+          const unsubExisting = failureUnsubsRef.current.get(nodeId);
+          if (unsubExisting) {
+            unsubExisting();
+            failureUnsubsRef.current.delete(nodeId);
+          }
+          removeNode(nodeId);
+          setDraftNodes((prev) => {
+            const c = prev.get(nodeId);
+            if (!c || c.promotedAt === undefined) return prev;
+            const next = new Map(prev);
+            next.set(nodeId, {
+              ...c,
+              missingRequired: computeMissingRequired(c.kind, c.params, nodeDefinitions),
+              promotedAt: undefined,
+            });
+            return next;
+          });
+          toast.error(`${nodeId} failed: ${reason}`);
+        };
+        const unsub = defaultSessionStore.sub(stateAtom, handle);
+        // Drop any stale subscription from a previous failed promotion
+        // of the same id before storing the new one.
+        const prior = failureUnsubsRef.current.get(nodeId);
+        if (prior) prior();
+        failureUnsubsRef.current.set(nodeId, unsub);
+        // jotai's sub() does not fire for the current value, so check
+        // once in case the atom was already populated (e.g. the engine
+        // rejected an earlier addNode and the user is retrying with
+        // the same id without an intervening removeNode).
+        handle();
+      }
+
       addNode(nodeId, draft.kind, draft.params);
       setDraftNodes((prev) => {
         const c = prev.get(nodeId);
@@ -783,7 +814,7 @@ const MonitorViewContent: React.FC = () => {
         return next;
       });
     },
-    [addNode, nodeDefinitions]
+    [addNode, nodeDefinitions, selectedSessionId, removeNode, toast]
   );
 
   // Ref indirection: the topology effect builds onPromote arrows per
@@ -924,32 +955,19 @@ const MonitorViewContent: React.FC = () => {
   // Track previous topoKey to avoid unnecessary rebuilds
   const prevTopoKeyForTopologyRef = useRef<string>('');
 
-  // Helper: Resolve node position from various sources (previous, pending, saved, or default)
+  // Helper: Resolve node position from previous render, the persistent
+  // position store, or default to origin.  Drop coordinates for newly
+  // committed nodes are written to the position store directly in
+  // `onDrop`, so by the time the topology effect runs after the
+  // server's `nodeadded`, `savedPositions` already contains them.
   const resolveNodePosition = useCallback(
     (
       nodeName: string,
       prevPositions: Map<string, { x: number; y: number }>,
       savedPositions: Record<string, { x: number; y: number }>
-    ): { position: { x: number; y: number }; fromPending: boolean } => {
-      let pos = prevPositions.get(nodeName);
-      let fromPending = false;
-
-      // Check pending positions from node drops
-      if (!pos && pendingNodePositions.current.has(nodeName)) {
-        pos = pendingNodePositions.current.get(nodeName)!;
-        pendingNodePositions.current.delete(nodeName);
-        fromPending = true;
-      }
-
-      // Check saved positions from position store
-      if (!pos && savedPositions[nodeName]) {
-        pos = savedPositions[nodeName];
-      }
-
-      return {
-        position: pos ?? { x: 0, y: 0 },
-        fromPending,
-      };
+    ): { position: { x: number; y: number } } => {
+      const pos = prevPositions.get(nodeName) ?? savedPositions[nodeName];
+      return { position: pos ?? { x: 0, y: 0 } };
     },
     []
   );
@@ -1160,14 +1178,9 @@ const MonitorViewContent: React.FC = () => {
     // useOnSelectionChange fires with [] and the inspector pane snaps
     // back to YAML — particularly noticeable when typing into a draft
     // adds a new param key (which does change topoKey and triggers a
-    // rebuild).  Also include selectedNodesRef so a just-dropped draft
-    // (where setSelectedNodes was called before the rebuild and React
-    // Flow has not yet committed the selection) still renders with a
-    // selection ring on its first paint.
-    const prevSelected = new Set<string>([
-      ...nodes.filter((n) => n.selected).map((n) => n.id),
-      ...selectedNodesRef.current,
-    ]);
+    // rebuild).  Just-dropped drafts (which don't appear in `nodes`
+    // yet) are handled separately via `newDraftSelectionRef` below.
+    const prevSelected = new Set<string>(nodes.filter((n) => n.selected).map((n) => n.id));
 
     // Get saved positions from position store
     const savedPositions = selectedSessionId ? getNodePositions(selectedSessionId) : {};
@@ -1177,17 +1190,7 @@ const MonitorViewContent: React.FC = () => {
       const apiNode = pipeline!.nodes[nodeName];
       if (!apiNode) continue;
 
-      // Resolve node position from various sources
-      const { position: pos, fromPending: positionFromPending } = resolveNodePosition(
-        nodeName,
-        prevPositions,
-        savedPositions
-      );
-
-      // Save position to position store if it came from pending (newly dropped)
-      if (positionFromPending && selectedSessionId) {
-        updateNodePosition(selectedSessionId, nodeName, pos);
-      }
+      const { position: pos } = resolveNodePosition(nodeName, prevPositions, savedPositions);
 
       // Use real-time state from Jotai atom if available, otherwise use pipeline state.
       // Read directly from the default store (non-reactive) since the topology effect
@@ -1283,6 +1286,12 @@ const MonitorViewContent: React.FC = () => {
           onPromote: () => stablePromoteDraftRef.current(draftId),
         },
       });
+      // Just-dropped draft: mark it selected so React Flow opens the
+      // inspector via useOnSelectionChange on the next commit.
+      if (newDraftSelectionRef.current.has(draftId)) {
+        node.selected = true;
+        newDraftSelectionRef.current.delete(draftId);
+      }
       newNodes.push(node);
     }
 
@@ -1473,15 +1482,23 @@ const MonitorViewContent: React.FC = () => {
         next.set(nodeId, { kind, params, position, missingRequired: missing });
         return next;
       });
-      setSelectedNodes([nodeId]);
+      // Hand the next topology rebuild a hint to mark this draft
+      // `selected: true`; React Flow then drives setSelectedNodes via
+      // useOnSelectionChange.
+      newDraftSelectionRef.current.add(nodeId);
       setRightPaneView('inspector');
       if (rightCollapsed) {
         setRightCollapsed(false);
       }
       toast.info(`Configure ${missing.join(', ')} before this node is added to the pipeline`);
     } else {
-      // All required params satisfied — commit immediately.
-      pendingNodePositions.current.set(nodeId, position);
+      // All required params satisfied — commit immediately.  Persist the
+      // drop coordinate to the position store so the topology rebuild
+      // (triggered by `nodeadded`) reads it back and renders the new
+      // node where the user dropped it.
+      if (selectedSessionId) {
+        updateNodePosition(selectedSessionId, nodeId, position);
+      }
       addNode(nodeId, kind, params);
     }
 
