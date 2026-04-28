@@ -144,26 +144,9 @@ export interface UseCompositorLayersResult {
 }
 
 /**
- * Promote auto-stub (`serverOnly`) layers to real layers when the user
- * touches them.  A `serverOnly` layer is a stub materialized by
- * `mapServerLayers` when the server reports a resolved layout for a
- * pin that has no explicit `properties.layers` entry yet (e.g. a
- * freshly connected source).  `serializeLayers` intentionally skips
- * `serverOnly` layers so the server can keep resolving their
- * geometry; that means dragging such a layer would never reach the
- * server and the next view-data sync would revert the visual change.
- * Clearing the flag the moment the user edits flips the layer into
- * "explicit config" mode so the edit serialises and persists.
- *
- * Only promote layers whose object identity actually changed in this
- * commit — callers mutate via `layers.map(l => l.id === id ?
- * {...l, ...patch} : l)` which preserves the identity of unchanged
- * entries.  Promoting *every* serverOnly layer on every commit would
- * lock the server out of aspect-fitting sources the user never
- * touched.
- *
- * Exported for unit-testing the per-layer scoping; not part of the
- * public hook API.
+ * Clear `serverOnly` on layers the caller actually mutated (object
+ * identity differs from current).  Untouched stubs keep the flag so
+ * the server keeps aspect-fitting sources the user never edited.
  */
 export const promoteEditedServerOnly = (
   current: LayerState[],

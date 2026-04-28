@@ -96,33 +96,18 @@ import { nodeTypes, defaultEdgeOptions } from '@/utils/reactFlowDefaults';
 // Memoized view title to prevent re-renders during drag
 const MonitorViewTitle = React.memo(() => <ViewTitle>Monitor</ViewTitle>);
 
-// Nodes that have been dropped on the canvas but not yet committed to
-// the engine.  Drafts live entirely in the UI; the user fills in
-// fields freely (drafts never round-trip through `tunenode`) and then
-// presses an explicit "Add to pipeline" button to promote — there is
-// no auto-promote on field-filled, no debounce, no timer.  An
-// explicit click is the *only* way a draft becomes a real node, which
-// keeps the UX deterministic ("typing into the URL didn't suddenly
-// fire creation") and removes a class of races between keystrokes
-// and the engine.
+// UI-only node dropped on the canvas, promoted to a real node on
+// explicit "Add to pipeline" click — never auto-promoted on edit.
 export type DraftNode = {
   kind: string;
   params: Record<string, unknown>;
   position: { x: number; y: number };
   missingRequired: string[];
-  /** Set the moment the user clicks "Add to pipeline".  While set, the
-   * draft is in flight: the inspector shows a "creating on server" spinner,
-   * the button is disabled, and edits accumulate locally so they can be
-   * forwarded as a post-create tune once the engine confirms.  Cleared
-   * back to undefined on `NodeStateChanged(Failed)` so the user can
-   * fix the input and click again. */
+  /** Timestamp when "Add to pipeline" was clicked; cleared on Failed. */
   promotedAt?: number;
 };
 
-// Extract the failure reason from a `NodeState::Failed` value, if it is
-// one.  Returns undefined for any other variant of the NodeState union
-// (the unit variants like `Creating`/`Ready` are strings; data variants
-// are single-key objects like `{ Failed: { reason } }`).
+// Returns the failure reason for `NodeState::Failed`, else undefined.
 const nodeStateFailedReason = (s: NodeState | null | undefined): string | undefined => {
   if (s && typeof s === 'object' && 'Failed' in s) {
     const f = (s as { Failed: { reason?: string } }).Failed;
@@ -147,13 +132,8 @@ const MonitorViewContent: React.FC = () => {
   const [nodes, setNodes, onNodesChangeInternal] = useNodesState<RFNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
-  // ── Low-priority dimension changes ────────────────────────────────────
-  // ReactFlow fires onNodesChange with 'dimensions' type for each node
-  // after mount measurement.  These are internal bookkeeping (the nodes
-  // are already visible) so we wrap them in startTransition to let React
-  // schedule them at lower priority rather than blocking the main thread.
-  // Interactive changes (select, drag, remove) bypass this and apply
-  // immediately.
+  // Defer 'dimensions' changes (post-mount measurement) via startTransition
+  // so they don't block interactive changes.
   const onNodesChangeBatched = useCallback(
     (changes: NodeChange[]) => {
       const immediate: NodeChange[] = [];
@@ -203,12 +183,8 @@ const MonitorViewContent: React.FC = () => {
     [selectedSessionId, updateNodePosition]
   );
   const [selectedNodes, setSelectedNodes] = useState<string[]>([]);
-  // IDs of drafts that were just dropped on the canvas and should be
-  // marked `selected: true` on their first appearance in newNodes — so
-  // React Flow's own selection state picks them up via
-  // useOnSelectionChange and the inspector opens automatically.  The
-  // topology effect reads and clears entries; once cleared, selection
-  // is fully owned by React Flow.
+  // Drafts to mark selected on their first topology rebuild; cleared
+  // once applied so React Flow owns selection thereafter.
   const newDraftSelectionRef = useRef<Set<string>>(new Set());
   const [rightPaneView, setRightPaneView] = useState<'yaml' | 'inspector' | 'telemetry'>('yaml');
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -227,12 +203,8 @@ const MonitorViewContent: React.FC = () => {
   // ── Draft nodes ───────────────────────────────────────────────────────
   // See module-level DraftNode type for the full lifecycle.
   const [draftNodes, setDraftNodes] = useState<Map<string, DraftNode>>(new Map());
-  // Latest-snapshot ref for the many places that need to peek at drafts
-  // from inside callbacks/effects without taking a dependency on
-  // `draftNodes` (which would cause unwanted re-running).  The
-  // *modifying* paths (handleDraftParamChange / promoteDraft) commit
-  // via the functional `setDraftNodes((prev) => ...)` form so they
-  // always read the freshest state — the ref is for read-only routing.
+  // Read-only snapshot for callbacks that mustn't depend on `draftNodes`.
+  // Modifying paths use functional `setDraftNodes((prev) => ...)`.
   const draftNodesRef = useRef(draftNodes);
   useEffect(() => {
     draftNodesRef.current = draftNodes;
@@ -295,11 +267,8 @@ const MonitorViewContent: React.FC = () => {
     },
   });
 
-  // Keep YAML view as default when nodes are selected.  Inspector only
-  // opens on double-click — except for drafts, which need the
-  // inspector to be visible so the user can fill the missing required
-  // fields.  We read drafts via the ref so the effect runs only when
-  // the selection changes, not on every keystroke into a draft.
+  // YAML by default; inspector opens on double-click — except drafts,
+  // which need the inspector to fill required fields.
   useEffect(() => {
     if (selectedNodes.length === 1 && draftNodesRef.current.has(selectedNodes[0])) {
       setRightPaneView('inspector');
@@ -336,11 +305,7 @@ const MonitorViewContent: React.FC = () => {
     const prev = selectedNodeRef.current;
     const prevData = (prev?.data as Record<string, unknown> | undefined) ?? undefined;
     const nextData = selectedNode.data as Record<string, unknown>;
-    // Check if meaningful properties have changed (not just position).
-    // `draft` is included so the inspector re-renders when the draft's
-    // missingRequired list changes (e.g. promotion timeout reverts a
-    // draft from `[]` back to the schema's required keys).  Without
-    // this, the DraftHint banner would show stale missing-required.
+    // Recompute only when meaningful data changes — not on every position update.
     if (
       !prev ||
       prev.id !== selectedNode.id ||
@@ -430,18 +395,11 @@ const MonitorViewContent: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- setNeedsAutoLayout/setNeedsFit are stable useState setters declared later
   }, [selectedSessionId, isLoadingSessions, sessions, getNodePositions]);
 
-  // Pipeline data for the selected session is fetched once by useSession
-  // (staleTime: Infinity) and kept current by live WebSocket events
-  // (nodeadded, noderemoved, connectionadded, connectionremoved).
-  // No periodic polling is needed — it would only introduce stale REST
-  // data that overwrites live state and reverts local edits.
-
-  // Subscribe to selected session.
-  // nodeStates is intentionally NOT consumed from this hook — see the
-  // useNodeStatesSubscription block below for the reasoning.
+  // Subscribe to selected session.  Pipeline is fetched once and kept
+  // current by live WS events — no polling.  nodeStates/nodeStats are
+  // consumed from session store directly via NodeStateIndicator.
   const {
     pipeline,
-    // nodeStats not used here - NodeStateIndicator fetches directly from session store
     isConnected: sessionIsConnected,
     tuneNode,
     tuneNodeConfig,
@@ -451,9 +409,7 @@ const MonitorViewContent: React.FC = () => {
     disconnectPins,
   } = useSession(selectedSessionId);
 
-  // Lightweight hook for dot-notation path updates: deep-merges locally
-  // into the atom and sends only the partial to the server (unlike
-  // useSession.tuneNodeConfig which shallow-merges and sends as-is).
+  // Dot-path-aware deep merge for nested params (vs useSession's shallow merge).
   const { tuneNodeConfig: tuneNodeConfigDeep } = useTuneNode(selectedSessionId);
 
   // Use session-specific connection status if a session is selected, otherwise use global
@@ -472,34 +428,22 @@ const MonitorViewContent: React.FC = () => {
   const pipelineRef = useRef(pipeline);
   pipelineRef.current = pipeline;
 
-  // Drop draft once the engine confirms successful creation.  With the
-  // new contract (see apps/skit/src/session.rs), `pipeline.nodes` only
-  // gets the entry after the engine actor's success path emits a
-  // NodeAddedNotification — i.e. after the plugin's constructor *and*
-  // initialize_node both returned Ok.  So the appearance of an entry
-  // here is itself the success signal; no state-watcher needed.
+  // Drop drafts whose ids now appear in pipeline.nodes — the engine's
+  // node-added forwarder only inserts after successful creation.
   useEffect(() => {
     if (draftNodes.size === 0) return;
     let changed = false;
     const next = new Map(draftNodes);
     for (const id of draftNodes.keys()) {
       if (!pipeline?.nodes[id]) continue;
-      // Inspector inputs are disabled while `isCreating`, so there is
-      // nothing to flush — the params on the wire match what the user
-      // last saw.  Just drop the draft.
       next.delete(id);
       changed = true;
     }
     if (changed) setDraftNodes(next);
   }, [pipeline, draftNodes]);
 
-  // Per-promotion failure subscriptions.  When `promoteDraft` calls
-  // `addNode`, it also subscribes to that node's state atom so a
-  // subsequent `NodeStateChanged(Failed)` (without a matching
-  // `NodeAdded`) reverts the draft to editable instead of leaving it
-  // stuck in the in-flight spinner.  The subscription lives only as
-  // long as the draft is in flight; the reaper effect below drops any
-  // unsub whose draft has been removed or cleared from in-flight.
+  // Per-promotion failure subscriptions, set up by promoteDraft and
+  // reaped here when the draft is dropped or its in-flight flag clears.
   const failureUnsubsRef = useRef<Map<string, () => void>>(new Map());
   useEffect(() => {
     for (const [id, unsub] of failureUnsubsRef.current) {
@@ -518,23 +462,10 @@ const MonitorViewContent: React.FC = () => {
     []
   );
 
-  // Discard drafts when the user switches away from the session they
-  // were authored on — they're tied to that canvas's coordinate space
-  // and naming context.  Use useLayoutEffect so the clear commits
-  // before the browser paints; otherwise the topology effect would
-  // briefly render the previous session's drafts on the new session's
-  // canvas in the frame between the session switch and the cleanup.
-  // Track the previous session id so we can clear the corresponding
-  // Jotai atom entries; without this the atomFamily would accumulate
-  // entries keyed by `<oldSessionId>\0<draftNodeId>` across many
-  // session switches.
-  // Initialised to `null` so the first commit (which always sets the
-  // ref to the current `selectedSessionId`) is treated as a baseline,
-  // not a session change.  Otherwise the effect would fire on initial
-  // mount and call `clearNodeParams(id, selectedSessionId)` for the
-  // very session it was just initialised from — a no-op today
-  // (`draftNodesRef.current` is empty on first mount) but logically
-  // confusing if drafts ever ride along with auto-selected sessions.
+  // Discard drafts on session switch — they're tied to the previous
+  // canvas's coords and namespace.  useLayoutEffect to clear before
+  // paint so the topology effect doesn't briefly render them on the
+  // new session's canvas.
   const prevDraftSessionIdRef = useRef<string | null>(null);
   React.useLayoutEffect(() => {
     const prevSession = prevDraftSessionIdRef.current;
@@ -556,21 +487,11 @@ const MonitorViewContent: React.FC = () => {
           .map((c: Connection) => `${c.from_node}:${c.from_pin}>${c.to_node}:${c.to_pin}`)
           .sort()
       : [];
-    // Include runtime schema keys so topology rebuilds when schemas arrive
-    // after the initial build (e.g. Slint property discovery).
-    // NOTE: Only keys are tracked, not content.  If a schema's content changed
-    // for an existing key (hot-reload), the effect would NOT re-run.  This is
-    // intentional — runtime_param_schema() is documented as immutable for the
-    // node's lifetime (see crates/core ProcessorNode trait docs).
+    // Track only schema KEYS (not content): runtime_param_schema is
+    // documented as immutable for the node's lifetime.
     const runtimeKeys = Object.keys(pipeline?.runtime_schemas ?? {}).sort();
-    // Drafts contribute their id, kind, missing-required list, and an
-    // `isCreating` flag (derived from promotedAt) so the canvas
-    // re-renders when the banner needs to switch between "needs
-    // <fields>" / "Add to pipeline" / "creating on server".  Param
-    // keys are intentionally excluded: drafts read their displayed
-    // values from the Jotai atom (writeNodeParam mirrors every
-    // keystroke), so a topology rebuild on every new key would just
-    // churn React.memo for no visible effect.
+    // Draft fingerprint excludes param values — drafts render from
+    // their Jotai atom on each keystroke, no rebuild needed.
     const draftFingerprint = Array.from(draftNodes.entries())
       .map(
         ([id, d]) =>
@@ -601,15 +522,9 @@ const MonitorViewContent: React.FC = () => {
     topoKey,
   });
 
-  // When a session is destroyed, the optimistic removal empties the list
-  // before React processes the batched setSelectedSessionId(null) from
-  // handleConfirmQuickDelete.  Eagerly clear the selection here so the
-  // badge and "Delete" control disappear immediately.
-  //
-  // The ref prevents this from fighting with the nav-state auto-select:
-  // we only clear selection for sessions that were *previously seen* in
-  // the list and then vanished (i.e., destroyed), not for a session ID
-  // that was just set via navigation state and hasn't appeared yet.
+  // Eagerly clear selection when a previously-seen session vanishes
+  // (destroyed).  The ref guards against clearing a freshly-set
+  // session id (from nav state) that hasn't appeared in the list yet.
   const sessionSeenInListRef = useRef(false);
   if (selectedSession) {
     sessionSeenInListRef.current = true;
@@ -626,22 +541,10 @@ const MonitorViewContent: React.FC = () => {
     }
   }, [selectedSessionId, selectedSession, isLoadingSessions]);
 
-  // Helper to validate parameter value against schema.
-  // Uses the runtime-merged schema when available so that dynamically
-  // discovered parameters are validated correctly.
-  //
-  // Runtime-discovered properties (e.g. from Slint) are stored as flat
-  // keys in the merged schema (e.g. "show") with a `path` field containing
-  // the dot-notation wire path (e.g. "properties.show").  When paramKey is
-  // a dot-path, we search for a property whose `path` matches before
-  // falling back to a flat key lookup.
+  // Validate against the runtime-merged schema if available.  Drafts
+  // fall back to the static schema since the engine hasn't run them yet.
   const validateParamValue = useCallback(
     (nodeId: string, paramKey: string, value: unknown): string | null => {
-      // Drafts have no entry in pipeline.nodes yet — fall back to the
-      // draft's kind so out-of-range numbers / malformed enums are
-      // caught the same way as on live nodes.  Runtime schemas are
-      // not yet available for a draft (the engine hasn't run the
-      // node) so only the static schema participates.
       const node = pipeline?.nodes[nodeId];
       const draft = draftNodesRef.current.get(nodeId);
       const kind = node?.kind ?? draft?.kind;
@@ -650,19 +553,14 @@ const MonitorViewContent: React.FC = () => {
       const nodeDef = nodeDefinitions.find((d) => d.kind === kind);
       if (!nodeDef) return null;
 
-      // Merge runtime schema (if any) so dynamically discovered properties
-      // are included in validation.
       const runtimeSchema = pipeline?.runtime_schemas?.[nodeId] as JsonSchema | undefined;
       const baseSchema = nodeDef.param_schema as JsonSchema | undefined;
       const merged = runtimeSchema ? deepMergeSchemas(baseSchema, runtimeSchema) : baseSchema;
       if (!merged?.properties) return null;
 
-      // 1. Direct flat-key lookup (works for simple keys like "gain_db").
+      // Direct lookup, then dot-path lookup via each property's `path`
+      // field (used by runtime-discovered Slint properties).
       let propSchema = merged.properties[paramKey] as JsonSchemaProperty | undefined;
-
-      // 2. If paramKey is a dot-path (e.g. "properties.show"), search for a
-      //    schema property whose `path` field matches.  Runtime-discovered
-      //    properties use this pattern.
       if (!propSchema && paramKey.includes('.')) {
         for (const entry of Object.values(merged.properties)) {
           if (entry && (entry as JsonSchemaProperty).path === paramKey) {
@@ -679,55 +577,32 @@ const MonitorViewContent: React.FC = () => {
     [pipeline, nodeDefinitions]
   );
 
-  // Ref indirection: keeps stableOnParamChange identity stable across
-  // pipeline reference changes.  validateParamValue changes whenever the
-  // pipeline object changes (e.g. param echo-back from server), but we
-  // don't want that to cascade into new node data objects and break
-  // React.memo on every node component.
+  // Ref keeps stableOnParamChange identity stable across pipeline
+  // changes — preserves React.memo on each node component.
   const validateParamValueRef = useRef(validateParamValue);
   validateParamValueRef.current = validateParamValue;
 
-  // Apply a single param change to a draft node.  This only updates
-  // *local* draft state — promotion happens exclusively via the
-  // explicit `Add to pipeline` button (`promoteDraft` below), never as
-  // a side-effect of typing.  That's why there's no debounce, no
-  // shadow in-flight set, and no "did the last keystroke complete the
-  // required set?" branching here: typing is just typing.
-  //
-  // Nested dot-paths (e.g. compositor's "properties.show") are merged
-  // into params via `buildParamUpdate` so the eventual addNode payload
-  // carries the correct shape.  They contribute nothing to
-  // missing-required because schema `required` is always top-level,
-  // but they must be persisted correctly for promotion.
+  // Update local draft state only.  Promotion is exclusively via the
+  // "Add to pipeline" button, never as a side-effect of typing.
   const handleDraftParamChange = useCallback(
     (nodeId: string, key: string, value: unknown) => {
-      // Match live-node validation behaviour: out-of-range numbers,
-      // malformed enums, etc. are surfaced immediately.  Required-but-
-      // empty fields are deliberately not validation errors here —
-      // they're handled by `computeMissingRequired` and visualised via
-      // the "needs ..." banner — so an empty value for a required
-      // field is allowed through.
+      // Required-but-empty is handled by computeMissingRequired (the
+      // "needs ..." banner), not surfaced as a validation error here.
       const validationError = validateParamValueRef.current(nodeId, key, value);
       if (validationError) {
         toast.error(`Invalid value for ${key}: ${validationError}`);
         return;
       }
-      // Mirror the edit into the per-node Jotai atom so InspectorPane
-      // sees every keystroke immediately rather than freezing on the
-      // first character.
+      // Mirror the edit into the per-node atom so InspectorPane sees
+      // every keystroke without waiting on a render.
       if (key.includes('.')) {
         writeNodeParams(nodeId, buildParamUpdate(key, value), selectedSessionId ?? undefined);
       } else {
         writeNodeParam(nodeId, key, value, selectedSessionId ?? undefined);
       }
 
-      // Read-modify-write inside the functional updater so two rapid
-      // edits to different keys each see the previous one's commit.
-      // While the draft is in flight (Add clicked, awaiting nodeadded /
-      // Failed) the inspector inputs are disabled, so this callback
-      // shouldn't fire then — but the inflight check is repeated here
-      // as a defensive guard against widgets routing changes through
-      // alternate paths.
+      // Functional updater: rapid edits to different keys each see the
+      // previous one's commit.
       setDraftNodes((prev) => {
         const c = prev.get(nodeId);
         if (!c || c.promotedAt !== undefined) return prev;
@@ -741,12 +616,8 @@ const MonitorViewContent: React.FC = () => {
     [nodeDefinitions, selectedSessionId, toast]
   );
 
-  // Promote a draft to a real node — the *only* place `addNode` fires
-  // for drafts.  Wired to the "Add to pipeline" button rendered in the
-  // node's draft banner (see NodeFrame).  No-ops if the draft has
-  // missing required fields or is already in flight; the button's
-  // disabled state mirrors those checks but the runtime guard is
-  // defensive.
+  // The only place `addNode` fires for drafts (wired to the "Add to
+  // pipeline" button on the draft banner).
   const promoteDraft = useCallback(
     (nodeId: string) => {
       const draft = draftNodesRef.current.get(nodeId);
@@ -755,20 +626,13 @@ const MonitorViewContent: React.FC = () => {
       const missing = computeMissingRequired(draft.kind, draft.params, nodeDefinitions);
       if (missing.length > 0) return;
 
-      // Subscribe to the engine's state atom *before* sending addNode so
-      // a synchronously-emitted Failed (e.g. duplicate-id rejection) is
-      // not missed.  Engine success path emits NodeAdded which triggers
-      // the success-cleanup effect; failure path emits
-      // NodeStateChanged(Failed), which the handler below catches to
-      // revert the draft to editable.
+      // Subscribe before addNode so a synchronously-emitted Failed
+      // (e.g. duplicate-id rejection) isn't missed.
       if (selectedSessionId) {
         const stateAtom = nodeStateAtom(nodeKey(selectedSessionId, nodeId));
         const handle = () => {
           const reason = nodeStateFailedReason(defaultSessionStore.get(stateAtom));
           if (reason === undefined) return;
-          // Tear down the subscription before any state writes so a
-          // re-promote with the same id can subscribe afresh without
-          // double-firing this handler.
           const unsubExisting = failureUnsubsRef.current.get(nodeId);
           if (unsubExisting) {
             unsubExisting();
@@ -789,15 +653,11 @@ const MonitorViewContent: React.FC = () => {
           toast.error(`${nodeId} failed: ${reason}`);
         };
         const unsub = defaultSessionStore.sub(stateAtom, handle);
-        // Drop any stale subscription from a previous failed promotion
-        // of the same id before storing the new one.
         const prior = failureUnsubsRef.current.get(nodeId);
         if (prior) prior();
         failureUnsubsRef.current.set(nodeId, unsub);
-        // jotai's sub() does not fire for the current value, so check
-        // once in case the atom was already populated (e.g. the engine
-        // rejected an earlier addNode and the user is retrying with
-        // the same id without an intervening removeNode).
+        // sub() doesn't fire for the current value — check once in
+        // case the atom is already populated (retry of a failed id).
         handle();
       }
 
@@ -817,12 +677,7 @@ const MonitorViewContent: React.FC = () => {
     [addNode, nodeDefinitions, selectedSessionId, removeNode, toast]
   );
 
-  // Ref indirection: the topology effect builds onPromote arrows per
-  // draft, and we don't want a fresh `promoteDraft` identity (e.g.
-  // when nodeDefinitions changes) to invalidate every node's data
-  // object and force a React.memo bypass on every node.  Reading via
-  // the ref keeps the dispatched function up-to-date without
-  // re-creating the arrows.
+  // Stable ref so onPromote arrows don't churn when promoteDraft re-creates.
   const stablePromoteDraftRef = useRef(promoteDraft);
   stablePromoteDraftRef.current = promoteDraft;
 
@@ -866,10 +721,8 @@ const MonitorViewContent: React.FC = () => {
       if (sourceDraft || targetDraft) {
         const draft = sourceDraft ?? targetDraft!;
         const draftId = sourceDraft ? connection.source : connection.target;
-        // After all required fields are filled the draft is held briefly
-        // with `missingRequired: []` until the engine echoes `nodeadded`.
-        // Surface that transitional state explicitly instead of an empty
-        // "Configure   on ..." message.
+        // missingRequired empties before nodeadded echoes; surface the
+        // transitional in-flight state instead of an empty list.
         const message =
           draft.missingRequired.length > 0
             ? `Configure ${draft.missingRequired.join(', ')} on ${draftId} before connecting`
@@ -905,10 +758,8 @@ const MonitorViewContent: React.FC = () => {
     for (const n of deleted) {
       if (draftNodesRef.current.has(n.id)) {
         deletedDrafts.push(n.id);
-        // Drafts are local-only — no `removenode` needed.  Clear the
-        // per-node Jotai atom so the next draft minted with the same
-        // generated id doesn't surface the deleted draft's typed
-        // values as its initial state.
+        // Clear the atom so a new draft with the same generated id
+        // doesn't inherit the deleted draft's typed values.
         clearNodeParams(n.id, selectedSessionId ?? undefined);
         continue;
       }
@@ -927,10 +778,7 @@ const MonitorViewContent: React.FC = () => {
 
   // Deletion is handled by React Flow's built-in delete key via onNodesDelete/onEdgesDelete.
 
-  // Helpers to add nodes with sensible defaults.
-  // Considers both the live pipeline AND in-flight drafts so two drops
-  // of the same kind don't collide and silently overwrite each other in
-  // the drafts map.
+  // Considers both live pipeline and in-flight drafts to avoid collisions.
   const generateName = (kind: string) => {
     const existing = new Set<string>(pipeline ? Object.keys(pipeline.nodes) : []);
     for (const id of draftNodesRef.current.keys()) existing.add(id);
@@ -955,11 +803,8 @@ const MonitorViewContent: React.FC = () => {
   // Track previous topoKey to avoid unnecessary rebuilds
   const prevTopoKeyForTopologyRef = useRef<string>('');
 
-  // Helper: Resolve node position from previous render, the persistent
-  // position store, or default to origin.  Drop coordinates for newly
-  // committed nodes are written to the position store directly in
-  // `onDrop`, so by the time the topology effect runs after the
-  // server's `nodeadded`, `savedPositions` already contains them.
+  // Position lookup: prev render → persistent store → origin.  Drop
+  // coordinates for new nodes are written to the store in `onDrop`.
   const resolveNodePosition = useCallback(
     (
       nodeName: string,
@@ -1172,14 +1017,8 @@ const MonitorViewContent: React.FC = () => {
       : [];
 
     const prevPositions = new Map(nodes.map((n) => [n.id, n.position]));
-    // Preserve React Flow's per-node selection state across topology
-    // rebuilds.  setNodes(newNodes) below replaces the array; without
-    // copying `selected`, all nodes lose their selected flag,
-    // useOnSelectionChange fires with [] and the inspector pane snaps
-    // back to YAML — particularly noticeable when typing into a draft
-    // adds a new param key (which does change topoKey and triggers a
-    // rebuild).  Just-dropped drafts (which don't appear in `nodes`
-    // yet) are handled separately via `newDraftSelectionRef` below.
+    // setNodes(newNodes) replaces the array, so `selected` is lost
+    // unless we re-apply it.  Fresh drafts use newDraftSelectionRef.
     const prevSelected = new Set<string>(nodes.filter((n) => n.selected).map((n) => n.id));
 
     // Get saved positions from position store
@@ -1245,26 +1084,17 @@ const MonitorViewContent: React.FC = () => {
       newNodes.push(node);
     }
 
-    // Append draft nodes (UI-only, not yet sent to engine).  Drafts use
-    // the same buildNodeObject path with a synthetic apiNode so they get
-    // the same React Flow node type, dynamic-pin support, and inspector
-    // integration as live nodes.
+    // Append draft nodes (UI-only, not yet sent to engine).
     for (const [draftId, draft] of draftNodes) {
       const draftDef = defByKind.get(draft.kind);
       const draftBaseInputs = draftDef?.inputs ?? [];
       const draftBaseOutputs = draftDef?.outputs ?? [];
-      // Drafts have no engine-side state, so dynamic pins are just the
-      // template; no incoming connections to reconstruct.
+      // No engine state yet → use template pins, skip dynamic-pin reconstruction.
       const draftFinalInputs = draftBaseInputs;
       const draftFinalOutputs = draftBaseOutputs;
-      // Honour the user's drag — `draft.position` is just the original
-      // drop coordinate.  Topology rebuilds (e.g. when missingRequired
-      // shrinks on the first keystroke) would otherwise snap the draft
-      // back to that drop point.
+      // Prefer prev/saved position over draft.position so topology
+      // rebuilds don't snap back to the original drop point after a drag.
       const draftPos = prevPositions.get(draftId) ?? savedPositions[draftId] ?? draft.position;
-      // No live state on a draft — the node does not exist in the
-      // engine yet.  NodeFrame ignores `state` when `draft` is set
-      // (it shows the draft banner instead of the state indicator).
       const node = buildNodeObject({
         nodeName: draftId,
         apiNode: {
@@ -1286,8 +1116,7 @@ const MonitorViewContent: React.FC = () => {
           onPromote: () => stablePromoteDraftRef.current(draftId),
         },
       });
-      // Just-dropped draft: mark it selected so React Flow opens the
-      // inspector via useOnSelectionChange on the next commit.
+      // Just-dropped draft: mark selected so the inspector opens.
       if (newDraftSelectionRef.current.has(draftId)) {
         node.selected = true;
         newDraftSelectionRef.current.delete(draftId);
@@ -1321,10 +1150,7 @@ const MonitorViewContent: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [topoKey, defByKind, selectedSessionId, tuneNode]);
 
-  // Stable callback for param changes - always sends directly to server
-  // (or, for drafts, updates local draft state and possibly promotes).
-  // Uses ref indirection for validateParamValue to keep identity stable
-  // across pipeline reference changes (see validateParamValueRef above).
+  // Stable param-change callback: routes to draft state or to server.
   const stableOnParamChange = useCallback(
     (nodeId: string, paramName: string, value: unknown) => {
       if (draftNodesRef.current.has(nodeId)) {
@@ -1338,10 +1164,7 @@ const MonitorViewContent: React.FC = () => {
         return;
       }
 
-      // Dot-notation paths (e.g. "properties.show") need buildParamUpdate to
-      // produce the correct nested UpdateParams payload.  tuneNodeConfigDeep
-      // deep-merges locally into the atom (preserving sibling nested
-      // properties) and sends only the partial to the server.
+      // dispatchParamUpdate handles nested dot-paths via tuneNodeConfigDeep.
       dispatchParamUpdate(nodeId, paramName, value, tuneNode, tuneNodeConfigDeep);
     },
     [toast, tuneNode, tuneNodeConfigDeep, handleDraftParamChange]
@@ -1355,13 +1178,7 @@ const MonitorViewContent: React.FC = () => {
     [tuneNodeConfig]
   );
 
-  // NOTE: fitView is triggered only by:
-  // 1. Auto-layout effect (when needsAutoLayout is true)
-  // 2. needsFit effect (when needsFit is true)
-  // Avoid auto-fitting on every node change to prevent disruption during editing.
-
-  // Keep YAML up to date with live (Zustand) param overrides
-  // Only runs when params change, not when nodes move
+  // Keep YAML in sync with live param overrides; runs only on param changes.
   useEffect(() => {
     if (!pipeline) {
       setYamlString('');
@@ -1427,10 +1244,8 @@ const MonitorViewContent: React.FC = () => {
 
   const handleDeleteNode = (nodeId: string) => {
     if (draftNodesRef.current.has(nodeId)) {
-      // Drop the per-node Jotai atom so a subsequent draft minted
-      // with the same generated id (e.g. servo_1 → deleted → a fresh
-      // servo dropped) doesn't display the previous draft's typed
-      // values as its initial state.
+      // Clear the atom so a re-dropped draft with the same generated
+      // id doesn't inherit the deleted draft's typed values.
       clearNodeParams(nodeId, selectedSessionId ?? undefined);
       setDraftNodes((prev) => {
         const next = new Map(prev);
@@ -1463,18 +1278,8 @@ const MonitorViewContent: React.FC = () => {
     const nodeId = generateName(kind);
     const params = draftDefaultParamsForKind(kind, nodeDefinitions);
 
-    // If any required params have no schema default, hold the node as a
-    // local-only draft until the user fills them in.  This avoids
-    // round-tripping a guaranteed-to-fail `addnode` (e.g. servo without
-    // `url`, slint without `slint_file`, kokoro/piper/matcha without
-    // `model_dir`) and the cleanup churn that follows.  See the topology
-    // effect for how drafts are merged into the React Flow graph.
-    //
-    // Drafts carry their own position (rendered directly via the draft
-    // branch in the topology effect) so we only seed pendingNodePositions
-    // for the immediate-commit path.  When a draft is later promoted,
-    // its current rendered position is already in `prevPositions` — no
-    // need to round-trip through the pending map.
+    // Hold as a local draft if any required param has no default —
+    // avoids round-tripping a guaranteed-to-fail `addnode`.
     const missing = computeMissingRequired(kind, params, nodeDefinitions);
     if (missing.length > 0) {
       setDraftNodes((prev) => {
@@ -1482,9 +1287,6 @@ const MonitorViewContent: React.FC = () => {
         next.set(nodeId, { kind, params, position, missingRequired: missing });
         return next;
       });
-      // Hand the next topology rebuild a hint to mark this draft
-      // `selected: true`; React Flow then drives setSelectedNodes via
-      // useOnSelectionChange.
       newDraftSelectionRef.current.add(nodeId);
       setRightPaneView('inspector');
       if (rightCollapsed) {
@@ -1492,10 +1294,8 @@ const MonitorViewContent: React.FC = () => {
       }
       toast.info(`Configure ${missing.join(', ')} before this node is added to the pipeline`);
     } else {
-      // All required params satisfied — commit immediately.  Persist the
-      // drop coordinate to the position store so the topology rebuild
-      // (triggered by `nodeadded`) reads it back and renders the new
-      // node where the user dropped it.
+      // Persist the drop coordinate so the post-`nodeadded` topology
+      // rebuild renders the new node where the user dropped it.
       if (selectedSessionId) {
         updateNodePosition(selectedSessionId, nodeId, position);
       }
@@ -1526,7 +1326,6 @@ const MonitorViewContent: React.FC = () => {
   );
 
   const handleQuickDeleteSession = useCallback((sessionId: string) => {
-    // Store which session to delete and show confirmation modal
     setSessionToDelete(sessionId);
   }, []);
 
@@ -1536,10 +1335,8 @@ const MonitorViewContent: React.FC = () => {
     setIsDeletingSession(true);
 
     try {
-      // Only tear down the preview when deleting the session that is
-      // actually being previewed.  sessionToDelete can be any session
-      // from the sidebar; stopping the preview unconditionally would
-      // kill an unrelated active stream.
+      // Only tear down preview if it's for the session being deleted —
+      // sessionToDelete may be any session from the sidebar.
       if (sessionToDelete === selectedSessionId) {
         await handleStopPreview();
       }

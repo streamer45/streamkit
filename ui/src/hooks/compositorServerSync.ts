@@ -159,12 +159,14 @@ export function mergeTextMeasurements(
 
 // ── Server layout helpers ────────────────────────────────────────────────────
 
-/** Check whether incoming view data is a stale echo of our own config change.
- *  Returns true when the data should be skipped (rev < local counter). */
-function isStaleViewData(vd: Record<string, unknown>, nodeId: string): boolean {
+/** True when the view-data tick was rendered from pre-commit config
+ *  (rev older than our latest stamped commit).  Empty sender is the
+ *  server's pre-stamp default and is treated like "ours" for gating. */
+export function isStaleViewData(vd: Record<string, unknown>, nodeId: string): boolean {
   const sender = typeof vd._sender === 'string' ? vd._sender : undefined;
   const rev = typeof vd._rev === 'number' ? vd._rev : undefined;
-  if (sender && sender === getClientNonce() && rev !== undefined) {
+  if (rev === undefined) return false;
+  if (sender === '' || sender === getClientNonce()) {
     return rev < getLocalConfigRev(nodeId);
   }
   return false;

@@ -297,9 +297,7 @@ describe('useCompositorDragResize first-drag of serverOnly layer', () => {
     });
 
     act(() => {
-      document.dispatchEvent(
-        new PointerEvent('pointerup', { clientX: 260, clientY: 200 })
-      );
+      document.dispatchEvent(new PointerEvent('pointerup', { clientX: 260, clientY: 200 }));
     });
 
     expect(deps.throttledConfigChange).toHaveBeenCalledTimes(1);
