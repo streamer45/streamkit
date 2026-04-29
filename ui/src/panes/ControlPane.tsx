@@ -18,7 +18,7 @@ import { useToast } from '@/context/ToastContext';
 import { usePermissions } from '@/hooks/usePermissions';
 import { uploadPlugin, deletePlugin } from '@/services/plugins';
 import { ensurePluginsLoaded, usePluginStore } from '@/stores/pluginStore';
-import { reloadSchemas } from '@/stores/schemaStore';
+import { reloadSchemas, syncPluginSchemas } from '@/stores/schemaStore';
 import type { NodeDefinition, PacketType, PluginSummary } from '@/types/types';
 import type { JsonSchema, JsonSchemaProperty } from '@/utils/jsonSchema';
 import { getLogger } from '@/utils/logger';
@@ -305,10 +305,17 @@ const ControlPane: React.FC<ControlPaneProps> = ({
   }, [toast]);
 
   React.useEffect(() => {
-    ensurePluginsLoaded().catch((err) => {
-      logger.error('Failed to load plugins', err);
-      toastRef.current.error('Could not load plugin list. Check logs for details.');
-    });
+    ensurePluginsLoaded()
+      .then(() => {
+        const kinds = usePluginStore.getState().plugins.map((p) => p.kind);
+        return syncPluginSchemas(kinds).catch((err) => {
+          logger.error('Failed to sync plugin schemas', err);
+        });
+      })
+      .catch((err) => {
+        logger.error('Failed to load plugins', err);
+        toastRef.current.error('Could not load plugin list. Check logs for details.');
+      });
   }, []);
 
   const pluginKinds = React.useMemo(() => new Set(plugins.map((p) => p.kind)), [plugins]);

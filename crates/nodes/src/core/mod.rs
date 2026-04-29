@@ -75,7 +75,7 @@ pub fn register_core_nodes(registry: &mut NodeRegistry, constraints: &GlobalNode
             move |params| (factory)(params),
             serde_json::to_value(schema_for!(file_read::FileReadConfig))
                 .expect("FileReadConfig schema should serialize to JSON"),
-            vec!["core".to_string(), "io".to_string()],
+            vec!["io".to_string(), "file".to_string()],
             false,
             "Reads binary data from a file and emits it as packets. \
              Supports configurable chunk sizes for streaming large files.",
@@ -87,7 +87,7 @@ pub fn register_core_nodes(registry: &mut NodeRegistry, constraints: &GlobalNode
             move |params| (factory)(params),
             serde_json::to_value(schema_for!(file_write::FileWriteConfig))
                 .expect("FileWriteConfig schema should serialize to JSON"),
-            vec!["core".to_string(), "io".to_string()],
+            vec!["io".to_string(), "file".to_string()],
             false,
             "Writes incoming binary packets to a file. \
              Security: the server validates write paths against `security.allowed_write_paths` (default deny).",
@@ -208,7 +208,7 @@ pub fn register_core_nodes(registry: &mut NodeRegistry, constraints: &GlobalNode
             move |params| (factory)(params),
             serde_json::to_value(schema_for!(object_store_write::ObjectStoreWriteConfig))
                 .expect("ObjectStoreWriteConfig schema should serialize to JSON"),
-            vec!["core".to_string(), "io".to_string(), "object_store".to_string()],
+            vec!["io".to_string(), "object_store".to_string()],
             false,
             "Streams binary data to S3-compatible object storage (AWS S3, GCS, Azure, MinIO, RustFS, etc.). \
              Uses multipart upload for bounded memory usage. \

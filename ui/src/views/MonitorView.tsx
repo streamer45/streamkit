@@ -53,8 +53,8 @@ import { useWebSocket } from '@/hooks/useWebSocket';
 import { getWebSocketService } from '@/services/websocket';
 import { useLayoutStore } from '@/stores/layoutStore';
 import { useNodePositionStore } from '@/stores/nodePositionStore';
-import { usePluginStore } from '@/stores/pluginStore';
-import { useSchemaStore } from '@/stores/schemaStore';
+import { ensurePluginsLoaded, usePluginStore } from '@/stores/pluginStore';
+import { useSchemaStore, syncPluginSchemas } from '@/stores/schemaStore';
 import {
   sessionStore as defaultSessionStore,
   nodeStateAtom,
@@ -169,6 +169,20 @@ const MonitorViewContent: React.FC = () => {
     () => new Map(plugins.map((p) => [p.kind, p.plugin_type])),
     [plugins]
   );
+
+  // Ensure plugins are loaded and schemas include plugin node definitions
+  React.useEffect(() => {
+    ensurePluginsLoaded()
+      .then(() => {
+        const kinds = usePluginStore.getState().plugins.map((p) => p.kind);
+        return syncPluginSchemas(kinds).catch((err) => {
+          viewsLogger.error('Failed to sync plugin schemas', err);
+        });
+      })
+      .catch((err) => {
+        viewsLogger.error('Failed to load plugins', err);
+      });
+  }, []);
 
   // Node position store for persisting canvas positions
   const updateNodePosition = useNodePositionStore((s) => s.updateNodePosition);
