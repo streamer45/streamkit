@@ -209,6 +209,7 @@ impl Engine {
             view_data_subscribers: Vec::new(),
             runtime_schemas: HashMap::new(),
             runtime_schema_subscribers: Vec::new(),
+            node_added_subscribers: Vec::new(),
             nodes_active_gauge: meter
                 .u64_gauge("engine.nodes.active")
                 .with_description("Number of active nodes in the pipeline")

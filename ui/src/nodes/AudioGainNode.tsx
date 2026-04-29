@@ -83,6 +83,7 @@ interface AudioGainNodeData {
   stats?: NodeStats;
   onParamChange?: (nodeId: string, paramName: string, value: unknown) => void;
   sessionId?: string;
+  draft?: { missingRequired: string[]; isCreating: boolean; onPromote: () => void };
 }
 
 interface AudioGainNodeProps {
@@ -157,6 +158,7 @@ const AudioGainNode: React.FC<AudioGainNodeProps> = React.memo(function AudioGai
       outputs={data.outputs}
       state={data.state}
       sessionId={data.sessionId}
+      draft={data.draft}
     >
       <GainWrapper>
         <GainLabel>

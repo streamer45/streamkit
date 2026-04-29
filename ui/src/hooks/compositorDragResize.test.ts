@@ -18,6 +18,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { DragResizeDeps } from './compositorDragResize';
 import { useCompositorDragResize } from './compositorDragResize';
 import type { LayerState } from './compositorLayerParsers';
+import { promoteEditedServerOnly } from './useCompositorLayers';
 
 /** Build a minimal layer for testing. */
 function makeLayer(id: string): LayerState {
@@ -245,5 +246,73 @@ describe('useCompositorDragResize zero-delta guard', () => {
 
     // throttledConfigChange SHOULD have been called
     expect(deps.throttledConfigChange).toHaveBeenCalled();
+  });
+});
+
+// ── First-drag-of-server-stub regression ────────────────────────────────────
+//
+// Auto-PiP layers materialised by `mapServerLayers` carry `serverOnly:
+// true`.  `serializeLayers` skips serverOnly layers so the server can keep
+// aspect-fitting them.  When the user drags such a layer, the dragged
+// entry must be promoted (serverOnly cleared) BEFORE serialization so
+// the user's edit reaches the server.  Pre-fix, `pointerup` reconstructed
+// the array from a closure-captured `updated` that still had
+// `serverOnly: true`, the server never received the edit, and the next
+// view-data tick snapped the layer back to its auto-fitted position.
+describe('useCompositorDragResize first-drag of serverOnly layer', () => {
+  it('fires throttledConfigChange with serverOnly cleared on the dragged layer', () => {
+    const stubLayer: LayerState = { ...makeLayer('stub-1'), serverOnly: true };
+    const otherStub: LayerState = { ...makeLayer('stub-2'), x: 500, serverOnly: true };
+
+    // Simulate the production setLayers + store.sub + ref-update chain:
+    // setLayers commits via promoteEditedServerOnly, then layersRef.current
+    // catches up synchronously via the store subscription.
+    const layersRef: { current: LayerState[] } = { current: [stubLayer, otherStub] };
+    const setLayers = vi.fn((action: React.SetStateAction<LayerState[]>) => {
+      const next =
+        typeof action === 'function'
+          ? (action as (prev: LayerState[]) => LayerState[])(layersRef.current)
+          : action;
+      layersRef.current = promoteEditedServerOnly(layersRef.current, next);
+    });
+
+    const deps = makeDeps({
+      layersRef,
+      setLayers,
+      findAnyLayer: (id: string) => {
+        const found = layersRef.current.find((l) => l.id === id);
+        return found ? { state: found, kind: 'video' as const } : null;
+      },
+    });
+    const { result } = renderHook(() => useCompositorDragResize(deps));
+
+    act(() => {
+      result.current.handleLayerPointerDown('stub-1', {
+        button: 0,
+        clientX: 200,
+        clientY: 150,
+        stopPropagation: vi.fn(),
+        preventDefault: vi.fn(),
+      } as unknown as React.PointerEvent);
+    });
+
+    act(() => {
+      document.dispatchEvent(new PointerEvent('pointerup', { clientX: 260, clientY: 200 }));
+    });
+
+    expect(deps.throttledConfigChange).toHaveBeenCalledTimes(1);
+    const sentLayers = (deps.throttledConfigChange as ReturnType<typeof vi.fn>).mock
+      .calls[0][0] as LayerState[];
+
+    // The dragged stub must be promoted to explicit config — otherwise
+    // serializeLayers would skip it and the server would never receive
+    // the user's edit.
+    const draggedSent = sentLayers.find((l) => l.id === 'stub-1');
+    expect(draggedSent).toBeDefined();
+    expect(draggedSent?.serverOnly).toBeUndefined();
+    // Untouched stubs in the same commit retain serverOnly so the
+    // server keeps aspect-fitting sources the user didn't drag.
+    const untouchedSent = sentLayers.find((l) => l.id === 'stub-2');
+    expect(untouchedSent?.serverOnly).toBe(true);
   });
 });

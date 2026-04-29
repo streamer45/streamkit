@@ -39,6 +39,26 @@ const PaneTitle = styled.h3`
   font-size: 14px;
   font-weight: 600;
   color: var(--sk-text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+`;
+
+const DraftPill = styled.span`
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--sk-warning, var(--sk-text-muted));
+  color: var(--sk-panel-bg);
+`;
+
+const DraftHint = styled.p`
+  margin: 4px 0 0 0;
+  font-size: 12px;
+  color: var(--sk-warning, var(--sk-text-muted));
 `;
 
 const PaneSubtitle = styled.p`
@@ -149,7 +169,15 @@ const ColorDot = styled.span<{ color: string }>`
 `;
 
 interface InspectorPaneProps {
-  node: Node<{ label: string; kind: string; params: Record<string, unknown>; sessionId?: string }>;
+  node: Node<{
+    label: string;
+    kind: string;
+    params: Record<string, unknown>;
+    sessionId?: string;
+    /** Inspector reads only `missingRequired` for the hint text;
+     *  promotion happens via the canvas-side button (see NodeFrame). */
+    draft?: { missingRequired: string[]; isCreating: boolean; onPromote: () => void };
+  }>;
   nodeDefinition: NodeDefinition;
   onParamChange: (nodeId: string, paramName: string, value: unknown) => void;
   onLabelChange: (nodeId: string, newLabel: string) => void;
@@ -332,8 +360,25 @@ const InspectorPane: React.FC<InspectorPaneProps> = ({
       schema.default ??
       '';
     const inputId = `param-${node.id}-${key}`;
-    // In monitor view, disable non-tunable params (they can't be changed at runtime)
-    const isDisabled = readOnly || (isMonitorView && !schema.tunable);
+    // In monitor view, non-tunable params are normally disabled (they
+    // can't be changed at runtime).  Drafts are the exception: the
+    // node does not exist in the engine yet, so the user must be able
+    // to fill required-but-not-tunable fields (e.g. slint's
+    // `slint_file`) to promote the draft.  All fields stay editable
+    // until the draft is committed; tunable gating resumes once the
+    // engine echoes back a real node.
+    //
+    // While the draft is *in flight* (Add to pipeline clicked, waiting
+    // for `nodeadded` or `Failed`), disable everything: any keystroke
+    // would be racing the engine's response and either overwritten on
+    // success (the addnode payload is already on the wire) or wasted
+    // on failure (the entry is being torn down).  Disabling matches
+    // the spinner + disabled button on the canvas banner — the user
+    // sees a coherent "wait" state and the UI doesn't have to
+    // reconcile post-promote keystrokes.
+    const isDraft = !!node.data.draft;
+    const isInflight = node.data.draft?.isCreating ?? false;
+    const isDisabled = readOnly || isInflight || (isMonitorView && !isDraft && !schema.tunable);
 
     switch (schema.type) {
       case 'string':
@@ -398,10 +443,18 @@ const InspectorPane: React.FC<InspectorPaneProps> = ({
   return (
     <PaneWrapper>
       <PaneHeader>
-        <PaneTitle>Inspector</PaneTitle>
+        <PaneTitle>
+          Inspector
+          {node.data.draft && <DraftPill aria-label="This node is a draft">Draft</DraftPill>}
+        </PaneTitle>
         <PaneSubtitle className="code-font">{node.data.label}</PaneSubtitle>
         {nodeDefinition.description && (
           <PaneSubtitle style={{ marginTop: 4 }}>{nodeDefinition.description}</PaneSubtitle>
+        )}
+        {node.data.draft && node.data.draft.missingRequired.length > 0 && (
+          <DraftHint>
+            Fill {node.data.draft.missingRequired.join(', ')} to add this node to the pipeline.
+          </DraftHint>
         )}
       </PaneHeader>
       <ContentWrapper>

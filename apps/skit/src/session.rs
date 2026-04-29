@@ -7,7 +7,7 @@
 use crate::config::Config;
 use crate::state::BroadcastEvent;
 use opentelemetry::global;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use streamkit_api::{Event as ApiEvent, EventPayload, MessageType, Pipeline};
@@ -177,6 +177,16 @@ pub struct Session {
     /// The handle to send control messages to the running DynamicEngine actor.
     engine_handle: Arc<DynamicEngineHandle>,
     pub pipeline: Arc<Mutex<Pipeline>>,
+    /// Node IDs that the WebSocket layer has accepted into the engine
+    /// actor but for which `NodeAdded`/`Failed` has not yet arrived.
+    /// `pipeline.nodes` only sees a node after the engine confirms
+    /// successful creation; the in-flight set covers the gap so a
+    /// second `addnode` for the same id (whether from the same or a
+    /// different client) is rejected at the handler instead of being
+    /// silently dropped by the actor's duplicate-id guard.  Drained on
+    /// success (node-added forwarder), on failure (state forwarder
+    /// observes `Failed`), or when an in-flight node is removed.
+    pub creating_nodes: Arc<Mutex<HashSet<String>>>,
     /// Timestamp when the session was created
     pub created_at: SystemTime,
     /// User/role who created this session (for permission filtering)
@@ -187,6 +197,46 @@ pub struct Session {
 }
 
 impl Session {
+    /// Reserves a node id for an in-flight `addnode`.
+    ///
+    /// Atomically checks both the live pipeline snapshot and the
+    /// in-flight set, then inserts into the in-flight set.  Returns
+    /// `Err` describing why the id is unavailable (already live, or
+    /// already being added).  The reservation is drained by the
+    /// node-added forwarder on success, the state forwarder on a
+    /// non-`Creating` state transition, or by `release_node_id` on
+    /// remove/cancellation.
+    ///
+    /// Lock order: `pipeline` first, then `creating_nodes`.  The two
+    /// guards are held jointly across both reads to prevent a node
+    /// from slipping into `pipeline.nodes` (via the node-added
+    /// forwarder) between the two checks and being silently dropped
+    /// by the actor's duplicate-id guard later.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with a human-readable reason when the id is
+    /// already live or already in flight.
+    #[allow(clippy::significant_drop_tightening)] // joint lock is the point
+    pub async fn reserve_node_id(&self, node_id: &str) -> Result<(), String> {
+        let pipeline = self.pipeline.lock().await;
+        if pipeline.nodes.contains_key(node_id) {
+            return Err(format!("Node '{node_id}' already exists in the pipeline"));
+        }
+        let mut creating = self.creating_nodes.lock().await;
+        if creating.contains(node_id) {
+            return Err(format!("Node '{node_id}' is already being added"));
+        }
+        creating.insert(node_id.to_string());
+        Ok(())
+    }
+
+    /// Releases an in-flight reservation taken by `reserve_node_id`.
+    /// Used on explicit removal of a still-Creating node.  Idempotent.
+    pub async fn release_node_id(&self, node_id: &str) {
+        self.creating_nodes.lock().await.remove(node_id);
+    }
+
     /// Forwards a control message to this session's specific engine actor.
     pub async fn send_control_message(&self, msg: EngineControlMessage) {
         if let Err(e) = self.engine_handle.send_control(msg).await {
@@ -271,11 +321,27 @@ impl Session {
             .await
             .map_err(|e| format!("Failed to subscribe to stats updates: {e}"))?;
 
+        // Pre-allocate the in-flight set so the state and node-added
+        // forwarders can both reach it.  `pipeline.nodes` only contains
+        // confirmed entries; this set fills the gap for accepted-but-
+        // not-yet-confirmed addnode requests.
+        let creating_nodes: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+
         // Spawn task to forward state updates to WebSocket clients
         let session_id_for_state = session_id.clone();
         let event_tx_for_state = event_tx.clone();
+        let creating_nodes_for_state = creating_nodes.clone();
         tokio::spawn(async move {
             while let Some(update) = state_rx.recv().await {
+                // Drain the in-flight entry as soon as a non-Creating
+                // state arrives — a Failed transition means the engine
+                // gave up on this id, and a later non-Creating state
+                // (Ready/Running/Degraded) confirms the node is past
+                // creation.  The node-added forwarder also drains on
+                // success; the second remove is a no-op.
+                if !matches!(update.state, NodeState::Creating) {
+                    creating_nodes_for_state.lock().await.remove(&update.node_id);
+                }
                 let event = ApiEvent {
                     message_type: MessageType::Event,
                     correlation_id: None,
@@ -375,6 +441,69 @@ impl Session {
             );
         });
 
+        // Subscribe to node-added notifications from the engine and use
+        // them as the trigger for both updating `pipeline.nodes` and
+        // emitting the public `NodeAdded` event.  Doing this here (and
+        // not in the WebSocket addnode handler) means clients only see
+        // `nodeadded` after the engine has confirmed the plugin's
+        // constructor and `initialize_node` returned Ok — never
+        // speculatively before the FFI call has even run.  Failures
+        // surface as `NodeStateChanged { state: Failed }` via the
+        // existing state forwarder above.
+        //
+        // Subscribing here (vs earlier in `create`) is safe: the engine
+        // can't have any nodes until something sends `AddNode`, and the
+        // first `AddNode` can't arrive until `create` returns the
+        // handle to its caller.
+        let pipeline = Arc::new(Mutex::new(Pipeline::default()));
+        let mut node_added_rx = engine_handle
+            .subscribe_node_added()
+            .await
+            .map_err(|e| format!("Failed to subscribe to node-added updates: {e}"))?;
+        let session_id_for_node_added = session_id.clone();
+        let event_tx_for_node_added = event_tx.clone();
+        let pipeline_for_node_added = pipeline.clone();
+        let creating_nodes_for_node_added = creating_nodes.clone();
+        tokio::spawn(async move {
+            while let Some(notification) = node_added_rx.recv().await {
+                // Update the cached pipeline snapshot first, then
+                // broadcast — late subscribers (re-fetching the pipeline
+                // immediately after a `nodeadded` event) see a
+                // consistent view that already includes the new entry.
+                {
+                    let mut pip = pipeline_for_node_added.lock().await;
+                    pip.nodes.insert(
+                        notification.node_id.clone(),
+                        streamkit_api::Node {
+                            kind: notification.kind.clone(),
+                            params: notification.params.clone(),
+                            state: None,
+                        },
+                    );
+                }
+                // The node is now visible in pipeline.nodes — drop the
+                // in-flight reservation so a future addnode for this id
+                // (after a removenode) is gated only by the live
+                // pipeline check.
+                creating_nodes_for_node_added.lock().await.remove(&notification.node_id);
+                let event = ApiEvent {
+                    message_type: MessageType::Event,
+                    correlation_id: None,
+                    payload: EventPayload::NodeAdded {
+                        session_id: session_id_for_node_added.clone(),
+                        node_id: notification.node_id,
+                        kind: notification.kind,
+                        params: notification.params,
+                    },
+                };
+                let _ = event_tx_for_node_added.send(BroadcastEvent::to_all(event));
+            }
+            tracing::debug!(
+                session_id = %session_id_for_node_added,
+                "Node-added forwarding task ended"
+            );
+        });
+
         // Subscribe to telemetry events from the engine
         let mut telemetry_rx = engine_handle
             .subscribe_telemetry()
@@ -408,7 +537,8 @@ impl Session {
             id: session_id,
             name,
             engine_handle: Arc::new(engine_handle),
-            pipeline: Arc::new(Mutex::new(Pipeline::default())),
+            pipeline,
+            creating_nodes,
             created_at: SystemTime::now(),
             created_by,
             #[cfg(feature = "moq")]
