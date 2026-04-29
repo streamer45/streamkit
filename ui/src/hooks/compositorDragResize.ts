@@ -249,8 +249,10 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
       if (state.layerKind === 'video') {
         if (!isZeroDelta) {
           setLayers((prev) => prev.map((l) => (l.id === updated.id ? updated : l)));
-          const newLayers = layersRef.current.map((l) => (l.id === updated.id ? updated : l));
-          throttledConfigChange?.(newLayers);
+          // Read the post-commit store, not the closure-captured
+          // `updated`: setLayers strips `serverOnly` from the dragged
+          // layer, and serializeLayers skips entries that still carry it.
+          throttledConfigChange?.(layersRef.current);
         }
       } else if (state.layerKind === 'text') {
         if (!isZeroDelta) {

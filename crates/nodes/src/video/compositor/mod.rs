@@ -867,15 +867,8 @@ impl ProcessorNode for CompositorNode {
                         msg,
                         &mut slots,
                         &mut clear_conversion_cache,
+                        &mut layer_configs_dirty,
                     );
-                    // Clear causal-consistency metadata so the resulting
-                    // view data is not stamped with a stale sender/rev
-                    // from a previous UpdateParams.  Without this, the
-                    // client that last edited config would suppress the
-                    // pin-triggered layout update via its echo gate.
-                    self.config_sender.clear();
-                    self.config_rev = 0;
-                    layer_configs_dirty = true;
                     continue;
                 }
 
@@ -988,15 +981,13 @@ impl ProcessorNode for CompositorNode {
                 scene = resolve_scene(&slots, &self.config, &image_overlays, &text_overlays);
                 layer_configs_dirty = false;
 
-                // Emit layout via view data if it changed.
+                // Emit layout via view data if it changed.  Stamp every
+                // tick (defaults to "" / 0) so clients can gate stale
+                // pre-commit echoes via `rev < localRev`.
                 if last_layout.as_ref() != Some(&scene.layout) {
                     if let Ok(mut json) = serde_json::to_value(&scene.layout) {
-                        // Stamp view data with the sender/rev from the last
-                        // UpdateParams so clients can detect stale self-echoes.
-                        if !self.config_sender.is_empty() {
-                            json["_sender"] = serde_json::Value::from(self.config_sender.as_str());
-                            json["_rev"] = serde_json::Value::from(self.config_rev);
-                        }
+                        json["_sender"] = serde_json::Value::from(self.config_sender.as_str());
+                        json["_rev"] = serde_json::Value::from(self.config_rev);
                         view_data_helpers::emit_view_data(&view_data_tx, &node_name, || json);
                     }
                     last_layout = Some(scene.layout.clone());
@@ -1446,6 +1437,7 @@ impl CompositorNode {
         msg: PinManagementMessage,
         slots: &mut Vec<InputSlot>,
         clear_conversion_cache: &mut bool,
+        layer_configs_dirty: &mut bool,
     ) {
         match msg {
             PinManagementMessage::RequestAddInputPin { suggested_name, response_tx } => {
@@ -1468,6 +1460,9 @@ impl CompositorNode {
                     last_source_dims: None,
                     hint_tx,
                 });
+                // Surface the new layer in view-data without waiting
+                // for the source's first frame.
+                *layer_configs_dirty = true;
 
                 Self::send_initial_hint_for_slot(
                     &pin_name,
@@ -1483,6 +1478,7 @@ impl CompositorNode {
                 if let Some(idx) = slots.iter().position(|s| s.name == pin_name) {
                     *clear_conversion_cache = true;
                     slots.remove(idx);
+                    *layer_configs_dirty = true;
                 }
                 node.input_pins.retain(|p| p.name != pin_name);
             },

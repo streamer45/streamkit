@@ -143,6 +143,25 @@ export interface UseCompositorLayersResult {
   keyboardDeps: CompositorKeyboardDeps;
 }
 
+/**
+ * Clear `serverOnly` on layers the caller actually mutated (object
+ * identity differs from current).  Untouched stubs keep the flag so
+ * the server keeps aspect-fitting sources the user never edited.
+ */
+export const promoteEditedServerOnly = (
+  current: LayerState[],
+  next: LayerState[]
+): LayerState[] => {
+  const currentById = new Map(current.map((l) => [l.id, l]));
+  return next.map((l) => {
+    if (!l.serverOnly) return l;
+    if (currentById.get(l.id) === l) return l;
+    const cleared = { ...l };
+    delete cleared.serverOnly;
+    return cleared;
+  });
+};
+
 export const useCompositorLayers = (
   options: UseCompositorLayersOptions
 ): UseCompositorLayersResult => {
@@ -180,7 +199,7 @@ export const useCompositorLayers = (
     (action: React.SetStateAction<LayerState[]>) => {
       const current = getLayersFromStore(store);
       const next = typeof action === 'function' ? action(current) : action;
-      setLayersInStore(store, next);
+      setLayersInStore(store, promoteEditedServerOnly(current, next));
     },
     [store]
   );

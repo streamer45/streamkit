@@ -32,13 +32,16 @@ This installs:
 - Binaries under `/opt/streamkit` (versioned releases + symlinks)
 - Service unit at `/etc/systemd/system/streamkit.service`
 - Config at `/etc/streamkit/skit.toml`
+- State directory at `/var/lib/streamkit` (auth state and dynamically loaded plugins)
 - Plugins directory at `/var/lib/streamkit/plugins`
+- Logs directory at `/var/log/streamkit` (created by `LogsDirectory=streamkit`; journald remains the primary log view)
 
 ## Configure
 
 - Edit config: `/etc/streamkit/skit.toml`
 - Optional env overrides: `/etc/streamkit/streamkit.env`
 - View logs: `journalctl -u streamkit -f`
+- Inspect the systemd-managed logs directory if file logging is enabled later: `/var/log/streamkit`
 
 By default the installed config binds to `127.0.0.1:4545`. If you want to expose StreamKit on the network, update `server.address` (and consider putting it behind a reverse proxy).
 
@@ -69,6 +72,14 @@ sudo ./streamkit-install.sh --latest
 sudo systemctl restart streamkit
 ```
 
+The installer does not overwrite an existing `/etc/streamkit/skit.toml`. If you're upgrading an older systemd install created before the `[auth]` section was added, add this to your existing config so auth state persists under the systemd state directory:
+
+```toml
+[auth]
+mode = "auto"
+state_dir = "/var/lib/streamkit/auth"
+```
+
 ## Uninstall
 
 To remove StreamKit while preserving configuration and data:
@@ -77,7 +88,7 @@ To remove StreamKit while preserving configuration and data:
 sudo ./streamkit-install.sh --uninstall
 ```
 
-To completely remove everything including config, data, and the streamkit user:
+To completely remove everything including config, data, service logs, and the streamkit user:
 
 ```bash
 sudo ./streamkit-install.sh --uninstall --purge
@@ -86,5 +97,6 @@ sudo ./streamkit-install.sh --uninstall --purge
 > [!NOTE]
 > Without `--purge`, the following are preserved for potential reinstallation:
 > - `/etc/streamkit/` (configuration)
-> - `/var/lib/streamkit/` (plugins and data)
+> - `/var/lib/streamkit/` (auth state, plugins, and data)
+> - `/var/log/streamkit/` (systemd-created logs directory)
 > - The `streamkit` system user

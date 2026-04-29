@@ -56,6 +56,40 @@ the full architecture.
   include a comment explaining the rationale.
 - **UI tooling**: Use `bun install` / `bunx` / `bun run` — never npm or pnpm.
 
+## Fix Root Causes, Not Symptoms
+
+Prefer a clean change that takes longer over a brittle stack of patches that
+ships sooner. If a feature requires defending against the same race in three
+places, layering synchronous shadow refs over async state, or "preferring
+draft over live" because two event sources disagree on timing — **stop and
+reconsider the contract**, don't add a fourth patch.
+
+Concrete signals you've crossed into workaround territory:
+
+- You're adding a *timeout* to recover from a missing event.
+- You need a synchronous shadow of state that already lives in an async store.
+- You catch yourself writing "the X event doesn't actually mean X, it means
+  *attempted* X, so we also have to listen for Y to know if it really
+  happened."
+- Tests are updated by adding sleeps or by relying on previously-broken
+  behavior (e.g. an invalid value being silently accepted).
+- The root cause is in a different layer than the one you're editing, and
+  fixing it there would invalidate most of your patch.
+
+When you spot this, surface the design issue to the user with a concrete
+proposal — even if it's more invasive — *before* writing the patch. State
+the tradeoff honestly: "this will take longer but produces something
+durable; vs. this short-term fix has these specific brittleness costs."
+
+Past incident worth remembering: the WebSocket `nodeadded` event used to fire
+before plugin construction had even started. The UI accumulated 13 commits of
+draft-state machinery (state-watchers, debounce timers, topology priority
+hacks) trying to reconstruct "did the node actually get created?" from
+out-of-band signals. The actual fix was a small server change — emit
+`nodeadded` from the engine actor's success path instead of the WS handler —
+which collapsed the UI back to the obvious cleanup. Code that exists to
+paper over a broken contract should be deleted, not refined.
+
 ## Verification Commands
 
 | Task | Command |
@@ -78,6 +112,23 @@ the full architecture.
 - Standard images do not bundle ML models or plugins — mount them at runtime.
   Demo images (`Dockerfile.demo`, tagged `-demo`) include bundled models and plugins.
 
+## MCP (Model Context Protocol) Integration
+
+StreamKit embeds an MCP server (`apps/skit/src/mcp/`) that exposes the
+control plane as MCP tools, prompts, and resources. **Agents with MCP client
+support can use this directly** — no REST/WebSocket code needed.
+
+- **Endpoint:** `POST /api/v1/mcp` (Streamable HTTP) or `skit mcp` (STDIO)
+- **Config:** `[mcp]` section in `skit.toml` — set `enabled = true`
+- **Auth:** HTTP transport uses bearer tokens (same as REST API). STDIO is
+  unauthenticated (admin-level, local-only).
+- **Code:** `apps/skit/src/mcp/mod.rs` (tools + resources),
+  `apps/skit/src/mcp/prompts.rs` (prompts)
+- **Tests:** `apps/skit/tests/mcp_integration_test.rs`
+
+See [`agent_docs/mcp.md`](agent_docs/mcp.md) for the full tool/prompt/resource
+reference and usage patterns.
+
 ## Detailed Guides
 
 Read the relevant guide **before** starting work in that area:
@@ -85,6 +136,7 @@ Read the relevant guide **before** starting work in that area:
 | Guide | When to read |
 |-------|-------------|
 | [`agent_docs/architecture.md`](agent_docs/architecture.md) | Understanding crate relationships, data flow, key abstractions |
+| [`agent_docs/mcp.md`](agent_docs/mcp.md) | Using the MCP server — tools, prompts, resources, auth, permissions |
 | [`agent_docs/ui-development.md`](agent_docs/ui-development.md) | Working on React UI — state management, component patterns |
 | [`agent_docs/e2e-testing.md`](agent_docs/e2e-testing.md) | Running E2E tests, headless-browser pitfalls |
 | [`agent_docs/render-performance.md`](agent_docs/render-performance.md) | Compositor perf profiling, render regression testing |

@@ -128,26 +128,29 @@ pub fn send_work(item: ServoWorkItem) -> Result<(), String> {
 /// The critical contract is calling `webview.paint()` inside
 /// `notify_new_frame_ready` -- without it the software rendering context's
 /// framebuffer never receives pixels.
+///
+/// `loaded` is read by `handle_render`'s post-load gate to fire one-shot
+/// post-load actions (custom CSS injection) on the first tick after the
+/// page reaches `LoadStatus::Complete`.
 #[derive(Default)]
 struct FrameDelegate {
     loaded: Cell<bool>,
-    load_failed: Cell<bool>,
-    frames: Cell<u64>,
 }
 
 impl WebViewDelegate for FrameDelegate {
     fn notify_load_status_changed(&self, _webview: WebView, status: LoadStatus) {
         if status == LoadStatus::Complete {
             self.loaded.set(true);
-            self.load_failed.set(false);
         }
         // Servo 0.1.0 does not expose a Failed variant.  Load failures
-        // are detected via timeout (page never reaches Complete).
+        // would manifest as the page never reaching Complete; there is
+        // no synchronous wait at register time, so failures simply
+        // leave the page in its loading state and `handle_render`
+        // returns whatever has been painted.
     }
 
     fn notify_new_frame_ready(&self, webview: WebView) {
         webview.paint();
-        self.frames.set(self.frames.get() + 1);
     }
 }
 
@@ -181,6 +184,12 @@ struct InstanceState {
     /// returned directly.  Set after [`POISON_THRESHOLD`] consecutive
     /// render panics; cleared on URL change (`UpdateConfig`).
     poisoned: bool,
+    /// Tracks whether one-shot post-load work (custom CSS injection) has
+    /// been performed for the current URL.  Set to `true` after we've
+    /// observed `LoadStatus::Complete` and run the post-load actions.
+    /// Reset on `UpdateConfig` when the URL changes so the new page
+    /// gets the same treatment.
+    post_load_done: bool,
 }
 
 /// Entry point for the shared Servo thread.
@@ -372,9 +381,23 @@ fn send_fallback_frame(instances: &HashMap<NodeId, InstanceState>, node_id: &Nod
     let _ = state.result_tx.send(ServoThreadResult::Frame { rgba_data: fallback });
 }
 
-/// Handle a `Register` work item: create a WebView on the shared Servo
-/// instance (creating the Servo if this is the first registration),
-/// navigate to URL, and wait for the initial load.
+/// Handle a `Register` work item: create the WebView and the per-instance
+/// rendering context, then return `InitOk` *immediately*.
+///
+/// Page loading is deferred — the first few `handle_render` ticks will
+/// return transparent / partially-painted frames while Servo's event
+/// loop progresses the load asynchronously.  This keeps node-init
+/// latency bounded by GPU surface allocation (sub-second) instead of
+/// blocking on the page's full first paint (5+ seconds for typical
+/// websites).  The `load_timeout_secs` config field is currently a
+/// no-op; it remains in the schema for forward compatibility (a future
+/// change may use it to cap wait-for-load progression for diagnostics
+/// or to move the node into Degraded if the page never loads).
+///
+/// One-shot post-load work (custom CSS injection) is gated on
+/// `post_load_done` and runs in `handle_render` once
+/// `delegate.loaded` flips, so the contract that "custom_css is
+/// applied after load" is preserved.
 fn handle_register(
     instances: &mut HashMap<NodeId, InstanceState>,
     servo: &mut Option<Servo>,
@@ -394,53 +417,15 @@ fn handle_register(
         s
     });
 
-    let load_timeout = Duration::from_secs(u64::from(config.load_timeout_secs));
-
     match create_webview(servo_ref, &config) {
         Ok((webview, rendering_context, delegate)) => {
-            // Wait for the initial page load so the first Render has content.
-            let load_start = Instant::now();
-            wait_for_load(servo_ref, &delegate, &config.url, &node_id, load_timeout);
-            let load_duration = load_start.elapsed();
-
-            if delegate.load_failed.get() {
-                tracing::warn!(
-                    node_id = %node_id,
-                    url = %config.url,
-                    load_ms = load_duration.as_millis(),
-                    "Page load reported failure — proceeding with partial content",
-                );
-            } else if !delegate.loaded.get() {
-                tracing::warn!(
-                    node_id = %node_id,
-                    url = %config.url,
-                    load_ms = load_duration.as_millis(),
-                    "Page load timed out — proceeding with partial content",
-                );
-            } else {
-                tracing::info!(
-                    node_id = %node_id,
-                    url = %config.url,
-                    load_ms = load_duration.as_millis(),
-                    "Page loaded successfully",
-                );
-            }
-
-            // Force at least one post-load frame via a rAF nudge.
-            nudge_frame(servo_ref, &webview, &delegate);
-
-            // Inject custom CSS if provided.
-            if let Some(ref css) = config.custom_css {
-                inject_custom_css(&webview, servo_ref, css);
-            }
-
             tracing::info!(
                 node_id = %node_id,
                 url = %config.url,
                 output = %format_args!("{}x{}", config.width, config.height),
                 viewport = %format_args!("{}x{}", config.effective_viewport_width(), config.effective_viewport_height()),
                 scaling = config.needs_scaling(),
-                "Created Servo WebView on shared instance",
+                "Created Servo WebView (page load deferred)",
             );
 
             let rc_width = config.effective_viewport_width();
@@ -462,6 +447,7 @@ fn handle_register(
                     render_duration_sum: Duration::ZERO,
                     consecutive_panic_count: 0,
                     poisoned: false,
+                    post_load_done: false,
                 },
             );
         },
@@ -487,8 +473,25 @@ fn handle_render(
 
     let render_start = Instant::now();
 
-    // Pump the event loop to let Servo process pending work.
+    // Pump the event loop to let Servo process pending work — this is
+    // also what advances the deferred page load registered in
+    // `handle_register`.
     servo.spin_event_loop();
+
+    // Run one-shot post-load actions (custom CSS) the first tick that
+    // observes a successful load.  Gated to fire exactly once per URL
+    // (`UpdateConfig` resets `post_load_done` on URL change).
+    if !state.post_load_done && state.delegate.loaded.get() {
+        if let Some(ref css) = state.config.custom_css {
+            inject_custom_css(&state.webview, servo, css);
+        }
+        state.post_load_done = true;
+        tracing::info!(
+            node_id = %node_id,
+            url = %state.config.url,
+            "Page reached LoadStatus::Complete — post-load actions applied",
+        );
+    }
 
     // Always read the full rendering context (rc_width × rc_height) —
     // this is the native size Servo is currently rendering at.  These
@@ -575,37 +578,20 @@ fn handle_update_config(
         if let Ok(parsed) = url::Url::parse(&new_config.url) {
             state.webview.load(parsed);
             state.delegate.loaded.set(false);
-            state.delegate.load_failed.set(false);
-
-            let load_timeout = Duration::from_secs(u64::from(new_config.load_timeout_secs));
-            let load_start = Instant::now();
-            wait_for_load(servo, &state.delegate, &new_config.url, node_id, load_timeout);
-
-            if state.delegate.load_failed.get() {
-                tracing::warn!(
-                    node_id = %node_id,
-                    url = %new_config.url,
-                    load_ms = load_start.elapsed().as_millis(),
-                    "URL navigation load failed",
-                );
-            } else if !state.delegate.loaded.get() {
-                tracing::warn!(
-                    node_id = %node_id,
-                    url = %new_config.url,
-                    load_ms = load_start.elapsed().as_millis(),
-                    "URL navigation load timed out",
-                );
-            }
+            // Reset the one-shot post-load gate so the new page gets
+            // its custom-CSS injection (if any) once it finishes
+            // loading.  Render ticks will run `handle_render`'s
+            // post-load block when `delegate.loaded` flips.
+            state.post_load_done = false;
         }
     }
 
-    if css_changed || url_changed {
-        let css = if css_changed {
-            new_config.custom_css.as_deref()
-        } else {
-            state.config.custom_css.as_deref()
-        };
-        if let Some(css) = css {
+    // CSS-only changes (no URL change) apply immediately if the current
+    // page is already loaded.  Otherwise they fold into the
+    // render-driven post-load gate above, which will pick up the new
+    // value because we're about to merge `new_config` into `state.config`.
+    if css_changed && !url_changed && state.delegate.loaded.get() {
+        if let Some(ref css) = new_config.custom_css {
             inject_custom_css(&state.webview, servo, css);
         }
     }
@@ -695,65 +681,6 @@ fn create_webview(
         .build();
 
     Ok((webview, rendering_context, delegate))
-}
-
-/// Wait for the page to reach `LoadStatus::Complete`, with a configurable
-/// timeout.  Returns when the delegate's `loaded` flag is set, or on timeout.
-fn wait_for_load(
-    servo: &Servo,
-    delegate: &FrameDelegate,
-    url: &str,
-    node_id: &NodeId,
-    timeout: Duration,
-) {
-    let deadline = Instant::now() + timeout;
-    while !delegate.loaded.get() {
-        if Instant::now() > deadline {
-            tracing::warn!(
-                node_id = %node_id,
-                url = %url,
-                timeout_secs = timeout.as_secs(),
-                "Timed out waiting for page load, proceeding anyway",
-            );
-            break;
-        }
-        servo.spin_event_loop();
-        std::thread::sleep(Duration::from_millis(1));
-    }
-}
-
-/// Force a post-load frame by triggering a `requestAnimationFrame` nudge
-/// and waiting for a new frame to be painted.
-fn nudge_frame(servo: &Servo, webview: &WebView, delegate: &FrameDelegate) {
-    let js_done = Rc::new(Cell::new(false));
-    {
-        let js_done_inner = js_done.clone();
-        webview.evaluate_javascript(
-            "new Promise(r => requestAnimationFrame(() => { \
-             document.documentElement.getBoundingClientRect(); r(); \
-             }))",
-            move |_r| js_done_inner.set(true),
-        );
-    }
-    let js_deadline = Instant::now() + Duration::from_secs(5);
-    while !js_done.get() {
-        if Instant::now() > js_deadline {
-            break;
-        }
-        servo.spin_event_loop();
-        std::thread::sleep(Duration::from_millis(1));
-    }
-
-    // Wait for at least one post-load frame_ready.
-    let frames_at_load = delegate.frames.get();
-    let frame_deadline = Instant::now() + Duration::from_secs(5);
-    while delegate.frames.get() <= frames_at_load {
-        if Instant::now() > frame_deadline {
-            break;
-        }
-        servo.spin_event_loop();
-        std::thread::sleep(Duration::from_millis(1));
-    }
 }
 
 /// Inject custom CSS into a loaded page via JavaScript.

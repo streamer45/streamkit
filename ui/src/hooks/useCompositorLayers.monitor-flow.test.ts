@@ -784,7 +784,7 @@ describe('Stale view-data gating (causal consistency)', () => {
     expect(layers1[0].width).toBe(960);
   });
 
-  it('view data without _sender/_rev metadata is always applied', () => {
+  it('view data with empty-default stamp is applied before any local commit', () => {
     seedStore();
 
     const opts = monitorOptions();
@@ -793,16 +793,52 @@ describe('Stale view-data gating (causal consistency)', () => {
       { initialProps: opts }
     );
 
-    // Bump local rev
-    bumpConfigRev(NODE_ID);
+    // localRev is 0 — the user hasn't committed anything yet.  The
+    // server stamps view-data with the empty default (`_sender: ""`,
+    // `_rev: 0`); pre-commit it's the authoritative source of geometry
+    // for auto-PiP layouts and must be accepted.
+    const preCommitLayout = {
+      ...makeServerLayout(),
+      _sender: '',
+      _rev: 0,
+    };
+    act(() => pushServerViewData(preCommitLayout));
 
-    // Server sends view data without any causal metadata
-    act(() => pushServerViewData(makeServerLayout()));
-
-    // Should be applied — no metadata means no gating
     const layers1 = getLayersFromStore(result.current.store);
     expect(layers1[0].x).toBe(160);
     expect(layers1[0].width).toBe(960);
+  });
+
+  it('view data with empty-default stamp is gated AFTER a local commit (first-drag race)', () => {
+    seedStore();
+
+    const opts = monitorOptions();
+    const { result } = renderHook(
+      (props: UseCompositorLayersOptions) => useCompositorLayers(props),
+      { initialProps: opts }
+    );
+
+    // Simulate the user's first drag: bump local rev to 1.  The server
+    // briefly continues rendering with pre-commit config and stamps
+    // view-data with the empty default (`_sender: ""`, `_rev: 0`).
+    // Without the gate this would snap the just-dragged layer back to
+    // its aspect-fitted server position.
+    bumpConfigRev(NODE_ID); // localRev = 1
+
+    // The store currently holds the full-canvas fallback (x=0, w=1280)
+    // from `seedStore`.  A pre-commit-stamped view-data tick arrives.
+    const preCommitLayout = {
+      ...makeServerLayout(),
+      _sender: '',
+      _rev: 0,
+    };
+    act(() => pushServerViewData(preCommitLayout));
+
+    // Geometry must NOT have been overwritten — the rev is below our
+    // local rev, so it's a stale pre-commit echo.
+    const layers1 = getLayersFromStore(result.current.store);
+    expect(layers1[0].x).toBe(0);
+    expect(layers1[0].width).toBe(1280);
   });
 
   it('activeInteractionRef suppresses view data during interactions', () => {

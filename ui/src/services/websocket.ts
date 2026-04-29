@@ -4,7 +4,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 
-import { getLocalConfigRev } from '@/hooks/useConfigRev';
+import { getLocalConfigRev, resetAllConfigRevs } from '@/hooks/useConfigRev';
 import {
   batchWriteNodeStates,
   batchWriteNodeStats,
@@ -95,9 +95,11 @@ export class WebSocketService {
       this.ws.onopen = () => {
         logger.info('Connected (onopen fired)');
         this.reconnectAttempts = 0;
-        // Reset sender nonce on each new connection so stale echoes from
-        // previous sessions are never mistaken for the current session's.
+        // Server resets its config_rev on restart, so our per-node
+        // counters must reset alongside the nonce — otherwise a stale
+        // localRev would gate fresh server view-data as a self-echo.
         this.clientNonce = uuidv4();
+        resetAllConfigRevs();
         this.notifyConnectionStatus(true);
         this.flushMessageQueue();
         this.resubscribeToSessions();

@@ -7,6 +7,18 @@ description: Package, sign, and publish plugins for the StreamKit marketplace
 
 This guide covers the v1 registry format for publishing StreamKit plugins (native or WASM).
 
+For official plugins in this repository, keep the marketplace metadata maintainable by editing the plugin's `plugins/native/<id>/plugin.yml` (and model metadata there) rather than hand-editing generated registry output. CI regenerates `marketplace/official-plugins.json`, and the published docs site serves the generated registry at `https://streamkit.dev/registry/index.json`.
+
+## Official plugin publishing checklist
+
+Before publishing a new official plugin, make sure it has:
+
+- `plugins/native/<id>/plugin.yml` with `id`, `version`, `artifact`, `entrypoint`, license, and any `models[]` metadata.
+- A `just build-plugin-native-<id>` target, and inclusion in `build-plugins-native` / `copy-plugins-native` if it should be part of the standard local build.
+- Model download metadata (`models[]`) for plugins that need models, so marketplace installs can download them into `[plugins].models_dir`.
+- At least one sample pipeline under `samples/pipelines/` when practical.
+- Regenerated official metadata (`python3 scripts/marketplace/generate_official_plugins.py`) if `plugin.yml` changed.
+
 ## Bundle layout
 
 Each release ships a bundle archive (for example `bundle.tar.zst`) that contains the plugin binary

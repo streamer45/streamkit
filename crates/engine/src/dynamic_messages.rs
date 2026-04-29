@@ -53,6 +53,20 @@ pub struct RuntimeSchemaUpdate {
     pub schema: serde_json::Value,
 }
 
+/// Notification emitted when a node has been *successfully* created and
+/// initialized — i.e. the plugin's constructor returned `Ok` and
+/// `initialize_node` completed without error.  This is what the WebSocket
+/// layer turns into the public `NodeAdded` event, so clients see
+/// `nodeadded` only after the engine has confirmed the node is real.
+///
+/// Failures are reported separately via `NodeStateUpdate { state: Failed }`.
+#[derive(Clone, Debug)]
+pub struct NodeAddedNotification {
+    pub node_id: String,
+    pub kind: String,
+    pub params: Option<serde_json::Value>,
+}
+
 /// Query messages for retrieving information from the engine without modifying state.
 pub enum QueryMessage {
     GetNodeStates {
@@ -81,6 +95,9 @@ pub enum QueryMessage {
     },
     SubscribeRuntimeSchemas {
         response_tx: mpsc::Sender<mpsc::UnboundedReceiver<RuntimeSchemaUpdate>>,
+    },
+    SubscribeNodeAdded {
+        response_tx: mpsc::Sender<mpsc::UnboundedReceiver<NodeAddedNotification>>,
     },
 }
 

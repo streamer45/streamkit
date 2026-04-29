@@ -99,7 +99,7 @@ impl NativeSourceNode for ServoSourcePlugin {
                     "load_timeout_secs": {
                         "type": "integer",
                         "default": 30,
-                        "description": "Maximum seconds to wait for page load",
+                        "description": "(Currently unused: page load is non-blocking; tick() returns transparent frames until the first paint.) Reserved for a future Degraded-state timeout signal.",
                         "minimum": 1
                     }
                 },
