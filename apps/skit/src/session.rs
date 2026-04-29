@@ -450,6 +450,11 @@ impl Session {
         // speculatively before the FFI call has even run.  Failures
         // surface as `NodeStateChanged { state: Failed }` via the
         // existing state forwarder above.
+        //
+        // Subscribing here (vs earlier in `create`) is safe: the engine
+        // can't have any nodes until something sends `AddNode`, and the
+        // first `AddNode` can't arrive until `create` returns the
+        // handle to its caller.
         let pipeline = Arc::new(Mutex::new(Pipeline::default()));
         let mut node_added_rx = engine_handle
             .subscribe_node_added()

@@ -22,15 +22,12 @@ use tokio::net::TcpListener;
 use tokio::time::{timeout, Duration, Instant};
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 
+type WsRead = futures_util::stream::SplitStream<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+>;
+
 /// Helper to read messages from WebSocket, skipping events until we get a response with matching correlation_id
-async fn read_response(
-    read: &mut futures_util::stream::SplitStream<
-        tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-        >,
-    >,
-    expected_correlation_id: &str,
-) -> Response {
+async fn read_response(read: &mut WsRead, expected_correlation_id: &str) -> Response {
     loop {
         let message = timeout(Duration::from_secs(15), read.next())
             .await
@@ -67,14 +64,7 @@ async fn read_response(
 /// constructor and `initialize_node` returned Ok).  Tests that read
 /// `pipeline.nodes` after `addnode` must wait for this event first,
 /// otherwise they race against the engine's background creation task.
-async fn wait_for_node_added(
-    read: &mut futures_util::stream::SplitStream<
-        tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-        >,
-    >,
-    expected_node_id: &str,
-) {
+async fn wait_for_node_added(read: &mut WsRead, expected_node_id: &str) {
     loop {
         let message = timeout(Duration::from_secs(15), read.next())
             .await
@@ -102,14 +92,7 @@ async fn wait_for_node_added(
 /// `NodeAdded` for the same id slips through first — the engine's
 /// failure path must not also emit a success.  Returns `true` when the
 /// Failed event is observed; panics on timeout.
-async fn wait_for_node_state_failed(
-    read: &mut futures_util::stream::SplitStream<
-        tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-        >,
-    >,
-    expected_node_id: &str,
-) -> bool {
+async fn wait_for_node_state_failed(read: &mut WsRead, expected_node_id: &str) -> bool {
     loop {
         let message = timeout(Duration::from_secs(15), read.next())
             .await

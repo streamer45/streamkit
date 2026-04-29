@@ -103,8 +103,10 @@ export type DraftNode = {
   params: Record<string, unknown>;
   position: { x: number; y: number };
   missingRequired: string[];
-  /** Timestamp when "Add to pipeline" was clicked; cleared on Failed. */
-  promotedAt?: number;
+  /** True between "Add to pipeline" click and the engine's
+   *  NodeAdded/Failed reply.  Cleared on Failed so the user can fix
+   *  the input and click again. */
+  inFlight?: boolean;
 };
 
 // Returns the failure reason for `NodeState::Failed`, else undefined.
@@ -430,17 +432,36 @@ const MonitorViewContent: React.FC = () => {
 
   // Drop drafts whose ids now appear in pipeline.nodes — the engine's
   // node-added forwarder only inserts after successful creation.
+  // Depend on pipeline.nodes only and read the current draft snapshot
+  // via the ref, so this doesn't re-run on every keystroke into a draft.
   useEffect(() => {
-    if (draftNodes.size === 0) return;
+    const drafts = draftNodesRef.current;
+    if (drafts.size === 0) return;
     let changed = false;
-    const next = new Map(draftNodes);
-    for (const id of draftNodes.keys()) {
+    const next = new Map(drafts);
+    for (const id of drafts.keys()) {
       if (!pipeline?.nodes[id]) continue;
       next.delete(id);
       changed = true;
     }
     if (changed) setDraftNodes(next);
-  }, [pipeline, draftNodes]);
+  }, [pipeline?.nodes]);
+
+  // Drop one or more drafts: clear their per-node atom (so a re-dropped
+  // draft with the same generated id doesn't inherit stale typed values)
+  // and remove them from the drafts map in a single setDraftNodes commit.
+  const deleteDrafts = useCallback(
+    (ids: string[]) => {
+      if (ids.length === 0) return;
+      for (const id of ids) clearNodeParams(id, selectedSessionId ?? undefined);
+      setDraftNodes((prev) => {
+        const next = new Map(prev);
+        for (const id of ids) next.delete(id);
+        return next;
+      });
+    },
+    [selectedSessionId]
+  );
 
   // Per-promotion failure subscriptions, set up by promoteDraft and
   // reaped here when the draft is dropped or its in-flight flag clears.
@@ -448,7 +469,7 @@ const MonitorViewContent: React.FC = () => {
   useEffect(() => {
     for (const [id, unsub] of failureUnsubsRef.current) {
       const d = draftNodes.get(id);
-      if (!d || d.promotedAt === undefined) {
+      if (!d || !d.inFlight) {
         unsub();
         failureUnsubsRef.current.delete(id);
       }
@@ -493,10 +514,7 @@ const MonitorViewContent: React.FC = () => {
     // Draft fingerprint excludes param values — drafts render from
     // their Jotai atom on each keystroke, no rebuild needed.
     const draftFingerprint = Array.from(draftNodes.entries())
-      .map(
-        ([id, d]) =>
-          `${id}:${d.kind}:${d.missingRequired.join(',')}:${d.promotedAt !== undefined ? '1' : '0'}`
-      )
+      .map(([id, d]) => `${id}:${d.kind}:${d.missingRequired.join(',')}:${d.inFlight ? '1' : '0'}`)
       .sort();
     const key = JSON.stringify([kinds, conns, runtimeKeys, draftFingerprint]);
     viewsLogger.debug('topoKey recalculated:', key.substring(0, 100));
@@ -605,7 +623,7 @@ const MonitorViewContent: React.FC = () => {
       // previous one's commit.
       setDraftNodes((prev) => {
         const c = prev.get(nodeId);
-        if (!c || c.promotedAt !== undefined) return prev;
+        if (!c || c.inFlight) return prev;
         const newParams = mergeDraftParam(c.params, key, value);
         const missing = computeMissingRequired(c.kind, newParams, nodeDefinitions);
         const next = new Map(prev);
@@ -622,7 +640,7 @@ const MonitorViewContent: React.FC = () => {
     (nodeId: string) => {
       const draft = draftNodesRef.current.get(nodeId);
       if (!draft) return;
-      if (draft.promotedAt !== undefined) return;
+      if (draft.inFlight) return;
       const missing = computeMissingRequired(draft.kind, draft.params, nodeDefinitions);
       if (missing.length > 0) return;
 
@@ -641,12 +659,12 @@ const MonitorViewContent: React.FC = () => {
           removeNode(nodeId);
           setDraftNodes((prev) => {
             const c = prev.get(nodeId);
-            if (!c || c.promotedAt === undefined) return prev;
+            if (!c || !c.inFlight) return prev;
             const next = new Map(prev);
             next.set(nodeId, {
               ...c,
               missingRequired: computeMissingRequired(c.kind, c.params, nodeDefinitions),
-              promotedAt: undefined,
+              inFlight: false,
             });
             return next;
           });
@@ -669,7 +687,7 @@ const MonitorViewContent: React.FC = () => {
         next.set(nodeId, {
           ...c,
           missingRequired: [],
-          promotedAt: Date.now(),
+          inFlight: true,
         });
         return next;
       });
@@ -754,26 +772,15 @@ const MonitorViewContent: React.FC = () => {
   };
 
   const onNodesDelete = (deleted: RFNode[]) => {
-    const deletedDrafts: string[] = [];
+    const draftIds: string[] = [];
     for (const n of deleted) {
       if (draftNodesRef.current.has(n.id)) {
-        deletedDrafts.push(n.id);
-        // Clear the atom so a new draft with the same generated id
-        // doesn't inherit the deleted draft's typed values.
-        clearNodeParams(n.id, selectedSessionId ?? undefined);
-        continue;
+        draftIds.push(n.id);
+      } else {
+        removeNode(n.id);
       }
-      removeNode(n.id);
     }
-    if (deletedDrafts.length > 0) {
-      setDraftNodes((prev) => {
-        const next = new Map(prev);
-        for (const id of deletedDrafts) {
-          next.delete(id);
-        }
-        return next;
-      });
-    }
+    deleteDrafts(draftIds);
   };
 
   // Deletion is handled by React Flow's built-in delete key via onNodesDelete/onEdgesDelete.
@@ -1112,7 +1119,7 @@ const MonitorViewContent: React.FC = () => {
         selectedSessionId,
         draft: {
           missingRequired: draft.missingRequired,
-          isCreating: draft.promotedAt !== undefined,
+          isCreating: !!draft.inFlight,
           onPromote: () => stablePromoteDraftRef.current(draftId),
         },
       });
@@ -1244,14 +1251,7 @@ const MonitorViewContent: React.FC = () => {
 
   const handleDeleteNode = (nodeId: string) => {
     if (draftNodesRef.current.has(nodeId)) {
-      // Clear the atom so a re-dropped draft with the same generated
-      // id doesn't inherit the deleted draft's typed values.
-      clearNodeParams(nodeId, selectedSessionId ?? undefined);
-      setDraftNodes((prev) => {
-        const next = new Map(prev);
-        next.delete(nodeId);
-        return next;
-      });
+      deleteDrafts([nodeId]);
       return;
     }
     removeNode(nodeId);
