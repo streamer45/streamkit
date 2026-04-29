@@ -154,6 +154,19 @@ describe('NodePalette', () => {
     expect(screen.queryByLabelText('Filter by Plugin')).not.toBeInTheDocument();
   });
 
+  it('uses OR logic across multiple active filter chips', () => {
+    render(<NodePalette {...defaultProps} />);
+    const coreChip = screen.getByLabelText('Filter by core');
+    const transportChip = screen.getByLabelText('Filter by transport');
+    fireEvent.click(coreChip);
+    fireEvent.click(transportChip);
+
+    // OR: shows nodes from both categories
+    expect(screen.getByText('2 nodes found')).toBeInTheDocument();
+    expect(screen.getByText('core::passthrough')).toBeInTheDocument();
+    expect(screen.getByText('transport::moq_pull')).toBeInTheDocument();
+  });
+
   it('toggles filter chip off on second click', () => {
     render(<NodePalette {...defaultProps} />);
     const audioChip = screen.getByLabelText('Filter by audio');
