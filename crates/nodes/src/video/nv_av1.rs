@@ -158,7 +158,7 @@ impl ProcessorNode for NvAv1DecoderNode {
                 codec: shiguredo_nvcodec::DecoderCodec::Av1,
                 #[allow(clippy::cast_possible_wrap)]
                 device_id: cuda_device as i32,
-                max_num_decode_surfaces: 8,
+                max_num_decode_surfaces: 20,
                 max_display_delay: 0, // low-latency
                 surface_format: shiguredo_nvcodec::SurfaceFormat::Nv12,
             };
@@ -755,7 +755,7 @@ mod tests {
         let config = shiguredo_nvcodec::DecoderConfig {
             codec: shiguredo_nvcodec::DecoderCodec::Av1,
             device_id: 0,
-            max_num_decode_surfaces: 8,
+            max_num_decode_surfaces: 20,
             max_display_delay: 0,
             surface_format: shiguredo_nvcodec::SurfaceFormat::Nv12,
         };
