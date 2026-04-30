@@ -155,13 +155,15 @@ impl ProcessorNode for NvAv1DecoderNode {
         let cuda_device = self.config.cuda_device.unwrap_or(0);
         let decode_task = tokio::task::spawn_blocking(move || {
             let nv_config = shiguredo_nvcodec::DecoderConfig {
+                codec: shiguredo_nvcodec::DecoderCodec::Av1,
                 #[allow(clippy::cast_possible_wrap)]
                 device_id: cuda_device as i32,
+                max_num_decode_surfaces: 8,
                 max_display_delay: 0, // low-latency
-                ..shiguredo_nvcodec::DecoderConfig::default()
+                surface_format: shiguredo_nvcodec::SurfaceFormat::Nv12,
             };
 
-            let mut decoder = match shiguredo_nvcodec::Decoder::new_av1(nv_config) {
+            let mut decoder = match shiguredo_nvcodec::Decoder::new(nv_config) {
                 Ok(d) => d,
                 Err(err) => {
                     let _ = result_tx.blocking_send(Err(format!(
@@ -527,25 +529,28 @@ impl StandardVideoEncoder for NvAv1Encoder {
         let cuda_device = config.cuda_device.unwrap_or(0);
 
         let nv_config = shiguredo_nvcodec::EncoderConfig {
+            codec: shiguredo_nvcodec::CodecConfig::Av1(shiguredo_nvcodec::Av1EncoderConfig {
+                profile: None,
+                idr_period: config.keyframe_interval,
+            }),
             width,
             height,
-            fps_numerator: config.framerate,
-            fps_denominator: 1,
-            target_bitrate: Some(config.bitrate),
+            framerate_num: config.framerate,
+            framerate_den: 1,
+            average_bitrate: Some(config.bitrate),
             preset: shiguredo_nvcodec::Preset::P1, // fastest for real-time
             tuning_info: shiguredo_nvcodec::TuningInfo::LOW_LATENCY,
             rate_control_mode: shiguredo_nvcodec::RateControlMode::Cbr,
             gop_length: config.keyframe_interval,
-            idr_period: config.keyframe_interval,
             frame_interval_p: 1, // no B-frames for low latency
-            profile: None,
+            buffer_format: shiguredo_nvcodec::BufferFormat::Nv12,
             #[allow(clippy::cast_possible_wrap)]
             device_id: cuda_device as i32,
             max_encode_width: None,
             max_encode_height: None,
         };
 
-        let encoder = shiguredo_nvcodec::Encoder::new_av1(nv_config).map_err(|err| {
+        let encoder = shiguredo_nvcodec::Encoder::new(nv_config).map_err(|err| {
             format!("NVENC: failed to create AV1 encoder on GPU {cuda_device}: {err}")
         })?;
 
@@ -574,8 +579,14 @@ impl StandardVideoEncoder for NvAv1Encoder {
             },
         };
 
+        let encode_options = shiguredo_nvcodec::EncodeOptions {
+            force_intra: false,
+            force_idr: false,
+            output_spspps: false,
+        };
+
         self.encoder
-            .encode(&nv12_data)
+            .encode(&nv12_data, &encode_options)
             .map_err(|err| format!("NVENC: AV1 encode failed: {err}"))?;
 
         Ok(self.drain_packets(metadata))
@@ -742,11 +753,13 @@ mod tests {
             return false;
         }
         let config = shiguredo_nvcodec::DecoderConfig {
+            codec: shiguredo_nvcodec::DecoderCodec::Av1,
             device_id: 0,
+            max_num_decode_surfaces: 8,
             max_display_delay: 0,
-            ..shiguredo_nvcodec::DecoderConfig::default()
+            surface_format: shiguredo_nvcodec::SurfaceFormat::Nv12,
         };
-        shiguredo_nvcodec::Decoder::new_av1(config).is_ok()
+        shiguredo_nvcodec::Decoder::new(config).is_ok()
     }
 
     /// Returns `true` if NVENC AV1 encoding is available on device 0.
@@ -756,23 +769,26 @@ mod tests {
             return false;
         }
         let config = shiguredo_nvcodec::EncoderConfig {
+            codec: shiguredo_nvcodec::CodecConfig::Av1(shiguredo_nvcodec::Av1EncoderConfig {
+                profile: None,
+                idr_period: Some(1),
+            }),
             width: 64,
             height: 64,
-            fps_numerator: 30,
-            fps_denominator: 1,
-            target_bitrate: Some(2_000_000),
+            framerate_num: 30,
+            framerate_den: 1,
+            average_bitrate: Some(2_000_000),
             preset: shiguredo_nvcodec::Preset::P1,
             tuning_info: shiguredo_nvcodec::TuningInfo::LOW_LATENCY,
             rate_control_mode: shiguredo_nvcodec::RateControlMode::Cbr,
             gop_length: Some(1),
-            idr_period: Some(1),
             frame_interval_p: 1,
-            profile: None,
+            buffer_format: shiguredo_nvcodec::BufferFormat::Nv12,
             device_id: 0,
             max_encode_width: None,
             max_encode_height: None,
         };
-        shiguredo_nvcodec::Encoder::new_av1(config).is_ok()
+        shiguredo_nvcodec::Encoder::new(config).is_ok()
     }
 
     // ── Unit tests (no GPU required) ────────────────────────────────────────
