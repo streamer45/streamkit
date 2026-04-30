@@ -39,7 +39,7 @@ base64 = "0.22"
 semver = "1.0"
 
 # For serializing the default config into TOML format
-toml = "1.0"
+toml = "1.1"
 
 # For structured logging
 tracing = { workspace = true }
@@ -56,7 +56,7 @@ tower-http = { version = "0.6", features = ["cors", "trace", "fs", "set-header"]
 tokio-stream = "0.1.18"
 hyper = { version = "1.9", features = ["full"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
-rustls = { version = "0.23.36", features = ["ring"] }
+rustls = { version = "0.23", features = ["ring"] }
 reqwest = { version = "0.13", features = ["multipart", "json"] }
 bytes = { workspace = true }
 futures = { workspace = true }
@@ -115,7 +115,7 @@ jemalloc_pprof = { version = "0.8", features = ["symbolize"], optional = true }
 dhat = { version = "0.3", optional = true }
 
 # MoQ support (optional)
-moq-native = { version = "0.13.12", optional = true }
+moq-native = { version = "0.13.13", optional = true }
 async-trait = { workspace = true }
 
 # For glob pattern matching in permissions
@@ -126,14 +126,14 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 
 # For built-in authentication
 jsonwebtoken = { version = "10.2.0", default-features = false, features = ["aws_lc_rs"] }
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
 thiserror = "2.0"
 getrandom = "0.4"
 aws-lc-rs = "1"
 
 # For MoQ auth path matching (optional, with moq feature)
-moq-lite = { version = "0.15.13", optional = true }
+moq-lite = { version = "0.15.15", optional = true }
 blake2 = "0.10.6"
 async-stream = "0.3.6"
 
