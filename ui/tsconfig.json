@@ -9,6 +9,7 @@
       "DOM"
     ],
     "skipLibCheck": true,
+    "types": ["node"],
     /* Bundler mode */
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
