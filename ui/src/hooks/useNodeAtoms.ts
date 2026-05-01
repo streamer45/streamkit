@@ -10,10 +10,12 @@
  * node — not every node on the canvas.
  *
  * Params are deliberately NOT read from atoms in node components.
- * Individual slider/toggle/text controls subscribe to the params atom
- * directly via `useNumericSlider` / `useTuneNode`, which confines
- * re-renders to just the control that changed — rather than the entire
- * node subtree on every drag tick.
+ * Most controls (sliders, toggles, text inputs) subscribe to the params
+ * atom directly via `useNumericSlider` / `useTuneNode`, which confines
+ * re-renders to just the control that changed.  Compositor layers are
+ * an exception — they receive params as a prop from the node component
+ * and sync remote changes via `compositorServerSync` (view data) rather
+ * than the params atom.  See #398 for improving this.
  *
  * When `sessionId` is available (monitor view), the hook subscribes to
  * the per-node atom family.  When absent (design view), it falls back to

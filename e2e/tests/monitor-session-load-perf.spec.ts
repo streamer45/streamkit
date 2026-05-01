@@ -181,11 +181,15 @@ test.describe('Monitor Session Load Perf — Re-render Budget', () => {
     // without hanging or crashing.
     //
     // Render-budget gates: catch regressions in ConfigurableNode renders
-    // during session load.  Node components now read state/params from
-    // per-node Jotai atoms instead of ReactFlow data props, so a state
-    // change on one node no longer forces every node to re-render.
-    // The render count still depends on how many distinct state
-    // transitions arrive per node (timing-dependent across RAF frames).
+    // during session load.  Node components read state from per-node
+    // Jotai atoms (not ReactFlow data props), so a state change on one
+    // node no longer forces every node to re-render.  Params are still
+    // passed via data props; individual controls subscribe to the params
+    // atom directly.
+    //
+    // The render count depends on how many distinct state transitions
+    // arrive per node (timing-dependent across RAF frames).  The budget
+    // must accommodate CI variance (scheduling jitter, slow VMs).
     const configurableData = snapshot.components['ConfigurableNode'];
     expect(
       configurableData,

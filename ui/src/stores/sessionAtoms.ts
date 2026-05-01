@@ -101,7 +101,6 @@ export function writeNodeParams(
 /** Clear node params atom for a specific node. */
 export function clearNodeParams(nodeId: string, sessionId?: string): void {
   const k = sessionId ? `${sessionId}\0${nodeId}` : nodeId;
-  sessionStore.set(nodeParamsAtom(k), {});
   nodeParamsAtom.remove(k);
 }
 
@@ -192,19 +191,15 @@ export function clearSessionAtoms(sessionId: string): void {
   const paramKeys = [...nodeParamsAtom.getParams()].filter((k) => k.startsWith(prefix));
 
   for (const key of stateKeys) {
-    sessionStore.set(nodeStateAtom(key), null);
     nodeStateAtom.remove(key);
   }
   for (const key of statsKeys) {
-    sessionStore.set(nodeStatsAtom(key), null);
     nodeStatsAtom.remove(key);
   }
   for (const key of viewKeys) {
-    sessionStore.set(nodeViewDataAtom(key), undefined);
     nodeViewDataAtom.remove(key);
   }
   for (const key of paramKeys) {
-    sessionStore.set(nodeParamsAtom(key), {});
     nodeParamsAtom.remove(key);
   }
 

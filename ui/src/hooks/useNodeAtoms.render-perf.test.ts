@@ -94,8 +94,10 @@ describe('useNodeStateFromAtom render-performance', () => {
         },
       }
     );
-    // Mount + subscription sync + 3 distinct state transitions = 5.
-    // (The deepEqual guard deduplicates the second 'Running'.)
+    // Mount + subscription sync + 4 state transitions = up to 6.
+    // All four transitions are distinct from the previous atom value
+    // (null→Init, Init→Running, Running→Ready, Ready→Running), so
+    // deepEqual does not deduplicate any of them.
     // Allow headroom for React batching variance.
     expect(result.meanRenderCount).toBeGreaterThanOrEqual(3);
     expect(result.meanRenderCount).toBeLessThanOrEqual(7);
