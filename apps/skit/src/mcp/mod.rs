@@ -1090,9 +1090,11 @@ fn diff_pipeline(current: &Pipeline, desired: &Pipeline) -> Vec<streamkit_api::B
         }
     }
 
-    // 4. Connect new connections.
+    // 4. Connect new connections and re-connect connections touching replaced nodes.
     for conn in &desired.connections {
-        if !current_conns.contains(&conn_key(conn)) {
+        let touches_replaced = replaced_node_ids.contains(conn.from_node.as_str())
+            || replaced_node_ids.contains(conn.to_node.as_str());
+        if !current_conns.contains(&conn_key(conn)) || touches_replaced {
             ops.push(BatchOperation::Connect {
                 from_node: conn.from_node.clone(),
                 from_pin: conn.from_pin.clone(),
