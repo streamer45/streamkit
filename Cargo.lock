@@ -6291,6 +6291,7 @@ dependencies = [
  "streamkit-plugin-sdk-native",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
