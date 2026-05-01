@@ -1303,6 +1303,509 @@ async fn mcp_modify_sessions_permission_denied() {
 }
 
 // ---------------------------------------------------------------------------
+// Extended batch mutation tests (connect, disconnect, removenode, multi-op)
+// ---------------------------------------------------------------------------
+
+/// Two-node pipeline for connection tests.
+const TWO_NODE_YAML: &str =
+    "nodes:\n  src:\n    kind: core::passthrough\n  dst:\n    kind: core::passthrough";
+
+#[tokio::test]
+async fn mcp_apply_batch_connect_and_disconnect() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let mcp_session = init_mcp_session(&client, addr, &token).await;
+
+    let skit_session =
+        create_skit_session(&client, addr, &token, &mcp_session, TWO_NODE_YAML).await;
+
+    // 1. Connect src → dst
+    let connect = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "apply_batch",
+            "arguments": {
+                "session_id": skit_session,
+                "operations": [
+                    {
+                        "action": "connect",
+                        "from_node": "src", "from_pin": "out",
+                        "to_node": "dst", "to_pin": "in"
+                    }
+                ]
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &connect, &token, &mcp_session).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let text = body["result"]["content"][0]["text"].as_str().expect("connect text");
+    let result: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(result["success"], true);
+
+    // Verify connection exists in pipeline
+    let get = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "get_pipeline",
+            "arguments": { "session_id": skit_session }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &get, &token, &mcp_session).await;
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let text = body["result"]["content"][0]["text"].as_str().expect("pipeline text");
+    let pipeline: serde_json::Value = serde_json::from_str(text).unwrap();
+    let conns = pipeline["connections"].as_array().expect("connections array");
+    assert_eq!(conns.len(), 1, "expected 1 connection after connect");
+    assert_eq!(conns[0]["from_node"], "src");
+    assert_eq!(conns[0]["to_node"], "dst");
+
+    // 2. Disconnect src → dst
+    let disconnect = json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": {
+            "name": "apply_batch",
+            "arguments": {
+                "session_id": skit_session,
+                "operations": [
+                    {
+                        "action": "disconnect",
+                        "from_node": "src", "from_pin": "out",
+                        "to_node": "dst", "to_pin": "in"
+                    }
+                ]
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &disconnect, &token, &mcp_session).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let text = body["result"]["content"][0]["text"].as_str().expect("disconnect text");
+    let result: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(result["success"], true);
+
+    // Verify connection is gone
+    let res = mcp_post_with_session(&client, addr, &get, &token, &mcp_session).await;
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let text = body["result"]["content"][0]["text"].as_str().expect("pipeline text");
+    let pipeline: serde_json::Value = serde_json::from_str(text).unwrap();
+    let conns = pipeline["connections"].as_array().expect("connections array");
+    assert!(conns.is_empty(), "expected 0 connections after disconnect");
+
+    // Clean up
+    let destroy = json!({
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "tools/call",
+        "params": { "name": "destroy_session", "arguments": { "session_id": skit_session } }
+    });
+    let _ = mcp_post_with_session(&client, addr, &destroy, &token, &mcp_session).await;
+}
+
+#[tokio::test]
+async fn mcp_apply_batch_remove_node() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let mcp_session = init_mcp_session(&client, addr, &token).await;
+
+    let skit_session =
+        create_skit_session(&client, addr, &token, &mcp_session, TWO_NODE_YAML).await;
+
+    // Remove "dst" node
+    let remove = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "apply_batch",
+            "arguments": {
+                "session_id": skit_session,
+                "operations": [
+                    { "action": "removenode", "node_id": "dst" }
+                ]
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &remove, &token, &mcp_session).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let text = body["result"]["content"][0]["text"].as_str().expect("removenode text");
+    let result: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(result["success"], true);
+
+    // Verify node is gone
+    let get = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "get_pipeline",
+            "arguments": { "session_id": skit_session }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &get, &token, &mcp_session).await;
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let text = body["result"]["content"][0]["text"].as_str().expect("pipeline text");
+    let pipeline: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert!(pipeline["nodes"]["src"].is_object(), "expected 'src' node");
+    assert!(pipeline["nodes"]["dst"].is_null(), "expected 'dst' to be removed");
+
+    // Clean up
+    let destroy = json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": { "name": "destroy_session", "arguments": { "session_id": skit_session } }
+    });
+    let _ = mcp_post_with_session(&client, addr, &destroy, &token, &mcp_session).await;
+}
+
+#[tokio::test]
+async fn mcp_apply_batch_multi_operation() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let mcp_session = init_mcp_session(&client, addr, &token).await;
+
+    let skit_session =
+        create_skit_session(&client, addr, &token, &mcp_session, PASSTHROUGH_YAML).await;
+
+    // Multi-op: add a node + connect it to the existing one
+    let apply = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "apply_batch",
+            "arguments": {
+                "session_id": skit_session,
+                "operations": [
+                    { "action": "addnode", "node_id": "sink", "kind": "core::passthrough" },
+                    {
+                        "action": "connect",
+                        "from_node": "pass", "from_pin": "out",
+                        "to_node": "sink", "to_pin": "in"
+                    }
+                ]
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &apply, &token, &mcp_session).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let text = body["result"]["content"][0]["text"].as_str().expect("multi-op text");
+    let result: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(result["success"], true);
+
+    // Verify both nodes and connection exist
+    let get = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "get_pipeline",
+            "arguments": { "session_id": skit_session }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &get, &token, &mcp_session).await;
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let text = body["result"]["content"][0]["text"].as_str().expect("pipeline text");
+    let pipeline: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert!(pipeline["nodes"]["pass"].is_object(), "expected 'pass' node");
+    assert!(pipeline["nodes"]["sink"].is_object(), "expected 'sink' node");
+    let conns = pipeline["connections"].as_array().expect("connections array");
+    assert_eq!(conns.len(), 1, "expected 1 connection");
+
+    // Clean up
+    let destroy = json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": { "name": "destroy_session", "arguments": { "session_id": skit_session } }
+    });
+    let _ = mcp_post_with_session(&client, addr, &destroy, &token, &mcp_session).await;
+}
+
+// ---------------------------------------------------------------------------
+// update_pipeline tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn mcp_update_pipeline_add_node() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let mcp_session = init_mcp_session(&client, addr, &token).await;
+
+    let skit_session =
+        create_skit_session(&client, addr, &token, &mcp_session, PASSTHROUGH_YAML).await;
+
+    // Update: add a second node
+    let new_yaml =
+        "nodes:\n  pass:\n    kind: core::passthrough\n  extra:\n    kind: core::passthrough";
+
+    let update = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "update_pipeline",
+            "arguments": {
+                "session_id": skit_session,
+                "yaml": new_yaml
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &update, &token, &mcp_session).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let text = body["result"]["content"][0]["text"].as_str().expect("update_pipeline text");
+    let result: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(result["operations_applied"], 1, "expected 1 addnode operation");
+
+    // Verify both nodes exist
+    let get = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "get_pipeline",
+            "arguments": { "session_id": skit_session }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &get, &token, &mcp_session).await;
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let text = body["result"]["content"][0]["text"].as_str().expect("pipeline text");
+    let pipeline: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert!(pipeline["nodes"]["pass"].is_object(), "expected 'pass' node");
+    assert!(pipeline["nodes"]["extra"].is_object(), "expected 'extra' node added by update");
+
+    // Clean up
+    let destroy = json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": { "name": "destroy_session", "arguments": { "session_id": skit_session } }
+    });
+    let _ = mcp_post_with_session(&client, addr, &destroy, &token, &mcp_session).await;
+}
+
+#[tokio::test]
+async fn mcp_update_pipeline_remove_node() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let mcp_session = init_mcp_session(&client, addr, &token).await;
+
+    let skit_session =
+        create_skit_session(&client, addr, &token, &mcp_session, TWO_NODE_YAML).await;
+
+    // Update: keep only "src"
+    let new_yaml = "nodes:\n  src:\n    kind: core::passthrough";
+
+    let update = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "update_pipeline",
+            "arguments": {
+                "session_id": skit_session,
+                "yaml": new_yaml
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &update, &token, &mcp_session).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let text = body["result"]["content"][0]["text"].as_str().expect("update_pipeline text");
+    let result: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(result["operations_applied"], 1, "expected 1 removenode operation");
+
+    // Verify only "src" remains
+    let get = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "get_pipeline",
+            "arguments": { "session_id": skit_session }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &get, &token, &mcp_session).await;
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let text = body["result"]["content"][0]["text"].as_str().expect("pipeline text");
+    let pipeline: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert!(pipeline["nodes"]["src"].is_object(), "expected 'src' node");
+    assert!(pipeline["nodes"]["dst"].is_null(), "expected 'dst' removed by update");
+
+    // Clean up
+    let destroy = json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": { "name": "destroy_session", "arguments": { "session_id": skit_session } }
+    });
+    let _ = mcp_post_with_session(&client, addr, &destroy, &token, &mcp_session).await;
+}
+
+#[tokio::test]
+async fn mcp_update_pipeline_no_changes() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let mcp_session = init_mcp_session(&client, addr, &token).await;
+
+    let skit_session =
+        create_skit_session(&client, addr, &token, &mcp_session, PASSTHROUGH_YAML).await;
+
+    // Update with the same YAML — should be a no-op.
+    let update = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "update_pipeline",
+            "arguments": {
+                "session_id": skit_session,
+                "yaml": PASSTHROUGH_YAML
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &update, &token, &mcp_session).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let text = body["result"]["content"][0]["text"].as_str().expect("update_pipeline text");
+    let result: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(result["operations_applied"], 0, "expected 0 operations for identical YAML");
+
+    // Clean up
+    let destroy = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": { "name": "destroy_session", "arguments": { "session_id": skit_session } }
+    });
+    let _ = mcp_post_with_session(&client, addr, &destroy, &token, &mcp_session).await;
+}
+
+#[tokio::test]
+async fn mcp_update_pipeline_invalid_yaml() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let mcp_session = init_mcp_session(&client, addr, &token).await;
+
+    let skit_session =
+        create_skit_session(&client, addr, &token, &mcp_session, PASSTHROUGH_YAML).await;
+
+    let update = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "update_pipeline",
+            "arguments": {
+                "session_id": skit_session,
+                "yaml": "not: valid: yaml: [["
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &update, &token, &mcp_session).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let error = &body["error"];
+    assert!(!error.is_null(), "expected error for invalid YAML, got: {body}");
+
+    // Clean up
+    let destroy = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": { "name": "destroy_session", "arguments": { "session_id": skit_session } }
+    });
+    let _ = mcp_post_with_session(&client, addr, &destroy, &token, &mcp_session).await;
+}
+
+#[tokio::test]
+async fn mcp_update_pipeline_permission_denied() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    // Start a server where modify_sessions is disabled for admin
+    let listener =
+        TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind test server listener");
+    let addr = listener.local_addr().unwrap();
+    let temp_dir = TempDir::new().unwrap();
+
+    let mut config = Config::default();
+    config.mcp.enabled = true;
+    config.auth.mode = streamkit_server::config::AuthMode::Enabled;
+    config.auth.state_dir = temp_dir.path().to_string_lossy().to_string();
+
+    if let Some(admin_perms) = config.permissions.roles.get_mut("admin") {
+        admin_perms.modify_sessions = false;
+    }
+
+    let auth_state = streamkit_server::auth::AuthState::new(&config.auth, true)
+        .await
+        .expect("Failed to init auth state");
+    let auth_state = Arc::new(auth_state);
+
+    let admin_token_path = temp_dir.path().join("admin.token");
+    let admin_token =
+        tokio::fs::read_to_string(&admin_token_path).await.expect("Missing admin.token");
+    let admin_token = admin_token.trim().to_string();
+
+    let (app, _state) = streamkit_server::server::create_app(config, Some(auth_state));
+    let _server_handle = tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service()).await.unwrap();
+    });
+
+    wait_for_healthz(addr).await;
+
+    let client = reqwest::Client::new();
+    let mcp_session = init_mcp_session(&client, addr, &admin_token).await;
+
+    let update = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "update_pipeline",
+            "arguments": {
+                "session_id": "any",
+                "yaml": PASSTHROUGH_YAML
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &update, &admin_token, &mcp_session).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let error = &body["error"];
+    assert!(!error.is_null(), "expected error for update_pipeline, got: {body}");
+    assert!(
+        error["message"].as_str().unwrap_or("").contains("Permission denied"),
+        "expected permission denied"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Plugin & node-definition tools
 // ---------------------------------------------------------------------------
 

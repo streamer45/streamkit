@@ -276,6 +276,17 @@ pub struct GetNodeDefinitionArgs {
     pub kind: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct UpdatePipelineArgs {
+    /// Session ID or name.
+    pub session_id: String,
+    /// New pipeline YAML defining the desired state. The tool will diff
+    /// this against the current pipeline and apply the minimal set of
+    /// batch operations (addnode, removenode, connect, disconnect) to
+    /// reconcile the running session.
+    pub yaml: String,
+}
+
 // ---------------------------------------------------------------------------
 // StreamKit MCP service
 // ---------------------------------------------------------------------------
@@ -935,6 +946,145 @@ impl StreamKitMcp {
 
         json_tool_result(&definition)
     }
+
+    // -- update_pipeline ---------------------------------------------------
+
+    #[tool(
+        description = "Update a running session's pipeline to match new YAML. Diffs the desired state against the current pipeline and applies the minimal set of batch operations (addnode, removenode, connect, disconnect). Returns the list of operations applied. Only nodes and connections are diffed — use tune_node separately to update runtime parameters."
+    )]
+    async fn update_pipeline(
+        &self,
+        Parameters(args): Parameters<UpdatePipelineArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let (session, _role_name, perms) = resolve_session(
+            &self.app_state,
+            &args.session_id,
+            &ctx,
+            |p| p.modify_sessions,
+            "modify_sessions",
+        )
+        .await?;
+
+        // Parse and compile the desired YAML.
+        let user_pipeline = streamkit_api::yaml::parse_yaml(&args.yaml)
+            .map_err(|e| McpError::invalid_params(format!("Invalid pipeline YAML: {e}"), None))?;
+
+        let desired = streamkit_api::yaml::compile(user_pipeline).map_err(|e| {
+            McpError::invalid_params(format!("Pipeline compilation error: {e}"), None)
+        })?;
+
+        // Snapshot the current pipeline state.
+        let current = { session.pipeline.lock().await.clone() };
+
+        // Compute diff → batch operations.
+        let operations = diff_pipeline(&current, &desired);
+
+        if operations.is_empty() {
+            info!(session_id = %args.session_id, "MCP update_pipeline (no changes)");
+            let result = serde_json::json!({
+                "operations_applied": 0,
+                "operations": [],
+            });
+            return json_tool_result(&result);
+        }
+
+        // Apply via the shared batch path (validates + applies).
+        crate::server::apply_batch_operations(
+            &session,
+            operations.clone(),
+            &perms,
+            &self.app_state.config.security,
+        )
+        .await
+        .map_err(|e| McpError::invalid_params(e, None))?;
+
+        info!(
+            session_id = %args.session_id,
+            ops = operations.len(),
+            "MCP update_pipeline"
+        );
+
+        let result = serde_json::json!({
+            "operations_applied": operations.len(),
+            "operations": operations,
+        });
+        json_tool_result(&result)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline diffing
+// ---------------------------------------------------------------------------
+
+/// Compute the minimal set of `BatchOperation`s to reconcile `current` into
+/// `desired`.  Ordering: disconnects → removes → adds → connects.
+fn diff_pipeline(current: &Pipeline, desired: &Pipeline) -> Vec<streamkit_api::BatchOperation> {
+    use std::collections::HashSet;
+    use streamkit_api::BatchOperation;
+
+    // Connection identity: (from_node, from_pin, to_node, to_pin).
+    type ConnKey = (String, String, String, String);
+    fn conn_key(c: &streamkit_api::Connection) -> ConnKey {
+        (c.from_node.clone(), c.from_pin.clone(), c.to_node.clone(), c.to_pin.clone())
+    }
+
+    let mut ops: Vec<BatchOperation> = Vec::new();
+
+    let current_node_ids: HashSet<&str> = current.nodes.keys().map(String::as_str).collect();
+    let desired_node_ids: HashSet<&str> = desired.nodes.keys().map(String::as_str).collect();
+
+    let current_conns: HashSet<ConnKey> = current.connections.iter().map(conn_key).collect();
+    let desired_conns: HashSet<ConnKey> = desired.connections.iter().map(conn_key).collect();
+
+    // 1. Disconnect removed connections (that aren't on nodes being removed).
+    for conn in &current.connections {
+        let key = conn_key(conn);
+        if !desired_conns.contains(&key)
+            && desired_node_ids.contains(conn.from_node.as_str())
+            && desired_node_ids.contains(conn.to_node.as_str())
+        {
+            ops.push(BatchOperation::Disconnect {
+                from_node: conn.from_node.clone(),
+                from_pin: conn.from_pin.clone(),
+                to_node: conn.to_node.clone(),
+                to_pin: conn.to_pin.clone(),
+            });
+        }
+    }
+
+    // 2. Remove nodes that no longer exist.
+    for node_id in &current_node_ids {
+        if !desired_node_ids.contains(node_id) {
+            ops.push(BatchOperation::RemoveNode { node_id: (*node_id).to_string() });
+        }
+    }
+
+    // 3. Add new nodes.
+    for (node_id, node) in &desired.nodes {
+        if !current_node_ids.contains(node_id.as_str()) {
+            ops.push(BatchOperation::AddNode {
+                node_id: node_id.clone(),
+                kind: node.kind.clone(),
+                params: node.params.clone(),
+            });
+        }
+    }
+
+    // 4. Connect new connections.
+    for conn in &desired.connections {
+        if !current_conns.contains(&conn_key(conn)) {
+            ops.push(BatchOperation::Connect {
+                from_node: conn.from_node.clone(),
+                from_pin: conn.from_pin.clone(),
+                to_node: conn.to_node.clone(),
+                to_pin: conn.to_pin.clone(),
+                mode: conn.mode,
+            });
+        }
+    }
+
+    ops
 }
 
 // ---------------------------------------------------------------------------
@@ -959,6 +1109,7 @@ impl ServerHandler for StreamKitMcp {
              to manage dynamic pipeline sessions. Use validate_batch and \
              apply_batch to mutate a running session's graph as a validated batch, \
              tune_node to send control messages, \
+             update_pipeline to apply a YAML diff to a running session, \
              generate_oneshot_command to get a command for batch processing, \
              get_logs to retrieve recent server logs for debugging, and \
              resources/list to browse sample pipeline templates. \
