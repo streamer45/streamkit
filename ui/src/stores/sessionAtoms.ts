@@ -96,7 +96,10 @@ export function writeNodeParams(
       cleaned[key] = value;
     }
   }
-  sessionStore.set(nodeParamsAtom(k), deepMerge(current, cleaned));
+  const merged = deepMerge(current, cleaned);
+  if (!deepEqual(current, merged)) {
+    sessionStore.set(nodeParamsAtom(k), merged);
+  }
 }
 
 /** Clear node params atom for a specific node. */
@@ -164,7 +167,11 @@ export function seedPipelineAtoms(sessionId: string, pipeline: Pipeline): void {
   if (pipeline.nodes) {
     for (const [nodeId, node] of Object.entries(pipeline.nodes)) {
       if (node.state) {
-        sessionStore.set(nodeStateAtom(nodeKey(sessionId, nodeId)), node.state);
+        const key = nodeKey(sessionId, nodeId);
+        const current = sessionStore.get(nodeStateAtom(key));
+        if (!deepEqual(current, node.state)) {
+          sessionStore.set(nodeStateAtom(key), node.state);
+        }
       }
     }
   }
