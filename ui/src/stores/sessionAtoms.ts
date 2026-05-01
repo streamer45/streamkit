@@ -72,6 +72,7 @@ export function writeNodeParam(
 ): void {
   const k = sessionId ? `${sessionId}\0${nodeId}` : nodeId;
   const current = sessionStore.get(nodeParamsAtom(k));
+  if (current[key] === value) return;
   sessionStore.set(nodeParamsAtom(k), { ...current, [key]: value });
 }
 
