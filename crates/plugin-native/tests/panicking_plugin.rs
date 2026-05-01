@@ -26,8 +26,7 @@ use tokio::sync::mpsc;
 /// The build script (`build.rs`) compiles the fixture crate and writes
 /// the artefact path to `OUT_DIR/panicking_plugin_path`.
 fn fixture_so_path() -> PathBuf {
-    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR must be set by Cargo");
-    let path_file = PathBuf::from(out_dir).join("panicking_plugin_path");
+    let path_file = PathBuf::from(env!("OUT_DIR")).join("panicking_plugin_path");
     let path_str = std::fs::read_to_string(&path_file).unwrap_or_else(|e| {
         panic!("Failed to read {}: {e}. Was the build script skipped?", path_file.display());
     });

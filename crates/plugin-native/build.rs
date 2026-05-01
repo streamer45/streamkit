@@ -23,7 +23,7 @@ fn main() {
     let fixture_dir = manifest_dir.join("../../tests/fixtures/panicking-plugin");
 
     // Rebuild when the fixture source or its SDK dependency changes.
-    println!("cargo::rerun-if-changed={}", fixture_dir.join("src/lib.rs").display());
+    println!("cargo::rerun-if-changed={}", fixture_dir.join("src").display());
     println!("cargo::rerun-if-changed={}", fixture_dir.join("Cargo.toml").display());
     let sdk_dir = manifest_dir.join("../../sdks/plugin-sdk/native/src");
     println!("cargo::rerun-if-changed={}", sdk_dir.display());
