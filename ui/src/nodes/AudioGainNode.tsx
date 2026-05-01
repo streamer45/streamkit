@@ -9,6 +9,7 @@ import React, { useEffect, useRef } from 'react';
 
 import { NodeFrame } from '@/components/node/NodeFrame';
 import { LiveBadge, LiveDot } from '@/components/ui/LiveIndicator';
+import { useNodeParamsFromAtom, useNodeStateFromAtom } from '@/hooks/useNodeAtoms';
 import { useNumericSlider } from '@/hooks/useNumericSlider';
 import { areNodePropsEqual } from '@/nodes/nodePropsEqual';
 import { perfOnRender } from '@/perf';
@@ -98,7 +99,13 @@ const AudioGainNode: React.FC<AudioGainNodeProps> = React.memo(function AudioGai
   selected,
 }) {
   nodesLogger.debug('AudioGainNode Render:', id);
-  const propGain = (data.params?.gain as number) ?? 1.0;
+
+  // Read state + params from per-node Jotai atoms so that updates
+  // re-render only *this* node instead of every node on the canvas.
+  const state = useNodeStateFromAtom(id, data.sessionId, data.state);
+  const params = useNodeParamsFromAtom(id, data.sessionId, data.params as Record<string, unknown>);
+
+  const propGain = (params?.gain as number) ?? 1.0;
 
   const { localValue, handleChange, handlePointerDown, handlePointerUp, disabled } =
     useNumericSlider({
@@ -156,7 +163,7 @@ const AudioGainNode: React.FC<AudioGainNodeProps> = React.memo(function AudioGai
       minWidth={180}
       inputs={data.inputs}
       outputs={data.outputs}
-      state={data.state}
+      state={state}
       sessionId={data.sessionId}
       draft={data.draft}
     >

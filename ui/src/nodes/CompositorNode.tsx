@@ -15,6 +15,7 @@ import { useCompositorKeyboard } from '@/hooks/compositorKeyboard';
 import { useCompositorLayers } from '@/hooks/useCompositorLayers';
 import type { LayerKind } from '@/hooks/useCompositorLayers';
 import { clearCompositorSelection, setCompositorSelection } from '@/hooks/useCompositorSelection';
+import { useNodeParamsFromAtom, useNodeStateFromAtom } from '@/hooks/useNodeAtoms';
 import { areNodePropsEqual } from '@/nodes/nodePropsEqual';
 import { perfOnRender } from '@/perf';
 import type { InputPin, OutputPin, NodeState, NodeStats, NodeDefinition } from '@/types/types';
@@ -116,8 +117,13 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(function Compos
 }) {
   nodesLogger.debug('CompositorNode Render:', id);
 
-  const canvasWidth = (data.params?.width as number) ?? 1280;
-  const canvasHeight = (data.params?.height as number) ?? 720;
+  // Read state + params from per-node Jotai atoms so that updates
+  // re-render only *this* node instead of every node on the canvas.
+  const state = useNodeStateFromAtom(id, data.sessionId, data.state);
+  const params = useNodeParamsFromAtom(id, data.sessionId, data.params ?? {});
+
+  const canvasWidth = (params?.width as number) ?? 1280;
+  const canvasHeight = (params?.height as number) ?? 720;
 
   const {
     selectedLayerId,
@@ -147,7 +153,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(function Compos
     sessionId: data.sessionId,
     canvasWidth,
     canvasHeight,
-    params: data.params ?? {},
+    params,
     onConfigChange: data.onConfigChange,
     onParamChange: data.onParamChange,
   });
@@ -357,7 +363,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(function Compos
       inputs={data.inputs}
       outputs={data.outputs}
       nodeDefinition={data.nodeDefinition}
-      state={data.state}
+      state={state}
       sessionId={data.sessionId}
       draft={data.draft}
     >
