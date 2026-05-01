@@ -15,6 +15,7 @@
  */
 
 import { useAtomValue } from 'jotai/react';
+import { useMemo } from 'react';
 
 import {
   nodeKey,
@@ -62,6 +63,8 @@ export function useNodeParamsFromAtom(
 ): Record<string, unknown> {
   const key = sessionId ? nodeKey(sessionId, nodeId) : null;
   const atomParams = useAtomValue(key ? nodeParamsAtom(key) : nullParamsAtom);
-  if (!key || Object.keys(atomParams).length === 0) return fallback;
-  return { ...fallback, ...atomParams };
+  return useMemo(() => {
+    if (!key || Object.keys(atomParams).length === 0) return fallback;
+    return { ...fallback, ...atomParams };
+  }, [key, fallback, atomParams]);
 }
