@@ -27,7 +27,6 @@ import {
   batchWriteNodeStates,
 } from '@/stores/sessionAtoms';
 import { measureHookRenders } from '@/test/perf';
-import type { MeasureResult } from '@/test/perf';
 import type { NodeState } from '@/types/types';
 
 import { useNodeStateFromAtom } from './useNodeAtoms';
@@ -44,8 +43,6 @@ function resetTestAtoms(): void {
 }
 
 describe('useNodeStateFromAtom render-performance', () => {
-  const results: MeasureResult[] = [];
-
   beforeEach(resetTestAtoms);
 
   it('does NOT re-render when params atom changes (slider isolation)', () => {
@@ -72,9 +69,6 @@ describe('useNodeStateFromAtom render-performance', () => {
         },
       }
     );
-    result.name = 'param-writes-no-rerender';
-    results.push(result);
-
     // Mount + atom subscription sync = 2 renders.  The 20 param atom
     // writes must NOT add any renders.  With the regression (subscribing
     // to nodeParamsAtom), this would be 22+.
@@ -100,9 +94,6 @@ describe('useNodeStateFromAtom render-performance', () => {
         },
       }
     );
-    result.name = 'state-writes-rerender';
-    results.push(result);
-
     // Mount + subscription sync + 3 distinct state transitions = 5.
     // (The deepEqual guard deduplicates the second 'Running'.)
     // Allow headroom for React batching variance.
@@ -142,9 +133,6 @@ describe('useNodeStateFromAtom render-performance', () => {
         },
       }
     );
-    result.name = 'mixed-param-state-isolation';
-    results.push(result);
-
     // Mount + subscription sync + 1 state change = 3.  The 20 param
     // writes must not contribute to the render count.  With the
     // regression, this would be 23+.
