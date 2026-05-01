@@ -22,9 +22,11 @@ fn main() {
         PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
     let fixture_dir = manifest_dir.join("../../tests/fixtures/panicking-plugin");
 
-    // Only rebuild when the fixture source changes.
+    // Rebuild when the fixture source or its SDK dependency changes.
     println!("cargo::rerun-if-changed={}", fixture_dir.join("src/lib.rs").display());
     println!("cargo::rerun-if-changed={}", fixture_dir.join("Cargo.toml").display());
+    let sdk_dir = manifest_dir.join("../../sdks/plugin-sdk/native/src");
+    println!("cargo::rerun-if-changed={}", sdk_dir.display());
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR not set"));
 
