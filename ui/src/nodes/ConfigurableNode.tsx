@@ -7,7 +7,7 @@ import React, { useCallback, useMemo, useState } from 'react';
 
 import { NodeFrame } from '@/components/node/NodeFrame';
 import { LiveDot } from '@/components/ui/LiveIndicator';
-import { useNodeParamsFromAtom, useNodeStateFromAtom } from '@/hooks/useNodeAtoms';
+import { useNodeStateFromAtom } from '@/hooks/useNodeAtoms';
 import { useNumericSlider } from '@/hooks/useNumericSlider';
 import { areNodePropsEqual } from '@/nodes/nodePropsEqual';
 import {
@@ -284,10 +284,13 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
     data.onParamChange?.toString().substring(0, 50)
   );
 
-  // Read state + params from per-node Jotai atoms so that updates
+  // Read state from per-node Jotai atom so that state transitions
   // re-render only *this* node instead of every node on the canvas.
+  // Params are NOT read from the atom here — slider/toggle/text controls
+  // subscribe directly via useNumericSlider / useTuneNode, which avoids
+  // full-subtree re-renders on every drag tick.
   const state = useNodeStateFromAtom(id, data.sessionId, data.state);
-  const params = useNodeParamsFromAtom(id, data.sessionId, data.params);
+  const params = data.params;
 
   const schema = data.paramSchema as JsonSchema | undefined;
   const properties = schema?.properties ?? {};

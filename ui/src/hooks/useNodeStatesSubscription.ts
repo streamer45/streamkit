@@ -6,11 +6,15 @@
  * Hook that bridges Zustand node-state updates to ReactFlow edges
  * without re-rendering MonitorViewContent.
  *
- * Node components read their own `state` and `params` directly from
- * per-node Jotai atoms (via {@link useNodeStateFromAtom} /
- * {@link useNodeParamsFromAtom}), so this hook no longer patches
- * ReactFlow node data.  It still subscribes to the Zustand store to
- * patch edge alert metadata (slow-input-timeout warnings).
+ * Node components read their `state` directly from per-node Jotai atoms
+ * (via {@link useNodeStateFromAtom}), so this hook no longer patches
+ * ReactFlow node data for state.  Params are NOT read from atoms in node
+ * components — individual controls (sliders, toggles) subscribe to the
+ * params atom directly via `useNumericSlider` / `useTuneNode`, which
+ * confines re-renders to just the affected control.
+ *
+ * This hook still subscribes to the Zustand store to patch edge alert
+ * metadata (slow-input-timeout warnings).
  *
  * Patches are throttled: the first change applies immediately, then
  * subsequent changes within PATCH_THROTTLE_MS are coalesced into a single

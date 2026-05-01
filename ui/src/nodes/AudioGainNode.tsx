@@ -9,7 +9,7 @@ import React, { useEffect, useRef } from 'react';
 
 import { NodeFrame } from '@/components/node/NodeFrame';
 import { LiveBadge, LiveDot } from '@/components/ui/LiveIndicator';
-import { useNodeParamsFromAtom, useNodeStateFromAtom } from '@/hooks/useNodeAtoms';
+import { useNodeStateFromAtom } from '@/hooks/useNodeAtoms';
 import { useNumericSlider } from '@/hooks/useNumericSlider';
 import { areNodePropsEqual } from '@/nodes/nodePropsEqual';
 import { perfOnRender } from '@/perf';
@@ -100,10 +100,13 @@ const AudioGainNode: React.FC<AudioGainNodeProps> = React.memo(function AudioGai
 }) {
   nodesLogger.debug('AudioGainNode Render:', id);
 
-  // Read state + params from per-node Jotai atoms so that updates
+  // Read state from per-node Jotai atom so that state transitions
   // re-render only *this* node instead of every node on the canvas.
+  // Params are NOT read from the atom here — the slider subscribes
+  // directly via useNumericSlider, which avoids full-subtree re-renders
+  // on every drag tick.
   const state = useNodeStateFromAtom(id, data.sessionId, data.state);
-  const params = useNodeParamsFromAtom(id, data.sessionId, data.params as Record<string, unknown>);
+  const params = data.params as Record<string, unknown>;
 
   const propGain = (params?.gain as number) ?? 1.0;
 

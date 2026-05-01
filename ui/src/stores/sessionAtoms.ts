@@ -45,11 +45,6 @@ export const nullStatsAtom = atom<NodeStats | null>(null);
  *  entry in `nodeStateAtom`. */
 export const nullStateAtom = atom<NodeState | null>(null);
 
-/** Static atom that always returns `{}`.  Used when a node component has no
- *  `sessionId` (e.g. design view) to avoid creating a permanent empty-key
- *  entry in `nodeParamsAtom`. */
-export const nullParamsAtom = atom<Record<string, unknown>>({});
-
 /** Static atom that always returns false.  Used when `sessionId` is null to
  *  avoid creating a permanent empty-key entry in `sessionConnectedAtom`. */
 export const nullConnectedAtom = atom(false);
