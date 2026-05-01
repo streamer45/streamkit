@@ -4700,7 +4700,7 @@ fn start_moq_webtransport_acceptor(
     };
 
     let mut moq_config = MoqServerConfig::default();
-    moq_config.bind = Some(addr);
+    moq_config.bind = Some(addr.to_string());
     moq_config.tls = tls;
 
     let moq_public_paths: Arc<[String]> = config

@@ -1736,7 +1736,7 @@ impl MoqPeerNode {
     ) -> Result<Option<moq_lite::GroupConsumer>, moq_lite::Error> {
         tokio::select! {
             biased;
-            group_result = track_consumer.next_group() => {
+            group_result = track_consumer.next_group_ordered() => {
                 match group_result {
                     Ok(Some(group)) => {
                         tracing::debug!(output_pin, "Got next group from publisher");

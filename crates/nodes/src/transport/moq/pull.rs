@@ -310,7 +310,7 @@ impl MoqPullNode {
     ) -> Result<Option<bytes::Bytes>, moq_lite::Error> {
         loop {
             if current_group.is_none() {
-                match track_consumer.next_group().await {
+                match track_consumer.next_group_ordered().await {
                     Ok(Some(group)) => {
                         *current_group = Some(group);
                         *is_first_in_group = true;
