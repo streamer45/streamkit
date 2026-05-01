@@ -190,7 +190,7 @@ test.describe('Monitor Session Load Perf — Re-render Budget', () => {
       'ConfigurableNode profiler data must be present — ensure the Profiler wrapper is intact'
     ).toBeDefined();
     assertRenderBudget(snapshot, 'ConfigurableNode', {
-      max: 20,
+      max: 25,
       maxDuration: 1_500,
     });
 

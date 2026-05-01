@@ -19,6 +19,7 @@ import { atomFamily } from 'jotai-family';
 
 import type { NodeState, NodeStats, Pipeline } from '@/types/types';
 import { deepMerge } from '@/utils/controlProps';
+import { deepEqual } from '@/utils/deepEqual';
 
 // ── Default store reference ─────────────────────────────────────────────────
 
@@ -121,11 +122,19 @@ export const sessionConnectedAtom = atomFamily((_sessionId: string) => atom(fals
 
 // ── Batch write helpers ─────────────────────────────────────────────────────
 
-/** Write batched node state updates to atoms. Called from WebSocket RAF flush. */
+/** Write batched node state updates to atoms. Called from WebSocket RAF flush.
+ *  Skips writes when the new value is deeply equal to the current one so
+ *  that Jotai subscribers (node components) are not notified for no-op
+ *  state transitions — this is the atom-side equivalent of the deepEqual
+ *  guard that the old setNodes() patching path had. */
 export function batchWriteNodeStates(updates: Map<string, Record<string, NodeState>>): void {
   for (const [sessionId, nodeUpdates] of updates) {
     for (const [nodeId, state] of Object.entries(nodeUpdates)) {
-      sessionStore.set(nodeStateAtom(nodeKey(sessionId, nodeId)), state);
+      const key = nodeKey(sessionId, nodeId);
+      const current = sessionStore.get(nodeStateAtom(key));
+      if (!deepEqual(current, state)) {
+        sessionStore.set(nodeStateAtom(key), state);
+      }
     }
   }
 }
