@@ -1705,6 +1705,72 @@ async fn mcp_update_pipeline_no_changes() {
 }
 
 #[tokio::test]
+async fn mcp_update_pipeline_kind_change() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let mcp_session = init_mcp_session(&client, addr, &token).await;
+
+    let skit_session =
+        create_skit_session(&client, addr, &token, &mcp_session, PASSTHROUGH_YAML).await;
+
+    // Change the node kind from passthrough to pacer (same node ID).
+    let new_yaml = "nodes:\n  pass:\n    kind: core::pacer";
+
+    let update = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "update_pipeline",
+            "arguments": {
+                "session_id": skit_session,
+                "yaml": new_yaml
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &update, &token, &mcp_session).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let text = body["result"]["content"][0]["text"].as_str().expect("update_pipeline text");
+    let result: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(
+        result["operations_applied"], 2,
+        "expected 2 operations (removenode + addnode) for kind change"
+    );
+
+    // Verify the node now has the new kind.
+    let get = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "get_pipeline",
+            "arguments": { "session_id": skit_session }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &get, &token, &mcp_session).await;
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let text = body["result"]["content"][0]["text"].as_str().expect("pipeline text");
+    let pipeline: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert!(pipeline["nodes"]["pass"].is_object(), "expected 'pass' node to still exist");
+    assert_eq!(
+        pipeline["nodes"]["pass"]["kind"], "core::pacer",
+        "expected node kind to change to core::pacer"
+    );
+
+    // Clean up
+    let destroy = json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": { "name": "destroy_session", "arguments": { "session_id": skit_session } }
+    });
+    let _ = mcp_post_with_session(&client, addr, &destroy, &token, &mcp_session).await;
+}
+
+#[tokio::test]
 async fn mcp_update_pipeline_invalid_yaml() {
     let _ = tracing_subscriber::fmt::try_init();
     let (addr, _handle, token, _dir) = start_mcp_server().await;

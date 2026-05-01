@@ -1034,15 +1034,32 @@ fn diff_pipeline(current: &Pipeline, desired: &Pipeline) -> Vec<streamkit_api::B
     let current_node_ids: HashSet<&str> = current.nodes.keys().map(String::as_str).collect();
     let desired_node_ids: HashSet<&str> = desired.nodes.keys().map(String::as_str).collect();
 
+    // Nodes whose kind changed need to be replaced (remove + re-add).
+    let replaced_node_ids: HashSet<&str> = current_node_ids
+        .intersection(&desired_node_ids)
+        .filter(|id| {
+            let cur = &current.nodes[**id];
+            let des = &desired.nodes[**id];
+            cur.kind != des.kind
+        })
+        .copied()
+        .collect();
+
     let current_conns: HashSet<ConnKey> = current.connections.iter().map(conn_key).collect();
     let desired_conns: HashSet<ConnKey> = desired.connections.iter().map(conn_key).collect();
 
-    // 1. Disconnect removed connections (that aren't on nodes being removed).
+    // 1. Disconnect removed connections (that aren't on nodes being fully removed).
+    //    Also disconnect connections touching replaced nodes (they will be re-added).
     for conn in &current.connections {
         let key = conn_key(conn);
-        if !desired_conns.contains(&key)
-            && desired_node_ids.contains(conn.from_node.as_str())
-            && desired_node_ids.contains(conn.to_node.as_str())
+        let from_replaced = replaced_node_ids.contains(conn.from_node.as_str());
+        let to_replaced = replaced_node_ids.contains(conn.to_node.as_str());
+        let from_survives = desired_node_ids.contains(conn.from_node.as_str());
+        let to_survives = desired_node_ids.contains(conn.to_node.as_str());
+
+        if (!desired_conns.contains(&key) || from_replaced || to_replaced)
+            && from_survives
+            && to_survives
         {
             ops.push(BatchOperation::Disconnect {
                 from_node: conn.from_node.clone(),
@@ -1053,16 +1070,18 @@ fn diff_pipeline(current: &Pipeline, desired: &Pipeline) -> Vec<streamkit_api::B
         }
     }
 
-    // 2. Remove nodes that no longer exist.
+    // 2. Remove nodes that no longer exist or whose kind changed.
     for node_id in &current_node_ids {
-        if !desired_node_ids.contains(node_id) {
+        if !desired_node_ids.contains(node_id) || replaced_node_ids.contains(node_id) {
             ops.push(BatchOperation::RemoveNode { node_id: (*node_id).to_string() });
         }
     }
 
-    // 3. Add new nodes.
+    // 3. Add new nodes and re-add replaced nodes with new kind.
     for (node_id, node) in &desired.nodes {
-        if !current_node_ids.contains(node_id.as_str()) {
+        if !current_node_ids.contains(node_id.as_str())
+            || replaced_node_ids.contains(node_id.as_str())
+        {
             ops.push(BatchOperation::AddNode {
                 node_id: node_id.clone(),
                 kind: node.kind.clone(),
