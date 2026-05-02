@@ -1174,9 +1174,11 @@ fn diff_pipeline(current: &Pipeline, desired: &Pipeline) -> DiffResult {
         }
         let current_node = &current.nodes[node_id.as_str()];
         if desired_node.params != current_node.params {
-            if let Some(ref p) = desired_node.params {
-                params_changed.push((node_id.clone(), p.clone()));
-            }
+            let new_params = desired_node
+                .params
+                .clone()
+                .unwrap_or(serde_json::Value::Object(Default::default()));
+            params_changed.push((node_id.clone(), new_params));
         }
     }
 
