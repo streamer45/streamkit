@@ -1003,10 +1003,20 @@ impl StreamKitMcp {
         }
 
         // Apply param changes via tune_node when permitted.
+        // Pre-clear the durable params so tune_session_node performs a full
+        // replacement instead of a deep merge (its default for incremental
+        // UI updates). Setting node.params = None causes take() inside
+        // tune_session_node to return None, skipping the merge branch.
         let mut params_applied = Vec::new();
         let mut params_deferred = Vec::new();
         for (node_id, new_params) in &diff.params_changed {
             if perms.tune_nodes {
+                {
+                    let mut pipeline = session.pipeline.lock().await;
+                    if let Some(node) = pipeline.nodes.get_mut(node_id) {
+                        node.params = None;
+                    }
+                }
                 crate::server::tune_session_node(
                     &session,
                     node_id.clone(),
@@ -1177,7 +1187,7 @@ fn diff_pipeline(current: &Pipeline, desired: &Pipeline) -> DiffResult {
             let new_params = desired_node
                 .params
                 .clone()
-                .unwrap_or(serde_json::Value::Object(Default::default()));
+                .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::default()));
             params_changed.push((node_id.clone(), new_params));
         }
     }
