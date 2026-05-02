@@ -3,36 +3,35 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Hook that bridges Zustand node-state updates to ReactFlow nodes/edges
+ * Hook that bridges Zustand node-state updates to ReactFlow edges
  * without re-rendering MonitorViewContent.
  *
- * Instead of subscribing reactively to `nodeStates` (which would re-render
- * the entire component on every node-state transition), this hook subscribes
- * directly to the Zustand store and patches ReactFlow nodes/edges from the
- * callback.  This completely bypasses React's render cycle for high-frequency
- * state changes during session load.
+ * Node components read their `state` directly from per-node Jotai atoms
+ * (via {@link useNodeStateFromAtom}), so this hook no longer patches
+ * ReactFlow node data for state.  Params are NOT read from atoms in node
+ * components — individual controls (sliders, toggles) subscribe to the
+ * params atom directly via `useNumericSlider` / `useTuneNode`, which
+ * confines re-renders to just the affected control.
+ *
+ * This hook still subscribes to the Zustand store to patch edge alert
+ * metadata (slow-input-timeout warnings).
  *
  * Patches are throttled: the first change applies immediately, then
  * subsequent changes within PATCH_THROTTLE_MS are coalesced into a single
- * deferred patch.  During session load, ~8 node-state transitions that
- * would each trigger a full ~20 ms MonitorViewContent re-render are
- * collapsed into 2–3 patches instead.
+ * deferred patch.
  */
 
-import type { Node as RFNode, Edge } from '@xyflow/react';
+import type { Edge } from '@xyflow/react';
 import React, { useEffect, useRef } from 'react';
 
 import { useSessionStore } from '@/stores/sessionStore';
 import type { NodeState, Pipeline } from '@/types/types';
-import { deepEqual } from '@/utils/deepEqual';
 import {
   isRecord,
   extractSlowTimeoutDetailsFromNodeState,
   describeSlowInputs,
   type SlowTimeoutDetails,
 } from '@/utils/pipelineGraph';
-
-const EMPTY_PARAMS: Record<string, unknown> = {};
 
 /** Build tooltip lines for a slow-input-timeout alert. */
 function buildSlowInputTooltipLines(
@@ -113,7 +112,6 @@ function collectSlowPinData(
 
 export interface UseNodeStatesSubscriptionOptions {
   selectedSessionId: string | null;
-  setNodes: React.Dispatch<React.SetStateAction<RFNode[]>>;
   setEdges: React.Dispatch<React.SetStateAction<Edge[]>>;
   pipelineRef: React.RefObject<Pipeline | undefined | null>;
   topoKey: string;
@@ -126,7 +124,6 @@ export interface UseNodeStatesSubscriptionReturn {
 
 export function useNodeStatesSubscription({
   selectedSessionId,
-  setNodes,
   setEdges,
   pipelineRef,
   topoKey,
@@ -160,50 +157,8 @@ export function useNodeStatesSubscription({
       const currentPipeline = pipelineRef.current;
       if (!currentPipeline) return;
 
-      // ── Patch nodes + edges in one transition to avoid double render ──
+      // Patch edge alerts (slow-input-timeout)
       React.startTransition(() => {
-        // Patch node state/params
-        setNodes((prev) => {
-          const updatesById = new Map<
-            string,
-            { nextState: unknown; nextParams: Record<string, unknown> }
-          >();
-
-          for (const n of prev) {
-            const apiNode = currentPipeline.nodes[n.id];
-            if (!apiNode) continue;
-
-            const nextState = nodeStates[n.id] ?? apiNode.state;
-            const nextParams: Record<string, unknown> =
-              apiNode.params && typeof apiNode.params === 'object' && !Array.isArray(apiNode.params)
-                ? (apiNode.params as Record<string, unknown>)
-                : EMPTY_PARAMS;
-
-            const stateChanged = !deepEqual(n.data.state, nextState);
-            const paramsChanged = !deepEqual(n.data.params, nextParams);
-
-            if (stateChanged || paramsChanged) {
-              updatesById.set(n.id, { nextState, nextParams });
-            }
-          }
-
-          if (updatesById.size === 0) return prev;
-
-          return prev.map((n) => {
-            const updateInfo = updatesById.get(n.id);
-            if (!updateInfo) return n;
-            return {
-              ...n,
-              data: {
-                ...n.data,
-                state: updateInfo.nextState,
-                params: updateInfo.nextParams,
-              },
-            };
-          });
-        });
-
-        // Patch edge alerts (slow-input-timeout)
         const { slowPinsByNode, slowDetailsByNode } = collectSlowPinData(
           currentPipeline,
           nodeStates
@@ -274,9 +229,7 @@ export function useNodeStatesSubscription({
 
       // ── Throttled patch ────────────────────────────────────────────────
       // Apply immediately if enough time elapsed since the last patch;
-      // otherwise buffer and apply after the throttle window.  During
-      // session-load bursts this collapses ~8 individual setNodes calls
-      // (each triggering a ~20 ms MonitorViewContent re-render) into 2–3.
+      // otherwise buffer and apply after the throttle window.
       pendingNodeStates = nodeStates;
       const now = performance.now();
       const elapsed = now - lastPatchTime;
@@ -304,7 +257,7 @@ export function useNodeStatesSubscription({
       unsubscribe();
       if (throttleTimer !== null) clearTimeout(throttleTimer);
     };
-  }, [selectedSessionId, setNodes, setEdges, pipelineRef]);
+  }, [selectedSessionId, setEdges, pipelineRef]);
 
   return { topoEffectRanRef };
 }

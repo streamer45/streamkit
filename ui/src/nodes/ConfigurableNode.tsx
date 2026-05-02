@@ -7,6 +7,7 @@ import React, { useCallback, useMemo, useState } from 'react';
 
 import { NodeFrame } from '@/components/node/NodeFrame';
 import { LiveDot } from '@/components/ui/LiveIndicator';
+import { useNodeStateFromAtom } from '@/hooks/useNodeAtoms';
 import { useNumericSlider } from '@/hooks/useNumericSlider';
 import { areNodePropsEqual } from '@/nodes/nodePropsEqual';
 import {
@@ -282,6 +283,10 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
     'onParamChange identity:',
     data.onParamChange?.toString().substring(0, 50)
   );
+
+  const state = useNodeStateFromAtom(id, data.sessionId, data.state);
+  const params = data.params;
+
   const schema = data.paramSchema as JsonSchema | undefined;
   const properties = schema?.properties ?? {};
   const totalParams = Object.keys(properties).length;
@@ -325,7 +330,7 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
       inputs={data.inputs}
       outputs={data.outputs}
       nodeDefinition={data.nodeDefinition}
-      state={data.state}
+      state={state}
       sessionId={data.sessionId}
       isBidirectional={isBidirectional}
       draft={data.draft}
@@ -360,7 +365,7 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
                   nodeId={id}
                   sessionId={data.sessionId}
                   config={config}
-                  params={data.params}
+                  params={params}
                 />
               ))}
               {sliderConfigs.map(({ key, path, schema: schemaProp, min, max, step }) => (
@@ -374,7 +379,7 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
                   min={min}
                   max={max}
                   step={step}
-                  params={data.params}
+                  params={params}
                   onParamChange={data.onParamChange}
                 />
               ))}
@@ -384,7 +389,7 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
                   nodeId={id}
                   sessionId={data.sessionId}
                   config={config}
-                  params={data.params}
+                  params={params}
                 />
               ))}
             </ControlGroup>

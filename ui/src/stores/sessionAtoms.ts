@@ -19,6 +19,7 @@ import { atomFamily } from 'jotai-family';
 
 import type { NodeState, NodeStats, Pipeline } from '@/types/types';
 import { deepMerge } from '@/utils/controlProps';
+import { deepEqual } from '@/utils/deepEqual';
 
 // ── Default store reference ─────────────────────────────────────────────────
 
@@ -38,6 +39,11 @@ export function nodeKey(sessionId: string, nodeId: string): string {
  *  a component needs to conditionally opt out of a high-frequency atom
  *  (e.g. stats when the tooltip is closed) without breaking the rules of hooks. */
 export const nullStatsAtom = atom<NodeStats | null>(null);
+
+/** Static atom that always returns null.  Used when a node component has no
+ *  `sessionId` (e.g. design view) to avoid creating a permanent empty-key
+ *  entry in `nodeStateAtom`. */
+export const nullStateAtom = atom<NodeState | null>(null);
 
 /** Static atom that always returns false.  Used when `sessionId` is null to
  *  avoid creating a permanent empty-key entry in `sessionConnectedAtom`. */
@@ -66,6 +72,7 @@ export function writeNodeParam(
 ): void {
   const k = sessionId ? `${sessionId}\0${nodeId}` : nodeId;
   const current = sessionStore.get(nodeParamsAtom(k));
+  if (current[key] === value) return;
   sessionStore.set(nodeParamsAtom(k), { ...current, [key]: value });
 }
 
@@ -85,13 +92,15 @@ export function writeNodeParams(
       cleaned[key] = value;
     }
   }
-  sessionStore.set(nodeParamsAtom(k), deepMerge(current, cleaned));
+  const merged = deepMerge(current, cleaned);
+  if (!deepEqual(current, merged)) {
+    sessionStore.set(nodeParamsAtom(k), merged);
+  }
 }
 
 /** Clear node params atom for a specific node. */
 export function clearNodeParams(nodeId: string, sessionId?: string): void {
   const k = sessionId ? `${sessionId}\0${nodeId}` : nodeId;
-  sessionStore.set(nodeParamsAtom(k), {});
   nodeParamsAtom.remove(k);
 }
 
@@ -111,11 +120,19 @@ export const sessionConnectedAtom = atomFamily((_sessionId: string) => atom(fals
 
 // ── Batch write helpers ─────────────────────────────────────────────────────
 
-/** Write batched node state updates to atoms. Called from WebSocket RAF flush. */
+/** Write batched node state updates to atoms. Called from WebSocket RAF flush.
+ *  Skips writes when the new value is deeply equal to the current one so
+ *  that Jotai subscribers (node components) are not notified for no-op
+ *  state transitions — this is the atom-side equivalent of the deepEqual
+ *  guard that the old setNodes() patching path had. */
 export function batchWriteNodeStates(updates: Map<string, Record<string, NodeState>>): void {
   for (const [sessionId, nodeUpdates] of updates) {
     for (const [nodeId, state] of Object.entries(nodeUpdates)) {
-      sessionStore.set(nodeStateAtom(nodeKey(sessionId, nodeId)), state);
+      const key = nodeKey(sessionId, nodeId);
+      const current = sessionStore.get(nodeStateAtom(key));
+      if (!deepEqual(current, state)) {
+        sessionStore.set(nodeStateAtom(key), state);
+      }
     }
   }
 }
@@ -145,7 +162,11 @@ export function seedPipelineAtoms(sessionId: string, pipeline: Pipeline): void {
   if (pipeline.nodes) {
     for (const [nodeId, node] of Object.entries(pipeline.nodes)) {
       if (node.state) {
-        sessionStore.set(nodeStateAtom(nodeKey(sessionId, nodeId)), node.state);
+        const key = nodeKey(sessionId, nodeId);
+        const current = sessionStore.get(nodeStateAtom(key));
+        if (!deepEqual(current, node.state)) {
+          sessionStore.set(nodeStateAtom(key), node.state);
+        }
       }
     }
   }
@@ -170,19 +191,15 @@ export function clearSessionAtoms(sessionId: string): void {
   const paramKeys = [...nodeParamsAtom.getParams()].filter((k) => k.startsWith(prefix));
 
   for (const key of stateKeys) {
-    sessionStore.set(nodeStateAtom(key), null);
     nodeStateAtom.remove(key);
   }
   for (const key of statsKeys) {
-    sessionStore.set(nodeStatsAtom(key), null);
     nodeStatsAtom.remove(key);
   }
   for (const key of viewKeys) {
-    sessionStore.set(nodeViewDataAtom(key), undefined);
     nodeViewDataAtom.remove(key);
   }
   for (const key of paramKeys) {
-    sessionStore.set(nodeParamsAtom(key), {});
     nodeParamsAtom.remove(key);
   }
 

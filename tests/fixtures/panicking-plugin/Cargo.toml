@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+[package]
+name = "panicking-plugin"
+version = "0.1.0"
+edition = "2021"
+license = "MPL-2.0"
+publish = false
+
+[lib]
+name = "panicking_plugin"
+crate-type = ["cdylib"]
+
+[dependencies]
+streamkit-plugin-sdk-native = { path = "../../../sdks/plugin-sdk/native" }
+serde_json = "1.0"
+tracing = "0.1"

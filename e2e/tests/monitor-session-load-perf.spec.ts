@@ -180,20 +180,23 @@ test.describe('Monitor Session Load Perf — Re-render Budget', () => {
     // infrastructure works and that the session load path completes
     // without hanging or crashing.
     //
-    // Render-budget gates: catch regressions in the Zustand→ReactFlow
-    // patching path.  The Webcam PiP pipeline has ~7 ConfigurableNode
-    // instances; each transitions through several states during session
-    // load, producing ~39 total commits today.  Budget is ~15% above
-    // baseline to catch meaningful regressions — tighten further as
-    // optimisations land (e.g., reading state from atoms instead of
-    // props would drop this to ~4).
+    // Render-budget gates: catch regressions in ConfigurableNode renders
+    // during session load.  Node components read state from per-node
+    // Jotai atoms (not ReactFlow data props), so a state change on one
+    // node no longer forces every node to re-render.  Params are still
+    // passed via data props; individual controls subscribe to the params
+    // atom directly.
+    //
+    // The render count depends on how many distinct state transitions
+    // arrive per node (timing-dependent across RAF frames).  The budget
+    // must accommodate CI variance (scheduling jitter, slow VMs).
     const configurableData = snapshot.components['ConfigurableNode'];
     expect(
       configurableData,
       'ConfigurableNode profiler data must be present — ensure the Profiler wrapper is intact'
     ).toBeDefined();
     assertRenderBudget(snapshot, 'ConfigurableNode', {
-      max: 45,
+      max: 42,
       maxDuration: 1_500,
     });
 
