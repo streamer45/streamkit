@@ -42,12 +42,14 @@
 //!   returns.  Both sides are now bounded: `send_to_worker` applies
 //!   `call_timeout` on the send, and `await_reply` applies it on the
 //!   reply.  For hints, `try_send` drops hints when worker is busy.
-//! - **`on_upstream_hint` has no reply-side timeout**: hint delivery
-//!   uses `try_send` (non-blocking on the async side) but the worker
-//!   executes the FFI call synchronously with no timeout.  A wedged
-//!   `on_upstream_hint` permanently blocks the worker; subsequent
-//!   `try_send`s will see the channel full and drop hints, and the
-//!   next `send_to_worker` for Tick will time out on the send side.
+//! - **`on_upstream_hint` per-batch timeout**: hint delivery uses
+//!   `try_send` (non-blocking on the async side) and the worker
+//!   enforces a `call_timeout` deadline across the hint batch.  If
+//!   the cumulative time for processing hints exceeds the deadline,
+//!   remaining hints are dropped with a warning.  A single wedged
+//!   FFI call within the batch still blocks the worker until it
+//!   returns; once it does, the deadline check fires and no further
+//!   hints are attempted.
 //! - **Detached workers**: `InstanceWorker::Drop` closes the channel
 //!   but does not join the thread (doing so on a tokio worker would
 //!   block the runtime).  A worker stuck in a long FFI call is
@@ -165,6 +167,25 @@ pub(crate) const DEFAULT_CALL_TIMEOUT: std::time::Duration = std::time::Duration
 /// `send_to_worker` until the worker drains the previous request,
 /// which is the desired serialisation of FFI calls.
 const WORKER_CHANNEL_CAPACITY: usize = 1;
+
+/// RAII guard for a newly-created plugin handle.
+///
+/// Used in [`NativeNodeWrapper::new`] to ensure `destroy_instance` is
+/// called if the constructor panics or fails after `create_instance`
+/// succeeds but before the handle is transferred to `InstanceState`.
+struct HandleGuard {
+    api: &'static CNativePluginAPI,
+    handle: CPluginHandle,
+    defused: bool,
+}
+
+impl Drop for HandleGuard {
+    fn drop(&mut self) {
+        if !self.defused {
+            ffi_guard_unit(|| (self.api.destroy_instance)(self.handle));
+        }
+    }
+}
 
 /// Wrapper preserving pointer provenance for the plugin's API vtable.
 ///
@@ -745,9 +766,15 @@ fn worker_thread_main(
 
             // Hints are best-effort advisory signals, not perf-critical FFI
             // calls — intentionally not instrumented with metrics.
+            // Each hint batch is bounded by call_timeout to prevent a
+            // series of slow hints from wedging the worker indefinitely.
             WorkerRequest::OnUpstreamHint { hints, reply } => {
                 if let Some(on_hint_fn) = state.api().on_upstream_hint {
-                    for c_str in &hints {
+                    let hint_timeout = state.call_timeout.unwrap_or(DEFAULT_CALL_TIMEOUT);
+                    let deadline = std::time::Instant::now() + hint_timeout;
+                    let total = hints.len();
+
+                    for (i, c_str) in hints.iter().enumerate() {
                         let Some(guard) = state.begin_call() else {
                             tracing::trace!(node = %node_id, "Dropping hint: instance being destroyed");
                             break;
@@ -776,6 +803,18 @@ fn worker_thread_main(
                             },
                             Ok(_) => {},
                         }
+
+                        if std::time::Instant::now() >= deadline {
+                            let remaining = total - i - 1;
+                            if remaining > 0 {
+                                warn!(
+                                    node = %node_id,
+                                    "on_upstream_hint batch exceeded timeout ({hint_timeout:?}), \
+                                     dropping {remaining} remaining hint(s)"
+                                );
+                            }
+                            break;
+                        }
                     }
                 }
                 let _ = reply.send(());
@@ -786,32 +825,36 @@ fn worker_thread_main(
 
 const PLUGIN_LOG_FIELD_NAMES: &[&str] = &["message"];
 
-/// Callsite anchor for dynamically-constructed [`tracing::Metadata`].
-struct PluginLogCallsite;
+/// Per-(target, level) callsite for dynamically-constructed
+/// [`tracing::Metadata`].
+///
+/// Each `(target, level)` pair gets its own leaked `PluginLogCallsite`,
+/// giving every entry a unique [`tracing::callsite::Identifier`].  This
+/// prevents `EnvFilter` cache poisoning: without unique IDs, whichever
+/// target registers first determines the cached `Interest` for *all*
+/// targets (since `EnvFilter` caches by callsite ID).
+struct PluginLogCallsite {
+    /// Back-link to the metadata stored in the owning
+    /// [`PluginLogMetadata`].  Set once during
+    /// [`plugin_log_static_metadata`] before the entry becomes visible.
+    meta: std::sync::OnceLock<&'static tracing::Metadata<'static>>,
+}
+
+impl PluginLogCallsite {
+    const fn new() -> Self {
+        Self { meta: std::sync::OnceLock::new() }
+    }
+}
 
 impl tracing::callsite::Callsite for PluginLogCallsite {
     fn set_interest(&self, _: tracing::subscriber::Interest) {}
     fn metadata(&self) -> &tracing::Metadata<'_> {
-        // Per-plugin targets are stored in `PLUGIN_LOG_METADATA_CACHE`; this
-        // fallback exists only to satisfy the `Callsite` trait.
-        static FALLBACK: std::sync::LazyLock<tracing::Metadata<'static>> =
-            std::sync::LazyLock::new(|| {
-                tracing::Metadata::new(
-                    "plugin_log_callsite",
-                    "plugin",
-                    tracing::Level::TRACE,
-                    None,
-                    None,
-                    None,
-                    plugin_log_field_set(),
-                    tracing::metadata::Kind::EVENT,
-                )
-            });
-        &FALLBACK
+        let Some(meta) = self.meta.get().copied() else {
+            unreachable!("PluginLogCallsite::meta is always set before use");
+        };
+        meta
     }
 }
-
-static PLUGIN_LOG_CALLSITE: PluginLogCallsite = PluginLogCallsite;
 
 struct PluginLogMetadata {
     metadata: tracing::Metadata<'static>,
@@ -824,32 +867,25 @@ static PLUGIN_LOG_METADATA_CACHE: std::sync::LazyLock<
     >,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
-/// Build the shared field set for plugin log events.
-///
-/// Called in both the early-out filter probe and the cached metadata
-/// path; the two calls must produce value-equal `FieldSet`s (same
-/// field names, same callsite identifier) so that `tracing`'s field
-/// lookup is consistent.  This is guaranteed as long as the inputs
-/// (`PLUGIN_LOG_FIELD_NAMES` and `PLUGIN_LOG_CALLSITE`) are unchanged.
-fn plugin_log_field_set() -> tracing::field::FieldSet {
-    tracing::field::FieldSet::new(
-        PLUGIN_LOG_FIELD_NAMES,
-        tracing::callsite::Identifier(&PLUGIN_LOG_CALLSITE),
-    )
-}
-
 fn plugin_log_static_metadata(target: &str, level: tracing::Level) -> &'static PluginLogMetadata {
     let mut cache =
         PLUGIN_LOG_METADATA_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let key = (target.to_string(), level);
     cache.entry(key).or_insert_with_key(|(target, level)| {
         let target: &'static str = Box::leak(target.clone().into_boxed_str());
-        let metadata = plugin_log_metadata(target, *level, plugin_log_field_set());
+        let callsite: &'static PluginLogCallsite = Box::leak(Box::new(PluginLogCallsite::new()));
+        let field_set = tracing::field::FieldSet::new(
+            PLUGIN_LOG_FIELD_NAMES,
+            tracing::callsite::Identifier(callsite),
+        );
+        let metadata = plugin_log_metadata(target, *level, field_set);
         let Some(message_field) = metadata.fields().field("message") else {
             unreachable!("plugin log field set must contain message");
         };
-        let entry = PluginLogMetadata { metadata, message_field };
-        Box::leak(Box::new(entry))
+        let entry: &'static PluginLogMetadata =
+            Box::leak(Box::new(PluginLogMetadata { metadata, message_field }));
+        let _ = callsite.meta.set(&entry.metadata);
+        entry
     })
 }
 
@@ -902,9 +938,8 @@ extern "C" fn plugin_log_enabled_callback(
                 unsafe { std::ffi::CStr::from_ptr(target) }.to_str().unwrap_or("plugin")
             };
 
-            let metadata =
-                plugin_log_metadata(target_str, plugin_log_level(level), plugin_log_field_set());
-            tracing::dispatcher::get_default(|d| d.enabled(&metadata))
+            let log_meta = plugin_log_static_metadata(target_str, plugin_log_level(level));
+            tracing::dispatcher::get_default(|d| d.enabled(&log_meta.metadata))
         },
     )
 }
@@ -927,12 +962,9 @@ extern "C" fn plugin_log_callback(
             unsafe { std::ffi::CStr::from_ptr(target) }.to_str().unwrap_or("unknown")
         };
 
-        // Check the subscriber filter *before* acquiring the metadata
-        // cache mutex.  This avoids contention on high-volume
-        // DEBUG/TRACE logs that the subscriber would discard anyway.
         let tracing_level = plugin_log_level(level);
-        let probe = plugin_log_metadata(target_str, tracing_level, plugin_log_field_set());
-        let enabled = tracing::dispatcher::get_default(|d| d.enabled(&probe));
+        let log_meta = plugin_log_static_metadata(target_str, tracing_level);
+        let enabled = tracing::dispatcher::get_default(|d| d.enabled(&log_meta.metadata));
         if !enabled {
             return;
         }
@@ -943,8 +975,6 @@ extern "C" fn plugin_log_callback(
             unsafe { conversions::c_str_to_string(message) }
                 .unwrap_or_else(|_| "[invalid UTF-8]".to_string())
         };
-
-        let log_meta = plugin_log_static_metadata(target_str, tracing_level);
         tracing::dispatcher::get_default(|d| {
             d.register_callsite(&log_meta.metadata);
             let values =
@@ -1011,6 +1041,11 @@ impl NativeNodeWrapper {
             ));
         }
 
+        // Guard: if anything between create_instance and the final
+        // Ok(Self { .. }) panics, we must destroy the handle so it
+        // does not leak.
+        let mut handle_guard = HandleGuard { api, handle, defused: false };
+
         // For v9 plugins, inject the log-enabled callback so the plugin
         // can short-circuit log formatting when the level is filtered.
         //
@@ -1028,6 +1063,7 @@ impl NativeNodeWrapper {
             }
         }
 
+        handle_guard.defused = true;
         Ok(Self {
             state: Arc::new(InstanceState::new(
                 library,
@@ -3252,5 +3288,203 @@ mod ffi_guard_tests {
 
         assert_eq!(event_count.load(Ordering::SeqCst), 1);
         assert_eq!(*seen_target.lock().unwrap(), Some("whisper".to_string()));
+    }
+
+    // ── Fix 1: EnvFilter cache poisoning ───────────────────────────────
+
+    #[test]
+    fn plugin_log_metadata_is_unique_per_target_level() {
+        let meta_a = plugin_log_static_metadata("unique_a", tracing::Level::INFO);
+        let meta_b = plugin_log_static_metadata("unique_b", tracing::Level::INFO);
+        let meta_c = plugin_log_static_metadata("unique_a", tracing::Level::DEBUG);
+
+        assert!(
+            !std::ptr::eq(meta_a, meta_b),
+            "different targets must produce distinct metadata entries"
+        );
+        assert!(
+            !std::ptr::eq(meta_a, meta_c),
+            "different levels must produce distinct metadata entries"
+        );
+    }
+
+    #[test]
+    fn plugin_log_same_target_level_reuses_entry() {
+        let meta_1 = plugin_log_static_metadata("reuse_tgt", tracing::Level::WARN);
+        let meta_2 = plugin_log_static_metadata("reuse_tgt", tracing::Level::WARN);
+        assert!(
+            std::ptr::eq(meta_1, meta_2),
+            "same (target, level) must return the same cached entry"
+        );
+    }
+
+    struct CountingLayer(std::sync::Arc<AtomicUsize>);
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CountingLayer {
+        fn on_event(
+            &self,
+            _event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn envfilter_per_target_filtering() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let event_count = std::sync::Arc::new(AtomicUsize::new(0));
+        let count_clone = std::sync::Arc::clone(&event_count);
+
+        let filter = tracing_subscriber::EnvFilter::new("ef_alpha=info,ef_beta=off");
+        let subscriber =
+            tracing_subscriber::registry().with(filter).with(CountingLayer(count_clone));
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let _guard = tracing::dispatcher::set_default(&dispatch);
+
+        let alpha = std::ffi::CString::new("ef_alpha").unwrap();
+        let beta = std::ffi::CString::new("ef_beta").unwrap();
+        let msg = std::ffi::CString::new("test message").unwrap();
+
+        // Register alpha first — without unique callsite IDs this would
+        // poison the cache and allow beta through too.
+        plugin_log_callback(
+            streamkit_plugin_sdk_native::types::CLogLevel::Info,
+            alpha.as_ptr(),
+            msg.as_ptr(),
+            std::ptr::null_mut(),
+        );
+        assert_eq!(event_count.load(Ordering::SeqCst), 1, "ef_alpha=info should pass");
+
+        plugin_log_callback(
+            streamkit_plugin_sdk_native::types::CLogLevel::Info,
+            beta.as_ptr(),
+            msg.as_ptr(),
+            std::ptr::null_mut(),
+        );
+        assert_eq!(
+            event_count.load(Ordering::SeqCst),
+            1,
+            "ef_beta=off must be filtered — cache poisoning if this fails"
+        );
+    }
+
+    // ── Fix 2: HandleGuard tests ───────────────────────────────────────
+
+    #[test]
+    fn handle_guard_calls_destroy_on_drop() {
+        test_stubs::DESTROY_CALL_COUNT.store(0, Ordering::SeqCst);
+        let api: &'static CNativePluginAPI = Box::leak(Box::new(dummy_api_counted_destroy()));
+        {
+            let _guard = HandleGuard {
+                api,
+                handle: std::ptr::without_provenance_mut::<c_void>(42),
+                defused: false,
+            };
+        }
+        assert_eq!(
+            test_stubs::DESTROY_CALL_COUNT.load(Ordering::SeqCst),
+            1,
+            "HandleGuard must call destroy_instance on drop when not defused"
+        );
+    }
+
+    #[test]
+    fn handle_guard_does_not_destroy_when_defused() {
+        test_stubs::DESTROY_CALL_COUNT.store(0, Ordering::SeqCst);
+        let api: &'static CNativePluginAPI = Box::leak(Box::new(dummy_api_counted_destroy()));
+        {
+            let mut guard = HandleGuard {
+                api,
+                handle: std::ptr::without_provenance_mut::<c_void>(42),
+                defused: false,
+            };
+            guard.defused = true;
+        }
+        assert_eq!(
+            test_stubs::DESTROY_CALL_COUNT.load(Ordering::SeqCst),
+            0,
+            "HandleGuard must NOT call destroy_instance when defused"
+        );
+    }
+
+    #[test]
+    fn handle_guard_catches_panic_between_create_and_ok() {
+        test_stubs::DESTROY_CALL_COUNT.store(0, Ordering::SeqCst);
+        let api: &'static CNativePluginAPI = Box::leak(Box::new(dummy_api_counted_destroy()));
+
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let _guard = HandleGuard {
+                api,
+                handle: std::ptr::without_provenance_mut::<c_void>(99),
+                defused: false,
+            };
+            panic!("simulated failure after create_instance");
+        }));
+
+        assert!(result.is_err(), "should have panicked");
+        assert_eq!(
+            test_stubs::DESTROY_CALL_COUNT.load(Ordering::SeqCst),
+            1,
+            "HandleGuard must destroy handle on panic"
+        );
+    }
+
+    // ── Fix 3: on_upstream_hint timeout tests ──────────────────────────
+
+    mod hint_timeout_stubs {
+        use super::*;
+
+        pub static HINT_CALL_COUNT: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+
+        pub extern "C" fn on_hint_slow(
+            _: CPluginHandle,
+            _: *const std::os::raw::c_char,
+        ) -> CResult {
+            HINT_CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(80));
+            CResult::success()
+        }
+    }
+
+    fn dummy_api_with_slow_hint() -> CNativePluginAPI {
+        let mut api = dummy_api();
+        api.on_upstream_hint = Some(hint_timeout_stubs::on_hint_slow);
+        api
+    }
+
+    #[test]
+    fn worker_on_upstream_hint_timeout_drops_remaining() {
+        hint_timeout_stubs::HINT_CALL_COUNT.store(0, Ordering::SeqCst);
+
+        // 100ms timeout — the slow stub sleeps 80ms per hint, so the
+        // second call should succeed but the third should be skipped.
+        let state = test_instance_state_with_timeout(
+            dummy_api_with_slow_hint(),
+            std::time::Duration::from_millis(100),
+        );
+        let (tx, rx) = tokio::sync::mpsc::channel::<WorkerRequest>(1);
+
+        let s = Arc::clone(&state);
+        let handle = std::thread::Builder::new()
+            .name("test-worker-hint-timeout".into())
+            .spawn(move || {
+                worker_thread_main(rx, s, Vec::new(), None, None, "test".into(), None, None);
+            })
+            .unwrap();
+
+        let hints: Vec<CString> =
+            (0..5).map(|i| CString::new(format!("hint-{i}")).unwrap()).collect();
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        tx.blocking_send(WorkerRequest::OnUpstreamHint { hints, reply: reply_tx }).unwrap();
+        reply_rx.blocking_recv().expect("hint batch should complete");
+
+        let called = hint_timeout_stubs::HINT_CALL_COUNT.load(Ordering::SeqCst);
+        assert!(called < 5, "timeout should have dropped some hints, but all {called} were called");
+        assert!(called >= 1, "at least one hint should have been delivered before timeout");
+
+        drop(tx);
+        handle.join().unwrap();
     }
 }
