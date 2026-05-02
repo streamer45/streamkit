@@ -545,10 +545,9 @@ const MonitorViewContent: React.FC = () => {
     updateNodePosition,
   });
 
-  // Throttled Zustand→ReactFlow patching bridge
+  // Throttled Zustand→ReactFlow edge-alert patching bridge
   const { topoEffectRanRef } = useNodeStatesSubscription({
     selectedSessionId,
-    setNodes,
     setEdges,
     pipelineRef,
     topoKey,
