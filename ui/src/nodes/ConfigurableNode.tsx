@@ -284,11 +284,6 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
     data.onParamChange?.toString().substring(0, 50)
   );
 
-  // Read state from per-node Jotai atom so that state transitions
-  // re-render only *this* node instead of every node on the canvas.
-  // Params are NOT read from the atom here — slider/toggle/text controls
-  // subscribe directly via useNumericSlider / useTuneNode, which avoids
-  // full-subtree re-renders on every drag tick.
   const state = useNodeStateFromAtom(id, data.sessionId, data.state);
   const params = data.params;
 

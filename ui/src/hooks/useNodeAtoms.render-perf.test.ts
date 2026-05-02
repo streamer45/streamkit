@@ -16,6 +16,7 @@
  */
 
 import { act } from '@testing-library/react';
+import { useAtomValue } from 'jotai/react';
 import { describe, it, expect, beforeEach } from 'vitest';
 
 import {
@@ -30,6 +31,16 @@ import { measureHookRenders } from '@/test/perf';
 import type { NodeState } from '@/types/types';
 
 import { useNodeStateFromAtom } from './useNodeAtoms';
+
+/** Positive control: a hook that subscribes to BOTH state and params atoms.
+ *  Used to prove that the test harness would detect the regression if
+ *  useNodeStateFromAtom accidentally subscribed to nodeParamsAtom. */
+function useNodeStateAndParams(nodeId: string, sessionId: string): NodeState | undefined {
+  const key = nodeKey(sessionId, nodeId);
+  const state = useAtomValue(nodeStateAtom(key));
+  useAtomValue(nodeParamsAtom(key));
+  return state ?? undefined;
+}
 
 // ── Setup ───────────────────────────────────────────────────────────────────
 
@@ -51,27 +62,37 @@ describe('useNodeStateFromAtom render-performance', () => {
     seed.set(SESSION_ID, { [NODE_ID]: 'Running' as NodeState });
     batchWriteNodeStates(seed);
 
+    const paramWrites = () => {
+      for (let i = 0; i < 20; i++) {
+        act(() => {
+          writeNodeParam(NODE_ID, 'opacity', 0.5 + i * 0.02, SESSION_ID);
+        });
+      }
+    };
+
+    // ── Positive control: a hook that DOES subscribe to params ──────────
+    // Proves the test harness detects re-renders from param writes.
+    const control = measureHookRenders(
+      (props: { nodeId: string; sessionId: string }) =>
+        useNodeStateAndParams(props.nodeId, props.sessionId),
+      {
+        initialProps: { nodeId: NODE_ID, sessionId: SESSION_ID },
+        scenario: paramWrites,
+      }
+    );
+    expect(control.meanRenderCount).toBeGreaterThanOrEqual(15);
+
+    // ── Actual test: useNodeStateFromAtom must NOT re-render ────────────
     const result = measureHookRenders(
       (props: { nodeId: string; sessionId: string }) =>
         useNodeStateFromAtom(props.nodeId, props.sessionId, undefined),
       {
         initialProps: { nodeId: NODE_ID, sessionId: SESSION_ID },
-        scenario: () => {
-          // Simulate 20 rapid slider drags — each calls writeNodeParam.
-          // If the hook subscribed to nodeParamsAtom, this would cause 20
-          // re-renders.  Since it only subscribes to nodeStateAtom, render
-          // count should stay at 1 (mount only).
-          for (let i = 0; i < 20; i++) {
-            act(() => {
-              writeNodeParam(NODE_ID, 'opacity', 0.5 + i * 0.02, SESSION_ID);
-            });
-          }
-        },
+        scenario: paramWrites,
       }
     );
     // Mount + atom subscription sync = 2 renders.  The 20 param atom
-    // writes must NOT add any renders.  With the regression (subscribing
-    // to nodeParamsAtom), this would be 22+.
+    // writes must NOT add any renders.
     expect(result.meanRenderCount).toBeLessThanOrEqual(2);
   });
 

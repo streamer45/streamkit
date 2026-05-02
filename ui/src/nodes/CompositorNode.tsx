@@ -116,12 +116,6 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(function Compos
   selected,
 }) {
   nodesLogger.debug('CompositorNode Render:', id);
-
-  // Read state from per-node Jotai atom so that state transitions
-  // re-render only *this* node instead of every node on the canvas.
-  // Params are NOT read from the atom here — slider controls subscribe
-  // directly via useNumericSlider, which avoids full-subtree re-renders
-  // on every drag tick.
   const state = useNodeStateFromAtom(id, data.sessionId, data.state);
   const params = data.params ?? {};
 

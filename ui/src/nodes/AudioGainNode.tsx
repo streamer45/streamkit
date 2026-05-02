@@ -99,12 +99,6 @@ const AudioGainNode: React.FC<AudioGainNodeProps> = React.memo(function AudioGai
   selected,
 }) {
   nodesLogger.debug('AudioGainNode Render:', id);
-
-  // Read state from per-node Jotai atom so that state transitions
-  // re-render only *this* node instead of every node on the canvas.
-  // Params are NOT read from the atom here — the slider subscribes
-  // directly via useNumericSlider, which avoids full-subtree re-renders
-  // on every drag tick.
   const state = useNodeStateFromAtom(id, data.sessionId, data.state);
   const params = data.params as Record<string, unknown>;
 

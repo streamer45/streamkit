@@ -17,9 +17,10 @@
  * and sync remote changes via `compositorServerSync` (view data) rather
  * than the params atom.  See #398 for improving this.
  *
- * When `sessionId` is available (monitor view), the hook subscribes to
- * the per-node atom family.  When absent (design view), it falls back to
- * a static null atom and returns the caller-supplied fallback value.
+ * `sessionId` is stable for the lifetime of a mount — design view always
+ * passes `undefined`, monitor view always passes a string.  The
+ * `nullStateAtom` branch exists to satisfy the rules of hooks (always
+ * call `useAtomValue`), not because the value toggles at runtime.
  */
 
 import { useAtomValue } from 'jotai/react';
@@ -32,7 +33,7 @@ import type { NodeState } from '@/types/types';
  *
  * @param nodeId   ReactFlow node id
  * @param sessionId  Active session id (undefined in design view)
- * @param fallback   Value to return when the atom is empty or sessionId is absent
+ * @param fallback   Value to return when sessionId is absent (design view)
  */
 export function useNodeStateFromAtom(
   nodeId: string,
@@ -41,5 +42,8 @@ export function useNodeStateFromAtom(
 ): NodeState | undefined {
   const key = sessionId ? nodeKey(sessionId, nodeId) : null;
   const atomState = useAtomValue(key ? nodeStateAtom(key) : nullStateAtom);
-  return (key ? atomState : null) ?? fallback ?? undefined;
+  // Keyed branch: return atom value directly (null → undefined).
+  // Unkeyed branch (design view): return fallback.
+  if (key) return atomState ?? undefined;
+  return fallback ?? undefined;
 }
