@@ -112,7 +112,8 @@ permissions relevant to MCP:
 |------------|----------|
 | `create_sessions` | Creating sessions, validating pipelines |
 | `list_sessions` | Listing sessions, getting pipeline state |
-| `modify_sessions` | Batch mutations, tuning nodes |
+| `modify_sessions` | Batch mutations, updating pipelines |
+| `tune_nodes` | Tuning node params (via tune_node or update_pipeline auto-apply) |
 | `destroy_sessions` | Destroying sessions |
 | `list_samples` | Listing sample pipelines, listing resources |
 | `read_samples` | Reading sample YAML, reading resources |
