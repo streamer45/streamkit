@@ -473,7 +473,6 @@ async fn handle_add_node(
     perms: &Permissions,
     role_name: &str,
 ) -> Option<ResponsePayload> {
-
     if !perms.modify_sessions {
         return Some(ResponsePayload::Error {
             message: "Permission denied: cannot modify sessions".to_string(),
@@ -496,7 +495,6 @@ async fn handle_add_node(
             message: format!("Session '{session_id}' not found"),
         });
     };
-
 
     if !can_access_session(&session, role_name, perms) {
         return Some(ResponsePayload::Error {
@@ -536,7 +534,6 @@ async fn handle_remove_node(
     perms: &Permissions,
     role_name: &str,
 ) -> Option<ResponsePayload> {
-
     if !perms.modify_sessions {
         return Some(ResponsePayload::Error {
             message: "Permission denied: cannot modify sessions".to_string(),
@@ -553,7 +550,6 @@ async fn handle_remove_node(
             message: format!("Session '{session_id}' not found"),
         });
     };
-
 
     if !can_access_session(&session, role_name, perms) {
         return Some(ResponsePayload::Error {
@@ -602,7 +598,6 @@ async fn handle_connect(
     perms: &Permissions,
     role_name: &str,
 ) -> Option<ResponsePayload> {
-
     if !perms.modify_sessions {
         return Some(ResponsePayload::Error {
             message: "Permission denied: cannot modify sessions".to_string(),
@@ -619,7 +614,6 @@ async fn handle_connect(
             message: format!("Session '{session_id}' not found"),
         });
     };
-
 
     if !can_access_session(&session, role_name, perms) {
         return Some(ResponsePayload::Error {
@@ -681,7 +675,6 @@ async fn handle_disconnect(
     perms: &Permissions,
     role_name: &str,
 ) -> Option<ResponsePayload> {
-
     if !perms.modify_sessions {
         return Some(ResponsePayload::Error {
             message: "Permission denied: cannot modify sessions".to_string(),
@@ -698,7 +691,6 @@ async fn handle_disconnect(
             message: format!("Session '{session_id}' not found"),
         });
     };
-
 
     if !can_access_session(&session, role_name, perms) {
         return Some(ResponsePayload::Error {
@@ -915,7 +907,6 @@ async fn handle_get_pipeline(
             message: format!("Session '{session_id}' not found"),
         });
     };
-
 
     if !can_access_session(&session, role_name, perms) {
         return Some(ResponsePayload::Error {

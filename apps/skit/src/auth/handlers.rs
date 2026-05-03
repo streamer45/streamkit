@@ -101,7 +101,7 @@ async fn get_auth_context(
     app_state: &AppState,
 ) -> Result<AuthContext, (StatusCode, String)> {
     if !app_state.auth.is_enabled() {
-            let (role, permissions) =
+        let (role, permissions) =
             crate::role_extractor::get_role_and_permissions(headers, &Arc::new(app_state.clone()));
         return Ok(AuthContext {
             claims: crate::auth::ApiClaims::anonymous(&role),
