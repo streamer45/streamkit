@@ -27,7 +27,6 @@ use crate::constants::{
     DEFAULT_BATCH_SIZE, DEFAULT_ONESHOT_IO_CAPACITY, DEFAULT_ONESHOT_MEDIA_CAPACITY,
     DEFAULT_STATE_CHANNEL_CAPACITY,
 };
-// Note: The constants are used in OneshotEngineConfig::default()
 use crate::{graph_builder, Engine};
 use bytes::Bytes;
 use futures::Stream;
@@ -91,8 +90,6 @@ fn validate_input_mode<S>(
         );
         Ok(OneshotInputMode::FileBased)
     } else {
-        // Generator mode: pipeline produces its own data (e.g. video::colorbars)
-        // No http_input or file_reader required — just needs http_output.
         if !inputs.is_empty() {
             tracing::error!(
                 "Pipeline validation failed: streams provided but no http_input nodes present"
@@ -356,7 +353,6 @@ impl Engine {
 
         tracing::debug!("Final output node identified: '{}'", final_node_id);
 
-        // Get final node definition - this should exist since it's referenced in a connection
         let final_node_def = definition.nodes.get(final_node_id).ok_or_else(|| {
             StreamKitError::Configuration(format!(
                 "Final node '{final_node_id}' referenced in connection but not found in pipeline definition"
@@ -364,28 +360,16 @@ impl Engine {
         })?;
         tracing::debug!("Creating final node instance of type '{}'", final_node_def.kind);
 
-        // Walk backwards from the output node through the connection graph to find
-        // the first node that declares a content_type.  This allows passthrough-style
-        // nodes (pacer, passthrough, telemetry_tap, etc.) to be inserted before
-        // http_output without losing the upstream content type.
-        //
-        // NOTE: This walk follows a single path — at each step it picks the first
-        // connection whose `to_node` matches `cursor`.  For fan-in nodes (e.g. a
-        // compositor with multiple inputs) only one arbitrary upstream branch is
-        // traversed.  This is correct for content-type discovery because the
-        // content-producing node (encoder / muxer) sits downstream of any fan-in
-        // point, not upstream of it.
+        // Walk backward from the output node to find the first node
+        // that declares a content_type (skips passthrough-style nodes).
         let static_content_type = {
             let mut cursor = final_node_id.as_str();
             let mut found: Option<String> = None;
             let mut steps = 0;
-            // Limit iterations to prevent infinite loops in malformed graphs.
             let max_steps = definition.nodes.len();
             for _ in 0..max_steps {
                 steps += 1;
                 if let Some(def) = definition.nodes.get(cursor) {
-                    // Skip synthetic oneshot nodes — they are not in the
-                    // registry and are handled separately by the engine.
                     if def.kind == "streamkit::http_input" || def.kind == "streamkit::http_output" {
                         break;
                     }
@@ -395,7 +379,6 @@ impl Engine {
                         break;
                     }
                 }
-                // Move to the upstream node that feeds `cursor`.
                 match definition.connections.iter().find(|c| c.to_node == cursor) {
                     Some(conn) => cursor = conn.from_node.as_str(),
                     None => break,

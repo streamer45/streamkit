@@ -413,13 +413,7 @@ impl DynamicEngine {
         }
     }
 
-    /// Handles a node state update by storing it and broadcasting to subscribers
-    ///
-    /// Takes by reference to avoid unnecessary clones when broadcasting to subscribers
     fn handle_state_update(&mut self, update: &NodeStateUpdate) {
-        // Ignore state updates for nodes that have been removed
-        // This prevents race conditions where a node sends a final state update
-        // after shutdown_node() has already removed it from node_states
         if !self.live_nodes.contains_key(&update.node_id) {
             tracing::trace!(
                 node = %update.node_id,
@@ -435,7 +429,6 @@ impl DynamicEngine {
             "Node state updated"
         );
 
-        // Record state transition metric
         let state_name = Self::node_state_name(&update.state);
         let node_id_kv = self.node_metric_labels.get(&update.node_id).map_or_else(
             || KeyValue::new("node_id", update.node_id.clone()),
@@ -444,11 +437,7 @@ impl DynamicEngine {
         self.node_state_transitions_counter
             .add(1, &[node_id_kv.clone(), KeyValue::new("state", state_name)]);
 
-        // Record state gauge as a proper "one-hot" state indicator per node:
-        // - Set the previous state's series to 0
-        // - Set the new/current state's series to 1
-        //
-        // This keeps dashboards correct when nodes transition away from Running.
+        // One-hot gauge: zero-out previous state, set new state to 1.
         let prev_state = self.node_states.get(&update.node_id);
         if let Some(prev_state) = prev_state {
             let prev_state_name = Self::node_state_name(prev_state);
@@ -459,54 +448,35 @@ impl DynamicEngine {
         }
         self.node_state_gauge.record(1, &[node_id_kv, KeyValue::new("state", state_name)]);
 
-        // Store the current state
         Arc::make_mut(&mut self.node_states).insert(update.node_id.clone(), update.state.clone());
 
-        // Check if all nodes are Ready or Running - if so, activate Ready nodes
-        // This prevents packet loss by ensuring all nodes are initialized before data flows
         self.check_and_activate_pipeline();
 
-        // Broadcast to all subscribers
-        self.state_subscribers.retain(|subscriber| {
-            // Keep subscribers on transient backpressure (Full); remove only when Closed.
-            //
-            // For state updates we also try to deliver eventually: dropping a state transition
-            // (e.g. Running -> Recovering) can leave clients showing a stale "healthy" status.
-            match subscriber.try_send(update.clone()) {
-                Ok(()) => true,
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    let subscriber = subscriber.clone();
-                    let update = update.clone();
-                    tokio::spawn(async move {
-                        let _ = subscriber.send(update).await;
-                    });
-                    true
-                },
-                Err(mpsc::error::TrySendError::Closed(_)) => false,
-            }
+        // State updates are retried on backpressure (not dropped) to avoid
+        // clients showing stale status.
+        self.state_subscribers.retain(|subscriber| match subscriber.try_send(update.clone()) {
+            Ok(()) => true,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                let subscriber = subscriber.clone();
+                let update = update.clone();
+                tokio::spawn(async move {
+                    let _ = subscriber.send(update).await;
+                });
+                true
+            },
+            Err(mpsc::error::TrySendError::Closed(_)) => false,
         });
     }
 
-    /// Handles a telemetry event by broadcasting to subscribers.
-    ///
-    /// Unlike state/stats, telemetry events are not stored - they're purely streaming.
-    /// Takes by reference to avoid unnecessary clones when broadcasting to subscribers.
     fn handle_telemetry_event(&mut self, event: &TelemetryEvent) {
-        // Broadcast to all subscribers, removing disconnected ones
-        self.telemetry_subscribers.retain(|subscriber| {
-            // Keep subscribers on transient backpressure (Full); remove only when Closed.
-            match subscriber.try_send(event.clone()) {
-                Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => true,
-                Err(mpsc::error::TrySendError::Closed(_)) => false,
-            }
+        self.telemetry_subscribers.retain(|subscriber| match subscriber.try_send(event.clone()) {
+            Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => true,
+            Err(mpsc::error::TrySendError::Closed(_)) => false,
         });
     }
 
-    /// Handles a node view data update by storing it and broadcasting to subscribers.
-    ///
-    /// View data is best-effort (like stats): dropped updates are acceptable.
+    /// View data is best-effort: dropped updates are acceptable.
     fn handle_view_data_update(&mut self, update: &NodeViewDataUpdate) {
-        // Ignore view data updates for nodes that have been removed
         if !self.live_nodes.contains_key(&update.node_id) {
             tracing::trace!(
                 node = %update.node_id,
@@ -515,10 +485,7 @@ impl DynamicEngine {
             return;
         }
 
-        // Store latest value
         Arc::make_mut(&mut self.node_view_data).insert(update.node_id.clone(), update.data.clone());
-
-        // Broadcast to all subscribers
         self.view_data_subscribers.retain(|subscriber| match subscriber.try_send(update.clone()) {
             Ok(()) => true,
             Err(mpsc::error::TrySendError::Full(_)) => {
@@ -780,33 +747,22 @@ impl DynamicEngine {
             })
         }
 
-        // Get source node metadata
         let source_metadata = self
             .node_pin_metadata
             .get(from_node)
             .ok_or_else(|| format!("Source node '{from_node}' not found"))?;
-
-        // Get destination node metadata
         let dest_metadata = self
             .node_pin_metadata
             .get(to_node)
             .ok_or_else(|| format!("Destination node '{to_node}' not found"))?;
 
-        // Find source output pin (exact match or dynamic pin family template)
         let source_pin = source_metadata
             .output_pins
             .iter()
             .find(|p| p.name == from_pin)
             .or_else(|| match_dynamic_output_pin(&source_metadata.output_pins, from_pin));
         let Some(source_pin) = source_pin else {
-            // If the source pin is not found but the node supports dynamic pins,
-            // allow the connection — the output pin will be created on-demand in
-            // connect_nodes via RequestAddOutputPin.
-            //
-            // NOTE: this skips destination-pin validation too.  When both nodes
-            // support dynamic pins and neither pin exists yet, no compile-time
-            // type checking occurs — mismatches will only surface at runtime
-            // (or via the post-creation check in connect_nodes).
+            // Dynamic-pin nodes create pins on-demand; skip validation.
             if self.dynamic_pin_nodes.contains(from_node) {
                 tracing::debug!(
                     "Source pin {}.{} not in metadata, but node supports dynamic pins; skipping strict type validation",
@@ -818,11 +774,6 @@ impl DynamicEngine {
             return Err(format!("Source pin '{from_pin}' not found on node '{from_node}'"));
         };
 
-        // Find destination input pin (exact match or dynamic pin family template).
-        //
-        // For nodes that support dynamic pins, we allow connecting to pins that don't exist yet
-        // (they'll be created on-demand in connect_nodes). If we can't find a template pin to
-        // validate against, fall back to permissive validation for dynamic-pin nodes.
         let dest_pin = dest_metadata
             .input_pins
             .iter()
@@ -840,7 +791,6 @@ impl DynamicEngine {
             return Err(format!("Destination pin '{to_pin}' not found on node '{to_node}'"));
         };
 
-        // Special handling for Passthrough types in dynamic pipelines
         if matches!(source_pin.produces_type, streamkit_core::types::PacketType::Passthrough) {
             tracing::debug!(
                 "Source pin {}.{} uses Passthrough - type will be resolved at runtime",
@@ -850,7 +800,6 @@ impl DynamicEngine {
             return Ok(());
         }
 
-        // Check if destination accepts Any type
         if dest_pin
             .accepts_types
             .iter()
@@ -859,7 +808,6 @@ impl DynamicEngine {
             return Ok(());
         }
 
-        // Check if destination accepts Passthrough
         if dest_pin
             .accepts_types
             .iter()
@@ -873,7 +821,6 @@ impl DynamicEngine {
             return Ok(());
         }
 
-        // Use the existing can_connect_any function for validation
         let registry = streamkit_core::packet_meta::packet_type_registry();
         if !streamkit_core::packet_meta::can_connect_any(
             &source_pin.produces_type,
@@ -910,7 +857,6 @@ impl DynamicEngine {
             mode
         );
 
-        // 0. Validate type compatibility before making the connection
         if let Err(e) = self.validate_connection_types(&from_node, &from_pin, &to_node, &to_pin) {
             tracing::error!(
                 "Cannot connect {}.{} -> {}.{}: {}",
@@ -923,30 +869,16 @@ impl DynamicEngine {
             return;
         }
 
-        // 1. Find the destination input Sender
-        // If the pin doesn't exist and the node supports dynamic pins, create it first.
-        // Track whether we dynamically created the input pin so we can roll it
-        // back if step 2 (output pin creation) fails.
-        //
-        // NOTE: We defer sending AddedInputPin until after the source output
-        // pin is resolved (step 2) so that AddedInputPin arrives before
-        // InputTypeResolved — the node needs the channel ready before it
-        // receives type info.  The deferred state is stored in
-        // `pending_input_pin_activation`.
+        // AddedInputPin is deferred until after source output pin resolution
+        // so the channel is ready before InputTypeResolved arrives.
         let mut created_dynamic_input: Option<String> = None;
         let mut pending_input_pin_activation: Option<(
             streamkit_core::InputPin,
             mpsc::Receiver<streamkit_core::types::Packet>,
             Option<mpsc::Sender<streamkit_core::UpstreamHint>>,
         )> = None;
-        // Hint receiver to deliver to the source node after connection is
-        // established.  Created for both pre-existing and dynamic pins.
-        // (Not initialised here — every branch below either assigns it or
-        // returns early, so the compiler can verify exhaustiveness.)
         let mut pending_hint_rx: Option<mpsc::Receiver<streamkit_core::UpstreamHint>>;
         let dest_tx = if let Some(tx) = self.node_inputs.get(&(to_node.clone(), to_pin.clone())) {
-            // Pre-existing pin — create a hint channel so the destination
-            // can send advisory hints (e.g. preferred output size) upstream.
             let (hint_tx, hint_rx) = mpsc::channel::<streamkit_core::UpstreamHint>(1);
             pending_hint_rx = Some(hint_rx);
             if let Some(pin_mgmt_tx) = self.pin_management_txs.get(&to_node) {
@@ -970,14 +902,12 @@ impl DynamicEngine {
                 );
                 return;
             };
-            // Node supports dynamic pins - create the pin on-demand
             tracing::info!(
                 "Dynamically creating input pin '{}.{}' for connection",
                 to_node,
                 to_pin
             );
 
-            // Request pin creation
             let (response_tx, response_rx) = tokio::sync::oneshot::channel();
             let msg = streamkit_core::pins::PinManagementMessage::RequestAddInputPin {
                 suggested_name: Some(to_pin.clone()),
@@ -1165,9 +1095,6 @@ impl DynamicEngine {
                             from_node, pin.name, pin.produces_type,
                             to_node, to_pin, dest_pin_def.accepts_types
                         );
-                        // Clean up the distributor actor and metadata that were
-                        // just created — leaving them would leak an orphaned
-                        // task and stale metadata for the session.
                         if let Some(cfg) =
                             self.pin_distributors.remove(&(from_node.clone(), pin.name.clone()))
                         {
@@ -1184,7 +1111,6 @@ impl DynamicEngine {
                 }
             }
 
-            // Notify the node that the output pin is ready with its channel
             let pin_name_for_cleanup = pin.name.clone();
             source_produces_type = pin.produces_type.clone();
             let added_msg = streamkit_core::pins::PinManagementMessage::AddedOutputPin {
@@ -1197,8 +1123,6 @@ impl DynamicEngine {
                     "Failed to send output pin activation to node '{}'. It may have stopped.",
                     from_node
                 );
-                // Clean up the distributor and metadata — the node never
-                // received AddedOutputPin so nothing will produce into this pin.
                 if let Some(cfg) =
                     self.pin_distributors.remove(&(from_node.clone(), pin_name_for_cleanup.clone()))
                 {
@@ -1227,8 +1151,6 @@ impl DynamicEngine {
             return;
         }
 
-        // 2b. Send the deferred AddedInputPin now that the source pin is resolved.
-        // This only fires when a dynamic input pin was created in step 1.
         if let Some((input_pin, input_rx, hint_tx)) = pending_input_pin_activation {
             if let Some(pin_mgmt_tx) = self.pin_management_txs.get(&to_node) {
                 let msg = streamkit_core::pins::PinManagementMessage::AddedInputPin {
@@ -1251,9 +1173,6 @@ impl DynamicEngine {
                     return;
                 }
             } else {
-                // pin_management_txs should always contain an entry (created
-                // in add_node for every node).  If missing, the node was
-                // removed between step 1 and step 2b.
                 tracing::error!(
                     "No pin management channel for node '{}' — cannot activate dynamic input pin. \
                      Rolling back connection.",
@@ -1269,18 +1188,7 @@ impl DynamicEngine {
             }
         }
 
-        // 2c. Deliver InputTypeResolved to the destination node.
-        // This is the single, uniform mechanism for all nodes (both
-        // dynamic-pin and pre-existing-pin) to learn the upstream type.
-        //
-        // If the source produces Passthrough, resolve it by tracing
-        // backward through the connection graph to find a concrete type.
-        //
-        // NOTE: If step 3 (AddConnection) fails below, the node will have
-        // received type info for a connection that never materialized.
-        // This is low-severity — the worst case is a pin that never
-        // receives data, and step 3 failure is rare (PinDistributor
-        // would need to have stopped between creation and this point).
+        // Resolve Passthrough by tracing backward through connections.
         let resolved_type =
             if matches!(source_produces_type, streamkit_core::types::PacketType::Passthrough) {
                 self.resolve_passthrough_type(&from_node, &from_pin)
@@ -1590,9 +1498,6 @@ impl DynamicEngine {
             Ok(node) => {
                 tracing::info!(node = %node_id, kind = %kind, "Node created successfully, initializing");
 
-                // initialize_node calls broadcast_state_update(Initializing)
-                // which reads Creating as the previous state and zeroes its
-                // gauge before setting Initializing to 1 — no gap.
                 if let Err(e) = self.initialize_node(node, &node_id, &kind, channels).await {
                     tracing::error!(
                         node_id = %node_id,
@@ -1601,45 +1506,22 @@ impl DynamicEngine {
                         "Failed to initialize node after async creation"
                     );
 
-                    // Broadcast Failed (reads prev state before inserting).
                     self.broadcast_state_update(
                         &node_id,
                         NodeState::Failed { reason: e.to_string() },
                     );
-
-                    // Clean up auxiliary bookkeeping but deliberately keep the
-                    // Failed entry in node_states so clients can observe the
-                    // failure.  The user must send RemoveNode to clear it (which
-                    // mirrors the Creating-cancel path at shutdown_node).
                     self.node_kinds.remove(&node_id);
                     self.node_metric_labels.remove(&node_id);
-
-                    // Drain pending connections and tunes referencing this node.
                     self.pending_connections
                         .retain(|pc| pc.from_node != node_id && pc.to_node != node_id);
                     self.pending_tunes.retain(|pt| pt.node_id != node_id);
                     return;
                 }
 
-                // Flush pending connections where both endpoints are now realized.
                 self.flush_pending_connections().await;
-
-                // Replay any TuneNode messages that arrived while Creating.
                 self.flush_pending_tunes(&node_id).await;
 
-                // Notify subscribers that the node has been fully created.
-                // The session-level forwarder turns this into the public
-                // `NodeAdded` event — clients see `nodeadded` only after
-                // the plugin's constructor *and* `initialize_node` returned
-                // Ok, never speculatively while the FFI call is still in
-                // flight.  Failures don't reach here; they're observable
-                // via NodeStateUpdate { state: Failed }.
                 let notification = NodeAddedNotification { node_id: node_id.clone(), kind, params };
-                // Unbounded send; dropping a NodeAdded notification
-                // would leave the client without a `nodeadded` event
-                // for this node, which is worse than memory pressure
-                // for a dead receiver.  Closed receivers prune via
-                // `is_ok()` returning false.
                 self.node_added_subscribers
                     .retain(|subscriber| subscriber.send(notification.clone()).is_ok());
             },
@@ -1651,17 +1533,12 @@ impl DynamicEngine {
                     "Background node creation failed"
                 );
 
-                // Broadcast Failed (reads prev state before inserting).
                 self.broadcast_state_update(&node_id, NodeState::Failed { reason: e.to_string() });
 
-                // Clean up auxiliary bookkeeping but deliberately keep the
-                // Failed entry in node_states so clients can observe the
-                // failure.  The user must send RemoveNode to clear it (which
-                // mirrors the Creating-cancel path at shutdown_node).
+                // Keep Failed in node_states so clients can observe it;
+                // RemoveNode clears it.
                 self.node_kinds.remove(&node_id);
                 self.node_metric_labels.remove(&node_id);
-
-                // Drain pending connections and tunes referencing this node.
                 self.pending_connections
                     .retain(|pc| pc.from_node != node_id && pc.to_node != node_id);
                 self.pending_tunes.retain(|pt| pt.node_id != node_id);
@@ -1989,34 +1866,23 @@ impl DynamicEngine {
             EngineControlMessage::Shutdown => {
                 tracing::info!("Received shutdown signal, stopping all nodes");
 
-                // Step 0: Clean up nodes still in Creating state.
-                // Clear all active_creations so any background results
-                // that arrive after shutdown are discarded.
+                // Discard any in-flight background creation results.
                 self.active_creations.clear();
                 self.pending_connections.clear();
                 self.pending_tunes.clear();
 
-                // Step 1: Close all input channels so nodes blocked on recv() will exit
-                // This ensures nodes that don't check control_rx will still shut down
+                // Close input channels so nodes blocked on recv() exit.
                 self.node_inputs.clear();
                 tracing::debug!("Closed all node input channels");
 
-                // Step 2: Send shutdown to all Pin Distributors immediately (non-blocking)
-                // Using try_send to avoid blocking if channels are full
                 for (_, config_tx) in self.pin_distributors.drain() {
-                    // Ignore errors - distributor might already be shutting down
-                    // Use drop to explicitly ignore Result (cleaner than let _)
                     drop(config_tx.try_send(PinConfigMsg::Shutdown));
                 }
                 tracing::debug!("Sent shutdown to all pin distributors");
 
-                // Step 3: Send shutdown messages to ALL nodes immediately (non-blocking broadcast)
                 let mut shutdown_handles = Vec::new();
                 for (node_id, live_node) in self.live_nodes.drain() {
-                    // Use try_send for immediate, non-blocking broadcast
-                    // If channel is full or closed, that's fine - node is busy or already shutting down
                     match live_node.control_tx.try_send(NodeControlMessage::Shutdown) {
-                        // Use () instead of _ for unit pattern to be explicit
                         Ok(()) => {
                             tracing::debug!(node_id = %node_id, "Sent shutdown signal to node");
                         },
@@ -2024,17 +1890,13 @@ impl DynamicEngine {
                             tracing::debug!(node_id = %node_id, "Node control channel full or closed");
                         },
                     }
-                    // Store the handle regardless - we want to wait for the node
                     shutdown_handles.push((node_id, live_node.task_handle));
                 }
 
-                // Step 4: Wait for nodes to exit gracefully (with timeout), then force-abort stragglers
-                // Graceful shutdown helps surface issues like nodes not checking control_rx
                 let shutdown_futures = shutdown_handles
                     .into_iter()
                     .map(|(node_id, handle)| async move {
                         let mut handle = handle;
-                        // Wait up to 2 seconds for graceful shutdown
                         match tokio::time::timeout(std::time::Duration::from_secs(2), &mut handle)
                             .await
                         {
@@ -2048,7 +1910,6 @@ impl DynamicEngine {
                                 tracing::error!(node_id = %node_id, error = %e, "Node task panicked during shutdown");
                             }
                             Err(_) => {
-                                // Timeout - node didn't exit gracefully
                                 tracing::warn!(
                                     node_id = %node_id,
                                     "Node did not shut down within 2s, this indicates a bug (node not checking control_rx or output send errors)"
@@ -2063,10 +1924,9 @@ impl DynamicEngine {
                         }
                     });
 
-                // Wait for all nodes to complete or timeout
                 futures::future::join_all(shutdown_futures).await;
 
-                // Step 5: Clean up remaining state
+                // Zero out gauge metrics for all nodes.
                 for (node_id, state) in self.node_states.as_ref() {
                     let node_id_kv = self.node_metric_labels.get(node_id.as_str()).map_or_else(
                         || KeyValue::new("node_id", node_id.clone()),

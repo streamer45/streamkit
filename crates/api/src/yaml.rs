@@ -545,8 +545,6 @@ fn is_bidirectional_kind(kind: &str) -> bool {
 fn detect_cycles(user_nodes: &IndexMap<String, UserNode>) -> Result<(), String> {
     use std::collections::HashSet;
 
-    // DFS helper function - defined first to satisfy items_after_statements lint
-    // Returns Some((cycle_nodes, cycle_description)) if a cycle is found
     fn dfs<'a>(
         node: &'a String,
         adjacency: &IndexMap<&'a String, Vec<&'a String>>,
@@ -562,13 +560,11 @@ fn detect_cycles(user_nodes: &IndexMap<String, UserNode>) -> Result<(), String> 
             for neighbor in neighbors {
                 if !visited.contains(neighbor) {
                     if let Some(cycle) = dfs(neighbor, adjacency, visited, rec_stack, cycle_path) {
-                        // Ensure we unwind recursion state even when returning early.
                         rec_stack.remove(node);
                         cycle_path.pop();
                         return Some(cycle);
                     }
                 } else if rec_stack.contains(neighbor) {
-                    // Found a cycle - collect the nodes in the cycle
                     let cycle_start_idx =
                         cycle_path.iter().position(|&n| n == *neighbor).unwrap_or(0);
                     let cycle_nodes: Vec<&'a String> = cycle_path[cycle_start_idx..].to_vec();
@@ -578,7 +574,6 @@ fn detect_cycles(user_nodes: &IndexMap<String, UserNode>) -> Result<(), String> 
                         cycle_strs.join(" -> "),
                         neighbor
                     );
-                    // Ensure we unwind recursion state even when returning early.
                     rec_stack.remove(node);
                     cycle_path.pop();
                     return Some((cycle_nodes, description));
@@ -591,9 +586,7 @@ fn detect_cycles(user_nodes: &IndexMap<String, UserNode>) -> Result<(), String> 
         None
     }
 
-    // Build adjacency list (node -> nodes it depends on, i.e., edges from needs to node)
-    // For cycle detection, we care about the dependency direction: if A needs B,
-    // then there's an edge B -> A in the data flow graph
+    // Adjacency: if A needs B, edge B -> A (data flow direction).
     let mut adjacency: IndexMap<&String, Vec<&String>> = IndexMap::new();
 
     for (node_name, node_def) in user_nodes {
@@ -607,15 +600,12 @@ fn detect_cycles(user_nodes: &IndexMap<String, UserNode>) -> Result<(), String> 
         };
 
         for dep_name in dependencies {
-            // Edge: dep_name -> node_name (data flows from dep to node)
-            // We need to find the key in user_nodes to get a reference with the right lifetime
             if let Some((key, _)) = user_nodes.get_key_value(dep_name) {
                 adjacency.entry(key).or_default().push(node_name);
             }
         }
     }
 
-    // DFS-based cycle detection
     let mut visited: HashSet<&String> = HashSet::new();
     let mut rec_stack: HashSet<&String> = HashSet::new();
     let mut cycle_path: Vec<&String> = Vec::new();
@@ -625,12 +615,10 @@ fn detect_cycles(user_nodes: &IndexMap<String, UserNode>) -> Result<(), String> 
             if let Some((cycle_nodes, cycle_error)) =
                 dfs(node_name, &adjacency, &mut visited, &mut rec_stack, &mut cycle_path)
             {
-                // Check if any node in the cycle is bidirectional
                 let has_bidirectional = cycle_nodes.iter().any(|node_name| {
                     user_nodes.get(*node_name).is_some_and(|node| is_bidirectional_kind(&node.kind))
                 });
 
-                // Only report error if no bidirectional node is in the cycle
                 if !has_bidirectional {
                     return Err(cycle_error);
                 }
@@ -649,15 +637,11 @@ fn compile_dag(
     user_nodes: IndexMap<String, UserNode>,
     client: Option<ClientSection>,
 ) -> Result<Pipeline, String> {
-    // First, detect cycles in the dependency graph
     detect_cycles(&user_nodes)?;
 
     let mut connections = Vec::new();
 
     for (node_name, node_def) in &user_nodes {
-        // Collect dependencies and resolve target pin names.
-        // For Map variant, the map key is the explicit target pin name.
-        // For Single/Multiple, pin names are auto-generated ("in" / "in_N").
         enum DepEntry<'a> {
             Auto { idx: usize, total: usize, dep: &'a NeedsDependency },
             Named { pin: &'a str, dep: &'a NeedsDependency },
@@ -695,7 +679,6 @@ fn compile_dag(
             };
             let (dep_name, from_pin) = dep.node_and_pin();
 
-            // Validate that the referenced node exists
             if !user_nodes.contains_key(dep_name) {
                 return Err(format!(
                     "Node '{node_name}' references non-existent node '{dep_name}' in 'needs' field"
@@ -712,7 +695,6 @@ fn compile_dag(
         }
     }
 
-    // Count incoming connections per node for auto-configuring num_inputs
     let mut incoming_counts: IndexMap<String, usize> = IndexMap::new();
     for conn in &connections {
         *incoming_counts.entry(conn.to_node.clone()).or_insert(0) += 1;

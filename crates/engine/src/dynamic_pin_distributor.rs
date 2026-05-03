@@ -132,7 +132,6 @@ impl PinDistributorActor {
             )
             .build();
 
-        // Pre-build metric labels once - avoids allocation on every packet
         let metric_labels = [
             KeyValue::new("node_id", node_id.clone()),
             KeyValue::new("pin_name", pin_name.clone()),
@@ -159,20 +158,16 @@ impl PinDistributorActor {
         }
     }
 
-    /// The main loop for the Pin Distributor. Handles configuration and packet fan-out with backpressure.
     #[allow(clippy::cognitive_complexity)]
     pub(super) async fn run(mut self) {
         tracing::debug!("PinDistributorActor started for {}.{}", self.node_id, self.pin_name);
 
         loop {
             tokio::select! {
-                // Prioritize configuration messages
                 biased;
 
-                // Handle configuration updates
                 Some(msg) = self.config_rx.recv() => {
                     if !self.handle_config(msg) {
-                        // Shutdown requested. Break the loop to start draining.
                         tracing::debug!(
                             "{}.{}: PinDistributor received Shutdown. Draining.",
                             self.node_id,
@@ -182,12 +177,10 @@ impl PinDistributorActor {
                     }
                 },
 
-                // Handle incoming packets from the node
                 Some(packet) = self.data_rx.recv() => {
                     self.distribute_packet(packet).await;
                 },
                 else => {
-                    // Data channel closed (node finished) and config channel closed.
                     tracing::debug!(
                         "{}.{}: PinDistributor inputs closed. Shutting down.",
                         self.node_id,
@@ -198,9 +191,6 @@ impl PinDistributorActor {
             }
         }
 
-        // Shutdown requested - exit immediately without draining.
-        // During shutdown, we prioritize fast termination over packet delivery.
-        // Close channels to signal upstream that we're done.
         self.config_rx.close();
         self.data_rx.close();
 

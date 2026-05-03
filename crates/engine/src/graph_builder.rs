@@ -213,7 +213,6 @@ pub async fn wire_and_spawn_graph(
         tracing::warn!("Type inference reached maximum iterations (100), some Passthrough types may remain unresolved");
     }
 
-    // Map from (to_node, to_pin) -> PacketType of the connected upstream output.
     let mut input_types: HashMap<(String, String), PacketType> = HashMap::new();
 
     for conn in connections {
@@ -224,7 +223,6 @@ pub async fn wire_and_spawn_graph(
             conn.to_node,
             conn.to_pin
         );
-        // Type-compatibility validation
         let out_ty = out_pin_types
             .get(&(conn.from_node.clone(), conn.from_pin.clone()))
             .ok_or_else(|| {
@@ -260,11 +258,9 @@ pub async fn wire_and_spawn_graph(
         let from_key = (conn.from_node.clone(), conn.from_pin.clone());
         let to_key = (conn.to_node.clone(), conn.to_pin.clone());
 
-        // Validate cardinality constraints
         let in_cardinality =
             in_pin_cardinality.get(&to_key).cloned().unwrap_or(PinCardinality::One);
 
-        // Check if input pin already has a connection
         if input_rxs.contains_key(&to_key) {
             match in_cardinality {
                 PinCardinality::One => {
@@ -304,8 +300,6 @@ pub async fn wire_and_spawn_graph(
             }
         }
 
-        // Record the upstream output type so we can provide it to the
-        // receiving node via `NodeContext::input_types`.
         input_types.insert(to_key.clone(), out_ty.clone());
 
         output_txs.insert(from_key, tx);
@@ -318,13 +312,11 @@ pub async fn wire_and_spawn_graph(
         input_rxs.len()
     );
 
-    // --- 3. Spawn each node as a separate actor task ---
     let mut live_nodes = HashMap::new();
     let node_names: Vec<String> = nodes.keys().cloned().collect();
 
     for name in node_names {
         tracing::debug!("Spawning node '{}'", name);
-        // Safe unwrap: node_names was created from nodes.keys(), so all keys must exist
         #[allow(clippy::unwrap_used)]
         let node = nodes.remove(&name).unwrap();
         let mut node_inputs = HashMap::new();
@@ -360,8 +352,6 @@ pub async fn wire_and_spawn_graph(
 
         let (control_tx, control_rx) = mpsc::channel(DEFAULT_ONESHOT_CONTROL_CAPACITY);
 
-        // Create a state channel for this node
-        // If no global state_tx was provided, create a dummy channel that will be ignored
         let (tx, rx) = mpsc::channel(DEFAULT_STATE_CHANNEL_CAPACITY);
         let (node_state_tx, _dummy_rx) = (tx, Some(rx));
 
@@ -387,7 +377,6 @@ pub async fn wire_and_spawn_graph(
         tracing::debug!("Starting task for node '{}'", name);
         let kind = node_kinds.get(&name).cloned().unwrap_or_else(|| "unknown".to_string());
 
-        // Clone name and kind for use in the tracing span, HashMap insertion, and debug statement
         let name_for_span = name.clone();
         let kind_for_span = kind.clone();
         let name_for_hashmap = name.clone();
