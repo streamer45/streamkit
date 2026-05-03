@@ -143,7 +143,6 @@ impl ProcessorNode for RtmpPublishNode {
     }
 
     fn output_pins(&self) -> Vec<OutputPin> {
-        // Sink node — no outputs.
         vec![]
     }
 
@@ -226,20 +225,9 @@ impl ProcessorNode for RtmpPublishNode {
         let mut audio_packet_count: u64 = 0;
         let mut tcp_read_buf = vec![0u8; 8192];
 
-        // Per-track timestamp rebase state.  Source timestamps from
-        // mic + camera are synchronized (same browser epoch), but audio
-        // and video arrive through different pipeline paths that may
-        // start at different wall-clock times (e.g. compositor generates
-        // early frames before MoQ video arrives, while audio waits for
-        // the opus→AAC chain).
-        //
-        // To align the tracks in the RTMP stream we follow the same
-        // pattern as the WebM muxer: each track's first frame computes
-        // a rebase offset so its RTMP timestamp starts at the current
-        // global position.  Subsequent frames preserve the source-
-        // timestamp cadence (which is correct because mic/camera are
-        // synchronized).  Large backward jumps (compositor calibration)
-        // trigger an offset reset.
+        // Per-track timestamp rebase: aligns audio and video tracks
+        // that arrive through different pipeline paths at different
+        // wall-clock times (same pattern as the WebM muxer).
         let mut ts_state = RtmpTimestampState::new();
 
         // ── Main publishing loop ────────────────────────────────────────
@@ -247,25 +235,16 @@ impl ProcessorNode for RtmpPublishNode {
 
         let result: Result<(), StreamKitError> = async {
             loop {
-                // Biased select: TCP read is checked FIRST every
-                // iteration so server ACKs / pings are always drained
-                // before we send more media.  Without this, the
-                // video/audio arms can starve the read arm and cause
-                // an ACK window overflow (`unacked > window * 2`).
+                // Biased select: TCP read first so server ACKs/pings
+                // are drained before sending more media.
                 tokio::select! {
                     biased;
 
-                    // TCP read (server responses / keepalive) — highest priority.
-                    // 30s timeout prevents hanging if the server becomes
-                    // unresponsive while input channels are idle.
                     read_result = tokio::time::timeout(
                         std::time::Duration::from_secs(30),
                         stream.read(&mut tcp_read_buf),
                     ) => {
                         let Ok(read_result) = read_result else {
-                            // Timeout — server hasn't sent anything in 30s.
-                            // This is normal during idle periods; just loop
-                            // back to check the other select arms.
                             continue;
                         };
                         match read_result {
@@ -277,7 +256,6 @@ impl ProcessorNode for RtmpPublishNode {
                                 if let Err(e) = connection.feed_recv_buf(&tcp_read_buf[..n]) {
                                     tracing::warn!(%node_name, error = %e, "Error feeding RTMP recv buffer");
                                 }
-                                // Drain events (acks, pings, etc.)
                                 if drain_events(&mut connection, &node_name) {
                                     tracing::info!(%node_name, "Breaking loop: peer disconnected");
                                     break;
@@ -291,13 +269,11 @@ impl ProcessorNode for RtmpPublishNode {
                         }
                     }
 
-                    // Video input
                     maybe_pkt = video_rx.recv() => {
                         let Some(pkt) = maybe_pkt else {
                             tracing::info!(%node_name, "Video input channel closed");
                             break;
                         };
-                        // Stop sending if the server has disconnected.
                         if connection.state() != RtmpConnectionState::Publishing {
                             tracing::warn!(%node_name, state = %connection.state(), "Connection no longer publishing, exiting");
                             break;
@@ -314,7 +290,6 @@ impl ProcessorNode for RtmpPublishNode {
                         flush_send_buf(&mut connection, &mut stream, &mut tcp_read_buf, &node_name).await?;
                     }
 
-                    // Audio input
                     maybe_pkt = audio_rx.recv() => {
                         let Some(pkt) = maybe_pkt else {
                             tracing::info!(%node_name, "Audio input channel closed");
@@ -338,7 +313,6 @@ impl ProcessorNode for RtmpPublishNode {
                         flush_send_buf(&mut connection, &mut stream, &mut tcp_read_buf, &node_name).await?;
                     }
 
-                    // Shutdown signal
                     Some(control_msg) = context.control_rx.recv() => {
                         if matches!(control_msg, streamkit_core::control::NodeControlMessage::Shutdown) {
                             tracing::info!(%node_name, "Received shutdown signal");
@@ -355,11 +329,6 @@ impl ProcessorNode for RtmpPublishNode {
 
         tracing::info!(%node_name, video_packets = video_packet_count, audio_packets = audio_packet_count, "RTMP publishing finished");
 
-        // Best-effort graceful TCP shutdown so the server sees a FIN
-        // rather than an abrupt RST.  The rtmp_client module does not
-        // expose deleteStream/FCUnpublish on the publish client, so we
-        // cannot send a clean RTMP-level teardown; the TCP close is the
-        // next best signal.
         let _ = stream.shutdown().await;
 
         match result {

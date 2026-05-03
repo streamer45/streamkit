@@ -109,7 +109,6 @@ impl ProcessorNode for MoqPeerNode {
         let node_name = context.output_sender.node_name().to_string();
         state_helpers::emit_initializing(&context.state_tx, &node_name);
 
-        // Validate that at least one input broadcast is configured.
         if self.config.input_broadcasts.is_empty() {
             return Err(StreamKitError::Configuration(
                 "input_broadcasts must contain at least one broadcast name".to_string(),

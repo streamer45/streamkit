@@ -152,8 +152,6 @@ impl ProcessorNode for PixelConvertNode {
             mpsc::channel::<Result<VideoFrame, String>>(get_codec_channel_capacity());
 
         let convert_task = tokio::task::spawn_blocking(move || {
-            // OpenTelemetry metrics — created here so they are owned by the
-            // blocking thread and can be updated without cross-thread sync.
             let meter = global::meter("skit_nodes");
             let frames_converted_counter = meter
                 .u64_counter("pixel_convert.frames_converted")
@@ -172,18 +170,8 @@ impl ProcessorNode for PixelConvertNode {
                 .build();
             let otel_attrs = [KeyValue::new("node", otel_node_name)];
 
-            // Single-entry Arc-pointer cache: stores only the *most recently*
-            // converted frame.  If the input `Arc<PooledVideoData>` pointer is
-            // identical to the previous frame we re-send the cached output
-            // (ref-count bump only, no CPU work).  This relies on the
-            // project-wide invariant that `PooledVideoData` is immutable once
-            // shared via `Arc` — nodes must never mutate pooled data in-place.
-            //
-            // Bounded by design: these are scalar variables, not a HashMap or
-            // Vec, so the cache cannot grow beyond one entry.  The memory
-            // overhead is exactly one frame buffer (e.g. ~8 MB for 1080p
-            // RGBA8, ~3 MB for 1080p NV12).  New conversions overwrite the
-            // previous entry.
+            // Single-entry Arc-pointer cache: re-send the last result when
+            // the input Arc pointer hasn't changed (zero-cost for static scenes).
             let mut last_input_ptr: usize = 0;
             let mut cached_output: Option<Arc<PooledVideoData>> = None;
             let mut cached_output_format: Option<PixelFormat> = None;
@@ -191,7 +179,6 @@ impl ProcessorNode for PixelConvertNode {
             let mut cached_height: u32 = 0;
 
             while let Some(frame) = convert_rx.blocking_recv() {
-                // Fast path 1: format already matches — passthrough.
                 if frame.pixel_format == target_format {
                     frames_passthrough_counter.add(1, &otel_attrs);
                     if result_tx.blocking_send(Ok(frame)).is_err() {
@@ -200,7 +187,6 @@ impl ProcessorNode for PixelConvertNode {
                     continue;
                 }
 
-                // Fast path 2: identical Arc pointer — re-send cached output.
                 let current_ptr = Arc::as_ptr(&frame.data) as usize;
                 if current_ptr == last_input_ptr
                     && last_input_ptr != 0
@@ -232,7 +218,6 @@ impl ProcessorNode for PixelConvertNode {
                     continue;
                 }
 
-                // Slow path: perform conversion.
                 let convert_start = Instant::now();
                 let result = convert_frame(&frame, target_format, video_pool.as_deref());
                 let duration = convert_start.elapsed();
@@ -242,7 +227,6 @@ impl ProcessorNode for PixelConvertNode {
                         frames_converted_counter.add(1, &otel_attrs);
                         conversion_duration_histogram.record(duration.as_secs_f64(), &otel_attrs);
 
-                        // Update cache.
                         last_input_ptr = current_ptr;
                         cached_output = Some(Arc::clone(&out_frame.data));
                         cached_output_format = Some(target_format);

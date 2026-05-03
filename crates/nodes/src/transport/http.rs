@@ -81,8 +81,6 @@ impl HttpPullNode {
             .map_err(|e| StreamKitError::Runtime(format!("Failed to initialize HTTP client: {e}")))
     }
 
-    /// Stream response body using bytes_stream() for efficient streaming.
-    /// This avoids buffering the entire response in memory and uses a single HTTP request.
     async fn stream_response(
         url: &str,
         chunk_size: usize,
@@ -106,20 +104,15 @@ impl HttpPullNode {
             return Err(StreamKitError::Runtime(format!("HTTP error: {}", response.status())));
         }
 
-        // Get content length if available for logging
         let content_length = response.content_length();
         if let Some(len) = content_length {
             tracing::info!("Content-Length: {} bytes", len);
         }
 
-        // Stream the response body using bytes_stream()
         let mut stream = response.bytes_stream();
         let mut chunk_count = 0u64;
         let mut total_bytes = 0u64;
 
-        // Buffer for accumulating small chunks to reach chunk_size
-        // Using BytesMut for O(1) split_to() instead of O(n) Vec::drain()
-        // Use saturating_mul to prevent overflow for huge chunk_size values
         let mut buffer = BytesMut::with_capacity(chunk_size.saturating_mul(2));
 
         while let Some(chunk_result) = stream.next().await {
@@ -134,8 +127,6 @@ impl HttpPullNode {
             total_bytes += chunk.len() as u64;
             buffer.put_slice(&chunk);
 
-            // Send when buffer reaches or exceeds chunk_size
-            // split_to() is O(1) - just adjusts internal pointers
             while buffer.len() >= chunk_size {
                 let to_send = buffer.split_to(chunk_size).freeze();
                 chunk_count += 1;
@@ -158,7 +149,6 @@ impl HttpPullNode {
             }
         }
 
-        // Send any remaining data in the buffer
         if !buffer.is_empty() {
             chunk_count += 1;
 
@@ -187,7 +177,6 @@ impl HttpPullNode {
 #[async_trait]
 impl ProcessorNode for HttpPullNode {
     fn input_pins(&self) -> Vec<InputPin> {
-        // HTTP input nodes have no input pins
         vec![]
     }
 
@@ -209,20 +198,16 @@ impl ProcessorNode for HttpPullNode {
             self.config.chunk_size
         );
 
-        // Source nodes emit Ready state and wait for Start signal
         state_helpers::emit_ready(&context.state_tx, &node_name);
         tracing::info!("HttpPullNode ready, waiting for start signal");
 
-        // Wait for Start control message
         loop {
             match context.control_rx.recv().await {
                 Some(streamkit_core::control::NodeControlMessage::Start) => {
                     tracing::info!("HttpPullNode received start signal");
                     break;
                 },
-                Some(streamkit_core::control::NodeControlMessage::UpdateParams(_)) => {
-                    // Ignore param updates while waiting to start - loop continues naturally
-                },
+                Some(streamkit_core::control::NodeControlMessage::UpdateParams(_)) => {},
                 Some(streamkit_core::control::NodeControlMessage::Shutdown) => {
                     tracing::info!("HttpPullNode received shutdown before start");
                     return Ok(());
@@ -238,7 +223,6 @@ impl ProcessorNode for HttpPullNode {
 
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
 
-        // Use streaming GET - single request, streams response body
         let result = Self::stream_response(
             &self.config.url,
             self.config.chunk_size,

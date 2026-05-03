@@ -114,13 +114,9 @@ pub fn decode_image_overlay(
     let target_w = config.transform.rect.width;
     let target_h = config.transform.rect.height;
 
-    // Pre-scale the decoded image to fit within the target rect while
-    // preserving the source aspect ratio.  This ensures the per-frame
-    // `scale_blit_rgba_rotated` call hits the identity-scale fast path
-    // (direct memcpy) and the image is never stretched.
+    // Pre-scale to target rect (aspect-ratio preserving) so per-frame
+    // blit hits the identity-scale fast path.
     if target_w > 0 && target_h > 0 && (w != target_w || h != target_h) {
-        // Aspect-ratio-preserving fit: scale so the image fits inside
-        // the target box without distortion.
         #[allow(clippy::cast_precision_loss)]
         let scale = {
             let sw = w as f32;

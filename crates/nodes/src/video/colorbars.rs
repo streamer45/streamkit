@@ -157,10 +157,7 @@ impl ProcessorNode for ColorBarsNode {
 
         let pixel_format = self.pixel_format;
 
-        // Pre-load the monospace font for draw_time (once, if enabled).
         let draw_time_font = if self.config.draw_time {
-            // If the user specified a custom font path, try that first;
-            // otherwise use the default system monospace font (DejaVu Sans Mono).
             let font_bytes = self.config.draw_time_font_path.as_ref().map_or_else(
                 || {
                     crate::video::fonts::load_default_mono_font().unwrap_or_else(|e| {
@@ -200,7 +197,6 @@ impl ProcessorNode for ColorBarsNode {
             None
         };
 
-        // Pre-generate the color bar pattern into a template buffer.
         let layout = streamkit_core::types::VideoLayout::packed(width, height, pixel_format);
         let total_bytes = layout.total_bytes();
         let mut template = vec![0u8; total_bytes];
@@ -219,7 +215,6 @@ impl ProcessorNode for ColorBarsNode {
             },
         }
 
-        // Source nodes emit Ready state and wait for Start signal.
         state_helpers::emit_ready(&context.state_tx, &node_name);
         tracing::info!("ColorBarsNode ready, waiting for start signal");
 
@@ -245,7 +240,6 @@ impl ProcessorNode for ColorBarsNode {
 
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
 
-        // Set up real-time pacing for dynamic (frame_count == 0) mode.
         let mut interval = if frame_count == 0 && fps > 0 {
             let period = std::time::Duration::from_micros(duration_us);
             Some(tokio::time::interval(period))
@@ -257,13 +251,11 @@ impl ProcessorNode for ColorBarsNode {
         let use_pts = self.config.draw_time_use_pts;
 
         loop {
-            // Honour finite frame count.
             if frame_count > 0 && seq >= u64::from(frame_count) {
                 tracing::info!("ColorBarsNode finished after {} frames", seq);
                 break;
             }
 
-            // Check cancellation.
             if let Some(token) = &context.cancellation_token {
                 if token.is_cancelled() {
                     tracing::info!("ColorBarsNode cancelled after {} frames", seq);
@@ -271,7 +263,6 @@ impl ProcessorNode for ColorBarsNode {
                 }
             }
 
-            // Pace in real-time mode.
             if let Some(ref mut iv) = interval {
                 tokio::select! {
                     _ = iv.tick() => {},
@@ -297,7 +288,6 @@ impl ProcessorNode for ColorBarsNode {
                 keyframe: Some(true),
             });
 
-            // Allocate frame from pool if available, otherwise from vec.
             let animate = self.config.animate;
             let frame = if let Some(pool) = &context.video_pool {
                 let mut pooled = pool.get(total_bytes);
@@ -452,7 +442,6 @@ fn generate_smpte_colorbars_nv12(
 
     let bar_count = SMPTE_BARS_YUV.len();
 
-    // Fill Y plane (identical to I420).
     for row in 0..height as usize {
         for col in 0..width as usize {
             let bar_idx = col * bar_count / width as usize;
@@ -461,7 +450,6 @@ fn generate_smpte_colorbars_nv12(
         }
     }
 
-    // Fill interleaved UV plane (half resolution).
     let chroma_w = (width + 1) as usize / 2;
     let chroma_h = uv_plane.height as usize;
     for row in 0..chroma_h {
@@ -490,7 +478,6 @@ fn generate_smpte_colorbars_i420(
 
     let bar_count = SMPTE_BARS_YUV.len();
 
-    // Fill Y plane.
     for row in 0..height as usize {
         for col in 0..width as usize {
             let bar_idx = col * bar_count / width as usize;
@@ -499,7 +486,6 @@ fn generate_smpte_colorbars_i420(
         }
     }
 
-    // Fill U and V planes (half resolution for I420).
     let chroma_w = u_plane.width as usize;
     let chroma_h = u_plane.height as usize;
     for row in 0..chroma_h {

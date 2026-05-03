@@ -551,16 +551,13 @@ fn wrap_text_lines(
             let word_w_f = word_w as f32;
 
             if current_line.is_empty() {
-                // First word on the line — always accept it.
                 current_line.push_str(word);
                 current_width = word_w_f;
             } else if current_width + space_advance + word_w_f <= max_w {
-                // Fits on the current line.
                 current_line.push(' ');
                 current_line.push_str(word);
                 current_width += space_advance + word_w_f;
             } else {
-                // Doesn't fit — flush current line and start a new one.
                 lines.push(std::mem::take(&mut current_line));
                 current_line.push_str(word);
                 current_width = word_w_f;
@@ -651,9 +648,7 @@ pub fn blit_text_wrapped(
 /// Compute the line height (in pixels) for a font at the given size.
 ///
 /// Uses `font_size * 1.2`, matching CSS `line-height: 1.2` used in the
-/// UI's `CompositorCanvas`.  The previous implementation used the
-/// rasterised glyph height of 'A' (which is smaller than font_size),
-/// producing tighter spacing than the CSS preview showed.
+/// UI's `CompositorCanvas`.
 #[allow(clippy::cast_precision_loss)]
 fn line_height_px(_font: &fontdue::Font, font_size: f32) -> f32 {
     font_size * 1.2

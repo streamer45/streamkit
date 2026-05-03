@@ -85,7 +85,6 @@ pub(super) async fn resolve_url_for_quic(url: &mut Url) -> Result<(), StreamKitE
         None => return Ok(()),
     };
 
-    // Skip if already an IP literal
     if host.parse::<std::net::IpAddr>().is_ok() {
         return Ok(());
     }
@@ -96,7 +95,6 @@ pub(super) async fn resolve_url_for_quic(url: &mut Url) -> Result<(), StreamKitE
         .map_err(|e| StreamKitError::Runtime(format!("Failed to resolve MoQ host '{host}': {e}")))?
         .collect();
 
-    // Prefer IPv4 for QUIC compatibility
     let preferred =
         addrs.iter().find(|a| a.is_ipv4()).or_else(|| addrs.first()).ok_or_else(|| {
             StreamKitError::Runtime(format!("No addresses found for MoQ host '{host}'"))
