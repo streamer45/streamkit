@@ -75,14 +75,12 @@ impl PacerNode {
         std::sync::Arc::new(|params| {
             let config: PacerConfig = config_helpers::parse_config_optional(params)?;
 
-            // Validate speed
             if config.speed <= 0.0 {
                 return Err(StreamKitError::Configuration(
                     "Speed must be greater than 0".to_string(),
                 ));
             }
 
-            // Validate buffer size
             if config.buffer_size == 0 {
                 return Err(StreamKitError::Configuration(
                     "Buffer size must be greater than 0".to_string(),
@@ -97,18 +95,15 @@ impl PacerNode {
         })
     }
 
-    /// Extract duration from packet metadata or calculate from AudioFrame
     fn get_packet_duration(packet: &Packet) -> Duration {
         match packet {
             Packet::Audio(frame) => {
-                // Try metadata first
                 if let Some(metadata) = &frame.metadata {
                     if let Some(duration_us) = metadata.duration_us {
                         return Duration::from_micros(duration_us);
                     }
                 }
 
-                // Fallback: calculate from AudioFrame
                 Self::calculate_audio_duration(frame)
             },
             Packet::Video(frame) => frame
@@ -116,27 +111,21 @@ impl PacerNode {
                 .as_ref()
                 .and_then(|m| m.duration_us)
                 .map_or(Duration::ZERO, Duration::from_micros),
-            Packet::Binary { metadata, .. } => {
-                // Use metadata if available
-                metadata
-                    .as_ref()
-                    .and_then(|m| m.duration_us)
-                    .map_or(Duration::ZERO, Duration::from_micros)
-            },
-            Packet::Text(_) | Packet::Transcription(_) | Packet::Custom(_) => Duration::ZERO, // Pass through immediately
+            Packet::Binary { metadata, .. } => metadata
+                .as_ref()
+                .and_then(|m| m.duration_us)
+                .map_or(Duration::ZERO, Duration::from_micros),
+            Packet::Text(_) | Packet::Transcription(_) | Packet::Custom(_) => Duration::ZERO,
         }
     }
 
-    /// Calculate duration from AudioFrame samples
     fn calculate_audio_duration(frame: &AudioFrame) -> Duration {
-        // Precision loss is acceptable for audio timing calculations (microsecond precision)
         #[allow(clippy::cast_precision_loss)]
         let samples_per_channel = frame.samples.len() as f64 / f64::from(frame.channels);
         let duration_secs = samples_per_channel / f64::from(frame.sample_rate);
         Duration::from_secs_f64(duration_secs)
     }
 
-    /// Adjust duration by speed multiplier
     fn adjust_for_speed(&self, duration: Duration) -> Duration {
         duration.div_f32(self.speed)
     }
@@ -158,7 +147,6 @@ impl ProcessorNode for PacerNode {
     fn input_pins(&self) -> Vec<InputPin> {
         vec![InputPin {
             name: "in".to_string(),
-            // Accepts any packet type
             accepts_types: vec![PacketType::Any],
             cardinality: PinCardinality::One,
         }]
@@ -167,7 +155,6 @@ impl ProcessorNode for PacerNode {
     fn output_pins(&self) -> Vec<OutputPin> {
         vec![OutputPin {
             name: "out".to_string(),
-            // Outputs same type as input (passthrough type inference)
             produces_type: PacketType::Passthrough,
             cardinality: PinCardinality::Broadcast,
         }]
@@ -201,7 +188,6 @@ impl ProcessorNode for PacerNode {
             .build();
         let metric_labels = [KeyValue::new("node_id", node_name.clone())];
 
-        // Internal bounded queue for backpressure control
         let mut packet_queue: VecDeque<streamkit_core::types::Packet> =
             VecDeque::with_capacity(self.buffer_size);
         let mut interval: Option<tokio::time::Interval> = None;
@@ -210,20 +196,16 @@ impl ProcessorNode for PacerNode {
         let mut packets_sent = 0usize;
         let mut last_packet_time = Instant::now();
         let mut media_base: Option<Instant> = None;
-        // Gap threshold for detecting new segments (e.g., between TTS sentences)
-        // A gap longer than this resets the burst counter
         let segment_gap_threshold = Duration::from_millis(300);
 
         tracing::debug!("PacerNode entering main loop (waiting for packets)");
 
         loop {
             tokio::select! {
-                // Receive packets from upstream - only when queue isn't full (backpressure)
                 Some(packet) = input_rx.recv(), if packet_queue.len() < self.buffer_size => {
                     stats_tracker.received();
                     packet_count += 1;
 
-                    // Check for segment gap - reset burst if there's been a significant pause
                     let now = Instant::now();
                     let gap = now.duration_since(last_packet_time);
                     if gap > segment_gap_threshold && packets_sent >= self.initial_burst_packets {
@@ -235,12 +217,10 @@ impl ProcessorNode for PacerNode {
                     }
                     last_packet_time = now;
 
-                    // Check if this packet has a duration
                     let duration = Self::get_packet_duration(&packet);
                     let adjusted_duration = self.adjust_for_speed(duration);
 
                     if adjusted_duration == Duration::ZERO {
-                        // Zero-duration packets (e.g., headers) - send immediately without queueing
                         tracing::debug!("Packet #{} has zero duration, sending immediately", packet_count);
                         if context.output_sender.send("out", packet).await.is_err() {
                             tracing::debug!("Output channel closed, stopping node");
@@ -248,14 +228,12 @@ impl ProcessorNode for PacerNode {
                         }
                         stats_tracker.sent();
                         stats_tracker.maybe_send();
-                        continue; // Skip queuing
+                        continue;
                     }
 
-                    // Queue packet for pacing
                     packet_queue.push_back(packet);
                     queue_gauge.record(packet_queue.len() as u64, &metric_labels);
 
-                    // If this is the first packet, or duration changed, create/recreate the interval
                     if interval.is_none() || current_duration != Some(adjusted_duration) {
                         if current_duration.is_some() && current_duration != Some(adjusted_duration) {
                             tracing::debug!(
@@ -277,13 +255,9 @@ impl ProcessorNode for PacerNode {
                     }
                 }
 
-                // Wait for interval tick when we have packets to send
                 () = async {
-                    // Initial burst: send with reduced delay (10% of normal pacing)
-                    // This builds buffer faster than real-time while avoiding network congestion
                     if packets_sent < self.initial_burst_packets {
                         if let Some(duration) = current_duration {
-                            // Send at 10x speed during burst (2ms instead of 20ms for Opus)
                             tokio::time::sleep(duration / 10).await;
                         }
                         return;
@@ -295,7 +269,6 @@ impl ProcessorNode for PacerNode {
                         std::future::pending::<()>().await;
                     }
                 }, if !packet_queue.is_empty() => {
-                    // Send the next packet from queue
                     if let Some(packet) = packet_queue.pop_front() {
                         queue_gauge.record(packet_queue.len() as u64, &metric_labels);
                         let is_burst = packets_sent < self.initial_burst_packets;
@@ -342,18 +315,12 @@ impl ProcessorNode for PacerNode {
                         stats_tracker.maybe_send();
                         packets_sent += 1;
 
-                        // Check if next packet has different duration - will recreate interval on next recv
                         if packet_queue.is_empty() {
-                            // Queue empty - clear interval but DON'T reset burst counter
-                            // The burst is a one-time buffer at stream start, not per-chunk
                             interval = None;
                             current_duration = None;
                         } else if let Some(next_packet) = packet_queue.front() {
                             let next_duration = Self::get_packet_duration(next_packet);
                             let next_adjusted = self.adjust_for_speed(next_duration);
-
-                            // If duration changes, we'll recreate the interval on the next loop iteration
-                            // The interval will keep ticking, but we'll check and recreate if needed
                             if next_adjusted != current_duration.unwrap_or(Duration::ZERO) {
                                 tracing::trace!(
                                     "Next packet has different duration {:?}, will recreate interval",
@@ -364,7 +331,6 @@ impl ProcessorNode for PacerNode {
                     }
                 }
 
-                // Handle control messages (speed updates)
                 Some(ctrl_msg) = context.control_rx.recv() => {
                     match ctrl_msg {
                         NodeControlMessage::UpdateParams(params) => {
@@ -397,9 +363,7 @@ impl ProcessorNode for PacerNode {
                                 }
                             }
                         }
-                        NodeControlMessage::Start => {
-                            // Pacer doesn't implement ready/start lifecycle - ignore
-                        }
+                        NodeControlMessage::Start => {}
                         NodeControlMessage::Shutdown => {
                             tracing::info!("PacerNode received shutdown signal");
                             break;
@@ -407,14 +371,12 @@ impl ProcessorNode for PacerNode {
                     }
                 }
 
-                // Input closed - drain remaining queue
                 else => {
                     break;
                 }
             }
         }
 
-        // Drain any remaining packets in queue
         if !packet_queue.is_empty() {
             tracing::info!(
                 "Input closed, draining {} remaining packets from queue",
@@ -422,16 +384,12 @@ impl ProcessorNode for PacerNode {
             );
 
             'drain: while let Some(packet) = packet_queue.pop_front() {
-                // Get duration for pacing
                 let duration = Self::get_packet_duration(&packet);
                 let adjusted_duration = self.adjust_for_speed(duration);
 
-                // Wait for pacing interval if needed, but also listen for shutdown
                 if adjusted_duration > Duration::ZERO {
                     tokio::select! {
-                        () = tokio::time::sleep(adjusted_duration) => {
-                            // Pacing delay completed, continue to send
-                        }
+                        () = tokio::time::sleep(adjusted_duration) => {}
                         Some(ctrl_msg) = context.control_rx.recv() => {
                             if matches!(ctrl_msg, NodeControlMessage::Shutdown) {
                                 tracing::info!(
@@ -476,7 +434,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_pacer_passes_through_packets() {
-        // Simple test - just verify pacer passes packets through
         let (input_tx, input_rx) = mpsc::channel(10);
         let mut inputs = HashMap::new();
         inputs.insert("in".to_string(), input_rx);
@@ -502,7 +459,7 @@ mod tests {
             telemetry_tx: None,
             session_id: None,
             cancellation_token: None,
-            pin_management_rx: None, // Test contexts don't support dynamic pins
+            pin_management_rx: None,
             audio_pool: None,
             video_pool: None,
             pipeline_mode: streamkit_core::PipelineMode::Dynamic,
@@ -510,12 +467,10 @@ mod tests {
             engine_control_tx: None,
         };
 
-        // Create node with very fast speed to minimize test time
         let node = Box::new(PacerNode { speed: 100.0, buffer_size: 16, initial_burst_packets: 0 });
         let node_handle = tokio::spawn(async move { node.run(context).await });
 
-        // Wait for states
-        state_rx.recv().await.unwrap(); // Initializing
+        state_rx.recv().await.unwrap();
         state_rx.recv().await.unwrap(); // Running
 
         // Send packets with short duration

@@ -38,9 +38,7 @@ pub struct FileWriteNode {
 impl FileWriteNode {
     pub fn factory() -> streamkit_core::node::NodeFactory {
         std::sync::Arc::new(|params| {
-            // For dynamic nodes, allow None to create a default instance for pin inspection
             let config: FileWriteConfig = if params.is_none() {
-                // Default config for pin inspection only
                 FileWriteConfig { path: "/dev/null".to_string(), chunk_size: default_chunk_size() }
             } else {
                 config_helpers::parse_config_required(params)?
@@ -61,7 +59,6 @@ impl ProcessorNode for FileWriteNode {
     }
 
     fn output_pins(&self) -> Vec<OutputPin> {
-        // File output nodes have no output pins
         vec![]
     }
 
@@ -69,7 +66,6 @@ impl ProcessorNode for FileWriteNode {
         let node_name = context.output_sender.node_name().to_string();
         state_helpers::emit_initializing(&context.state_tx, &node_name);
 
-        // Create/open the file for writing
         let mut file = tokio::fs::File::create(&self.config.path).await.map_err(|e| {
             StreamKitError::Runtime(format!("Failed to create file '{}': {}", self.config.path, e))
         })?;
@@ -90,17 +86,14 @@ impl ProcessorNode for FileWriteNode {
         let mut buffer = Vec::with_capacity(self.config.chunk_size);
         let mut chunks_written = 0u64;
 
-        // Receive and buffer packets
         while let Some(packet) = context.recv_with_cancellation(&mut input_rx).await {
             if let Packet::Binary { data, .. } = packet {
                 stats_tracker.received();
                 packet_count += 1;
                 total_bytes += data.len() as u64;
 
-                // Add data to buffer
                 buffer.extend_from_slice(&data);
 
-                // Write buffer to file when it reaches chunk_size
                 if buffer.len() >= self.config.chunk_size {
                     if let Err(e) = file.write_all(&buffer).await {
                         stats_tracker.errored();
@@ -126,7 +119,6 @@ impl ProcessorNode for FileWriteNode {
             }
         }
 
-        // Write any remaining buffered data
         if !buffer.is_empty() {
             if let Err(e) = file.write_all(&buffer).await {
                 stats_tracker.errored();

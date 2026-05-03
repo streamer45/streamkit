@@ -5,14 +5,12 @@
 use streamkit_core::constraints::GlobalNodeConstraints;
 use streamkit_core::NodeRegistry;
 
-// Declare the top-level feature modules directly.
 pub mod audio;
 pub mod containers;
 pub mod core;
 pub mod transport;
 pub mod video;
 
-// Shared utilities
 pub mod codec_utils;
 pub mod streaming_utils;
 

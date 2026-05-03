@@ -38,7 +38,6 @@ use streamkit_core::registry::StaticPins;
 pub fn register_core_nodes(registry: &mut NodeRegistry, constraints: &GlobalNodeConstraints) {
     let _ = constraints;
 
-    // --- Register PassthroughNode ---
     #[cfg(feature = "passthrough")]
     {
         use schemars::{schema_for, JsonSchema};
@@ -64,7 +63,6 @@ pub fn register_core_nodes(registry: &mut NodeRegistry, constraints: &GlobalNode
         );
     }
 
-    // --- Register FileReadNode and FileWriteNode ---
     #[cfg(feature = "file_io")]
     {
         use schemars::schema_for;
@@ -94,7 +92,6 @@ pub fn register_core_nodes(registry: &mut NodeRegistry, constraints: &GlobalNode
         );
     }
 
-    // --- Register PacerNode ---
     #[cfg(feature = "pacer")]
     {
         use schemars::schema_for;
@@ -112,7 +109,6 @@ pub fn register_core_nodes(registry: &mut NodeRegistry, constraints: &GlobalNode
         );
     }
 
-    // --- Register JsonSerialize ---
     {
         use schemars::schema_for;
 
@@ -132,7 +128,6 @@ pub fn register_core_nodes(registry: &mut NodeRegistry, constraints: &GlobalNode
         );
     }
 
-    // --- Register TextChunker ---
     {
         use schemars::schema_for;
 
@@ -150,10 +145,8 @@ pub fn register_core_nodes(registry: &mut NodeRegistry, constraints: &GlobalNode
         );
     }
 
-    // --- Register Sink Node ---
     sink::register(registry);
 
-    // --- Register Script Node ---
     #[cfg(feature = "script")]
     {
         use schemars::schema_for;
@@ -174,7 +167,6 @@ pub fn register_core_nodes(registry: &mut NodeRegistry, constraints: &GlobalNode
         );
     }
 
-    // --- Register TelemetryTap Node ---
     {
         use schemars::schema_for;
 
@@ -191,13 +183,10 @@ pub fn register_core_nodes(registry: &mut NodeRegistry, constraints: &GlobalNode
         );
     }
 
-    // --- Register TelemetryOut Node ---
     telemetry_out::register(registry);
 
-    // --- Register ParamBridge Node ---
     param_bridge::register(registry);
 
-    // --- Register ObjectStoreWriteNode ---
     #[cfg(feature = "object_store")]
     {
         use schemars::schema_for;

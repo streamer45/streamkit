@@ -82,21 +82,18 @@ impl AudioPacerNode {
         std::sync::Arc::new(|params| {
             let config: AudioPacerConfig = config_helpers::parse_config_optional(params)?;
 
-            // Validate speed
             if config.speed <= 0.0 {
                 return Err(StreamKitError::Configuration(
                     "Speed must be greater than 0".to_string(),
                 ));
             }
 
-            // Validate buffer size
             if config.buffer_size == 0 {
                 return Err(StreamKitError::Configuration(
                     "Buffer size must be greater than 0".to_string(),
                 ));
             }
 
-            // Validate initial format fields (must be set together)
             match (config.initial_sample_rate, config.initial_channels) {
                 (Some(sample_rate), Some(channels)) => {
                     if sample_rate == 0 {
@@ -135,11 +132,7 @@ impl AudioPacerNode {
         Duration::from_secs_f64(duration_secs)
     }
 
-    /// Create a silence frame matching the given audio format.
-    /// Generates 20ms of silence at the specified sample rate.
-    /// This should be called once to create a cached frame that can be cloned cheaply.
     fn create_silence_frame(sample_rate: u32, channels: u16) -> AudioFrame {
-        // Generate 20ms of audio
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let samples_per_channel = (f64::from(sample_rate) * 0.020) as usize; // 20ms
         let total_samples = samples_per_channel * channels as usize;
@@ -149,21 +142,18 @@ impl AudioPacerNode {
         AudioFrame::new(sample_rate, channels, samples)
     }
 
-    /// Get or create a cached silence frame for the given audio format.
-    /// Returns a clone of the cached frame (O(1) due to Arc-backed samples).
+    /// Returns a clone of the cached silence frame (O(1) due to Arc-backed samples).
     fn get_cached_silence(
         cached_silence: &mut Option<AudioFrame>,
         sample_rate: u32,
         channels: u16,
     ) -> AudioFrame {
-        // Check if we have a valid cached silence frame with matching format
         if let Some(ref frame) = cached_silence {
             if frame.sample_rate == sample_rate && frame.channels == channels {
-                return frame.clone(); // O(1) clone due to Arc<PooledSamples>
+                return frame.clone();
             }
         }
 
-        // Create and cache a new silence frame
         let silence = Self::create_silence_frame(sample_rate, channels);
         *cached_silence = Some(silence.clone());
         silence
@@ -180,10 +170,9 @@ impl ProcessorNode for AudioPacerNode {
     fn input_pins(&self) -> Vec<InputPin> {
         vec![InputPin {
             name: "in".to_string(),
-            // Accept any raw audio format (wildcards for all fields)
             accepts_types: vec![PacketType::RawAudio(AudioFormat {
-                sample_rate: 0, // wildcard
-                channels: 0,    // wildcard
+                sample_rate: 0,
+                channels: 0,
                 sample_format: SampleFormat::F32,
             })],
             cardinality: PinCardinality::One,
@@ -193,7 +182,6 @@ impl ProcessorNode for AudioPacerNode {
     fn output_pins(&self) -> Vec<OutputPin> {
         vec![OutputPin {
             name: "out".to_string(),
-            // Produce same format as input (passthrough)
             produces_type: PacketType::Passthrough,
             cardinality: PinCardinality::Broadcast,
         }]
@@ -215,13 +203,8 @@ impl ProcessorNode for AudioPacerNode {
 
         state_helpers::emit_running(&context.state_tx, &node_name);
 
-        // Track audio format from first frame
         let mut audio_format: Option<(u32, u16)> = self.initial_format;
-
-        // Cached silence frame to avoid heap allocation on every tick
         let mut cached_silence: Option<AudioFrame> = None;
-
-        // Internal bounded queue for backpressure
         let mut audio_queue: VecDeque<AudioFrame> = VecDeque::with_capacity(self.buffer_size);
         let mut interval: Option<Interval> = None;
         let mut frame_duration: Option<Duration> = None;
@@ -260,7 +243,6 @@ impl ProcessorNode for AudioPacerNode {
                         Packet::Audio(frame) => {
                             stats_tracker.received();
 
-                            // Capture audio format from first frame
                             let detected_format = (frame.sample_rate, frame.channels);
                             if audio_format != Some(detected_format) {
                                 let previous_format = audio_format;
@@ -273,14 +255,11 @@ impl ProcessorNode for AudioPacerNode {
                                 );
                             }
 
-                            // Calculate frame duration
                             let duration = Self::calculate_audio_duration(&frame);
                             let adjusted_duration = self.adjust_for_speed(duration);
 
-                            // Queue the frame
                             audio_queue.push_back(frame);
 
-                            // Create/update interval if needed
                             if interval.is_none() || frame_duration != Some(adjusted_duration) {
                                 if frame_duration.is_some() && frame_duration != Some(adjusted_duration) {
                                     tracing::debug!(
@@ -292,7 +271,6 @@ impl ProcessorNode for AudioPacerNode {
 
                                 let start = Instant::now() + adjusted_duration;
                                 let mut iv = tokio::time::interval_at(start, adjusted_duration);
-                                // See above: burst to catch up rather than dropping audio time.
                                 iv.set_missed_tick_behavior(MissedTickBehavior::Burst);
                                 interval = Some(iv);
                                 frame_duration = Some(adjusted_duration);
@@ -301,13 +279,11 @@ impl ProcessorNode for AudioPacerNode {
                             }
                         }
                         _ => {
-                            // Non-audio packet - this shouldn't happen due to pin types
                             tracing::warn!("Received non-audio packet, ignoring");
                         }
                     }
                 }
 
-                // Interval tick - send audio or generate silence
                 () = async {
                     if let Some(iv) = &mut interval {
                         iv.tick().await;
@@ -315,11 +291,8 @@ impl ProcessorNode for AudioPacerNode {
                         std::future::pending::<()>().await;
                     }
                 }, if interval.is_some() && audio_format.is_some() => {
-                    // Try to send queued audio first
                     if !audio_queue.is_empty() {
-                        // Send the frame
                         let Some(frame) = audio_queue.pop_front() else {
-                            // Queue is known non-empty due to the is_empty guard above.
                             continue;
                         };
 
@@ -335,9 +308,7 @@ impl ProcessorNode for AudioPacerNode {
                             tracing::trace!("Sent {} frames ({} silence)", frames_sent, silence_frames_sent);
                         }
                     } else if self.generate_silence && !input_closed {
-                        // Queue is empty and input still open - generate silence
                         if let Some((sample_rate, channels)) = audio_format {
-                            // Use cached silence frame (O(1) clone) to avoid heap allocation
                             let silence = Self::get_cached_silence(&mut cached_silence, sample_rate, channels);
 
                             if context.output_sender.send("out", Packet::Audio(silence)).await.is_err() {
@@ -358,7 +329,6 @@ impl ProcessorNode for AudioPacerNode {
                     stats_tracker.maybe_send();
                 }
 
-                // Handle control messages
                 Some(ctrl_msg) = context.control_rx.recv() => {
                     match ctrl_msg {
                         NodeControlMessage::UpdateParams(params) => {
@@ -375,7 +345,6 @@ impl ProcessorNode for AudioPacerNode {
                                                     speed
                                                 );
                                                 self.speed = speed;
-                                                // Speed change will take effect on next frame
                                             } else {
                                                 tracing::warn!("AudioPacerNode received invalid speed: {}", speed);
                                             }
@@ -387,9 +356,7 @@ impl ProcessorNode for AudioPacerNode {
                                 }
                             }
                         }
-                        NodeControlMessage::Start => {
-                            // Audio pacer doesn't implement ready/start lifecycle
-                        }
+                        NodeControlMessage::Start => {}
                         NodeControlMessage::Shutdown => {
                             tracing::info!("AudioPacerNode received shutdown signal");
                             break;
@@ -397,18 +364,15 @@ impl ProcessorNode for AudioPacerNode {
                     }
                 }
 
-                // Input closed
                 else => {
                     if !input_closed {
                         tracing::info!("Input closed, draining {} queued frames", audio_queue.len());
                         input_closed = true;
 
-                        // If generate_silence is false and queue is empty, stop
                         if !self.generate_silence && audio_queue.is_empty() {
                             break;
                         }
                     } else if audio_queue.is_empty() && !self.generate_silence {
-                        // Queue drained and no silence generation
                         break;
                     }
                 }

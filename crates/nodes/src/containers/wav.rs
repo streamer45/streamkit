@@ -98,17 +98,13 @@ impl ProcessorNode for WavDemuxerNode {
             .with_boundaries(streamkit_core::metrics::HISTOGRAM_BOUNDARIES_FILE_OPERATION.to_vec())
             .build();
 
-        // Create channels for communication with the blocking task.
-        // This must be bounded to provide backpressure and prevent unbounded buffering.
         let (stream_tx, stream_rx) = mpsc::channel::<Bytes>(get_stream_channel_capacity());
         let (result_tx, mut result_rx) = mpsc::channel::<DemuxResult>(DEMUXER_CHANNEL_CAPACITY);
 
-        // Spawn blocking task that will demux as data streams in
         let demux_duration_histogram_clone = demux_duration_histogram.clone();
         let demux_task = tokio::task::spawn_blocking(move || {
             let demux_start_time = Instant::now();
 
-            // Create streaming reader that will block waiting for data from the channel
             let reader = StreamingReader::new(stream_rx);
 
             let result = demux_wav_streaming_incremental(reader, &result_tx);
@@ -122,12 +118,10 @@ impl ProcessorNode for WavDemuxerNode {
 
         state_helpers::emit_running(&context.state_tx, &node_name);
 
-        // Stats tracking
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
 
-        // Stream input data to demuxer as it arrives.
-        // This is a separate task so the main loop can keep draining demux results even when
-        // the stream channel is full (avoids deadlocks).
+        // Separate task drains input to the demuxer while the main loop drains results,
+        // preventing deadlocks when the stream channel is full.
         let node_name_for_input = node_name.clone();
         let mut input_task = tokio::spawn(async move {
             let stream_tx = stream_tx;
@@ -159,7 +153,6 @@ impl ProcessorNode for WavDemuxerNode {
         });
         let mut input_done = false;
 
-        // Process input and results concurrently
         loop {
             tokio::select! {
                 maybe_result = result_rx.recv() => {
@@ -197,7 +190,6 @@ impl ProcessorNode for WavDemuxerNode {
                             return Err(StreamKitError::Runtime(err_msg));
                         }
                         None => {
-                            // Result channel closed, blocking task is done
                             break;
                         }
                     }
@@ -209,15 +201,14 @@ impl ProcessorNode for WavDemuxerNode {
                         break;
                     }
                 }
+                // EOF or upstream closed — keep draining demux results until
+                // the blocking task closes the result channel.
                 _ = &mut input_task, if !input_done => {
-                    // Input finished (EOF or upstream closed). Keep draining demux results until
-                    // the blocking task closes the result channel.
                     input_done = true;
                 }
             }
         }
 
-        // Wait for the blocking task to complete
         let _ = demux_task.await;
 
         state_helpers::emit_stopped(&context.state_tx, &node_name, "input_closed");
@@ -230,23 +221,17 @@ impl ProcessorNode for WavDemuxerNode {
 // Type alias for demux result to simplify complex signatures
 type DemuxResult = Result<(Vec<f32>, u32, u16), String>;
 
-/// Demuxes WAV data incrementally from a streaming reader
-/// Demuxes and emits frames as soon as WAV packets are available
-/// High complexity due to WAV format handling, frame assembly, and channel conversion
-#[allow(clippy::cognitive_complexity)]
+#[allow(clippy::cognitive_complexity)] // WAV format handling, frame assembly, and channel conversion
 fn demux_wav_streaming_incremental(
     reader: StreamingReader,
     result_tx: &mpsc::Sender<DemuxResult>,
 ) -> Result<(), String> {
-    // Wrap the streaming reader in ReadOnlySource, then MediaSourceStream
     let source = ReadOnlySource::new(reader);
     let mss = MediaSourceStream::new(Box::new(source), MediaSourceStreamOptions::default());
 
-    // Create a hint for WAV format
     let mut hint = Hint::new();
     hint.with_extension("wav");
 
-    // Probe the media source
     let format_opts = FormatOptions::default();
     let metadata_opts = MetadataOptions::default();
     let probed = symphonia::default::get_probe()
@@ -255,11 +240,9 @@ fn demux_wav_streaming_incremental(
 
     let mut format_reader = probed.format;
 
-    // Get the default track
     let track =
         format_reader.default_track().ok_or_else(|| "No default track found in WAV".to_string())?;
 
-    // Get codec parameters
     let codec_params = &track.codec_params;
     let sample_rate =
         codec_params.sample_rate.ok_or_else(|| "No sample rate found in WAV".to_string())?;
@@ -274,23 +257,18 @@ fn demux_wav_streaming_incremental(
         channels
     );
 
-    // Create decoder (WAV typically contains PCM, which needs decoding)
     let decoder_opts = DecoderOptions::default();
     let mut decoder = symphonia::default::get_codecs()
         .make(codec_params, &decoder_opts)
         .map_err(|e| format!("Failed to create WAV decoder: {e}"))?;
 
-    // Get the track ID for filtering
     let track_id = track.id;
 
-    // Decode packets and rechunk for output
-    // Use VecDeque for O(1) front removal instead of O(n) Vec::drain
     let mut sample_buf: Option<SampleBuffer<f32>> = None;
     let mut rechunk_buffer: VecDeque<f32> = VecDeque::new();
     let mut frame_count = 0;
 
     loop {
-        // Read next packet - this will block waiting for more data from the stream
         let packet = match format_reader.next_packet() {
             Ok(packet) => packet,
             Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
@@ -303,32 +281,25 @@ fn demux_wav_streaming_incremental(
             },
         };
 
-        // Filter packets by track ID
         if packet.track_id() != track_id {
             continue;
         }
 
-        // Decode the packet
         match decoder.decode(&packet) {
             Ok(audio_buf) => {
-                // Initialize sample buffer on first decode
                 if sample_buf.is_none() {
                     let spec = *audio_buf.spec();
                     let duration = audio_buf.capacity() as u64;
                     sample_buf = Some(SampleBuffer::<f32>::new(duration, spec));
                 }
 
-                // Copy decoded audio and rechunk for output
                 if let Some(buf) = &mut sample_buf {
                     buf.copy_interleaved_ref(audio_buf);
                     rechunk_buffer.extend(buf.samples().iter().copied());
 
-                    // Send fixed-size chunks as they become available
                     while rechunk_buffer.len() >= OUTPUT_FRAME_SIZE {
-                        // Drain from front - O(1) amortized with VecDeque
                         let chunk: Vec<f32> = rechunk_buffer.drain(..OUTPUT_FRAME_SIZE).collect();
 
-                        // Use blocking_send - more efficient than Handle::block_on
                         if result_tx.blocking_send(Ok((chunk, sample_rate, channels))).is_err() {
                             tracing::info!(
                                 "Result channel closed after sending {} frames ({} samples total). Stopping demux.",
@@ -350,7 +321,6 @@ fn demux_wav_streaming_incremental(
                 }
             },
             Err(Error::DecodeError(err)) => {
-                // Log and continue to next packet - no explicit continue needed
                 tracing::warn!("WAV decode error (continuing): {}", err);
             },
             Err(e) => {
@@ -359,7 +329,6 @@ fn demux_wav_streaming_incremental(
         }
     }
 
-    // Send any remaining samples as a final frame
     let total_samples_sent = frame_count * OUTPUT_FRAME_SIZE;
     if rechunk_buffer.is_empty() {
         tracing::info!(

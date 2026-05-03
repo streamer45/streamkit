@@ -72,7 +72,6 @@ impl AudioResamplerNode {
         std::sync::Arc::new(|params| {
             let config: AudioResamplerConfig = match params {
                 Some(p) => config_helpers::parse_config_required(Some(p))?,
-                // Default config for schema generation
                 None => AudioResamplerConfig {
                     target_sample_rate: 48000, // Default to 48kHz
                     chunk_frames: default_chunk_frames(),
@@ -80,7 +79,6 @@ impl AudioResamplerNode {
                 },
             };
 
-            // Validate target_sample_rate
             if config.target_sample_rate == 0 {
                 return Err(StreamKitError::Configuration(
                     "target_sample_rate must be greater than 0".to_string(),
@@ -93,7 +91,6 @@ impl AudioResamplerNode {
                 ));
             }
 
-            // Validate output_frame_size is a valid Opus frame size (or 0 for disabled)
             if config.output_frame_size != 0 {
                 let valid_sizes = [120, 240, 480, 960, 1920, 2880];
                 if !valid_sizes.contains(&config.output_frame_size) {
@@ -123,10 +120,9 @@ impl ProcessorNode for AudioResamplerNode {
     fn input_pins(&self) -> Vec<InputPin> {
         vec![InputPin {
             name: "in".to_string(),
-            // Accept any raw audio format (wildcards for sample_rate/channels).
             accepts_types: vec![PacketType::RawAudio(AudioFormat {
-                sample_rate: 0, // wildcard
-                channels: 0,    // wildcard
+                sample_rate: 0,
+                channels: 0,
                 sample_format: SampleFormat::F32,
             })],
             cardinality: PinCardinality::One,
@@ -136,10 +132,9 @@ impl ProcessorNode for AudioResamplerNode {
     fn output_pins(&self) -> Vec<OutputPin> {
         vec![OutputPin {
             name: "out".to_string(),
-            // Resampling changes sample rate; channels pass through unchanged (wildcard here).
             produces_type: PacketType::RawAudio(AudioFormat {
                 sample_rate: self.config.target_sample_rate,
-                channels: 0, // wildcard (resampler does not currently enforce channel count)
+                channels: 0,
                 sample_format: SampleFormat::F32,
             }),
             cardinality: PinCardinality::Broadcast,
@@ -166,7 +161,6 @@ impl ProcessorNode for AudioResamplerNode {
         let mut total_input_samples = 0u64;
         let mut total_output_samples = 0u64;
 
-        // State variables for resampler (initialized on first audio packet)
         let mut resampler: Option<Async<f32>> = None;
         let mut needs_resample: Option<bool> = None;
         let mut sample_rate: Option<u32> = None;
@@ -174,12 +168,11 @@ impl ProcessorNode for AudioResamplerNode {
         let mut output_sequence: u64 = 0;
         let mut output_timestamp_us: Option<u64> = None;
 
-        let mut sample_buffer: Vec<f32> = Vec::new(); // Buffer for accumulating input samples
+        let mut sample_buffer: Vec<f32> = Vec::new();
         let mut sample_buffer_offset: usize = 0;
-        let mut output_buffer: Vec<f32> = Vec::new(); // Buffer for accumulating output samples to exact frame size
+        let mut output_buffer: Vec<f32> = Vec::new();
         let mut output_buffer_offset: usize = 0;
 
-        // Helper to create PooledSamples from a slice, using audio_pool if available
         let make_pooled_samples =
             |data: &[f32], pool: &Option<Arc<AudioFramePool>>| -> PooledSamples {
                 pool.as_ref().map_or_else(
@@ -192,7 +185,6 @@ impl ProcessorNode for AudioResamplerNode {
                 )
             };
 
-        // Process packets and resample audio
         while let Some(packet) = context.recv_with_cancellation(&mut input_rx).await {
             stats_tracker.received();
             packet_count += 1;
@@ -201,7 +193,6 @@ impl ProcessorNode for AudioResamplerNode {
                 Packet::Audio(frame) => {
                     total_input_samples += frame.samples.len() as u64;
 
-                    // Initialize stream state on first audio packet.
                     if needs_resample.is_none() {
                         needs_resample = Some(frame.sample_rate != self.config.target_sample_rate);
                         sample_rate = Some(frame.sample_rate);
@@ -226,7 +217,6 @@ impl ProcessorNode for AudioResamplerNode {
                                 num_channels
                             );
 
-                            // Create resampler once with fixed chunk size.
                             resampler = Some(
                                 Async::<f32>::new_poly(
                                     f64::from(output_rate) / f64::from(input_rate),
@@ -245,7 +235,6 @@ impl ProcessorNode for AudioResamplerNode {
                         }
                     }
 
-                    // Verify audio format matches
                     if Some(frame.sample_rate) != sample_rate || Some(frame.channels) != channels {
                         let (Some(expected_sample_rate), Some(expected_channels)) =
                             (sample_rate, channels)
@@ -275,8 +264,7 @@ impl ProcessorNode for AudioResamplerNode {
                     }
 
                     let target_sample_rate = self.config.target_sample_rate;
-                    // Safe unwrap: initialized on first packet
-                    #[allow(clippy::unwrap_used)]
+                    #[allow(clippy::unwrap_used)] // initialized on first packet
                     let num_channels = channels.unwrap() as usize;
 
                     let mut next_metadata = |duration_us: u64| -> Option<PacketMetadata> {
@@ -294,8 +282,6 @@ impl ProcessorNode for AudioResamplerNode {
                     };
 
                     if needs_resample == Some(false) {
-                        // No resampling required. If output_frame_size is configured, still normalize
-                        // output packet sizes to avoid downstream codec pacing/underflow issues.
                         if self.config.output_frame_size == 0 {
                             if context
                                 .output_sender
@@ -369,12 +355,9 @@ impl ProcessorNode for AudioResamplerNode {
                         continue;
                     }
 
-                    // Resampling path
-                    // Add samples to buffer
                     sample_buffer.extend_from_slice(&frame.samples);
 
-                    // Safe unwrap: resampler is Some when needs_resample is true
-                    #[allow(clippy::unwrap_used)]
+                    #[allow(clippy::unwrap_used)] // resampler is Some when needs_resample is true
                     let resampler_ref = resampler.as_mut().unwrap();
                     let chunk_size_samples = self.config.chunk_frames * num_channels;
 
@@ -486,7 +469,6 @@ impl ProcessorNode for AudioResamplerNode {
                             stats_tracker.sent();
                         }
 
-                        // Mark processed samples as consumed (compaction happens opportunistically).
                         sample_buffer_offset += chunk_size_samples;
                     }
 
@@ -504,7 +486,6 @@ impl ProcessorNode for AudioResamplerNode {
                     stats_tracker.maybe_send();
                 },
                 other => {
-                    // Pass through non-audio packets unchanged
                     tracing::debug!("Passing through non-audio packet");
                     if context.output_sender.send("out", other).await.is_err() {
                         tracing::debug!("Output channel closed, stopping node");
@@ -516,9 +497,7 @@ impl ProcessorNode for AudioResamplerNode {
             }
         }
 
-        // Process any remaining buffered samples (resampling path only)
         if sample_buffer.len() > sample_buffer_offset && needs_resample == Some(true) {
-            // Safe unwraps: channels and sample_rate are Some when resampler is Some
             let Some(channels_u16) = channels else {
                 return Err(StreamKitError::Runtime(
                     "Resampler ended with pending samples but no channel count".to_string(),
@@ -530,14 +509,11 @@ impl ProcessorNode for AudioResamplerNode {
 
             tracing::debug!("Processing {} remaining frames", remaining_frames);
 
-            // For remaining samples, we need to create a new resampler with the exact size
-            // or pad to chunk_frames
             if remaining_frames > 0 {
                 #[allow(clippy::unwrap_used)]
                 let input_rate = sample_rate.unwrap();
                 let output_rate = self.config.target_sample_rate;
 
-                // Create a temporary resampler for the remainder
                 let mut remainder_resampler = Async::<f32>::new_poly(
                     f64::from(output_rate) / f64::from(input_rate),
                     1.0,
@@ -661,7 +637,6 @@ impl ProcessorNode for AudioResamplerNode {
             }
         }
 
-        // Flush any remaining output buffer samples
         if output_buffer.len() > output_buffer_offset && self.config.output_frame_size > 0 {
             if output_buffer_offset > 0 {
                 output_buffer.drain(..output_buffer_offset);
@@ -697,7 +672,6 @@ impl ProcessorNode for AudioResamplerNode {
 
             if context.output_sender.send("out", Packet::Audio(resampled_frame)).await.is_err() {
                 tracing::debug!("Output channel closed, stopping node");
-                // Can't break here, we're in cleanup after loop
                 return Ok(());
             }
 
@@ -736,7 +710,6 @@ mod tests {
         };
         let node = Box::new(AudioResamplerNode { config });
 
-        // Verify pins
         assert_eq!(node.input_pins().len(), 1);
         assert_eq!(node.input_pins()[0].name, "in");
         assert_eq!(node.output_pins().len(), 1);
@@ -745,7 +718,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_audio_resampler_downsample() {
-        // Create test context
         let (input_tx, input_rx) = mpsc::channel(10);
         let mut inputs = HashMap::new();
         inputs.insert("in".to_string(), input_rx);
@@ -771,7 +743,7 @@ mod tests {
             telemetry_tx: None,
             session_id: None,
             cancellation_token: None,
-            pin_management_rx: None, // Test contexts don't support dynamic pins
+            pin_management_rx: None,
             audio_pool: None,
             video_pool: None,
             pipeline_mode: streamkit_core::PipelineMode::Dynamic,
@@ -779,7 +751,6 @@ mod tests {
             engine_control_tx: None,
         };
 
-        // Create node that downsamples from 48kHz to 24kHz
         let config = AudioResamplerConfig {
             target_sample_rate: 24000,
             chunk_frames: 960,
@@ -789,22 +760,18 @@ mod tests {
 
         let node_handle = tokio::spawn(async move { node.run(context).await });
 
-        // Wait for states
-        state_rx.recv().await.unwrap(); // Initializing
-        state_rx.recv().await.unwrap(); // Running
+        state_rx.recv().await.unwrap();
+        state_rx.recv().await.unwrap();
 
-        // Send audio packet with 960 samples (480 frames stereo) - exactly one chunk
         let input_samples = vec![0.5; 960];
         let audio_packet = Packet::Audio(AudioFrame::new(48000, 2, input_samples.clone()));
 
         input_tx.send(audio_packet).await.unwrap();
         drop(input_tx);
 
-        // Receive resampled packet
         let (_node, _pin, resampled_packet) = packet_rx.recv().await.unwrap();
 
         if let Packet::Audio(frame) = resampled_packet {
-            // Downsampling 48kHz->24kHz = approximately half the samples
             let expected_samples = 480;
             let tolerance = 10;
             assert!(
@@ -815,7 +782,6 @@ mod tests {
             );
             assert_eq!(frame.sample_rate, 24000);
             assert_eq!(frame.channels, 2);
-            // Note: Metadata is not tested here due to buffering complexity
         } else {
             panic!("Expected Audio packet");
         }
@@ -826,7 +792,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_audio_resampler_buffering() {
-        // Test that resampler properly buffers across multiple packets
         let (input_tx, input_rx) = mpsc::channel(10);
         let mut inputs = HashMap::new();
         inputs.insert("in".to_string(), input_rx);
@@ -852,7 +817,7 @@ mod tests {
             telemetry_tx: None,
             session_id: None,
             cancellation_token: None,
-            pin_management_rx: None, // Test contexts don't support dynamic pins
+            pin_management_rx: None,
             audio_pool: None,
             video_pool: None,
             pipeline_mode: streamkit_core::PipelineMode::Dynamic,
@@ -862,7 +827,7 @@ mod tests {
 
         let config = AudioResamplerConfig {
             target_sample_rate: 24000,
-            chunk_frames: 960,    // Chunk size
+            chunk_frames: 960,
             output_frame_size: 0, // Disabled for this test
         };
         let node = Box::new(AudioResamplerNode { config });
@@ -872,26 +837,19 @@ mod tests {
         state_rx.recv().await.unwrap(); // Initializing
         state_rx.recv().await.unwrap(); // Running
 
-        // Send multiple small packets that need to be buffered
-        // 3 packets of 480 samples = 1440 samples total
-        // Should produce 1 full chunk (960 samples) + remainder
         for _ in 0..3 {
             let audio_packet = Packet::Audio(AudioFrame::new(48000, 2, vec![0.5; 480]));
             input_tx.send(audio_packet).await.unwrap();
         }
         drop(input_tx);
 
-        // Should receive at least 1 packet (from full chunk)
         let (_node, _pin, resampled_packet) = packet_rx.recv().await.unwrap();
         if let Packet::Audio(frame) = resampled_packet {
-            // First packet from full chunk
             assert!(!frame.samples.is_empty());
         } else {
             panic!("Expected Audio packet");
         }
 
-        // May receive another packet from remainder
-        // Just drain any remaining packets
         while packet_rx.try_recv().is_ok() {}
 
         state_rx.recv().await.unwrap(); // Stopped
@@ -900,7 +858,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_audio_resampler_invalid_sample_rate() {
-        // Test that zero target_sample_rate is rejected
         let factory = AudioResamplerNode::factory();
         let params = serde_json::json!({ "target_sample_rate": 0 });
         let result = factory(Some(&params));

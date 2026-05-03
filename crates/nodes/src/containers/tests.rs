@@ -67,7 +67,6 @@ async fn test_ogg_muxer_basic() {
 
     let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
 
-    // Create OGG muxer node
     let config = OggMuxerConfig { stream_serial: 12345, ..Default::default() };
     let node = OggMuxerNode::new(config);
 

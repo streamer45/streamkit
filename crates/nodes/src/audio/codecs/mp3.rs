@@ -8,7 +8,6 @@ use opentelemetry::{global, KeyValue};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::collections::VecDeque;
-use std::io::Cursor;
 use std::time::Instant;
 use streamkit_core::stats::NodeStatsTracker;
 use streamkit_core::types::{AudioFormat, AudioFrame, Packet, PacketType, SampleFormat};
@@ -25,7 +24,6 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use tokio::sync::mpsc;
 
-// Use the shared StreamingReader from streaming_utils
 use crate::streaming_utils::StreamingReader;
 
 // --- MP3 Decoder Constants ---
@@ -98,17 +96,12 @@ impl ProcessorNode for Mp3DecoderNode {
             .with_boundaries(streamkit_core::metrics::HISTOGRAM_BOUNDARIES_FILE_OPERATION.to_vec())
             .build();
 
-        // Create channels for communication with the blocking task.
-        // This must be bounded to provide backpressure and prevent unbounded buffering.
         let (stream_tx, stream_rx) = mpsc::channel::<Bytes>(get_stream_channel_capacity());
         let (result_tx, mut result_rx) = mpsc::channel::<DecodeResult>(DECODER_CHANNEL_CAPACITY);
 
-        // Spawn blocking task that will decode as data streams in
         let decode_duration_histogram_clone = decode_duration_histogram.clone();
         let decode_task = tokio::task::spawn_blocking(move || {
             let decode_start_time = Instant::now();
-
-            // Create streaming reader that will block waiting for data from the channel
             let reader = StreamingReader::new(stream_rx);
 
             let result = decode_mp3_streaming_incremental(reader, &result_tx);
@@ -122,12 +115,9 @@ impl ProcessorNode for Mp3DecoderNode {
 
         state_helpers::emit_running(&context.state_tx, &node_name);
 
-        // Stats tracking
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
 
-        // Stream input data to decoder as it arrives.
-        // This is a separate task so the main loop can keep draining decode results even when
-        // the stream channel is full (avoids deadlocks).
+        // Separate input task to avoid deadlocks when the stream channel is full.
         let mut input_task = tokio::spawn(async move {
             let stream_tx = stream_tx;
             while let Some(packet) = input_rx.recv().await {
@@ -141,7 +131,6 @@ impl ProcessorNode for Mp3DecoderNode {
         });
         let mut input_done = false;
 
-        // Process input and results concurrently
         loop {
             tokio::select! {
                 maybe_result = result_rx.recv() => {
@@ -150,7 +139,6 @@ impl ProcessorNode for Mp3DecoderNode {
                             packets_processed_counter.add(1, &[KeyValue::new("status", "ok")]);
                             stats_tracker.received();
 
-                            // Send the decoded frame directly - already appropriately sized by MP3 packet
                             if !samples.is_empty() {
                                 let output_frame = AudioFrame::with_metadata(
                                     sample_rate,
@@ -180,10 +168,7 @@ impl ProcessorNode for Mp3DecoderNode {
                             state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
                             return Err(StreamKitError::Runtime(err_msg));
                         }
-                        None => {
-                            // Result channel closed, blocking task is done
-                            break;
-                        }
+                        None => break,
                     }
                 }
                 Some(control_msg) = context.control_rx.recv() => {
@@ -193,33 +178,25 @@ impl ProcessorNode for Mp3DecoderNode {
                         break;
                     }
                 }
+                // EOF or upstream closed — keep draining decode results until
+                // the blocking task closes the result channel.
                 _ = &mut input_task, if !input_done => {
-                    // Input finished (EOF or upstream closed). Keep draining decode results until
-                    // the blocking task closes the result channel.
                     input_done = true;
                 }
             }
         }
 
-        // Drop the result receiver to signal the decode task to stop
         drop(result_rx);
-
-        // Abort the blocking task for immediate shutdown
         decode_task.abort();
 
-        // Wait for decode task to complete with timeout (blocking I/O may not abort immediately)
         match tokio::time::timeout(std::time::Duration::from_millis(100), decode_task).await {
-            Ok(Ok(())) => {
-                // Task completed successfully
-            },
+            Ok(Ok(())) => {},
             Ok(Err(e)) => {
-                // Task panicked or was aborted
                 if !e.is_cancelled() {
                     tracing::error!("Decode task panicked: {}", e);
                 }
             },
             Err(_) => {
-                // Timeout - blocking task is stuck in I/O, this is expected on abort
                 tracing::debug!(
                     "Decode task did not respond to abort within 100ms (stuck in blocking I/O)"
                 );
@@ -233,26 +210,19 @@ impl ProcessorNode for Mp3DecoderNode {
     }
 }
 
-// Type alias for decode result to simplify complex signatures
-// Includes samples, sample_rate, channels, and timing metadata
 type DecodeResult = Result<(Vec<f32>, u32, u16, streamkit_core::types::PacketMetadata), String>;
 
-/// Decodes MP3 data incrementally from a streaming reader
-/// Decodes and emits frames as soon as MP3 packets are available
 #[allow(clippy::cognitive_complexity)] // Decoder state machine is inherently complex
 fn decode_mp3_streaming_incremental(
     reader: StreamingReader,
     result_tx: &mpsc::Sender<DecodeResult>,
 ) -> Result<(), String> {
-    // Wrap the streaming reader in ReadOnlySource, then MediaSourceStream
     let source = ReadOnlySource::new(reader);
     let mss = MediaSourceStream::new(Box::new(source), MediaSourceStreamOptions::default());
 
-    // Create a hint for MP3 format
     let mut hint = Hint::new();
     hint.with_extension("mp3");
 
-    // Probe the media source
     let format_opts = FormatOptions::default();
     let metadata_opts = MetadataOptions::default();
     let probed = symphonia::default::get_probe()
@@ -261,11 +231,9 @@ fn decode_mp3_streaming_incremental(
 
     let mut format_reader = probed.format;
 
-    // Get the default track
     let track =
         format_reader.default_track().ok_or_else(|| "No default track found in MP3".to_string())?;
 
-    // Get codec parameters
     let codec_params = &track.codec_params;
     let sample_rate =
         codec_params.sample_rate.ok_or_else(|| "No sample rate found in MP3".to_string())?;
@@ -280,24 +248,19 @@ fn decode_mp3_streaming_incremental(
         channels
     );
 
-    // Create decoder
     let decoder_opts = DecoderOptions::default();
     let mut decoder = symphonia::default::get_codecs()
         .make(codec_params, &decoder_opts)
         .map_err(|e| format!("Failed to create MP3 decoder: {e}"))?;
 
-    // Get the track ID for filtering
     let track_id = track.id;
 
-    // Decode packets and rechunk for output
-    // Use VecDeque for O(1) front removal instead of O(n) Vec::drain
     let mut sample_buf: Option<SampleBuffer<f32>> = None;
     let mut rechunk_buffer: VecDeque<f32> = VecDeque::new();
     let mut frame_count = 0u64;
     let mut cumulative_timestamp_us = 0u64;
 
     loop {
-        // Read next packet - this will block waiting for more data from the stream
         let packet = match format_reader.next_packet() {
             Ok(packet) => packet,
             Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
@@ -310,38 +273,28 @@ fn decode_mp3_streaming_incremental(
             },
         };
 
-        // Filter packets by track ID
         if packet.track_id() != track_id {
             continue;
         }
 
-        // Decode the packet
         match decoder.decode(&packet) {
             Ok(audio_buf) => {
-                // Initialize sample buffer on first decode
                 if sample_buf.is_none() {
                     let spec = *audio_buf.spec();
                     let duration = audio_buf.capacity() as u64;
                     sample_buf = Some(SampleBuffer::<f32>::new(duration, spec));
                 }
 
-                // Copy decoded audio and rechunk for output
                 if let Some(buf) = &mut sample_buf {
                     buf.copy_interleaved_ref(audio_buf);
                     rechunk_buffer.extend(buf.samples().iter().copied());
 
-                    // Send fixed-size chunks as they become available
                     while rechunk_buffer.len() >= OUTPUT_FRAME_SIZE {
-                        // Drain from front - O(1) amortized with VecDeque
                         let chunk: Vec<f32> = rechunk_buffer.drain(..OUTPUT_FRAME_SIZE).collect();
-
-                        // Calculate duration for this chunk
-                        // duration = (total_samples / channels) / sample_rate * 1_000_000
                         let samples_per_channel = chunk.len() / channels as usize;
                         let duration_us =
                             (samples_per_channel as u64 * 1_000_000) / u64::from(sample_rate);
 
-                        // Create metadata with timing information
                         let metadata = streamkit_core::types::PacketMetadata {
                             timestamp_us: Some(cumulative_timestamp_us),
                             duration_us: Some(duration_us),
@@ -349,7 +302,6 @@ fn decode_mp3_streaming_incremental(
                             keyframe: None,
                         };
 
-                        // Use blocking_send - more efficient than Handle::block_on
                         if result_tx
                             .blocking_send(Ok((chunk, sample_rate, channels, metadata)))
                             .is_err()
@@ -364,7 +316,6 @@ fn decode_mp3_streaming_incremental(
                 }
             },
             Err(Error::DecodeError(err)) => {
-                // Log and continue to next packet - no explicit continue needed
                 tracing::warn!("MP3 decode error (continuing): {}", err);
             },
             Err(e) => {
@@ -393,171 +344,6 @@ fn decode_mp3_streaming_incremental(
     }
 
     tracing::info!("Finished streaming {} MP3 frames", frame_count);
-
-    Ok(())
-}
-
-/// Legacy decode function (kept for reference, not used)
-#[allow(dead_code)]
-#[allow(clippy::cognitive_complexity)] // Decoder state machine is inherently complex
-fn decode_mp3_streaming(data: &[u8], result_tx: &mpsc::Sender<DecodeResult>) -> Result<(), String> {
-    use std::sync::mpsc as std_mpsc;
-
-    // Create a cursor over the data
-    let owned_data = data.to_vec();
-    let cursor = Cursor::new(owned_data);
-    let mss = MediaSourceStream::new(Box::new(cursor), MediaSourceStreamOptions::default());
-
-    // Create a hint for MP3 format
-    let mut hint = Hint::new();
-    hint.with_extension("mp3");
-
-    // Probe the media source
-    let format_opts = FormatOptions::default();
-    let metadata_opts = MetadataOptions::default();
-    let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &format_opts, &metadata_opts)
-        .map_err(|e| format!("Failed to probe MP3 format: {e}"))?;
-
-    let mut format_reader = probed.format;
-
-    // Get the default track
-    let track =
-        format_reader.default_track().ok_or_else(|| "No default track found in MP3".to_string())?;
-
-    // Get codec parameters
-    let codec_params = &track.codec_params;
-    let sample_rate =
-        codec_params.sample_rate.ok_or_else(|| "No sample rate found in MP3".to_string())?;
-    let channel_count =
-        codec_params.channels.ok_or_else(|| "No channel info found in MP3".to_string())?.count();
-    let channels = u16::try_from(channel_count)
-        .map_err(|_| format!("Channel count {channel_count} exceeds u16::MAX"))?;
-
-    tracing::info!("Detected MP3 audio: {} Hz, {} channels", sample_rate, channels);
-
-    // Create decoder
-    let decoder_opts = DecoderOptions::default();
-    let mut decoder = symphonia::default::get_codecs()
-        .make(codec_params, &decoder_opts)
-        .map_err(|e| format!("Failed to create MP3 decoder: {e}"))?;
-
-    // Get the track ID for filtering
-    let track_id = track.id;
-
-    // Use a std channel to collect frames in the blocking context
-    let (frame_tx, frame_rx) = std_mpsc::channel();
-
-    // Decode packets and collect frames
-    let mut sample_buf: Option<SampleBuffer<f32>> = None;
-    let mut packet_count = 0u64;
-    let mut cumulative_timestamp_us = 0u64;
-
-    // Buffer for rechunking - use VecDeque for O(1) front removal
-    let mut rechunk_buffer: VecDeque<f32> = VecDeque::new();
-
-    loop {
-        // Read next packet
-        let packet = match format_reader.next_packet() {
-            Ok(packet) => packet,
-            Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                tracing::debug!("Reached end of MP3 stream after {} packets", packet_count);
-                break;
-            },
-            Err(e) => {
-                tracing::warn!("Error reading MP3 packet: {}", e);
-                break;
-            },
-        };
-
-        // Filter packets by track ID
-        if packet.track_id() != track_id {
-            continue;
-        }
-
-        // Decode the packet
-        match decoder.decode(&packet) {
-            Ok(audio_buf) => {
-                // Initialize sample buffer on first decode
-                if sample_buf.is_none() {
-                    let spec = *audio_buf.spec();
-                    let duration = audio_buf.capacity() as u64;
-                    sample_buf = Some(SampleBuffer::<f32>::new(duration, spec));
-                }
-
-                // Copy decoded audio into sample buffer and add to rechunk buffer
-                if let Some(buf) = &mut sample_buf {
-                    buf.copy_interleaved_ref(audio_buf);
-                    rechunk_buffer.extend(buf.samples().iter().copied());
-
-                    // Send fixed-size chunks as they become available
-                    while rechunk_buffer.len() >= OUTPUT_FRAME_SIZE {
-                        // Drain from front - O(1) amortized with VecDeque
-                        let chunk: Vec<f32> = rechunk_buffer.drain(..OUTPUT_FRAME_SIZE).collect();
-
-                        // Calculate duration for this chunk
-                        let samples_per_channel = chunk.len() / channels as usize;
-                        let duration_us =
-                            (samples_per_channel as u64 * 1_000_000) / u64::from(sample_rate);
-
-                        let metadata = streamkit_core::types::PacketMetadata {
-                            timestamp_us: Some(cumulative_timestamp_us),
-                            duration_us: Some(duration_us),
-                            sequence: Some(packet_count),
-                            keyframe: None,
-                        };
-
-                        if frame_tx.send((chunk, sample_rate, channels, metadata)).is_err() {
-                            return Ok(());
-                        }
-                        packet_count += 1;
-                        cumulative_timestamp_us += duration_us;
-                    }
-                }
-            },
-            Err(Error::DecodeError(err)) => {
-                // Log and continue to next packet - no explicit continue needed
-                tracing::warn!("MP3 decode error (continuing): {}", err);
-            },
-            Err(e) => {
-                return Err(format!("Failed to decode MP3 packet: {e}"));
-            },
-        }
-    }
-
-    // Send any remaining samples as a final chunk
-    if !rechunk_buffer.is_empty() {
-        // Calculate duration for the final chunk
-        let samples_per_channel = rechunk_buffer.len() / channels as usize;
-        let duration_us = (samples_per_channel as u64 * 1_000_000) / u64::from(sample_rate);
-
-        let metadata = streamkit_core::types::PacketMetadata {
-            timestamp_us: Some(cumulative_timestamp_us),
-            duration_us: Some(duration_us),
-            sequence: Some(packet_count),
-            keyframe: None,
-        };
-
-        let final_chunk: Vec<f32> = rechunk_buffer.into_iter().collect();
-        if frame_tx.send((final_chunk, sample_rate, channels, metadata)).is_ok() {
-            packet_count += 1;
-        }
-    }
-
-    drop(frame_tx); // Signal we're done
-
-    tracing::info!("Decoded {} MP3 packets, sending to async channel", packet_count);
-
-    // Now send all frames to the async channel
-    // Use blocking_send - efficient for spawn_blocking context
-    for frame in frame_rx {
-        if result_tx.blocking_send(Ok(frame)).is_err() {
-            tracing::debug!("Result channel closed during frame transmission");
-            return Ok(());
-        }
-    }
-
-    tracing::info!("Finished streaming {} MP3 frames", packet_count);
 
     Ok(())
 }

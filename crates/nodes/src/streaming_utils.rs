@@ -51,7 +51,6 @@ impl StreamingReader {
 impl Read for StreamingReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         loop {
-            // Try to read from current chunk
             if let Some(front) = self.chunks.front() {
                 let available = front.len() - self.chunk_offset;
                 if available > 0 {
@@ -60,7 +59,6 @@ impl Read for StreamingReader {
                         .copy_from_slice(&front[self.chunk_offset..self.chunk_offset + to_read]);
                     self.chunk_offset += to_read;
 
-                    // If we've consumed the entire chunk, drop it
                     if self.chunk_offset >= front.len() {
                         self.chunks.pop_front();
                         self.chunk_offset = 0;
@@ -72,7 +70,6 @@ impl Read for StreamingReader {
 
                     return Ok(to_read);
                 }
-                // Empty chunk - drop it and try next
                 self.chunks.pop_front();
                 self.chunk_offset = 0;
                 continue;

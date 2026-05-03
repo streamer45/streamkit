@@ -128,7 +128,6 @@ impl TelemetryTapNode {
         Ok(Self { config })
     }
 
-    /// Check if a packet type should be tapped.
     fn should_tap_packet_type(&self, packet: &Packet) -> bool {
         let type_name = match packet {
             Packet::Audio(_) => "Audio",
@@ -142,14 +141,12 @@ impl TelemetryTapNode {
         self.config.packet_types.iter().any(|t| t.eq_ignore_ascii_case(type_name))
     }
 
-    /// Check if a Custom packet's event_type matches the filter.
     fn matches_event_type_filter(&self, event_type: &str) -> bool {
         if self.config.event_type_filter.is_empty() {
             return true;
         }
 
         self.config.event_type_filter.iter().any(|pattern| {
-            // Simple glob matching: "vad.*" matches "vad.start", "vad.end", etc.
             if pattern.ends_with(".*") {
                 let prefix = &pattern[..pattern.len() - 2];
                 event_type.starts_with(prefix)
@@ -222,14 +219,12 @@ impl ProcessorNode for TelemetryTapNode {
         let node_name = context.output_sender.node_name().to_string();
         state_helpers::emit_initializing(&context.state_tx, &node_name);
 
-        // Create telemetry emitter
         let mut telemetry = TelemetryEmitter::new(
             node_name.clone(),
             context.session_id.clone(),
             context.telemetry_tx.clone(),
         );
 
-        // Configure rate limiting
         telemetry.set_rate_limit(self.config.max_events_per_sec);
 
         tracing::info!(
@@ -244,13 +239,11 @@ impl ProcessorNode for TelemetryTapNode {
 
         state_helpers::emit_running(&context.state_tx, &node_name);
 
-        // Audio level aggregation state
         let mut audio_samples_acc: Vec<f32> = Vec::new();
         let mut last_audio_emit = Instant::now();
         let audio_interval = std::time::Duration::from_millis(self.config.audio_sample_interval_ms);
 
         while let Some(packet) = context.recv_with_cancellation(&mut input_rx).await {
-            // Check if we should tap this packet type
             if self.should_tap_packet_type(&packet) {
                 match &packet {
                     Packet::Transcription(transcription) => {
@@ -258,7 +251,6 @@ impl ProcessorNode for TelemetryTapNode {
                         telemetry.emit("stt.result", data);
                     },
                     Packet::Custom(custom) => {
-                        // Extract event_type from custom packet data
                         let event_type = custom
                             .data
                             .get("event_type")
@@ -274,7 +266,6 @@ impl ProcessorNode for TelemetryTapNode {
                         };
 
                         if self.matches_event_type_filter(&telemetry_event_type) {
-                            // Forward the custom packet data as telemetry, preserving source type_id.
                             let mut data = custom.data.clone();
                             if let Some(obj) = data.as_object_mut() {
                                 obj.insert(

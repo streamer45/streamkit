@@ -80,10 +80,6 @@ pub struct AudioMixerConfig {
 
 impl Default for AudioMixerConfig {
     fn default() -> Self {
-        // Default to 100ms timeout (5 frames at 20ms frame size)
-        // This provides tolerance for timing jitter, GC pauses, and network variation
-        // while still catching truly slow/stuck inputs quickly enough
-        // Tests use 100ms and it works well in practice
         Self { sync_timeout_ms: Some(100), num_inputs: None, clocked: None }
     }
 }
@@ -121,12 +117,8 @@ struct InputSlot {
 impl AudioMixerNode {
     pub fn new(config: AudioMixerConfig) -> Self {
         let (input_pins, next_input_id) = config.num_inputs.map_or_else(
-            || {
-                // Dynamic mode - start with no pins
-                (Vec::new(), 0)
-            },
+            || (Vec::new(), 0),
             |num_inputs| {
-                // Pre-create pins for stateless/oneshot pipelines
                 let mut pins = Vec::with_capacity(num_inputs);
                 for i in 0..num_inputs {
                     pins.push(InputPin {
@@ -146,8 +138,6 @@ impl AudioMixerNode {
         Self { config, input_pins, next_input_id }
     }
 
-    /// Returns the static pins for node definition registration.
-    /// For dynamic mode, this includes a Dynamic cardinality pin template.
     pub fn definition_pins() -> (Vec<InputPin>, Vec<OutputPin>) {
         let inputs = vec![InputPin {
             name: "in".to_string(),
@@ -231,9 +221,7 @@ impl AudioMixerNode {
         let node_name = context.output_sender.node_name().to_string();
         state_helpers::emit_running(&context.state_tx, &node_name);
 
-        // Stats tracking
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
-
         let mut pin_mgmt_rx = context.pin_management_rx.take();
         let cancellation_token = context.cancellation_token.clone();
 
@@ -251,10 +239,8 @@ impl AudioMixerNode {
         let output_mailbox = Arc::new(OutputMailbox::new());
         let (audio_cmd_tx, audio_cmd_rx) = std::sync::mpsc::channel::<AudioThreadCommand>();
 
-        // Drainers (and the clocked audio thread) report events back to this management loop.
         let (input_event_tx, mut input_event_rx) = mpsc::channel::<InputEvent>(32);
 
-        // Audio thread drives mixing and writes frames to output_mailbox.
         let audio_pool = context.audio_pool.clone();
         let state_tx = context.state_tx.clone();
         let stop_flag = Arc::new(AtomicBool::new(false));
@@ -288,7 +274,6 @@ impl AudioMixerNode {
                 StreamKitError::Runtime(format!("Failed to spawn audio mixer thread: {e}"))
             })?;
 
-        // Output forwarder (Tokio task) owns the OutputSender and sends frames downstream.
         let mut output_sender = context.output_sender;
         let output_mailbox_forwarder = output_mailbox.clone();
         let mut shutdown_rx = output_mailbox_forwarder.shutdown_rx.clone();
@@ -443,30 +428,19 @@ impl AudioMixerNode {
         Ok(())
     }
 
-    /// Runtime pin management with broadcast synchronization
-    #[allow(clippy::cognitive_complexity, clippy::too_many_lines)] // Dynamic audio mixing logic is inherently complex
+    #[allow(clippy::cognitive_complexity, clippy::too_many_lines)] // Dynamic audio mixing is inherently complex
     async fn run_dynamic(mut self, mut context: NodeContext) -> Result<(), StreamKitError> {
         let node_name = context.output_sender.node_name().to_string();
         state_helpers::emit_running(&context.state_tx, &node_name);
 
-        // Stats tracking
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
-
-        // Take the pin management channel (optional - only needed for fully dynamic mode)
-        // In stateless pipelines with num_inputs specified, this will be None and that's OK
         let mut pin_mgmt_rx = context.pin_management_rx.take();
-
-        // Extract cancellation token before moving inputs
         let cancellation_token = context.cancellation_token.clone();
 
         let mut slots: Vec<InputSlot> = Vec::new();
 
-        // Round-robin index for fair receiver polling
         let mut round_robin_idx: usize = 0;
 
-        // Pre-create input pins for any connections that were provided at startup
-        // This ensures compatibility with dynamic pipeline definitions that provide initial connections
-        // Skip if pins were already created by the constructor (num_inputs was specified)
         if self.config.num_inputs.is_none() {
             for pin_name in context.inputs.keys() {
                 let pin = InputPin {
@@ -481,7 +455,6 @@ impl AudioMixerNode {
                 self.input_pins.push(pin);
                 tracing::info!("Mixer: Pre-created input pin {} for initial connection", pin_name);
 
-                // Update next_input_id if this is a numbered pin (in_N)
                 if let Some(num_str) = pin_name.strip_prefix("in_") {
                     if let Ok(num) = num_str.parse::<usize>() {
                         self.next_input_id = self.next_input_id.max(num + 1);
@@ -490,7 +463,6 @@ impl AudioMixerNode {
             }
         }
 
-        // Start with inputs from context (if any were pre-connected)
         for (name, rx) in context.inputs {
             slots.push(InputSlot {
                 name: Arc::from(name),
@@ -501,10 +473,8 @@ impl AudioMixerNode {
             });
         }
 
-        // Track the maximum observed channel count; never decreases (format stability).
+        // Max observed channel count; never decreases (format stability).
         let mut max_output_channels_seen: u16 = 0;
-
-        // Track last mix time for timeout detection
         let mut waiting_since: Option<std::time::Instant> = None;
         let mut has_warned_slow = false;
         let mut last_reported_slow_pins: Vec<String> = Vec::new();
@@ -547,16 +517,13 @@ impl AudioMixerNode {
             last_reported_slow_pins = slow_pins;
         };
 
-        // Track mixed frames sent (for debugging)
         let mut mixed_frame_count: u64 = 0;
         let mut mix_frames: Vec<AudioFrame> = Vec::new();
 
         loop {
-            // Determine if we have a timeout configured
             let sync_timeout = self.config.sync_timeout_ms.map(tokio::time::Duration::from_millis);
 
             tokio::select! {
-                // Handle pin management messages (only in fully dynamic mode)
                 Some(msg) = async {
                     match &mut pin_mgmt_rx {
                         Some(rx) => rx.recv().await,
@@ -565,7 +532,6 @@ impl AudioMixerNode {
                 } => {
                     match msg {
                         PinManagementMessage::RequestAddInputPin { suggested_name, response_tx } => {
-                            // Create new input pin
                             let pin_name = suggested_name.unwrap_or_else(|| {
                                 let name = format!("in_{}", self.next_input_id);
                                 self.next_input_id += 1;
@@ -588,7 +554,6 @@ impl AudioMixerNode {
                         }
 
                         PinManagementMessage::AddedInputPin { pin, channel, hint_tx: _ } => {
-                            // Engine has created the channel, start receiving
                             tracing::info!("Mixer: Activated input pin {}", pin.name);
                             slots.push(InputSlot {
                                 name: Arc::from(pin.name),
@@ -600,7 +565,6 @@ impl AudioMixerNode {
                         }
 
                         PinManagementMessage::RemoveInputPin { pin_name } => {
-                            // Remove input pin
                             tracing::info!("Mixer: Removed input pin {}", pin_name);
                             if let Some(idx) =
                                 slots.iter().position(|s| s.name.as_ref() == pin_name.as_str())
@@ -619,13 +583,10 @@ impl AudioMixerNode {
                             self.input_pins.retain(|p| p.name != pin_name);
                         }
 
-                        _ => {
-                            // Ignore output pin messages (we don't support dynamic outputs)
-                        }
+                        _ => {}
                     }
                     }
 
-                    // Support explicit shutdown via control message.
                     Some(control_msg) = context.control_rx.recv() => {
                         if matches!(control_msg, streamkit_core::control::NodeControlMessage::Shutdown) {
                             state_helpers::emit_stopped(&context.state_tx, &node_name, "shutdown");
@@ -635,7 +596,6 @@ impl AudioMixerNode {
                         }
                     }
 
-                    // Timeout-based mixing with silence, even when no new packets arrive.
                     () = async {
                         if let (Some(timeout), Some(start)) = (sync_timeout, waiting_since) {
                             let elapsed = start.elapsed();
@@ -670,7 +630,6 @@ impl AudioMixerNode {
                             missing_names
                         );
 
-                        // Track discarded frames for slow/missing pins
                         let missing_count = missing_idxs.len();
                         if missing_count > 0 {
                             stats_tracker.discarded_n(missing_count as u64);
@@ -708,7 +667,6 @@ impl AudioMixerNode {
                         }
                     }
 
-                    // Receive from any input (we can't select! over a dynamic list of receivers)
                     result = Self::recv_from_any(&mut slots, &mut round_robin_idx, cancellation_token.as_ref()) => {
                         match result {
                             RecvResult::Audio(slot_idx, frame) => {
@@ -718,13 +676,11 @@ impl AudioMixerNode {
 
                                 stats_tracker.received();
 
-                                // Track maximum output channels; never decreases.
                                 max_output_channels_seen = max_output_channels_seen.max(frame.channels);
 
                                 let was_cold_start = !slots[slot_idx].has_sent;
                                 slots[slot_idx].has_sent = true;
 
-                                // Check if cold start is now complete for ALL pins.
                                 let cold_start_complete = slots.iter().all(|s| s.has_sent);
                                 if was_cold_start && cold_start_complete {
                                     tracing::trace!("[MIX_TRACE] Cold start complete - starting to mix");
@@ -736,7 +692,6 @@ impl AudioMixerNode {
                                     waiting_since = Some(std::time::Instant::now());
                                 }
 
-                                // Keep the latest frame per pin.
                                 slots[slot_idx].frame = Some(frame);
 
                                 let ready_to_mix = slots.iter().all(|s| s.slow || s.frame.is_some());
@@ -798,7 +753,6 @@ impl AudioMixerNode {
                                                         missing_names
                                                     );
 
-                                                    // Track discarded frames for slow/missing pins
                                                     stats_tracker.discarded_n(missing_names.len() as u64);
 
                                                     for s in &mut slots {
@@ -868,7 +822,6 @@ impl AudioMixerNode {
                             waiting_since = None;
                             sync_slow_state(&slots, None);
 
-                            // If we have frames buffered and remaining active pins, mix now.
                             if !slots.is_empty() && slots.iter().any(|s| s.frame.is_some()) {
                                 if let Err(e) = self.mix_and_send(
                                     &mut slots,
@@ -896,18 +849,14 @@ impl AudioMixerNode {
                                 return Ok(());
                             }
                         }
-                        RecvResult::OtherPacket => {
-                            // Skip non-audio packets
-                        }
+                        RecvResult::OtherPacket => {}
                         RecvResult::AllClosed => {
-                            // All inputs closed
                             state_helpers::emit_stopped(&context.state_tx, &node_name, "no_inputs");
                             tracing::info!("AudioMixerNode shutting down (no inputs)");
                             stats_tracker.force_send();
                             return Ok(());
                         }
                         RecvResult::Cancelled => {
-                            // Cancellation requested
                             tracing::info!("AudioMixerNode cancelled");
                             stats_tracker.force_send();
                             return Ok(());
@@ -956,22 +905,16 @@ impl AudioMixerNode {
                 None
             };
 
-        // Determine output configuration.
-        // Output channels never decrease across the lifetime of the node, to avoid downstream
-        // format flips when a higher-channel input ends.
         let current_max = mix_frames.iter().map(|f| f.channels).max().unwrap_or(1);
         let output_channels = max_output_channels_seen.max(current_max).max(1);
         let sample_rate = mix_frames.first().map(|f| f.sample_rate).unwrap_or_default();
 
-        // Calculate output frame size based on the longest input after channel conversion
         let max_samples_per_channel =
             mix_frames.iter().map(|f| f.samples.len() / f.channels as usize).max().unwrap_or(0);
         let output_size = max_samples_per_channel * output_channels as usize;
         let present_pins_count = mix_frames.len();
 
-        // Optimization: if we have a frame that already matches the output shape, reuse it as the
-        // output buffer and mix other frames into it (avoids allocating a fresh Vec per mix).
-        // If samples are shared (Arc), `make_samples_mut()` will clone once (copy-on-write).
+        // Reuse an existing frame as the output buffer when it matches the output shape.
         let base_idx = mix_frames
             .iter()
             .enumerate()
@@ -995,7 +938,6 @@ impl AudioMixerNode {
             base.metadata.clone_from(&combined_metadata);
             base
         } else {
-            // Fallback: allocate a fresh output buffer and mix all frames into it.
             let mut mixed_samples = vec![0.0f32; output_size];
             for frame_to_mix in &*mix_frames {
                 Self::mix_frame_with_channel_conversion(
@@ -1005,14 +947,11 @@ impl AudioMixerNode {
                 );
             }
 
-            // Preserve metadata from the first frame (timestamp, duration, etc.)
-            // Use take() instead of clone() to avoid copying - we're about to clear the buffer anyway
             let metadata = combined_metadata.clone();
 
             AudioFrame::with_metadata(sample_rate, output_channels, mixed_samples, metadata)
         };
 
-        // If filling silence for missing pins, they contribute 0.0 (already initialized)
         if fill_silence {
             let missing_count = expected_count.saturating_sub(present_expected_count);
             if missing_count > 0 {
@@ -1024,8 +963,6 @@ impl AudioMixerNode {
             }
         }
 
-        // Ensure the output frame reports the selected output channel count (should already match,
-        // but keep this explicit for future refactors).
         output_frame.channels = output_channels;
 
         output_sender.send("out", Packet::Audio(output_frame)).await.map_err(|e| e.to_string())?;
@@ -1049,11 +986,9 @@ impl AudioMixerNode {
         let samples_per_channel = source.samples.len() / source_channels as usize;
         let output_samples_per_channel = output.len() / output_channels as usize;
 
-        // Use the minimum length to avoid out-of-bounds
         let mix_samples_per_channel = samples_per_channel.min(output_samples_per_channel);
 
         if source_channels == output_channels {
-            // Same channel count: direct sample-wise mixing
             let mix_len = mix_samples_per_channel * output_channels as usize;
             for (out_sample, src_sample) in
                 output.iter_mut().zip(source.samples.iter()).take(mix_len)
@@ -1061,22 +996,19 @@ impl AudioMixerNode {
                 *out_sample += src_sample;
             }
         } else if source_channels == 1 && output_channels == 2 {
-            // Mono to stereo: duplicate mono signal to both L and R channels
             for i in 0..mix_samples_per_channel {
                 let mono_sample = source.samples[i];
                 let out_idx = i * 2;
-                output[out_idx] += mono_sample; // Left channel
-                output[out_idx + 1] += mono_sample; // Right channel
+                output[out_idx] += mono_sample;
+                output[out_idx + 1] += mono_sample;
             }
         } else if source_channels == 2 && output_channels == 1 {
-            // Stereo to mono: average L and R channels
             for i in 0..mix_samples_per_channel {
                 let left = source.samples[i * 2];
                 let right = source.samples[i * 2 + 1];
                 output[i] += (left + right) * 0.5;
             }
         } else {
-            // Generic fallback: map channels cyclically
             tracing::warn!(
                 "Mixing {} channels into {} channels using generic fallback",
                 source_channels,
@@ -1093,32 +1025,19 @@ impl AudioMixerNode {
         }
     }
 
-    /// Helper to receive from any input channel
-    /// Returns a RecvResult indicating what was received
-    ///
-    /// Strategy:
-    /// 1. First, do a non-blocking check of all receivers (fair round-robin starting from round_robin_idx)
-    /// 2. If no data available, wait on the current round-robin receiver using proper async
-    ///
-    /// The try_recv pass provides fairness across inputs. The async wait on the current receiver
-    /// is efficient (no busy-polling) and the outer select! loop will cycle back to check all
-    /// receivers again after this returns.
-    ///
-    /// Performance: Avoids hashing by polling an indexed slice of receivers.
+    /// Fair round-robin receive from any input; try_recv all, then async wait on current.
     async fn recv_from_any(
         slots: &mut [InputSlot],
         round_robin_idx: &mut usize,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> RecvResult {
         if slots.is_empty() {
-            // No receivers, wait indefinitely (will be woken by pin management)
             tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
             return RecvResult::AllClosed;
         }
 
         let num_receivers = slots.len();
 
-        // Fair round-robin: start from last position to avoid starvation
         for i in 0..num_receivers {
             let idx = (*round_robin_idx + i) % num_receivers;
             match slots[idx].rx.try_recv() {
@@ -1134,9 +1053,6 @@ impl AudioMixerNode {
             }
         }
 
-        // No data immediately available. Wait on the current round-robin receiver using proper async.
-        // This is more efficient than busy-polling. The outer select! loop will cycle
-        // back to check all receivers again after this returns.
         let wait_idx = *round_robin_idx % num_receivers;
         let rx = &mut slots[wait_idx].rx;
 
@@ -1263,7 +1179,6 @@ fn run_clocked_audio_thread(config: &ClockedThreadConfig) {
     let mut last_reported_slow_pins: Vec<String> = Vec::new();
     let mut next_tick = std::time::Instant::now() + config.tick_duration;
 
-    // Pre-allocated buffers reused every tick to avoid per-tick heap allocations.
     let mut frames: Vec<AudioFrame> = Vec::new();
     let mut slow_pins: Vec<String> = Vec::new();
 
@@ -1305,14 +1220,12 @@ fn run_clocked_audio_thread(config: &ClockedThreadConfig) {
                 AudioThreadCommand::Shutdown => break,
             },
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                // Tick.
                 next_tick += config.tick_duration;
 
                 if inputs.is_empty() {
                     continue;
                 }
 
-                // Drain any queued commands quickly.
                 while let Ok(cmd) = config.cmd_rx.try_recv() {
                     match cmd {
                         AudioThreadCommand::AddInput { name, ring } => {
@@ -1371,7 +1284,6 @@ fn run_clocked_audio_thread(config: &ClockedThreadConfig) {
                         any_input_had_frame = true;
                         frames.push(frame);
                     } else {
-                        // Missing this tick.
                         if input.missing_since.is_none() {
                             input.missing_since = Some(std::time::Instant::now());
                         }
@@ -1422,7 +1334,6 @@ fn run_clocked_audio_thread(config: &ClockedThreadConfig) {
                     continue;
                 }
 
-                // If we've never observed channels yet, we can't size the output buffer.
                 if max_output_channels_seen == 0 && frames.is_empty() {
                     continue;
                 }
@@ -1465,7 +1376,6 @@ fn mix_clocked_frames(
 ) -> AudioFrame {
     let output_size = frame_samples_per_channel * output_channels as usize;
 
-    // If we have a frame that matches the output shape, reuse it as the output buffer.
     let base_idx = frames
         .iter()
         .enumerate()
@@ -1556,7 +1466,6 @@ async fn run_input_drainer(
             ring.push(frame);
         }
 
-        // Drain bursty backlogs quickly.
         loop {
             match rx.try_recv() {
                 Ok(Packet::Audio(frame)) => {
@@ -1620,17 +1529,11 @@ fn start_clocked_input_drainer(
     (name, handle)
 }
 
-/// Result from receiving from any input channel
 enum RecvResult {
-    /// Received an audio frame from the specified slot index
     Audio(usize, AudioFrame),
-    /// A pin received EOF (channel closed)
     PinEof(usize),
-    /// Received a non-audio packet (to be skipped)
     OtherPacket,
-    /// All input channels are closed
     AllClosed,
-    /// Cancellation was requested
     Cancelled,
 }
 

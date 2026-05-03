@@ -91,12 +91,10 @@ impl TextChunkerNode {
     }
 
     fn extract_word_chunk(&mut self) -> Option<String> {
-        // Count words in buffer
         if self.buffer.split_whitespace().count() < self.config.chunk_words {
             return None;
         }
 
-        // Find position after N words
         let mut word_count = 0;
         let mut last_word_end = 0;
 
@@ -104,7 +102,6 @@ impl TextChunkerNode {
             if ch.is_whitespace() && idx > last_word_end {
                 word_count += 1;
                 if word_count >= self.config.chunk_words {
-                    // Extract up to this point
                     let chunk: String = self.buffer.drain(..=idx).collect();
                     self.buffer = self.buffer.trim_start().to_string();
                     return Some(chunk.trim().to_string());
@@ -113,7 +110,6 @@ impl TextChunkerNode {
             }
         }
 
-        // If we have exactly chunk_words and no trailing whitespace
         if word_count == self.config.chunk_words - 1 && !self.buffer.is_empty() {
             let chunk = self.buffer.drain(..).collect();
             return Some(chunk);
@@ -127,8 +123,6 @@ impl TextChunkerNode {
             return None;
         }
 
-        // Split on natural pauses: sentence endings, commas, semicolons, dashes, colons
-        // This creates natural chunks for TTS while maintaining intonation
         let boundaries = [
             ". ", ".\n", "! ", "!\n", "? ", "?\n", // Sentence endings (English)
             "。", "！", "？", // Sentence endings (Chinese)
@@ -146,7 +140,6 @@ impl TextChunkerNode {
             }
         }
 
-        // Check for final punctuation at end (no trailing space/newline)
         if self.buffer.ends_with('.')
             || self.buffer.ends_with('!')
             || self.buffer.ends_with('?')

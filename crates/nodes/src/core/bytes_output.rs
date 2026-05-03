@@ -66,7 +66,7 @@ impl ProcessorNode for BytesOutputNode {
     }
 
     fn output_pins(&self) -> Vec<streamkit_core::OutputPin> {
-        vec![] // This is an output node.
+        vec![]
     }
 
     async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
@@ -79,19 +79,15 @@ impl ProcessorNode for BytesOutputNode {
 
         let mut reason = "input_closed".to_string();
 
-        // Loop and forward every binary packet's data to the result stream.
         while let Some(packet) = context.recv_with_cancellation(&mut input_rx).await {
             if let Packet::Binary { data, .. } = packet {
                 packet_count += 1;
 
-                // Log every 500th packet to track progress (debug-only to avoid hot-path overhead)
                 if packet_count % 500 == 0 {
                     tracing::debug!("BytesOutputNode: sent {} packets so far", packet_count);
                 }
 
                 if self.result_tx.send(data).await.is_err() {
-                    // The receiver was dropped, so the HTTP response has likely closed.
-                    // Trigger cancellation to stop all upstream processing immediately.
                     if let Some(token) = &context.cancellation_token {
                         tracing::warn!(
                             "BytesOutputNode receiver closed. Triggering cancellation after {} packets.",
