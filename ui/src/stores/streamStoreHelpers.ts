@@ -27,12 +27,7 @@ const logger = getLogger('streamStore');
 const SUPPORTED_VIDEO_CODECS = ['vp9', 'av1'];
 const SUPPORTED_AUDIO_CODECS = ['opus'];
 
-/**
- * Map user-facing codec name to WebCodecs codec string.
- *
- * Throws for unrecognized codecs so pipeline authors get a clear error
- * instead of a cryptic WebCodecs encoder failure.
- */
+/** Map user-facing codec name to WebCodecs codec string. */
 function mapCodecToWebCodecs(codec: string): string {
   switch (codec) {
     case 'vp9':
@@ -49,14 +44,7 @@ function mapCodecToWebCodecs(codec: string): string {
   }
 }
 
-/**
- * Build `@moq/publish` encoder config and capture constraints from per-track
- * media hints.  Deterministic — logs warnings for invalid configurations.
- *
- * @param track - The track config containing optional width/height/codec/max_bitrate.
- * @returns encoderConfig for `Publish.Broadcast` and optional capture constraints.
- * @throws {Error} If the track specifies an unsupported codec.
- */
+/** Build `@moq/publish` encoder config and capture constraints from per-track media hints. */
 export function buildVideoEncoderConfig(track?: PublishTrackConfig | null): {
   encoderConfig: { codec: string; maxPixels?: number; maxBitrate?: number };
   constraints?: { width?: number; height?: number };
@@ -76,9 +64,6 @@ export function buildVideoEncoderConfig(track?: PublishTrackConfig | null): {
       encoderConfig.maxPixels = width * height;
     }
   } else if (width != null || height != null) {
-    // Partial dimensions: capture constraint is applied but maxPixels cannot
-    // be computed.  The Rust linter warns about this; log here too for
-    // runtime visibility.
     logger.warn(
       `Track (source=${track?.source}) has partial dimensions ` +
         `(width=${width ?? 'unset'}, height=${height ?? 'unset'}) — ` +
@@ -104,10 +89,6 @@ export function buildVideoEncoderConfig(track?: PublishTrackConfig | null): {
   };
 }
 
-/**
- * Emit `logger.warn` for each track whose codec is not in the recognized set.
- * Pure validation — does not throw or modify state.
- */
 export function validateTrackCodecs(tracks: PublishTrackConfig[]): void {
   for (const track of tracks) {
     if (track.codec == null) continue;
@@ -262,12 +243,7 @@ export function waitForSignalValue<T>(
   });
 }
 
-/**
- * Waits for a specific broadcast to be announced on the MoQ relay.
- * Used when publishing to an external relay: the skit pipeline needs time to
- * discover input, build the graph, and start publishing output. Polling for
- * the announcement avoids a fixed delay.
- */
+/** Wait for a broadcast to appear on the relay before subscribing. */
 async function waitForBroadcastAnnouncement(
   connection: Hang.Moq.Connection.Reload,
   broadcastName: string,
@@ -281,8 +257,6 @@ async function waitForBroadcastAnnouncement(
   const announcements = conn.announced();
   const deadline = Date.now() + timeoutMs;
   try {
-    // Build a promise that rejects when the abort signal fires so the
-    // Promise.race below reacts immediately instead of polling.
     const abortPromise = abortSignal
       ? new Promise<never>((_, reject) => {
           abortSignal.addEventListener(
@@ -332,10 +306,8 @@ export function decideConnect(
   }
 
   const shouldWatch = state.connectionMode === 'session' || state.enableWatch;
-  // NOTE: Session mode no longer implicitly enables publishing.  Publishing is
-  // now driven entirely by `enablePublish` (which the session setup sets based
-  // on whether the pipeline needs client-side media inputs).  This was a
-  // deliberate change from the old behaviour where session mode always published.
+  // Session mode no longer implicitly enables publishing — driven entirely
+  // by `enablePublish` which session setup sets based on pipeline inputs.
   const shouldPublish = state.enablePublish;
 
   return { ok: true, trimmedServerUrl, shouldWatch, shouldPublish };
@@ -924,9 +896,6 @@ function schedulePostConnectWarnings(
     }, 10_000);
   }
 
-  // Camera warning mirrors the microphone warning above.  The guard
-  // `attempt.camera` is null when `!needsVideo`, so this block is only
-  // reached when the pipeline actually requested a camera source.
   if (decision.shouldPublish && attempt.camera) {
     const cameraRef = attempt.camera;
 
@@ -946,9 +915,6 @@ function schedulePostConnectWarnings(
     }, 10_000);
   }
 
-  // Screen source warning — analogous to the camera warning above.
-  // Screen.source has shape { audio?, video? } | undefined, so we
-  // check for the presence of the video track.
   if (decision.shouldPublish && attempt.screen) {
     const screenRef = attempt.screen;
 
@@ -968,9 +934,6 @@ function schedulePostConnectWarnings(
     }, 10_000);
   }
 
-  // Secondary camera / screen health — mirrors the primary camera and
-  // screen blocks above so that `secondaryCameraStatus` doesn't go stale
-  // when the user stops sharing via OS controls.
   if (decision.shouldPublish && attempt.secondaryCamera) {
     const cameraRef = attempt.secondaryCamera;
 
@@ -1010,7 +973,6 @@ function schedulePostConnectWarnings(
   }
 }
 
-/** Apply watch-path results to the attempt object in a type-safe manner. */
 function applyWatchResult(
   attempt: ConnectAttempt,
   result: ReturnType<typeof setupWatchPath>
@@ -1025,7 +987,6 @@ function applyWatchResult(
   attempt.videoRenderer = result.videoRenderer;
 }
 
-/** Apply publish-path results to the attempt object in a type-safe manner. */
 function applyPublishResult(
   attempt: ConnectAttempt,
   result: Awaited<ReturnType<typeof setupPublishPath>>
@@ -1036,7 +997,6 @@ function applyPublishResult(
   attempt.publish = result.publish;
 }
 
-/** Apply secondary publish-path results to the attempt object. */
 function applySecondaryPublishResult(
   attempt: ConnectAttempt,
   result: Awaited<ReturnType<typeof setupSecondaryPublishPath>>

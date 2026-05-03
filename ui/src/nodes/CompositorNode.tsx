@@ -58,11 +58,6 @@ interface CompositorNodeProps {
   selected?: boolean;
 }
 
-// ── Connected entry list ──────────────────────────────────────────────────────────────
-// Subscribes to all layer atoms so it re-renders when entries change, but
-// useStableEntries returns a stable reference during opacity/rotation drags,
-// so CompositorEntryList (React.memo) bails out on those ticks.
-
 interface ConnectedEntryListProps {
   selectedLayerId: string | null;
   onSelectLayer: (id: string | null) => void;
@@ -84,9 +79,6 @@ const ConnectedEntryList: React.FC<ConnectedEntryListProps> = React.memo((props)
   return <CompositorEntryList entries={entries} {...props} />;
 });
 ConnectedEntryList.displayName = 'ConnectedEntryList';
-
-// ── Connected context menu ────────────────────────────────────────────────────────────
-// Only mounts when the context menu is open. Reads entries from atoms.
 
 interface ConnectedContextMenuProps {
   menu: ContextMenuState;
@@ -155,10 +147,6 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(function Compos
     onParamChange: data.onParamChange,
   });
 
-  // Stable interaction callbacks for suppressing stale server view data
-  // during continuous slider drags (opacity, rotation, crop, text alpha).
-  // These set activeInteractionRef.current which gates useServerLayoutSync.
-  // On interaction end, the next server view-data tick (~16-33ms) reconciles.
   const handleInteractionStart = useCallback(() => {
     activeInteractionRef.current = true;
   }, [activeInteractionRef]);
@@ -168,8 +156,6 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(function Compos
 
   const disabled = !data.onConfigChange && !data.onParamChange;
 
-  // Context menu state — bundled into a single memo to stay within
-  // the max-statements budget for this component.
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const contextMenuHandlers = useMemo(
     () => ({
@@ -184,12 +170,6 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(function Compos
   const compositorWrapperRef = useRef<HTMLDivElement>(null);
   useCompositorKeyboard(compositorWrapperRef, { ...keyboardDeps, disabled });
 
-  // Focus the wrapper when a layer is selected so that subsequent
-  // keyboard events (arrows, Delete, Escape) bubble through the wrapper.
-  // Pointer handlers call preventDefault() which suppresses the browser's
-  // default focus, so we must set it explicitly.
-  // Skip if an input/textarea already has focus (e.g. text inspector)
-  // to avoid stealing focus from the user mid-typing.
   useEffect(() => {
     if (selectedLayerId && compositorWrapperRef.current) {
       const tag = document.activeElement?.tagName;
@@ -199,7 +179,6 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(function Compos
     }
   }, [selectedLayerId]);
 
-  // Standalone textInputRef — passed to inspector for double-click focus
   const textInputRef = useRef<HTMLTextAreaElement>(null);
 
   const handleTextFocusRequest = useCallback(
@@ -214,17 +193,13 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(function Compos
     [selectLayer]
   );
 
-  // Broadcast compositor layer selection for YAML highlighting
   useEffect(() => {
     setCompositorSelection(data.label, selected ? selectedLayerId : null);
     return () => clearCompositorSelection(data.label);
   }, [selected, data.label, selectedLayerId]);
 
-  // Show live indicator when node is in an active session
   const showLiveIndicator = !!data.onConfigChange && !!data.sessionId;
 
-  // Memoize the canvas header so the SKTooltip / LIVE badge subtree doesn't
-  // re-render on every slider tick.
   const canvasHeaderContent = useMemo(
     () => (
       <CanvasHeader>
@@ -247,8 +222,6 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(function Compos
     [showLiveIndicator, canvasWidth, canvasHeight]
   );
 
-  // Memoize side panel content to prevent cascade re-renders through
-  // intermediate styled divs when only appearance props change.
   const sidePanelContent = useMemo(
     () => (
       <>
@@ -301,8 +274,6 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(function Compos
     ]
   );
 
-  // Memoize canvas section content to prevent cascade through
-  // CompositorWrapper → CanvasSection styled div wrappers.
   const canvasSectionContent = useMemo(
     () => (
       <>
@@ -372,10 +343,9 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(function Compos
         >
           <CompositorWrapper>
             <CanvasSection>
-              {/* Side panel rendered first in DOM order so that layer-list text
-                  (e.g. "Text 0") is matched before identically-named canvas labels
-                  by Playwright's getByText().first(). The panel uses position:absolute
-                  so DOM order has no effect on visual layout. */}
+              {/* SidePanel first in DOM order so Playwright's getByText().first()
+                  matches layer-list text before identically-named canvas labels.
+                  position:absolute means DOM order has no visual effect. */}
               <SidePanel className="nodrag nopan">{sidePanelContent}</SidePanel>
               {canvasSectionContent}
             </CanvasSection>
@@ -385,8 +355,6 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(function Compos
     </NodeFrame>
   );
 
-  // Wrap in React.Profiler in dev builds so that Layer 2 (Playwright) can
-  // capture render metrics via window.__PERF_DATA__.
   if (import.meta.env.DEV) {
     return (
       <React.Profiler id="CompositorNode" onRender={perfOnRender}>

@@ -2,11 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Pure utility functions for summarising node health / issues from
- * the session store's `nodeStates` map.
- */
-
 import type { NodeState } from '@/types/types';
 
 /** Abbreviated session id for display (first segment before the first dash). */

@@ -2,13 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Memoized React sub-components for CompositorNode's inspector panel.
- *
- * Extracted from compositorNodeParts to keep each module under the
- * max-lines lint threshold while preserving identical runtime behaviour.
- */
-
 import styled from '@emotion/styled';
 import { FlipHorizontal2, FlipVertical2, Image, Plus, RotateCcw, Type } from 'lucide-react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -92,9 +85,6 @@ export const InspectorHeaderSection: React.FC<{
   dimensionsReadOnly?: boolean;
 }> = React.memo(
   ({ name, x, y, width, height, onPositionSizeChange, disabled, dimensionsReadOnly }) => {
-    // Fully uncontrolled inputs — zero useState, zero extra commits.
-    // DOM values are synced imperatively via refs (same zero-render
-    // pattern the compositor's drag/resize system uses).
     const focusedRef = useRef<string | null>(null);
     const xRef = useRef<HTMLInputElement>(null);
     const yRef = useRef<HTMLInputElement>(null);
@@ -123,7 +113,6 @@ export const InspectorHeaderSection: React.FC<{
       [onPositionSizeChange]
     );
 
-    // Sync DOM from props — skip the focused field to preserve user editing.
     const rx = String(Math.round(x));
     const ry = String(Math.round(y));
     const rw = String(Math.round(width));
@@ -133,7 +122,6 @@ export const InspectorHeaderSection: React.FC<{
     if (wRef.current && focusedRef.current !== 'w') wRef.current.value = rw;
     if (hRef.current && focusedRef.current !== 'h') hRef.current.value = rh;
 
-    // Per-field event handlers (no state updates, just refs + commit).
     const handlers = (field: string, ro?: boolean) => ({
       onFocus: () => {
         focusedRef.current = field;

@@ -2,13 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Helpers for handling <base href="..."> deployments.
- *
- * StreamKit can be hosted under a subpath (e.g., /s/session_xxx/). These helpers
- * centralize parsing so the router, HTTP API, and WebSocket URLs stay in sync.
- */
-
 export function getBaseUrl(): URL | null {
   const baseElement = document.querySelector('base[href]');
   const baseHref = baseElement?.getAttribute('href');

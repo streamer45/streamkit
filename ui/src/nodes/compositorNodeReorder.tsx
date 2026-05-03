@@ -2,13 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Drag-reorder layer list with z-order up/down buttons.
- *
- * Extracted from compositorNodeWidgets to keep each module under the
- * max-lines lint threshold.
- */
-
 import styled from '@emotion/styled';
 import { ChevronDown, ChevronUp, Eye, EyeOff, GripVertical, Image, Type, X } from 'lucide-react';
 import { Reorder } from 'motion/react';

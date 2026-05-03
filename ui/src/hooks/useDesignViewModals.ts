@@ -4,9 +4,7 @@
 
 import { useState, useCallback } from 'react';
 
-/**
- * Custom hook to manage modal states in DesignView
- */
+/** Grouped modal open/close state for the DesignView component. */
 export function useDesignViewModals() {
   const [showClearModal, setShowClearModal] = useState(false);
   const [showSaveModal, setShowSaveModal] = useState(false);
@@ -19,49 +17,21 @@ export function useDesignViewModals() {
     description: string;
   } | null>(null);
 
-  const handleOpenClearModal = useCallback(() => {
-    setShowClearModal(true);
-  }, []);
-
-  const handleCloseClearModal = useCallback(() => {
-    setShowClearModal(false);
-  }, []);
-
-  const handleOpenSaveModal = useCallback(() => {
-    setShowSaveModal(true);
-  }, []);
-
-  const handleCloseSaveModal = useCallback(() => {
-    setShowSaveModal(false);
-  }, []);
-
-  const handleOpenCreateModal = useCallback(() => {
-    setShowCreateModal(true);
-  }, []);
-
-  const handleCloseCreateModal = useCallback(() => {
-    setShowCreateModal(false);
-  }, []);
-
-  const handleOpenLoadSampleModal = useCallback(() => {
-    setShowLoadSampleModal(true);
-  }, []);
-
+  const handleOpenClearModal = useCallback(() => setShowClearModal(true), []);
+  const handleCloseClearModal = useCallback(() => setShowClearModal(false), []);
+  const handleOpenSaveModal = useCallback(() => setShowSaveModal(true), []);
+  const handleCloseSaveModal = useCallback(() => setShowSaveModal(false), []);
+  const handleOpenCreateModal = useCallback(() => setShowCreateModal(true), []);
+  const handleCloseCreateModal = useCallback(() => setShowCreateModal(false), []);
+  const handleOpenLoadSampleModal = useCallback(() => setShowLoadSampleModal(true), []);
   const handleCloseLoadSampleModal = useCallback(() => {
     setShowLoadSampleModal(false);
     setPendingSample(null);
   }, []);
-
-  const handleOpenSaveFragmentModal = useCallback(() => {
-    setShowSaveFragmentModal(true);
-  }, []);
-
-  const handleCloseSaveFragmentModal = useCallback(() => {
-    setShowSaveFragmentModal(false);
-  }, []);
+  const handleOpenSaveFragmentModal = useCallback(() => setShowSaveFragmentModal(true), []);
+  const handleCloseSaveFragmentModal = useCallback(() => setShowSaveFragmentModal(false), []);
 
   return {
-    // State
     showClearModal,
     showSaveModal,
     showCreateModal,
@@ -69,8 +39,6 @@ export function useDesignViewModals() {
     showSaveFragmentModal,
     pendingSample,
     setPendingSample,
-
-    // Handlers
     handleOpenClearModal,
     handleCloseClearModal,
     handleOpenSaveModal,

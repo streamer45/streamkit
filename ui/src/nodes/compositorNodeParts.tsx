@@ -2,21 +2,12 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Styled components, sub-components, and helpers for CompositorNode.
- *
- * Extracted to keep the main CompositorNode module under the max-lines
- * lint threshold while preserving identical runtime behaviour.
- */
-
 import styled from '@emotion/styled';
 
 import type { LayerKind } from '@/hooks/useCompositorLayers';
 
 // ── Friendly label helpers ──────────────────────────────────────────────────
 
-/** Convert technical layer IDs to user-friendly labels.
- *  e.g. "in_0" -> "Input 0", "text_1" -> "Text 1" */
 export function friendlyLabel(id: string, kind: LayerKind, index?: number): string {
   switch (kind) {
     case 'video': {
@@ -34,7 +25,6 @@ export function friendlyLabel(id: string, kind: LayerKind, index?: number): stri
 
 // ── Styled components ───────────────────────────────────────────────────────
 
-/** Outer wrapper that positions the node body and the side inspector panel */
 export const CompositorOuterWrapper = styled.div`
   position: relative;
   display: flex;
@@ -323,13 +313,11 @@ export const ColorInput = styled.input`
   }
 `;
 
-/** Convert [R, G, B, A] to a hex color string (#rrggbb) for <input type="color"> */
 export function rgbaToHex(color: [number, number, number, number]): string {
   const [r, g, b] = color;
   return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
 }
 
-/** Convert a hex color string (#rrggbb) + alpha byte -> [R, G, B, A] */
 export function hexToRgba(hex: string, alpha: number): [number, number, number, number] {
   const r = Number.parseInt(hex.slice(1, 3), 16);
   const g = Number.parseInt(hex.slice(3, 5), 16);
@@ -337,7 +325,6 @@ export function hexToRgba(hex: string, alpha: number): [number, number, number, 
   return [r, g, b, alpha];
 }
 
-/** Default DejaVu fonts that ship as system font assets on disk. */
 export const DEFAULT_FONT_OPTIONS = [
   { value: 'samples/fonts/system/DejaVuSans.ttf', label: 'DejaVu Sans' },
   { value: 'samples/fonts/system/DejaVuSerif.ttf', label: 'DejaVu Serif' },
@@ -424,7 +411,6 @@ export const LayerListItem = styled.div<{ isSelected?: boolean; isHidden?: boole
   }
 `;
 
-/** Unified entry representing any layer kind for sorting / display */
 export interface CompositorEntry {
   id: string;
   kind: LayerKind;

@@ -2,13 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Compact Radix slider styled components shared by compositor inspector panels.
- *
- * Extracted from compositorNodeWidgets to keep each module under the
- * max-lines lint threshold.
- */
-
 import styled from '@emotion/styled';
 import * as RadixSlider from '@radix-ui/react-slider';
 

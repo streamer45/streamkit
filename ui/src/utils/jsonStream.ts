@@ -2,13 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Extracts complete JSON values from a stream buffer.
- *
- * StreamKit oneshot JSON output is commonly newline-delimited, but can also appear as
- * concatenated top-level JSON objects (e.g., `}{`) depending on how the bytes are viewed/copied.
- * This helper frames complete JSON objects/arrays without relying on newlines.
- */
+/** Frame complete JSON objects/arrays from a stream buffer (handles concatenated `}{`). */
 // eslint-disable-next-line max-statements, complexity, sonarjs/cognitive-complexity -- Stream framing is inherently stateful; keeping it in one place is clearer than splitting into many tiny helpers.
 export function extractJsonValues(buffer: string): { values: string[]; remainder: string } {
   const values: string[] = [];
@@ -23,7 +17,6 @@ export function extractJsonValues(buffer: string): { values: string[]; remainder
 
     if (startIndex === null) {
       if (ch === ' ' || ch === '\n' || ch === '\r' || ch === '\t') continue;
-      // We only frame objects/arrays (which is what StreamKit packets serialize to).
       if (ch !== '{' && ch !== '[') {
         continue;
       }

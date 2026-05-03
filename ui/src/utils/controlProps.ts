@@ -2,19 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Builds a nested `UpdateParams` object from a dot-notation property path.
- *
- * For example:
- * - `buildParamUpdate("properties.home_score", 4)` → `{ properties: { home_score: 4 } }`
- * - `buildParamUpdate("gain_db", 1.5)` → `{ gain_db: 1.5 }`
- *
- * Empty or whitespace-only segments are discarded so that malformed paths
- * like `""`, `"."`, or `"a..b"` degrade gracefully instead of producing
- * keys with empty strings.
- *
- * @throws {Error} if the path resolves to zero valid segments.
- */
+/** Build a nested object from a dot-notation path (e.g. `"properties.score"` → `{properties:{score: value}}`). */
 export function buildParamUpdate(path: string, value: unknown): Record<string, unknown> {
   const parts = path.split('.').filter(Boolean);
   if (parts.length === 0) {
@@ -29,17 +17,7 @@ export function buildParamUpdate(path: string, value: unknown): Record<string, u
   return { [parts[0]]: result };
 }
 
-/**
- * Reads a value from a nested object using a dot-notation path.
- *
- * Companion to `buildParamUpdate` — while `buildParamUpdate` *writes* a
- * value into a nested structure, `readByPath` *reads* one back out.
- *
- * For example:
- * - `readByPath({ gain_db: 1.5 }, "gain_db")` → `1.5`
- * - `readByPath({ properties: { show: true } }, "properties.show")` → `true`
- * - `readByPath({}, "missing.key")` → `undefined`
- */
+/** Read a value from a nested object using a dot-notation path. */
 export function readByPath(obj: Record<string, unknown>, path: string): unknown {
   const parts = path.split('.').filter(Boolean);
   let current: unknown = obj;
@@ -50,17 +28,7 @@ export function readByPath(obj: Record<string, unknown>, path: string): unknown 
   return current;
 }
 
-/**
- * Dispatches a param update through the correct handler based on whether
- * the param name is a flat key or a dot-notation path.
- *
- * This centralises the `if (name.includes('.'))` branching that otherwise
- * appears in every call-site (MonitorView, usePipeline, etc.).
- *
- * - **Flat keys** (e.g. `"gain_db"`) → `onFlat(nodeId, key, value)`
- * - **Dot-paths** (e.g. `"properties.show"`) → `onNested(nodeId, partialConfig)`
- *   where `partialConfig` is produced by `buildParamUpdate`.
- */
+/** Route flat keys to `onFlat`, dot-paths to `onNested` (via `buildParamUpdate`). */
 export function dispatchParamUpdate(
   nodeId: string,
   paramName: string,
@@ -79,11 +47,7 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
-/**
- * Recursively deep-merges `source` into `target`, returning a new object.
- * Only plain objects are merged recursively; arrays and other values are
- * replaced wholesale (matching the semantics of `UpdateParams`).
- */
+/** Recursively deep-merge `source` into `target`; arrays/primitives are replaced wholesale. */
 export function deepMerge(
   target: Record<string, unknown>,
   source: Record<string, unknown>

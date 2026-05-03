@@ -119,20 +119,13 @@ const AudioGainNode: React.FC<AudioGainNodeProps> = React.memo(function AudioGai
 
   const animationControlsRef = useRef<ReturnType<typeof animate> | null>(null);
 
-  // Custom animation effect for smooth transitions (AudioGainNode-specific feature)
-  // This provides visual feedback when gain values change from the server
   useEffect(() => {
-    // Only animate if we're not actively dragging
-    // The hook already handles the basic syncing, this adds smooth animation on top
     const shouldAnimate = Math.abs(localValue - propGain) > 0.001;
 
     if (shouldAnimate) {
       animationControlsRef.current?.stop();
-      // Note: The animation visual effect is handled by motion library
-      // The actual value updates are managed by the useNumericSlider hook
     }
 
-    // Capture the current ref value for cleanup to avoid stale reference
     const animationControls = animationControlsRef.current;
     return () => {
       animationControls?.stop();
@@ -142,13 +135,10 @@ const AudioGainNode: React.FC<AudioGainNodeProps> = React.memo(function AudioGai
   const gainDb = 20 * Math.log10(localValue);
 
   const handleGainChangeWithAnimation = (e: React.ChangeEvent<HTMLInputElement>) => {
-    // Cancel any ongoing animation when user starts dragging
     animationControlsRef.current?.stop();
     handleChange(e);
   };
 
-  // Show live indicator when node is in an active session (has sessionId)
-  // This prevents the LIVE badge from showing in design view (which has no sessionId)
   const showLiveIndicator = !!data.onParamChange && !!data.sessionId;
 
   const content = (

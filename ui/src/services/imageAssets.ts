@@ -2,10 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Service for managing image assets
- */
-
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { ImageAsset } from '@/types/generated/api-types';
@@ -15,10 +11,6 @@ import { fetchApi } from './base';
 
 const logger = getLogger('imageAssets');
 
-/**
- * Lists all available image assets (system + user)
- * @returns A promise that resolves to an array of image assets
- */
 export async function listImageAssets(): Promise<ImageAsset[]> {
   logger.info('Fetching image assets');
 
@@ -42,11 +34,6 @@ export async function listImageAssets(): Promise<ImageAsset[]> {
   return assets;
 }
 
-/**
- * Uploads a new image asset
- * @param file - The image file to upload
- * @returns A promise that resolves to the created image asset
- */
 export async function uploadImageAsset(file: File): Promise<ImageAsset> {
   logger.info('Uploading image asset:', file.name);
 
@@ -59,9 +46,6 @@ export async function uploadImageAsset(file: File): Promise<ImageAsset> {
   });
 
   if (response.status === 409) {
-    // Conflict — file already exists. Fetch existing assets to find the match.
-    // The server sanitizes filenames (spaces → underscores, etc.), so match
-    // against the sanitized name rather than the raw file.name.
     const sanitized = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
     const assets = await listImageAssets();
     const existing = assets.find((a) => a.id === sanitized);
@@ -89,10 +73,6 @@ export async function uploadImageAsset(file: File): Promise<ImageAsset> {
   return asset;
 }
 
-/**
- * Deletes an image asset by ID
- * @param id - The image asset ID to delete
- */
 export async function deleteImageAsset(id: string): Promise<void> {
   logger.info('Deleting image asset:', id);
 
@@ -114,11 +94,6 @@ export async function deleteImageAsset(id: string): Promise<void> {
   logger.info('Deleted image asset:', id);
 }
 
-// ── React Query hooks ───────────────────────────────────────────────────────
-
-/**
- * Hook to fetch image assets with caching
- */
 export function useImageAssets(enabled = true) {
   return useQuery({
     queryKey: ['imageAssets'],
@@ -129,9 +104,6 @@ export function useImageAssets(enabled = true) {
   });
 }
 
-/**
- * Hook to upload an image asset
- */
 export function useUploadImageAsset() {
   const queryClient = useQueryClient();
 
@@ -143,9 +115,6 @@ export function useUploadImageAsset() {
   });
 }
 
-/**
- * Hook to delete an image asset
- */
 export function useDeleteImageAsset() {
   const queryClient = useQueryClient();
 

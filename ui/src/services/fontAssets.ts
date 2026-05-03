@@ -2,11 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Service for managing font assets and loading them into the browser
- * via the CSS Font Loading API for accurate canvas previews.
- */
-
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { FontAsset } from '@/types/generated/api-types';
@@ -21,24 +16,13 @@ const logger = getLogger('fontAssets');
 /** Set of font asset paths that have already been loaded into the browser. */
 const loadedFonts = new Set<string>();
 
-/**
- * Derive a unique CSS font-family name from a font asset path.
- *
- * E.g. `"samples/fonts/system/Inter.ttf"` → `"sk-Inter"`.
- * The `sk-` prefix avoids collisions with system fonts.
- */
+/** Derive a CSS font-family name from a font asset path (e.g. `"sk-Inter"`). */
 export function fontFamilyForAsset(assetPath: string): string {
   const filename = assetPath.split('/').pop() ?? assetPath;
   const nameWithoutExt = filename.replace(/\.[^.]+$/, '');
   return `sk-${nameWithoutExt}`;
 }
 
-/**
- * Build the serve URL for a font asset.
- *
- * E.g. `"samples/fonts/system/Inter.ttf"` →
- *      `"/api/v1/assets/fonts/file/system/Inter.ttf"`.
- */
 function fontServeUrl(assetPath: string): string {
   const parts = assetPath.split('/');
   const filename = parts.pop() ?? '';
@@ -46,13 +30,6 @@ function fontServeUrl(assetPath: string): string {
   return `/api/v1/assets/fonts/file/${encodeURIComponent(scope)}/${encodeURIComponent(filename)}`;
 }
 
-/**
- * Load a single font asset into the browser using the CSS Font Loading API.
- *
- * Once loaded, text rendered with `font-family: fontFamilyForAsset(path)`
- * will use the actual font file from the server.  No-ops if the font has
- * already been loaded.
- */
 async function loadFontFace(asset: FontAsset): Promise<void> {
   if (loadedFonts.has(asset.path)) return;
 
@@ -73,21 +50,11 @@ async function loadFontFace(asset: FontAsset): Promise<void> {
   }
 }
 
-/**
- * Load all font assets into the browser for canvas preview rendering.
- *
- * Call this after fetching the font asset list so that compositor canvas
- * text overlays render with the actual server-side font rather than a
- * generic CSS fallback.
- */
+/** Load all font assets into the browser for canvas text overlay rendering. */
 export async function loadFontAssets(assets: FontAsset[]): Promise<void> {
   await Promise.allSettled(assets.map(loadFontFace));
 }
 
-/**
- * Lists all available font assets (system + user)
- * @returns A promise that resolves to an array of font assets
- */
 export async function listFontAssets(): Promise<FontAsset[]> {
   logger.info('Fetching font assets');
 
@@ -111,12 +78,6 @@ export async function listFontAssets(): Promise<FontAsset[]> {
   return assets;
 }
 
-/**
- * Uploads a new font asset
- * @public
- * @param file - The font file to upload
- * @returns A promise that resolves to the created font asset
- */
 export async function uploadFontAsset(file: File): Promise<FontAsset> {
   logger.info('Uploading font asset:', file.name);
 
@@ -156,11 +117,6 @@ export async function uploadFontAsset(file: File): Promise<FontAsset> {
   return asset;
 }
 
-/**
- * Deletes a font asset by ID
- * @public
- * @param id - The font asset ID to delete
- */
 export async function deleteFontAsset(id: string): Promise<void> {
   logger.info('Deleting font asset:', id);
 

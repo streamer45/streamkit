@@ -2,16 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Schema-driven controls for Monitor view node cards.
- *
- * These components render toggle switches and text inputs directly on
- * ConfigurableNode cards for parameters marked `tunable: true` in the
- * node's `param_schema`.  They complement the existing NumericSliderControl
- * (which handles number/integer params) and use the same `TuneNodeAsync`
- * wire protocol via `useTuneNode`.
- */
-
 import styled from '@emotion/styled';
 import { useAtomValue } from 'jotai/react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -140,17 +130,15 @@ interface BooleanToggleControlProps {
   params: Record<string, unknown>;
 }
 
-// React.memo relies on `config` and `params` being referentially stable
-// across parent re-renders.  Do not spread or clone them before passing.
+// React.memo relies on `config` and `params` being referentially stable.
+// Do not spread or clone them before passing.
 export const BooleanToggleControl: React.FC<BooleanToggleControlProps> = React.memo(
   ({ nodeId, sessionId, config, params }) => {
     const { tuneNodeConfig } = useTuneNode(sessionId ?? null);
 
-    // Read from atom for live sync
     const paramsKey = sessionId ? `${sessionId}\0${nodeId}` : nodeId;
     const nodeParams = useAtomValue(nodeParamsAtom(paramsKey));
 
-    // Effective value: atom > props > default
     const effectiveValue = (() => {
       const stored = readByPath(nodeParams, config.path);
       if (typeof stored === 'boolean') return stored;
@@ -162,20 +150,15 @@ export const BooleanToggleControl: React.FC<BooleanToggleControlProps> = React.m
 
     const [checked, setChecked] = useState(effectiveValue);
 
-    // Sync with external changes
     useEffect(() => {
       setChecked(effectiveValue);
     }, [effectiveValue]);
 
-    // Ref pattern: keep tuneNodeConfig ref stable so toggle handler identity
-    // doesn't change when sessionId (rarely) changes.
     const tuneRef = useRef(tuneNodeConfig);
     useEffect(() => {
       tuneRef.current = tuneNodeConfig;
     }, [tuneNodeConfig]);
 
-    // Ref tracks latest checked to avoid stale closures if two clicks
-    // fire before React re-renders.
     const checkedRef = useRef(checked);
     checkedRef.current = checked;
 
@@ -217,17 +200,15 @@ interface TextInputControlProps {
   params: Record<string, unknown>;
 }
 
-// React.memo relies on `config` and `params` being referentially stable
-// across parent re-renders.  Do not spread or clone them before passing.
+// React.memo relies on `config` and `params` being referentially stable.
+// Do not spread or clone them before passing.
 export const TextInputControl: React.FC<TextInputControlProps> = React.memo(
   ({ nodeId, sessionId, config, params }) => {
     const { tuneNodeConfig } = useTuneNode(sessionId ?? null);
 
-    // Read from atom for live sync
     const paramsKey = sessionId ? `${sessionId}\0${nodeId}` : nodeId;
     const nodeParams = useAtomValue(nodeParamsAtom(paramsKey));
 
-    // Effective value: atom > props > default
     const effectiveValue = (() => {
       const stored = readByPath(nodeParams, config.path);
       if (typeof stored === 'string') return stored;
@@ -238,12 +219,9 @@ export const TextInputControl: React.FC<TextInputControlProps> = React.memo(
     })();
 
     const [text, setText] = useState(effectiveValue);
-    // Ref tracks latest text for flushDebounce so its identity stays
-    // stable across keystrokes (no `text` in useCallback deps).
     const textRef = useRef(text);
     textRef.current = text;
 
-    // Sync with external changes when not actively editing
     const isEditingRef = useRef(false);
     useEffect(() => {
       if (!isEditingRef.current) {
@@ -251,7 +229,6 @@ export const TextInputControl: React.FC<TextInputControlProps> = React.memo(
       }
     }, [effectiveValue]);
 
-    // Ref pattern: keep tuneNodeConfig ref stable for the debounce closure.
     const tuneRef = useRef(tuneNodeConfig);
     useEffect(() => {
       tuneRef.current = tuneNodeConfig;
@@ -271,9 +248,6 @@ export const TextInputControl: React.FC<TextInputControlProps> = React.memo(
       [nodeId, config.path]
     );
 
-    // Flush any pending debounce on blur/unmount so the last typed value
-    // is sent rather than silently dropped.  Reads from textRef so the
-    // callback identity doesn't change on every keystroke.
     const flushDebounce = useCallback(() => {
       if (timerRef.current !== undefined) {
         clearTimeout(timerRef.current);

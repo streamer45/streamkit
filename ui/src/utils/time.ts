@@ -2,9 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Format uptime from a timestamp to a human-readable string with fixed width
- */
 export function formatUptime(createdAt: string): string {
   const start = new Date(createdAt);
   const now = new Date();
@@ -34,9 +31,6 @@ export function formatUptime(createdAt: string): string {
   return `${String(seconds).padStart(2, '0')}s`;
 }
 
-/**
- * Format a timestamp to a short time string
- */
 export function formatTime(timestamp: string): string {
   const date = new Date(timestamp);
   return date.toLocaleTimeString(undefined, {
@@ -46,9 +40,6 @@ export function formatTime(timestamp: string): string {
   });
 }
 
-/**
- * Format a timestamp to a short date and time string
- */
 export function formatDateTime(timestamp: string): string {
   const date = new Date(timestamp);
   return date.toLocaleString(undefined, {

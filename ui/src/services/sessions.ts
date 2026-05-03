@@ -2,10 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Service for managing sessions
- */
-
 import type { SessionInfo } from '@/types/types';
 import { getLogger } from '@/utils/logger';
 
@@ -34,10 +30,6 @@ export interface PreviewResponse {
   video: boolean;
 }
 
-/**
- * Lists all active sessions
- * @returns A promise that resolves to an array of sessions
- */
 export async function listSessions(signal?: AbortSignal): Promise<SessionInfo[]> {
   const response = await fetchApi('/api/v1/sessions', {
     method: 'GET',
@@ -54,12 +46,6 @@ export async function listSessions(signal?: AbortSignal): Promise<SessionInfo[]>
   return response.json();
 }
 
-/**
- * Creates a new session with a pipeline from YAML
- * @param name - Optional session name
- * @param yaml - Pipeline definition in YAML format
- * @returns A promise that resolves to the created session info
- */
 export async function createSession(
   name: string | null,
   yaml: string
@@ -98,10 +84,6 @@ export async function createSession(
 
 // ── Preview API ────────────────────────────────────────────────────────
 
-/**
- * Starts an engine-native preview for a session by injecting a preview
- * subgraph into the running pipeline.
- */
 export async function startPreview(
   sessionId: string,
   tapNode?: string,
@@ -127,9 +109,6 @@ export async function startPreview(
   return response.json();
 }
 
-/**
- * Stops and tears down an active preview.
- */
 export async function stopPreview(sessionId: string, previewId: string): Promise<void> {
   const response = await fetchApi(
     `/api/v1/sessions/${encodeURIComponent(sessionId)}/preview/${encodeURIComponent(previewId)}`,

@@ -2,11 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * JSON Schema utilities for working with parameter schemas in nodes.
- * These functions help extract slider configurations from JSON schemas.
- */
-
 import type { ControlConfig } from '@/types/types';
 
 export interface JsonSchemaProperty {
@@ -18,19 +13,10 @@ export interface JsonSchemaProperty {
   exclusiveMinimum?: number;
   exclusiveMaximum?: number;
   multipleOf?: number;
-  /**
-   * Indicates whether this parameter can be updated while the node is running.
-   * If false or undefined, the parameter can only be set at initialization time.
-   * If true, the parameter supports live updates via UpdateParams messages.
-   */
+  /** Whether this param supports live updates via UpdateParams. */
   tunable?: boolean;
-  /**
-   * Override the UpdateParams key path (dot-notation).
-   * Defaults to the property key when omitted.
-   * Example: `"path": "properties.show"` sends `{ properties: { show: value } }`.
-   */
+  /** Override the UpdateParams key path (dot-notation). Defaults to the property key. */
   path?: string;
-  /** Enum values for select/dropdown controls. */
   enum?: unknown[];
 }
 
@@ -49,36 +35,21 @@ export interface SliderConfig {
   tunable: boolean;
 }
 
-/**
- * Type guard to check if a value is a finite number
- */
 export const isFiniteNumber = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value);
 
-/**
- * Resolves the minimum value from a JSON schema property.
- * Checks both `minimum` and `exclusiveMinimum` fields.
- */
 export const resolveMinimum = (schema: JsonSchemaProperty): number | undefined => {
   if (isFiniteNumber(schema.minimum)) return schema.minimum;
   if (isFiniteNumber(schema.exclusiveMinimum)) return schema.exclusiveMinimum;
   return undefined;
 };
 
-/**
- * Resolves the maximum value from a JSON schema property.
- * Checks both `maximum` and `exclusiveMaximum` fields.
- */
 export const resolveMaximum = (schema: JsonSchemaProperty): number | undefined => {
   if (isFiniteNumber(schema.maximum)) return schema.maximum;
   if (isFiniteNumber(schema.exclusiveMaximum)) return schema.exclusiveMaximum;
   return undefined;
 };
 
-/**
- * Calculates the number of decimal places from a step value.
- * Handles both regular decimals and scientific notation (e.g., 1e-3).
- */
 export const decimalPlacesFromStep = (step: number): number => {
   if (!Number.isFinite(step) || step <= 0) {
     return 0;
@@ -95,10 +66,6 @@ export const decimalPlacesFromStep = (step: number): number => {
   return 0;
 };
 
-/**
- * Infers an appropriate step value for a numeric slider based on the schema.
- * Priority: multipleOf > integer type > calculated from range.
- */
 export const inferStep = (schema: JsonSchemaProperty, min: number, max: number): number => {
   if (isFiniteNumber(schema.multipleOf) && schema.multipleOf > 0) {
     return schema.multipleOf;
@@ -117,10 +84,6 @@ export const inferStep = (schema: JsonSchemaProperty, min: number, max: number):
   return rounded > 0 ? rounded : 0.1;
 };
 
-/**
- * Formats a number with a specific number of decimal places and optional sign.
- * Useful for displaying slider values (e.g., +12.5 dB).
- */
 export const formatNumber = (value: number, decimals: number, includeSign: boolean): string => {
   const fixed = value.toFixed(decimals);
   if (includeSign && value > 0) {
@@ -129,10 +92,6 @@ export const formatNumber = (value: number, decimals: number, includeSign: boole
   return fixed;
 };
 
-/**
- * Extracts slider configurations from a JSON schema.
- * Only returns configs for numeric/integer properties with valid min/max bounds.
- */
 export const extractSliderConfigs = (schema: JsonSchema | undefined): SliderConfig[] => {
   if (!schema) return [];
 
@@ -142,7 +101,6 @@ export const extractSliderConfigs = (schema: JsonSchema | undefined): SliderConf
     if (!schemaProp || (schemaProp.type !== 'number' && schemaProp.type !== 'integer')) {
       return acc;
     }
-    // Only include tunable params for slider display on node cards
     if (!schemaProp.tunable) {
       return acc;
     }
@@ -159,15 +117,12 @@ export const extractSliderConfigs = (schema: JsonSchema | undefined): SliderConf
       min,
       max,
       step,
-      tunable: schemaProp.tunable ?? false, // Default to false if not specified
+      tunable: schemaProp.tunable ?? false,
     });
     return acc;
   }, [] as SliderConfig[]);
 };
 
-/**
- * Validates a numeric value against schema constraints.
- */
 const validateNumericValue = (value: number, schema: JsonSchemaProperty): string | null => {
   if (!isFiniteNumber(value)) {
     return 'Value must be a finite number';
@@ -195,12 +150,7 @@ const validateNumericValue = (value: number, schema: JsonSchemaProperty): string
   return null;
 };
 
-/**
- * Validates a value against a JSON schema property.
- * Returns null if valid, or an error message if invalid.
- */
 export const validateValue = (value: unknown, schema: JsonSchemaProperty): string | null => {
-  // Check for numeric types
   if (schema.type === 'number' || schema.type === 'integer') {
     if (typeof value !== 'number') {
       return `Expected a number, got ${typeof value}`;
@@ -208,35 +158,22 @@ export const validateValue = (value: unknown, schema: JsonSchemaProperty): strin
     return validateNumericValue(value, schema);
   }
 
-  // Check for boolean type
   if (schema.type === 'boolean' && typeof value !== 'boolean') {
     return `Expected a boolean, got ${typeof value}`;
   }
 
-  // Check for string type
   if (schema.type === 'string' && typeof value !== 'string') {
     return `Expected a string, got ${typeof value}`;
   }
 
-  return null; // Valid
+  return null;
 };
 
 // ---------------------------------------------------------------------------
 // Schema merging — runtime enrichment
 // ---------------------------------------------------------------------------
 
-/**
- * Deep-merge a runtime param schema into a base (static) schema.
- *
- * The merge is shallow at the top level (only `properties` is merged) and
- * **deep within each property**: when a runtime property key collides with
- * a base property key, the two entries are spread together so that base
- * fields (e.g. `default`, `minimum`, `maximum`) are preserved unless the
- * runtime entry explicitly overrides them.
- *
- * This is used to combine the static `param_schema` from the node registry
- * with per-instance runtime discoveries (e.g. Slint component properties).
- */
+/** Deep-merge a runtime param schema into a base (static) schema, preserving base-only fields. */
 export const deepMergeSchemas = (
   base: JsonSchema | undefined,
   runtime: JsonSchema | undefined
@@ -247,9 +184,6 @@ export const deepMergeSchemas = (
   const baseProps = base.properties ?? {};
   const runtimeProps = runtime.properties ?? {};
 
-  // Property-level deep merge: for each key present in runtime, spread
-  // the base entry first (if any) then the runtime entry on top so that
-  // runtime fields win but base-only fields (default, min, max, …) survive.
   const mergedProps: Record<string, JsonSchemaProperty> = { ...baseProps };
   for (const [key, runtimeEntry] of Object.entries(runtimeProps)) {
     const baseEntry = baseProps[key];
@@ -273,10 +207,6 @@ export interface ToggleConfig {
   schema: JsonSchemaProperty;
 }
 
-/**
- * Extracts toggle configurations from a JSON schema.
- * Returns configs for boolean properties marked `tunable: true`.
- */
 export const extractToggleConfigs = (schema: JsonSchema | undefined): ToggleConfig[] => {
   if (!schema) return [];
 
@@ -306,11 +236,6 @@ export interface TextConfig {
   schema: JsonSchemaProperty;
 }
 
-/**
- * Extracts text input configurations from a JSON schema.
- * Returns configs for string properties marked `tunable: true`.
- * Excludes enum-constrained strings (those would need a select/dropdown control).
- */
 export const extractTextConfigs = (schema: JsonSchema | undefined): TextConfig[] => {
   if (!schema) return [];
 
@@ -402,18 +327,7 @@ function propToControlConfig(
   }
 }
 
-/**
- * Converts tunable properties from a merged JSON schema into `ControlConfig`
- * entries suitable for `OverlayControls`.
- *
- * This bridges the gap between the schema-driven controls in Monitor View
- * and the `client.controls` YAML controls in Stream View, allowing both
- * views to render the same set of controls from a single source of truth.
- *
- * @param nodeId  The pipeline node ID (e.g. "scoreboard").
- * @param schema  The merged (base + runtime) JSON schema for the node.
- * @param group   Optional group label for all generated controls.
- */
+/** Convert tunable schema properties into ControlConfig entries for OverlayControls. */
 export function schemaToControlConfigs(
   nodeId: string,
   schema: JsonSchema | undefined,

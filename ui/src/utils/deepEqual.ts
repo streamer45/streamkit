@@ -8,12 +8,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return proto === Object.prototype || proto === null;
 }
 
-/**
- * Fast deep-equality for JSON-like data (plain objects/arrays/primitives).
- * - Early-exits on first difference
- * - Avoids allocations (unlike JSON.stringify)
- * - Treats non-plain objects (Date/Map/Set/etc) as reference-equal only
- */
 export function deepEqual(a: unknown, b: unknown): boolean {
   if (Object.is(a, b)) return true;
 

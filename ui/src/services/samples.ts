@@ -2,10 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Service for managing sample pipelines
- */
-
 import type { SamplePipeline, SavePipelineRequest } from '@/types/generated/api-types';
 import { getLogger } from '@/utils/logger';
 
@@ -13,10 +9,6 @@ import { fetchApi } from './base';
 
 const logger = getLogger('samples');
 
-/**
- * Lists all available oneshot sample pipelines
- * @returns A promise that resolves to an array of sample pipelines
- */
 export async function listSamples(): Promise<SamplePipeline[]> {
   logger.info('Fetching sample pipelines');
 
@@ -43,15 +35,10 @@ export async function listSamples(): Promise<SamplePipeline[]> {
   return samples;
 }
 
-/**
- * Lists all available sample pipelines (oneshot + dynamic).
- * @returns A promise that resolves to an array of sample pipelines
- */
 export async function listAllSamples(): Promise<SamplePipeline[]> {
   const [oneshot, dynamic] = await Promise.all([listSamples(), listDynamicSamples()]);
   const merged = [...oneshot, ...dynamic];
 
-  // De-dupe by ID (defensive; endpoints should not overlap)
   const seen = new Set<string>();
   return merged.filter((s) => {
     if (seen.has(s.id)) return false;
@@ -60,10 +47,6 @@ export async function listAllSamples(): Promise<SamplePipeline[]> {
   });
 }
 
-/**
- * Lists all available dynamic sample pipelines
- * @returns A promise that resolves to an array of dynamic sample pipelines
- */
 export async function listDynamicSamples(): Promise<SamplePipeline[]> {
   logger.info('Fetching dynamic sample pipelines');
 
@@ -90,11 +73,6 @@ export async function listDynamicSamples(): Promise<SamplePipeline[]> {
   return samples;
 }
 
-/**
- * Saves a new user pipeline
- * @param request - The pipeline data to save
- * @returns A promise that resolves to the created sample pipeline
- */
 export async function saveSample(request: SavePipelineRequest): Promise<SamplePipeline> {
   logger.info('Saving user pipeline:', request.name);
 
@@ -125,11 +103,6 @@ export async function saveSample(request: SavePipelineRequest): Promise<SamplePi
   return sample;
 }
 
-/**
- * Deletes a user pipeline
- * @param id - The sample pipeline ID to delete
- * @returns A promise that resolves when the deletion is complete
- */
 export async function deleteSample(id: string): Promise<void> {
   logger.info('Deleting user pipeline:', id);
 
