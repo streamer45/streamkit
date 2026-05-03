@@ -516,7 +516,7 @@ ${fieldLines}
   ${serverUrl}/api/v1/process -o - | ffplay -f webm -i -`;
 };
 
-// eslint-disable-next-line max-statements, sonarjs/cognitive-complexity
+// eslint-disable-next-line max-statements, sonarjs/cognitive-complexity -- Conversion workflow orchestration
 const ConvertView: React.FC = () => {
   const {
     samples,
@@ -880,7 +880,7 @@ const ConvertView: React.FC = () => {
     ]
   );
 
-  // eslint-disable-next-line max-statements
+  // eslint-disable-next-line max-statements -- Co-locates conversion state + error/cancel handling
   const handleConvert = async () => {
     const uploads = await prepareUploads();
     if (uploads === null) return;

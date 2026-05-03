@@ -111,8 +111,7 @@ const nodeStateFailedReason = (s: NodeState | null | undefined): string | undefi
   return undefined;
 };
 
-// eslint-disable-next-line max-statements
-
+// eslint-disable-next-line max-statements -- Main view component with many hooks and state management
 const MonitorViewContent: React.FC = () => {
   const location = useLocation();
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
@@ -853,7 +852,7 @@ const MonitorViewContent: React.FC = () => {
     [nodes, reconstructDynamicInputs, reconstructDynamicOutputs]
   );
 
-  // eslint-disable-next-line max-statements
+  // eslint-disable-next-line max-statements -- Core graph-building logic
   useEffect(() => {
     viewsLogger.debug(
       'Topology effect check, prev:',

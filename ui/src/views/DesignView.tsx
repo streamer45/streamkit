@@ -483,7 +483,7 @@ function processRegularNodeDrop(
  * - Auto-layout and graph manipulation
  *
  */
-// eslint-disable-next-line max-statements
+// eslint-disable-next-line max-statements -- Single-view editor orchestration
 const DesignViewContent: React.FC = () => {
   const { menu, paneMenu, reactFlowWrapper, onNodeContextMenu, onPaneContextMenu, onPaneClick } =
     useContextMenu();
@@ -1197,11 +1197,7 @@ const DesignViewContent: React.FC = () => {
   }, [selectedNode]);
 
   useEffect(() => {
-    if (selectedNodes.length === 0) {
-      setRightPaneView('yaml');
-    } else {
-      setRightPaneView('yaml');
-    }
+    setRightPaneView('yaml');
   }, [selectedNodes]);
 
   const handleNodeDoubleClick = React.useCallback(() => {
