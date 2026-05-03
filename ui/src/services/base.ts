@@ -17,7 +17,9 @@ export function getApiUrl(): string {
         url.hostname = window.location.hostname;
         return url.toString().replace(/\/$/, '');
       }
-    } catch {}
+    } catch {
+      // ignore malformed URLs
+    }
 
     return apiBase;
   }
