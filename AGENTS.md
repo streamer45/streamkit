@@ -58,49 +58,81 @@ the full architecture.
 
 ## Comment Guidelines
 
-Default is **no comment**. Bias aggressively toward terseness — most code
-should have no comments at all. If you feel compelled to add one, first ask
-whether a better name or a small refactor would make it unnecessary.
+> *"NEVER try to explain HOW your code works in a comment … just tell
+> people WHY."*
+> — [Linux kernel coding style, §8](https://www.kernel.org/doc/html/latest/process/coding-style.html)
+
+> *"The best code is self-documenting. Giving sensible names to types and
+> variables is much better than using obscure names that you must then
+> explain through comments."*
+> — [Google C++ Style Guide](https://google.github.io/styleguide/cppguide.html#Comments)
+
+Default is **no comment**. If you feel compelled to add one, first ask
+whether a better name or a small extraction would make it unnecessary.
+Comments that restate the *how* (what the code obviously does) add noise
+and drift out of sync; comments that explain the *why* (constraints,
+trade-offs, gotchas invisible from the code alone) prevent real bugs.
 
 ### Do NOT write
 
-- **Line narration** — comments restating the next line of code
+These antipatterns accounted for ~3,500 lines removed in the v0.5 cleanup.
+
+- **Line narration** — restating what the next line does
   (`// Send packet` before `send_packet()`, `// Check if empty` before
-  `if x.is_empty()`).
-- **`// Helper: X`** labels on descriptively-named functions.
-- **Verbose JSDoc / `///` on self-documenting items** — a 13-line doc block
-  on `PARAM_THROTTLE_MS = 33` or per-field docs like
-  `/** Handler for slider onChange event */` adds nothing.
+  `if x.is_empty()`). The [Google C++ guide](https://google.github.io/styleguide/cppguide.html#Implementation_Comments)
+  limits implementation comments to "tricky, non-obvious, interesting, or
+  important parts"; obvious code needs nothing.
+- **`// Helper: X`** labels on descriptively-named functions — the name
+  already tells the reader; a label adds nothing.
+- **Verbose JSDoc / `///` on self-documenting items** — an essay on
+  `PARAM_THROTTLE_MS = 33` or per-field docs like
+  `/** Handler for slider onChange event */` adds zero information.
+  [Rust RFC 505](https://rust-lang.github.io/rfcs/0505-api-comment-conventions.html)
+  and the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/documentation.html)
+  recommend a **single-line summary** as the first doc comment line;
+  anything beyond that should earn its keep.
 - **Section dividers** — `// --- Public Modules ---`, `// State`,
   `// Handlers`. Use blank lines or code structure instead.
 - **Step-by-step numbered narration** — `// 1. Validate`, `// 2. Connect`.
   Extract named functions instead of numbering prose.
-- **Complexity apologies** — multi-paragraph essays above lint suppressions
-  explaining why the function is large. Keep the rationale to one line.
+- **Complexity apologies** — multi-paragraph justifications above lint
+  suppressions. Keep the rationale to one line.
 - **Standard framework behavior** — `"useState setters are stable"`,
   `"useMemo prevents re-renders"`. Any React/Tokio/Axum developer knows this.
 - **Dead code "for reference"** — git history preserves it. Delete it.
+  As Google's [documentation best practices](https://google.github.io/styleguide/docguide/best_practices.html)
+  put it: *"Dead docs are bad. They misinform, they slow down, they incite
+  despair."* The same applies to dead code.
 - **Diff-oriented comments** — comments whose only purpose is to explain your
   edit ("now we also check X", "previously this did Z"). Put that context in
   the PR description instead.
 
 ### DO write
 
-- **`// SAFETY:`** on `unsafe` blocks and FFI boundaries.
+- **`// SAFETY:`** on `unsafe` blocks and FFI boundaries — Rust convention
+  and required by `clippy::undocumented_unsafe_blocks`.
 - **Lint suppression rationales** — required by the Linting discipline rule
-  below. Always include `-- reason` (eslint) or `// reason` (#[allow]).
+  above. Always include `-- reason` (eslint) or `// reason` (`#[allow]`).
 - **Non-obvious constraints** invisible from reading the code — performance
   contracts (`React.memo` referential-stability requirements), DOM-ordering
-  guards required by Playwright selectors, protocol/codec quirks.
+  guards required by Playwright selectors, protocol/codec quirks. The
+  [Google C++ guide](https://google.github.io/styleguide/cppguide.html#Implementation_Comments)
+  calls these out: *"tricky or complicated code blocks should have comments
+  before them."*
 - **Design decisions** that differ from the intuitive default — e.g. why
   session mode no longer implicitly enables publishing.
 - **`@public`** tags on APIs consumed by external tools (Playwright, MCP).
-- **Concurrency invariants** — pointer validity, lock-ordering, channel
-  backpressure semantics.
+- **Concurrency invariants** — lock-ordering, channel backpressure
+  semantics, and synchronization assumptions. The
+  [Google C++ guide](https://google.github.io/styleguide/cppguide.html#Class_Comments)
+  specifically requires documenting *"the synchronization assumptions the
+  class makes."*
 
-Rule of thumb: if the comment explains a **constraint that isn't visible from
-reading the code alone**, keep it. If it restates what the code obviously
-does, delete it.
+Rule of thumb: **code tells you *how*, comments tell you *why***
+([Coding Horror, 2006](https://blog.codinghorror.com/code-tells-you-how-comments-tell-you-why/),
+paraphrasing Kernighan). If a comment explains a constraint that isn't
+visible from reading the code alone, keep it. If it restates what the
+code obviously does, delete it.
 
 ## Fix Root Causes, Not Symptoms
 
