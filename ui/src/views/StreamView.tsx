@@ -581,7 +581,6 @@ const StreamView: React.FC = () => {
     if (!configLoaded) loadConfig();
   }, [configLoaded, loadConfig]);
 
-
   const [mseError, setMseError] = useState<string | null>(null);
   const mseUrl = React.useMemo(() => {
     if (!activeSessionId || !msePath) return null;
@@ -594,7 +593,6 @@ const StreamView: React.FC = () => {
   const { canvasRef: videoCanvasRef, aspectRatio: canvasAspectRatio } =
     useVideoCanvas(videoRenderer);
   const { muted, volume, toggleMute, changeVolume } = useAudioControls(audioEmitter);
-
 
   const livePipeline = useSessionStore(
     useCallback(

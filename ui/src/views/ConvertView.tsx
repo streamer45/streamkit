@@ -516,7 +516,6 @@ ${fieldLines}
   ${serverUrl}/api/v1/process -o - | ffplay -f webm -i -`;
 };
 
-
 // eslint-disable-next-line max-statements, sonarjs/cognitive-complexity
 const ConvertView: React.FC = () => {
   const {

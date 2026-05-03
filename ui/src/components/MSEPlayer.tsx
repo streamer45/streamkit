@@ -494,7 +494,6 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
         const mediaKind = isVideo ? 'video' : 'audio';
         setStatus(`Streaming ${mediaKind}...`);
 
-
         if (stream.locked) {
           componentsLogger.warn('MSEPlayer: Stream is already locked, skipping');
           setErrorAndNotify('Stream is already locked. Please try again.');
@@ -504,7 +503,6 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
         // Read chunks from the stream and append to source buffer
         const reader = stream.getReader();
         readerRef.current = reader; // Store reader for cleanup
-
 
         const listeners = attachStreamListeners(
           media,

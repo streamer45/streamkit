@@ -458,7 +458,6 @@ const MonitorViewContent: React.FC = () => {
     return key;
   }, [pipeline, draftNodes]);
 
-
   const { setNeedsAutoLayout, setNeedsFit, handleAutoLayout } = useAutoLayout({
     pipeline,
     selectedSessionId,
@@ -468,14 +467,12 @@ const MonitorViewContent: React.FC = () => {
     updateNodePosition,
   });
 
-
   const { topoEffectRanRef } = useNodeStatesSubscription({
     selectedSessionId,
     setEdges,
     pipelineRef,
     topoKey,
   });
-
 
   const sessionSeenInListRef = useRef(false);
   if (selectedSession) {
@@ -492,7 +489,6 @@ const MonitorViewContent: React.FC = () => {
       setSelectedSessionId(null);
     }
   }, [selectedSessionId, selectedSession, isLoadingSessions]);
-
 
   const validateParamValue = useCallback(
     (nodeId: string, paramKey: string, value: unknown): string | null => {
@@ -1276,8 +1272,6 @@ const MonitorViewContent: React.FC = () => {
     ]
   );
 
-
-
   // - Only track nodes.length, not full nodes array (FlowCanvas handles position updates internally)
   // - selectedSession used instead of sessions array to prevent unnecessary re-renders
   const hasPipeline = !!pipeline;
@@ -1375,7 +1369,6 @@ const MonitorViewContent: React.FC = () => {
   const selectedNodeLabel = React.useMemo(() => {
     return stableSelectedNode?.data?.label as string | undefined;
   }, [stableSelectedNode]);
-
 
   const rightPanel = React.useMemo(
     () =>
