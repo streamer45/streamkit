@@ -49,7 +49,6 @@ impl BytesInputNode {
 #[async_trait]
 impl ProcessorNode for BytesInputNode {
     fn input_pins(&self) -> Vec<InputPin> {
-        // This is an input node, so it has no input pins.
         vec![]
     }
 
@@ -58,8 +57,6 @@ impl ProcessorNode for BytesInputNode {
             .iter()
             .map(|stream| OutputPin {
                 name: stream.pin.clone(),
-                // This node produces generic binary data, but we use Any
-                // to allow flexible connections (e.g., Binary → Text conversion)
                 produces_type: PacketType::Any,
                 cardinality: PinCardinality::Broadcast,
             })

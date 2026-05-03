@@ -41,9 +41,7 @@ pub struct FileReadNode {
 impl FileReadNode {
     pub fn factory() -> streamkit_core::node::NodeFactory {
         std::sync::Arc::new(|params| {
-            // For dynamic nodes, allow None to create a default instance for pin inspection
             let config: FileReadConfig = if params.is_none() {
-                // Default config for pin inspection only
                 FileReadConfig { path: "/dev/null".to_string(), chunk_size: default_chunk_size() }
             } else {
                 tracing::debug!("FileReadNode factory received params: {:?}", params);
@@ -58,7 +56,6 @@ impl FileReadNode {
 #[async_trait]
 impl ProcessorNode for FileReadNode {
     fn input_pins(&self) -> Vec<InputPin> {
-        // File input nodes have no input pins
         vec![]
     }
 
@@ -74,7 +71,6 @@ impl ProcessorNode for FileReadNode {
         let node_name = context.output_sender.node_name().to_string();
         state_helpers::emit_initializing(&context.state_tx, &node_name);
 
-        // Open the file
         let mut file = tokio::fs::File::open(&self.config.path).await.map_err(|e| {
             StreamKitError::Runtime(format!("Failed to open file '{}': {}", self.config.path, e))
         })?;
@@ -85,21 +81,16 @@ impl ProcessorNode for FileReadNode {
             self.config.chunk_size
         );
 
-        // Source nodes emit Ready state and wait for Start signal
-        // This prevents packet loss during pipeline startup
         state_helpers::emit_ready(&context.state_tx, &node_name);
         tracing::info!("FileReadNode ready, waiting for start signal");
 
-        // Wait for Start control message
         loop {
             match context.control_rx.recv().await {
                 Some(streamkit_core::control::NodeControlMessage::Start) => {
                     tracing::info!("FileReadNode received start signal");
                     break;
                 },
-                Some(streamkit_core::control::NodeControlMessage::UpdateParams(_)) => {
-                    // Ignore param updates while waiting to start - loop continues naturally
-                },
+                Some(streamkit_core::control::NodeControlMessage::UpdateParams(_)) => {},
                 Some(streamkit_core::control::NodeControlMessage::Shutdown) => {
                     tracing::info!("FileReadNode received shutdown before start");
                     return Ok(());
@@ -118,9 +109,7 @@ impl ProcessorNode for FileReadNode {
         let mut total_bytes = 0u64;
         let mut buffer = vec![0u8; self.config.chunk_size];
 
-        // Read file in chunks
         loop {
-            // Check for cancellation before each read
             if let Some(token) = &context.cancellation_token {
                 if token.is_cancelled() {
                     tracing::info!("FileRead cancelled after {} chunks", chunk_count);
@@ -128,7 +117,6 @@ impl ProcessorNode for FileReadNode {
                 }
             }
 
-            // Use select! to check both file read AND control messages
             tokio::select! {
                 read_result = file.read(&mut buffer) => {
                     match read_result {

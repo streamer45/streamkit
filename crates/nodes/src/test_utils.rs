@@ -20,7 +20,6 @@ pub fn create_test_context(
     let (state_tx, state_rx) = mpsc::channel(10);
     let (stats_tx, _stats_rx) = mpsc::channel(10);
     let (pin_mgmt_tx, pin_mgmt_rx) = mpsc::channel(10);
-    // Drop the sender so nodes using this context don't wait for pin management messages
     drop(pin_mgmt_tx);
 
     let mock_sender = MockOutputSender::new();
@@ -34,8 +33,8 @@ pub fn create_test_context(
         batch_size,
         state_tx,
         stats_tx: Some(stats_tx),
-        telemetry_tx: None, // Test contexts don't emit telemetry
-        session_id: None,   // Test contexts don't have sessions
+        telemetry_tx: None,
+        session_id: None,
         cancellation_token: None,
         pin_management_rx: Some(pin_mgmt_rx), // Provide channel for dynamic pins support
         audio_pool: None,

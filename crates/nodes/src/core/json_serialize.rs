@@ -47,7 +47,6 @@ impl JsonSerialize {
         Ok(Self { pretty: config.pretty, newline_delimited: config.newline_delimited })
     }
 
-    /// Get input and output pins
     pub fn input_pins() -> Vec<InputPin> {
         vec![InputPin {
             name: "in".to_string(),
@@ -82,7 +81,6 @@ impl ProcessorNode for JsonSerialize {
         let mut input = context.take_input("in")?;
 
         while let Some(packet) = context.recv_with_cancellation(&mut input).await {
-            // Serialize the packet to JSON
             let mut json_bytes = if self.pretty {
                 serde_json::to_vec_pretty(&packet)
             } else {
@@ -92,12 +90,10 @@ impl ProcessorNode for JsonSerialize {
                 StreamKitError::Runtime(format!("Failed to serialize packet to JSON: {e}"))
             })?;
 
-            // Add newline if newline_delimited is enabled
             if self.newline_delimited {
                 json_bytes.push(b'\n');
             }
 
-            // Send as Binary packet with application/json content type
             if context
                 .output_sender
                 .send(

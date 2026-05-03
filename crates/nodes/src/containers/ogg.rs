@@ -27,9 +27,6 @@ const DEFAULT_CHUNK_SIZE: usize = 65536;
 
 // --- Ogg Muxer ---
 
-// A shared, thread-safe buffer that implements io::Write. This is used to
-// work around the borrow checker when using the ogg::PacketWriter, allowing
-// us to stream out completed pages as they are written.
 #[derive(Clone)]
 struct SharedPacketBuffer(Arc<Mutex<Vec<u8>>>);
 
@@ -41,13 +38,11 @@ impl SharedPacketBuffer {
 
 impl Write for SharedPacketBuffer {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        // Mutex poisoning is a fatal error - standard pattern in Rust
         #[allow(clippy::unwrap_used)]
         self.0.lock().unwrap().write(buf)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        // Mutex poisoning is a fatal error - standard pattern in Rust
         #[allow(clippy::unwrap_used)]
         self.0.lock().unwrap().flush()
     }
@@ -129,7 +124,6 @@ impl ProcessorNode for OggMuxerNode {
         let mut packet_count = 0u64;
         let mut last_granule_pos = 0u64;
 
-        // Stats tracking
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
 
         let shared_buffer = SharedPacketBuffer::new();
@@ -138,12 +132,10 @@ impl ProcessorNode for OggMuxerNode {
             let mut writer_buffer = shared_buffer.clone();
             let mut writer = PacketWriter::new(&mut writer_buffer);
 
-            // --- Write codec-specific headers before processing any input packets ---
             match self.config.codec {
                 OggMuxerCodec::Opus => {
                     tracing::info!("Writing Opus headers to OGG stream");
-                    // 1. Opus Identification Header (19 bytes)
-                    // https://www.rfc-editor.org/rfc/rfc7845.html#section-5.1
+                    // Opus Identification Header (RFC 7845 §5.1)
                     let opus_head = vec![
                         b'O',
                         b'p',
@@ -178,12 +170,10 @@ impl ProcessorNode for OggMuxerNode {
                     }
                     tracing::debug!("OpusHead written successfully");
 
-                    // 2. Opus Comment Header
                     tracing::debug!("Writing OpusTags header...");
                     let vendor_string = "streamkit";
                     let mut opus_tags = Vec::new();
                     opus_tags.extend_from_slice(b"OpusTags");
-                    // vendor_string is a constant &str, so len() will never exceed u32
                     #[allow(clippy::expect_used)]
                     let vendor_len = u32::try_from(vendor_string.len())
                         .expect("vendor string length fits in u32");
@@ -218,27 +208,20 @@ impl ProcessorNode for OggMuxerNode {
                         );
                     }
 
-                    // Force every packet to end a page for maximum streaming behavior.
-                    // This allows chunk_size to work as expected by ensuring
-                    // the buffer fills up regularly. Trade-off: slightly higher OGG overhead.
+                    // Force every packet to end a page for streaming (slight OGG overhead trade-off).
                     let pck_info = PacketWriteEndInfo::EndPage;
 
-                    // Calculate granule position from metadata if available, otherwise use packet count
-                    // For Opus: granule position is at 48kHz sample rate
+                    // Granule position at 48kHz for Opus
                     if let Some(meta) = metadata {
                         if let Some(timestamp_us) = meta.timestamp_us {
-                            // Convert timestamp from microseconds to 48kHz samples
                             last_granule_pos = (timestamp_us * 48000) / 1_000_000;
                         } else if let Some(duration_us) = meta.duration_us {
-                            // If we don't have timestamp but have duration, accumulate
                             let samples = (duration_us * 48000) / 1_000_000;
                             last_granule_pos += samples;
                         } else {
-                            // Fallback: assume 960 samples (20ms at 48kHz)
                             last_granule_pos = 960 * packet_count;
                         }
                     } else {
-                        // No metadata: fallback to assuming 960 samples per packet
                         last_granule_pos = 960 * packet_count;
                     }
 
@@ -255,8 +238,6 @@ impl ProcessorNode for OggMuxerNode {
                         return Err(StreamKitError::Runtime(err_msg));
                     }
 
-                    // Flush any bytes accumulated by the Ogg writer immediately to maximize streaming.
-                    // This avoids buffering large chunks in memory and delivers data as soon as pages are ready.
                     let data_to_send = {
                         #[allow(clippy::unwrap_used)]
                         let mut buffer_guard = shared_buffer.0.lock().unwrap();
@@ -309,7 +290,6 @@ impl ProcessorNode for OggMuxerNode {
             }
         }
 
-        // Flush any remaining data from the buffer.
         let data_to_send = {
             #[allow(clippy::unwrap_used)]
             let mut buffer_guard = shared_buffer.0.lock().unwrap();
@@ -339,7 +319,6 @@ impl ProcessorNode for OggMuxerNode {
                 .is_err()
             {
                 tracing::debug!("Output channel closed during final flush");
-                // Don't return error, we're already shutting down
             } else {
                 stats_tracker.sent();
             }
@@ -398,19 +377,12 @@ impl ProcessorNode for OggDemuxerNode {
         state_helpers::emit_running(&context.state_tx, &node_name);
         let mut input_rx = context.take_input("in")?;
 
-        // Stats tracking
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
 
-        // Create a duplex stream to feed data to the async PacketReader
         let (mut writer, reader) = duplex(get_demuxer_buffer_size());
-
-        // Create the async packet reader
         let mut packet_reader = PacketReader::new(reader);
-
-        // Clone cancellation token before moving context
         let cancellation_token = context.cancellation_token.clone();
 
-        // Spawn a task to forward input data to the duplex writer
         let writer_task = tokio::spawn(async move {
             let mut input_chunks = 0;
             let mut total_bytes = 0;
@@ -448,11 +420,9 @@ impl ProcessorNode for OggDemuxerNode {
                 total_bytes
             );
 
-            // Close the writer to signal end of stream
             drop(writer);
         });
 
-        // Process packets from the async reader
         let mut packets_extracted = 0u64;
         let mut last_granule_pos: Option<u64> = None;
         let mut packets_at_granule_pos = 0u64;
@@ -483,30 +453,24 @@ impl ProcessorNode for OggDemuxerNode {
                         tracing::debug!("OggDemuxer extracted {} packets", packets_extracted);
                     }
 
-                    // Extract granule position for timing metadata
                     let granule_pos = packet.absgp_page();
 
-                    // Calculate timing metadata from granule position
-                    // For Opus (RFC 7845): granule position is at 48kHz sample rate
+                    // Granule position → timestamp (Opus at 48kHz per RFC 7845)
                     let metadata = if granule_pos > 0 {
                         let timestamp_us = (granule_pos * 1_000_000) / 48000;
 
-                        // Determine packet duration
-                        // Complex conditional logic for Opus frame duration detection
                         #[allow(clippy::option_if_let_else)]
                         #[allow(clippy::redundant_closure)]
                         let duration_us = detected_frame_duration_us.map_or_else(
                             || {
                                 if let Some(last_gp) = last_granule_pos {
                                     if granule_pos > last_gp && packets_at_granule_pos > 0 {
-                                        // First granule position change detected - calculate frame duration
                                         let total_duration_us =
                                             ((granule_pos - last_gp) * 1_000_000) / 48000;
                                         let frame_duration =
                                             total_duration_us / packets_at_granule_pos;
                                         detected_frame_duration_us = Some(frame_duration);
 
-                                        // Precision loss acceptable for logging display
                                         #[allow(clippy::cast_precision_loss)]
                                         let frame_duration_ms = frame_duration as f64 / 1000.0;
                                         tracing::info!(
@@ -518,18 +482,15 @@ impl ProcessorNode for OggDemuxerNode {
 
                                         Some(frame_duration)
                                     } else {
-                                        // Still on first granule position, use default
-                                        Some(20_000) // 20ms default for Opus
+                                        Some(20_000)
                                     }
                                 } else {
-                                    // Very first packet with granule position
-                                    Some(20_000) // 20ms default for Opus
+                                    Some(20_000)
                                 }
                             },
                             |detected| Some(detected),
                         );
 
-                        // Track packets at current granule position for probing
                         if Some(granule_pos) == last_granule_pos {
                             packets_at_granule_pos += 1;
                         } else {
@@ -544,11 +505,9 @@ impl ProcessorNode for OggDemuxerNode {
                             keyframe: None,
                         })
                     } else {
-                        // No valid granule position (header packets)
                         None
                     };
 
-                    // Send the packet data to the output with timing metadata
                     let output_packet = Packet::Binary {
                         data: Bytes::from(packet.data),
                         content_type: None,
@@ -570,8 +529,6 @@ impl ProcessorNode for OggDemuxerNode {
             }
         }
 
-        // Give the writer task a brief moment to complete, then abort if needed
-        // The writer task might be blocked waiting for input from upstream
         match tokio::time::timeout(std::time::Duration::from_millis(100), writer_task).await {
             Ok(Ok(())) => {
                 tracing::debug!("Writer task completed gracefully");
@@ -651,20 +608,15 @@ impl ProcessorNode for SymphoniaOggDemuxerNode {
         tracing::info!("SymphoniaOggDemuxerNode starting");
         let mut input_rx = context.take_input("in")?;
 
-        // Create channels for streaming reader and results
         let (data_tx, data_rx) =
             tokio::sync::mpsc::channel::<bytes::Bytes>(get_stream_channel_capacity());
         let (result_tx, mut result_rx) = tokio::sync::mpsc::channel::<Result<Packet, String>>(32);
 
-        // Spawn blocking task for Symphonia processing
         let state_tx = context.state_tx.clone();
         let stats_tx = context.stats_tx.clone();
         let cancellation_token = context.cancellation_token.clone();
         let node_name_clone = node_name.clone();
 
-        // Ogg decoder state machine with streaming, packet handling, and channel conversion
-        // Moderate complexity due to format probing, codec handling, and real-time streaming
-        // Allows for common patterns in media decoding (unwraps on Results that should succeed, mutex locks, drops)
         #[allow(clippy::cognitive_complexity)]
         #[allow(clippy::unwrap_used)]
         #[allow(clippy::expect_used)]
@@ -679,11 +631,8 @@ impl ProcessorNode for SymphoniaOggDemuxerNode {
                 MediaSourceStream::new(Box::new(ReadOnlySource::new(reader)), Default::default());
 
             let format_opts = FormatOptions::default();
-            // Explicitly instantiate the Ogg demuxer instead of using Symphonia's probe.
-            //
-            // Symphonia's probe scans for *any* supported format marker and returns the first
-            // match; on Ogg/Opus input it can occasionally lock onto a false-positive MP3 marker
-            // later in the stream, causing very noisy "skipping junk" logs and incorrect demuxing.
+            // Bypass Symphonia's probe: it can false-positive match MP3 markers in Ogg/Opus
+            // streams, producing noisy logs and incorrect demuxing.
             let mut format_reader =
                 match symphonia::default::formats::OggReader::try_new(mss, &format_opts) {
                     Ok(reader) => reader,
@@ -701,7 +650,6 @@ impl ProcessorNode for SymphoniaOggDemuxerNode {
 
             state_helpers::emit_running(&state_tx, &node_name);
 
-            // Read packets and forward them
             let mut packets_extracted = 0;
             loop {
                 if let Some(token) = &cancellation_token {
@@ -735,21 +683,12 @@ impl ProcessorNode for SymphoniaOggDemuxerNode {
                             None
                         };
 
-                        // tracing::debug!(
-                        //     "Extracted Ogg packet {} with {} bytes (ts: {}, dur: {})",
-                        //     packets_extracted,
-                        //     packet.data.len(),
-                        //     packet.ts(),
-                        //     packet.dur()
-                        // );
-
                         let output_packet = Packet::Binary {
                             data: Bytes::from(Vec::from(packet.data)),
                             content_type: None,
                             metadata,
                         };
 
-                        // Send packet through result channel
                         if result_tx.blocking_send(Ok(output_packet)).is_err() {
                             tracing::debug!("Result channel closed, stopping demuxer");
                             break;
@@ -792,12 +731,8 @@ impl ProcessorNode for SymphoniaOggDemuxerNode {
 
         state_helpers::emit_running(&context.state_tx, &node_name);
 
-        // Stats tracking
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
 
-        // Stream input data to the blocking demuxer.
-        // This is a separate task so the main loop can keep draining demux results even when
-        // the stream channel is full (avoids deadlocks).
         let mut input_task = tokio::spawn(async move {
             let data_tx = data_tx;
             while let Some(packet) = input_rx.recv().await {
@@ -837,7 +772,6 @@ impl ProcessorNode for SymphoniaOggDemuxerNode {
                             return Err(StreamKitError::Runtime(err_msg));
                         }
                         None => {
-                            // Result channel closed, blocking task is done
                             break;
                         }
                     }

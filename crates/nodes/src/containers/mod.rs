@@ -6,20 +6,17 @@
 
 use streamkit_core::NodeRegistry;
 
-// Declare the submodules for each container format.
 #[cfg(feature = "mp4")]
 pub mod mp4;
 pub mod ogg;
 pub mod wav;
 pub mod webm;
 
-// Integration tests for container nodes
 #[cfg(test)]
 mod tests;
 
 /// Registers all available container nodes with the engine's registry.
 pub fn register_container_nodes(registry: &mut NodeRegistry) {
-    // Call the registration function from each submodule.
     #[cfg(feature = "mp4")]
     mp4::register_mp4_nodes(registry);
     ogg::register_ogg_nodes(registry);

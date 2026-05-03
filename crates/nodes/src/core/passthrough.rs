@@ -18,7 +18,6 @@ impl ProcessorNode for PassthroughNode {
     fn input_pins(&self) -> Vec<InputPin> {
         vec![InputPin {
             name: "in".to_string(),
-            // This node accepts any packet type.
             accepts_types: vec![PacketType::Any],
             cardinality: PinCardinality::One,
         }]
@@ -27,7 +26,6 @@ impl ProcessorNode for PassthroughNode {
     fn output_pins(&self) -> Vec<OutputPin> {
         vec![OutputPin {
             name: "out".to_string(),
-            // It outputs whatever it receives, using passthrough type inference
             produces_type: PacketType::Passthrough,
             cardinality: PinCardinality::Broadcast,
         }]
@@ -42,10 +40,7 @@ impl ProcessorNode for PassthroughNode {
 
         state_helpers::emit_running(&context.state_tx, &node_name);
 
-        // This node doesn't have tunable parameters, so we can ignore the control channel.
-        // The loop will simply exit when the input channel is closed.
         while let Some(packet) = context.recv_with_cancellation(&mut input_rx).await {
-            // Forward the packet directly to the "out" pin.
             if context.output_sender.send("out", packet).await.is_err() {
                 tracing::debug!("Output channel closed, stopping node");
                 break;
@@ -91,7 +86,6 @@ mod tests {
         assert_state_initializing(&mut state_rx).await;
         assert_state_running(&mut state_rx).await;
 
-        // Send audio packet
         let audio_packet = create_test_audio_packet(48000, 2, 100, 0.75);
         input_tx.send(audio_packet.clone()).await.unwrap();
 
@@ -99,7 +93,6 @@ mod tests {
         assert_state_stopped(&mut state_rx).await;
         node_handle.await.unwrap().unwrap();
 
-        // Verify packet passed through unchanged
         let output_packets = mock_sender.get_packets_for_pin("out").await;
         assert_eq!(output_packets.len(), 1);
 
@@ -122,7 +115,6 @@ mod tests {
         assert_state_initializing(&mut state_rx).await;
         assert_state_running(&mut state_rx).await;
 
-        // Send binary packet
         let test_data = vec![1, 2, 3, 4, 5];
         let binary_packet = create_test_binary_packet(test_data.clone());
         input_tx.send(binary_packet).await.unwrap();
@@ -131,7 +123,6 @@ mod tests {
         assert_state_stopped(&mut state_rx).await;
         node_handle.await.unwrap().unwrap();
 
-        // Verify packet passed through
         let output_packets = mock_sender.get_packets_for_pin("out").await;
         assert_eq!(output_packets.len(), 1);
 
@@ -157,7 +148,6 @@ mod tests {
         assert_state_initializing(&mut state_rx).await;
         assert_state_running(&mut state_rx).await;
 
-        // Send text packet
         let text = "Hello, StreamKit!".to_string();
         input_tx.send(Packet::Text(text.clone().into())).await.unwrap();
 
@@ -165,7 +155,6 @@ mod tests {
         assert_state_stopped(&mut state_rx).await;
         node_handle.await.unwrap().unwrap();
 
-        // Verify packet passed through
         let output_packets = mock_sender.get_packets_for_pin("out").await;
         assert_eq!(output_packets.len(), 1);
 
@@ -191,7 +180,6 @@ mod tests {
         assert_state_initializing(&mut state_rx).await;
         assert_state_running(&mut state_rx).await;
 
-        // Send mixed packet types
         input_tx.send(create_test_audio_packet(48000, 2, 10, 1.0)).await.unwrap();
         input_tx.send(Packet::Text("test".into())).await.unwrap();
         input_tx.send(create_test_binary_packet(vec![0xFF])).await.unwrap();
@@ -200,11 +188,8 @@ mod tests {
         assert_state_stopped(&mut state_rx).await;
         node_handle.await.unwrap().unwrap();
 
-        // Verify all packets passed through
         let output_packets = mock_sender.get_packets_for_pin("out").await;
         assert_eq!(output_packets.len(), 3);
-
-        // Verify packet types match
         assert!(matches!(output_packets[0], Packet::Audio(_)));
         assert!(matches!(output_packets[1], Packet::Text(_)));
         assert!(matches!(output_packets[2], Packet::Binary { .. }));

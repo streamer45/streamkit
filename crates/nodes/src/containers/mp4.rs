@@ -848,8 +848,6 @@ impl ProcessorNode for Mp4MuxerNode {
             return Err(StreamKitError::Runtime(err_msg));
         }
 
-        // ---- Classify inputs (same pattern as WebM muxer) ----
-
         let skip_classification = self.config.num_inputs >= 2
             && self.config.video_width > 0
             && self.config.video_height > 0;
@@ -864,7 +862,6 @@ impl ProcessorNode for Mp4MuxerNode {
         let mut video_codec = self.config.video_codec.unwrap_or(VideoCodec::Av1);
         let mut all_receivers: Vec<tokio::sync::mpsc::Receiver<Packet>> = Vec::new();
 
-        // Resolve input types from engine or pin management messages.
         let mut input_types = std::mem::take(&mut context.input_types);
         let num_inputs = context.inputs.len();
         if input_types.is_empty() {
@@ -911,12 +908,10 @@ impl ProcessorNode for Mp4MuxerNode {
                 );
             }
 
-            // Detect audio codec from type info.
             if let Some(PacketType::EncodedAudio(fmt)) = pin_type {
                 audio_codec = fmt.codec;
             }
 
-            // Detect video codec from type info.
             if let Some(PacketType::EncodedVideo(fmt)) = pin_type {
                 video_codec = fmt.codec;
             }
@@ -969,8 +964,6 @@ impl ProcessorNode for Mp4MuxerNode {
         );
 
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
-
-        // ---- Dispatch to mode-specific muxing logic ----
 
         let session = MuxSession {
             config: &self.config,

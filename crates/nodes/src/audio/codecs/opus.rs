@@ -95,8 +95,6 @@ impl ProcessorNode for OpusDecoderNode {
             .with_boundaries(streamkit_core::metrics::HISTOGRAM_BOUNDARIES_CODEC_PACKET.to_vec())
             .build();
 
-        // Create channels for communication with the blocking task
-        // Now includes metadata with each packet
         let (decode_tx, mut decode_rx) = mpsc::channel::<(
             Bytes,
             Option<streamkit_core::types::PacketMetadata>,
@@ -104,9 +102,8 @@ impl ProcessorNode for OpusDecoderNode {
         let (result_tx, mut result_rx) =
             mpsc::channel::<Result<Packet, String>>(get_codec_channel_capacity());
 
-        // Spawn a single blocking task that will handle all decode operations.
-        // Constructs AudioFrame packets directly so the forward loop can use
-        // the generic codec_forward_loop helper.
+        // Blocking task: decodes Opus packets and produces AudioFrame packets
+        // for the generic codec_forward_loop helper.
         let decode_task = tokio::task::spawn_blocking(move || {
             let mut decoder = match opus::Decoder::new(OPUS_SAMPLE_RATE, opus::Channels::Mono) {
                 Ok(d) => d,
@@ -116,7 +113,6 @@ impl ProcessorNode for OpusDecoderNode {
                 },
             };
 
-            // Reusable decode buffer - avoids allocation per frame (~7.5KB savings per decode)
             let mut decode_buffer = vec![0f32; OPUS_MAX_FRAME_SIZE];
 
             while let Some((data, metadata)) = decode_rx.blocking_recv() {
@@ -124,7 +120,6 @@ impl ProcessorNode for OpusDecoderNode {
 
                 let result = match decoder.decode_float(&data, &mut decode_buffer, false) {
                     Ok(decoded_len) => {
-                        // Skip empty decode results
                         if decoded_len == 0 {
                             decode_duration_histogram
                                 .record(decode_start_time.elapsed().as_secs_f64(), &[]);
@@ -158,10 +153,8 @@ impl ProcessorNode for OpusDecoderNode {
 
         state_helpers::emit_running(&context.state_tx, &node_name);
 
-        // Stats tracking
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
 
-        // Process input packets and send them for decoding
         let decode_tx_clone = decode_tx.clone();
         let batch_size = context.batch_size;
         let mut input_task = tokio::spawn(async move {
@@ -324,9 +317,6 @@ impl ProcessorNode for OpusEncoderNode {
             .with_boundaries(streamkit_core::metrics::HISTOGRAM_BOUNDARIES_CODEC_PACKET.to_vec())
             .build();
 
-        // Create channels for communication with the blocking task
-        // Now includes channel count with each frame
-        // Use Arc<PooledSamples> to avoid cloning samples unless padding is needed
         let (encode_tx, mut encode_rx) =
             mpsc::channel::<(Arc<PooledSamples>, u16, Option<PacketMetadata>)>(
                 get_codec_channel_capacity(),
@@ -337,20 +327,13 @@ impl ProcessorNode for OpusEncoderNode {
 
         let target_bitrate = self.config.bitrate;
 
-        // Spawn a single blocking task that will handle all encode operations
-        // Uses blocking_recv/blocking_send for efficiency - no need for block_on
         let encode_task = tokio::task::spawn_blocking(move || {
             let mut encoder: Option<opus::Encoder> = None;
             let mut current_channels: Option<u16> = None;
 
-            // Reusable encode buffer - avoids 4KB allocation per frame
-            // Actual Opus output is typically 200-500 bytes, but we need the full buffer
-            // for the encode call. We only allocate the actual encoded size for the result.
             let mut encode_buffer = vec![0u8; OPUS_OUTPUT_BUFFER_SIZE];
 
-            // Use blocking_recv - efficient for spawn_blocking context
             while let Some((samples, channels, metadata)) = encode_rx.blocking_recv() {
-                // Initialize or recreate encoder if channel count changed
                 if current_channels != Some(channels) {
                     let opus_channels =
                         if channels == 1 { opus::Channels::Mono } else { opus::Channels::Stereo };
@@ -361,7 +344,6 @@ impl ProcessorNode for OpusEncoderNode {
                         opus::Application::Audio,
                     ) {
                         Ok(mut e) => {
-                            // Set the configured bitrate
                             if let Err(err) = e.set_bitrate(opus::Bitrate::Bits(target_bitrate)) {
                                 tracing::error!("Failed to set Opus bitrate: {}", err);
                                 let _ = result_tx.blocking_send(Err(err.to_string()));
@@ -386,26 +368,22 @@ impl ProcessorNode for OpusEncoderNode {
                 let encode_start_time = Instant::now();
 
                 let result = {
-                    // Encoder must exist at this point because we just initialized it above
-                    // based on the channel count. If it doesn't exist, something went wrong.
                     let Some(ref mut enc) = encoder else {
                         tracing::error!("Encoder not initialized after channel setup");
                         let _ = result_tx.blocking_send(Err("Encoder not initialized".to_string()));
                         continue;
                     };
 
-                    // Pad undersized frames with silence to meet Opus requirements
-                    // Opus expects exact frame sizes (e.g., 960 samples for 20ms at 48kHz)
+                    // Opus requires exact frame sizes (e.g. 960 samples for 20ms at 48kHz);
+                    // pad undersized frames with silence.
                     let expected_samples =
                         (OPUS_SAMPLE_RATE as usize * 20) / 1000 * channels as usize;
 
-                    // Only clone if padding is needed, otherwise use slice directly
                     let encode_result = if samples.len() < expected_samples {
                         let mut padded = samples.as_ref().to_vec();
                         padded.resize(expected_samples, 0.0);
                         enc.encode_float(&padded, &mut encode_buffer)
                     } else {
-                        // Use slice directly - no allocation needed
                         enc.encode_float(samples.as_ref(), &mut encode_buffer)
                     };
 
@@ -417,7 +395,6 @@ impl ProcessorNode for OpusEncoderNode {
 
                 encode_duration_histogram.record(encode_start_time.elapsed().as_secs_f64(), &[]);
 
-                // Use blocking_send - efficient for spawn_blocking context
                 if result_tx.blocking_send(result).is_err() {
                     break; // Main task has shut down
                 }
@@ -426,10 +403,8 @@ impl ProcessorNode for OpusEncoderNode {
 
         state_helpers::emit_running(&context.state_tx, &node_name);
 
-        // Stats tracking
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
 
-        // Process input packets and send them for encoding
         let encode_tx_clone = encode_tx.clone();
         let batch_size = context.batch_size;
         let mut input_task = tokio::spawn(async move {
@@ -446,7 +421,6 @@ impl ProcessorNode for OpusEncoderNode {
                     if let Packet::Audio(frame) = packet {
                         frame_count += 1;
 
-                        // Send to blocking task for encoding with channel count + metadata
                         if encode_tx_clone
                             .send((frame.samples, frame.channels, frame.metadata))
                             .await

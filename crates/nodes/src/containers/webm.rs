@@ -266,7 +266,6 @@ impl SharedPacketBuffer {
     ///
     /// Streaming mode (non-seek): drain everything written so far without copying.
     fn take_data(&self) -> Option<Bytes> {
-        // Mutex poisoning is a fatal error - allows expect() for this common pattern
         #[allow(clippy::expect_used)]
         let mut state = self.state.lock().expect("SharedPacketBuffer mutex poisoned");
 
@@ -277,13 +276,7 @@ impl SharedPacketBuffer {
             return None;
         }
 
-        // Drain everything written so far without copying.
-        //
-        // This avoids two major sources of allocation churn in DHAT profiles:
-        // - copying out incremental slices on every flush
-        // - repeatedly trimming a sliding window with `split_off` (copies the window)
         let data_vec = std::mem::take(state.cursor.get_mut());
-        // Advance base_offset so Seek::Start can clamp consistently if it ever happens.
         state.base_offset = base + current_len;
         state.last_sent_pos = 0;
         state.cursor.set_position(0);
@@ -294,13 +287,11 @@ impl SharedPacketBuffer {
 
 impl Write for SharedPacketBuffer {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        // Mutex poisoning is a fatal error - allows expect() for this common pattern
         #[allow(clippy::expect_used)]
         self.state.lock().expect("SharedPacketBuffer mutex poisoned").cursor.write(buf)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        // Mutex poisoning is a fatal error - allows expect() for this common pattern
         #[allow(clippy::expect_used)]
         self.state.lock().expect("SharedPacketBuffer mutex poisoned").cursor.flush()
     }
@@ -631,11 +622,6 @@ impl ProcessorNode for WebMMuxerNode {
         // receivers are assigned to audio_rx / video_rx.
         let mut all_receivers: Vec<tokio::sync::mpsc::Receiver<Packet>> = Vec::new();
 
-        // -- Resolve input types --
-        // Static/oneshot pipelines: input_types is populated by the graph
-        // builder at build time.
-        // Dynamic pipelines: input_types starts empty; wait for
-        // InputTypeResolved messages from the engine.
         let mut input_types = std::mem::take(&mut context.input_types);
         let num_inputs = context.inputs.len();
         if input_types.is_empty() {
@@ -676,7 +662,6 @@ impl ProcessorNode for WebMMuxerNode {
         // types are classified correctly, and pins without types default to
         // audio (the safer assumption) with a warning.
 
-        // -- Classify inputs and assign receivers --
         for (pin_name, rx) in context.inputs.drain() {
             let pin_type = input_types.get(&pin_name);
             let is_video = pin_type.is_some_and(|ty| {
@@ -792,7 +777,6 @@ impl ProcessorNode for WebMMuxerNode {
             WebMStreamingMode::File => Writer::new(mux_buffer),
         };
 
-        // Create WebM segment builder
         let builder = SegmentBuilder::new(writer).map_err(|e| {
             let err_msg = format!("Failed to create SegmentBuilder: {e}");
             state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
@@ -805,8 +789,6 @@ impl ProcessorNode for WebMMuxerNode {
                 state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
                 StreamKitError::Runtime(err_msg)
             })?;
-
-        // -- Add tracks conditionally --
 
         let mut tracks = MuxTracks { audio: None, video: None };
 
@@ -983,12 +965,9 @@ impl ProcessorNode for WebMMuxerNode {
         let mut video_clock = MediaClock::new(0);
         let mut mux_state = MuxState { header_sent: false, last_written_ns: 0, packet_count: 0 };
 
-        // Per-track timestamp rebase offsets — computed lazily when each track's
-        // first frame arrives.
         let mut audio_rebase_offset_ns: Option<i64> = None;
         let mut video_rebase_offset_ns: Option<i64> = None;
 
-        // Per-track last-written timestamps for per-track monotonicity.
         let mut audio_last_ns: Option<u64> = None;
         let mut video_last_ns: Option<u64> = None;
 
@@ -1003,7 +982,6 @@ impl ProcessorNode for WebMMuxerNode {
         let mut audio_frame_count = 0u64;
         let mut video_frame_count = 0u64;
 
-        // Write first video packet (from auto-detection or packet inspection).
         if let Some((data, metadata)) = first_video_packet.take() {
             if let Some(video_track) = tracks.video {
                 let is_keyframe = metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(true);
@@ -1311,7 +1289,6 @@ impl ProcessorNode for WebMMuxerNode {
 
             // Periodic pipeline health — every 150 packets (~2s).
             if mux_state.packet_count.is_multiple_of(150) {
-                // Timestamps in ms are well within i64 range for any practical stream.
                 #[allow(clippy::cast_possible_wrap)]
                 let a_ms = audio_last_ns.map_or(-1i64, |ns| (ns / 1_000_000) as i64);
                 #[allow(clippy::cast_possible_wrap)]
@@ -1332,7 +1309,6 @@ impl ProcessorNode for WebMMuxerNode {
             mux_state.packet_count
         );
 
-        // Finalize the segment and recover the buffer.
         let writer = segment.finalize(None).map_err(|_e| {
             let err_msg = "Failed to finalize WebM segment".to_string();
             state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
@@ -1340,7 +1316,6 @@ impl ProcessorNode for WebMMuxerNode {
         })?;
         let mut mux_buffer = writer.into_inner();
 
-        // Flush any remaining data from the buffer
         if let Some(data) = mux_buffer.take_data() {
             tracing::debug!("Writing final data, buffer size: {} bytes", data.len());
             if context
@@ -1482,7 +1457,6 @@ fn stage_frame(
     // at t=0 and MoQ audio arriving seconds later).  Without this, MSE
     // consumers see timestamp gaps between tracks and can't play smoothly.
     let is_new_offset = rebase_offset_ns.is_none();
-    // Media timestamps in nanoseconds are well within i64 range for practical streams.
     #[allow(clippy::cast_possible_wrap)]
     let offset = *rebase_offset_ns.get_or_insert_with(|| last_written_ns as i64 - raw_ns as i64);
     if is_new_offset {
@@ -1522,8 +1496,6 @@ fn stage_frame(
             const REBASE_RESET_THRESHOLD_NS: u64 = 500_000_000;
             let gap_ns = last - timestamp_ns;
             if gap_ns > REBASE_RESET_THRESHOLD_NS {
-                // Media timestamps in nanoseconds are well within i64 range
-                // for practical streams.
                 #[allow(clippy::cast_possible_wrap)]
                 let new_offset = last_written_ns as i64 - raw_ns as i64;
                 tracing::info!(
