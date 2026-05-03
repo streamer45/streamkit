@@ -288,6 +288,8 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
   const toggleConfigs = useMemo(() => extractToggleConfigs(schema), [schema]);
   const textConfigs = useMemo(() => extractTextConfigs(schema), [schema]);
   const controlCount = toggleConfigs.length + sliderConfigs.length + textConfigs.length;
+  // Drafts hide canvas-side tune controls — the engine has no entry for a
+  // draft node yet, so tunenode would warn. Drafts configure via Inspector only.
   const isDraft = !!data.draft;
   const hasControls = controlCount > 0 && !isDraft;
 

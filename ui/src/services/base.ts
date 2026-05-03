@@ -8,7 +8,8 @@ import { getBaseHrefWithoutTrailingSlash, getBasePathname } from '../utils/baseH
 export function getApiUrl(): string {
   const apiBase = import.meta.env.VITE_API_BASE;
   if (apiBase !== undefined) {
-    // Rewrite loopback hostname to match UI so SameSite=Strict cookies work.
+    // Browsers treat localhost and 127.0.0.1 as different sites, which breaks
+    // SameSite=Strict cookie auth. Rewrite loopback hostname to match the UI.
     try {
       const url = new URL(apiBase);
       const isLoopback = (host: string) => host === 'localhost' || host === '127.0.0.1';

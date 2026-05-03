@@ -444,6 +444,8 @@ const TextStyleSection: React.FC<{
 );
 TextStyleSection.displayName = 'TextStyleSection';
 
+// Field-level atom subscriptions: Jotai's Object.is check means changing
+// opacity won't re-render ConnectedRotationControl (same number returned).
 const ConnectedOpacityControl: React.FC<{
   selectedLayerId: string;
   selectedLayerKind: LayerKind | null;

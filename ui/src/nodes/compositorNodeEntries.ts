@@ -9,6 +9,8 @@ import type { TextOverlayState, ImageOverlayState } from '@/hooks/useCompositorL
 import { friendlyLabel } from './compositorNodeParts';
 import type { CompositorEntry } from './compositorNodeParts';
 
+// Returns a referentially stable entry list so React.memo consumers bail out
+// during opacity/rotation drags (those fields are not in entries).
 export function useStableEntries(
   layers: { id: string; zIndex: number; visible: boolean }[],
   textOverlays: TextOverlayState[],
