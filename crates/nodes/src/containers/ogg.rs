@@ -38,12 +38,12 @@ impl SharedPacketBuffer {
 
 impl Write for SharedPacketBuffer {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        #[allow(clippy::unwrap_used)]
+        #[allow(clippy::unwrap_used)] // Mutex poisoning is fatal
         self.0.lock().unwrap().write(buf)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        #[allow(clippy::unwrap_used)]
+        #[allow(clippy::unwrap_used)] // Mutex poisoning is fatal
         self.0.lock().unwrap().flush()
     }
 }
