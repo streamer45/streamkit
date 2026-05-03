@@ -276,6 +276,17 @@ pub struct GetNodeDefinitionArgs {
     pub kind: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct UpdatePipelineArgs {
+    /// Session ID or name.
+    pub session_id: String,
+    /// New pipeline YAML defining the desired state. The tool will diff
+    /// this against the current pipeline and apply the minimal set of
+    /// batch operations (addnode, removenode, connect, disconnect) to
+    /// reconcile the running session.
+    pub yaml: String,
+}
+
 // ---------------------------------------------------------------------------
 // StreamKit MCP service
 // ---------------------------------------------------------------------------
@@ -935,6 +946,270 @@ impl StreamKitMcp {
 
         json_tool_result(&definition)
     }
+
+    // -- update_pipeline ---------------------------------------------------
+
+    #[tool(
+        description = "Update a running session's pipeline to match new YAML. Diffs the desired state against the current pipeline and applies the minimal set of batch operations (addnode, removenode, connect, disconnect). Parameter changes on surviving nodes are applied automatically via tune_node when the caller has tune_nodes permission; otherwise they are returned in params_changed for manual follow-up. Note: the pipeline is snapshotted before diffing and the lock is released during diff computation — concurrent mutations may cause 'node already exists' errors; retry in that case. Engine-side errors after the durable Pipeline mutation do not roll back already-applied operations."
+    )]
+    async fn update_pipeline(
+        &self,
+        Parameters(args): Parameters<UpdatePipelineArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let (session, _role_name, perms) = resolve_session(
+            &self.app_state,
+            &args.session_id,
+            &ctx,
+            |p| p.modify_sessions,
+            "modify_sessions",
+        )
+        .await?;
+
+        // Parse and compile the desired YAML.
+        let user_pipeline = streamkit_api::yaml::parse_yaml(&args.yaml)
+            .map_err(|e| McpError::invalid_params(format!("Invalid pipeline YAML: {e}"), None))?;
+
+        let desired = streamkit_api::yaml::compile(user_pipeline).map_err(|e| {
+            McpError::invalid_params(format!("Pipeline compilation error: {e}"), None)
+        })?;
+
+        // Snapshot the current pipeline state.
+        let current = { session.pipeline.lock().await.clone() };
+
+        // Compute diff → batch operations + param changes.
+        let diff = diff_pipeline(&current, &desired);
+
+        if diff.operations.is_empty() && diff.params_changed.is_empty() {
+            info!(session_id = %args.session_id, "MCP update_pipeline (no changes)");
+            let result = serde_json::json!({
+                "operations_applied": 0,
+                "operations": [],
+                "params_changed": [],
+            });
+            return json_tool_result(&result);
+        }
+
+        // Apply structural changes via the shared batch path (validates + applies).
+        if !diff.operations.is_empty() {
+            crate::server::apply_batch_operations(
+                &session,
+                diff.operations.clone(),
+                &perms,
+                &self.app_state.config.security,
+            )
+            .await
+            .map_err(|e| McpError::invalid_params(e, None))?;
+        }
+
+        // Apply param changes via tune_node_replace when permitted.
+        // Uses full replacement semantics (not deep merge) so that keys
+        // removed from the YAML are actually cleared in the durable model.
+        let mut params_applied = Vec::new();
+        let mut params_deferred = Vec::new();
+        let mut params_errors = Vec::new();
+        for (node_id, new_params) in &diff.params_changed {
+            if perms.tune_nodes {
+                match crate::server::tune_session_node_replace(
+                    &session,
+                    node_id.clone(),
+                    streamkit_core::control::NodeControlMessage::UpdateParams(new_params.clone()),
+                    &self.app_state.config.security,
+                    &self.app_state.event_tx,
+                )
+                .await
+                {
+                    Ok(()) => params_applied.push(node_id.clone()),
+                    Err(e) => {
+                        warn!(
+                            session_id = %args.session_id,
+                            node_id = %node_id,
+                            params_applied = ?params_applied,
+                            error = %e,
+                            "MCP update_pipeline partial param failure"
+                        );
+                        params_errors.push(serde_json::json!({
+                            "node_id": node_id,
+                            "error": e,
+                        }));
+                    },
+                }
+            } else {
+                params_deferred.push(node_id.clone());
+            }
+        }
+
+        info!(
+            session_id = %args.session_id,
+            ops = diff.operations.len(),
+            params_tuned = params_applied.len(),
+            params_deferred = params_deferred.len(),
+            "MCP update_pipeline"
+        );
+
+        let mut result = serde_json::json!({
+            "operations_applied": diff.operations.len(),
+            "operations": diff.operations,
+            "params_changed": diff.params_changed.iter()
+                .map(|(id, v)| serde_json::json!({ "node_id": id, "params": v }))
+                .collect::<Vec<_>>(),
+        });
+        if !params_applied.is_empty() {
+            result["params_applied"] = serde_json::json!(params_applied);
+        }
+        if !params_deferred.is_empty() {
+            result["params_deferred"] = serde_json::json!(params_deferred);
+            result["params_deferred_reason"] =
+                serde_json::json!("caller lacks tune_nodes permission; use tune_node manually");
+        }
+        if !params_errors.is_empty() {
+            result["params_errors"] = serde_json::json!(params_errors);
+        }
+        json_tool_result(&result)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline diffing
+// ---------------------------------------------------------------------------
+
+/// Result of diffing two pipelines.
+struct DiffResult {
+    /// Structural batch operations (disconnect, remove, add, connect).
+    operations: Vec<streamkit_api::BatchOperation>,
+    /// Nodes whose params changed (node_id, desired_params). Only includes
+    /// surviving nodes whose kind did NOT change (replaced nodes get their
+    /// params via the AddNode operation).
+    params_changed: Vec<(String, serde_json::Value)>,
+}
+
+/// Compute the minimal set of `BatchOperation`s to reconcile `current` into
+/// `desired`.  Ordering: disconnects → removes → adds → connects.
+///
+/// Also detects param-only changes on surviving nodes and returns them
+/// separately so the caller can apply them via `tune_node`.
+fn diff_pipeline(current: &Pipeline, desired: &Pipeline) -> DiffResult {
+    use std::collections::HashSet;
+    use streamkit_api::BatchOperation;
+    use streamkit_core::control::ConnectionMode;
+
+    // Connection identity includes mode so that Reliable↔BestEffort flips
+    // are detected as a disconnect+reconnect.
+    type ConnKey = (String, String, String, String, ConnectionMode);
+    fn conn_key(c: &streamkit_api::Connection) -> ConnKey {
+        (c.from_node.clone(), c.from_pin.clone(), c.to_node.clone(), c.to_pin.clone(), c.mode)
+    }
+
+    let mut ops: Vec<BatchOperation> = Vec::new();
+
+    let current_node_ids: HashSet<&str> = current.nodes.keys().map(String::as_str).collect();
+    let desired_node_ids: HashSet<&str> = desired.nodes.keys().map(String::as_str).collect();
+
+    // Nodes whose kind changed need to be replaced (remove + re-add).
+    let replaced_node_ids: HashSet<&str> = current_node_ids
+        .intersection(&desired_node_ids)
+        .filter(|id| {
+            let cur = &current.nodes[**id];
+            let des = &desired.nodes[**id];
+            cur.kind != des.kind
+        })
+        .copied()
+        .collect();
+
+    let current_conns: HashSet<ConnKey> = current.connections.iter().map(conn_key).collect();
+    let desired_conns: HashSet<ConnKey> = desired.connections.iter().map(conn_key).collect();
+
+    // 1. Disconnect removed/changed connections.
+    //    We skip connections where either endpoint is being fully removed
+    //    (the engine tears those down with RemoveNode). Connections on
+    //    replaced nodes are explicitly disconnected because the node is
+    //    re-added as a new instance. HashSet<ConnKey> collapses true
+    //    parallel edges (same endpoints + same mode) into one entry;
+    //    this is safe because the YAML compiler never emits parallel edges
+    //    between the same pin pair.
+    for conn in &current.connections {
+        let key = conn_key(conn);
+        let from_replaced = replaced_node_ids.contains(conn.from_node.as_str());
+        let to_replaced = replaced_node_ids.contains(conn.to_node.as_str());
+        let from_survives = desired_node_ids.contains(conn.from_node.as_str());
+        let to_survives = desired_node_ids.contains(conn.to_node.as_str());
+
+        if (!desired_conns.contains(&key) || from_replaced || to_replaced)
+            && from_survives
+            && to_survives
+        {
+            ops.push(BatchOperation::Disconnect {
+                from_node: conn.from_node.clone(),
+                from_pin: conn.from_pin.clone(),
+                to_node: conn.to_node.clone(),
+                to_pin: conn.to_pin.clone(),
+            });
+        }
+    }
+
+    // 2. Remove nodes that no longer exist or whose kind changed.
+    //    Iterating current.nodes (IndexMap) gives deterministic ordering.
+    for node_id in current.nodes.keys() {
+        if !desired_node_ids.contains(node_id.as_str())
+            || replaced_node_ids.contains(node_id.as_str())
+        {
+            ops.push(BatchOperation::RemoveNode { node_id: node_id.clone() });
+        }
+    }
+
+    // 3. Add new nodes and re-add replaced nodes with new kind.
+    for (node_id, node) in &desired.nodes {
+        if !current_node_ids.contains(node_id.as_str())
+            || replaced_node_ids.contains(node_id.as_str())
+        {
+            ops.push(BatchOperation::AddNode {
+                node_id: node_id.clone(),
+                kind: node.kind.clone(),
+                params: node.params.clone(),
+            });
+        }
+    }
+
+    // 4. Connect new connections and re-connect connections touching replaced nodes.
+    for conn in &desired.connections {
+        let touches_replaced = replaced_node_ids.contains(conn.from_node.as_str())
+            || replaced_node_ids.contains(conn.to_node.as_str());
+        if !current_conns.contains(&conn_key(conn)) || touches_replaced {
+            ops.push(BatchOperation::Connect {
+                from_node: conn.from_node.clone(),
+                from_pin: conn.from_pin.clone(),
+                to_node: conn.to_node.clone(),
+                to_pin: conn.to_pin.clone(),
+                mode: conn.mode,
+            });
+        }
+    }
+
+    // 5. Detect param-only changes on surviving, non-replaced nodes.
+    let mut params_changed = Vec::new();
+    for (node_id, desired_node) in &desired.nodes {
+        if replaced_node_ids.contains(node_id.as_str())
+            || !current_node_ids.contains(node_id.as_str())
+        {
+            continue;
+        }
+        let current_node = &current.nodes[node_id.as_str()];
+        // Treat None and Some({}) as equivalent so repeated calls with the
+        // same YAML are true no-ops (idempotent).
+        let normalise = |p: &Option<serde_json::Value>| match p {
+            Some(serde_json::Value::Object(m)) if m.is_empty() => None,
+            other => other.clone(),
+        };
+        if normalise(&desired_node.params) != normalise(&current_node.params) {
+            let new_params = desired_node
+                .params
+                .clone()
+                .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::default()));
+            params_changed.push((node_id.clone(), new_params));
+        }
+    }
+
+    DiffResult { operations: ops, params_changed }
 }
 
 // ---------------------------------------------------------------------------
@@ -959,6 +1234,7 @@ impl ServerHandler for StreamKitMcp {
              to manage dynamic pipeline sessions. Use validate_batch and \
              apply_batch to mutate a running session's graph as a validated batch, \
              tune_node to send control messages, \
+             update_pipeline to apply a YAML diff to a running session, \
              generate_oneshot_command to get a command for batch processing, \
              get_logs to retrieve recent server logs for debugging, and \
              resources/list to browse sample pipeline templates. \

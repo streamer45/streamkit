@@ -33,7 +33,7 @@ Or via environment: `STREAMKIT_MCP__ENABLED=true`.
 
 For STDIO, just run `skit mcp` — no config needed.
 
-## Tools (15)
+## Tools (16)
 
 All tools follow the same pattern: `extract_auth() → permission check →
 delegate to shared helper → result`.
@@ -70,7 +70,8 @@ delegate to shared helper → result`.
 |------|-------------|------------|
 | `validate_batch` | Dry-run batch mutations (addnode, connect, etc.) | `modify_sessions` |
 | `apply_batch` | Apply batch mutations atomically | `modify_sessions` |
-| `tune_node` | Send control message (e.g. UpdateParams) to a node | `modify_sessions` |
+| `tune_node` | Send control message (e.g. UpdateParams) to a node | `tune_nodes` |
+| `update_pipeline` | Diff new YAML against running session and apply minimal batch ops | `modify_sessions` (+ `tune_nodes` for auto-applying param changes) |
 
 ### Diagnostics
 
@@ -111,7 +112,8 @@ permissions relevant to MCP:
 |------------|----------|
 | `create_sessions` | Creating sessions, validating pipelines |
 | `list_sessions` | Listing sessions, getting pipeline state |
-| `modify_sessions` | Batch mutations, tuning nodes |
+| `modify_sessions` | Batch mutations, updating pipelines |
+| `tune_nodes` | Tuning node params (via tune_node or update_pipeline auto-apply) |
 | `destroy_sessions` | Destroying sessions |
 | `list_samples` | Listing sample pipelines, listing resources |
 | `read_samples` | Reading sample YAML, reading resources |
@@ -154,6 +156,31 @@ permissions relevant to MCP:
 2. tools/call   → apply_batch (apply atomically)
 3. tools/call   → tune_node (adjust parameters at runtime)
 ```
+
+### Apply a full YAML update to a running session
+
+```
+1. tools/call   → update_pipeline (diffs YAML against current state, applies batch ops)
+```
+
+`update_pipeline` is a higher-level alternative to `validate_batch` +
+`apply_batch`.  It takes the desired pipeline YAML and the session ID,
+computes the diff (nodes added/removed/replaced, connections
+added/removed/mode-changed, parameter changes on surviving nodes), and
+applies the changes as batch operations.  Use it when the agent reasons
+about pipeline YAML rather than individual graph mutations.
+
+**Caveats:**
+
+- **Param changes** on surviving nodes are auto-applied via `tune_node`
+  when the caller has `tune_nodes` permission. Otherwise, the response
+  includes `params_deferred` — call `tune_node` manually for those nodes.
+- **Partial failure:** Engine-side errors after the durable Pipeline
+  mutation do not roll back already-applied operations (same as
+  `apply_batch`).
+- **Concurrency:** The pipeline is snapshotted before diffing and the
+  lock is released during diff computation. Concurrent mutations may
+  cause "node already exists" errors — retry in that case.
 
 ## Code Layout
 

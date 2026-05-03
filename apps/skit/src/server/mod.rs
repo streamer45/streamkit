@@ -4224,6 +4224,36 @@ pub async fn tune_session_node(
     security_config: &crate::config::SecurityConfig,
     event_tx: &tokio::sync::broadcast::Sender<crate::state::BroadcastEvent>,
 ) -> Result<(), String> {
+    tune_session_node_inner(session, node_id, message, security_config, event_tx, false).await
+}
+
+/// Like [`tune_session_node`] but the durable params are fully replaced
+/// instead of deep-merged. Used by `update_pipeline` which needs declarative
+/// "desired state" semantics.
+///
+/// # Errors
+///
+/// Returns an error string when the security policy rejects the
+/// `UpdateParams` payload.
+#[cfg(feature = "mcp")]
+pub async fn tune_session_node_replace(
+    session: &crate::session::Session,
+    node_id: String,
+    message: streamkit_core::control::NodeControlMessage,
+    security_config: &crate::config::SecurityConfig,
+    event_tx: &tokio::sync::broadcast::Sender<crate::state::BroadcastEvent>,
+) -> Result<(), String> {
+    tune_session_node_inner(session, node_id, message, security_config, event_tx, true).await
+}
+
+async fn tune_session_node_inner(
+    session: &crate::session::Session,
+    node_id: String,
+    message: streamkit_core::control::NodeControlMessage,
+    security_config: &crate::config::SecurityConfig,
+    event_tx: &tokio::sync::broadcast::Sender<crate::state::BroadcastEvent>,
+    replace: bool,
+) -> Result<(), String> {
     use streamkit_core::control::NodeControlMessage;
 
     if let NodeControlMessage::UpdateParams(ref params) = message {
@@ -4247,11 +4277,15 @@ pub async fn tune_session_node(
             }
             let mut pipeline = session.pipeline.lock().await;
             if let Some(node) = pipeline.nodes.get_mut(&node_id) {
-                node.params = Some(match node.params.take() {
-                    Some(existing) => {
-                        crate::websocket_handlers::deep_merge_json(existing, durable_params)
-                    },
-                    None => durable_params,
+                node.params = Some(if replace {
+                    durable_params
+                } else {
+                    match node.params.take() {
+                        Some(existing) => {
+                            crate::websocket_handlers::deep_merge_json(existing, durable_params)
+                        },
+                        None => durable_params,
+                    }
                 });
             }
         }

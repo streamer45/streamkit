@@ -29,7 +29,17 @@ pub enum NodeControlMessage {
 
 /// Specifies how a connection handles backpressure from slow consumers.
 #[derive(
-    Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default, TS, schemars::JsonSchema,
+    Debug,
+    Deserialize,
+    Serialize,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Default,
+    TS,
+    schemars::JsonSchema,
 )]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]

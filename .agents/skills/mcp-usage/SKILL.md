@@ -26,7 +26,7 @@ directly via MCP instead of writing REST/WebSocket code.
 
 ## Available Capabilities
 
-### Tools (15)
+### Tools (16)
 
 **Discovery:**
 - `list_nodes` — all node definitions (kind, schema, pins, categories)
@@ -48,7 +48,8 @@ directly via MCP instead of writing REST/WebSocket code.
 **Live mutation:**
 - `validate_batch(session_id, operations)` — dry-run mutations
 - `apply_batch(session_id, operations)` — apply mutations atomically
-- `tune_node(session_id, node_id, message)` — send UpdateParams
+- `tune_node(session_id, node_id, message)` — send UpdateParams (requires `tune_nodes`)
+- `update_pipeline(session_id, yaml)` — diff YAML against session, apply batch ops; auto-tunes params when caller has `tune_nodes` permission, otherwise returns `params_deferred`
 
 **Diagnostics:**
 - `get_logs(limit?, level?, filter?)` — recent server log lines
