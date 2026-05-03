@@ -200,6 +200,7 @@ impl AuthState {
         self.revocation_store.as_ref()
     }
 
+    /// Returns false if auth is disabled or if the revocation store is not available.
     #[allow(dead_code)]
     pub fn is_revoked(&self, token_hash: &str) -> bool {
         self.revocation_store.as_ref().is_some_and(|store| store.is_revoked(token_hash))
