@@ -407,7 +407,6 @@ export const ImageOverlayLayer: React.FC<{
     [overlayId, onPointerDown]
   );
 
-  // Build a serve URL for the image overlay preview.
   const imgSrc = useMemo(() => {
     if (!overlay?.assetPath) return undefined;
 

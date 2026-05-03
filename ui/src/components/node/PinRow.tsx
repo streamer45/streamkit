@@ -17,7 +17,6 @@ function percent(i: number, total: number) {
   return GUTTER_PCT + (i * usable) / (total - 1);
 }
 
-// Helper: Find upstream output pin for a node's first input
 function findUpstreamOutputType(
   nodeId: string,
   nodes: Map<string, unknown>,
@@ -115,7 +114,6 @@ export const PinRow: React.FC<PinRowProps> = ({ nodeId, side, pins, isInput, tot
           packetType = ((p as InputPin).accepts_types?.[0] ?? 'Any') as PacketType;
         } else {
           const outputPin = p as OutputPin;
-          // Use resolved type if available, otherwise use declared type
           packetType = resolvedOutputTypes.get(name) || outputPin.produces_type;
         }
 

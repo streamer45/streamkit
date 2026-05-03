@@ -245,7 +245,6 @@ type NodeFrameProps = {
   draft?: DraftNodeState;
 };
 
-// Helper: Check if node definition has dynamic pins
 function hasDynamicPins(pins?: Array<InputPin | OutputPin>): boolean {
   return (
     pins?.some((pin) => typeof pin.cardinality === 'object' && 'Dynamic' in pin.cardinality) ??
@@ -253,7 +252,6 @@ function hasDynamicPins(pins?: Array<InputPin | OutputPin>): boolean {
   );
 }
 
-// Helper: Filter out dynamic template pins
 function filterRuntimePins<T extends InputPin | OutputPin>(pins?: T[]): T[] {
   return (
     pins?.filter((pin) => !(typeof pin.cardinality === 'object' && 'Dynamic' in pin.cardinality)) ??
@@ -261,7 +259,6 @@ function filterRuntimePins<T extends InputPin | OutputPin>(pins?: T[]): T[] {
   );
 }
 
-// Helper: Infer packet type for ghost pins
 function inferGhostPacketType(
   runtimePins: InputPin[] | OutputPin[],
   nodeDefinitionPins: Array<InputPin | OutputPin> | undefined,
@@ -452,7 +449,6 @@ const NormalNodeLayout: React.FC<{
   const showInputGhost = hasDynamicPins(nodeDefinition?.inputs);
   const showOutputGhost = hasDynamicPins(nodeDefinition?.outputs);
 
-  // Filter out Dynamic template pins from runtime pins (they shouldn't appear as real pins)
   const runtimeInputs = filterRuntimePins(inputs);
   const runtimeOutputs = filterRuntimePins(outputs);
 
@@ -464,7 +460,6 @@ const NormalNodeLayout: React.FC<{
     ? inferGhostPacketType(runtimeOutputs, nodeDefinition?.outputs, false)
     : undefined;
 
-  // Calculate total pins including ghost for proper spacing
   const totalInputPins = runtimeInputs.length + (showInputGhost ? 1 : 0);
   const totalOutputPins = runtimeOutputs.length + (showOutputGhost ? 1 : 0);
 

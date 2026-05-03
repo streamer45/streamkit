@@ -297,7 +297,6 @@ const SamplePipelinesPane = forwardRef<SamplePipelinesPaneRef, SamplePipelinesPa
       loadSamples();
     }, [loadSamples]);
 
-    // Expose refresh method to parent
     useImperativeHandle(ref, () => ({
       refresh: loadSamples,
     }));
@@ -321,9 +320,7 @@ const SamplePipelinesPane = forwardRef<SamplePipelinesPaneRef, SamplePipelinesPa
         await deleteSample(sampleToDelete.id);
         toast.success(`Deleted pipeline: ${sampleToDelete.name}`);
 
-        // Refresh the samples list
         await loadSamples();
-
         setShowDeleteModal(false);
         setSampleToDelete(null);
       } catch (err) {
@@ -339,7 +336,6 @@ const SamplePipelinesPane = forwardRef<SamplePipelinesPaneRef, SamplePipelinesPa
       setSampleToDelete(null);
     };
 
-    // Fragment handlers
     const handleFragmentDragStart = (event: React.DragEvent, fragment: FragmentSample) => {
       if (onFragmentDragStart) {
         onFragmentDragStart(event, fragment);
@@ -366,9 +362,7 @@ const SamplePipelinesPane = forwardRef<SamplePipelinesPaneRef, SamplePipelinesPa
         await deleteFragmentService(fragmentToDelete.id);
         toast.success(`Deleted fragment: ${fragmentToDelete.name}`);
 
-        // Refresh the list
         await loadSamples();
-
         setShowFragmentDeleteModal(false);
         setFragmentToDelete(null);
       } catch (err) {

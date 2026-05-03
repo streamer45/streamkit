@@ -19,7 +19,6 @@ interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   active?: boolean;
 }
 
-// Helper: Get size-specific styles
 function getSizeStyles(size?: ButtonSize): string {
   switch (size) {
     case 'small':
@@ -40,7 +39,6 @@ function getSizeStyles(size?: ButtonSize): string {
   }
 }
 
-// Helper: Get variant-specific styles
 function getVariantStyles(variant?: ButtonVariant, active?: boolean, size?: ButtonSize): string {
   switch (variant) {
     case 'primary':

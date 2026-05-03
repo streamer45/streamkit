@@ -174,8 +174,6 @@ interface InspectorPaneProps {
     kind: string;
     params: Record<string, unknown>;
     sessionId?: string;
-    /** Inspector reads only `missingRequired` for the hint text;
-     *  promotion happens via the canvas-side button (see NodeFrame). */
     draft?: { missingRequired: string[]; isCreating: boolean; onPromote: () => void };
   }>;
   nodeDefinition: NodeDefinition;
@@ -186,7 +184,6 @@ interface InspectorPaneProps {
   isMonitorView?: boolean;
 }
 
-// Helper: Render string field
 const StringField: React.FC<{
   inputId: string;
   value: unknown;
@@ -233,7 +230,6 @@ const StringField: React.FC<{
   );
 };
 
-// Helper: Render select field for enum-constrained strings
 const SelectField: React.FC<{
   inputId: string;
   value: unknown;
@@ -262,7 +258,6 @@ const SelectField: React.FC<{
   );
 };
 
-// Helper: Render number field
 const NumberField: React.FC<{
   inputId: string;
   value: unknown;
@@ -284,7 +279,6 @@ const NumberField: React.FC<{
   />
 );
 
-// Helper: Render boolean field
 const BooleanField: React.FC<{
   inputId: string;
   value: unknown;
@@ -301,7 +295,6 @@ const BooleanField: React.FC<{
   />
 );
 
-// Helper: Render JSON field (fallback for unknown types)
 const JsonField: React.FC<{
   inputId: string;
   value: unknown;
@@ -334,17 +327,10 @@ const InspectorPane: React.FC<InspectorPaneProps> = ({
   readOnly = false,
   isMonitorView = false,
 }) => {
-  // Read live params for this node from a per-node Jotai atom (fine-grained reactivity).
-  // Only re-renders when THIS node's params change, not when any node's params change.
   const paramsKey = node.data.sessionId ? `${node.data.sessionId}\0${node.id}` : node.id;
   const nodeParams = useAtomValue(nodeParamsAtom(paramsKey));
 
   const handleInputChange = (key: string, value: unknown, schema?: JsonSchemaProperty) => {
-    // When a schema has a `path` override, build the nested payload and
-    // route it through onParamChange so it works in both Monitor view
-    // (where onParamChange → tuneNode) and design view (where
-    // onParamChange → onConfigChange).  The path is passed as the
-    // paramName so the caller can build the correct UpdateParams.
     if (schema?.path) {
       onParamChange(node.id, schema.path, value);
     } else {

@@ -220,7 +220,6 @@ export const CustomAudioPlayer: React.FC<CustomAudioPlayerProps> = ({
     const audio = audioRef.current;
     if (!audio) return;
 
-    // Set initial volume
     audio.volume = volume;
 
     const handleTimeUpdate = () => setCurrentTime(audio.currentTime);
@@ -235,7 +234,6 @@ export const CustomAudioPlayer: React.FC<CustomAudioPlayerProps> = ({
     audio.addEventListener('play', handlePlay);
     audio.addEventListener('pause', handlePause);
 
-    // Auto-play if specified
     if (autoPlay) {
       audio.play().catch((err) => {
         componentsLogger.warn('Autoplay failed:', err);

@@ -141,7 +141,6 @@ export const SessionInfoChip: React.FC<SessionInfoDisplayProps> = React.memo(({ 
     useShallow((state) => state.sessions.get(session.id)?.nodeStates ?? {})
   );
 
-  // Compute session status - memoized to prevent recalculation on every uptime update
   const sessionStatus = React.useMemo(() => computeSessionStatus(nodeStates), [nodeStates]);
   const statusColor = React.useMemo(() => getSessionStatusColor(sessionStatus), [sessionStatus]);
   const statusLabel = React.useMemo(() => getSessionStatusLabel(sessionStatus), [sessionStatus]);
@@ -253,7 +252,6 @@ export const SessionItem: React.FC<SessionItemProps> = React.memo(
       useShallow((state) => state.sessions.get(session.id)?.nodeStates ?? {})
     );
 
-    // Compute session status from node states - memoized to prevent recalculation on every uptime update
     const sessionStatus = React.useMemo(() => computeSessionStatus(nodeStates), [nodeStates]);
     const statusColor = React.useMemo(() => getSessionStatusColor(sessionStatus), [sessionStatus]);
     const statusLabel = React.useMemo(() => getSessionStatusLabel(sessionStatus), [sessionStatus]);

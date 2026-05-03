@@ -6,7 +6,6 @@ import styled from '@emotion/styled';
 import * as RadixCheckbox from '@radix-ui/react-checkbox';
 import React from 'react';
 
-// Checkbox Root
 export const CheckboxRoot = styled(RadixCheckbox.Root)`
   width: 18px;
   height: 18px;
@@ -42,7 +41,6 @@ export const CheckboxRoot = styled(RadixCheckbox.Root)`
   }
 `;
 
-// Checkbox Indicator (checkmark)
 export const CheckboxIndicator = styled(RadixCheckbox.Indicator)`
   color: var(--sk-panel-bg);
   display: flex;

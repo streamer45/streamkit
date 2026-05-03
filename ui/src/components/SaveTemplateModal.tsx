@@ -42,7 +42,6 @@ const SaveTemplateModal: React.FC<SaveTemplateModalProps> = ({
   const [isSaving, setIsSaving] = useState(false);
   const [showOverwriteConfirm, setShowOverwriteConfirm] = useState(false);
 
-  // Update name and description when initial values change
   React.useEffect(() => {
     if (isOpen) {
       setName(initialName);
@@ -61,7 +60,6 @@ const SaveTemplateModal: React.FC<SaveTemplateModalProps> = ({
       setShowOverwriteConfirm(false);
       onClose();
     } catch (error) {
-      // Check if it's a 409 conflict error (duplicate name)
       if (error instanceof Error && error.message.includes('409')) {
         setShowOverwriteConfirm(true);
       } else {

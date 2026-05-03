@@ -73,7 +73,6 @@ interface MSEPlayerProps {
   onError?: (message: string) => void;
 }
 
-// Helper: Create error handler for media element
 function createMediaErrorHandler(
   media: HTMLMediaElement,
   setError: (msg: string) => void,
@@ -97,14 +96,10 @@ function createMediaErrorHandler(
   };
 }
 
-// Helper: Check if media element has a real error (not cleanup error)
 function hasRealMediaError(media: HTMLMediaElement): boolean {
   return !!media.error && !media.error.message?.includes('Empty src attribute');
 }
 
-// Helper: Start playback from the beginning for oneshot/convert streams.
-// Plays from wherever currentTime is (typically 0).  Returns true once
-// there is enough buffered data to begin playback.
 function startPlaybackFromBeginning(media: HTMLMediaElement, sourceBuffer: SourceBuffer): boolean {
   const buffered = sourceBuffer.buffered;
   if (buffered.length === 0) {
@@ -126,7 +121,6 @@ function startPlaybackFromBeginning(media: HTMLMediaElement, sourceBuffer: Sourc
   return true;
 }
 
-// Helper: Check if error is a cancellation
 function isCancellationError(err: unknown): boolean {
   const isCancellation =
     err instanceof TypeError && (err.message.includes('cancel') || err.message.includes('Cancel'));
@@ -134,7 +128,6 @@ function isCancellationError(err: unknown): boolean {
   return isCancellation || isAbortError;
 }
 
-// Helper: Handle stream completion
 function handleStreamCompletion(
   totalBytes: number,
   mediaSource: MediaSource,
@@ -142,23 +135,16 @@ function handleStreamCompletion(
   onComplete?: () => void
 ): void {
   setStatus(`Completed (${(totalBytes / 1024).toFixed(1)} KB)`);
-  // Signal end of stream
   if (mediaSource.readyState === 'open') {
     mediaSource.endOfStream();
   }
-  // Call completion callback
   onComplete?.();
 }
 
-// Helper: Process stream chunk
 async function processStreamChunk(value: Uint8Array, sourceBuffer: SourceBuffer): Promise<void> {
-  // Create a new Uint8Array to ensure it's backed by ArrayBuffer (not SharedArrayBuffer)
   const buffer = new Uint8Array(value);
   sourceBuffer.appendBuffer(buffer);
 
-  // Wait for the buffer to finish updating before appending more.
-  // Listen for both updateend (success) and error (decode/append failure)
-  // so that SourceBuffer errors surface instead of hanging silently.
   await new Promise<void>((resolve, reject) => {
     const onUpdateEnd = () => {
       sourceBuffer.removeEventListener('error', onError);
@@ -358,7 +344,6 @@ async function processChunkAndUpdateState(
   }
 }
 
-// Helper: Stream reading loop
 async function streamMediaData(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   sourceBuffer: SourceBuffer,
@@ -401,7 +386,6 @@ async function streamMediaData(
       setStatus(`Streaming... ${(state.totalBytes / 1024).toFixed(1)} KB`);
     }
 
-    // Check media source and element state before appending.
     if (mediaSource.readyState !== 'open' || hasRealMediaError(media)) {
       componentsLogger.warn('Media source not ready or element error, stopping stream');
       reader.cancel();
@@ -462,13 +446,11 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
       }
     };
 
-    // Check MSE support
     if (!('MediaSource' in window)) {
       setErrorAndNotify('Media Source Extensions not supported in this browser');
       return;
     }
 
-    // Listen for when media is ready to play
     const handleCanPlay = () => {
       componentsLogger.info('MSEPlayer: Media can play - hiding loading overlay');
       if (stallTimerRef?.current) {
@@ -494,7 +476,6 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
     const mediaSource = new MediaSource();
     mediaSourceRef.current = mediaSource;
 
-    // Create object URL for MediaSource
     const objectUrl = URL.createObjectURL(mediaSource);
     media.src = objectUrl;
 
@@ -504,8 +485,7 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
       try {
         setStatus('Opening media source...');
 
-        // Use the content type from the server (set by the pipeline YAML).
-        // This declares all expected codecs (e.g. "vp9,opus") — the backend
+        // Content type from server declares expected codecs (e.g. "vp9,opus") — the backend
         // muxer must wait for all inputs before producing the init segment.
         const mseContentType = normalizeMimeType(contentType);
         componentsLogger.debug('MSEPlayer: Using MIME type:', mseContentType);
@@ -514,7 +494,6 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
         const mediaKind = isVideo ? 'video' : 'audio';
         setStatus(`Streaming ${mediaKind}...`);
 
-        // Check if stream is already locked (can happen in StrictMode)
         if (stream.locked) {
           componentsLogger.warn('MSEPlayer: Stream is already locked, skipping');
           setErrorAndNotify('Stream is already locked. Please try again.');
@@ -525,7 +504,6 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
         const reader = stream.getReader();
         readerRef.current = reader; // Store reader for cleanup
 
-        // Set up event listeners (stall/resume diagnostics + error handler).
         const listeners = attachStreamListeners(
           media,
           sourceBuffer,
@@ -562,7 +540,6 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
           // Playback failed (e.g., decode error). Caller can decide how to fall back.
           return;
         }
-        // Handle cancellation errors
         if (isCancellationError(err) || aborted) {
           componentsLogger.info('MSEPlayer: Stream cancelled/aborted by user');
           onCancelRef.current?.();
@@ -571,14 +548,12 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
           setErrorAndNotify(err instanceof Error ? err.message : 'Unknown error');
         }
       } finally {
-        // Clear reader ref
         readerRef.current = null;
       }
     };
 
     mediaSource.addEventListener('sourceopen', handleSourceOpen);
 
-    // Cleanup
     return () => {
       componentsLogger.debug('MSEPlayer: Cleanup called - cancelling stream reader');
       aborted = true;
@@ -589,7 +564,6 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
         stallTimerRef.current = null;
       }
 
-      // Cancel the reader if it exists - this will cause the read() to reject
       if (readerRef.current) {
         try {
           readerRef.current.cancel('Component unmounting');
@@ -599,10 +573,8 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
         }
       }
 
-      // Clean up event listener
       media.removeEventListener('canplay', handleCanPlay);
 
-      // Clean up media source
       if (mediaSource.readyState === 'open') {
         try {
           mediaSource.endOfStream();
@@ -611,11 +583,9 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
         }
       }
 
-      // Clean up object URL
       URL.revokeObjectURL(objectUrl);
       media.src = '';
 
-      // Reset error notification for future mounts
       errorNotifiedRef.current = false;
     };
     // Callbacks are accessed via refs so they don't trigger effect re-runs.

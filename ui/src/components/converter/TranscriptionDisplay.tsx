@@ -11,7 +11,6 @@ import { componentsLogger } from '@/utils/logger';
 
 import { LoadingSpinner } from '../LoadingSpinner';
 
-// Helper: Update transcription state with new data
 function updateTranscriptionState(
   transcription: TranscriptionData,
   currentLanguage: string | null,
@@ -20,13 +19,10 @@ function updateTranscriptionState(
   setLanguage: React.Dispatch<React.SetStateAction<string | null>>,
   setIsLoading: React.Dispatch<React.SetStateAction<boolean>>
 ): void {
-  // Update segments
   setSegments((prev) => [...prev, ...transcription.segments]);
 
-  // Update full text (accumulate)
   setFullText((prev) => (prev ? `${prev} ${transcription.text}` : transcription.text));
 
-  // Update language (use first one we see)
   if (transcription.language && !currentLanguage) {
     setLanguage(transcription.language);
   }
@@ -34,7 +30,6 @@ function updateTranscriptionState(
   setIsLoading(false);
 }
 
-// Helper: Process buffered lines
 function processBufferedLines(
   lines: string[],
   parseTranscriptionLine: (line: string) => TranscriptionData | null,
@@ -59,7 +54,6 @@ function processBufferedLines(
   }
 }
 
-// Helper: Read and process transcription stream
 async function readTranscriptionStream(
   reader: ReadableStreamDefaultReader<string>,
   parseTranscriptionLine: (line: string) => TranscriptionData | null,
@@ -287,7 +281,6 @@ function parseTranscriptionLine(line: string): TranscriptionData | null {
 
   try {
     const parsed = JSON.parse(line);
-    // Handle the packet wrapper format: {"Transcription": {...}}
     if (parsed.Transcription) {
       return parsed.Transcription as TranscriptionData;
     }
@@ -317,7 +310,6 @@ export const TranscriptionDisplay: React.FC<TranscriptionDisplayProps> = ({
       try {
         componentsLogger.debug('TranscriptionDisplay: Starting stream processing');
 
-        // Check if stream is already locked (can happen in StrictMode)
         if (stream.locked) {
           componentsLogger.warn(
             'TranscriptionDisplay: Stream is already locked, skipping processing'
@@ -326,7 +318,6 @@ export const TranscriptionDisplay: React.FC<TranscriptionDisplayProps> = ({
           return;
         }
 
-        // Use type assertion for TextDecoderStream compatibility
         const textStream = stream.pipeThrough(
           new TextDecoderStream() as unknown as ReadableWritablePair<string, Uint8Array>
         );
@@ -343,7 +334,6 @@ export const TranscriptionDisplay: React.FC<TranscriptionDisplayProps> = ({
           onComplete
         );
       } catch (error) {
-        // Handle AbortError gracefully (user cancelled)
         if (error instanceof Error && error.name === 'AbortError') {
           componentsLogger.info('TranscriptionDisplay: Stream aborted by user');
           onCancel?.();
@@ -365,9 +355,6 @@ export const TranscriptionDisplay: React.FC<TranscriptionDisplayProps> = ({
 
     processStream();
 
-    // Cleanup: we don't abort here to allow the stream to complete
-    // The stream will naturally finish when done, and React will clean up the component
-    // This is important for StrictMode which will mount/unmount/remount
     return () => {
       componentsLogger.debug(
         'TranscriptionDisplay: Cleanup called (not aborting stream to allow completion)'
@@ -376,7 +363,6 @@ export const TranscriptionDisplay: React.FC<TranscriptionDisplayProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Show loading spinner until we have content
   if (isLoading && segments.length === 0) {
     return (
       <LoadingContainer>

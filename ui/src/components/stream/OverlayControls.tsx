@@ -305,7 +305,6 @@ const NumberControl: React.FC<{
     [throttledSend]
   );
 
-  // Format display: show integers without decimals, floats with up to 2.
   const display = Number.isInteger(step) ? Math.round(localValue) : localValue.toFixed(2);
 
   return (
@@ -390,20 +389,16 @@ const OverlayControls: React.FC<OverlayControlsProps> = ({ pipelineYaml, session
   const { tuneNodeConfig } = useTuneNode(sessionId);
   const nodeDefinitions = useSchemaStore((s) => s.nodeDefinitions);
 
-  // Parse controls from the pipeline YAML's client section.
   const yamlControls: ControlConfig[] = useMemo(
     () => parseClientFromYaml(pipelineYaml)?.controls ?? [],
     [pipelineYaml]
   );
 
-  // Generate schema-driven controls from runtime_schemas (same source as
-  // Monitor View) and merge with YAML controls.  YAML controls take
-  // precedence when they target the same node+property — they carry
-  // hand-authored labels, groups, and range overrides.
+  // YAML controls take precedence over schema-generated ones when they
+  // target the same node+property (they carry hand-authored labels/ranges).
   const controls: ControlConfig[] = useMemo(() => {
     if (!pipeline?.runtime_schemas) return yamlControls;
 
-    // Build a set of node:property keys already covered by YAML controls
     const yamlKeys = new Set(yamlControls.map((c) => `${c.node}:${c.property}`));
 
     const schemaControls: ControlConfig[] = [];
@@ -431,8 +426,6 @@ const OverlayControls: React.FC<OverlayControlsProps> = ({ pipelineYaml, session
     return [...yamlControls, ...schemaControls];
   }, [yamlControls, pipeline, nodeDefinitions]);
 
-  // Build a send callback for a control. A new closure is created per
-  // render, but child controls absorb this via onSendRef so it is safe.
   const makeSend = useCallback(
     (control: ControlConfig) => (value: unknown) => {
       const update = buildParamUpdate(control.property, value);

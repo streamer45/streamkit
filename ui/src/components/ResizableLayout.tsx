@@ -162,7 +162,6 @@ function DesktopResizableLayout({ left, center, right }: ResizableLayoutProps) {
 
   const initialLayout = initialLayoutRef.current;
 
-  // Memoize callbacks to prevent PanelResizeHandle from re-rendering
   const handleLeftCollapse = useCallback(() => setLeftCollapsed(true), [setLeftCollapsed]);
   const handleLeftExpand = useCallback(() => setLeftCollapsed(false), [setLeftCollapsed]);
   const handleLeftResize = useCallback(

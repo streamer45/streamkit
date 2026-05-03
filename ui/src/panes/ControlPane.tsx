@@ -381,10 +381,8 @@ const ControlPane: React.FC<ControlPaneProps> = ({
     await performRemovePlugin(kind);
   }, [pendingDelete, performRemovePlugin]);
 
-  // Memoize callback for back button
   const handleBackToNodeList = React.useCallback(() => setSelectedDef(null), []);
 
-  // Memoize node details JSX to prevent re-renders
   const nodeDetailsContent = React.useMemo(() => {
     if (!selectedDef) return null;
 
@@ -650,7 +648,6 @@ const ControlPane: React.FC<ControlPaneProps> = ({
     );
   }, [selectedDef, handleBackToNodeList, pluginKinds, plugins]);
 
-  // Memoize node library JSX to prevent re-renders
   const nodeLibraryContent = React.useMemo(() => {
     if (nodeDefinitions.length === 0) {
       return (
@@ -689,19 +686,16 @@ const ControlPane: React.FC<ControlPaneProps> = ({
     setSelectedTop,
   ]);
 
-  // Memoize tab change handler to prevent re-renders
   const handleTabChange = React.useCallback((value: string) => {
     setActiveTab(value as 'nodes' | 'samples' | 'plugins');
   }, []);
 
-  // Memoize dialog open change handler to prevent re-renders
   const handleDialogOpenChange = React.useCallback((open: boolean) => {
     if (!open) {
       setPendingDelete(null);
     }
   }, []);
 
-  // Memoize samples tab content to prevent re-renders
   const samplesTabContent = React.useMemo(() => {
     if (!onLoadSample) return null;
     return (
@@ -716,7 +710,6 @@ const ControlPane: React.FC<ControlPaneProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- samplesRef is stable and shouldn't trigger re-memoization
   }, [onLoadSample, mode, onFragmentDragStart, onFragmentInsert]);
 
-  // Memoize plugin management JSX to prevent re-renders
   const pluginManagementContent = React.useMemo(
     () => (
       <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>

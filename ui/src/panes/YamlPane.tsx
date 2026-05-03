@@ -139,10 +139,6 @@ interface YamlPaneProps {
   highlightNodeLabel?: string;
 }
 
-/**
- * Helper function to find the line range of a node in YAML
- * Returns { startLine, endLine } (0-indexed) or null if not found
- */
 function findNodeLineRange(
   yaml: string,
   nodeLabel: string
@@ -158,7 +154,6 @@ function findNodeLineRange(
     const line = lines[i];
     const trimmed = line.trim();
 
-    // Check if we're entering the nodes section
     if (trimmed === 'nodes:') {
       inNodesSection = true;
       continue;
@@ -166,35 +161,27 @@ function findNodeLineRange(
 
     if (!inNodesSection) continue;
 
-    // Check if we've hit a top-level key (end of nodes section)
     if (line.match(/^[a-zA-Z_]/)) {
-      // If we found the node, this is the end
       if (nodeStartLine !== -1) {
         return { startLine: nodeStartLine, endLine: i - 1 };
       }
-      // Otherwise, we've left the nodes section
       break;
     }
 
-    // Look for the node label as a key
-    // Include colons in the pattern to support node names like "transport::moq::peer_1"
     const nodeKeyMatch = line.match(/^(\s+)([a-zA-Z0-9_:.-]+):\s*$/);
     if (nodeKeyMatch) {
       const indent = nodeKeyMatch[1].length;
       const key = nodeKeyMatch[2];
 
       if (nodeStartLine === -1 && key === nodeLabel) {
-        // Found our node
         nodeStartLine = i;
         nodeIndent = indent;
       } else if (nodeStartLine !== -1 && indent === nodeIndent) {
-        // Found another node at the same level - this is the end
         return { startLine: nodeStartLine, endLine: i - 1 };
       }
     }
   }
 
-  // If we found the node and reached the end of the file
   if (nodeStartLine !== -1) {
     return { startLine: nodeStartLine, endLine: lines.length - 1 };
   }
@@ -222,7 +209,6 @@ function findOverlayIndexById(
       itemIndex++;
     }
     const trimmed = line.trim();
-    // Strip leading "- " so we also match "- id: foo" (id on array-item line)
     const stripped = trimmed.startsWith('- ') ? trimmed.slice(2) : trimmed;
     if (
       (stripped === `id: ${targetId}` ||
@@ -389,16 +375,11 @@ const YamlPane: React.FC<YamlPaneProps> = ({
   const isDarkMode = colorMode === 'dark';
   const editorViewRef = useRef<EditorView | null>(null);
 
-  // Debounce the upstream onChange so intermediate (invalid) YAML states
-  // produced while typing don't trigger a flood of parse-error toasts.
-  // CodeMirror manages its own internal buffer, so the editor stays
-  // responsive — only the parent's parse/validate cycle is deferred.
   const debouncedOnChange = useMemo(() => {
     if (!onChange) return undefined;
     return debounce(onChange, YAML_EDIT_DEBOUNCE_MS, { leading: false, trailing: true });
   }, [onChange]);
 
-  // Cancel any pending debounced call on unmount or when onChange changes.
   useEffect(() => {
     return () => {
       debouncedOnChange?.cancel();
@@ -412,12 +393,9 @@ const YamlPane: React.FC<YamlPaneProps> = ({
     [debouncedOnChange]
   );
 
-  // Create highlighting extension for selected node
   const highlightExtension = useMemo(() => {
-    // Define the effect to set highlight range
     const setHighlightEffect = StateEffect.define<{ startLine: number; endLine: number } | null>();
 
-    // Define the state field to store decorations
     const highlightField = StateField.define({
       create() {
         return Decoration.none;
@@ -432,7 +410,6 @@ const YamlPane: React.FC<YamlPaneProps> = ({
               const { startLine, endLine } = effect.value;
               const highlights: Range<Decoration>[] = [];
 
-              // Add decoration for each line in the range
               for (let line = startLine; line <= endLine; line++) {
                 const lineObj = tr.state.doc.line(line + 1); // CodeMirror lines are 1-indexed
                 highlights.push(
@@ -453,7 +430,6 @@ const YamlPane: React.FC<YamlPaneProps> = ({
       provide: (f) => EditorView.decorations.from(f),
     });
 
-    // Custom styling for highlighted lines
     const highlightTheme = EditorView.baseTheme({
       '.cm-highlighted-node-line': {
         backgroundColor: 'rgba(59, 130, 246, 0.1)',
@@ -463,20 +439,16 @@ const YamlPane: React.FC<YamlPaneProps> = ({
     return [highlightField, highlightTheme, setHighlightEffect];
   }, []);
 
-  // Extract the effect type from the extension
   const setHighlightEffect = highlightExtension[2] as StateEffectType<{
     startLine: number;
     endLine: number;
   } | null>;
 
-  // Read compositor layer selection (published by CompositorNode)
   const compositorSelection = useCompositorSelection();
 
-  // Update highlights when highlightNodeLabel or compositor layer selection changes
   useEffect(() => {
     if (!editorViewRef.current) return;
 
-    // If a compositor layer is selected, drill into that layer's YAML range
     let range: { startLine: number; endLine: number } | null = null;
     const nodeLabel = highlightNodeLabel || '';
 
@@ -494,12 +466,10 @@ const YamlPane: React.FC<YamlPaneProps> = ({
     }
 
     if (range) {
-      // Apply highlight and scroll to view
       editorViewRef.current.dispatch({
         effects: setHighlightEffect.of(range),
       });
 
-      // Scroll to the highlighted section
       const startLine = editorViewRef.current.state.doc.line(range.startLine + 1);
       editorViewRef.current.dispatch({
         effects: EditorView.scrollIntoView(startLine.from, {
@@ -507,18 +477,15 @@ const YamlPane: React.FC<YamlPaneProps> = ({
         }),
       });
     } else {
-      // Clear highlight if no node selected
       editorViewRef.current.dispatch({
         effects: setHighlightEffect.of(null),
       });
     }
   }, [highlightNodeLabel, yaml, setHighlightEffect, compositorSelection]);
 
-  // Create autocompletion extension with keyboard shortcuts
   const autocompletionExtension = useMemo(() => {
     if (readOnly || nodeDefinitions.length === 0) return [];
 
-    // High-precedence keymap to handle Tab when completion is active
     const tabKeymap = Prec.highest(
       EditorView.domEventHandlers({
         keydown: (event, view) => {
@@ -535,7 +502,6 @@ const YamlPane: React.FC<YamlPaneProps> = ({
       })
     );
 
-    // Keymap for manually triggering autocomplete with Ctrl+Space
     const completionKeymap = keymap.of([
       {
         key: 'Ctrl-Space',
@@ -579,7 +545,6 @@ const YamlPane: React.FC<YamlPaneProps> = ({
     return extensions;
   }, [autocompletionExtension, readOnly, highlightExtension]);
 
-  // Capture the EditorView instance when the editor is created
   const onCreateEditor = (view: EditorView) => {
     editorViewRef.current = view;
   };

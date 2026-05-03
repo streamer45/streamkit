@@ -393,8 +393,6 @@ export function AssetLibrary({ onDragStart, isDraggable }: AssetLibraryProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [formatFilter, setFormatFilter] = useState<string>('all');
 
-  // Reset format filter when switching asset type so stale selections from a
-  // previous type don't hide all results in the new type.
   const handleTypeFilterChange = useCallback((newType: TypeFilter) => {
     setTypeFilter(newType);
     setFormatFilter('all');

@@ -104,10 +104,8 @@ const TopRightControlsContainer = styled.div`
   }
 `;
 
-// Memoized ViewTitle to prevent re-renders during drag
 const DesignViewTitle = React.memo(() => <CanvasTitle>Design</CanvasTitle>);
 
-// Memoized TopRightControls component to prevent re-renders during drag
 const TopRightControls = React.memo(
   ({
     mode,
@@ -251,9 +249,6 @@ type PipelineCanvasCache = {
   description: string;
 };
 
-/**
- * Helper function to handle fragment drops
- */
 function processFragmentDrop(
   fragmentDataStr: string,
   position: { x: number; y: number },
@@ -305,9 +300,6 @@ function processFragmentDrop(
   }
 }
 
-/**
- * Helper function to handle audio asset drops
- */
 function processAudioAssetDrop(
   assetPath: string,
   position: { x: number; y: number },
@@ -348,12 +340,6 @@ function processAudioAssetDrop(
   return { node: newNode, nodeId: newId };
 }
 
-/**
- * Helper function to handle plugin asset drops.
- *
- * Uses the asset type's `node_kind` and `node_param` from the discovery
- * endpoint to create the correct node with the asset path pre-filled.
- */
 function processPluginAssetDrop(
   assetPath: string,
   nodeKind: string,
@@ -394,11 +380,6 @@ function processPluginAssetDrop(
   return { node: newNode, nodeId: newId };
 }
 
-/**
- * Parse the drag event data for a plugin asset drop and create the node.
- *
- * Returns `null` if the event data is missing or invalid.
- */
 function parsePluginAssetDrop(
   event: React.DragEvent,
   position: { x: number; y: number },
@@ -431,9 +412,6 @@ function parsePluginAssetDrop(
   }
 }
 
-/**
- * Helper function to handle regular node drops
- */
 function processRegularNodeDrop(
   type: string,
   position: { x: number; y: number },
@@ -580,7 +558,6 @@ const DesignViewContent: React.FC = () => {
 
   const cachesRef = React.useRef<Partial<Record<'oneshot' | 'dynamic', PipelineCanvasCache>>>({});
 
-  // Keep per-mode caches updated with the latest canvas state.
   React.useEffect(() => {
     cachesRef.current[mode] = {
       nodes,
@@ -590,7 +567,6 @@ const DesignViewContent: React.FC = () => {
     };
   }, [mode, nodes, edges, pipelineName, pipelineDescription]);
 
-  // Create stable callback refs for node data to prevent unnecessary re-renders
   const handleParamChangeRef = React.useRef(handleParamChange);
   const handleLabelChangeRef = React.useRef(handleLabelChange);
   React.useEffect(() => {
@@ -598,7 +574,6 @@ const DesignViewContent: React.FC = () => {
     handleLabelChangeRef.current = handleLabelChange;
   }, [handleParamChange, handleLabelChange]);
 
-  // Stable callbacks that never change identity
   const stableHandleParamChange = React.useCallback(
     (nodeId: string, paramName: string, value: unknown) => {
       handleParamChangeRef.current(nodeId, paramName, value);
@@ -630,7 +605,6 @@ const DesignViewContent: React.FC = () => {
     createOnConnectEnd,
   } = useReactFlowCommon();
 
-  // Keep refs to avoid recreating callbacks on every drag
   const nodesRef = React.useRef(nodes);
   const edgesRef = React.useRef(edges);
   React.useEffect(() => {
@@ -639,13 +613,9 @@ const DesignViewContent: React.FC = () => {
   }, [nodes, edges]);
 
   const handleNodeDragStop = React.useCallback(() => {
-    // Keep YAML ordering in sync with the canvas (top-down) without regenerating on every drag tick.
-    // Note: onNodeDragStop's third param only contains the dragged nodes, not all nodes.
-    // Use nodesRef.current which has all nodes with updated positions from onNodesChange.
     regenerateYamlFromCanvas({ nodes: nodesRef.current, edges: edgesRef.current });
   }, [regenerateYamlFromCanvas]);
 
-  // Wrap isValidConnection to pass current nodes and edges via refs
   const isValidConnectionWrapper = React.useCallback(
     (connection: Connection | Edge) => {
       return isValidConnectionBase(connection, nodesRef.current, edgesRef.current);
@@ -653,17 +623,14 @@ const DesignViewContent: React.FC = () => {
     [isValidConnectionBase]
   );
 
-  // Filter nodes based on mode - memoize to prevent left panel re-renders
   const filteredNodeDefinitions = React.useMemo(() => {
     return nodeDefinitions.filter((def) => {
       const isOneshotNode = def.categories.includes('oneshot');
       const isDynamicNode = def.categories.includes('dynamic');
 
       if (mode === 'oneshot') {
-        // In oneshot mode, hide dynamic-only nodes
         return !isDynamicNode;
       } else {
-        // In dynamic mode, hide oneshot-only nodes
         return !isOneshotNode;
       }
     });
@@ -673,12 +640,10 @@ const DesignViewContent: React.FC = () => {
     (deleted: Edge[]) => {
       setEdges((eds) => eds.filter((e) => !deleted.some((del) => del.id === e.id)));
 
-      // Remove dynamically created pins that no longer have connections
       deleted.forEach((edge) => {
         const targetNode = nodesRef.current.find((n) => n.id === edge.target);
         if (!targetNode) return;
 
-        // Check if this node has dynamic pins
         const nodeDefinition = (targetNode.data as Record<string, unknown>)?.nodeDefinition as
           | { inputs?: unknown[] }
           | undefined;
@@ -691,18 +656,15 @@ const DesignViewContent: React.FC = () => {
 
         if (!hasDynamicInputs) return;
 
-        // Find the pin that was connected
         const targetHandle = edge.targetHandle;
         if (!targetHandle) return;
 
-        // Check if this pin has any other remaining connections
         const hasOtherConnections = edgesRef.current.some(
           (e) => e.target === edge.target && e.targetHandle === targetHandle && e.id !== edge.id
         );
 
         if (hasOtherConnections) return;
 
-        // Remove the pin from the node
         setNodes((nds) =>
           nds.map((n) => {
             if (n.id === edge.target) {
@@ -736,7 +698,6 @@ const DesignViewContent: React.FC = () => {
     [setNodes, setEdges]
   );
 
-  // Wrapper for setNodes to match the expected signature in createOnConnect
   const setNodesWrapper = React.useCallback(
     (updater: (nodes: RFNode<EditorNodeData>[]) => RFNode<EditorNodeData>[]) => {
       setNodes((prevNodes) => updater(prevNodes) as RFNode<EditorNodeData>[]);
@@ -764,8 +725,6 @@ const DesignViewContent: React.FC = () => {
     [createOnConnectEnd]
   );
 
-  // Handle selection changes
-  // Avoid re-render loops on pan/zoom: only update when selection actually changes
   const arraysEqual = (a: string[], b: string[]) =>
     a.length === b.length && a.every((v, i) => v === b[i]);
 
@@ -775,8 +734,6 @@ const DesignViewContent: React.FC = () => {
       setSelectedNodes((prev) => (arraysEqual(prev, nextNodeIds) ? prev : nextNodeIds));
     },
   });
-
-  // Deletion is handled by React Flow's built-in delete key via onNodesDelete/onEdgesDelete.
 
   const handleAutoLayout = () => {
     if (nodes.length === 0) return;
@@ -816,7 +773,6 @@ const DesignViewContent: React.FC = () => {
     }));
 
     setNodes(nextNodes);
-    // Pass edges explicitly to avoid stale closure issues.
     regenerateYamlFromCanvas({ nodes: nextNodes, edges: edgesRef.current });
 
     setTimeout(() => {
@@ -824,7 +780,6 @@ const DesignViewContent: React.FC = () => {
     }, 0);
   };
 
-  // Layout just the fragment nodes around a drop position
   const layoutFragmentNodes = React.useCallback(
     (
       fragmentNodeIds: string[],
@@ -834,12 +789,10 @@ const DesignViewContent: React.FC = () => {
     ) => {
       if (fragmentNodeIds.length === 0) return allNodes;
 
-      // Filter to only edges within the fragment
       const fragmentEdges = allEdges.filter(
         (e) => fragmentNodeIds.includes(e.source) && fragmentNodeIds.includes(e.target)
       );
 
-      // Calculate layout for fragment nodes
       const { levels, sortedLevels } = topoLevelsFromEdges(
         fragmentNodeIds,
         fragmentEdges.map((e) => ({ source: e.source, target: e.target }))
@@ -871,7 +824,6 @@ const DesignViewContent: React.FC = () => {
         edges: fragmentEdges.map((e) => ({ source: e.source, target: e.target })),
       });
 
-      // Offset positions to be relative to drop position
       return allNodes.map((n) => {
         if (!fragmentNodeIds.includes(n.id)) return n;
 
@@ -902,11 +854,9 @@ const DesignViewContent: React.FC = () => {
 
       toast.success(`Template "${name}" ${overwrite ? 'overwritten' : 'saved'} successfully!`);
 
-      // Refresh the samples list
       samplesRef.current?.refresh();
     } catch (error) {
       viewsLogger.error('Failed to save template:', error);
-      // Don't show toast for 409 conflict - let the modal handle it with the overwrite dialog
       if (!(error instanceof Error && error.message.includes('409'))) {
         toast.error(error instanceof Error ? error.message : 'Failed to save template');
       }
@@ -916,12 +866,10 @@ const DesignViewContent: React.FC = () => {
 
   const handleCreateSession = async (name: string) => {
     try {
-      // Validate pipeline has content before sending
       if (!yamlString.trim()) {
         throw new Error('Pipeline is empty. Add some nodes before creating a session.');
       }
 
-      // Validate that we're in dynamic mode and don't have oneshot-only nodes
       if (mode === 'dynamic') {
         const oneshotNodes = nodes.filter((node) => {
           const nodeDef = nodeDefinitions.find((def) => def.kind === node.data.kind);
@@ -937,14 +885,12 @@ const DesignViewContent: React.FC = () => {
         }
       }
 
-      // Create session with pipeline using the sessions service
       const result = await createSession(name, yamlString);
       const sessionDisplayName = result.name || result.session_id;
 
       toast.success(`Session created: ${sessionDisplayName}`);
       toast.success('Pipeline deployed to session!');
 
-      // Navigate to monitor view
       navigate('/monitor');
     } catch (error) {
       viewsLogger.error('Failed to create session:', error);
@@ -971,7 +917,6 @@ const DesignViewContent: React.FC = () => {
         y: event.clientY,
       });
 
-      // Handle fragment drop
       if (type.startsWith('fragment:')) {
         const fragmentDataStr = event.dataTransfer.getData('application/x-streamkit-fragment');
         if (fragmentDataStr) {
@@ -998,7 +943,6 @@ const DesignViewContent: React.FC = () => {
         return;
       }
 
-      // Handle audio asset drop
       if (type.startsWith('audio-asset:')) {
         const assetPath = type.replace('audio-asset:', '');
         const { node: newNode, nodeId: newId } = processAudioAssetDrop(
@@ -1020,7 +964,6 @@ const DesignViewContent: React.FC = () => {
         return;
       }
 
-      // Handle plugin asset drop (e.g. slint files)
       if (type.startsWith('plugin-asset:')) {
         const pluginNode = parsePluginAssetDrop(
           event,
@@ -1041,7 +984,6 @@ const DesignViewContent: React.FC = () => {
         return;
       }
 
-      // Handle regular node drop
       const { node: newNode, nodeId: newId } = processRegularNodeDrop(
         type,
         position,
@@ -1110,7 +1052,6 @@ const DesignViewContent: React.FC = () => {
     [setType]
   );
 
-  // Fragment drag and drop handlers
   const onFragmentDragStart = React.useCallback(
     (event: React.DragEvent, fragment: FragmentSample) => {
       const dragType = `fragment:${fragment.id}`;
@@ -1125,13 +1066,11 @@ const DesignViewContent: React.FC = () => {
     (fragment: FragmentSample) => {
       if (!rf.current) return;
 
-      // Get the center of the viewport
       const viewport = rf.current.getViewport();
       const centerX = -viewport.x + window.innerWidth / 2 / viewport.zoom;
       const centerY = -viewport.y + window.innerHeight / 2 / viewport.zoom;
       const dropPosition = { x: centerX - 100, y: centerY - 100 };
 
-      // Parse fragment from YAML
       const { nodes: fragmentNodesData } = yamlToFragment(fragment.yaml);
 
       const { nodes: fragmentNodes, edges: fragmentEdges } = fragmentToReactFlow(
@@ -1145,7 +1084,6 @@ const DesignViewContent: React.FC = () => {
         nextLabelForKind
       );
 
-      // Apply auto-layout to fragment nodes
       const fragmentNodeIds = fragmentNodes.map((n) => n.id);
       const combinedNodes = [...nodesRef.current, ...(fragmentNodes as RFNode<EditorNodeData>[])];
       const combinedEdges = [...edgesRef.current, ...fragmentEdges];
@@ -1186,7 +1124,6 @@ const DesignViewContent: React.FC = () => {
         toast.success(`Fragment "${name}" saved successfully`);
         handleCloseSaveFragmentModal();
 
-        // Refresh the samples list to show the new fragment
         samplesRef.current?.refresh();
       } catch (error) {
         viewsLogger.error('Failed to save fragment:', error);
@@ -1225,21 +1162,17 @@ const DesignViewContent: React.FC = () => {
   );
 
   const handleDeleteNode = (nodeId: string) => {
-    // Remove the node
     setNodes((nds) => nds.filter((node) => node.id !== nodeId));
 
-    // Remove edges connected to the deleted node
     setEdges((eds) => eds.filter((edge) => edge.source !== nodeId && edge.target !== nodeId));
   };
 
-  // Memoize selectedNode with custom comparison (ignore position changes)
   const selectedNodeId = selectedNodes.length === 1 ? selectedNodes[0] : null;
   const selectedNode = React.useMemo(() => {
     if (!selectedNodeId) return null;
     return nodes.find((node) => node.id === selectedNodeId) ?? null;
   }, [selectedNodeId, nodes]);
 
-  // Create a stable reference for selectedNode that only changes when data (not position) changes
   const selectedNodeRef = React.useRef(selectedNode);
   const stableSelectedNode = React.useMemo(() => {
     if (!selectedNode) {
@@ -1249,7 +1182,6 @@ const DesignViewContent: React.FC = () => {
     const prev = selectedNodeRef.current;
     const prevData = (prev?.data as Record<string, unknown> | undefined) ?? undefined;
     const nextData = selectedNode.data as Record<string, unknown>;
-    // Check if meaningful properties have changed (not just position)
     if (
       !prev ||
       prev.id !== selectedNode.id ||
@@ -1264,38 +1196,21 @@ const DesignViewContent: React.FC = () => {
     return selectedNodeRef.current;
   }, [selectedNode]);
 
-  // Keep YAML view as default when nodes are selected
-  // Inspector only opens on double-click
   useEffect(() => {
-    if (selectedNodes.length === 0) {
-      // No selection - keep YAML view
-      setRightPaneView('yaml');
-    } else if (selectedNodes.length > 1) {
-      // Multiple selection - show YAML view
-      setRightPaneView('yaml');
-    } else if (selectedNodes.length === 1) {
-      // Single selection - switch to YAML view (with highlighting)
-      setRightPaneView('yaml');
-    }
+    setRightPaneView('yaml');
   }, [selectedNodes]);
 
-  // Double-click handler to open inspector
   const handleNodeDoubleClick = React.useCallback(() => {
     setRightPaneView('inspector');
-    // Expand right pane if collapsed
     if (rightCollapsed) {
       setRightCollapsed(false);
     }
   }, [rightCollapsed, setRightCollapsed]);
-
-  // Keep a ref to handleAutoLayout to avoid dependency issues
   const handleAutoLayoutRef = React.useRef(handleAutoLayout);
   React.useEffect(() => {
     handleAutoLayoutRef.current = handleAutoLayout;
   });
 
-  // Run auto-layout after file imports, or fitView on initial page load.
-  // We no longer fitView on every node add/remove as it's disruptive to manual placement.
   useEffect(() => {
     if (nodes.length > 0) {
       if (pendingAutoLayoutRef.current) {
@@ -1319,11 +1234,9 @@ const DesignViewContent: React.FC = () => {
     return nodeDefinitions.find((def) => def.kind === selectedNode.data.kind) || null;
   })();
 
-  // Memoized button handlers to prevent TopRightControls from re-rendering
   const handleModeToggle = React.useCallback(() => {
     const nextMode = mode === 'oneshot' ? 'dynamic' : 'oneshot';
 
-    // Ensure the current canvas is cached even if the user switches immediately after load.
     cachesRef.current[mode] = {
       nodes: nodesRef.current,
       edges: edgesRef.current,
@@ -1331,8 +1244,6 @@ const DesignViewContent: React.FC = () => {
       description: pipelineDescription,
     };
 
-    // Swap canvases instead of forcing users to clear incompatible nodes.
-    // Keep a separate "last state" cache per mode.
     const nextCache = cachesRef.current[nextMode];
     const nextNodes = nextCache ? rehydrateNodesForCanvas(nextCache.nodes) : [];
     const nextEdges = nextCache?.edges ?? [];
@@ -1361,18 +1272,14 @@ const DesignViewContent: React.FC = () => {
     setSelectionMode(!selectionMode);
   }, [selectionMode]);
 
-  // Use refs to avoid recreating callback on every drag
   const handleImportYamlRef = React.useRef(handleImportYaml);
   React.useEffect(() => {
     handleImportYamlRef.current = handleImportYaml;
   }, [handleImportYaml]);
 
-  // Track when we need to auto-layout after import
   const pendingAutoLayoutRef = React.useRef(false);
-  // Track initial page load to run fitView once when nodes are restored from localStorage
   const pendingInitialFitViewRef = React.useRef(true);
 
-  // File import handlers - kept at DesignView level so file input survives menu close
   const handleImportFileChange = React.useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
@@ -1383,7 +1290,6 @@ const DesignViewContent: React.FC = () => {
           pendingAutoLayoutRef.current = true;
           handleImportYamlRef.current(content);
         }
-        // Reset input so same file can be selected again
         if (importFileInputRef.current) {
           importFileInputRef.current.value = '';
         }
@@ -1403,12 +1309,10 @@ const DesignViewContent: React.FC = () => {
 
   const handleLoadSample = React.useCallback(
     (yamlString: string, name: string, description: string) => {
-      // If canvas has nodes, show confirmation
       if (nodesRef.current.length > 0) {
         setPendingSample({ yaml: yamlString, name, description });
         handleOpenLoadSampleModal();
       } else {
-        // Canvas is empty, load directly with auto-layout
         pendingAutoLayoutRef.current = true;
         handleImportYamlRef.current(yamlString, description, name);
         toastRef.current.success(`Loaded sample: ${name}`);
@@ -1433,7 +1337,6 @@ const DesignViewContent: React.FC = () => {
     toast.success('Canvas cleared');
   }, [setNodes, setEdges, toast, handleCloseClearModal]);
 
-  // Memoize left panel to prevent re-renders during drag
   const leftPanel = React.useMemo(
     () => (
       <ControlPane
@@ -1460,12 +1363,6 @@ const DesignViewContent: React.FC = () => {
     ]
   );
 
-  // Center panel contains React Flow which handles its own efficient updates
-  // The parent (DesignViewContent) WILL re-render when nodes/edges change, and that's expected
-  // What matters is that:
-  // 1. Individual node components don't re-render (handled by React.memo)
-  // 2. Callbacks are stable (handled by useCallback with refs)
-  // 3. Sibling panels (left/right) don't re-render (they're memoized separately)
   const centerPanel = (
     <CenterContainer className="react-flow-container">
       <CanvasTopBar>
@@ -1509,12 +1406,10 @@ const DesignViewContent: React.FC = () => {
     </CenterContainer>
   );
 
-  // Extract selected node label for YAML highlighting
   const selectedNodeLabel = React.useMemo(() => {
     return stableSelectedNode?.data?.label;
   }, [stableSelectedNode]);
 
-  // Memoize right panel to prevent re-renders during drag
   const rightPanel = React.useMemo(
     () => (
       <PipelineRightPane
@@ -1577,7 +1472,6 @@ const DesignViewContent: React.FC = () => {
           onExportYaml={handleExportYaml}
           onAutoLayout={handleAutoLayout}
           onSaveFragment={() => {
-            // Delay modal opening to allow context menu to fully close
             setTimeout(() => handleOpenSaveFragmentModal(), 0);
           }}
           hasSelectedNodes={selectedNodes.length > 0}
