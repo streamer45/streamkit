@@ -25,22 +25,18 @@ const MAX_FILENAME_LENGTH: usize = 255;
 
 /// Validates a filename for security
 fn validate_filename(filename: &str) -> Result<(), SamplesError> {
-    // Check length
     if filename.len() > MAX_FILENAME_LENGTH {
         return Err(SamplesError::InvalidFilename("Filename too long".to_string()));
     }
 
-    // Check if empty
     if filename.is_empty() {
         return Err(SamplesError::InvalidFilename("Filename cannot be empty".to_string()));
     }
 
-    // Check for path traversal attempts
     if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
         return Err(SamplesError::InvalidFilename("Invalid characters in filename".to_string()));
     }
 
-    // Check extension (case-insensitive)
     let has_valid_extension = std::path::Path::new(filename)
         .extension()
         .and_then(|ext| ext.to_str())
@@ -132,31 +128,26 @@ pub async fn list_samples(
     let base_path = PathBuf::from(&app_state.config.server.samples_dir);
     let mut samples = Vec::new();
 
-    // Load system samples from oneshot/
     let oneshot_path = base_path.join("oneshot");
     if oneshot_path.exists() {
         samples.extend(load_samples_from_dir(&oneshot_path, true, "oneshot").await?);
     }
 
-    // Load system samples from dynamic/
     let dynamic_path = base_path.join("dynamic");
     if dynamic_path.exists() {
         samples.extend(load_samples_from_dir(&dynamic_path, true, "dynamic").await?);
     }
 
-    // Load user samples from user/
     let user_path = base_path.join("user");
     if user_path.exists() {
         samples.extend(load_samples_from_dir(&user_path, false, "user").await?);
     }
 
-    // Load demo samples from demo/
     let demo_path = base_path.join("demo");
     if demo_path.exists() {
         samples.extend(load_samples_from_dir(&demo_path, true, "demo").await?);
     }
 
-    // Filter samples based on permissions
     let filtered_samples: Vec<SamplePipeline> = samples
         .into_iter()
         .filter(|sample| {
@@ -212,7 +203,6 @@ fn parse_pipeline_metadata(
     )
 }
 
-/// Convert engine mode enum to string representation
 fn mode_to_string(mode: streamkit_api::EngineMode) -> String {
     match mode {
         streamkit_api::EngineMode::OneShot => "oneshot".to_string(),
@@ -242,27 +232,21 @@ async fn load_samples_from_dir(
             continue;
         }
 
-        // Check file size before reading
         let metadata = fs::metadata(&path).await?;
         if metadata.len() > MAX_FILE_SIZE as u64 {
             warn!("Skipping file {} - exceeds size limit", path.display());
             continue;
         }
 
-        // Read and parse file content
         match fs::read_to_string(&path).await {
             Ok(yaml) => {
                 let (name, description, mode) = parse_pipeline_metadata(&yaml, &path);
 
-                // Generate ID with directory prefix to ensure uniqueness across directories
                 let base_filename = filename.trim_end_matches(".yml").trim_end_matches(".yaml");
                 let id = format!("{subdir}/{base_filename}");
 
-                // Use metadata from schema, or fallback to filename-based name
                 let name = name.unwrap_or_else(|| filename_to_name(filename));
                 let description = description.unwrap_or_default();
-
-                // Detect if this is a fragment (lacks name, description, or mode in YAML)
                 let is_fragment = name == filename_to_name(filename) && description.is_empty();
 
                 samples.push(SamplePipeline {
@@ -295,7 +279,6 @@ async fn get_sample_handler(
         return SamplesError::Forbidden.into_response();
     }
 
-    // Extract the filename from the ID (which may be prefixed like "oneshot/whisper-transcription")
     let filename_base = if let Some((_subdir, base)) = id.split_once('/') {
         base
     } else {
@@ -335,11 +318,9 @@ pub async fn get_sample(
 ) -> Result<SamplePipeline, SamplesError> {
     let base_path = PathBuf::from(&app_state.config.server.samples_dir);
 
-    // Parse ID to extract directory prefix and filename
     let (subdir_hint, filename_base) = if let Some((prefix, base)) = id.split_once('/') {
         (Some(prefix), base)
     } else {
-        // Legacy ID format without prefix - try all directories
         (None, id)
     };
 
@@ -352,7 +333,6 @@ pub async fn get_sample(
         return Err(SamplesError::InvalidFilename("Invalid characters in sample ID".to_string()));
     }
 
-    // Determine which directories to search based on the prefix
     let subdirs_to_search: Vec<(&str, bool)> = if let Some(hint) = subdir_hint {
         // If prefix is present, search only that directory
         match hint {
@@ -366,7 +346,6 @@ pub async fn get_sample(
             },
         }
     } else {
-        // Legacy format - try all directories for backward compatibility
         vec![("oneshot", true), ("dynamic", true), ("demo", true), ("user", false)]
     };
 
@@ -383,25 +362,19 @@ pub async fn get_sample(
 
                 let yaml = fs::read_to_string(&path).await?;
 
-                // Try to parse the YAML to extract metadata
                 let (name, description, mode) = parse_pipeline_metadata(&yaml, &path);
 
-                // Use metadata from schema, or fallback to filename-based name
                 let name = name.unwrap_or_else(|| filename_to_name(&filename));
                 let description = description.unwrap_or_default();
                 let mode_str = mode_to_string(mode);
 
-                // Check if this sample is allowed by permissions
                 let relative_path =
                     path.strip_prefix(&base_path).unwrap_or(&path).to_string_lossy().to_string();
                 if !perms.is_sample_allowed(&relative_path) {
                     return Err(SamplesError::Forbidden);
                 }
 
-                // Detect if this is a fragment
                 let is_fragment = name == filename_to_name(&filename) && description.is_empty();
-
-                // Return ID with directory prefix for consistency
                 let full_id = format!("{subdir}/{filename_base}");
 
                 return Ok(SamplePipeline {
@@ -427,7 +400,6 @@ async fn save_sample_handler(
     Json(request): Json<SavePipelineRequest>,
 ) -> impl IntoResponse {
     let perms = get_permissions(&headers, &app_state);
-    // Check if user has permission to create/save samples
     if !perms.write_samples {
         return SamplesError::Forbidden.into_response();
     }
@@ -436,7 +408,6 @@ async fn save_sample_handler(
         return SamplesError::FileTooLarge.into_response();
     }
 
-    // Generate a safe filename from the name
     let filename = generate_safe_filename(&request.name);
 
     match validate_filename(&filename) {
@@ -484,24 +455,19 @@ async fn save_sample(
     let base_path = PathBuf::from(&app_state.config.server.samples_dir);
     let user_dir = base_path.join("user");
 
-    // Ensure user directory exists
     fs::create_dir_all(&user_dir).await?;
 
     let path = user_dir.join(filename);
 
-    // Check if file already exists
     if path.exists() && !request.overwrite {
         return Err(SamplesError::AlreadyExists);
     }
 
-    // Parse the YAML to add metadata fields (only for non-fragments)
     let yaml_with_metadata = if request.is_fragment {
-        // For fragments, don't add name/description to YAML
         request.yaml.clone()
     } else {
         match serde_saphyr::from_str::<serde_json::Value>(&request.yaml) {
             Ok(mut value) => {
-                // Add name and description to the YAML structure
                 if let Some(obj) = value.as_object_mut() {
                     obj.insert("name".to_string(), serde_json::Value::String(request.name.clone()));
                     obj.insert(
@@ -528,8 +494,6 @@ async fn save_sample(
     // Always prefix user pipelines with "user/"
     let id = format!("user/{base_filename}");
 
-    // Extract mode from the saved YAML
-    // We only need the mode, so we discard name and description
     let (_, _, mode) = parse_pipeline_metadata(&yaml_with_metadata, &path);
     let mode_str = mode_to_string(mode);
 
@@ -551,7 +515,6 @@ async fn delete_sample_handler(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let perms = get_permissions(&headers, &app_state);
-    // Check if user has permission to delete samples
     if !perms.delete_samples {
         warn!(
             sample_id = %id,
@@ -561,7 +524,6 @@ async fn delete_sample_handler(
         return SamplesError::Forbidden.into_response();
     }
 
-    // Extract the filename from the ID (which may be prefixed like "user/my-pipeline")
     let filename_base = if let Some((_subdir, base)) = id.split_once('/') {
         base
     } else {
@@ -590,11 +552,9 @@ async fn delete_sample_handler(
 async fn delete_sample(app_state: &AppState, id: &str) -> Result<(), SamplesError> {
     let base_path = PathBuf::from(&app_state.config.server.samples_dir);
 
-    // Parse ID to extract directory prefix and filename
     let (subdir_hint, filename_base) = if let Some((prefix, base)) = id.split_once('/') {
         (Some(prefix), base)
     } else {
-        // Legacy ID format without prefix - assume user directory
         (Some("user"), id)
     };
 

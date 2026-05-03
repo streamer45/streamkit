@@ -86,7 +86,6 @@ impl MaybeAuth {
 /// Checks the Authorization header first (Bearer token format),
 /// then falls back to the configured cookie name.
 pub fn extract_token(headers: &HeaderMap, config: &Config) -> Option<String> {
-    // Try Authorization header first: "Bearer <token>"
     if let Some(auth_header) = headers.get(AUTHORIZATION) {
         if let Ok(auth_str) = auth_header.to_str() {
             if let Some(token) = auth_str.strip_prefix("Bearer ") {
@@ -95,7 +94,6 @@ pub fn extract_token(headers: &HeaderMap, config: &Config) -> Option<String> {
         }
     }
 
-    // Fall back to cookie
     if let Some(cookie_header) = headers.get(COOKIE) {
         if let Ok(cookie_str) = cookie_header.to_str() {
             let cookie_name = &config.auth.cookie_name;
@@ -129,7 +127,6 @@ pub async fn validate_token_from_headers(
     config: &Config,
     permissions_config: &crate::permissions::PermissionsConfig,
 ) -> Result<AuthContext, (StatusCode, String)> {
-    // Extract token
     let token = extract_token(headers, config).ok_or_else(|| {
         (StatusCode::UNAUTHORIZED, "No authentication token provided".to_string())
     })?;
@@ -147,21 +144,18 @@ pub async fn validate_token(
     auth_state: &AuthState,
     permissions_config: &crate::permissions::PermissionsConfig,
 ) -> Result<AuthContext, (StatusCode, String)> {
-    // Validate JWT
     let claims = auth_state
         .validate_api_token(token)
         .map_err(|e| (StatusCode::UNAUTHORIZED, format!("Invalid token: {e}")))?;
 
     let token_hash = super::hash_token(token);
 
-    // Check revocation
     if let Some(revocation_store) = auth_state.revocation_store() {
         if revocation_store.is_revoked(&token_hash) {
             return Err((StatusCode::UNAUTHORIZED, "Token has been revoked".to_string()));
         }
     }
 
-    // Check "tokens we mint" enforcement
     if let Some(metadata_store) = auth_state.token_metadata_store() {
         if !metadata_store.exists(&claims.jti).await {
             return Err((
@@ -175,7 +169,6 @@ pub async fn validate_token(
         return Err((StatusCode::UNAUTHORIZED, "Token has unknown role".to_string()));
     }
 
-    // Get permissions for the role
     let permissions = permissions_config.get_role(&claims.role);
 
     Ok(AuthContext { role: claims.role.clone(), claims, permissions })

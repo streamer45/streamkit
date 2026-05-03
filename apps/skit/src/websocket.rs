@@ -33,12 +33,6 @@ fn max_ws_message_bytes() -> usize {
     })
 }
 
-/// Helper function to send a JSON message over WebSocket with consistent error handling.
-/// Returns `Ok(())` if the message was sent successfully, `Err(())` if serialization
-/// or sending failed (indicating the connection should be closed).
-///
-/// The `Sync` bound on `T` is required because the message reference crosses an `.await` point,
-/// and the future must be `Send` to work with Tokio's multi-threaded runtime.
 async fn send_json_message<T: Serialize + Sync>(
     socket: &mut WebSocket,
     message: &T,
@@ -60,7 +54,6 @@ async fn send_json_message<T: Serialize + Sync>(
     }
 }
 
-/// Metrics for WebSocket connection handling
 #[derive(Clone)]
 struct WebSocketMetrics {
     connections_gauge: opentelemetry::metrics::Gauge<u64>,
@@ -105,7 +98,6 @@ async fn handle_client_message(
 ) -> bool {
     metrics.messages_counter.add(1, &[KeyValue::new("direction", "inbound")]);
 
-    // Parse the incoming request
     let request: ApiRequest = match serde_json::from_str(&text) {
         Ok(req) => req,
         Err(e) => {
@@ -121,9 +113,7 @@ async fn handle_client_message(
         },
     };
 
-    // Handle the request and generate a response
     if let Some(response) = handle_api_request(request, app_state, perms, role_name).await {
-        // Send the response back
         metrics.messages_counter.add(1, &[KeyValue::new("direction", "outbound")]);
         if send_json_message(socket, &response, "response").await.is_err() {
             metrics.errors_counter.add(1, &[KeyValue::new("error_type", "send_error")]);
