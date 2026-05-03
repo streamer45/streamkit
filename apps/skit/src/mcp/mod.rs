@@ -493,7 +493,6 @@ impl StreamKitMcp {
             ));
         }
 
-        // Validate the YAML before generating a command.
         let validation = crate::server::validate_pipeline_yaml(
             &self.app_state,
             &perms,
@@ -590,7 +589,6 @@ impl StreamKitMcp {
 
         let destroyed_id = session.id.clone();
 
-        // Broadcast event
         let event = streamkit_api::Event {
             message_type: streamkit_api::MessageType::Event,
             correlation_id: None,
@@ -966,7 +964,6 @@ impl StreamKitMcp {
         )
         .await?;
 
-        // Parse and compile the desired YAML.
         let user_pipeline = streamkit_api::yaml::parse_yaml(&args.yaml)
             .map_err(|e| McpError::invalid_params(format!("Invalid pipeline YAML: {e}"), None))?;
 
@@ -977,7 +974,6 @@ impl StreamKitMcp {
         // Snapshot the current pipeline state.
         let current = { session.pipeline.lock().await.clone() };
 
-        // Compute diff → batch operations + param changes.
         let diff = diff_pipeline(&current, &desired);
 
         if diff.operations.is_empty() && diff.params_changed.is_empty() {

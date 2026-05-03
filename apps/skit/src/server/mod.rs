@@ -1677,7 +1677,6 @@ async fn upload_plugin_handler(
         },
     };
 
-    // Check if the loaded plugin is allowed
     if !perms.is_plugin_allowed(&summary.kind) {
         let _ = tokio::task::spawn_blocking({
             let manager = Arc::clone(&app_state.plugin_manager);
@@ -2290,7 +2289,6 @@ async fn get_moq_fingerprints_handler(
     State(app_state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    // Check auth and deny viewers
     if app_state.auth.is_enabled() {
         let auth_ctx = crate::auth::validate_token_from_headers(
             &headers,
@@ -3627,7 +3625,6 @@ async fn static_handler(
 async fn metrics_middleware(req: axum::http::Request<Body>, next: Next) -> Response {
     let start = Instant::now();
     let method = req.method().clone();
-    // Extract matched path for metrics, falling back to the full URI path if no match
     let path = req.extensions().get::<MatchedPath>().map_or_else(
         || req.uri().path().to_owned(),
         |matched_path| matched_path.as_str().to_owned(),
@@ -3894,7 +3891,6 @@ pub async fn create_dynamic_session(
         ));
     }
 
-    // Create session (engine allocation).
     let session = crate::session::Session::create(
         &app_state.engine,
         &app_state.config,
@@ -4146,7 +4142,6 @@ pub async fn apply_batch_operations(
         drop(pipeline);
     }
 
-    // Send control messages to the engine.
     for msg in engine_operations {
         session.send_control_message(msg).await;
     }
@@ -4924,7 +4919,6 @@ pub async fn start_server(config: &Config) -> Result<(), Box<dyn std::error::Err
         );
     }
 
-    // Initialize auth state
     let auth = if auth_enabled {
         info!(
             mode = ?config.auth.mode,

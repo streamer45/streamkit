@@ -563,7 +563,6 @@ impl UnifiedPluginManager {
             // Enter the span to ensure tracing logs work in blocking context
             let _enter = span.enter();
 
-            // Create a node instance with specified params to trigger initialization
             let _node = {
                 let registry =
                     registry.read().map_err(|e| anyhow!("Registry lock poisoned: {e}"))?;
@@ -763,7 +762,6 @@ impl UnifiedPluginManager {
         let summary = PluginSummary::from_entry(kind.clone(), &managed);
         self.plugins.insert(kind, managed);
 
-        // Update metrics
         self.plugin_operations_counter
             .add(1, &[KeyValue::new("operation", "load"), KeyValue::new("plugin_type", "wasm")]);
         self.update_loaded_gauge();
@@ -795,7 +793,6 @@ impl UnifiedPluginManager {
 
         self.check_kind_conflict(&kind, &original_kind)?;
 
-        // Register with the engine's node registry
         {
             let mut registry =
                 self.engine.registry.write().map_err(|e| anyhow!("Registry lock poisoned: {e}"))?;
@@ -810,7 +807,6 @@ impl UnifiedPluginManager {
         let summary = PluginSummary::from_entry(kind.clone(), &managed);
         self.plugins.insert(kind, managed);
 
-        // Update metrics
         self.plugin_operations_counter
             .add(1, &[KeyValue::new("operation", "load"), KeyValue::new("plugin_type", "native")]);
         self.update_loaded_gauge();
@@ -848,7 +844,6 @@ impl UnifiedPluginManager {
             PluginType::Native => "native",
         };
 
-        // Update metrics
         self.plugin_operations_counter.add(
             1,
             &[KeyValue::new("operation", "unload"), KeyValue::new("plugin_type", plugin_type)],

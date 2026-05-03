@@ -31,22 +31,18 @@ const ALLOWED_AUDIO_FORMATS: &[&str] = &["opus", "ogg", "flac", "mp3", "wav"];
 
 /// Validates a filename for security
 fn validate_audio_filename(filename: &str) -> Result<String, AssetsError> {
-    // Check length
     if filename.len() > MAX_FILENAME_LENGTH {
         return Err(AssetsError::InvalidFilename("Filename too long".to_string()));
     }
 
-    // Check if empty
     if filename.is_empty() {
         return Err(AssetsError::InvalidFilename("Filename cannot be empty".to_string()));
     }
 
-    // Check for path traversal attempts
     if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
         return Err(AssetsError::InvalidFilename("Invalid characters in filename".to_string()));
     }
 
-    // Extract extension and validate it's an audio format
     let extension = filename
         .rsplit('.')
         .next()
@@ -79,7 +75,6 @@ async fn read_license_file(license_path: &PathBuf) -> Option<String> {
     use std::fmt::Write as _;
 
     fs::read_to_string(license_path).await.map_or(None, |contents| {
-        // Extract relevant info from SPDX license file
         let mut license_info = String::new();
         // REUSE-IgnoreStart
         for line in contents.lines() {
@@ -117,25 +112,20 @@ async fn process_audio_entry(
 
     let filename = path.file_name().and_then(|s| s.to_str())?.to_string();
 
-    // Validate extension
     let extension = path.extension().and_then(|s| s.to_str()).map(str::to_lowercase)?;
 
     if !ALLOWED_AUDIO_FORMATS.contains(&extension.as_str()) {
         return None;
     }
 
-    // Get file metadata
     let metadata = fs::metadata(&path).await.ok()?;
     let size_bytes = metadata.len();
 
-    // Generate ID from full filename (including extension) to ensure uniqueness
     let id = filename.clone();
 
-    // Generate display name from filename without extension
     let name_without_ext = filename.trim_end_matches(&format!(".{extension}"));
     let display_name = name_without_ext.replace(['_', '-'], " ");
 
-    // Check permissions
     let asset_path_str = if is_system {
         format!("samples/audio/system/{filename}")
     } else {
@@ -170,7 +160,6 @@ async fn scan_audio_directory(
 ) -> Result<Vec<AudioAsset>, AssetsError> {
     let mut assets = Vec::new();
 
-    // Check if directory exists
     if !dir_path.exists() {
         warn!("Audio directory does not exist: {:?}", dir_path);
         return Ok(assets);
@@ -442,7 +431,6 @@ async fn delete_audio_files(
         .await
         .map_err(|e| AssetsError::IoError(format!("Failed to delete file: {e}")))?;
 
-    // Delete license file if it exists
     let license_path = file_path.with_extension(format!("{extension}.license"));
     if license_path.exists() {
         if let Err(e) = fs::remove_file(&license_path).await {
@@ -469,7 +457,6 @@ pub async fn delete_asset_handler(
     let user_dir = base_path.join("user");
     let file_path = user_dir.join(&id);
 
-    // Extract extension from filename
     let extension = match id.rsplit('.').next() {
         Some(ext) => ext.to_string(),
         None => return AssetsError::NotFound(id).into_response(),
@@ -945,7 +932,6 @@ async fn serve_image_asset_handler(
             .into_response();
     }
 
-    // Validate scope
     if scope != "user" && scope != "system" {
         return AssetsError::InvalidFilename(
             "Invalid scope: must be 'user' or 'system'".to_string(),
@@ -1208,7 +1194,6 @@ async fn process_font_upload(
     let written_bytes = stream_field_to_file(field, &file_path, MAX_FONT_FILE_SIZE).await?;
     create_license_sidecar(&file_path, &extension).await;
 
-    // Validate that the uploaded file is actually a font by checking magic bytes.
     let header = match fs::read(&file_path).await {
         Ok(data) if data.len() >= 4 => data[..4].to_vec(),
         Ok(_) => {

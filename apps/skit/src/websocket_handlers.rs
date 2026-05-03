@@ -567,7 +567,6 @@ async fn handle_remove_node(
     // observed a Failed transition for the cancelled creation.
     session.release_node_id(&node_id).await;
 
-    // Broadcast event to all clients
     let event = ApiEvent {
         message_type: MessageType::Event,
         correlation_id: None,
@@ -632,7 +631,6 @@ async fn handle_connect(
         });
     }
 
-    // Broadcast event to all clients
     let event = ApiEvent {
         message_type: MessageType::Event,
         correlation_id: None,
@@ -648,8 +646,6 @@ async fn handle_connect(
         error!("Failed to broadcast ConnectionAdded event: {}", e);
     }
 
-    // Now safe to do async operations without holding session_manager lock
-    // Convert API ConnectionMode to core ConnectionMode
     let core_mode = match mode {
         streamkit_api::ConnectionMode::Reliable => {
             streamkit_core::control::ConnectionMode::Reliable
@@ -708,7 +704,6 @@ async fn handle_disconnect(
         });
     }
 
-    // Broadcast event to all clients
     let event = ApiEvent {
         message_type: MessageType::Event,
         correlation_id: None,

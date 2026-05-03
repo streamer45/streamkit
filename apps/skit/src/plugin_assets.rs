@@ -328,7 +328,6 @@ async fn process_entry(
     let display_name = name_without_ext.replace(['_', '-'], " ");
 
     let scope = if is_system { "system" } else { "user" };
-    // Build the relative path from the system_dir's parent.
     let base = asset_type.system_dir.parent().unwrap_or(&asset_type.system_dir);
     let asset_path_str = format!("{}/{scope}/{filename}", base.display());
 
@@ -593,7 +592,6 @@ async fn serve_handler(
         return PluginAssetError::Forbidden.into_response();
     }
 
-    // Validate extension against registered type before serving.
     let extension =
         file_path.extension().and_then(|e| e.to_str()).map(str::to_lowercase).unwrap_or_default();
     if !asset_type.extensions.iter().any(|e| e.eq_ignore_ascii_case(&extension)) {
@@ -923,7 +921,6 @@ pub fn read_local_plugin_manifest(
         .and_then(|s| s.to_str())
         .map(|s| s.strip_prefix("lib").unwrap_or(s));
 
-    // Build candidate paths: generic names first, then stem-based.
     let mut candidates: Vec<std::path::PathBuf> =
         vec![dir.join("plugin.yml"), dir.join("plugin.yaml")];
 
