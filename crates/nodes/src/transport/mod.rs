@@ -22,7 +22,6 @@ pub mod rtmp;
 
 /// Registers all available transport nodes with the engine's registry.
 pub fn register_transport_nodes(registry: &mut NodeRegistry) {
-    // Call the registration function from each submodule.
     moq::register_moq_nodes(registry);
 
     #[cfg(feature = "http")]

@@ -132,7 +132,6 @@ impl ProcessorNode for HttpMseNode {
             StreamKitError::Configuration(err.to_string())
         })?;
 
-        // Get the MSE gateway from the global registry.
         let gateway = streamkit_core::mse_gateway::get_mse_gateway().ok_or_else(|| {
             let err = "MSE gateway not available — ensure transport::http::mse is used in a session with gateway support";
             tracing::error!("{}", err);
@@ -142,7 +141,6 @@ impl ProcessorNode for HttpMseNode {
         let content_type =
             self.config.content_type.clone().unwrap_or_else(|| DEFAULT_CONTENT_TYPE.to_string());
 
-        // Build the full registration path: /mse/{session_id}{path}
         let path_suffix = if self.config.path.starts_with('/') {
             self.config.path.clone()
         } else {
@@ -158,8 +156,6 @@ impl ProcessorNode for HttpMseNode {
             "HttpMseNode registering MSE stream"
         );
 
-        // Register with the MSE gateway, passing max_clients so the gateway
-        // can enforce capacity and reject clients with a proper 503.
         let mut client_rx = gateway
             .register_stream(
                 full_path.clone(),
@@ -174,7 +170,6 @@ impl ProcessorNode for HttpMseNode {
                 StreamKitError::Runtime(err)
             })?;
 
-        // Take ownership of the input channel.
         let mut input_rx = context.take_input("in").map_err(|e| {
             tracing::error!("Failed to take input pin: {}", e);
             e
@@ -185,34 +180,19 @@ impl ProcessorNode for HttpMseNode {
 
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
 
-        // Connected clients (body_tx senders).
         let mut clients: Vec<mpsc::Sender<Bytes>> = Vec::new();
 
-        // Init segment buffer: accumulates bytes until the first WebM Cluster is
-        // detected, then truncated to only the header (EBML + Segment + Info +
-        // Tracks).  Any SimpleBlock data the muxer writes before opening the
-        // first Cluster is discarded — it is invalid for MSE SourceBuffer.
-        //
-        // Per the WebM Byte Stream Format spec for MSE, the init segment must
-        // end before the first Cluster element.
-        //
-        // Rolling GOP buffer: accumulates data from the most recent Cluster
-        // start (keyframe boundary).  Late-joining clients receive init +
-        // this buffer so they start at a clean Cluster with a keyframe.
-        // The buffer is reset whenever a new Cluster ID is detected in the
-        // live data.  A hard cap prevents unbounded growth if keyframes are
-        // infrequent (e.g. 10s interval at high bitrate).
+        // Init segment: accumulates until the first WebM Cluster ID, then
+        // truncated to header only (EBML + Segment + Info + Tracks).
+        // Rolling GOP buffer: data since the most recent Cluster start;
+        // late-joining clients receive init + GOP buffer.
         let mut init_segment: Vec<u8> = Vec::new();
         let mut gop_buffer: Vec<u8> = Vec::new();
         let mut init_complete = false;
 
-        // Overlap buffer for detecting Cluster ID across chunk boundaries.
-        // Holds the last 3 bytes of the previous chunk so a 4-byte Cluster ID
-        // that straddles two consecutive packets can still be found.
+        // Overlap buffer: last 3 bytes of previous chunk, for detecting
+        // a 4-byte Cluster ID that straddles chunk boundaries.
         let mut overlap: Vec<u8> = Vec::new();
-        // How many of the overlap bytes were actually appended to init_segment.
-        // When the buffer is near MAX_INIT_SEGMENT_SIZE, the overlap tail may
-        // extend past what was buffered, so truncation must be bounded by this.
         let mut overlap_bytes_in_init: usize = 0;
 
         let cancellation_token = context.cancellation_token.clone();
@@ -221,7 +201,6 @@ impl ProcessorNode for HttpMseNode {
             tokio::select! {
                 biased;
 
-                // Shutdown via cancellation token.
                 () = async {
                     if let Some(ref token) = cancellation_token {
                         token.cancelled().await;
@@ -233,7 +212,6 @@ impl ProcessorNode for HttpMseNode {
                     break Ok(());
                 }
 
-                // Control messages.
                 msg = context.control_rx.recv() => {
                     match msg {
                         Some(streamkit_core::control::NodeControlMessage::Shutdown) => {
@@ -248,16 +226,12 @@ impl ProcessorNode for HttpMseNode {
                     }
                 }
 
-                // New HTTP client connecting.
                 client = client_rx.recv() => {
                     let Some(client) = client else {
                         tracing::warn!("MSE gateway client channel closed");
                         break Ok(());
                     };
 
-                    // Send init segment + rolling GOP buffer to the new client.
-                    // The GOP buffer starts at the most recent Cluster boundary
-                    // (keyframe), so the client can decode immediately.
                     if !init_segment.is_empty() {
                         let init_bytes = Bytes::copy_from_slice(&init_segment);
                         match client.body_tx.try_send(init_bytes) {
@@ -288,7 +262,6 @@ impl ProcessorNode for HttpMseNode {
                     clients.push(client.body_tx);
                 }
 
-                // Incoming WebM data from upstream muxer.
                 packet = input_rx.recv() => {
                     let Some(packet) = packet else {
                         tracing::info!("Input channel closed");
@@ -303,26 +276,14 @@ impl ProcessorNode for HttpMseNode {
                         continue;
                     };
 
-                    // Skip empty packets — they carry no data and would
-                    // pass through init-detection doing nothing useful.
                     if data.is_empty() {
                         continue;
                     }
 
-                    // Buffer the init segment (everything before the first Cluster element).
-                    // When the first Cluster is found, `cluster_start_in_data` records
-                    // the byte offset within `data` where the Cluster begins so only
-                    // valid media data (from the Cluster onward) is forwarded to clients.
                     let mut cluster_start_in_data: Option<usize> = None;
-                    // When the Cluster ID straddles two chunks, the leading bytes
-                    // live in the overlap buffer and must be prepended to the
-                    // forwarded data so late-joining clients receive a complete
-                    // Cluster header.
                     let mut cluster_prefix: Vec<u8> = Vec::new();
 
                     if !init_complete {
-                        // Search for the Cluster ID in the overlap + current chunk to handle
-                        // the case where the 4-byte ID straddles two consecutive packets.
                         let cluster_found = if overlap.is_empty() {
                             false
                         } else {
@@ -331,24 +292,18 @@ impl ProcessorNode for HttpMseNode {
                             find_cluster_id(&combined).is_some_and(|pos| {
                                 let overlap_len = overlap.len();
                                 if pos < overlap_len {
-                                    // The Cluster ID starts inside the overlap region.
                                     // Only truncate bytes that were actually appended to
                                     // init_segment — the overlap may extend past what was
                                     // buffered if the init_segment hit MAX_INIT_SEGMENT_SIZE.
                                     let bytes_to_remove = (overlap_len - pos).min(overlap_bytes_in_init);
                                     init_segment.truncate(init_segment.len() - bytes_to_remove);
-                                    // Cluster ID straddles: save the prefix bytes from
-                                    // the overlap so we can prepend them to the forwarded
-                                    // data, producing a complete Cluster header.
                                     cluster_prefix = overlap[pos..].to_vec();
                                     cluster_start_in_data = Some(0);
                                 } else {
-                                    // The Cluster started inside the new chunk.
                                     let extra = pos - overlap_len;
                                     let remaining_capacity = MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
                                     let to_append = extra.min(remaining_capacity);
                                     init_segment.extend_from_slice(&data[..to_append]);
-                                    // Forward data from the Cluster offset within this chunk.
                                     cluster_start_in_data = Some(extra);
                                 }
                                 true
@@ -358,7 +313,6 @@ impl ProcessorNode for HttpMseNode {
                         if cluster_found {
                             init_complete = true;
                         } else if let Some(cluster_offset) = find_cluster_id(&data) {
-                            // Cluster ID found entirely within this chunk.
                             if cluster_offset > 0 {
                                 let remaining_capacity = MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
                                 let to_append = cluster_offset.min(remaining_capacity);
@@ -367,7 +321,6 @@ impl ProcessorNode for HttpMseNode {
                             init_complete = true;
                             cluster_start_in_data = Some(cluster_offset);
                         } else {
-                            // Still in the init segment — buffer these bytes.
                             let remaining_capacity = MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
                             let appended = if remaining_capacity > 0 {
                                 let to_append = data.len().min(remaining_capacity);
@@ -376,25 +329,15 @@ impl ProcessorNode for HttpMseNode {
                             } else {
                                 0
                             };
-                            // Keep the last 3 bytes for cross-chunk Cluster ID detection.
                             let keep = data.len().min(WEBM_CLUSTER_ID.len() - 1);
                             overlap.clear();
                             overlap.extend_from_slice(&data[data.len() - keep..]);
-                            // Track how many of those overlap bytes are actually in init_segment.
-                            // The overlap comes from the tail of `data`, but only `appended` bytes
-                            // from `data` were added to init_segment. The overlap bytes start at
-                            // offset `data.len() - keep`, so they're in init_segment only if
-                            // `appended > data.len() - keep`.
                             overlap_bytes_in_init = appended.saturating_sub(data.len() - keep);
                         }
 
                         if init_complete {
-                            // Truncate the init segment to the WebM header
-                            // (EBML + Segment + Info + Tracks).  The muxer may
-                            // emit SimpleBlock data before the first Cluster in
-                            // non-seekable streaming mode; those bytes are
-                            // invalid at the Segment level and would cause
-                            // MSE CHUNK_DEMUXER_ERROR_APPEND_FAILED.
+                            // Truncate to WebM header (EBML + Segment + Info + Tracks).
+                            // Pre-Cluster SimpleBlock data is invalid for MSE.
                             if let Some(tracks_end) = find_tracks_end(&init_segment) {
                                 if tracks_end < init_segment.len() {
                                     tracing::debug!(
@@ -407,8 +350,6 @@ impl ProcessorNode for HttpMseNode {
                                 }
                             }
 
-                            // No Cluster preamble is stored — see comment above.
-
                             let elapsed_ms = u64::try_from(node_start.elapsed().as_millis())
                                 .unwrap_or(u64::MAX);
                             tracing::info!(
@@ -418,9 +359,6 @@ impl ProcessorNode for HttpMseNode {
                             );
                             overlap.clear();
 
-                            // Send init segment to clients that connected before
-                            // init was complete.  They've been waiting in the
-                            // `clients` vec without data.
                             if !clients.is_empty() && !init_segment.is_empty() {
                                 let init_bytes = Bytes::copy_from_slice(&init_segment);
                                 let mut i = 0;
@@ -436,19 +374,10 @@ impl ProcessorNode for HttpMseNode {
                         }
                     }
 
-                    // Only forward data once the init segment is complete
-                    // (i.e. the first Cluster has arrived).  Data emitted by
-                    // the muxer before the first Cluster contains SimpleBlock
-                    // elements at the Segment level which are invalid for MSE.
                     if !init_complete {
                         continue;
                     }
 
-                    // For the chunk that triggered init_complete, forward data
-                    // from the Cluster boundary onward (including the Cluster
-                    // header).  When the Cluster ID straddled two chunks, the
-                    // prefix bytes from the overlap are prepended so clients
-                    // receive a complete Cluster header.
                     let forward_data = match cluster_start_in_data {
                         Some(offset) if offset < data.len() => {
                             if cluster_prefix.is_empty() {
@@ -463,8 +392,6 @@ impl ProcessorNode for HttpMseNode {
                         None => data.clone(),
                     };
 
-                    // Maintain the rolling GOP buffer for late-joining clients.
-                    // Reset when we see a new Cluster ID; append otherwise.
                     if !forward_data.is_empty() {
                         if find_cluster_id(&forward_data).is_some() {
                             let elapsed_ms = u64::try_from(node_start.elapsed().as_millis())
@@ -487,15 +414,12 @@ impl ProcessorNode for HttpMseNode {
                         }
                     }
 
-                    // Broadcast to all connected clients, removing disconnected or slow ones.
                     if !clients.is_empty() && !forward_data.is_empty() {
                         let chunk = forward_data;
                         let mut i = 0;
                         while i < clients.len() {
-                            // Use try_send to avoid blocking the pipeline on a slow client.
                             match clients[i].try_send(chunk.clone()) {
                                 Ok(()) => {
-                                    // stats_tracker.sent() counts per-client delivery, not per-packet.
                                     // This differs from single-output nodes but accurately reflects
                                     // the total number of chunk deliveries across all clients.
                                     stats_tracker.sent();

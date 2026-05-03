@@ -78,13 +78,9 @@ impl ConversionCache {
 
     /// Drop all cached conversion entries.
     ///
-    /// Called when the slot layout changes (input disconnected or pin
-    /// removed) so that potentially large RGBA buffers (~8 MB per 1080p
-    /// frame) are freed.  A full clear is used instead of positional
-    /// eviction because the cache is indexed by draw-order position,
-    /// which is invalidated whenever the slot set changes.  Slot
-    /// changes are infrequent, so the one-time re-conversion cost on
-    /// the next frame is negligible.
+    /// Called when the slot layout changes so that large RGBA buffers
+    /// are freed and the draw-order-indexed cache is rebuilt on the
+    /// next frame.
     pub fn clear(&mut self) {
         self.entries.clear();
         self.first_layer_alpha_cache = None;

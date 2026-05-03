@@ -287,40 +287,33 @@ impl Dav1dDecoder {
         // No OBU pre-validation needed — C dav1d handles corrupt data
         // gracefully via negative error codes (unlike rav1d which panics).
 
-        // Wrap the input data in a Dav1dData.
         let mut dav1d_data = dav1d_ffi::Dav1dData::zeroed();
         let buf_ptr = unsafe { dav1d_ffi::dav1d_data_create(&raw mut dav1d_data, data.len()) };
         if buf_ptr.is_null() {
             return Err("dav1d: failed to allocate Dav1dData buffer".to_string());
         }
-        // Copy our data into the dav1d-managed buffer.
         // SAFETY: `dav1d_data_create` returned a valid buffer of `data.len()` bytes.
         unsafe {
             std::ptr::copy_nonoverlapping(data.as_ptr(), buf_ptr, data.len());
         }
 
-        // RAII guard ensures `dav1d_data_unref` is called on all error paths.
         let mut data_guard = Dav1dDataGuard::new(&raw mut dav1d_data);
 
         let mut all_frames = Vec::new();
 
-        // Feed data to the decoder in a retry loop.  The dav1d API contract
-        // states that when `dav1d_send_data` returns EAGAIN the input data
-        // was **not** consumed.  The caller must drain pending pictures via
-        // `dav1d_get_picture` and then retry with the same `Dav1dData`.
+        // dav1d API: EAGAIN means the input was not consumed; drain
+        // pending pictures then retry.
         let mut eagain_empty_retries: u32 = 0;
 
         loop {
             let res = unsafe { dav1d_ffi::dav1d_send_data(self.ctx, &raw mut dav1d_data) };
 
             if res == 0 {
-                // Data consumed successfully — defuse the guard.
                 data_guard.defuse();
                 break;
             }
 
             if res == DAV1D_EAGAIN {
-                // EAGAIN — drain buffered pictures, then retry send.
                 let mut drained = self.drain_pictures(metadata, video_pool)?;
                 if drained.is_empty() {
                     eagain_empty_retries += 1;
@@ -341,11 +334,9 @@ impl Dav1dDecoder {
                 continue;
             }
 
-            // Real error — guard will call dav1d_data_unref on drop.
             return Err(format!("dav1d: dav1d_send_data failed with code {res}"));
         }
 
-        // Drain any pictures produced by the successful send.
         let mut drained = self.drain_pictures(metadata, video_pool)?;
         all_frames.append(&mut drained);
 
@@ -364,7 +355,6 @@ impl Dav1dDecoder {
             let res = unsafe { dav1d_ffi::dav1d_get_picture(self.ctx, &raw mut pic) };
 
             if res == DAV1D_EAGAIN {
-                // No more pictures available right now.
                 break;
             }
             if res < 0 {

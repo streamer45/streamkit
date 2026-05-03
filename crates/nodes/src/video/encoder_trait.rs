@@ -37,9 +37,6 @@ use tokio::sync::mpsc;
 // ---------------------------------------------------------------------------
 
 /// Encoded output packet shared across all video encoder nodes.
-///
-/// Replaces the three identical `EncodedPacket` structs that previously
-/// existed in `vp9.rs`, `av1.rs`, and `svt_av1.rs`.
 pub struct EncodedPacket {
     pub data: Bytes,
     pub metadata: Option<PacketMetadata>,
@@ -190,9 +187,9 @@ pub trait EncoderNodeRunner: Send + 'static {
 
 /// Run an encoder node using the shared boilerplate.
 ///
-/// This replaces the ~140–175 lines of near-identical code in each encoder's
-/// `ProcessorNode::run()` implementation.  The encoder-specific work is
-/// confined to [`EncoderNodeRunner::spawn_codec_task`].
+/// Handles initialisation, metrics, channel setup, the async
+/// input-batching task, the forward loop, and shutdown.
+/// The encoder-specific work is in [`EncoderNodeRunner::spawn_codec_task`].
 pub async fn run_encoder<E: EncoderNodeRunner>(
     encoder: E,
     mut context: NodeContext,

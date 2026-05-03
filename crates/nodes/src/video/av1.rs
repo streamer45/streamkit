@@ -467,10 +467,6 @@ impl StandardVideoEncoder for Av1Encoder {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Internal codec types
-// ---------------------------------------------------------------------------
-
 use super::encoder_trait::{self, EncodedPacket, EncoderNodeRunner, StandardVideoEncoder};
 
 // ---------------------------------------------------------------------------
@@ -550,7 +546,6 @@ impl Av1Decoder {
             return Ok(Vec::new());
         }
 
-        // Wrap the input data in a `Dav1dData`.
         let mut dav1d_data: Dav1dData = Dav1dData::default();
         let buf_ptr = unsafe {
             rav1d::src::lib::dav1d_data_create(NonNull::new(&raw mut dav1d_data), data.len())
@@ -558,28 +553,18 @@ impl Av1Decoder {
         if buf_ptr.is_null() {
             return Err("rav1d: failed to allocate Dav1dData buffer".to_string());
         }
-        // Copy our data into the rav1d-managed buffer.
         // SAFETY: `dav1d_data_create` returned a valid buffer of `data.len()` bytes.
         unsafe {
             std::ptr::copy_nonoverlapping(data.as_ptr(), buf_ptr, data.len());
         }
 
-        // RAII guard ensures `dav1d_data_unref` is called on all error paths.
-        // After `dav1d_send_data` consumes the data (returns 0), we defuse the
-        // guard so the (now-empty) `Dav1dData` is not double-freed.
         let mut data_guard = Dav1dDataGuard::new(&raw mut dav1d_data);
 
         let mut all_frames = Vec::new();
 
-        // Feed data to the decoder in a retry loop.  The dav1d API contract
-        // states that when `dav1d_send_data` returns EAGAIN (-11) the input
-        // data was **not** consumed.  The caller must drain pending pictures
-        // via `dav1d_get_picture` and then retry with the same `Dav1dData`.
-        //
-        // The retry count is bounded to prevent an infinite busy-loop if the
-        // decoder gets into a state where EAGAIN persists without producing
-        // any pictures (which would block the `spawn_blocking` thread and
-        // hang the tokio runtime on shutdown).
+        // dav1d API: EAGAIN (-11) means the input was not consumed; drain
+        // pending pictures then retry.  Retries are bounded to prevent a
+        // busy-loop that would hang the tokio runtime on shutdown.
         let mut eagain_empty_retries: u32 = 0;
 
         loop {
@@ -588,13 +573,11 @@ impl Av1Decoder {
             };
 
             if res.0 == 0 {
-                // Data consumed successfully — defuse the guard.
                 data_guard.defuse();
                 break;
             }
 
             if res.0 == DAV1D_EAGAIN {
-                // EAGAIN — drain buffered pictures, then retry send.
                 let mut drained = self.drain_pictures(metadata, video_pool)?;
                 if drained.is_empty() {
                     eagain_empty_retries += 1;
@@ -603,9 +586,7 @@ impl Av1Decoder {
                              (no pictures produced after 1000 retries)"
                             .to_string());
                     }
-                    // Progressive backoff: yield_now() returns immediately
-                    // on lightly-loaded systems, so switch to sleep after a
-                    // few iterations to avoid a tight spin-loop.
+                    // Progressive backoff to avoid a tight spin-loop.
                     if eagain_empty_retries <= EAGAIN_YIELD_THRESHOLD {
                         std::thread::yield_now();
                     } else {
@@ -618,11 +599,9 @@ impl Av1Decoder {
                 continue;
             }
 
-            // Real error — guard will call dav1d_data_unref on drop.
             return Err(format!("rav1d: dav1d_send_data failed with code {}", res.0));
         }
 
-        // Drain any pictures produced by the successful send.
         let mut drained = self.drain_pictures(metadata, video_pool)?;
         all_frames.append(&mut drained);
 
@@ -645,13 +624,9 @@ impl Av1Decoder {
                 rav1d::src::lib::dav1d_get_picture(Some(self.ctx), NonNull::new(&raw mut pic))
             };
             if res.0 == DAV1D_EAGAIN {
-                // EAGAIN — no more pictures available right now.
                 break;
             }
             if res.0 < 0 {
-                // A real error — but if we already collected frames, return them.
-                // During flush() there is no next call, so log a warning to avoid
-                // silently losing the error.
                 if !frames.is_empty() {
                     tracing::warn!(
                         "rav1d: dav1d_get_picture error {} after draining {} frame(s) — \
@@ -664,12 +639,6 @@ impl Av1Decoder {
                 return Err(format!("rav1d: dav1d_get_picture failed with code {}", res.0));
             }
 
-            // NOTE: When one input packet produces multiple decoded frames
-            // (e.g. B-frame reordering during flush), all output frames receive
-            // identical metadata (timestamps).  This is correct for
-            // low_latency: true (one frame per packet) but may confuse
-            // timestamp-sensitive consumers in non-low-latency mode.  Known
-            // limitation — acceptable for the current real-time use case.
             let meta = metadata.cloned();
 
             match copy_dav1d_picture(&pic, meta, video_pool) {
@@ -708,9 +677,7 @@ impl Av1Decoder {
         &mut self,
         video_pool: Option<&Arc<VideoFramePool>>,
     ) -> Result<Vec<VideoFrame>, String> {
-        // Drain any pictures the decoder has buffered but not yet emitted.
         let frames = self.drain_pictures(None, video_pool)?;
-        // Now reset decoder state (safe — we already pulled all frames).
         unsafe {
             rav1d::src::lib::dav1d_flush(self.ctx);
         }
