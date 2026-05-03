@@ -216,7 +216,6 @@ pub async fn process_oneshot_with_client(
         "Starting oneshot pipeline processing"
     );
 
-    // Validate input files exist
     if !Path::new(pipeline_path).exists() {
         return Err(format!("Pipeline file not found: {pipeline_path}").into());
     }
@@ -230,7 +229,6 @@ pub async fn process_oneshot_with_client(
     debug!("Reading pipeline configuration from {pipeline_path}");
     let pipeline_content = fs::read_to_string(pipeline_path).await?;
 
-    // Create multipart form
     let mut form = multipart::Form::new().text("config", pipeline_content);
     for input in inputs {
         debug!("Reading input media file from {}", input.path);
@@ -256,20 +254,17 @@ pub async fn process_oneshot_with_client(
         form = form.part(input.field.clone(), part);
     }
 
-    // Send request to server
     let url = http_base_url(server_url)?.join("/api/v1/process")?;
 
     info!("Sending request to {url}");
     let response = client.post(url).multipart(form).send().await?;
 
-    // Check response status
     if !response.status().is_success() {
         let status = response.status();
         let error_text = response.text().await.unwrap_or_default();
         return Err(format!("Server returned error {status}: {error_text}").into());
     }
 
-    // Get content type for logging
     let content_type =
         response.headers().get("content-type").and_then(|ct| ct.to_str().ok()).unwrap_or("unknown");
 
@@ -341,14 +336,12 @@ pub async fn create_session(
     // Prepare HTTP request body
     let request_body = CreateSessionRequest { name: name.clone(), yaml: pipeline_content };
 
-    // Send HTTP POST request
     let client = reqwest::Client::new();
     let url = http_base_url(server_url)?.join("/api/v1/sessions")?;
 
     info!("Sending HTTP POST request to {url}");
     let response = client.post(url).json(&request_body).send().await?;
 
-    // Check response status
     if !response.status().is_success() {
         let status = response.status();
         let error_text = response.text().await.unwrap_or_default();
@@ -356,7 +349,6 @@ pub async fn create_session(
         return Err(format!("Server returned error {status}: {error_text}").into());
     }
 
-    // Parse response
     let result: CreateSessionResponse = response.json().await?;
     let session_id = result.session_id;
     let session_name = result.name;
@@ -455,10 +447,8 @@ pub async fn tune_node(
         "Tuning node parameter"
     );
 
-    // Parse the parameter value as YAML
     let param_value: serde_json::Value = serde_saphyr::from_str(value)?;
 
-    // Create a JSON object with the single parameter
     let mut params = serde_json::Map::new();
     params.insert(param.to_string(), param_value);
     let update_params = serde_json::Value::Object(params);

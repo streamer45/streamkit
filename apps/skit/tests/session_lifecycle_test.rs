@@ -47,10 +47,8 @@ async fn read_response(read: &mut WsRead, expected_correlation_id: &str) -> Resp
             continue;
         }
 
-        // Parse as response
         let response: Response = serde_json::from_str(text).expect("Failed to parse response");
 
-        // Check if correlation_id matches
         if response.correlation_id.as_deref() == Some(expected_correlation_id) {
             return response;
         }

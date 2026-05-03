@@ -526,11 +526,9 @@ async fn read_response(
             continue;
         }
 
-        // Parse as response
         let response: streamkit_api::Response =
             serde_json::from_str(text).expect("Failed to parse response");
 
-        // Check if correlation_id matches
         if response.correlation_id.as_deref() == Some(expected_correlation_id) {
             return response;
         }

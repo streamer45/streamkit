@@ -13,14 +13,12 @@ use crate::load_test::config::LoadTestConfig;
 pub async fn populate_environment(config: &LoadTestConfig) -> Result<()> {
     let client = reqwest::Client::new();
 
-    // Load native plugins
     for plugin_path in &config.populate.plugins_native {
         if let Err(e) = load_native_plugin(&client, &config.server.url, plugin_path).await {
             warn!("Failed to load native plugin {}: {}", plugin_path, e);
         }
     }
 
-    // Load WASM plugins
     for plugin_path in &config.populate.plugins_wasm {
         if let Err(e) = load_wasm_plugin(&client, &config.server.url, plugin_path).await {
             warn!("Failed to load WASM plugin {}: {}", plugin_path, e);
