@@ -999,25 +999,18 @@ impl StreamKitMcp {
                 &self.app_state.config.security,
             )
             .await
-            .map_err(|e| McpError::invalid_params(e, None))?;
+            .map_err(|e| McpError::internal_error(e, None))?;
         }
 
-        // Apply param changes via tune_node when permitted.
-        // Pre-clear the durable params so tune_session_node performs a full
-        // replacement instead of a deep merge (its default for incremental
-        // UI updates). Setting node.params = None causes take() inside
-        // tune_session_node to return None, skipping the merge branch.
+        // Apply param changes via tune_node_replace when permitted.
+        // Uses full replacement semantics (not deep merge) so that keys
+        // removed from the YAML are actually cleared in the durable model.
         let mut params_applied = Vec::new();
         let mut params_deferred = Vec::new();
+        let mut params_errors = Vec::new();
         for (node_id, new_params) in &diff.params_changed {
             if perms.tune_nodes {
-                {
-                    let mut pipeline = session.pipeline.lock().await;
-                    if let Some(node) = pipeline.nodes.get_mut(node_id) {
-                        node.params = None;
-                    }
-                }
-                crate::server::tune_session_node(
+                match crate::server::tune_session_node_replace(
                     &session,
                     node_id.clone(),
                     streamkit_core::control::NodeControlMessage::UpdateParams(new_params.clone()),
@@ -1025,8 +1018,22 @@ impl StreamKitMcp {
                     &self.app_state.event_tx,
                 )
                 .await
-                .map_err(|e| McpError::invalid_params(e, None))?;
-                params_applied.push(node_id.clone());
+                {
+                    Ok(()) => params_applied.push(node_id.clone()),
+                    Err(e) => {
+                        warn!(
+                            session_id = %args.session_id,
+                            node_id = %node_id,
+                            params_applied = ?params_applied,
+                            error = %e,
+                            "MCP update_pipeline partial param failure"
+                        );
+                        params_errors.push(serde_json::json!({
+                            "node_id": node_id,
+                            "error": e,
+                        }));
+                    },
+                }
             } else {
                 params_deferred.push(node_id.clone());
             }
@@ -1054,6 +1061,9 @@ impl StreamKitMcp {
             result["params_deferred"] = serde_json::json!(params_deferred);
             result["params_deferred_reason"] =
                 serde_json::json!("caller lacks tune_nodes permission; use tune_node manually");
+        }
+        if !params_errors.is_empty() {
+            result["params_errors"] = serde_json::json!(params_errors);
         }
         json_tool_result(&result)
     }
@@ -1115,7 +1125,8 @@ fn diff_pipeline(current: &Pipeline, desired: &Pipeline) -> DiffResult {
     //    replaced nodes are explicitly disconnected because the node is
     //    re-added as a new instance. HashSet<ConnKey> collapses true
     //    parallel edges (same endpoints + same mode) into one entry;
-    //    this is acceptable because the engine also deduplicates them.
+    //    this is safe because the YAML compiler never emits parallel edges
+    //    between the same pin pair.
     for conn in &current.connections {
         let key = conn_key(conn);
         let from_replaced = replaced_node_ids.contains(conn.from_node.as_str());

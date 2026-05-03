@@ -2132,6 +2132,75 @@ async fn mcp_update_pipeline_params_change() {
     let _ = mcp_post_with_session(&client, addr, &destroy, &token, &mcp_session).await;
 }
 
+/// Verify that update_pipeline fully replaces params (not deep-merge).
+/// Starting with `{a: 1, b: 2}`, updating to `{a: 9}` must remove `b`.
+#[tokio::test]
+async fn mcp_update_pipeline_params_replace_removes_old_keys() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let (addr, _handle, token, _dir) = start_mcp_server().await;
+    let client = reqwest::Client::new();
+    let mcp_session = init_mcp_session(&client, addr, &token).await;
+
+    // Create session with params {a: 1, b: 2}.
+    let initial_yaml =
+        "nodes:\n  pass:\n    kind: core::passthrough\n    params:\n      a: 1\n      b: 2";
+    let skit_session = create_skit_session(&client, addr, &token, &mcp_session, initial_yaml).await;
+
+    // Update with params {a: 9} — b should be removed.
+    let new_yaml = "nodes:\n  pass:\n    kind: core::passthrough\n    params:\n      a: 9";
+    let update = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "update_pipeline",
+            "arguments": {
+                "session_id": skit_session,
+                "yaml": new_yaml
+            }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &update, &token, &mcp_session).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let text = body["result"]["content"][0]["text"].as_str().expect("update_pipeline text");
+    let result: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(result["operations_applied"].as_u64().unwrap(), 0);
+    let params_changed = result["params_changed"].as_array().expect("params_changed array");
+    assert_eq!(params_changed.len(), 1);
+    assert_eq!(params_changed[0]["params"]["a"], 9);
+
+    // Verify durable params: b must be gone, a must be 9.
+    let get = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "get_pipeline",
+            "arguments": { "session_id": skit_session }
+        }
+    });
+    let res = mcp_post_with_session(&client, addr, &get, &token, &mcp_session).await;
+    let body = extract_sse_json(&res.text().await.unwrap());
+    let text = body["result"]["content"][0]["text"].as_str().expect("pipeline text");
+    let pipeline: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(pipeline["nodes"]["pass"]["params"]["a"], 9, "expected a to be updated to 9");
+    assert!(
+        pipeline["nodes"]["pass"]["params"].get("b").is_none(),
+        "expected b to be removed (full replacement, not deep merge)"
+    );
+
+    // Clean up
+    let destroy = json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": { "name": "destroy_session", "arguments": { "session_id": skit_session } }
+    });
+    let _ = mcp_post_with_session(&client, addr, &destroy, &token, &mcp_session).await;
+}
+
 #[tokio::test]
 async fn mcp_update_pipeline_both_endpoints_replaced() {
     let _ = tracing_subscriber::fmt::try_init();
