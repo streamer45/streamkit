@@ -191,7 +191,6 @@ const NodePalette: React.FC<NodePaletteProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilters, setActiveFilters] = useState<Set<string>>(new Set());
 
-  // Use controlled prop if provided, otherwise fall back to internal state
   const selectedTop = selectedTopProp !== undefined ? selectedTopProp : selectedTopState;
   const setSelectedTop = (top: string | null) => {
     if (onSelectedTopChange) {
@@ -220,7 +219,6 @@ const NodePalette: React.FC<NodePaletteProps> = ({
 
   const isSearchOrFilterActive = searchQuery.trim().length > 0 || activeFilters.size > 0;
 
-  // Filter nodes by search query and active filter chips
   const filteredDefs = React.useMemo(() => {
     if (!isSearchOrFilterActive) return sortedDefs;
 
@@ -352,7 +350,6 @@ const NodePalette: React.FC<NodePaletteProps> = ({
     </ul>
   );
 
-  // Build filter chip options: top-level categories + "plugin" if plugins exist
   const filterChips = React.useMemo(() => {
     const chips = topCategories.map((cat) => ({ key: cat, label: cat }));
     if (hasPlugins) {

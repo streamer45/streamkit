@@ -27,7 +27,6 @@ const edgeTypes = {
   typed: TypedEdge,
 };
 
-// Helper to compute ReactFlow props based on edit mode and selection mode
 function computeReactFlowProps<NodeData extends Record<string, unknown>>(
   editMode: boolean,
   selectionMode: boolean | undefined,

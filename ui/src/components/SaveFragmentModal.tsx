@@ -45,10 +45,8 @@ const SaveFragmentModal: React.FC<SaveFragmentModalProps> = ({
   const inputRef = React.useRef<HTMLInputElement>(null);
   const prevOpenRef = React.useRef(false);
 
-  // Update fields only when modal transitions from closed to open
   React.useEffect(() => {
     if (isOpen && !prevOpenRef.current) {
-      // Modal just opened
       setName(initialName);
       setDescription(initialDescription);
       setTagsInput(initialTags.join(', '));
@@ -65,7 +63,6 @@ const SaveFragmentModal: React.FC<SaveFragmentModalProps> = ({
 
     setIsSaving(true);
     try {
-      // Parse tags from comma-separated input
       const tags = tagsInput
         .split(',')
         .map((tag) => tag.trim())

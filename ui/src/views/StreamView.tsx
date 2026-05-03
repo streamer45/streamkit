@@ -90,9 +90,6 @@ async function loadAndApplySamples(
     const orderedSamples = orderSamplePipelinesSystemFirst(samples);
     viewState.setSamples(orderedSamples);
 
-    // Auto-select first template if available and apply its MoQ
-    // settings so the stream store (pipelineNeedsVideo, etc.) matches
-    // the selected template.
     if (orderedSamples.length > 0 && !viewState.selectedTemplateId) {
       const first = orderedSamples[0];
       viewState.setSelectedTemplateId(first.id);
@@ -125,7 +122,6 @@ function directModeStreamingText(enableWatch: boolean, enablePublish: boolean): 
   return `Connected: ${parts.join(' and ')}`;
 }
 
-// Static text maps — pure constants, no need to recreate on every render.
 const STATUS_TEXT: Record<ConnectionStatus, string> = {
   disconnected: 'Disconnected',
   connecting: 'Connecting...',
@@ -428,13 +424,10 @@ const StreamView: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
 
-  // State for pipeline selection and session creation
   const viewState = useStreamViewState();
 
-  // WebSocket for session events
   const { onMessage, send: sendWs } = useWebSocket();
 
-  // Use Zustand store for persistent state
   const {
     status,
     connectionMode,
@@ -541,8 +534,6 @@ const StreamView: React.FC = () => {
 
   const isStreaming = status === 'connected';
 
-  // Memoised action bundle for applyMoqSettings — all setters are stable
-  // Zustand references so the object identity only changes on first render.
   const storeActions = React.useMemo(
     () => ({
       setServerUrl,
@@ -575,7 +566,6 @@ const StreamView: React.FC = () => {
   const videoContainerRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
-  // Track fullscreen state + ensure schemas & config are loaded on mount.
   useEffect(() => {
     const handler = () => setIsFullscreen(Boolean(document.fullscreenElement));
     document.addEventListener('fullscreenchange', handler);
@@ -591,7 +581,7 @@ const StreamView: React.FC = () => {
     if (!configLoaded) loadConfig();
   }, [configLoaded, loadConfig]);
 
-  // MSE playback URL — build from msePath + activeSessionId.
+
   const [mseError, setMseError] = useState<string | null>(null);
   const mseUrl = React.useMemo(() => {
     if (!activeSessionId || !msePath) return null;
@@ -605,10 +595,7 @@ const StreamView: React.FC = () => {
     useVideoCanvas(videoRenderer);
   const { muted, volume, toggleMute, changeVolume } = useAudioControls(audioEmitter);
 
-  // Read the pipeline (including runtime_schemas) from the session store,
-  // which is kept up-to-date by WebSocket events (RuntimeSchemasUpdated).
-  // This replaces the previous one-shot REST fetch with a 1.5s delay that
-  // could miss late-arriving schemas.
+
   const livePipeline = useSessionStore(
     useCallback(
       (s) => {
@@ -619,7 +606,6 @@ const StreamView: React.FC = () => {
     )
   );
 
-  // Validate active session still exists when navigating to this view
   useEffect(() => {
     const validateSession = async () => {
       if (!activeSessionId) return;
@@ -628,7 +614,6 @@ const StreamView: React.FC = () => {
         const sessions = await listSessions();
         if (sessions.some((s) => s.id === activeSessionId)) return;
 
-        // Session was deleted while we were away, clear it
         if (status === 'connected' || status === 'connecting') disconnect();
         clearActiveSession();
       } catch (error) {
@@ -636,12 +621,10 @@ const StreamView: React.FC = () => {
       }
     };
 
-    // Validate on every navigation to this view
     validateSession();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.pathname]); // Trigger when route changes to /stream
 
-  // Listen for session destroyed events to sync with Monitor view (when view is active)
   useEffect(() => {
     const unsubscribe = onMessage((message) => {
       if (message.type !== 'event') return;
@@ -649,7 +632,6 @@ const StreamView: React.FC = () => {
       if (event.payload.event !== 'sessiondestroyed') return;
       if (activeSessionId !== event.payload.session_id) return;
 
-      // If currently streaming, disconnect first
       if (status === 'connected' || status === 'connecting') {
         disconnect();
       }
@@ -659,13 +641,11 @@ const StreamView: React.FC = () => {
     return unsubscribe;
   }, [onMessage, activeSessionId, status, clearActiveSession, disconnect]);
 
-  // Load dynamic pipeline samples
   useEffect(() => {
     loadAndApplySamples(viewState, storeActions);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Handle template selection
   const handleTemplateSelect = useCallback(
     (templateId: string) => {
       const template = viewState.samples.find((s) => s.id === templateId);
@@ -673,10 +653,6 @@ const StreamView: React.FC = () => {
         viewState.setSelectedTemplateId(templateId);
         viewState.setPipelineYaml(template.yaml);
 
-        // Always clear transport-related state so switching to a pipeline
-        // without a client section doesn't leave stale values from the
-        // previous template (e.g. switching from a MoQ pipeline to an
-        // MSE-only pipeline must clear outputBroadcast, and vice versa).
         const moqSettings = extractMoqPeerSettings(template.yaml);
         applyMoqSettings(moqSettings, storeActions, useStreamStore.getState().configServerUrl);
       }
@@ -684,7 +660,6 @@ const StreamView: React.FC = () => {
     [viewState, storeActions]
   );
 
-  // Handle session creation
   const handleCreateSession = useCallback(async () => {
     if (!viewState.pipelineYaml) {
       viewState.setSessionCreationError('Please select a pipeline template');
@@ -698,10 +673,8 @@ const StreamView: React.FC = () => {
       logger.info('Creating session');
       const result = await createSession(viewState.sessionName || null, viewState.pipelineYaml);
 
-      // Get the selected template name for display
       const template = viewState.samples.find((s) => s.id === viewState.selectedTemplateId);
 
-      // Store in persistent Zustand store
       setActiveSession(
         result.session_id,
         result.name || 'Unnamed Session',
@@ -711,8 +684,6 @@ const StreamView: React.FC = () => {
       viewState.setSessionCreationStatus('success');
       logger.info('Session created successfully');
 
-      // Auto-connect to MoQ after session creation, but only when the
-      // pipeline actually uses MoQ transport.
       autoConnectIfMoq(status, serverUrl, connect, viewState);
     } catch (error) {
       logger.error('Failed to create session:', error);
@@ -757,14 +728,11 @@ const StreamView: React.FC = () => {
     }
   }, [activeSessionId, clearActiveSession, disconnect, sendWs, status, viewState]);
 
-  // Determine if Connect button should be disabled
-  // In session mode: require a session; in direct mode: just need URL and at least one stream direction
   const canConnect =
     connectionMode === 'session'
       ? activeSessionId !== null && configLoaded && serverUrl.trim().length > 0
       : configLoaded && serverUrl.trim().length > 0 && (enablePublish || enableWatch);
 
-  // Handle navigation to Monitor view
   const handleViewInMonitor = useCallback(() => {
     if (activeSessionId) {
       navigate('/monitor', { state: { sessionId: activeSessionId } });
@@ -848,8 +816,6 @@ const StreamView: React.FC = () => {
                 active={connectionMode === 'session'}
                 onClick={() => {
                   setConnectionMode('session');
-                  // Re-apply the selected template's MoQ settings that
-                  // were overridden by Direct Connect mode.
                   if (viewState.selectedTemplateId) {
                     handleTemplateSelect(viewState.selectedTemplateId);
                   }
@@ -862,13 +828,9 @@ const StreamView: React.FC = () => {
                 active={connectionMode === 'direct'}
                 onClick={() => {
                   setConnectionMode('direct');
-                  // Direct mode has no pipeline YAML, so default to both media types
                   setPipelineMediaTypes(true, true);
                   setPipelineOutputTypes(true, true);
-                  // Direct mode connects to a relay without a skit pipeline,
-                  // so there is no external relay announcement to wait for.
                   setIsExternalRelay(false);
-                  // Direct mode always uses camera (no pipeline to specify screen).
                   setVideoSourceType('camera');
                 }}
                 disabled={status !== 'disconnected'}

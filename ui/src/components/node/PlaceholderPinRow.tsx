@@ -25,7 +25,6 @@ function percent(i: number, total: number) {
   return GUTTER_PCT + (i * usable) / (total - 1);
 }
 
-// Helper: Get ghost pin style for horizontal sides (top/bottom)
 function getHorizontalGhostStyle(
   side: 'top' | 'bottom',
   positionPercent: number,
@@ -54,7 +53,6 @@ function getHorizontalGhostStyle(
   };
 }
 
-// Helper: Get ghost pin style for vertical sides (left/right)
 function getVerticalGhostStyle(
   side: 'left' | 'right',
   positionPercent: number,
@@ -112,15 +110,10 @@ export const PlaceholderPinRow: React.FC<PlaceholderPinRowProps> = ({
   const halfSize = HANDLE_STYLE.size / 2;
   const borderWidth = 2;
 
-  // Calculate position percentage based on index and total
   const positionPercent = percent(pinIndex, totalPins);
 
-  // Get color from packet type if provided
   const bgColor = packetType ? getPacketTypeColor(packetType) : 'var(--sk-border)';
 
-  // Ghost pin style - more distinct visual appearance
-  // Uses a striped pattern and lighter appearance to differentiate from real pins
-  // Positioned using percentage like real pins for even spacing
   const style: React.CSSProperties =
     side === 'top' || side === 'bottom'
       ? getHorizontalGhostStyle(side, positionPercent, halfSize, borderWidth, bgColor)

@@ -155,7 +155,6 @@ function getEventColor(eventType: string): string {
   return '#6b7280'; // Gray for unknown
 }
 
-// Format timestamp for display
 function formatEventTime(timestamp: string): string {
   try {
     const date = new Date(timestamp);
@@ -171,7 +170,6 @@ function formatEventTime(timestamp: string): string {
   }
 }
 
-// Get a preview of the event data
 function getEventPreview(event: TelemetryEvent): string | null {
   const { data } = event;
 

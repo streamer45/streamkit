@@ -29,7 +29,6 @@ const TokensView = React.lazy(() => import('./views/TokensView'));
 
 const logger = getLogger('App');
 
-// Create a client
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {

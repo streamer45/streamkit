@@ -162,7 +162,6 @@ export const PipelineEditor: React.FC<PipelineEditorProps> = ({
     onChange(newValue);
   };
 
-  // Create autocompletion extension with keyboard shortcuts
   const autocompletionExtension = useMemo(() => {
     if (nodeDefinitions.length === 0) return [];
 

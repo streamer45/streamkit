@@ -35,7 +35,6 @@ export interface TopControlsProps {
 // Component
 // ---------------------------------------------------------------------------
 
-// Memoized TopControls component to prevent re-renders during drag
 export const TopControls = React.memo(
   ({
     isConnected,

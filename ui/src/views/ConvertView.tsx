@@ -385,8 +385,6 @@ const splitTtsFields = (
 };
 
 const buildNoInputUploads = (fields: HttpInputField[]): UploadField[] => {
-  // Generator pipelines (e.g. video::colorbars) have no http_input at all —
-  // return empty so the multipart request only contains the config field.
   if (fields.length === 0) return [];
 
   const blob = new Blob([''], { type: 'application/octet-stream' });
@@ -468,12 +466,10 @@ const generateCliCommand = (
   fields: HttpInputField[],
   serverUrl: string = 'http://127.0.0.1:4545'
 ): string => {
-  // Convert template ID to file path (e.g., "oneshot/speech_to_text" -> "samples/pipelines/oneshot/speech_to_text.yml")
   const configPath = `samples/pipelines/${templateId}.yml`;
   const activeFields = fields.length > 0 ? fields : [{ name: 'media', required: true }];
 
   if (isNoInput) {
-    // No input needed - send empty media field
     return `curl --no-buffer \\
   -F config=@${configPath} \\
   -F media= \\
@@ -481,7 +477,6 @@ const generateCliCommand = (
   }
 
   if (isTTS) {
-    // TTS pipeline - pipe text input
     const { textField, extraFields } = splitTtsFields(activeFields);
     const textFieldName = textField?.name ?? 'media';
     const extraLines = extraFields
@@ -494,9 +489,7 @@ const generateCliCommand = (
 ${extraBlock}  ${serverUrl}/api/v1/process -o - | ffplay -f webm -i -`;
   }
 
-  // Multi-upload pipelines
   if (activeFields.length > 1) {
-    // Provide real assets for known dual-upload sample
     if (
       templateId.endsWith('oneshot/dual_upload_mixing') &&
       activeFields.some((f) => f.name === 'track_a') &&
@@ -517,24 +510,14 @@ ${fieldLines}
   ${serverUrl}/api/v1/process -o - | ffplay -f webm -i -`;
   }
 
-  // Standard audio input pipeline
   return `curl --no-buffer \\
   -F config=@${configPath} \\
   -F media=@your-audio-file.ogg \\
   ${serverUrl}/api/v1/process -o - | ffplay -f webm -i -`;
 };
 
-/**
- * ConvertView - Batch file processing interface using oneshot pipelines.
- *
- * This component provides the UI for:
- * - Template selection and YAML editing
- * - File upload or asset selection
- * - Pipeline conversion with streaming support
- * - Audio playback and transcription display
- *
- */
-// eslint-disable-next-line max-statements, sonarjs/cognitive-complexity -- Conversion workflow orchestration
+
+// eslint-disable-next-line max-statements, sonarjs/cognitive-complexity
 const ConvertView: React.FC = () => {
   const {
     samples,
@@ -580,13 +563,10 @@ const ConvertView: React.FC = () => {
   const [httpInputFields, setHttpInputFields] = useState<HttpInputField[]>([]);
   const [hasHttpInput, setHasHttpInput] = useState(false);
   const [fieldUploads, setFieldUploads] = useState<Record<string, File | null>>({});
-  // State for CLI command copy button
   const [cliCopied, setCliCopied] = useState(false);
   const [msePlaybackError, setMsePlaybackError] = useState<string | null>(null);
   const [mseFallbackLoading, setMseFallbackLoading] = useState<boolean>(false);
 
-  // Parse pipeline YAML once — derive both client section and http_input fields
-  // from the same parsed object to avoid double-parsing.
   const parsedPipelineYaml = useMemo(() => {
     try {
       const parsed = loadYaml(pipelineYaml) as Record<string, unknown> | null;
@@ -602,7 +582,6 @@ const ConvertView: React.FC = () => {
   const isNoInputPipeline = client?.input?.type === 'none' || client?.input?.type === 'trigger';
   const isVideoPipeline = client?.output?.type === 'video';
 
-  // Generate CLI command based on current template and pipeline type
   const cliCommand = useMemo(() => {
     if (!selectedTemplateId) return '';
     return generateCliCommand(
@@ -613,7 +592,6 @@ const ConvertView: React.FC = () => {
     );
   }, [selectedTemplateId, isNoInputPipeline, isTTSPipeline, httpInputFields]);
 
-  // Handler for copying CLI command to clipboard
   const handleCopyCliCommand = useCallback(async () => {
     if (!cliCommand) return;
     try {
@@ -625,24 +603,18 @@ const ConvertView: React.FC = () => {
     }
   }, [cliCommand]);
 
-  // Ref for auto-scrolling to results
   const resultsRef = useRef<HTMLDivElement | null>(null);
 
-  // Ref for audio element (for custom player)
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  // Get node definitions for YAML autocomplete
   const nodeDefinitions = useSchemaStore((s) => s.nodeDefinitions);
 
-  // Ensure schemas are loaded for autocomplete
   useEffect(() => {
     ensureSchemasLoaded();
   }, []);
 
-  // Auto-scroll to results when they appear
   useEffect(() => {
     if ((mediaUrl || mediaStream) && resultsRef.current) {
-      // Small delay to ensure content has rendered
       const timeoutId = setTimeout(() => {
         resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }, 100);
@@ -650,10 +622,8 @@ const ConvertView: React.FC = () => {
     }
   }, [mediaUrl, mediaStream]);
 
-  // Fetch audio assets
   const { data: audioAssets = [], isLoading: assetsLoading } = useAudioAssets();
 
-  // Derive a field-hint lookup from the client section
   const getFieldHint = useCallback(
     (fieldName: string): { accept?: string; hint?: string } => {
       const hints = client?.input?.field_hints;
@@ -669,7 +639,6 @@ const ConvertView: React.FC = () => {
           if (fh.accept) return { accept: fh.accept };
         }
       }
-      // Fall back to top-level input accept
       const topFormats = parseAcceptToFormats(client?.input?.accept);
       if (topFormats && topFormats.length > 0) {
         const accept = topFormats.map((f) => `.${f}`).join(',');
@@ -681,19 +650,16 @@ const ConvertView: React.FC = () => {
     [client]
   );
 
-  // Filter assets based on client-declared accept & asset_tags
   const assetFormats = useMemo(() => parseAcceptToFormats(client?.input?.accept), [client]);
   const inputAssetTags = client?.input?.asset_tags ?? null;
   const filteredAssets = useMemo(() => {
     if (!pipelineYaml) return audioAssets;
 
-    // Multi-field pipelines: only filter by format (avoid tag-based narrowing so users can mix content)
     if (httpInputFields.length > 1) {
       if (!assetFormats) return audioAssets;
       return audioAssets.filter((asset) => assetFormats.includes(asset.format.toLowerCase()));
     }
 
-    // Single-field pipelines: apply both format and tag filters if present
     if (!assetFormats && !inputAssetTags) {
       viewsLogger.debug('No specific format required, showing all assets');
       return audioAssets;
@@ -716,7 +682,6 @@ const ConvertView: React.FC = () => {
     return tagFiltered;
   }, [audioAssets, pipelineYaml, httpInputFields.length, assetFormats, inputAssetTags]);
 
-  // Clear selected asset if it's no longer in the filtered list
   useEffect(() => {
     if (selectedAssetId && !filteredAssets.some((asset) => asset.id === selectedAssetId)) {
       viewsLogger.debug('Selected asset not compatible with pipeline, clearing selection');
@@ -724,7 +689,6 @@ const ConvertView: React.FC = () => {
     }
   }, [filteredAssets, selectedAssetId, setSelectedAssetId]);
 
-  // Track http_input fields for multi-upload pipelines
   useEffect(() => {
     const { fields, hasHttpInput: hasHttp } = deriveHttpInputFieldsFromParsed(parsedPipelineYaml);
     setHasHttpInput(hasHttp);
@@ -738,14 +702,12 @@ const ConvertView: React.FC = () => {
     });
   }, [parsedPipelineYaml]);
 
-  // Force playback mode for transcription/TTS pipelines
   useEffect(() => {
     if ((isTranscriptionPipeline || isTTSPipeline) && outputMode !== 'playback') {
       setOutputMode('playback');
     }
   }, [isTranscriptionPipeline, isTTSPipeline, outputMode, setOutputMode]);
 
-  // Update YAML when asset selection changes
   useEffect(() => {
     if (inputMode === 'asset' && selectedAssetId && selectedTemplateId) {
       const selectedAsset = audioAssets.find((a) => a.id === selectedAssetId);
@@ -758,7 +720,6 @@ const ConvertView: React.FC = () => {
     }
   }, [selectedAssetId, inputMode, audioAssets, samples, selectedTemplateId, setPipelineYaml]);
 
-  // Restore original YAML when switching back to upload mode
   useEffect(() => {
     if (inputMode === 'upload' && selectedTemplateId) {
       const selectedSample = samples.find((s) => s.id === selectedTemplateId);
@@ -768,8 +729,6 @@ const ConvertView: React.FC = () => {
     }
   }, [inputMode, selectedTemplateId, samples, setPipelineYaml]);
 
-  // Fetch samples on mount - intentionally empty deps to run once
-  // useState setters are stable and safe to include in deps
   useEffect(() => {
     const fetchSamples = async () => {
       try {
@@ -777,17 +736,14 @@ const ConvertView: React.FC = () => {
         setSamplesError(null);
         const fetchedSamples = await listSamples();
 
-        // Filter to only show oneshot pipelines in convert view
         const oneshotSamples = fetchedSamples.filter((sample) => sample.mode === 'oneshot');
         const orderedSamples = orderSamplePipelinesSystemFirst(oneshotSamples);
         setSamples(orderedSamples);
 
-        // Set default template if available
         if (orderedSamples.length > 0) {
           const defaultSample = orderedSamples[0];
           setSelectedTemplateId(defaultSample.id);
           setPipelineYaml(defaultSample.yaml);
-          // Client-section flags are derived via useMemo, no manual setter needed
         }
       } catch (error) {
         viewsLogger.error('Failed to fetch samples:', error);
@@ -805,13 +761,9 @@ const ConvertView: React.FC = () => {
     if (sample) {
       setSelectedTemplateId(templateId);
 
-      // Reset asset selection when switching templates to avoid persisting state
       setSelectedAssetId('');
 
-      // Set original YAML (asset selection will be reapplied via useEffect if needed)
       setPipelineYaml(sample.yaml);
-      // Force playback for transcription pipelines (will be picked up by the
-      // effect once pipelineYaml updates and client is re-derived).
       const templateClient = parseClientFromYaml(sample.yaml);
       if (templateClient?.output?.type === 'transcription') {
         setOutputMode('playback');
@@ -820,9 +772,6 @@ const ConvertView: React.FC = () => {
   };
 
   const prepareUploads = useCallback(async (): Promise<UploadField[] | null> => {
-    // For no-input (generator) pipelines, use the raw httpInputFields
-    // so that truly input-less pipelines (no http_input node) send no uploads.
-    // Also handle custom pipelines without a client section that lack http_input.
     if (isNoInputPipeline || (!client && !hasHttpInput)) {
       return buildNoInputUploads(httpInputFields);
     }
@@ -854,7 +803,6 @@ const ConvertView: React.FC = () => {
     textInput,
   ]);
 
-  // Helper: Clean up previous conversion state
   const cleanupPreviousState = useCallback(() => {
     if (mediaUrl && !useStreaming) {
       URL.revokeObjectURL(mediaUrl);
@@ -867,7 +815,6 @@ const ConvertView: React.FC = () => {
     setMseFallbackLoading(false);
   }, [mediaUrl, setMediaContentType, setMediaStream, setMediaUrl, setUseStreaming, useStreaming]);
 
-  // Helper: Handle successful conversion result
   const handleConversionSuccess = useCallback(
     (result: Awaited<ReturnType<typeof convertFile>>) => {
       setMsePlaybackError(null);
@@ -934,21 +881,13 @@ const ConvertView: React.FC = () => {
     ]
   );
 
-  /**
-   * Handles the conversion workflow end-to-end: input validation, API call, and streaming/download handling.
-   */
-  // eslint-disable-next-line max-statements -- Intentionally co-locates conversion state + error/cancel handling.
+  // eslint-disable-next-line max-statements
   const handleConvert = async () => {
-    // Determine the input source
     const uploads = await prepareUploads();
-    if (uploads === null) {
-      return; // Validation failed
-    }
+    if (uploads === null) return;
 
-    // Clear previous audio URL/stream if it exists
     cleanupPreviousState();
 
-    // Create a new AbortController for this request
     const controller = new AbortController();
     setAbortController(controller);
 
@@ -968,20 +907,17 @@ const ConvertView: React.FC = () => {
         setAbortController(null);
         setConversionMessage(result.error || 'An unknown error occurred during conversion.');
 
-        // Reset status after 8 seconds
         setTimeout(() => {
           setConversionStatus('idle');
           setConversionMessage('');
         }, 8000);
       }
     } catch (error) {
-      // Check if this is an abort error (user cancelled)
       const isAbortError = error instanceof Error && error.name === 'AbortError';
       const isAbortRelated = error instanceof DOMException && error.name === 'AbortError';
 
       if (isAbortError || isAbortRelated) {
         viewsLogger.info('Conversion cancelled by user (caught AbortError)');
-        // Only update state if we haven't already handled cancellation in handleCancel
         if (abortController) {
           setConversionStatus('idle');
           setConversionMessage('Conversion cancelled');
@@ -1008,15 +944,11 @@ const ConvertView: React.FC = () => {
   const handleCancel = () => {
     if (abortController) {
       try {
-        // Abort the fetch - this will cause the convertFile promise to reject with AbortError
         abortController.abort();
       } catch (err) {
-        // Ignore errors from abort() - it might already be aborted
         viewsLogger.debug('Error aborting (expected):', err);
       }
 
-      // Clear ALL audio/stream state immediately
-      // This will unmount MSEAudioPlayer/TranscriptionDisplay and trigger their cleanup
       if (mediaUrl && !useStreaming) {
         URL.revokeObjectURL(mediaUrl);
       }
@@ -1027,11 +959,8 @@ const ConvertView: React.FC = () => {
       setMsePlaybackError(null);
       setMseFallbackLoading(false);
 
-      // Clear processing status and abort controller immediately
       setConversionStatus('idle');
       setAbortController(null);
-
-      // Show cancellation message
       setConversionMessage('Conversion cancelled');
       setTimeout(() => {
         setConversionMessage('');
@@ -1054,7 +983,6 @@ const ConvertView: React.FC = () => {
       },
       onCancel: () => {
         viewsLogger.debug(`${label} cancelled callback`);
-        // Only update if we still have an abort controller (not already handled by handleCancel)
         setAbortController((currentController) => {
           if (currentController) {
             setConversionStatus('idle');
@@ -1100,13 +1028,9 @@ const ConvertView: React.FC = () => {
   const handleRetryWithoutStreaming = useCallback(async () => {
     if (mseFallbackLoading) return;
 
-    // Determine the input source
     const uploads = await prepareUploads();
-    if (uploads === null) {
-      return;
-    }
+    if (uploads === null) return;
 
-    // Abort any active streaming request (if still running)
     if (abortController) {
       try {
         abortController.abort();
@@ -1199,7 +1123,6 @@ const ConvertView: React.FC = () => {
       outputFileName = `output${extension}`;
     }
 
-    // Create download link directly from the existing object URL
     const link = document.createElement('a');
     link.href = mediaUrl;
     link.download = outputFileName;
@@ -1210,7 +1133,6 @@ const ConvertView: React.FC = () => {
 
   const handleInputModeChange = (mode: 'upload' | 'asset') => {
     setInputMode(mode);
-    // Clear the other mode's selection when switching
     if (mode === 'upload') {
       setSelectedAssetId('');
     } else {
@@ -1226,7 +1148,6 @@ const ConvertView: React.FC = () => {
         ? textInput.trim() !== '' && !ttsMissingRequiredUploads
         : (() => {
             if (!hasHttpInput) {
-              // Pipelines without http_input rely solely on YAML/file_reader; allow run
               return true;
             }
 
@@ -1492,8 +1413,6 @@ const ConvertView: React.FC = () => {
             <div ref={resultsRef}>
               {mediaContentType?.includes('application/json') && mediaStream ? (
                 isTranscriptionPipeline ? (
-                  // Render transcription display for JSON content
-                  // Use key to force remount when stream changes
                   <TranscriptionDisplay
                     key={streamKey}
                     stream={mediaStream}
@@ -1509,7 +1428,6 @@ const ConvertView: React.FC = () => {
                   />
                 )
               ) : (
-                // Render media player for audio/video content
                 <AudioPlayerContainer>
                   <AudioPlayerTitle>
                     {mediaContentType?.startsWith('video/') ? 'Converted Video' : 'Converted Audio'}
