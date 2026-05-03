@@ -178,6 +178,8 @@ impl ProcessorNode for Mp3DecoderNode {
                         break;
                     }
                 }
+                // EOF or upstream closed — keep draining decode results until
+                // the blocking task closes the result channel.
                 _ = &mut input_task, if !input_done => {
                     input_done = true;
                 }
@@ -210,7 +212,7 @@ impl ProcessorNode for Mp3DecoderNode {
 
 type DecodeResult = Result<(Vec<f32>, u32, u16, streamkit_core::types::PacketMetadata), String>;
 
-#[allow(clippy::cognitive_complexity)]
+#[allow(clippy::cognitive_complexity)] // Decoder state machine is inherently complex
 fn decode_mp3_streaming_incremental(
     reader: StreamingReader,
     result_tx: &mpsc::Sender<DecodeResult>,

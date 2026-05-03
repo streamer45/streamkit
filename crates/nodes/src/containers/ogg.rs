@@ -617,6 +617,9 @@ impl ProcessorNode for SymphoniaOggDemuxerNode {
         let cancellation_token = context.cancellation_token.clone();
         let node_name_clone = node_name.clone();
 
+        // Ogg decoder state machine: format probing, codec handling, and real-time streaming
+        // require elevated complexity and common media-decoding patterns (unwraps on
+        // Results that should succeed, mutex locks, precision-losing casts).
         #[allow(clippy::cognitive_complexity)]
         #[allow(clippy::unwrap_used)]
         #[allow(clippy::expect_used)]

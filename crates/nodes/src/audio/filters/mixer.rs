@@ -428,7 +428,7 @@ impl AudioMixerNode {
         Ok(())
     }
 
-    #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
+    #[allow(clippy::cognitive_complexity, clippy::too_many_lines)] // Dynamic audio mixing is inherently complex
     async fn run_dynamic(mut self, mut context: NodeContext) -> Result<(), StreamKitError> {
         let node_name = context.output_sender.node_name().to_string();
         state_helpers::emit_running(&context.state_tx, &node_name);

@@ -201,6 +201,8 @@ impl ProcessorNode for WavDemuxerNode {
                         break;
                     }
                 }
+                // EOF or upstream closed — keep draining demux results until
+                // the blocking task closes the result channel.
                 _ = &mut input_task, if !input_done => {
                     input_done = true;
                 }
@@ -219,7 +221,7 @@ impl ProcessorNode for WavDemuxerNode {
 // Type alias for demux result to simplify complex signatures
 type DemuxResult = Result<(Vec<f32>, u32, u16), String>;
 
-#[allow(clippy::cognitive_complexity)]
+#[allow(clippy::cognitive_complexity)] // WAV format handling, frame assembly, and channel conversion
 fn demux_wav_streaming_incremental(
     reader: StreamingReader,
     result_tx: &mpsc::Sender<DemuxResult>,
