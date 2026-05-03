@@ -2,27 +2,16 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Shared ReactFlow configuration defaults used across all views.
- * Centralizes node types and edge options for consistency.
- */
-
 import AudioGainNode from '@/nodes/AudioGainNode';
 import CompositorNode from '@/nodes/CompositorNode';
 import ConfigurableNode from '@/nodes/ConfigurableNode';
 
-/**
- * Node type mappings for ReactFlow
- */
 export const nodeTypes = {
   audioGain: AudioGainNode,
   compositor: CompositorNode,
   configurable: ConfigurableNode,
 };
 
-/**
- * Type for default edge options
- */
 export interface DefaultEdgeOptions {
   type: string;
   animated: boolean;
@@ -32,12 +21,8 @@ export interface DefaultEdgeOptions {
   };
 }
 
-/**
- * Default edge styling and behavior
- * No arrow markers - direction is clear from top-to-bottom pipeline structure
- */
 export const defaultEdgeOptions: DefaultEdgeOptions = {
-  type: 'typed', // Use our custom typed edge
+  type: 'typed',
   animated: true,
   style: {
     stroke: 'var(--sk-primary)',

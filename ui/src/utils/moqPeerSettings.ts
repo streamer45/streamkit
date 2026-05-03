@@ -47,8 +47,6 @@ export interface MoqPeerSettings {
   msePath?: string;
 }
 
-/** Derives `MoqPeerSettings` from a declarative `ClientSection`. */
-/** Derive track info (media needs + video source type) from publish config. */
 function deriveTrackInfo(client: ClientSection): {
   tracks: PublishTrackConfig[];
   needsAudioInput: boolean;
@@ -59,8 +57,6 @@ function deriveTrackInfo(client: ClientSection): {
   const needsAudioInput = tracks.some((t) => t.kind === 'audio');
   const needsVideoInput = tracks.some((t) => t.kind === 'video');
 
-  // Determine the video source type from the primary broadcast's video track.
-  // A track with source: 'screen' means getDisplayMedia, otherwise getUserMedia.
   const defaultBroadcast = client.publish?.broadcast;
   const primaryVideoTrack = tracks.find(
     (t) => t.kind === 'video' && (t.broadcast ?? defaultBroadcast) === defaultBroadcast
@@ -71,7 +67,6 @@ function deriveTrackInfo(client: ClientSection): {
   return { tracks, needsAudioInput, needsVideoInput, videoSourceType };
 }
 
-/** Collect all unique broadcast names from tracks, starting with the default. */
 function collectPublishBroadcasts(
   defaultBroadcast: string | undefined,
   tracks: PublishTrackConfig[]
@@ -85,14 +80,7 @@ function collectPublishBroadcasts(
   return result;
 }
 
-/** Determine whether the pipeline uses an external MoQ relay. */
 function deriveIsExternalRelay(client: ClientSection): boolean {
-  // External relay pattern: relay_url is explicit, OR the pipeline declares
-  // both publish and watch (with a MoQ broadcast) without a gateway_path.
-  // Gateway pipelines always set gateway_path; its absence with pub+watch
-  // means nodes connect to a standalone relay and the browser must wait for
-  // the output broadcast announcement before subscribing.
-  // MSE-only watch configs (no broadcast) don't count as external relay.
   if (client.relay_url) return true;
   const hasMoqWatch = Boolean(client.watch?.broadcast);
   return !client.gateway_path && Boolean(client.publish) && hasMoqWatch;
@@ -120,22 +108,10 @@ export function deriveSettingsFromClient(client: ClientSection): MoqPeerSettings
   };
 }
 
-/**
- * Extracts MoQ peer settings from a pipeline YAML string by reading the
- * declarative `client` section.
- *
- * Returns settings only when the client section declares dynamic transport
- * configuration (gateway_path, relay_url, publish, or watch).  Oneshot
- * pipelines (input/output only) return null.
- *
- * @param yamlContent - The YAML string to parse
- * @returns MoqPeerSettings if the client section declares MoQ transport, null otherwise
- */
 export function extractMoqPeerSettings(yamlContent: string): MoqPeerSettings | null {
   const client = parseClientFromYaml(yamlContent);
   if (!client) return null;
 
-  // Only return settings for dynamic pipelines that declare MoQ transport.
   if (!client.gateway_path && !client.relay_url && !client.publish && !client.watch) {
     return null;
   }
@@ -143,21 +119,12 @@ export function extractMoqPeerSettings(yamlContent: string): MoqPeerSettings | n
   return deriveSettingsFromClient(client);
 }
 
-/**
- * Updates a URL's path with a new path while preserving the protocol, host, and port.
- *
- * @param baseUrl - The original URL string
- * @param newPath - The new path to set
- * @returns The updated URL string, or the original if parsing fails
- */
 export function updateUrlPath(baseUrl: string, newPath: string): string {
   try {
     const url = new URL(baseUrl);
     url.pathname = newPath;
     return url.toString();
   } catch {
-    // If URL parsing fails, try a simple path replacement
-    // Handle URLs like "https://example.com:4545/moq" -> "https://example.com:4545/moq/transcoder"
     const match = baseUrl.match(/^(https?:\/\/[^/]+)(\/.*)?$/);
     if (match) {
       return match[1] + newPath;
@@ -168,7 +135,6 @@ export function updateUrlPath(baseUrl: string, newPath: string): string {
 
 // ── Stream store integration ─────────────────────────────────────────────────
 
-/** Subset of stream store actions needed by {@link applyMoqSettings}. */
 export interface MoqSettingsActions {
   setServerUrl: (url: string) => void;
   setInputBroadcast: (broadcast: string) => void;
@@ -183,15 +149,6 @@ export interface MoqSettingsActions {
   setMsePath: (path: string | null) => void;
 }
 
-/**
- * Resolves the server URL for a pipeline's MoQ settings.
- *
- * - Relay pipelines use the relay URL directly.
- * - Gateway pipelines apply the gateway path to the provided base URL
- *   (typically `configServerUrl` from the stream store).
- *
- * Returns the resolved URL or undefined if no update is needed.
- */
 export function resolveServerUrl(
   settings: MoqPeerSettings,
   configServerUrl: string
@@ -203,18 +160,6 @@ export function resolveServerUrl(
   return undefined;
 }
 
-/**
- * Apply parsed MoQ peer settings to the stream store, or clear all
- * transport state when no client section exists (settings is null).
- *
- * This consolidates the duplicated setter-call blocks that previously
- * appeared in both the initial-load useEffect and handleTemplateSelect
- * in StreamView.
- *
- * @param settings - Parsed settings from {@link extractMoqPeerSettings}, or null
- * @param actions  - Stream store setter functions
- * @param configServerUrl - The original gateway URL from config (for URL resolution)
- */
 export function applyMoqSettings(
   settings: MoqPeerSettings | null,
   actions: MoqSettingsActions,
@@ -234,8 +179,6 @@ export function applyMoqSettings(
     actions.setTracks(settings.tracks, settings.publishBroadcasts);
     actions.setMsePath(settings.msePath ?? null);
   } else {
-    // No client section — reset all transport state to defaults to
-    // prevent stale MoQ/MSE settings from leaking across templates.
     actions.setInputBroadcast('');
     actions.setOutputBroadcast('');
     actions.setEnablePublish(false);

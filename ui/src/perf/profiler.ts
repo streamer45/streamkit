@@ -2,28 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Runtime render-performance profiler for Layer 2 (Playwright integration).
- *
- * Collects React.Profiler `onRender` data into a global store that Playwright
- * tests can read via `page.evaluate(() => window.__PERF_DATA__)`.
- *
- * In production builds this module is a no-op: all functions return immediately
- * and no data is stored.
- *
- * Usage in a React component (dev only):
- *
- *   import { perfOnRender } from '@/perf/profiler';
- *   <Profiler id="CompositorNode" onRender={perfOnRender}>
- *     <CompositorNodeInner />
- *   </Profiler>
- *
- * Reading from Playwright:
- *
- *   const data = await page.evaluate(() => window.__PERF_DATA__);
- */
-
-/** @public — consumed by Playwright e2e tests via window.__PERF_DATA__ */
 export interface PerfCommit {
   id: string;
   phase: 'mount' | 'update' | 'nested-update';
@@ -33,7 +11,6 @@ export interface PerfCommit {
   commitTime: number;
 }
 
-/** @public — consumed by Playwright e2e tests via window.__PERF_DATA__ */
 export interface PerfComponentData {
   /** Total number of commits for this profiler id. */
   renderCount: number;
@@ -45,7 +22,6 @@ export interface PerfComponentData {
   commits: PerfCommit[];
 }
 
-/** @public — consumed by Playwright e2e tests via window.__PERF_DATA__ */
 export interface PerfDataStore {
   /** Component-level profiling data keyed by Profiler id. */
   components: Record<string, PerfComponentData>;
@@ -55,7 +31,6 @@ export interface PerfDataStore {
   startedAt: string;
 }
 
-/** Maximum number of individual commit records stored per component. */
 const MAX_COMMITS = 500;
 
 const isDev = import.meta.env.DEV;
@@ -75,11 +50,6 @@ if (isDev && typeof window !== 'undefined') {
   (window as Window & { __PERF_DATA__?: PerfDataStore }).__PERF_DATA__ = store;
 }
 
-/**
- * React.Profiler `onRender` callback.  Pass this directly:
- *
- *   <Profiler id="MyComponent" onRender={perfOnRender}>
- */
 export const perfOnRender: React.ProfilerOnRenderCallback = isDev
   ? (
       id: string,
@@ -118,14 +88,6 @@ export const perfOnRender: React.ProfilerOnRenderCallback = isDev
   : // No-op in production.
     () => {};
 
-/**
- * Reset all collected data and start a new measurement session.
- * Call this from Playwright before running an interaction scenario:
- *
- *   await page.evaluate(() => window.__PERF_RESET__?.());
- *
- * @public — consumed by Playwright e2e tests
- */
 export function resetPerfData(): void {
   if (!isDev) return;
   store.session += 1;
@@ -141,11 +103,6 @@ if (isDev && typeof window !== 'undefined') {
   (window as Window & { __PERF_RESET__?: () => void }).__PERF_RESET__ = resetPerfData;
 }
 
-/**
- * Get a snapshot of the current perf data (for programmatic use in tests).
- *
- * @public — consumed by Playwright e2e tests
- */
 export function getPerfData(): PerfDataStore {
   return store;
 }

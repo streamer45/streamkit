@@ -2,10 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Service for managing audio assets
- */
-
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { AudioAsset } from '@/types/generated/api-types';
@@ -15,10 +11,6 @@ import { fetchApi } from './base';
 
 const logger = getLogger('assets');
 
-/**
- * Lists all available audio assets (system + user)
- * @returns A promise that resolves to an array of audio assets
- */
 export async function listAudioAssets(): Promise<AudioAsset[]> {
   logger.info('Fetching audio assets');
 
@@ -45,11 +37,6 @@ export async function listAudioAssets(): Promise<AudioAsset[]> {
   return assets;
 }
 
-/**
- * Uploads a new audio asset
- * @param file - The audio file to upload
- * @returns A promise that resolves to the created audio asset
- */
 export async function uploadAudioAsset(file: File): Promise<AudioAsset> {
   logger.info('Uploading audio asset:', file.name);
 
@@ -78,11 +65,6 @@ export async function uploadAudioAsset(file: File): Promise<AudioAsset> {
   return asset;
 }
 
-/**
- * Deletes an audio asset
- * @param id - The asset ID to delete
- * @returns A promise that resolves when the asset is deleted
- */
 export async function deleteAudioAsset(id: string): Promise<void> {
   logger.info('Deleting audio asset:', id);
 
@@ -104,11 +86,6 @@ export async function deleteAudioAsset(id: string): Promise<void> {
   logger.info('Deleted audio asset:', id);
 }
 
-// React Query hooks
-
-/**
- * Hook to fetch audio assets with caching
- */
 export function useAudioAssets(enabled = true) {
   return useQuery({
     queryKey: ['audioAssets'],
@@ -119,31 +96,23 @@ export function useAudioAssets(enabled = true) {
   });
 }
 
-/**
- * Hook to upload an audio asset
- */
 export function useUploadAudioAsset() {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: uploadAudioAsset,
     onSuccess: () => {
-      // Invalidate and refetch audio assets list
       queryClient.invalidateQueries({ queryKey: ['audioAssets'] });
     },
   });
 }
 
-/**
- * Hook to delete an audio asset
- */
 export function useDeleteAudioAsset() {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: deleteAudioAsset,
     onSuccess: () => {
-      // Invalidate and refetch audio assets list
       queryClient.invalidateQueries({ queryKey: ['audioAssets'] });
     },
   });

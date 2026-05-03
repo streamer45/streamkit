@@ -6,23 +6,15 @@ import type { Pipeline } from '@/types/types';
 
 export type SimpleEdge = { source: string; target: string };
 
-/**
- * Checks if adding a new edge would create a cycle in the graph.
- * Returns true if the connection would create a cycle (invalid).
- *
- * Bidirectional nodes (like moq_peer) are allowed to participate in cycles
- * since they process data in both directions intentionally.
- */
+/** Returns true if adding `newEdge` would create a cycle (bidirectional nodes exempt). */
 export function wouldCreateCycle(
   nodeIds: string[],
   existingEdges: SimpleEdge[],
   newEdge: SimpleEdge,
   bidirectionalNodeIds: string[] = []
 ): boolean {
-  // Add the proposed edge to existing edges
   const allEdges = [...existingEdges, newEdge];
 
-  // Use topological sort to detect cycles
   const inDegree: Record<string, number> = {};
   const outgoing: Record<string, string[]> = {};
 
@@ -57,22 +49,16 @@ export function wouldCreateCycle(
     }
   }
 
-  // If we couldn't process all nodes, there's a cycle
   if (processedCount === nodeIds.length) {
     return false; // No cycle
   }
 
-  // There's a cycle - check if any bidirectional node is part of it
   const nodesInCycle = nodeIds.filter((id) => !processed.has(id));
   const hasBidirectionalNode = nodesInCycle.some((id) => bidirectionalNodeIds.includes(id));
 
-  // If a bidirectional node is in the cycle, it's allowed
   return !hasBidirectionalNode;
 }
 
-/**
- * Initialize graph data structures for topological level assignment
- */
 function initializeGraphStructures(
   nodeIds: string[],
   edges: SimpleEdge[]
@@ -101,9 +87,6 @@ function initializeGraphStructures(
   return { inDegree, outgoing, predecessors };
 }
 
-/**
- * Compute topological levels using BFS from root nodes
- */
 function computeTopologicalLevels(
   nodeIds: string[],
   inDegree: Record<string, number>,
@@ -112,7 +95,6 @@ function computeTopologicalLevels(
   const level: Record<string, number> = {};
   const queue: string[] = [];
 
-  // Start with root nodes (no incoming edges)
   for (const n of nodeIds) {
     if (inDegree[n] === 0) {
       queue.push(n);
@@ -120,7 +102,6 @@ function computeTopologicalLevels(
     }
   }
 
-  // Process nodes level by level
   while (queue.length > 0) {
     const u = queue.shift() as string;
     for (const v of outgoing[u]) {
@@ -135,9 +116,6 @@ function computeTopologicalLevels(
   return level;
 }
 
-/**
- * Assign levels to remaining nodes (cycles or disconnected components)
- */
 function assignRemainingLevels(
   nodeIds: string[],
   level: Record<string, number>,
@@ -158,9 +136,6 @@ function assignRemainingLevels(
   }
 }
 
-/**
- * Group nodes by their assigned levels
- */
 function groupNodesByLevel(
   nodeIds: string[],
   level: Record<string, number>
@@ -187,16 +162,12 @@ export function topoLevelsFromEdges(
   sortedLevels: number[];
   levelByNode: Record<string, number>;
 } {
-  // Initialize graph structures
   const { inDegree, outgoing, predecessors } = initializeGraphStructures(nodeIds, edges);
 
-  // Compute levels using topological traversal
   const level = computeTopologicalLevels(nodeIds, inDegree, outgoing);
 
-  // Handle remaining nodes (cycles/disconnected)
   assignRemainingLevels(nodeIds, level, predecessors);
 
-  // Group nodes by level
   const { levels, sortedLevels } = groupNodesByLevel(nodeIds, level);
 
   return { levels, sortedLevels, levelByNode: level };
@@ -228,10 +199,6 @@ export function orderedNamesFromLevels(
   return ordered;
 }
 
-/**
- * Assigns horizontal lanes to nodes to maintain visual continuity in fork-join patterns.
- * Nodes that are part of the same linear chain get the same lane assignment.
- */
 type Adjacency = {
   outgoing: Record<string, string[]>;
   incoming: Record<string, string[]>;
@@ -373,22 +340,16 @@ function assignLanes(
 ): Record<string, number> {
   const { outgoing, incoming } = buildAdjacency(nodeIds, edges);
 
-  // Heuristic: when a node forks, keep the "primary" branch in the same lane to avoid
-  // shifting the main path to the right (e.g., telemetry sinks branching off a core pipeline).
-  //
-  // We approximate "primary" as the child with the greatest downstream depth (longest path),
-  // breaking ties by out-degree (more downstream work).
+  // Primary branch heuristic: keep the child with the greatest downstream depth in the same lane.
   const depthByNode = computeDepthByNode(sortedLevels, levels, outgoing);
   const primaryChildByParent = computePrimaryChildByParent(nodeIds, outgoing, depthByNode);
 
   const lanes: Record<string, number> = {};
   let nextLane = 0;
 
-  // Process levels from left to right
   for (const level of sortedLevels) {
     const nodesAtLevel = levels[level] ?? [];
 
-    // Try to assign lanes based on parent lanes
     for (const node of nodesAtLevel) {
       const parents = incoming[node] ?? [];
       const result = computeLaneForNode(
@@ -407,9 +368,6 @@ function assignLanes(
   return lanes;
 }
 
-/**
- * Applies lane-based layout where nodes maintain visual continuity in fork-join patterns
- */
 function applyLaneBasedLayout(
   levels: Record<number, string[]>,
   sortedLevels: number[],
@@ -426,7 +384,6 @@ function applyLaneBasedLayout(
 
   const spacing = nodeWidth + hGap;
 
-  // Rebuild incoming map for continuity anchoring.
   const incoming: Record<string, string[]> = {};
   const nodeIds = sortedLevels.flatMap((l) => levels[l]);
   for (const n of nodeIds) {
@@ -454,8 +411,6 @@ function applyLaneBasedLayout(
       ? Math.max(...names.map((n) => heights[n] ?? nodeHeight))
       : nodeHeight;
 
-    // Keep sibling spacing constant by packing nodes in this level into consecutive columns.
-    // Use lane order to preserve continuity, but avoid large gaps from unused lanes.
     const ordered = [...names].sort((a, b) => {
       const la = lanes[a] ?? 0;
       const lb = lanes[b] ?? 0;
@@ -463,15 +418,11 @@ function applyLaneBasedLayout(
       return a.localeCompare(b);
     });
 
-    // Ideal X comes from lane assignment. We'll choose a single row offset to best preserve
-    // continuity, while using evenly spaced columns within the row.
     const deltas = ordered.map((name, idx) => {
       const lane = lanes[name] ?? 0;
       return lane * spacing - idx * spacing;
     });
 
-    // Prefer anchoring a continuity node (single parent, same lane as parent) so the main path
-    // stays vertically aligned across levels. Otherwise, use the median offset.
     const continuityIdx = ordered.findIndex((name) => {
       const parents = incoming[name] ?? [];
       if (parents.length !== 1) return false;
@@ -496,9 +447,6 @@ function applyLaneBasedLayout(
   return positions;
 }
 
-/**
- * Applies centered layout where nodes at each level are centered horizontally
- */
 function applyCenteredLayout(
   levels: Record<number, string[]>,
   sortedLevels: number[],
@@ -534,9 +482,6 @@ function applyCenteredLayout(
   return positions;
 }
 
-/**
- * Computes lane assignments for nodes if edges are provided
- */
 function computeLanesIfNeeded(
   edges: SimpleEdge[],
   nodeIds: string[],
@@ -571,7 +516,6 @@ export function verticalLayout(
   const nodeIds = sortedLevels.flatMap((l) => levels[l]);
   const lanes = computeLanesIfNeeded(edges, nodeIds, levels, sortedLevels);
 
-  // Use lane-based layout if we have valid lane assignments, otherwise use centered layout
   const hasValidLanes = Object.keys(lanes).length > 0;
   if (hasValidLanes) {
     return applyLaneBasedLayout(

@@ -6,19 +6,10 @@ import { load } from 'js-yaml';
 
 import type { ClientSection, Pipeline } from '@/types/types';
 
-/**
- * Extracts the `client` section from a compiled `Pipeline`, returning `null`
- * when the field is absent.
- */
 export function extractClientSection(pipeline: Pipeline | null | undefined): ClientSection | null {
   return pipeline?.client ?? null;
 }
 
-/**
- * Extracts the `client` section from an already-parsed YAML object.
- * Use this when you have already called `load()` and want to avoid
- * parsing the same YAML string again.
- */
 export function extractClientFromParsed(
   parsed: Record<string, unknown> | null | undefined
 ): ClientSection | null {
@@ -26,10 +17,6 @@ export function extractClientFromParsed(
   return (parsed.client as ClientSection) ?? null;
 }
 
-/**
- * Parses a raw pipeline YAML string and extracts the `client` section.
- * Returns `null` if the YAML is invalid or has no client section.
- */
 export function parseClientFromYaml(yamlContent: string): ClientSection | null {
   try {
     const parsed = load(yamlContent) as Record<string, unknown> | null;
@@ -39,11 +26,7 @@ export function parseClientFromYaml(yamlContent: string): ClientSection | null {
   }
 }
 
-/**
- * Converts a CSS-style `accept` attribute (e.g. `"audio/*"`, `".ogg,.opus"`)
- * into an array of lowercase format names suitable for asset-format matching.
- * Returns `null` when all formats are acceptable.
- */
+/** Convert a CSS-style `accept` attribute into lowercase format names; null = all accepted. */
 export function parseAcceptToFormats(accept: string | null | undefined): string[] | null {
   if (!accept) return null;
   if (accept.includes('*')) return null;

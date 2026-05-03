@@ -2,10 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Service for executing oneshot (stateless) pipeline conversions
- */
-
 import { getLogger } from '@/utils/logger';
 import { canUseMseForMimeType } from '@/utils/mse';
 
@@ -30,15 +26,11 @@ export interface ConvertFileOptions {
   webmPlayback?: WebmPlaybackStrategy;
 }
 
-/**
- * Creates a wrapped readable stream with proper cancellation handling
- */
 function createWrappedStream(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   signal: AbortSignal | undefined,
   streamType: string
 ): ReadableStream<Uint8Array> {
-  // Listen for abort signal and cancel the reader
   if (signal) {
     signal.addEventListener('abort', () => {
       logger.debug(`Abort signal received, cancelling ${streamType} reader`);
@@ -77,9 +69,6 @@ function createWrappedStream(
   });
 }
 
-/**
- * Handles streaming response for JSON, WebM, or MP4 (fMP4) content
- */
 function handleStreamingResponse(
   response: Response,
   contentType: string,
@@ -146,9 +135,6 @@ function handleStreamingResponse(
   return null;
 }
 
-/**
- * Handles blob-based playback for non-streaming formats
- */
 async function handleBlobPlayback(
   response: Response,
   contentType: string
@@ -167,9 +153,6 @@ async function handleBlobPlayback(
   };
 }
 
-/**
- * Handles download mode by triggering a browser download
- */
 async function handleDownload(
   response: Response,
   contentType: string,
@@ -178,7 +161,6 @@ async function handleDownload(
   const blob = await response.blob();
   logger.debug('Downloaded blob size:', blob.size);
 
-  // Generate a filename based on the original file
   const extension = getExtensionFromContentType(contentType);
   let outputFileName: string;
   if (mediaFile) {
@@ -190,7 +172,6 @@ async function handleDownload(
     outputFileName = `output${extension}`;
   }
 
-  // Trigger download
   downloadBlob(blob, outputFileName);
 
   logger.info('Download triggered:', outputFileName);
@@ -198,14 +179,6 @@ async function handleDownload(
   return { success: true };
 }
 
-/**
- * Executes a oneshot pipeline conversion
- * @param pipelineYaml - The YAML pipeline configuration
- * @param mediaFile - The media file to process (optional if pipeline includes file_read)
- * @param mode - Output mode: 'download' or 'playback'
- * @param signal - Optional AbortSignal to cancel the request
- * @returns A promise that resolves when the conversion is complete
- */
 export type UploadField = { field: string; file: File };
 
 export async function convertFile(
@@ -216,17 +189,14 @@ export async function convertFile(
   options?: ConvertFileOptions
 ): Promise<ConversionResult> {
   try {
-    // Build the multipart form data
     const formData = new FormData();
     formData.append('config', new Blob([pipelineYaml], { type: 'text/yaml' }));
 
-    // Append uploads (multi-field allowed)
     const files = uploads ?? [];
     for (const upload of files) {
       formData.append(upload.field, upload.file);
     }
 
-    // Determine the API URL
     logger.info('Starting conversion:', {
       uploads: files.length,
       fileNames: files.map((f) => f.file.name),
@@ -234,7 +204,6 @@ export async function convertFile(
       pipelineLength: pipelineYaml.length,
     });
 
-    // Make the request
     const response = await fetchApi('/api/v1/process', {
       method: 'POST',
       body: formData,
@@ -255,23 +224,18 @@ export async function convertFile(
       };
     }
 
-    // Get the content type from the response
     const contentType = response.headers.get('Content-Type') || 'application/octet-stream';
     logger.info('Conversion successful, content type:', contentType);
 
     if (mode === 'playback') {
-      // Try streaming response first (for JSON/WebM/MP4)
       const streamingResult = handleStreamingResponse(response, contentType, signal, options);
       if (streamingResult) {
         return streamingResult;
       }
 
-      // Fall back to blob-based playback for other formats
       return handleBlobPlayback(response, contentType);
     }
 
-    // Handle download mode
-    // Use first upload to infer output naming when possible
     const primaryFile = files[0]?.file ?? null;
     return handleDownload(response, contentType, primaryFile);
   } catch (error) {
@@ -283,10 +247,6 @@ export async function convertFile(
   }
 }
 
-/**
- * Maps content type to file extension
- * Exported for use in download handling across the app
- */
 export function getExtensionFromContentType(contentType: string): string {
   const typeMap: Record<string, string> = {
     'audio/ogg': '.ogg',
@@ -303,35 +263,27 @@ export function getExtensionFromContentType(contentType: string): string {
     'video/ogg': '.ogv',
   };
 
-  // Try exact match first
   if (typeMap[contentType]) {
     return typeMap[contentType];
   }
 
-  // Try prefix match (e.g., "audio/ogg; codecs=opus")
   for (const [type, ext] of Object.entries(typeMap)) {
     if (contentType.startsWith(type)) {
       return ext;
     }
   }
 
-  // Check if it's an audio type and default to .ogg
   if (contentType.includes('audio')) {
     return '.ogg';
   }
 
-  // Last resort: check if application/octet-stream, likely audio
   if (contentType === 'application/octet-stream') {
     return '.ogg';
   }
 
-  // Final fallback
   return '.bin';
 }
 
-/**
- * Triggers a browser download for a blob
- */
 function downloadBlob(blob: Blob, fileName: string): void {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -341,7 +293,6 @@ function downloadBlob(blob: Blob, fileName: string): void {
   link.click();
   document.body.removeChild(link);
 
-  // Clean up the object URL after a short delay
   setTimeout(() => {
     URL.revokeObjectURL(url);
   }, 100);

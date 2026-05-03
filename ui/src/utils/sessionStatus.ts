@@ -4,9 +4,6 @@
 
 import type { NodeState } from '@/types/types';
 
-/**
- * Aggregated session status based on node states
- */
 export type SessionStatus =
   | 'running'
   | 'initializing'
@@ -16,17 +13,6 @@ export type SessionStatus =
   | 'stopped'
   | 'unknown';
 
-/**
- * Compute aggregated session status from all node states
- * Priority order (highest to lowest):
- * 1. Failed - Any node failed
- * 2. Stopped - Any node stopped
- * 3. Degraded - Any node degraded
- * 4. Recovering - Any node recovering
- * 5. Initializing - Any node initializing (and none in worse states)
- * 6. Running - All nodes running
- * 7. Unknown - No nodes or unable to determine
- */
 export function computeSessionStatus(nodeStates: Record<string, NodeState>): SessionStatus {
   const states = Object.values(nodeStates);
 
@@ -34,32 +20,26 @@ export function computeSessionStatus(nodeStates: Record<string, NodeState>): Ses
     return 'unknown';
   }
 
-  // Check for failure (highest priority)
   if (states.some((state) => typeof state === 'object' && 'Failed' in state)) {
     return 'failed';
   }
 
-  // Check for stopped
   if (states.some((state) => typeof state === 'object' && 'Stopped' in state)) {
     return 'stopped';
   }
 
-  // Check for degraded
   if (states.some((state) => typeof state === 'object' && 'Degraded' in state)) {
     return 'degraded';
   }
 
-  // Check for recovering
   if (states.some((state) => typeof state === 'object' && 'Recovering' in state)) {
     return 'recovering';
   }
 
-  // Check for creating or initializing
   if (states.some((state) => state === 'Creating' || state === 'Initializing')) {
     return 'initializing';
   }
 
-  // All running
   if (states.every((state) => state === 'Running')) {
     return 'running';
   }
@@ -67,9 +47,6 @@ export function computeSessionStatus(nodeStates: Record<string, NodeState>): Ses
   return 'unknown';
 }
 
-/**
- * Get color for session status
- */
 export function getSessionStatusColor(status: SessionStatus): string {
   switch (status) {
     case 'running':
@@ -89,9 +66,6 @@ export function getSessionStatusColor(status: SessionStatus): string {
   }
 }
 
-/**
- * Get label for session status
- */
 export function getSessionStatusLabel(status: SessionStatus): string {
   switch (status) {
     case 'running':

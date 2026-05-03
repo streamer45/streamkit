@@ -8,9 +8,6 @@ import { load } from 'js-yaml';
 
 import type { NodeDefinition } from '@/types/generated/api-types';
 
-/**
- * JSON Schema property definition
- */
 interface JsonSchemaProperty {
   type?: string | string[];
   enum?: unknown[];
@@ -23,9 +20,6 @@ interface JsonSchemaProperty {
   [key: string]: unknown;
 }
 
-/**
- * JSON Schema definition
- */
 interface JsonSchema {
   type?: string;
   properties?: Record<string, JsonSchemaProperty>;
@@ -33,9 +27,6 @@ interface JsonSchema {
   [key: string]: unknown;
 }
 
-/**
- * Provides mode completions (dynamic/oneshot)
- */
 function getModeCompletions(textBeforeCursor: string, lineStart: number): CompletionResult | null {
   const modeMatch = /^\s*mode:\s*(.*)$/.exec(textBeforeCursor);
   if (!modeMatch) return null;
@@ -60,9 +51,6 @@ function getModeCompletions(textBeforeCursor: string, lineStart: number): Comple
   };
 }
 
-/**
- * Provides kind completions (node types)
- */
 function getKindCompletions(
   textBeforeCursor: string,
   lineStart: number,
@@ -91,9 +79,6 @@ function getKindCompletions(
   };
 }
 
-/**
- * Provides needs field completions (node names)
- */
 function getNeedsFieldCompletions(
   textBeforeCursor: string,
   lineStart: number,
@@ -124,16 +109,12 @@ function getNeedsFieldCompletions(
   };
 }
 
-/**
- * Checks if we're inside a needs array by looking at previous lines
- */
 function isInsideNeedsArray(linesBefore: string[]): boolean {
   for (let i = linesBefore.length - 1; i >= 0; i--) {
     const prevLine = linesBefore[i];
     if (/^\s*needs:\s*$/.test(prevLine)) {
       return true;
     }
-    // If we hit a non-indented line or another key, we're not in needs array
     if (/^\s*\w+:/.test(prevLine) && !/^\s*needs:/.test(prevLine)) {
       return false;
     }
@@ -141,9 +122,6 @@ function isInsideNeedsArray(linesBefore: string[]): boolean {
   return false;
 }
 
-/**
- * Provides needs array item completions (node names in array)
- */
 function getNeedsArrayCompletions(
   textBeforeCursor: string,
   lineStart: number,
@@ -154,7 +132,6 @@ function getNeedsArrayCompletions(
   const needsArrayMatch = /^\s*-\s+(.*)$/.exec(textBeforeCursor);
   if (!needsArrayMatch) return null;
 
-  // Check if we're inside a needs array by looking at previous lines
   const linesBefore = context.state.doc.sliceString(0, line.from).split('\n');
   if (!isInsideNeedsArray(linesBefore)) return null;
 
@@ -180,15 +157,6 @@ function getNeedsArrayCompletions(
   };
 }
 
-/**
- * Creates a YAML autocompletion extension for StreamKit pipelines.
- * Provides completions for:
- * - `mode:` fields with pipeline execution modes (dynamic/oneshot)
- * - `kind:` fields with available node types
- * - `needs:` fields with node names from the current document
- * - `params:` parameter names based on node schema
- * - Parameter values based on JSON Schema types (enums, booleans, etc.)
- */
 export function createYamlAutocompletion(nodeDefinitions: NodeDefinition[]) {
   return autocompletion({
     activateOnTyping: true,
@@ -199,17 +167,12 @@ export function createYamlAutocompletion(nodeDefinitions: NodeDefinition[]) {
         const lineStart = line.from;
         const cursorPosInLine = context.pos - lineStart;
 
-        // Get text before cursor on current line
         const textBeforeCursor = lineText.slice(0, cursorPosInLine);
 
-        // Get the full document text to parse node names
         const fullText = context.state.doc.toString();
 
-        // Get lines before cursor for context analysis
         const linesBefore = context.state.doc.sliceString(0, line.from).split('\n');
 
-        // Try each completion type in order
-        // Note: Order matters! More specific completions should come first
         return (
           getModeCompletions(textBeforeCursor, lineStart) ||
           getKindCompletions(textBeforeCursor, lineStart, nodeDefinitions) ||
@@ -223,9 +186,6 @@ export function createYamlAutocompletion(nodeDefinitions: NodeDefinition[]) {
   });
 }
 
-/**
- * Extracts node names from YAML document
- */
 function extractNodeNames(yamlText: string): string[] {
   try {
     const parsed = load(yamlText) as {
@@ -246,12 +206,10 @@ function extractNodeNames(yamlText: string): string[] {
 
     return [];
   } catch {
-    // If YAML is invalid, try to extract node names with regex
     const matches = yamlText.matchAll(/^(\w+):\s*$/gm);
     const names = new Set<string>();
     for (const match of matches) {
       const name = match[1];
-      // Filter out common YAML keys
       if (
         ![
           'mode',
@@ -273,20 +231,15 @@ function extractNodeNames(yamlText: string): string[] {
   }
 }
 
-/**
- * Finds the node kind for the current cursor position by looking backwards for 'kind:' field
- */
 function findCurrentNodeKind(linesBefore: string[]): string | null {
   for (let i = linesBefore.length - 1; i >= 0; i--) {
     const line = linesBefore[i];
 
-    // Check if we found a kind: line
     const kindMatch = line.match(/^\s*kind:\s+(.+)$/);
     if (kindMatch) {
       return kindMatch[1].trim();
     }
 
-    // If we hit a top-level key (node name), stop searching
     if (line.match(/^[a-zA-Z0-9_:.-]+:\s*$/)) {
       return null;
     }
@@ -294,19 +247,14 @@ function findCurrentNodeKind(linesBefore: string[]): string | null {
   return null;
 }
 
-/**
- * Checks if we're inside a params block by looking at previous lines
- */
 function isInsideParamsBlock(linesBefore: string[]): boolean {
   for (let i = linesBefore.length - 1; i >= 0; i--) {
     const prevLine = linesBefore[i];
 
-    // Found params: - we're inside
     if (/^\s*params:\s*$/.test(prevLine)) {
       return true;
     }
 
-    // If we hit a non-indented line or another top-level key, we're not in params
     if (/^[a-zA-Z0-9_:.-]+:/.test(prevLine)) {
       return false;
     }
@@ -314,21 +262,16 @@ function isInsideParamsBlock(linesBefore: string[]): boolean {
   return false;
 }
 
-/**
- * Provides parameter name completions for params: blocks
- */
 function getParamNameCompletions(
   textBeforeCursor: string,
   lineStart: number,
   linesBefore: string[],
   nodeDefinitions: NodeDefinition[]
 ): CompletionResult | null {
-  // Check if we're inside a params block
   if (!isInsideParamsBlock(linesBefore)) {
     return null;
   }
 
-  // Check if we're typing a param name (line starts with whitespace and word characters)
   const paramNameMatch = /^\s+([a-zA-Z0-9_]*)$/.exec(textBeforeCursor);
   if (!paramNameMatch) {
     return null;
@@ -337,25 +280,21 @@ function getParamNameCompletions(
   const typed = paramNameMatch[1];
   const from = lineStart + textBeforeCursor.lastIndexOf(typed);
 
-  // Find the node kind to get its schema
   const nodeKind = findCurrentNodeKind(linesBefore);
   if (!nodeKind) {
     return null;
   }
 
-  // Find the node definition
   const nodeDef = nodeDefinitions.find((def) => def.kind === nodeKind);
   if (!nodeDef || !nodeDef.param_schema) {
     return null;
   }
 
-  // Parse the schema
   const schema = nodeDef.param_schema as JsonSchema;
   if (!schema.properties) {
     return null;
   }
 
-  // Get parameter names from schema
   const options = Object.entries(schema.properties)
     .filter(([name]) => name.toLowerCase().includes(typed.toLowerCase()))
     .map(([name, prop]) => {
@@ -382,9 +321,6 @@ function getParamNameCompletions(
   };
 }
 
-/**
- * Gets enum value completions
- */
 function getEnumCompletions(
   paramSchema: JsonSchemaProperty,
   typed: string
@@ -402,9 +338,6 @@ function getEnumCompletions(
     }));
 }
 
-/**
- * Gets boolean value completions
- */
 function getBooleanCompletions(
   paramSchema: JsonSchemaProperty,
   typed: string
@@ -418,9 +351,6 @@ function getBooleanCompletions(
     }));
 }
 
-/**
- * Gets number/integer value completions
- */
 function getNumberCompletions(
   paramSchema: JsonSchemaProperty,
   typed: string
@@ -430,7 +360,6 @@ function getNumberCompletions(
   if (typed === '' && paramSchema.default !== undefined) {
     let detail = 'Default value';
 
-    // Add range hint if constraints exist
     if (paramSchema.minimum !== undefined || paramSchema.maximum !== undefined) {
       const min = paramSchema.minimum !== undefined ? String(paramSchema.minimum) : '-∞';
       const max = paramSchema.maximum !== undefined ? String(paramSchema.maximum) : '∞';
@@ -447,9 +376,6 @@ function getNumberCompletions(
   return options;
 }
 
-/**
- * Gets string value completions
- */
 function getStringCompletions(
   paramSchema: JsonSchemaProperty,
   typed: string
@@ -467,9 +393,6 @@ function getStringCompletions(
   return [];
 }
 
-/**
- * Provides parameter value completions based on JSON Schema type
- */
 function getParamValueCompletions(
   textBeforeCursor: string,
   lineStart: number,
@@ -507,7 +430,6 @@ function getParamValueCompletions(
   const paramSchema = schema.properties[paramName];
   let options: Array<{ label: string; type: string; detail?: string; apply?: string }> = [];
 
-  // Determine which completion type to use
   if (paramSchema.enum && Array.isArray(paramSchema.enum)) {
     options = getEnumCompletions(paramSchema, typed);
   } else if (paramSchema.type === 'boolean') {

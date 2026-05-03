@@ -14,14 +14,6 @@ import type {
 import type { PacketType } from '@/types/types';
 import { deepEqual } from '@/utils/deepEqual';
 
-/**
- * Minimal client-side packet type registry, driven by the server.
- * This keeps the UI generic and scalable. There is no client-side fallback:
- * the UI relies on the server-provided registry as the single source of truth.
- */
-
-// Types imported from generated bindings
-
 function variantOf(packetType: PacketType): { kind: string; payload?: unknown } {
   if (typeof packetType === 'string') {
     return { kind: packetType };
@@ -57,7 +49,6 @@ function formatWithTemplate(
 export function formatPacketType(packetType: PacketType): string {
   const { kind, payload } = variantOf(packetType);
 
-  // Special case for Passthrough type
   if (kind === 'Passthrough') {
     return 'Passthrough (inferred from input)';
   }
@@ -74,19 +65,17 @@ export function formatPacketType(packetType: PacketType): string {
     return meta.label;
   }
 
-  // No client fallback: rely on server-provided registry only
   return kind;
 }
 
 export function getPacketTypeColor(packetType: PacketType): string {
   const { kind } = variantOf(packetType);
 
-  // Special neutral color for Passthrough (will be resolved at connection time)
   if (kind === 'Passthrough') {
     if (typeof window !== 'undefined') {
       return getComputedStyle(document.documentElement).getPropertyValue('--sk-text-muted').trim();
     }
-    return '#95a5a6'; // SSR fallback
+    return '#95a5a6';
   }
 
   const meta = getPacketTypeMeta(kind);
@@ -94,27 +83,22 @@ export function getPacketTypeColor(packetType: PacketType): string {
     return meta.color;
   }
 
-  // Fallback color for unknown packet types (use CSS variable for consistency)
-  // Get computed value at runtime to support theme switching
   if (typeof window !== 'undefined') {
     return getComputedStyle(document.documentElement)
       .getPropertyValue('--sk-status-stopped')
       .trim();
   }
-  return '#95a5a6'; // SSR fallback
+  return '#95a5a6';
 }
 
 function canConnectPair(out: PacketType, input: PacketType): boolean {
   const a = variantOf(out);
   const b = variantOf(input);
 
-  // Passthrough can't be validated at connection time - needs type inference
-  // Allow it for now, validation will happen during pipeline validation
   if (a.kind === 'Passthrough') {
     return true;
   }
 
-  // Any matches anything
   if (a.kind === 'Any' || b.kind === 'Any') {
     return true;
   }
@@ -123,12 +107,11 @@ function canConnectPair(out: PacketType, input: PacketType): boolean {
   const mb = getPacketTypeMeta(b.kind);
 
   if (ma && mb) {
-    // Kinds must match for these v1 strategies
     if (a.kind !== b.kind) {
       return false;
     }
 
-    const compat = ma.compatibility; // symmetric by convention
+    const compat = ma.compatibility;
     if (compat.kind === 'any') return true;
     if (compat.kind === 'exact') return true;
 
@@ -144,11 +127,9 @@ function canConnectPair(out: PacketType, input: PacketType): boolean {
       });
     }
 
-    // Unknown strategy: be conservative
     return false;
   }
 
-  // No client fallback: rely on server-provided registry only
   return false;
 }
 
@@ -156,9 +137,6 @@ export function canConnect(outputType: PacketType, inputTypes: PacketType[]): bo
   return inputTypes.some((it) => canConnectPair(outputType, it));
 }
 
-/**
- * Formats pin cardinality for human-readable display
- */
 export function formatPinCardinality(cardinality: PinCardinality): string {
   if (typeof cardinality === 'string') {
     switch (cardinality) {
@@ -171,7 +149,6 @@ export function formatPinCardinality(cardinality: PinCardinality): string {
     }
   }
 
-  // Dynamic cardinality
   if (typeof cardinality === 'object' && 'Dynamic' in cardinality) {
     const prefix = cardinality.Dynamic.prefix;
     return `Dynamic (${prefix}_*)`;
@@ -180,9 +157,6 @@ export function formatPinCardinality(cardinality: PinCardinality): string {
   return 'Unknown';
 }
 
-/**
- * Gets a visual icon/symbol for the cardinality type
- */
 export function getPinCardinalityIcon(cardinality: PinCardinality): string {
   if (typeof cardinality === 'string') {
     switch (cardinality) {
@@ -195,17 +169,13 @@ export function getPinCardinalityIcon(cardinality: PinCardinality): string {
     }
   }
 
-  // Dynamic cardinality
   if (typeof cardinality === 'object' && 'Dynamic' in cardinality) {
-    return '◈'; // Diamond for dynamic
+    return '◈';
   }
 
   return '○';
 }
 
-/**
- * Gets a tooltip description for the cardinality
- */
 export function getPinCardinalityDescription(
   cardinality: PinCardinality,
   isInput: boolean
@@ -223,7 +193,6 @@ export function getPinCardinalityDescription(
     }
   }
 
-  // Dynamic cardinality
   if (typeof cardinality === 'object' && 'Dynamic' in cardinality) {
     const prefix = cardinality.Dynamic.prefix;
     return isInput
@@ -261,8 +230,6 @@ function inferCompositorOutputType(sourceNode: Node, sourceOutput: OutputPin): P
 
   const payload = (outVariant.payload as Record<string, unknown> | undefined) ?? {};
 
-  // Also reflect configured width/height so downstream nodes see concrete
-  // dimensions instead of the definition-time wildcards.
   const width: number | null =
     typeof params.width === 'number'
       ? params.width
@@ -276,7 +243,6 @@ function inferCompositorOutputType(sourceNode: Node, sourceOutput: OutputPin): P
         ? payload.height
         : null;
 
-  // The compositor always outputs RGBA8.
   return {
     RawVideo: {
       width,
@@ -345,16 +311,7 @@ function resolvePassthroughSource(
   };
 }
 
-/**
- * Resolves the actual packet type for an output pin, handling Passthrough type inference.
- * Traces back through the pipeline to find the source type for Passthrough nodes.
- *
- * @param sourceNode - The node whose output type to resolve
- * @param sourceHandle - The name of the output pin (or null for default 'out')
- * @param nodes - All nodes in the pipeline
- * @param edges - All edges in the pipeline
- * @returns The resolved packet type
- */
+/** Resolve the actual packet type for an output pin, tracing through Passthrough nodes. */
 export function resolveOutputType(
   sourceNode: Node,
   sourceHandle: string | null,
@@ -367,20 +324,14 @@ export function resolveOutputType(
     return 'Any';
   }
 
-  // Some nodes have output types that depend on configuration params.
-  // Resolve those here so validation + edge metadata reflect the configured pipeline.
-  //
-  // NOTE: This is UI-only inference to improve UX (YAML import + canvas connections).
-  // The server remains authoritative at runtime.
+  // UI-only inference from node params; server remains authoritative at runtime.
   const inferred = inferConfiguredOutputType(sourceNode, sourceOutput);
   if (inferred) return inferred;
 
-  // If not Passthrough, return as-is
   if (sourceOutput.produces_type !== 'Passthrough') {
     return sourceOutput.produces_type;
   }
 
-  // Passthrough node - trace back to find the input type
   const upstream = resolvePassthroughSource(sourceNode, nodes, edges);
   if (!upstream) return 'Any';
   return resolveOutputType(upstream.upstreamNode, upstream.upstreamHandle, nodes, edges);

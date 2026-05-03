@@ -2,20 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Custom React.memo comparator for ReactFlow node components.
- *
- * ReactFlow passes position/dimension props (`positionAbsoluteX`,
- * `positionAbsoluteY`, `width`, `height`, `dragging`, `zIndex`, …) to
- * every custom node component.  These change frequently during dimension
- * measurement, auto-layout, and fit-view — but the node components never
- * read them.  The default shallow-equality comparison in React.memo sees
- * them as changed and re-renders every node on every layout tick.
- *
- * This comparator only checks the props that node components actually
- * consume: `id`, `type`, `data` (by reference), and `selected`.
- */
-
 interface NodeComponentProps {
   id: string;
   type?: string;

@@ -32,8 +32,7 @@ import {
 } from '@/utils/jsonSchema';
 import { nodesLogger } from '@/utils/logger';
 
-// Module-level map so expanded state survives topology rebuilds (which
-// recreate ConfigurableNode React elements, resetting useState).
+// Survives topology rebuilds which recreate React elements.
 const expandedState = new Map<string, boolean>();
 
 const ParamCount = styled.div`
@@ -124,8 +123,6 @@ interface ConfigurableNodeData {
   definition?: { bidirectional?: boolean };
   onParamChange?: (nodeId: string, paramName: string, value: unknown) => void;
   sessionId?: string;
-  /** Set when the node has been dropped on the canvas but not yet
-   *  committed via `addnode`.  See `MonitorView`/`pipelineGraph.buildNodeObject`. */
   draft?: { missingRequired: string[]; isCreating: boolean; onPromote: () => void };
 }
 
@@ -139,7 +136,6 @@ interface NumericSliderControlProps {
   nodeId: string;
   sessionId?: string;
   paramKey: string;
-  /** Dot-notation path for reading/writing nested params. Defaults to `paramKey`. */
   path?: string;
   schema: JsonSchemaProperty;
   min: number;
@@ -149,7 +145,6 @@ interface NumericSliderControlProps {
   onParamChange?: (nodeId: string, paramName: string, value: unknown) => void;
 }
 
-// Helper: Compute fallback value for slider
 function computeFallbackValue(
   defaultValue: unknown,
   baseParam: unknown,
@@ -165,7 +160,6 @@ function computeFallbackValue(
   return (min + max) / 2;
 }
 
-// Helper: Format slider value with unit
 function formatSliderValue(
   value: number,
   paramKey: string,
@@ -186,7 +180,6 @@ function formatSliderValue(
   };
 }
 
-// Helper: Format min/max labels
 function formatMinMaxLabels(
   min: number,
   max: number,
@@ -295,20 +288,11 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
   const toggleConfigs = useMemo(() => extractToggleConfigs(schema), [schema]);
   const textConfigs = useMemo(() => extractTextConfigs(schema), [schema]);
   const controlCount = toggleConfigs.length + sliderConfigs.length + textConfigs.length;
-  // Drafts hide the canvas-side tune controls entirely.  Those controls
-  // dispatch `tunenode` directly via `useTuneNode` (see SchemaControls)
-  // and so cannot route through the draft path — for a draft node the
-  // engine has no entry yet and would warn "Could not tune non-existent
-  // node".  Drafts are configured exclusively from the right-pane
-  // Inspector, whose `onParamChange` is wired to draft-aware routing.
   const isDraft = !!data.draft;
   const hasControls = controlCount > 0 && !isDraft;
 
-  // Detect bidirectional nodes using the bidirectional property from node definition
   const isBidirectional = data.definition?.bidirectional ?? false;
 
-  // Show live indicator when node is in an active session (has sessionId)
-  // This prevents the LIVE badge from showing in design view (which has no sessionId)
   const showLiveIndicator = !!data.onParamChange && !!data.sessionId;
 
   const [controlsExpanded, setControlsExpanded] = useState(() => expandedState.get(id) ?? false);

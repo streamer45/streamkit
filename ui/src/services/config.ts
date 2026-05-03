@@ -4,16 +4,10 @@
 
 import { fetchApi } from './base';
 
-/**
- * Frontend configuration fetched from the server
- */
 export interface FrontendConfig {
   moqGatewayUrl?: string;
 }
 
-/**
- * Fetch frontend configuration from the server
- */
 export async function fetchConfig(): Promise<FrontendConfig> {
   const response = await fetchApi('/api/v1/config');
 
@@ -23,7 +17,6 @@ export async function fetchConfig(): Promise<FrontendConfig> {
 
   const data = await response.json();
 
-  // Convert snake_case to camelCase
   return {
     moqGatewayUrl: data.moq_gateway_url,
   };

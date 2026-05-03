@@ -2,14 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Generic service for plugin-declared asset types.
- *
- * All plugin asset types share the same REST endpoints parameterized by
- * `type_id`.  This module provides React Query hooks that work with any
- * plugin asset type.
- */
-
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import type { PluginAsset } from '@/types/generated/api-types';
@@ -19,9 +11,6 @@ import { fetchApi } from './base';
 
 const logger = getLogger('pluginAssets');
 
-/**
- * List all assets for a plugin-registered type.
- */
 export async function listPluginAssets(typeId: string): Promise<PluginAsset[]> {
   logger.debug('Fetching plugin assets:', typeId);
 
@@ -45,9 +34,6 @@ export async function listPluginAssets(typeId: string): Promise<PluginAsset[]> {
   return assets;
 }
 
-/**
- * Upload a file as a plugin asset.
- */
 export async function uploadPluginAsset(typeId: string, file: File): Promise<PluginAsset> {
   logger.info('Uploading plugin asset:', typeId, file.name);
 
@@ -76,9 +62,6 @@ export async function uploadPluginAsset(typeId: string, file: File): Promise<Plu
   return asset;
 }
 
-/**
- * Delete a user-uploaded plugin asset.
- */
 export async function deletePluginAsset(typeId: string, id: string): Promise<void> {
   logger.info('Deleting plugin asset:', typeId, id);
 
@@ -101,14 +84,6 @@ export async function deletePluginAsset(typeId: string, id: string): Promise<voi
   logger.info('Deleted plugin asset:', id);
 }
 
-// ── React Query Hooks ────────────────────────────────────────────────────────
-
-/**
- * Hook to upload a plugin asset.
- *
- * When `typeId` is empty (no plugin type selected), the mutation is a no-op
- * to avoid posting to an invalid endpoint.
- */
 export function useUploadPluginAsset(typeId: string) {
   const queryClient = useQueryClient();
 

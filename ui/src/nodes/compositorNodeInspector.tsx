@@ -2,20 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Inspector panel for the compositor node.
- *
- * Reads from Jotai atoms directly to derive the selected layer, its kind,
- * inspector properties and display name.  This avoids passing large derived
- * objects through props and keeps re-renders confined to the inspector when
- * appearance-only properties (opacity, rotation) change on the selected layer.
- *
- * Individual inspector controls (OpacityControl, RotationControl, etc.) are
- * React.memo'd with primitive props, so only the control whose value actually
- * changed re-renders — e.g. an opacity drag only updates OpacityControl, not
- * RotationControl or MirrorControl.
- */
-
 import { useAtomValue } from 'jotai/react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
@@ -102,7 +88,6 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
     onInteractionStart,
     onInteractionEnd,
   }) => {
-    // ── Read from atoms ────────────────────────────────────────────────────
     const selectedLayerId = useAtomValue(selectedLayerIdAtom);
     const selectedLayerKind = useAtomValue(selectedLayerKindAtom);
     const selectedLayer = useAtomValue(
@@ -117,11 +102,8 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
     const textOverlayIds = useAtomValue(textOverlayIdsAtom);
     const imageOverlayIds = useAtomValue(imageOverlayIdsAtom);
 
-    // ── Fallback text input ref ────────────────────────────────────────────
     const internalTextInputRef = useRef<HTMLTextAreaElement>(null);
     const textInputRef = externalTextInputRef ?? internalTextInputRef;
-
-    // ── Stable callbacks (must be before early return) ─────────────────────
 
     const handleOpacityChange = useCallback(
       (v: number) => {
@@ -188,11 +170,9 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
       ]
     );
 
-    // ── Early return after all hooks ───────────────────────────────────────
     const source = selectedLayer ?? selectedTextOverlay ?? selectedImageOverlay;
     if (!source || !selectedLayerId) return null;
 
-    // ── Derive selected layer name ─────────────────────────────────────────
     let selectedLayerName = '';
     if (selectedLayer) {
       selectedLayerName = friendlyLabel(selectedLayer.id, 'video');
@@ -271,12 +251,7 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
 );
 CompositorInspector.displayName = 'CompositorInspector';
 
-// ── Text style section with own atom subscription ───────────────────────────
-//
-// Extracted from CompositorInspector so that text-style changes (color, font,
-// etc.) only re-render this section — not the entire inspector tree.  The
-// component subscribes to textOverlayAtoms internally and uses ref-based
-// callbacks so that onChange handlers have stable references across renders.
+
 
 const TextStyleSection: React.FC<{
   selectedLayerId: string;
@@ -296,7 +271,6 @@ const TextStyleSection: React.FC<{
   }) => {
     const overlay = useAtomValue(textOverlayAtoms(selectedLayerId));
 
-    // ── Font assets (owned here — only text overlays need them) ───────────
     const [fontAssets, setFontAssets] = useState<FontAsset[]>([]);
 
     useEffect(() => {
@@ -318,11 +292,8 @@ const TextStyleSection: React.FC<{
     const systemFonts = useMemo(() => fontAssets.filter((a) => a.is_system), [fontAssets]);
     const userFonts = useMemo(() => fontAssets.filter((a) => !a.is_system), [fontAssets]);
 
-    // ── Ref for overlay so callbacks stay stable ──────────────────────────
     const overlayRef = useRef(overlay);
     overlayRef.current = overlay;
-
-    // ── Stable callbacks (deps are primitives / stable parent refs) ───────
 
     const handleTextChange = useCallback(
       (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -474,13 +445,6 @@ const TextStyleSection: React.FC<{
   }
 );
 TextStyleSection.displayName = 'TextStyleSection';
-
-// ── Connected controls with field-level atom subscriptions ───────────────────
-//
-// These subscribe to derived atoms that return primitives (number).  Jotai's
-// Object.is check means: when opacity changes, layerRotationAtom re-evaluates
-// but returns the same number → ConnectedRotationControl skips re-render.
-// This prevents the "all controls re-render on every slider tick" cascade.
 
 const ConnectedOpacityControl: React.FC<{
   selectedLayerId: string;

@@ -10,17 +10,11 @@ import { fetchApi } from './base';
 
 const logger = getLogger('permissions');
 
-/**
- * Response from the /api/v1/permissions endpoint
- */
 interface PermissionsResponse {
   role: string;
   permissions: PermissionsInfo;
 }
 
-/**
- * Convert API PermissionsInfo to frontend Permissions
- */
 function convertPermissions(apiPerms: PermissionsInfo): Permissions {
   return {
     createSessions: apiPerms.create_sessions,
@@ -41,9 +35,6 @@ function convertPermissions(apiPerms: PermissionsInfo): Permissions {
   };
 }
 
-/**
- * Initialize permissions by fetching them from the server via HTTP
- */
 export async function initializePermissions(): Promise<void> {
   try {
     const response = await fetchApi('/api/v1/permissions', {
@@ -67,7 +58,6 @@ export async function initializePermissions(): Promise<void> {
   } catch (error) {
     logger.error('Error fetching permissions:', error);
 
-    // Fall back to deny-all permissions
     usePermissionStore.getState().setRole('unknown');
     usePermissionStore.getState().setPermissions({
       createSessions: false,

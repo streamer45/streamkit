@@ -2,10 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Shared hook for numeric slider controls with throttled updates.
- * Handles local state, store synchronization, drag tracking, and throttled updates.
- */
+/** Shared hook for numeric slider controls with throttled updates. */
 
 import { useAtomValue } from 'jotai/react';
 import { throttle } from 'lodash-es';
@@ -19,10 +16,7 @@ export interface UseNumericSliderOptions {
   nodeId: string;
   sessionId?: string;
   paramKey: string;
-  /**
-   * Dot-notation path for reading/writing nested params.
-   * Defaults to `paramKey` when omitted.
-   */
+  /** Dot-notation path for reading/writing nested params. Defaults to `paramKey`. */
   path?: string;
   min: number;
   max: number;
@@ -30,45 +24,20 @@ export interface UseNumericSliderOptions {
   defaultValue: number;
   propValue?: number;
   onParamChange?: (nodeId: string, paramName: string, value: unknown) => void;
-  /**
-   * Transform the value before sending it to onParamChange.
-   * For example, use Math.round for integer types.
-   */
   transformValue?: (value: number) => number;
-  /**
-   * Throttle delay in milliseconds (default: 100ms)
-   */
   throttleMs?: number;
 }
 
 export interface UseNumericSliderResult {
-  /**
-   * The current local value to display in the slider
-   */
   localValue: number;
-  /**
-   * Handler for slider onChange event
-   */
   handleChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
-  /**
-   * Handler for slider onPointerDown event
-   */
   handlePointerDown: (event: React.PointerEvent<HTMLInputElement>) => void;
-  /**
-   * Handler for slider onPointerUp event
-   */
   handlePointerUp: (event: React.PointerEvent<HTMLInputElement>) => void;
-  /**
-   * Whether the slider should be disabled (no onParamChange provided)
-   */
   disabled: boolean;
 }
 
 const clampValue = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
-/**
- * Custom hook for managing numeric slider state with throttled updates
- */
 export const useNumericSlider = (options: UseNumericSliderOptions): UseNumericSliderResult => {
   const {
     nodeId,
@@ -87,13 +56,11 @@ export const useNumericSlider = (options: UseNumericSliderOptions): UseNumericSl
 
   const effectivePath = pathOverride ?? paramKey;
 
-  // Get stored value from Jotai per-node atom (fine-grained reactivity).
-  // Use readByPath so nested paths (e.g. "properties.score") are resolved.
+  // Read from Jotai per-node atom; readByPath resolves nested paths (e.g. "properties.score").
   const paramsKey = sessionId ? `${sessionId}\0${nodeId}` : nodeId;
   const nodeParams = useAtomValue(nodeParamsAtom(paramsKey));
   const storedValue = readByPath(nodeParams, effectivePath) as number | undefined;
 
-  // Determine effective value: stored > prop > default
   const effectiveValue = (() => {
     if (typeof storedValue === 'number' && Number.isFinite(storedValue)) {
       return clampValue(storedValue, min, max);
@@ -104,19 +71,14 @@ export const useNumericSlider = (options: UseNumericSliderOptions): UseNumericSl
     return clampValue(defaultValue, min, max);
   })();
 
-  // Local state for immediate UI feedback
   const [localValue, setLocalValue] = useState(effectiveValue);
-
-  // Refs for tracking drag state and local value
   const isDraggingRef = useRef(false);
   const localValueRef = useRef(localValue);
 
-  // Keep localValueRef in sync
   useEffect(() => {
     localValueRef.current = localValue;
   }, [localValue]);
 
-  // Sync local value with effective value when not dragging
   useEffect(() => {
     if (isDraggingRef.current) {
       return;
@@ -127,7 +89,6 @@ export const useNumericSlider = (options: UseNumericSliderOptions): UseNumericSl
     }
   }, [effectiveValue, step]);
 
-  // Create throttled update function
   const throttledChange = useMemo(() => {
     if (!onParamChange) {
       return null;
@@ -142,7 +103,6 @@ export const useNumericSlider = (options: UseNumericSliderOptions): UseNumericSl
     );
   }, [nodeId, onParamChange, effectivePath, transformValue, throttleMs]);
 
-  // Cancel throttled function on unmount
   useEffect(
     () => () => {
       throttledChange?.cancel();
@@ -150,7 +110,6 @@ export const useNumericSlider = (options: UseNumericSliderOptions): UseNumericSl
     [throttledChange]
   );
 
-  // Handler for slider value change
   const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const raw = Number.parseFloat(event.target.value);
     const clamped = clampValue(Number.isFinite(raw) ? raw : min, min, max);
@@ -158,14 +117,12 @@ export const useNumericSlider = (options: UseNumericSliderOptions): UseNumericSl
     throttledChange?.(clamped);
   };
 
-  // Handler for pointer down (start dragging)
   const handlePointerDown = (event: React.PointerEvent<HTMLInputElement>) => {
     isDraggingRef.current = true;
     event.stopPropagation();
     event.currentTarget.setPointerCapture?.(event.pointerId);
   };
 
-  // Handler for pointer up (stop dragging)
   const handlePointerUp = (event: React.PointerEvent<HTMLInputElement>) => {
     isDraggingRef.current = false;
     event.stopPropagation();

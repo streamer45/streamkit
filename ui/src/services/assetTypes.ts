@@ -2,14 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Service for discovering registered asset types (core + plugin).
- *
- * The server exposes `GET /api/v1/asset-types` which returns all asset types
- * that are currently available — core types (audio, images, fonts) are always
- * present, and plugin-declared types appear when the declaring plugin is loaded.
- */
-
 import { useQuery } from '@tanstack/react-query';
 
 import type { AssetTypeInfo } from '@/types/generated/api-types';
@@ -19,9 +11,6 @@ import { fetchApi } from './base';
 
 const logger = getLogger('assetTypes');
 
-/**
- * Fetches all registered asset types from the server.
- */
 export async function listAssetTypes(): Promise<AssetTypeInfo[]> {
   logger.debug('Fetching asset types');
 
@@ -44,12 +33,6 @@ export async function listAssetTypes(): Promise<AssetTypeInfo[]> {
   return types;
 }
 
-/**
- * React Query hook for asset type discovery.
- *
- * Fetches once and caches for a long time — asset types only change when
- * plugins are loaded/unloaded, which is rare.
- */
 export function useAssetTypes() {
   return useQuery({
     queryKey: ['assetTypes'],

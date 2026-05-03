@@ -2,11 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Shared utility for parsing YAML pipeline configurations into ReactFlow nodes and edges.
- * This eliminates duplication between handleImportYaml and handleYamlChange in usePipeline.
- */
-
 import type { Node, Edge, XYPosition } from '@xyflow/react';
 import { load } from 'js-yaml';
 
@@ -49,10 +44,6 @@ type ParsedDependency = {
   mode?: ConnectionMode;
 };
 
-/**
- * Parse a needs dependency into node label + optional source pin + mode.
- * Supports "node.pin" shorthand as well as { node, mode } objects.
- */
 function parseDependency(dep: NeedsDependency): ParsedDependency {
   const mode = typeof dep === 'string' ? undefined : dep.mode;
   const raw = typeof dep === 'string' ? dep : dep.node;
@@ -85,9 +76,6 @@ type ParsedYaml = {
   mode?: string;
 };
 
-/**
- * Validates the mode field in parsed YAML
- */
 function validateMode(mode: string | undefined): string | null {
   if (!mode) return null;
   if (mode !== 'dynamic' && mode !== 'oneshot') {
@@ -96,15 +84,11 @@ function validateMode(mode: string | undefined): string | null {
   return null;
 }
 
-/**
- * Detects the execution mode from parsed YAML
- */
 function detectMode(parsed: ParsedYaml): EngineMode {
   if (parsed.mode) {
     return parsed.mode as EngineMode;
   }
 
-  // Auto-detect from node types
   const allNodeKinds = [
     ...(parsed.steps?.map((s) => s.kind) || []),
     ...(parsed.nodes ? Object.values(parsed.nodes).map((n) => n.kind) : []),
@@ -120,9 +104,6 @@ function detectMode(parsed: ParsedYaml): EngineMode {
   return 'dynamic';
 }
 
-/**
- * Converts steps format to nodes format
- */
 function convertStepsToNodes(
   steps: Array<{ kind: string; params?: Record<string, unknown> }>
 ): Record<string, ImportedNodeConfig> {
@@ -134,7 +115,6 @@ function convertStepsToNodes(
       kind: step.kind,
       params: step.params,
     };
-    // Add dependency on previous step (except for first step)
     if (index > 0) {
       config.needs = `step_${index - 1}`;
     }
@@ -144,9 +124,6 @@ function convertStepsToNodes(
   return nodes;
 }
 
-/**
- * Normalizes parsed YAML into nodes format
- */
 function normalizeParsedYaml(
   parsed: ParsedYaml
 ): { nodes: Record<string, ImportedNodeConfig> } | null {
@@ -161,20 +138,15 @@ function normalizeParsedYaml(
   return null;
 }
 
-/**
- * Expands dynamic input pins based on needs
- */
 function expandDynamicInputs(nodeDef: NodeDefinition, config: ImportedNodeConfig): unknown[] {
   const needs = config.needs ? (Array.isArray(config.needs) ? config.needs : [config.needs]) : [];
   const nodeInputs = nodeDef.inputs || [];
 
-  // If the node has a Dynamic cardinality input pin and multiple needs, expand the pins
   const dynamicPin = nodeInputs.find(
     (pin) => typeof pin.cardinality === 'object' && 'Dynamic' in pin.cardinality
   );
 
   if (dynamicPin && needs.length > 0) {
-    // Replace the dynamic template pin with actual pins for each need
     return needs.map((_, index) => ({
       name: `in_${index}`,
       accepts_types: dynamicPin.accepts_types,
@@ -185,11 +157,7 @@ function expandDynamicInputs(nodeDef: NodeDefinition, config: ImportedNodeConfig
   return nodeInputs;
 }
 
-/**
- * Derive output pins for http_input based on params.fields/field.
- * - When fields are provided, create one pin per entry (string or { name }).
- * - Ensure a 'media' pin always exists for backward compatibility.
- */
+/** Derive output pins for http_input based on params.fields/field. */
 function deriveHttpInputOutputs(
   params?: Record<string, unknown>
 ): Array<{ name: string; produces_type: PacketType; cardinality: 'Broadcast' }> {
@@ -224,9 +192,6 @@ function deriveHttpInputOutputs(
   }));
 }
 
-/**
- * Creates ReactFlow nodes from pipeline nodes
- */
 function createNodesFromPipeline(
   pipelineNodes: Record<string, ImportedNodeConfig>,
   nodeDefinitions: NodeDefinition[],
@@ -275,8 +240,7 @@ function createNodesFromPipeline(
           nodeDefinition: nodeDef,
           onParamChange: handleParamChange,
           onLabelChange: handleLabelChange,
-          // No sessionId - prevents LIVE badge in design view
-        },
+          },
         origin: [0.5, 0] as [number, number],
       };
       newNodes.push(newNode);
@@ -285,9 +249,6 @@ function createNodesFromPipeline(
   );
 }
 
-/**
- * Validates connection compatibility between source and target nodes
- */
 function validateConnectionCompatibility(
   sourceNode: Node<EditorNodeData>,
   targetNode: Node<EditorNodeData>,
@@ -317,7 +278,6 @@ function validateConnectionCompatibility(
   }
   if (!targetInput) return;
 
-  // Resolve the output type (handles Passthrough inference and param-dependent nodes like resampler)
   const resolvedSourceType = resolveOutputType(
     sourceNode,
     sourceOutput.name,
@@ -325,7 +285,6 @@ function validateConnectionCompatibility(
     edges
   );
 
-  // Use the existing canConnect utility for proper type validation
   const isCompatible = canConnect(resolvedSourceType, targetInput.accepts_types);
 
   if (!isCompatible) {
@@ -337,9 +296,6 @@ function validateConnectionCompatibility(
   }
 }
 
-/**
- * Creates an edge between two nodes
- */
 function createEdgeForConnection(
   sourceNode: Node<EditorNodeData>,
   targetNode: Node<EditorNodeData>,
@@ -365,11 +321,9 @@ function createEdgeForConnection(
 
   if (!sourceOutput || !targetInput) return;
 
-  // Get pin names
   const sourceHandle = sourceOutput.name;
   const targetHandle = targetInput.name;
 
-  // Resolve the output type for this edge (handles Passthrough inference)
   const resolvedType = resolveOutputType(
     sourceNode,
     sourceHandle,
@@ -377,7 +331,6 @@ function createEdgeForConnection(
     newEdges
   );
 
-  // Ensure unique edge ids in case of multiple connections between the same nodes
   newEdges.push({
     id: `${sourceId}-${targetId}-${newEdges.length}`,
     source: sourceId,
@@ -391,9 +344,6 @@ function createEdgeForConnection(
   });
 }
 
-/**
- * Creates edges from pipeline connections
- */
 function createEdgesFromPipeline(
   pipelineNodes: Record<string, ImportedNodeConfig>,
   labelToIdMap: Map<string, string>,
@@ -408,7 +358,6 @@ function createEdgesFromPipeline(
       const targetNode = nodeByLabel.get(label);
       if (!targetId || !targetNode) return;
 
-      // Handle map-style needs: { pinName: "sourceNode" }
       const rawNeeds = config.needs;
       const isMapStyle =
         typeof rawNeeds === 'object' && !Array.isArray(rawNeeds) && !('node' in rawNeeds);
@@ -509,7 +458,6 @@ function createEdgesFromPipeline(
           newEdges
         );
 
-        // Create the edge
         createEdgeForConnection(
           sourceNode,
           targetNode,
@@ -526,9 +474,6 @@ function createEdgesFromPipeline(
   );
 }
 
-/**
- * Applies automatic layout to nodes using DAG utilities
- */
 function applyAutomaticLayout(
   newNodes: Node<EditorNodeData>[],
   newEdges: Edge[]
@@ -544,7 +489,6 @@ function applyAutomaticLayout(
     newEdges.map((e) => ({ source: e.source, target: e.target }))
   );
 
-  // Provide estimated per-node heights so vertical spacing between levels ignores node heights
   const kindById: Record<string, string> = {};
   newNodes.forEach((n) => {
     kindById[n.id] = n.data.kind as string;
@@ -570,17 +514,6 @@ function applyAutomaticLayout(
   })) as Node<EditorNodeData>[];
 }
 
-/**
- * Parse YAML content into ReactFlow nodes and edges with automatic layout.
- *
- * @param yamlContent - The YAML string to parse
- * @param nodeDefinitions - Available node type definitions from the schema store
- * @param handleParamChange - Callback for parameter changes
- * @param handleLabelChange - Callback for label changes
- * @param getId - Function to generate unique node IDs
- * @param resetCounters - Function to reset label counters
- * @returns Parsed pipeline with nodes, edges, and mode, or an error message
- */
 export const parseYamlToPipeline = (
   yamlContent: string,
   nodeDefinitions: NodeDefinition[],
@@ -596,16 +529,13 @@ export const parseYamlToPipeline = (
       return { nodes: [], edges: [], mode: 'dynamic', error: 'Invalid YAML: Must be an object' };
     }
 
-    // Validate mode
     const modeError = validateMode(parsed.mode);
     if (modeError) {
       return { nodes: [], edges: [], mode: 'dynamic', error: modeError };
     }
 
-    // Detect execution mode
     const detectedMode = detectMode(parsed);
 
-    // Normalize to nodes format
     const pipeline = normalizeParsedYaml(parsed);
     if (!pipeline) {
       return {
@@ -621,10 +551,8 @@ export const parseYamlToPipeline = (
     const labelToIdMap = new Map<string, string>();
     const nodeByLabel = new Map<string, Node<EditorNodeData>>();
 
-    // Reset counters
     resetCounters();
 
-    // First pass: create nodes and expand dynamic input pins based on needs
     createNodesFromPipeline(
       pipeline.nodes,
       nodeDefinitions,
@@ -636,10 +564,8 @@ export const parseYamlToPipeline = (
       newNodes
     );
 
-    // Second pass: validate and create edges
     createEdgesFromPipeline(pipeline.nodes, labelToIdMap, nodeByLabel, newEdges);
 
-    // Auto-layout imported pipelines top-to-bottom using shared DAG utilities
     const laidOutNodes = applyAutomaticLayout(newNodes, newEdges);
 
     return {

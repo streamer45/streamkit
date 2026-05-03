@@ -2,11 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Pure helper functions for converting Pipeline data into ReactFlow
- * nodes and edges.  Used by the Monitor View's topology effect.
- */
-
 import type { Node as RFNode, Edge } from '@xyflow/react';
 import { dump } from 'js-yaml';
 
@@ -78,10 +73,6 @@ export const describeSlowInputs = (
 // Edge connection validation
 // ---------------------------------------------------------------------------
 
-/**
- * Checks if an edge connection is valid (both source and target pins exist).
- * Prevents React Flow warnings about missing handles.
- */
 const isValidEdgeConnection = (conn: Connection, nodeMap: Map<string, RFNode>): boolean => {
   const sourceNode = nodeMap.get(conn.from_node);
   const targetNode = nodeMap.get(conn.to_node);
@@ -91,13 +82,11 @@ const isValidEdgeConnection = (conn: Connection, nodeMap: Map<string, RFNode>): 
   const isDynamicTemplatePin = (pin: InputPin | OutputPin): boolean =>
     typeof pin.cardinality === 'object' && pin.cardinality !== null && 'Dynamic' in pin.cardinality;
 
-  // Check if the output pin exists
   const sourceOutputs = (sourceNode.data.outputs || []) as OutputPin[];
   const hasSourcePin = sourceOutputs.some(
     (pin) => pin.name === conn.from_pin && !isDynamicTemplatePin(pin)
   );
 
-  // Check if the input pin exists
   const targetInputs = (targetNode.data.inputs || []) as InputPin[];
   const hasTargetPin = targetInputs.some(
     (pin) => pin.name === conn.to_pin && !isDynamicTemplatePin(pin)
@@ -106,9 +95,6 @@ const isValidEdgeConnection = (conn: Connection, nodeMap: Map<string, RFNode>): 
   return hasSourcePin && hasTargetPin;
 };
 
-/**
- * Build edges from pipeline connections, filtering out invalid ones.
- */
 export const buildEdgesFromConnections = (connections: Connection[], nodes: RFNode[]): Edge[] => {
   const nodeMap = new Map(nodes.map((n) => [n.id, n]));
 
@@ -127,9 +113,6 @@ export const buildEdgesFromConnections = (connections: Connection[], nodes: RFNo
 // YAML generation
 // ---------------------------------------------------------------------------
 
-/**
- * Generate YAML representation of the pipeline ordered by topological sort.
- */
 export const generatePipelineYaml = (pipeline: Pipeline, orderedNames: string[]): string => {
   const yamlObject: { nodes: Record<string, unknown> } = { nodes: {} };
 
@@ -160,10 +143,6 @@ export const generatePipelineYaml = (pipeline: Pipeline, orderedNames: string[])
 // ReactFlow node construction
 // ---------------------------------------------------------------------------
 
-/**
- * Build a single Node object from pipeline data.
- * Helper for topology effect to reduce complexity.
- */
 export interface BuildNodeParams {
   nodeName: string;
   apiNode: Node;
@@ -175,17 +154,6 @@ export interface BuildNodeParams {
   stableOnParamChange: (nodeId: string, paramName: string, value: unknown) => void;
   stableOnConfigChange?: (nodeId: string, config: Record<string, unknown>) => void;
   selectedSessionId: string | null;
-  /** When set, the React Flow node is rendered as an unsubmitted draft
-   *  (dashed border + "needs <fields>" banner + "Add to pipeline"
-   *  button).  Used by Monitor view for nodes the user has dropped
-   *  but not yet committed via the explicit promotion button.
-   *
-   *  - `missingRequired`: param keys still empty.  When non-empty, the
-   *    promote button is disabled and the banner shows the list.
-   *  - `isCreating`: true once the user has clicked Add and we are
-   *    waiting for the engine's `nodeadded`/`Failed` reply.  Banner
-   *    shows a spinner; button is disabled.
-   *  - `onPromote`: invoked when the user clicks the promote button. */
   draft?: {
     missingRequired: string[];
     isCreating: boolean;
@@ -193,7 +161,6 @@ export interface BuildNodeParams {
   };
 }
 
-/** Determine the ReactFlow node type from the pipeline node kind */
 export const nodeTypeForKind = (kind: string): string => {
   if (kind === 'audio::gain') return 'audioGain';
   if (kind === 'video::compositor') return 'compositor';
@@ -216,15 +183,9 @@ export const buildNodeObject = (params: BuildNodeParams): RFNode => {
       nodeDefinition: params.nodeDef,
       definition: { bidirectional: params.nodeDef?.bidirectional },
       state: params.nodeState,
-      // Stats are NOT included here to prevent re-renders when they update
-      // NodeStateIndicator will fetch them directly from session store on hover
       onParamChange: params.stableOnParamChange,
-      // Full-config change callback for compositor nodes
       onConfigChange: params.stableOnConfigChange,
       sessionId: params.selectedSessionId || undefined,
-      // When the node is an unsubmitted draft, downstream renderers
-      // (NodeFrame) render the dashed-border draft banner with the
-      // promote button.  Live nodes leave this undefined.
       draft: params.draft,
     },
   };
