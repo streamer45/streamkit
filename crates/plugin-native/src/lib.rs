@@ -209,15 +209,13 @@ impl LoadedNativePlugin {
         // the lifetime of the plugin API call.
         let c_meta = unsafe { &*c_metadata };
 
-        // Extract kind
         // SAFETY: c_meta.kind is a valid C string pointer provided by the plugin.
         let kind = unsafe {
             conversions::c_str_to_string(c_meta.kind)
                 .map_err(|e| anyhow!("Failed to read plugin kind: {e}"))?
         };
 
-        // Extract description (optional)
-        // SAFETY: c_meta.description is either a valid C string pointer or null.
+        // SAFETY: c_meta.description is either null or a valid C string.
         let description = if c_meta.description.is_null() {
             None
         } else {
@@ -227,19 +225,16 @@ impl LoadedNativePlugin {
             })
         };
 
-        // Extract inputs
         let mut inputs = Vec::new();
         // SAFETY: The plugin provides a valid pointer and count for the inputs array.
         let c_inputs = unsafe { std::slice::from_raw_parts(c_meta.inputs, c_meta.inputs_count) };
 
         for c_input in c_inputs {
-            // SAFETY: c_input.name is a valid C string pointer provided by the plugin.
             let name = unsafe {
                 conversions::c_str_to_string(c_input.name)
                     .map_err(|e| anyhow!("Failed to read input pin name: {e}"))?
             };
 
-            // SAFETY: The plugin provides valid pointer and count for the accepts_types array.
             let accepts_types_slice = unsafe {
                 std::slice::from_raw_parts(c_input.accepts_types, c_input.accepts_types_count)
             };
@@ -259,13 +254,11 @@ impl LoadedNativePlugin {
             });
         }
 
-        // Extract outputs
         let mut outputs = Vec::new();
         // SAFETY: The plugin provides a valid pointer and count for the outputs array.
         let c_outputs = unsafe { std::slice::from_raw_parts(c_meta.outputs, c_meta.outputs_count) };
 
         for c_output in c_outputs {
-            // SAFETY: c_output.name is a valid C string pointer provided by the plugin.
             let name = unsafe {
                 conversions::c_str_to_string(c_output.name)
                     .map_err(|e| anyhow!("Failed to read output pin name: {e}"))?
@@ -279,8 +272,7 @@ impl LoadedNativePlugin {
             });
         }
 
-        // Extract param schema
-        // SAFETY: c_meta.param_schema is a valid C string pointer provided by the plugin.
+        // SAFETY: c_meta.param_schema is a valid C string pointer.
         let param_schema_str = unsafe {
             conversions::c_str_to_string(c_meta.param_schema)
                 .map_err(|e| anyhow!("Failed to read param schema: {e}"))?
@@ -292,14 +284,12 @@ impl LoadedNativePlugin {
             serde_json::from_str(&param_schema_str).context("Failed to parse param schema JSON")?
         };
 
-        // Extract categories
         let mut categories = Vec::new();
         // SAFETY: The plugin provides a valid pointer and count for the categories array.
         let c_categories =
             unsafe { std::slice::from_raw_parts(c_meta.categories, c_meta.categories_count) };
 
         for c_cat_ptr in c_categories {
-            // SAFETY: Each category pointer is a valid C string provided by the plugin.
             let cat = unsafe {
                 conversions::c_str_to_string(*c_cat_ptr)
                     .map_err(|e| anyhow!("Failed to read category: {e}"))?

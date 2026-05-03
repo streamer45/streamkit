@@ -13,13 +13,10 @@ use streamkit_core::constraints::GlobalNodeConstraints;
 use streamkit_core::registry::NodeRegistry;
 use tokio::sync::mpsc;
 
-// --- Public Modules ---
-
 pub mod constants;
 pub mod graph_builder;
 pub mod oneshot;
 
-// Dynamic engine modules (gated by feature flag)
 #[cfg(feature = "dynamic")]
 mod dynamic_actor;
 #[cfg(feature = "dynamic")]
@@ -31,7 +28,6 @@ mod dynamic_messages;
 #[cfg(feature = "dynamic")]
 mod dynamic_pin_distributor;
 
-// Re-exports
 #[cfg(feature = "dynamic")]
 pub use dynamic_config::DynamicEngineConfig;
 #[cfg(feature = "dynamic")]
@@ -40,7 +36,6 @@ pub use dynamic_handle::DynamicEngineHandle;
 pub use dynamic_messages::RuntimeSchemaUpdate;
 pub use oneshot::{OneshotEngineConfig, OneshotInput, OneshotPipelineResult};
 
-// Import constants and types (within dynamic module)
 #[cfg(feature = "dynamic")]
 use constants::{
     DEFAULT_CONTROL_CAPACITY, DEFAULT_ENGINE_CONTROL_CAPACITY, DEFAULT_ENGINE_QUERY_CAPACITY,
@@ -49,10 +44,7 @@ use constants::{
 #[cfg(feature = "dynamic")]
 use dynamic_actor::DynamicEngine;
 
-// --- Engine Structs ---
-
-/// The main Engine struct, which acts as a unified entry point.
-/// It can be used to run stateless pipelines or to start the long-running dynamic actor.
+/// Unified entry point for running stateless or dynamic pipelines.
 pub struct Engine {
     pub registry: Arc<RwLock<NodeRegistry>>,
     pub(crate) audio_pool: Arc<streamkit_core::AudioFramePool>,
@@ -104,11 +96,9 @@ impl Engine {
         let mut registry =
             resource_manager.map_or_else(NodeRegistry::new, NodeRegistry::with_resource_manager);
 
-        // Register built-in nodes
         streamkit_nodes::register_nodes(&mut registry, constraints);
 
         if load_plugins {
-            // Load WASM plugins if feature is enabled
             #[cfg(feature = "plugins")]
             Self::load_plugins(&mut registry, plugin_dir);
         }

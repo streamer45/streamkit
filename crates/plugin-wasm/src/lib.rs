@@ -79,10 +79,7 @@ impl PluginRuntime {
         let engine = Engine::new(&engine_config)?;
         let mut linker = Linker::new(&engine);
 
-        // Add WASI p2 support
         wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
-
-        // Add our host functions (WASI imports already linked above)
         bindings::streamkit::plugin::host::add_to_linker::<HostState, HasSelf<_>>(
             &mut linker,
             |s| s,
@@ -102,7 +99,6 @@ impl PluginRuntime {
         let component = Component::from_file(&self.engine, path)
             .map_err(|e| anyhow::anyhow!("Failed to load component from file: {e:#}"))?;
 
-        // Extract metadata by instantiating temporarily
         let metadata = self.extract_metadata(&component)?;
 
         tracing::info!(
@@ -120,9 +116,7 @@ impl PluginRuntime {
         })
     }
 
-    /// Extract metadata from a component without running its main logic
     fn extract_metadata(&self, component: &Component) -> Result<wit_types::NodeMetadata> {
-        // Create a temporary store and instance
         let wasi = WasiCtx::builder().build();
         let host_state = HostState {
             wasi,
@@ -137,7 +131,6 @@ impl PluginRuntime {
             futures::executor::block_on(self.linker.instantiate_async(&mut store, component))?;
         let plugin = Plugin::new(&mut store, &instance)?;
 
-        // Call the metadata function
         let node = plugin.streamkit_plugin_node();
         let metadata = futures::executor::block_on(node.call_metadata(&mut store))?;
 

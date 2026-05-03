@@ -214,32 +214,22 @@ impl DynamicEngineHandle {
         response_rx.recv().await.ok_or_else(|| "Failed to receive response from engine".to_string())
     }
 
-    /// Sends a shutdown signal to the engine and waits for it to complete.
-    /// This ensures all nodes are properly stopped before returning.
-    /// Can only be called once - subsequent calls will return an error.
+    /// Sends a shutdown signal and waits for engine completion.
     ///
     /// # Errors
     ///
-    /// Returns an error if:
-    /// - The engine has already been shut down (called twice)
-    /// - The engine fails to shut down within 10 seconds
-    /// - The engine task panicked during shutdown
-    ///
-    /// This is inherently a bit complex because it needs to distinguish between
-    /// graceful shutdown, panics, timeouts, and repeat calls.
+    /// Returns an error if the engine was already shut down, timed out
+    /// (10s), or panicked.
     #[allow(clippy::cognitive_complexity)]
     pub async fn shutdown_and_wait(&self) -> Result<(), String> {
-        // Send the shutdown message
         self.send_control(EngineControlMessage::Shutdown).await?;
 
-        // Take ownership of the JoinHandle
         let join_handle = {
             let mut task_guard = self.engine_task.lock().await;
             task_guard.take()
         };
 
         if let Some(handle) = join_handle {
-            // Wait for the engine actor to complete (with timeout)
             match tokio::time::timeout(std::time::Duration::from_secs(10), handle).await {
                 Ok(Ok(())) => {
                     tracing::debug!("Engine shut down gracefully");
@@ -255,7 +245,6 @@ impl DynamicEngineHandle {
                 },
             }
         } else {
-            // JoinHandle was already taken (shutdown_and_wait was called before)
             tracing::warn!("shutdown_and_wait called multiple times, engine already shut down");
             Ok(())
         }

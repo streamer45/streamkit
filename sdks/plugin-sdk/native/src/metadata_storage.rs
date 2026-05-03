@@ -56,27 +56,15 @@ unsafe impl Sync for PluginMetadataStorage {}
 impl PluginMetadataStorage {
     /// Build storage from a [`NodeMetadata`] value.
     ///
-    /// This extracts the ~200 lines of metadata conversion that was
-    /// previously duplicated between `native_plugin_entry!` and
-    /// `native_source_plugin_entry!`.
-    ///
     /// # Panics
     ///
     /// Cannot panic in practice — the `unwrap()` calls on `last()` are
     /// reached only immediately after pushing an element to the same `Vec`.
     pub fn from_node_metadata(meta: &NodeMetadata) -> Self {
-        // Invariant: the raw pointers stored in `c_inputs`/`c_outputs`
-        // are captured via `.as_ptr()` on Vec elements immediately after
-        // pushing.  These pointers remain valid because:
-        //   1. Each Vec is only ever pushed to (never popped or cleared).
-        //   2. The Vecs are moved into the returned struct and never
-        //      reallocated after that.
-        //   3. The struct lives in a `OnceLock` and is never moved again.
-        // A future refactor that calls `.to_vec()`, sorts, or otherwise
-        // reallocates a Vec would invalidate these pointers — use this
-        // comment as a guard rail.
-        //
-        // ── Convert inputs ──────────────────────────────────────────
+        // Raw pointers in c_inputs/c_outputs are captured via .as_ptr()
+        // after pushing. Valid because: (1) Vecs are append-only, (2) moved
+        // into the returned struct without reallocation, (3) stored in a
+        // static OnceLock (never moved again).
         let mut c_inputs = Vec::new();
         let mut input_names = Vec::new();
         let mut input_types = Vec::new();
