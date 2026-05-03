@@ -56,6 +56,52 @@ the full architecture.
   include a comment explaining the rationale.
 - **UI tooling**: Use `bun install` / `bunx` / `bun run` — never npm or pnpm.
 
+## Comment Guidelines
+
+Default is **no comment**. Bias aggressively toward terseness — most code
+should have no comments at all. If you feel compelled to add one, first ask
+whether a better name or a small refactor would make it unnecessary.
+
+### Do NOT write
+
+- **Line narration** — comments restating the next line of code
+  (`// Send packet` before `send_packet()`, `// Check if empty` before
+  `if x.is_empty()`).
+- **`// Helper: X`** labels on descriptively-named functions.
+- **Verbose JSDoc / `///` on self-documenting items** — a 13-line doc block
+  on `PARAM_THROTTLE_MS = 33` or per-field docs like
+  `/** Handler for slider onChange event */` adds nothing.
+- **Section dividers** — `// --- Public Modules ---`, `// State`,
+  `// Handlers`. Use blank lines or code structure instead.
+- **Step-by-step numbered narration** — `// 1. Validate`, `// 2. Connect`.
+  Extract named functions instead of numbering prose.
+- **Complexity apologies** — multi-paragraph essays above lint suppressions
+  explaining why the function is large. Keep the rationale to one line.
+- **Standard framework behavior** — `"useState setters are stable"`,
+  `"useMemo prevents re-renders"`. Any React/Tokio/Axum developer knows this.
+- **Dead code "for reference"** — git history preserves it. Delete it.
+- **Diff-oriented comments** — comments whose only purpose is to explain your
+  edit ("now we also check X", "previously this did Z"). Put that context in
+  the PR description instead.
+
+### DO write
+
+- **`// SAFETY:`** on `unsafe` blocks and FFI boundaries.
+- **Lint suppression rationales** — required by the Linting discipline rule
+  below. Always include `-- reason` (eslint) or `// reason` (#[allow]).
+- **Non-obvious constraints** invisible from reading the code — performance
+  contracts (`React.memo` referential-stability requirements), DOM-ordering
+  guards required by Playwright selectors, protocol/codec quirks.
+- **Design decisions** that differ from the intuitive default — e.g. why
+  session mode no longer implicitly enables publishing.
+- **`@public`** tags on APIs consumed by external tools (Playwright, MCP).
+- **Concurrency invariants** — pointer validity, lock-ordering, channel
+  backpressure semantics.
+
+Rule of thumb: if the comment explains a **constraint that isn't visible from
+reading the code alone**, keep it. If it restates what the code obviously
+does, delete it.
+
 ## Fix Root Causes, Not Symptoms
 
 Prefer a clean change that takes longer over a brittle stack of patches that
