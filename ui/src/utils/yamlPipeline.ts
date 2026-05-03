@@ -240,7 +240,7 @@ function createNodesFromPipeline(
           nodeDefinition: nodeDef,
           onParamChange: handleParamChange,
           onLabelChange: handleLabelChange,
-          },
+        },
         origin: [0.5, 0] as [number, number],
       };
       newNodes.push(newNode);

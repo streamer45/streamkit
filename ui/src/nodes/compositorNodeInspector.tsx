@@ -251,8 +251,6 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
 );
 CompositorInspector.displayName = 'CompositorInspector';
 
-
-
 const TextStyleSection: React.FC<{
   selectedLayerId: string;
   updateTextOverlay: (id: string, patch: Partial<TextOverlayState>) => void;
