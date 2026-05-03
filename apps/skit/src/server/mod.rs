@@ -4235,6 +4235,7 @@ pub async fn tune_session_node(
 ///
 /// Returns an error string when the security policy rejects the
 /// `UpdateParams` payload.
+#[cfg(feature = "mcp")]
 pub async fn tune_session_node_replace(
     session: &crate::session::Session,
     node_id: String,

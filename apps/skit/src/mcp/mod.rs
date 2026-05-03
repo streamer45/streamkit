@@ -1194,7 +1194,13 @@ fn diff_pipeline(current: &Pipeline, desired: &Pipeline) -> DiffResult {
             continue;
         }
         let current_node = &current.nodes[node_id.as_str()];
-        if desired_node.params != current_node.params {
+        // Treat None and Some({}) as equivalent so repeated calls with the
+        // same YAML are true no-ops (idempotent).
+        let normalise = |p: &Option<serde_json::Value>| match p {
+            Some(serde_json::Value::Object(m)) if m.is_empty() => None,
+            other => other.clone(),
+        };
+        if normalise(&desired_node.params) != normalise(&current_node.params) {
             let new_params = desired_node
                 .params
                 .clone()
