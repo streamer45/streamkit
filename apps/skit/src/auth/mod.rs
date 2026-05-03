@@ -200,6 +200,8 @@ impl AuthState {
         self.revocation_store.as_ref()
     }
 
+    /// Check if a token is revoked by its token hash.
+    ///
     /// Returns false if auth is disabled or if the revocation store is not available.
     #[allow(dead_code)]
     pub fn is_revoked(&self, token_hash: &str) -> bool {

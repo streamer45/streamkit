@@ -485,6 +485,7 @@ async fn handle_add_node(
         return Some(ResponsePayload::Error { message });
     }
 
+    // Lock scope kept minimal so async engine operations below don't hold the session_manager lock.
     let session = {
         let session_manager = app_state.session_manager.lock().await;
         session_manager.get_session_by_name_or_id(&session_id)
