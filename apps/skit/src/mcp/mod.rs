@@ -999,7 +999,7 @@ impl StreamKitMcp {
                 &self.app_state.config.security,
             )
             .await
-            .map_err(|e| McpError::internal_error(e, None))?;
+            .map_err(|e| McpError::invalid_params(e, None))?;
         }
 
         // Apply param changes via tune_node_replace when permitted.
