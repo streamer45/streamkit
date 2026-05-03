@@ -343,6 +343,9 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(function Compos
         >
           <CompositorWrapper>
             <CanvasSection>
+              {/* SidePanel first in DOM order so Playwright's getByText().first()
+                  matches layer-list text before identically-named canvas labels.
+                  position:absolute means DOM order has no visual effect. */}
               <SidePanel className="nodrag nopan">{sidePanelContent}</SidePanel>
               {canvasSectionContent}
             </CanvasSection>

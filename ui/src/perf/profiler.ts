@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+/** @public — consumed by Playwright e2e tests via window.__PERF_DATA__ */
 export interface PerfCommit {
   id: string;
   phase: 'mount' | 'update' | 'nested-update';
@@ -11,6 +12,7 @@ export interface PerfCommit {
   commitTime: number;
 }
 
+/** @public — consumed by Playwright e2e tests via window.__PERF_DATA__ */
 export interface PerfComponentData {
   /** Total number of commits for this profiler id. */
   renderCount: number;
@@ -22,6 +24,7 @@ export interface PerfComponentData {
   commits: PerfCommit[];
 }
 
+/** @public — consumed by Playwright e2e tests via window.__PERF_DATA__ */
 export interface PerfDataStore {
   /** Component-level profiling data keyed by Profiler id. */
   components: Record<string, PerfComponentData>;
@@ -50,6 +53,7 @@ if (isDev && typeof window !== 'undefined') {
   (window as Window & { __PERF_DATA__?: PerfDataStore }).__PERF_DATA__ = store;
 }
 
+/** @public — React.Profiler onRender callback for Playwright perf tests */
 export const perfOnRender: React.ProfilerOnRenderCallback = isDev
   ? (
       id: string,
@@ -88,6 +92,7 @@ export const perfOnRender: React.ProfilerOnRenderCallback = isDev
   : // No-op in production.
     () => {};
 
+/** @public — consumed by Playwright e2e tests */
 export function resetPerfData(): void {
   if (!isDev) return;
   store.session += 1;
@@ -103,6 +108,7 @@ if (isDev && typeof window !== 'undefined') {
   (window as Window & { __PERF_RESET__?: () => void }).__PERF_RESET__ = resetPerfData;
 }
 
+/** @public — consumed by Playwright e2e tests */
 export function getPerfData(): PerfDataStore {
   return store;
 }

@@ -306,6 +306,8 @@ export function decideConnect(
   }
 
   const shouldWatch = state.connectionMode === 'session' || state.enableWatch;
+  // Session mode no longer implicitly enables publishing — driven entirely
+  // by `enablePublish` which session setup sets based on pipeline inputs.
   const shouldPublish = state.enablePublish;
 
   return { ok: true, trimmedServerUrl, shouldWatch, shouldPublish };

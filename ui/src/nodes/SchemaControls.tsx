@@ -130,6 +130,8 @@ interface BooleanToggleControlProps {
   params: Record<string, unknown>;
 }
 
+// React.memo relies on `config` and `params` being referentially stable.
+// Do not spread or clone them before passing.
 export const BooleanToggleControl: React.FC<BooleanToggleControlProps> = React.memo(
   ({ nodeId, sessionId, config, params }) => {
     const { tuneNodeConfig } = useTuneNode(sessionId ?? null);
@@ -198,6 +200,8 @@ interface TextInputControlProps {
   params: Record<string, unknown>;
 }
 
+// React.memo relies on `config` and `params` being referentially stable.
+// Do not spread or clone them before passing.
 export const TextInputControl: React.FC<TextInputControlProps> = React.memo(
   ({ nodeId, sessionId, config, params }) => {
     const { tuneNodeConfig } = useTuneNode(sessionId ?? null);
