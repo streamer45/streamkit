@@ -33,7 +33,6 @@ pub async fn run_load_test(
     duration_override: Option<u64>,
     cleanup: bool,
 ) -> Result<()> {
-    // Load and parse config
     let mut config = LoadTestConfig::from_file(config_path)
         .with_context(|| format!("Failed to load config from {config_path}"))?;
 
@@ -68,7 +67,6 @@ pub async fn run_load_test(
         info!("Dynamic sessions: {}", config.dynamic.session_count);
     }
 
-    // Set up graceful shutdown handler
     let shutdown_token = tokio_util::sync::CancellationToken::new();
     let shutdown_handle = shutdown_token.clone();
     let ctrl_c_handle = tokio::spawn(async move {
@@ -87,7 +85,6 @@ pub async fn run_load_test(
         populate_environment(&config).await?;
     }
 
-    // Initialize metrics collector
     let metrics = MetricsCollector::new();
 
     // Run the appropriate scenario

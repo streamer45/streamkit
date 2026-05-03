@@ -151,12 +151,10 @@ impl AuthState {
         let state_dir = PathBuf::from(&config.state_dir);
         info!(state_dir = %state_dir.display(), "Initializing authentication");
 
-        // Initialize stores
         let key_provider = Arc::new(FileKeyProvider::load_or_init(&state_dir).await?);
         let revocation_store = Arc::new(FileRevocationStore::new(&state_dir).await?);
         let token_metadata_store = Arc::new(FileTokenMetadataStore::new(&state_dir).await?);
 
-        // Check if we need to create bootstrap admin token
         let tokens = token_metadata_store.list().await?;
         if tokens.is_empty() {
             info!("No tokens found, creating bootstrap admin token");
@@ -177,7 +175,6 @@ impl AuthState {
                 )
                 .await?;
 
-            // Write bootstrap token to file
             let token_path = state_dir.join("admin.token");
             FileKeyProvider::write_secure(&token_path, &token).await?;
 
@@ -195,12 +192,10 @@ impl AuthState {
         })
     }
 
-    /// Check if authentication is enabled.
     pub const fn is_enabled(&self) -> bool {
         self.enabled
     }
 
-    /// Get the revocation store (for checking revocation status).
     pub fn revocation_store(&self) -> Option<&Arc<dyn RevocationStore>> {
         self.revocation_store.as_ref()
     }
@@ -213,12 +208,10 @@ impl AuthState {
         self.revocation_store.as_ref().is_some_and(|store| store.is_revoked(token_hash))
     }
 
-    /// Get the token metadata store.
     pub fn token_metadata_store(&self) -> Option<&Arc<dyn TokenMetadataStore>> {
         self.token_metadata_store.as_ref()
     }
 
-    /// Get the key provider.
     #[allow(dead_code)]
     pub fn key_provider(&self) -> Option<&Arc<dyn KeyProvider>> {
         self.key_provider.as_ref()
@@ -242,7 +235,6 @@ impl AuthState {
     pub fn validate_api_token(&self, token: &str) -> Result<ApiClaims, AuthError> {
         let key_provider = self.key_provider.as_ref().ok_or(AuthError::Disabled)?;
 
-        // Set up validation
         let mut validation = Validation::new(Algorithm::EdDSA);
         validation.set_audience(&[AUD_API]);
         validation.set_required_spec_claims(&["exp", "aud", "jti"]);
@@ -352,7 +344,6 @@ impl AuthState {
         let key_provider = self.key_provider.as_ref().ok_or(AuthError::Disabled)?;
         let metadata_store = self.token_metadata_store.as_ref().ok_or(AuthError::Disabled)?;
 
-        // Validate TTL
         if ttl_secs > self.config.api_max_ttl_secs {
             return Err(AuthError::TtlExceedsMax { max: self.config.api_max_ttl_secs });
         }
@@ -381,7 +372,6 @@ impl AuthState {
         let encoding_key = EncodingKey::from_ed_der(&key_material.pkcs8);
         let token = encode(&header, &claims, &encoding_key)?;
 
-        // Store metadata (hash the token, never store raw)
         let token_hash = hash_token(&token);
         let meta = TokenMetadata {
             jti: jti.clone(),
@@ -420,7 +410,6 @@ impl AuthState {
         let key_provider = self.key_provider.as_ref().ok_or(AuthError::Disabled)?;
         let metadata_store = self.token_metadata_store.as_ref().ok_or(AuthError::Disabled)?;
 
-        // Validate TTL
         if ttl_secs > self.config.moq_max_ttl_secs {
             return Err(AuthError::TtlExceedsMax { max: self.config.moq_max_ttl_secs });
         }
@@ -480,16 +469,12 @@ impl AuthState {
         let revocation_store = self.revocation_store.as_ref().ok_or(AuthError::Disabled)?;
         let metadata_store = self.token_metadata_store.as_ref().ok_or(AuthError::Disabled)?;
 
-        // Get the token metadata to find expiration
         let meta = metadata_store.get(jti).await?;
         let meta = meta.ok_or(AuthError::UnknownToken)?;
         let token_hash = meta.token_hash;
         let exp = meta.exp;
 
-        // Add to revocation store
         revocation_store.revoke(&token_hash, exp).await?;
-
-        // Mark as revoked in metadata
         metadata_store.mark_revoked(jti).await?;
 
         info!(jti = %jti, "Token revoked");

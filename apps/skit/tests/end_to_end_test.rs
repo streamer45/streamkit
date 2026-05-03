@@ -42,7 +42,6 @@ async fn start_test_server() -> Option<(SocketAddr, tokio::task::JoinHandle<()>)
 
 #[tokio::test]
 async fn test_double_volume_end_to_end() {
-    // Initialize tracing for debugging
     let _ = tracing_subscriber::fmt::try_init();
 
     // Start test server
@@ -56,23 +55,19 @@ async fn test_double_volume_end_to_end() {
         .and_then(|parent| parent.parent())
         .expect("streamkit-server should live under workspace_root/apps/skit");
 
-    // Load pipeline configuration
     let pipeline_yaml =
         fs::read_to_string(repo_root.join("samples/pipelines/oneshot/double_volume.yml"))
             .await
             .expect("Failed to read pipeline YAML");
 
-    // Load input audio file
     let audio_data = fs::read(repo_root.join("samples/audio/system/sample.ogg"))
         .await
         .expect("Failed to read input audio file");
 
-    // Create multipart form
     let form = multipart::Form::new()
         .text("config", pipeline_yaml)
         .part("media", multipart::Part::bytes(audio_data).file_name("sample.ogg"));
 
-    // Send request to server
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/api/v1/process");
 
@@ -82,10 +77,8 @@ async fn test_double_volume_end_to_end() {
             .expect("Request timed out")
             .expect("Failed to send request");
 
-    // Verify response status
     assert_eq!(response.status(), StatusCode::OK, "Expected 200 OK, got: {}", response.status());
 
-    // Verify content type
     let content_type = response
         .headers()
         .get("content-type")
@@ -94,7 +87,6 @@ async fn test_double_volume_end_to_end() {
         .expect("Invalid content-type header");
     assert_eq!(content_type, "audio/ogg", "Unexpected content type");
 
-    // Get response body
     let response_body = response.bytes().await.expect("Failed to read response body");
 
     // Validate the Ogg/Opus file by actually parsing and decoding it

@@ -343,7 +343,6 @@ enum ControlCommands {
 
 #[tokio::main]
 async fn main() {
-    // Initialize basic logging for client
     tracing_subscriber::fmt::init();
 
     let cli = Cli::parse();

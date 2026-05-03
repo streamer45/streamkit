@@ -450,7 +450,6 @@ async fn handle_auth_rotate_key(cli: &Cli) {
         .map(|u| u.trim().trim_end_matches('/').to_string())
         .or_else(|| default_server_url(&config_result.config).ok());
 
-    // Initialize auth state (this will load existing keys)
     let auth_state = match crate::auth::AuthState::new(&config_result.config.auth, true).await {
         Ok(state) => state,
         Err(e) => {

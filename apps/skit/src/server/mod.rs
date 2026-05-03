@@ -131,8 +131,6 @@ static HTTP_METRICS: OnceLock<(
     opentelemetry::metrics::Histogram<f64>,
 )> = OnceLock::new();
 
-/// Helper function to safely read from a RwLock without panicking.
-/// Returns a 503 Service Unavailable error if the lock is poisoned.
 fn read_registry(
     app_state: &Arc<AppState>,
 ) -> Result<std::sync::RwLockReadGuard<'_, streamkit_core::NodeRegistry>, StatusCode> {
@@ -153,7 +151,6 @@ fn origin_matches_pattern(origin: &str, pattern: &str) -> bool {
         return true;
     }
 
-    // Handle wildcard port matching (e.g., "http://localhost:*")
     if let Some(prefix_without_port) = pattern.strip_suffix(":*") {
         let Some(rest) = origin.strip_prefix(prefix_without_port) else {
             return false;
@@ -209,7 +206,6 @@ fn strip_base_path_prefix<'a>(path: &'a str, base_path: Option<&str>) -> &'a str
         return path;
     }
 
-    // Normalize matching: config may specify base_path with or without a leading '/'.
     if base_path.starts_with('/') {
         let Some(rest) = path.strip_prefix(base_path) else {
             return path;
@@ -227,7 +223,6 @@ fn strip_base_path_prefix<'a>(path: &'a str, base_path: Option<&str>) -> &'a str
         return path;
     }
 
-    // base_path without leading slash: match against path after the initial '/'
     if !path.starts_with('/') {
         return path;
     }
@@ -390,7 +385,6 @@ fn create_cors_layer(
         return Ok(CorsLayer::new());
     }
 
-    // Build list of patterns for matching
     let patterns: Vec<String> = config.allowed_origins.clone();
 
     info!(
@@ -399,7 +393,6 @@ fn create_cors_layer(
         "CORS configured with origin allowlist"
     );
 
-    // Create a predicate-based allowlist
     let allow_origin = AllowOrigin::predicate(move |origin: &HeaderValue, _request_parts| {
         let Ok(origin_str) = origin.to_str() else {
             return false;
@@ -492,8 +485,6 @@ async fn list_node_definitions_handler(
 
     let mut definitions = read_registry(&app_state)?.definitions();
 
-    // Add synthetic node definitions for oneshot-only nodes.
-    // These are virtual markers that get replaced at runtime in oneshot pipelines.
     definitions.extend(synthetic_node_definitions());
 
     definitions.retain(|def| {
@@ -1459,7 +1450,6 @@ async fn get_config_handler(
     State(app_state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    // Check auth and deny viewers
     if app_state.auth.is_enabled() {
         let auth_ctx = crate::auth::validate_token_from_headers(
             &headers,
@@ -1473,7 +1463,6 @@ async fn get_config_handler(
             return Err((StatusCode::FORBIDDEN, "Viewers cannot access config".to_string()));
         }
     } else {
-        // Auth disabled - still check role for viewer restriction
         let (role, _) = crate::role_extractor::get_role_and_permissions(&headers, &app_state);
         if role == "viewer" {
             return Err((StatusCode::FORBIDDEN, "Viewers cannot access config".to_string()));
@@ -1496,7 +1485,6 @@ async fn list_plugins_handler(
 
     let mut plugins = app_state.plugin_manager.lock().await.list_plugins();
 
-    // Filter plugins based on allowed_plugins permission
     plugins.retain(|plugin| perms.is_plugin_allowed(&plugin.kind));
 
     Json(plugins)
@@ -1517,7 +1505,6 @@ async fn upload_plugin_handler(
 
     let perms = crate::role_extractor::get_permissions(&headers, &app_state);
 
-    // Check permission to load plugins
     if !perms.load_plugins {
         return Err(PluginHttpError::Forbidden(
             "Permission denied: cannot load plugins".to_string(),
@@ -1690,7 +1677,6 @@ async fn upload_plugin_handler(
         },
     };
 
-    // Check if the loaded plugin is allowed
     if !perms.is_plugin_allowed(&summary.kind) {
         let _ = tokio::task::spawn_blocking({
             let manager = Arc::clone(&app_state.plugin_manager);
@@ -2190,7 +2176,6 @@ async fn delete_plugin_handler(
 
     let perms = crate::role_extractor::get_permissions(&headers, &app_state);
 
-    // Check permission to delete plugins
     if !perms.delete_plugins {
         warn!(
             plugin_kind = %kind,
@@ -2304,7 +2289,6 @@ async fn get_moq_fingerprints_handler(
     State(app_state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    // Check auth and deny viewers
     if app_state.auth.is_enabled() {
         let auth_ctx = crate::auth::validate_token_from_headers(
             &headers,
@@ -2454,7 +2438,6 @@ pub async fn populate_session_pipeline(
     pipeline.mode = engine_pipeline.mode;
     pipeline.client.clone_from(&engine_pipeline.client);
 
-    // Add nodes to in-memory pipeline
     for (node_id, node_spec) in &engine_pipeline.nodes {
         pipeline.nodes.insert(
             node_id.clone(),
@@ -2466,7 +2449,6 @@ pub async fn populate_session_pipeline(
         );
     }
 
-    // Add connections to in-memory pipeline
     pipeline.connections.extend(engine_pipeline.connections.iter().map(|c| {
         streamkit_api::Connection {
             from_node: c.from_node.clone(),
@@ -2483,8 +2465,6 @@ pub async fn send_pipeline_to_engine(
     session: &crate::session::Session,
     engine_pipeline: &Pipeline,
 ) {
-    // Send control messages to engine actor (asynchronous)
-    // The engine will actually instantiate the nodes
     for (node_id, node_spec) in &engine_pipeline.nodes {
         session
             .send_control_message(EngineControlMessage::AddNode {
@@ -2495,7 +2475,6 @@ pub async fn send_pipeline_to_engine(
             .await;
     }
 
-    // Send connection control messages to engine actor
     for conn in &engine_pipeline.connections {
         let core_mode = match conn.mode {
             streamkit_api::ConnectionMode::Reliable => {
@@ -2589,7 +2568,6 @@ async fn destroy_session_handler(
 ) -> Response {
     let (role_name, perms) = crate::role_extractor::get_role_and_permissions(&headers, &app_state);
 
-    // Check permission
     if !perms.destroy_sessions {
         warn!(
             session_id = %session_id,
@@ -2608,7 +2586,6 @@ async fn destroy_session_handler(
                 .into_response();
         };
 
-        // Check ownership before destroying
         if !perms.access_all_sessions
             && session.created_by.as_ref().is_some_and(|creator| creator != &role_name)
         {
@@ -2693,12 +2670,10 @@ async fn get_pipeline_handler(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    // Fetch current node states without holding the pipeline lock.
     let node_states = session.get_node_states().await.unwrap_or_default();
     let node_view_data = session.get_node_view_data().await.unwrap_or_default();
     let runtime_schemas = session.get_runtime_schemas().await.unwrap_or_default();
 
-    // Clone pipeline (short lock hold) and add runtime state to nodes.
     let mut api_pipeline = {
         let pipeline = session.pipeline.lock().await;
         pipeline.clone()
@@ -3344,11 +3319,6 @@ async fn process_oneshot_pipeline_handler(
 ) -> Result<Response, AppError> {
     tracing::info!("Processing multipart request");
 
-    // Enforce role-based access control for oneshot execution.
-    //
-    // Enforce RBAC for oneshot execution. When built-in auth is enabled, the request is first
-    // authenticated by `auth_guard_middleware`, which injects the resolved role into a trusted
-    // header so existing handlers can apply RBAC without refactors.
     let headers = req.headers().clone();
     let (role_name, perms) = crate::role_extractor::get_role_and_permissions(&headers, &app_state);
     if !perms.create_sessions {
@@ -3357,20 +3327,15 @@ async fn process_oneshot_pipeline_handler(
         ));
     }
 
-    // Parse multipart: read boundary + config first
     let boundary = extract_multipart_boundary(req.headers())?;
     let body_stream = req.into_body().into_data_stream();
     let mut multipart = raw_multer::Multipart::new(body_stream, boundary);
     let user_pipeline = parse_config_field(&mut multipart).await?;
 
-    // Compile pipeline definition
-    tracing::debug!("Compiling user pipeline definition");
     let pipeline_def: Pipeline = compile(user_pipeline)?;
-    tracing::debug!("Pipeline compilation completed");
 
     let input_bindings = determine_http_input_bindings(&pipeline_def)?;
 
-    // Validate pipeline structure
     let (has_http_input, has_file_read, has_http_output) = validate_pipeline_nodes(&pipeline_def)?;
 
     // Enforce allowed node/plugin kinds for oneshot execution.
@@ -3397,7 +3362,6 @@ async fn process_oneshot_pipeline_handler(
         }
     }
 
-    // Validate file/script paths
     validate_file_reader_paths(&pipeline_def, &app_state.config.security)?;
     validate_file_writer_paths(&pipeline_def, &app_state.config.security)?;
     validate_script_paths(&pipeline_def, &app_state.config.security)?;
@@ -3411,7 +3375,6 @@ async fn process_oneshot_pipeline_handler(
     );
     tracing::info!(role = %role_name, "Executing oneshot pipeline for role");
 
-    // Prepare multipart routing
     let cancel_token = CancellationToken::new();
     let mut field_senders: HashMap<String, tokio::sync::mpsc::Sender<Result<Bytes, axum::Error>>> =
         HashMap::new();
@@ -3453,7 +3416,6 @@ async fn process_oneshot_pipeline_handler(
     }
     let (parse_done_tx, parse_done_rx) = tokio::sync::oneshot::channel();
 
-    // Spawn multipart routing task
     let routing_task = tokio::spawn(route_multipart_fields(
         multipart,
         field_senders,
@@ -3472,7 +3434,6 @@ async fn process_oneshot_pipeline_handler(
         })?
         .map_err(|_| AppError::BadRequest("Failed to observe multipart state".into()))?;
 
-    // Execute oneshot pipeline
     tracing::info!("Starting oneshot pipeline execution");
     let oneshot_start_time = Instant::now();
     let oneshot_duration_histogram = ONESHOT_DURATION_HISTOGRAM
@@ -3489,7 +3450,6 @@ async fn process_oneshot_pipeline_handler(
         })
         .clone();
 
-    // Build oneshot config from server configuration
     let oneshot_config = {
         let cfg = &app_state.config.engine.oneshot;
         OneshotEngineConfig {
@@ -3525,7 +3485,6 @@ async fn process_oneshot_pipeline_handler(
         },
     };
 
-    // Ensure multipart routing finished cleanly
     match parse_done_rx.await {
         Ok(Ok(())) => {},
         Ok(Err(err)) => {
@@ -3541,7 +3500,6 @@ async fn process_oneshot_pipeline_handler(
     }
     let _ = routing_task.await;
 
-    // Build and return streaming response
     Ok(build_streaming_response(pipeline_result, oneshot_start_time, oneshot_duration_histogram))
 }
 
@@ -3567,7 +3525,6 @@ async fn websocket_handler(
         }
     }
 
-    // Require auth when enabled (cookie or Authorization header)
     let (role_name, perms) = if app_state.auth.is_enabled() {
         match crate::auth::validate_token_from_headers(
             &headers,
@@ -3599,14 +3556,11 @@ async fn static_handler(
 
     let path = stripped_path.trim_start_matches('/');
 
-    // If path is empty, serve index.html
     let path = if path.is_empty() { "index.html" } else { path };
 
     if let Some(content) = Assets::get(path) {
         let mime = mime_guess::from_path(path).first_or_octet_stream();
         let mut headers = HeaderMap::new();
-        // MIME types from mime_guess should always be valid for HTTP headers.
-        // This expect is justified: mime_guess returns standard MIME types that always parse.
         #[allow(clippy::expect_used)]
         headers.insert(
             header::CONTENT_TYPE,
@@ -3671,7 +3625,6 @@ async fn static_handler(
 async fn metrics_middleware(req: axum::http::Request<Body>, next: Next) -> Response {
     let start = Instant::now();
     let method = req.method().clone();
-    // Extract matched path for metrics, falling back to the full URI path if no match
     let path = req.extensions().get::<MatchedPath>().map_or_else(
         || req.uri().path().to_owned(),
         |matched_path| matched_path.as_str().to_owned(),
@@ -3878,7 +3831,6 @@ pub async fn create_dynamic_session(
     role_name: String,
     perms: &crate::permissions::Permissions,
 ) -> Result<CreateSessionResult, CreateSessionError> {
-    // Parse & compile
     let user_pipeline: UserPipeline = streamkit_api::yaml::parse_yaml(yaml)
         .map_err(|e| CreateSessionError::InvalidInput(format!("YAML parse error: {e}")))?;
 
@@ -3892,7 +3844,6 @@ pub async fn create_dynamic_session(
         ));
     }
 
-    // Per-node permission and security checks.
     for (node_id, node) in &engine_pipeline.nodes {
         if is_synthetic_kind(&node.kind) {
             return Err(CreateSessionError::InvalidInput(format!(
@@ -3940,7 +3891,6 @@ pub async fn create_dynamic_session(
         ));
     }
 
-    // Create session (engine allocation).
     let session = crate::session::Session::create(
         &app_state.engine,
         &app_state.config,
@@ -3974,7 +3924,6 @@ pub async fn create_dynamic_session(
     let session_name = session.name.clone();
     let created_at = crate::session::system_time_to_rfc3339(session.created_at);
 
-    // Populate pipeline and send to engine
     populate_session_pipeline(&session, &engine_pipeline).await;
     send_pipeline_to_engine(&session, &engine_pipeline).await;
 
@@ -3986,7 +3935,6 @@ pub async fn create_dynamic_session(
         "Created new session"
     );
 
-    // Broadcast event
     let event = ApiEvent {
         message_type: MessageType::Event,
         correlation_id: None,
@@ -4050,7 +3998,6 @@ pub async fn validate_batch_operations(
         });
     }
 
-    // Validate all AddNode operations against permission and security rules.
     for op in operations {
         if let streamkit_api::BatchOperation::AddNode { node_id, kind, params, .. } = op {
             if let Some(message) = crate::websocket_handlers::validate_add_node_op(
@@ -4088,13 +4035,11 @@ pub async fn apply_batch_operations(
     perms: &crate::permissions::Permissions,
     security_config: &crate::config::SecurityConfig,
 ) -> Result<(), String> {
-    // Pre-validate duplicate node_ids.
     let duplicates = check_batch_node_id_uniqueness(session, &operations).await;
     if let Some(node_id) = duplicates.first() {
         return Err(format!("Batch rejected: node '{node_id}' already exists in the pipeline"));
     }
 
-    // Validate permissions for all AddNode operations.
     for op in &operations {
         if let streamkit_api::BatchOperation::AddNode { kind, params, .. } = op {
             if let Some(message) = crate::websocket_handlers::validate_add_node_op(
@@ -4108,7 +4053,6 @@ pub async fn apply_batch_operations(
         }
     }
 
-    // Apply all operations in order.
     let mut engine_operations = Vec::new();
     {
         let mut pipeline = session.pipeline.lock().await;
@@ -4198,7 +4142,6 @@ pub async fn apply_batch_operations(
         drop(pipeline);
     }
 
-    // Send control messages to the engine.
     for msg in engine_operations {
         session.send_control_message(msg).await;
     }
@@ -4520,7 +4463,6 @@ pub fn create_app(
         .route("/api/v1/sessions/{id}", delete(destroy_session_handler))
         .route("/api/v1/sessions/{id}/pipeline", get(get_pipeline_handler));
 
-    // Preview routes are only available when the MoQ feature is enabled.
     #[cfg(feature = "moq")]
     {
         router = router
@@ -4567,19 +4509,14 @@ pub fn create_app(
         .merge(crate::assets::font_assets_router())
         .merge(crate::plugin_assets::plugin_assets_router());
 
-    // Add MoQ routes if feature is enabled
     #[cfg(feature = "moq")]
     {
         router = router.route("/api/v1/moq/fingerprints", get(get_moq_fingerprints_handler));
         router = router.route("/certificate.sha256", get(get_certificate_sha256_handler));
     }
 
-    // Mount MCP (Model Context Protocol) endpoint when the feature is enabled
-    // and the config has it turned on.
-    //
-    // SECURITY: The endpoint MUST live under /api/ so that auth_guard_middleware,
-    // origin_guard_middleware, CORS, tracing, and metrics all apply automatically.
-    // Endpoint validation is enforced at config-load time (McpConfig::validate).
+    // The endpoint MUST live under /api/ so auth_guard_middleware, origin_guard_middleware,
+    // CORS, tracing, and metrics all apply. Enforced at config-load time (McpConfig::validate).
     #[cfg(feature = "mcp")]
     {
         if app_state.config.mcp.enabled {
@@ -4603,15 +4540,11 @@ pub fn create_app(
         );
     }
 
-    // Add MSE streaming route.
-    // SECURITY: Intentionally outside /api/ so auth_guard_middleware does not
-    // apply — matches the MoQ WebTransport model. See mse_stream_handler doc comment.
+    // Outside /api/ so auth_guard_middleware doesn't apply — matches the MoQ WebTransport model.
     router = router.route("/mse/{*path}", get(mse_stream_handler));
 
-    // Add auth routes
     router = router.nest("/api/v1/auth", crate::auth::auth_router());
 
-    // Configure CORS with auth enabled state
     let auth_enabled = app_state.auth.is_enabled();
     let cors_layer = create_cors_layer(&app_state.config.server.cors, auth_enabled)
         .expect("CORS configuration error");
@@ -4690,13 +4623,10 @@ fn start_moq_webtransport_acceptor(
 
     let auth_state = Arc::clone(&app_state.auth);
 
-    // Parse address for WebTransport — use moq_address when set, otherwise fall back
-    // to the main server address (same port for HTTP and QUIC).
     let addr: SocketAddr =
         config.server.moq_address.as_deref().unwrap_or(&config.server.address).parse()?;
 
-    // Configure TLS for MoQ WebTransport.
-    // Priority: moq_cert_path/moq_key_path → server cert_path/key_path (when tls=true) → self-signed.
+    // TLS priority: moq_cert_path/moq_key_path → server cert_path/key_path (when tls=true) → self-signed.
     let moq_cert = config.server.moq_cert_path.as_deref().filter(|s| !s.is_empty());
     let moq_key = config.server.moq_key_path.as_deref().filter(|s| !s.is_empty());
 
@@ -4852,13 +4782,11 @@ async fn validate_moq_auth(
         return Err(axum::http::StatusCode::UNAUTHORIZED);
     };
 
-    // Validate JWT
     let claims = auth_state.validate_moq_token(&jwt).map_err(|e| {
         warn!(path = %path, error = %e, "MoQ JWT validation failed");
         axum::http::StatusCode::UNAUTHORIZED
     })?;
 
-    // Check audience
     if claims.aud != crate::auth::AUD_MOQ {
         warn!(path = %path, expected = crate::auth::AUD_MOQ, actual = %claims.aud, "MoQ auth failed: wrong audience");
         return Err(axum::http::StatusCode::UNAUTHORIZED);
@@ -4882,7 +4810,6 @@ async fn validate_moq_auth(
         return Err(axum::http::StatusCode::UNAUTHORIZED);
     };
 
-    // Extra robustness: ensure the presented token matches the stored hash.
     if meta.token_hash != token_hash {
         warn!(path = %path, jti = %claims.jti, "MoQ auth failed: token hash mismatch");
         return Err(axum::http::StatusCode::UNAUTHORIZED);
@@ -4893,13 +4820,11 @@ async fn validate_moq_auth(
         return Err(axum::http::StatusCode::UNAUTHORIZED);
     }
 
-    // Check revocation
     if auth_state.is_revoked(&token_hash) {
         warn!(path = %path, "MoQ auth failed: token revoked");
         return Err(axum::http::StatusCode::UNAUTHORIZED);
     }
 
-    // Verify root matches path and reduce permissions
     crate::auth::verify_moq_token(&claims, path)
         .map_err(|e| {
             warn!(path = %path, error = %e, "MoQ path verification failed");
@@ -4928,7 +4853,6 @@ async fn validate_moq_auth(
 pub async fn start_server(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     let addr: SocketAddr = config.server.address.parse()?;
 
-    // Determine if auth should be enabled based on config mode and bind address
     let auth_enabled = match config.auth.mode {
         crate::config::AuthMode::Auto => !addr.ip().is_loopback(),
         crate::config::AuthMode::Enabled => true,
@@ -4995,7 +4919,6 @@ pub async fn start_server(config: &Config) -> Result<(), Box<dyn std::error::Err
         );
     }
 
-    // Initialize auth state
     let auth = if auth_enabled {
         info!(
             mode = ?config.auth.mode,
@@ -5045,7 +4968,6 @@ pub async fn start_server(config: &Config) -> Result<(), Box<dyn std::error::Err
     #[cfg(not(feature = "moq"))]
     let _ = &app_state;
 
-    // Legacy role_header check - only applies when auth is disabled
     if !auth_enabled && !addr.ip().is_loopback() && config.permissions.role_header.is_none() {
         if !config.permissions.allow_insecure_no_auth {
             return Err(format!(
@@ -5065,12 +4987,9 @@ pub async fn start_server(config: &Config) -> Result<(), Box<dyn std::error::Err
         );
     }
 
-    // Start MoQ WebTransport acceptor if feature is enabled
     #[cfg(feature = "moq")]
     start_moq_webtransport_acceptor(&app_state, config)?;
 
-    // Set up graceful shutdown signal handler
-    // These expect() calls are justified and documented in the function's # Panics section
     #[allow(clippy::expect_used)]
     let shutdown_signal = async {
         let ctrl_c = async {
@@ -5127,13 +5046,11 @@ pub async fn start_server(config: &Config) -> Result<(), Box<dyn std::error::Err
 
         let handle = axum_server::Handle::new();
 
-        // Spawn a task to listen for shutdown signal
         tokio::spawn({
             let handle = handle.clone();
             let tracker = app_state.shutdown_tracker.clone();
             async move {
                 shutdown_signal.await;
-                // Drain background shutdown tasks before stopping the server
                 tracker.drain(std::time::Duration::from_secs(10)).await;
                 handle.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
             }
@@ -5152,13 +5069,11 @@ pub async fn start_server(config: &Config) -> Result<(), Box<dyn std::error::Err
 
         let handle = axum_server::Handle::new();
 
-        // Spawn a task to listen for shutdown signal
         tokio::spawn({
             let handle = handle.clone();
             let tracker = app_state.shutdown_tracker.clone();
             async move {
                 shutdown_signal.await;
-                // Drain background shutdown tasks before stopping the server
                 tracker.drain(std::time::Duration::from_secs(10)).await;
                 handle.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
             }

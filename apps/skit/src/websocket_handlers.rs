@@ -46,24 +46,20 @@ pub fn validate_add_node_op(
     perms: &Permissions,
     security_config: &crate::config::SecurityConfig,
 ) -> Option<String> {
-    // Reject oneshot-only marker nodes on the dynamic control plane.
     if kind == "streamkit::http_input" || kind == "streamkit::http_output" {
         return Some(format!(
             "Node type '{kind}' is oneshot-only and cannot be used in dynamic sessions"
         ));
     }
 
-    // Check if the node type is allowed.
     if !perms.is_node_allowed(kind) {
         return Some(format!("Permission denied: node type '{kind}' not allowed"));
     }
 
-    // If this is a plugin node, enforce the plugin allowlist too.
     if kind.starts_with("plugin::") && !perms.is_plugin_allowed(kind) {
         return Some(format!("Permission denied: plugin '{kind}' not allowed"));
     }
 
-    // Security: validate file_reader paths.
     if kind == "core::file_reader" {
         let Some(path) = params.and_then(|p| p.get("path")).and_then(serde_json::Value::as_str)
         else {
@@ -76,7 +72,6 @@ pub fn validate_add_node_op(
         }
     }
 
-    // Security: validate file_writer paths.
     if kind == "core::file_writer" {
         let Some(path) = params.and_then(|p| p.get("path")).and_then(serde_json::Value::as_str)
         else {
@@ -89,7 +84,6 @@ pub fn validate_add_node_op(
         }
     }
 
-    // Security: validate script_path (if present) for core::script nodes.
     if kind == "core::script" {
         if let Some(path) =
             params.and_then(|p| p.get("script_path")).and_then(serde_json::Value::as_str)
@@ -165,14 +159,12 @@ async fn handle_create_session(
     role_name: &str,
     _correlation_id: Option<String>,
 ) -> Option<ResponsePayload> {
-    // Check permission
     if !perms.create_sessions {
         return Some(ResponsePayload::Error {
             message: "Permission denied: cannot create sessions".to_string(),
         });
     }
 
-    // Check global session limits + duplicate names with short lock hold.
     let (current_count, name_taken) = {
         let session_manager = app_state.session_manager.lock().await;
         let current_count = session_manager.session_count();
@@ -206,7 +198,6 @@ async fn handle_create_session(
         Err(error_msg) => return Some(ResponsePayload::Error { message: error_msg }),
     };
 
-    // Insert session with short lock hold, re-checking limits to avoid races.
     let insert_result = {
         let mut session_manager = app_state.session_manager.lock().await;
         let current_count = session_manager.session_count();
@@ -223,7 +214,6 @@ async fn handle_create_session(
 
     info!(session_id = %session.id, name = ?session.name, "Created new session");
 
-    // Broadcast event to all clients
     let created_at_str = crate::session::system_time_to_rfc3339(session.created_at);
     let event = ApiEvent {
         message_type: MessageType::Event,
@@ -252,7 +242,6 @@ async fn handle_destroy_session(
     role_name: &str,
     _correlation_id: Option<String>,
 ) -> Option<ResponsePayload> {
-    // Check permission
     if !perms.destroy_sessions {
         warn!(
             session_id = %session_id,
@@ -273,7 +262,6 @@ async fn handle_destroy_session(
             });
         };
 
-        // Check ownership before destroying
         if !can_access_session(&session, role_name, perms) {
             warn!(
                 session_id = %session_id,
@@ -336,7 +324,6 @@ async fn handle_list_sessions(
     perms: &Permissions,
     role_name: &str,
 ) -> Option<ResponsePayload> {
-    // Check permission
     if !perms.list_sessions {
         return Some(ResponsePayload::Error {
             message: "Permission denied: cannot list sessions".to_string(),
@@ -345,15 +332,12 @@ async fn handle_list_sessions(
 
     let sessions = app_state.session_manager.lock().await.list_sessions();
 
-    // Filter sessions based on ownership and permissions
     let session_infos: Vec<streamkit_api::SessionInfo> = sessions
         .into_iter()
         .filter(|session| {
-            // Admin with access_all_sessions can see all sessions
             if perms.access_all_sessions {
                 return true;
             }
-            // Otherwise, only see sessions you created
             session.created_by.as_ref().is_none_or(|creator| creator == role_name)
         })
         .map(|session| streamkit_api::SessionInfo {
@@ -373,7 +357,6 @@ async fn handle_list_sessions(
 }
 
 fn handle_list_nodes(app_state: &AppState, perms: &Permissions) -> ResponsePayload {
-    // Check permission
     if !perms.list_nodes {
         return ResponsePayload::Error {
             message: "Permission denied: cannot list nodes".to_string(),
@@ -392,9 +375,6 @@ fn handle_list_nodes(app_state: &AppState, perms: &Permissions) -> ResponsePaylo
         };
         registry.definitions()
     };
-
-    // Add synthetic node definitions for oneshot-only nodes
-    // These are virtual markers that get replaced at runtime in stateless pipelines
 
     definitions.push(NodeDefinition {
         kind: "streamkit::http_input".to_string(),
@@ -493,7 +473,6 @@ async fn handle_add_node(
     perms: &Permissions,
     role_name: &str,
 ) -> Option<ResponsePayload> {
-    // Check permission to modify sessions
     if !perms.modify_sessions {
         return Some(ResponsePayload::Error {
             message: "Permission denied: cannot modify sessions".to_string(),
@@ -506,11 +485,11 @@ async fn handle_add_node(
         return Some(ResponsePayload::Error { message });
     }
 
-    // Get session with SHORT lock hold to avoid blocking other operations
+    // Lock scope kept minimal so async engine operations below don't hold the session_manager lock.
     let session = {
         let session_manager = app_state.session_manager.lock().await;
         session_manager.get_session_by_name_or_id(&session_id)
-    }; // Session manager lock released here
+    };
 
     let Some(session) = session else {
         return Some(ResponsePayload::Error {
@@ -518,7 +497,6 @@ async fn handle_add_node(
         });
     };
 
-    // Check ownership (session is cloned, doesn't need lock)
     if !can_access_session(&session, role_name, perms) {
         return Some(ResponsePayload::Error {
             message: "Permission denied: you do not own this session".to_string(),
@@ -557,18 +535,16 @@ async fn handle_remove_node(
     perms: &Permissions,
     role_name: &str,
 ) -> Option<ResponsePayload> {
-    // Check permission to modify sessions
     if !perms.modify_sessions {
         return Some(ResponsePayload::Error {
             message: "Permission denied: cannot modify sessions".to_string(),
         });
     }
 
-    // Get session with SHORT lock hold to avoid blocking other operations
     let session = {
         let session_manager = app_state.session_manager.lock().await;
         session_manager.get_session_by_name_or_id(&session_id)
-    }; // Session manager lock released here
+    };
 
     let Some(session) = session else {
         return Some(ResponsePayload::Error {
@@ -576,7 +552,6 @@ async fn handle_remove_node(
         });
     };
 
-    // Check ownership (session is cloned, doesn't need lock)
     if !can_access_session(&session, role_name, perms) {
         return Some(ResponsePayload::Error {
             message: "Permission denied: you do not own this session".to_string(),
@@ -593,7 +568,6 @@ async fn handle_remove_node(
     // observed a Failed transition for the cancelled creation.
     session.release_node_id(&node_id).await;
 
-    // Broadcast event to all clients
     let event = ApiEvent {
         message_type: MessageType::Event,
         correlation_id: None,
@@ -624,18 +598,16 @@ async fn handle_connect(
     perms: &Permissions,
     role_name: &str,
 ) -> Option<ResponsePayload> {
-    // Check permission to modify sessions
     if !perms.modify_sessions {
         return Some(ResponsePayload::Error {
             message: "Permission denied: cannot modify sessions".to_string(),
         });
     }
 
-    // Get session with SHORT lock hold to avoid blocking other operations
     let session = {
         let session_manager = app_state.session_manager.lock().await;
         session_manager.get_session_by_name_or_id(&session_id)
-    }; // Session manager lock released here
+    };
 
     let Some(session) = session else {
         return Some(ResponsePayload::Error {
@@ -643,7 +615,6 @@ async fn handle_connect(
         });
     };
 
-    // Check ownership (session is cloned, doesn't need lock)
     if !can_access_session(&session, role_name, perms) {
         return Some(ResponsePayload::Error {
             message: "Permission denied: you do not own this session".to_string(),
@@ -661,7 +632,6 @@ async fn handle_connect(
         });
     }
 
-    // Broadcast event to all clients
     let event = ApiEvent {
         message_type: MessageType::Event,
         correlation_id: None,
@@ -677,8 +647,6 @@ async fn handle_connect(
         error!("Failed to broadcast ConnectionAdded event: {}", e);
     }
 
-    // Now safe to do async operations without holding session_manager lock
-    // Convert API ConnectionMode to core ConnectionMode
     let core_mode = match mode {
         streamkit_api::ConnectionMode::Reliable => {
             streamkit_core::control::ConnectionMode::Reliable
@@ -704,18 +672,16 @@ async fn handle_disconnect(
     perms: &Permissions,
     role_name: &str,
 ) -> Option<ResponsePayload> {
-    // Check permission to modify sessions
     if !perms.modify_sessions {
         return Some(ResponsePayload::Error {
             message: "Permission denied: cannot modify sessions".to_string(),
         });
     }
 
-    // Get session with SHORT lock hold to avoid blocking other operations
     let session = {
         let session_manager = app_state.session_manager.lock().await;
         session_manager.get_session_by_name_or_id(&session_id)
-    }; // Session manager lock released here
+    };
 
     let Some(session) = session else {
         return Some(ResponsePayload::Error {
@@ -723,7 +689,6 @@ async fn handle_disconnect(
         });
     };
 
-    // Check ownership (session is cloned, doesn't need lock)
     if !can_access_session(&session, role_name, perms) {
         return Some(ResponsePayload::Error {
             message: "Permission denied: you do not own this session".to_string(),
@@ -740,7 +705,6 @@ async fn handle_disconnect(
         });
     }
 
-    // Broadcast event to all clients
     let event = ApiEvent {
         message_type: MessageType::Event,
         correlation_id: None,
@@ -923,18 +887,16 @@ async fn handle_get_pipeline(
     perms: &Permissions,
     role_name: &str,
 ) -> Option<ResponsePayload> {
-    // Check permission
     if !perms.list_sessions {
         return Some(ResponsePayload::Error {
             message: "Permission denied: cannot view pipelines".to_string(),
         });
     }
 
-    // Get session with SHORT lock hold to avoid blocking other operations
     let session = {
         let session_manager = app_state.session_manager.lock().await;
         session_manager.get_session_by_name_or_id(&session_id)
-    }; // Session manager lock released here
+    };
 
     let Some(session) = session else {
         return Some(ResponsePayload::Error {
@@ -942,7 +904,6 @@ async fn handle_get_pipeline(
         });
     };
 
-    // Check ownership (session is cloned, doesn't need lock)
     if !can_access_session(&session, role_name, perms) {
         return Some(ResponsePayload::Error {
             message: "Permission denied: you do not own this session".to_string(),

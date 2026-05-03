@@ -196,7 +196,6 @@ impl FileKeyProvider {
             Self::write_secure(&jwks_path, &serde_json::to_string_pretty(&jwks)?).await?;
         }
 
-        // Build public key map (kid -> raw bytes)
         let mut public_keys: HashMap<String, Arc<[u8]>> = HashMap::new();
         for jwk in &jwks.keys {
             let bytes = base64url_decode(&jwk.x)?;
@@ -669,7 +668,6 @@ impl FileTokenMetadataStore {
         let store =
             Self { state_dir: state_dir.to_path_buf(), tokens: RwLock::new(HashMap::new()) };
 
-        // Load existing tokens
         let path = state_dir.join("tokens.json");
         if path.exists() {
             FileKeyProvider::verify_permissions(&path)?;

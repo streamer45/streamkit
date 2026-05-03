@@ -148,13 +148,11 @@ pub async fn get_logs_handler(
     headers: HeaderMap,
     Query(query): Query<LogQuery>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    // Check permissions — admin only
     let perms = crate::role_extractor::get_permissions(&headers, &app_state);
     if !perms.access_all_sessions {
         return Err(StatusCode::FORBIDDEN);
     }
 
-    // Check that file logging is enabled
     if !app_state.config.log.file_enable {
         return Err(StatusCode::NOT_FOUND);
     }
@@ -427,7 +425,6 @@ pub async fn stream_logs_handler(
     headers: HeaderMap,
     Query(query): Query<LogStreamQuery>,
 ) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, StatusCode> {
-    // Check permissions — admin only
     let perms = crate::role_extractor::get_permissions(&headers, &app_state);
     if !perms.access_all_sessions {
         return Err(StatusCode::FORBIDDEN);
@@ -447,7 +444,6 @@ pub async fn stream_logs_handler(
     let level = query.level;
 
     let stream = async_stream::stream! {
-        // Open file and seek to end
         let Ok(mut file) = tokio::fs::File::open(&log_path).await else {
             yield Ok(Event::default().data("[error] Failed to open log file"));
             return;
@@ -470,7 +466,6 @@ pub async fn stream_logs_handler(
         loop {
             tokio::time::sleep(tokio::time::Duration::from_millis(TAIL_POLL_INTERVAL_MS)).await;
 
-            // Check current file size
             let Ok(metadata) = tokio::fs::metadata(&log_path).await else {
                 continue;
             };

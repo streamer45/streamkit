@@ -688,7 +688,6 @@ impl SessionManager {
     ///
     /// Returns an error if a session with the same name already exists.
     pub fn add_session(&mut self, session: Session) -> Result<(), String> {
-        // Check for duplicate session names
         if let Some(ref session_name) = session.name {
             if self.is_name_taken(session_name) {
                 return Err(format!("Session with name '{session_name}' already exists"));
@@ -697,7 +696,6 @@ impl SessionManager {
 
         self.sessions.insert(session.id.clone(), session);
 
-        // Update metrics
         self.sessions_created_counter.add(1, &[]);
         self.sessions_active_gauge.record(self.sessions.len() as u64, &[]);
 
@@ -706,12 +704,10 @@ impl SessionManager {
 
     /// Find session by ID or name
     pub fn get_session_by_name_or_id(&self, identifier: &str) -> Option<Session> {
-        // First try by ID
         if let Some(session) = self.sessions.get(identifier) {
             return Some(session.clone());
         }
 
-        // Then try by name
         self.sessions.values().find(|session| session.name.as_deref() == Some(identifier)).cloned()
     }
 

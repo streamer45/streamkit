@@ -235,7 +235,6 @@ impl Shell {
     ///
     /// Panics if URL scheme conversion fails (unreachable in practice as "ws" and "wss" are always valid)
     pub fn new(server_url: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        // Parse server URL to convert to ws:// or wss://
         let mut ws_url = Url::parse(server_url)?;
         match ws_url.scheme() {
             // set_scheme only fails for invalid schemes, but "ws" and "wss" are always valid
@@ -270,7 +269,6 @@ impl Shell {
         editor.bind_sequence(KeyEvent::alt('n'), Cmd::HistorySearchForward);
         editor.bind_sequence(KeyEvent::alt('p'), Cmd::HistorySearchBackward);
 
-        // Load history
         if editor.load_history(".skit_history").is_err() {
             debug!("No previous history found");
         }
@@ -332,7 +330,6 @@ impl Shell {
             }
         }
 
-        // Save history
         if let Err(e) = self.editor.save_history(".skit_history") {
             warn!("Failed to save history: {e}");
         }
@@ -397,12 +394,10 @@ impl Shell {
     async fn refresh_sessions(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let sessions = self.fetch_sessions().await?;
 
-        // Update completions
         if let Some(helper) = self.editor.helper_mut() {
             helper.completer.update_sessions(sessions.clone());
         }
 
-        // Use clone_from for efficient assignment
         self.current_sessions.clone_from(&sessions);
 
         Ok(())
@@ -424,12 +419,10 @@ impl Shell {
             }
         }
 
-        // Update completions
         if let Some(helper) = self.editor.helper_mut() {
             helper.completer.update_sessions(sessions.clone());
         }
 
-        // Use clone_from for efficient assignment
         self.current_sessions.clone_from(&sessions);
 
         Ok(())
@@ -500,7 +493,6 @@ impl Shell {
         let pipeline_path = args[0];
         let mut name = None;
 
-        // Parse optional --name argument
         let mut i = 1;
         while i < args.len() {
             match args[i] {
@@ -520,7 +512,6 @@ impl Shell {
             }
         }
 
-        // Convert WebSocket URL to HTTP URL for the create_session function
         let http_url = self
             .ws_url
             .replace("ws://", "http://")
@@ -612,17 +603,12 @@ impl Shell {
 
         println!("🚀 Processing oneshot pipeline: {input_path} → {pipeline_path} → {output_path}");
 
-        // Convert WebSocket URL back to HTTP URL for the oneshot HTTP API
-        // ws://host:port/api/v1/control -> http://host:port
-        // wss://host:port/api/v1/control -> https://host:port
         let http_url = self
             .ws_url
             .replace("ws://", "http://")
             .replace("wss://", "https://")
             .replace("/api/v1/control", "");
 
-        // Use the existing process_oneshot function from client.rs
-        // This makes a multipart HTTP POST to /api/v1/process
         let inputs = vec![crate::client::InputFile {
             field: "media".to_string(),
             path: input_path.to_string(),

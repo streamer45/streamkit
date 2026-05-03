@@ -101,7 +101,6 @@ async fn get_auth_context(
     app_state: &AppState,
 ) -> Result<AuthContext, (StatusCode, String)> {
     if !app_state.auth.is_enabled() {
-        // Auth disabled - use legacy role extraction
         let (role, permissions) =
             crate::role_extractor::get_role_and_permissions(headers, &Arc::new(app_state.clone()));
         return Ok(AuthContext {
@@ -150,7 +149,6 @@ pub async fn login_handler(
         _ => return (StatusCode::BAD_REQUEST, "Missing token".to_string()).into_response(),
     };
 
-    // Validate the token
     let auth_ctx =
         match validate_token(&token, &app_state.auth, &app_state.config.permissions).await {
             Ok(ctx) => ctx,
@@ -162,7 +160,6 @@ pub async fn login_handler(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
 
-    // Build session cookie
     let Some(cookie) =
         build_session_cookie(&token, &app_state.config, auth_ctx.claims.exp.saturating_sub(now))
     else {
@@ -195,7 +192,6 @@ pub async fn me_handler(
     let auth_enabled = app_state.auth.is_enabled();
 
     if !auth_enabled {
-        // Auth disabled - return default role info
         let (role, _) = crate::role_extractor::get_role_and_permissions(&headers, &app_state);
         return Json(MeResponse {
             authenticated: true, // Consider everyone authenticated when auth is disabled
@@ -205,7 +201,6 @@ pub async fn me_handler(
         });
     }
 
-    // Try to get auth context
     match get_auth_context(&headers, &app_state).await {
         Ok(auth_ctx) => Json(MeResponse {
             authenticated: true,
@@ -231,13 +226,11 @@ pub async fn create_token_handler(
         return (StatusCode::BAD_REQUEST, "Authentication is disabled".to_string()).into_response();
     }
 
-    // Require auth
     let auth_ctx = match get_auth_context(&headers, &app_state).await {
         Ok(ctx) => ctx,
         Err(e) => return e.into_response(),
     };
 
-    // Require admin
     if let Err(e) = require_admin(&auth_ctx) {
         return e.into_response();
     }
@@ -246,10 +239,8 @@ pub async fn create_token_handler(
         return (StatusCode::BAD_REQUEST, "Unknown role".to_string()).into_response();
     }
 
-    // Determine TTL
     let ttl = req.ttl_secs.unwrap_or(app_state.config.auth.api_default_ttl_secs);
 
-    // Mint the token
     let (token, meta) = match app_state
         .auth
         .mint_api_token(&req.role, req.label.as_deref(), ttl, &auth_ctx.claims.jti)
@@ -277,18 +268,15 @@ pub async fn list_tokens_handler(
         return (StatusCode::BAD_REQUEST, "Authentication is disabled".to_string()).into_response();
     }
 
-    // Require auth
     let auth_ctx = match get_auth_context(&headers, &app_state).await {
         Ok(ctx) => ctx,
         Err(e) => return e.into_response(),
     };
 
-    // Require admin
     if let Err(e) = require_admin(&auth_ctx) {
         return e.into_response();
     }
 
-    // Get token metadata store
     let Some(store) = app_state.auth.token_metadata_store() else {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -297,7 +285,6 @@ pub async fn list_tokens_handler(
             .into_response();
     };
 
-    // List tokens
     let tokens = match store.list().await {
         Ok(t) => t,
         Err(e) => {
@@ -306,7 +293,6 @@ pub async fn list_tokens_handler(
         },
     };
 
-    // Convert to response format
     let token_infos: Vec<TokenInfo> = tokens
         .into_iter()
         .map(|t| TokenInfo {
@@ -336,13 +322,11 @@ pub async fn revoke_token_handler(
         return (StatusCode::BAD_REQUEST, "Authentication is disabled".to_string()).into_response();
     }
 
-    // Require auth
     let auth_ctx = match get_auth_context(&headers, &app_state).await {
         Ok(ctx) => ctx,
         Err(e) => return e.into_response(),
     };
 
-    // Require admin
     if let Err(e) = require_admin(&auth_ctx) {
         return e.into_response();
     }
@@ -381,21 +365,17 @@ pub async fn create_moq_token_handler(
         return (StatusCode::BAD_REQUEST, "Authentication is disabled".to_string()).into_response();
     }
 
-    // Require auth
     let auth_ctx = match get_auth_context(&headers, &app_state).await {
         Ok(ctx) => ctx,
         Err(e) => return e.into_response(),
     };
 
-    // Require admin
     if let Err(e) = require_admin(&auth_ctx) {
         return e.into_response();
     }
 
-    // Determine TTL
     let ttl = req.ttl_secs.unwrap_or(app_state.config.auth.moq_default_ttl_secs);
 
-    // Mint the token
     let (token, meta) = match app_state
         .auth
         .mint_moq_token(

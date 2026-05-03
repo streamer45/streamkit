@@ -31,7 +31,6 @@ pub async fn oneshot_worker(
     let pipeline_path = &config.oneshot.pipeline;
     let input_path = &config.oneshot.input_file;
 
-    // Create a temp output path that we won't actually write
     let output_path = if cfg!(windows) { "NUL" } else { "/dev/null" };
 
     loop {
@@ -297,7 +296,6 @@ async fn create_session_with_pipeline(
         session_id: String,
     }
 
-    // Generate a unique suffix for this session to avoid conflicts
     let unique_id = rand::rng()
         .sample_iter(&Alphanumeric)
         .take(8)
@@ -318,7 +316,6 @@ async fn create_session_with_pipeline(
     // Prepare the request
     let request = CreateSessionRequest { yaml, name: Some(session_name.to_string()) };
 
-    // Send HTTP POST to /api/v1/sessions
     let client = reqwest::Client::new();
     let url = format!("{server_url}/api/v1/sessions");
     let response = client.post(&url).json(&request).send().await?;
@@ -563,7 +560,6 @@ pub async fn session_tuner_worker(
                                     rand::rng().random_range(0..session.tunable_node_ids.len());
                                 let node_id = &session.tunable_node_ids[node_idx];
 
-                                // Generate random gain value between 0.5 and 2.0
                                 let gain_value = rand::rng().random_range(0.5..2.0);
 
                                 ws.tune_node(

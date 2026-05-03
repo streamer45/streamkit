@@ -275,57 +275,53 @@ impl Permissions {
         }
     }
 
-    /// Check if a sample pipeline path is allowed
+    /// Check if a sample pipeline path is allowed.
+    ///
+    /// Empty list = nothing allowed (secure by default). Use `["*"]` to allow all.
     pub fn is_sample_allowed(&self, path: &str) -> bool {
-        // Empty list means nothing is allowed (secure by default)
-        // Use ["*"] wildcard to allow everything
         if self.allowed_samples.is_empty() {
             return false;
         }
 
-        // Check against glob patterns
         self.allowed_samples
             .iter()
             .any(|pattern| Pattern::new(pattern).ok().is_some_and(|p| p.matches(path)))
     }
 
-    /// Check if a node type is allowed
+    /// Check if a node type is allowed.
+    ///
+    /// Empty list = nothing allowed (secure by default). Use `["*"]` to allow all.
     pub fn is_node_allowed(&self, node_type: &str) -> bool {
-        // Empty list means nothing is allowed (secure by default)
-        // Use ["*"] wildcard to allow everything
         if self.allowed_nodes.is_empty() {
             return false;
         }
 
-        // Check against patterns (supports wildcards like "audio::*")
         self.allowed_nodes
             .iter()
             .any(|pattern| Pattern::new(pattern).ok().is_some_and(|p| p.matches(node_type)))
     }
 
-    /// Check if a plugin is allowed
+    /// Check if a plugin is allowed.
+    ///
+    /// Empty list = nothing allowed (secure by default). Use `["*"]` to allow all.
     pub fn is_plugin_allowed(&self, plugin_name: &str) -> bool {
-        // Empty list means nothing is allowed (secure by default)
-        // Use ["*"] wildcard to allow everything
         if self.allowed_plugins.is_empty() {
             return false;
         }
 
-        // Check against patterns (supports wildcards like "plugin::*")
         self.allowed_plugins
             .iter()
             .any(|pattern| Pattern::new(pattern).ok().is_some_and(|p| p.matches(plugin_name)))
     }
 
-    /// Check if an audio asset path is allowed
+    /// Check if an audio asset path is allowed.
+    ///
+    /// Empty list = nothing allowed (secure by default). Use `["*"]` to allow all.
     pub fn is_asset_allowed(&self, path: &str) -> bool {
-        // Empty list means nothing is allowed (secure by default)
-        // Use ["*"] wildcard to allow everything
         if self.allowed_assets.is_empty() {
             return false;
         }
 
-        // Check against glob patterns
         self.allowed_assets
             .iter()
             .any(|pattern| Pattern::new(pattern).ok().is_some_and(|p| p.matches(path)))

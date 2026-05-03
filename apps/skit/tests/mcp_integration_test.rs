@@ -176,7 +176,6 @@ async fn init_mcp_session(client: &reqwest::Client, addr: SocketAddr, token: &st
         .unwrap()
         .to_string();
 
-    // Send initialized notification
     let initialized = json!({
         "jsonrpc": "2.0",
         "method": "notifications/initialized"
