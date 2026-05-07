@@ -19,16 +19,16 @@ import { act } from '@testing-library/react';
 import { createStore } from 'jotai';
 import { describe, it, expect, vi } from 'vitest';
 
-import { measureHookRenders } from '@/test/perf';
 import { sessionStore, nodeParamsAtom, nodeKey, writeNodeParams } from '@/stores/sessionAtoms';
+import { measureHookRenders } from '@/test/perf';
 
 import { setLayersInStore } from './compositorAtoms';
 import type { LayerState, TextOverlayState, ImageOverlayState } from './compositorLayerParsers';
-import { useParamAtomSync } from './compositorParamSync';
 import {
   mergeRemoteLayerParams,
   mergeRemoteTextParams,
   mergeRemoteImageParams,
+  useParamAtomSync,
 } from './compositorParamSync';
 
 vi.mock('@/services/websocket', () => ({
