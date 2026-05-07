@@ -80,9 +80,4 @@ See [Writing Plugins](/guides/writing-plugins/) for details and recommended prac
 
 ## Production baseline checklist
 
-- Keep built-in auth enabled for any non-loopback bind.
-- Use least-privileged roles and set `default_role` to a low-privilege role.
-- Disable runtime plugin management unless you need it.
-- Restrict `allowed_file_paths` and `allowed_write_paths`.
-- Configure `server.cors.allowed_origins` if you use browsers.
-- Review script fetch allowlists and secrets.
+See the [Security](/guides/security/#baseline-checklist) page for a consolidated production checklist.
