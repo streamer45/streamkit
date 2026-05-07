@@ -871,17 +871,15 @@ fn plugin_log_static_metadata(target: &str, level: tracing::Level) -> &'static P
     let key = (target.to_string(), level);
 
     {
-        let cache = PLUGIN_LOG_METADATA_CACHE
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cache =
+            PLUGIN_LOG_METADATA_CACHE.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(entry) = cache.get(&key) {
             return entry;
         }
     }
 
-    let mut cache = PLUGIN_LOG_METADATA_CACHE
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut cache =
+        PLUGIN_LOG_METADATA_CACHE.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     cache.entry(key).or_insert_with_key(|(target, level)| {
         let target: &'static str = Box::leak(target.clone().into_boxed_str());
         let callsite: &'static PluginLogCallsite = Box::leak(Box::new(PluginLogCallsite::new()));
