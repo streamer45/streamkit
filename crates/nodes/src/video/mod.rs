@@ -70,11 +70,6 @@ pub const AV1_CONTENT_TYPE: &str = "video/av1";
 /// MIME-style content type for H.264-encoded video packets.
 pub const H264_CONTENT_TYPE: &str = "video/h264";
 
-// ── Decode-loop backoff constants ────────────────────────────────────────────
-//
-// Shared across dav1d, rav1d (av1), and VA-API decoder loops to cap
-// empty-EAGAIN retries and transition from yield to sleep.
-
 /// Maximum number of consecutive EAGAIN retries that produce no output
 /// before the decode loop is considered stuck.
 pub const MAX_EAGAIN_EMPTY_RETRIES: u32 = 1000;
