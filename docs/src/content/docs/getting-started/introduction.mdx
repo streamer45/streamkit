@@ -34,7 +34,9 @@ StreamKit is built for developers who need to process real-time media — whethe
 
 ## How It Works (High-Level)
 
-Each node runs as an independent Tokio task and communicates via bounded async channels. Outputs can **fan out** to multiple downstream consumers, and connections can be **reliable** (backpressure) or **best-effort** (drop on overload). Pipelines are type-checked before they run (pins declare accepted/produced packet types), and dynamic sessions can be reconfigured at runtime via the control API.
+A pipeline is a graph of processing nodes. Each node runs concurrently and communicates through buffered channels. Outputs can **fan out** to multiple consumers, and connections can be **reliable** (backpressure) or **best-effort** (drop on overload). Pipelines are type-checked before they run, and dynamic sessions can be reconfigured at runtime via the control API.
+
+For more on the internals, see the [Architecture Overview](/architecture/overview/).
 
 ## Next Steps
 

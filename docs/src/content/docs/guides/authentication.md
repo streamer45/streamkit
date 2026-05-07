@@ -42,6 +42,12 @@ To print it:
 skit auth print-admin-token
 ```
 
+Use `--raw` for machine-readable output (token only, no surrounding text) — useful in scripts:
+
+```bash
+TOKEN=$(skit auth print-admin-token --raw)
+```
+
 Rotate the signing key (and mint a new bootstrap token):
 
 ```bash

@@ -219,6 +219,56 @@ Endpoints:
 | `license` | string? | Optional license information |
 | `is_system` | bool | `true` for system assets, `false` for user uploads |
 
+## Auth Tokens
+
+When built-in auth is enabled, the following endpoints are available under `/api/v1/auth`:
+
+- `POST /api/v1/auth/login` — Exchange a token for an HttpOnly session cookie
+- `POST /api/v1/auth/logout` — Clear the session cookie
+- `GET /api/v1/auth/me` — Return the current user's identity and role
+- `POST /api/v1/auth/tokens` — Mint a new API token (admin only)
+- `GET /api/v1/auth/tokens` — List minted tokens (admin only)
+- `DELETE /api/v1/auth/tokens/{jti}` — Revoke a token by JTI (admin only)
+- `POST /api/v1/auth/reload-keys` — Reload signing keys from disk (admin only)
+- `POST /api/v1/auth/moq-tokens` — Mint a MoQ/WebTransport token (admin only; requires `moq` feature)
+
+## Logs
+
+- `GET /api/v1/logs` — Fetch recent log entries
+- `GET /api/v1/logs/stream` — SSE stream of log entries in real time
+
+## Image Assets
+
+- `GET /api/v1/assets/images` — List image assets
+- `POST /api/v1/assets/images` — Upload an image asset (max 10 MB)
+- `GET /api/v1/assets/images/file/{scope}/{id}` — Serve an image file
+- `DELETE /api/v1/assets/images/{id}` — Delete a user image asset
+
+Allowed formats: `png`, `jpg`, `jpeg`, `webp`, `gif`, `svg`, `svgz`.
+
+## Font Assets
+
+- `GET /api/v1/assets/fonts` — List font assets
+- `POST /api/v1/assets/fonts` — Upload a font asset (max 10 MB)
+- `GET /api/v1/assets/fonts/file/{scope}/{id}` — Serve a font file
+- `DELETE /api/v1/assets/fonts/{id}` — Delete a user font asset
+
+## Plugin Assets
+
+Plugin-declared assets (e.g. Slint UI files) are managed through a generic asset type system.
+
+- `GET /api/v1/asset-types` — List registered asset types (from plugin manifests)
+- `GET /api/v1/assets/plugin/{type_id}` — List assets for a type
+- `POST /api/v1/assets/plugin/{type_id}` — Upload an asset (max 100 MB)
+- `DELETE /api/v1/assets/plugin/{type_id}/{id}` — Delete an asset
+- `GET /api/v1/assets/plugin/{type_id}/file/{scope}/{id}` — Serve / update an asset file
+
+## WebSocket Control Plane
+
+- `GET /api/v1/control` — WebSocket upgrade for session control
+
+See the [WebSocket API reference](/reference/websocket-api/) for the message protocol.
+
 ## Feature-Gated Endpoints
 
 The following endpoints require specific build features and may not be available in all builds (including some Docker images).
@@ -240,6 +290,14 @@ Requires: `--features moq`
 
 - `GET /api/v1/moq/fingerprints` (WebTransport certificate fingerprints)
 - `GET /certificate.sha256` (first fingerprint, plain text)
+
+### MCP (Model Context Protocol)
+
+Requires: `--features mcp` and `[mcp].enabled = true` in config.
+
+- `POST /api/v1/mcp` (default path; configurable via `[mcp].endpoint`) — Streamable HTTP transport for MCP clients
+
+The MCP endpoint uses bearer token auth (same as REST API). For STDIO transport, use `skit mcp` instead.
 
 ## Error Responses
 

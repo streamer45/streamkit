@@ -82,6 +82,43 @@ Prints the JSON schema for `skit.toml` to stdout (useful for editor autocomplete
 skit config schema > skit-schema.json
 ```
 
+### `skit auth`
+
+Manage authentication state (offline — reads files directly, does not require a running server except for `mint`).
+
+| Subcommand | Description |
+|------------|-------------|
+| `print-admin-token` | Print the bootstrap admin token path and value |
+| `print-admin-token --raw` | Print only the token string (for scripting) |
+| `rotate-key` | Rotate the signing key, keep old key for validation, mint a new admin token |
+| `mint api` | Mint an API token via the running server's HTTP API |
+| `mint moq` | Mint a MoQ/WebTransport token via the running server's HTTP API |
+
+```bash
+skit auth print-admin-token
+skit auth print-admin-token --raw
+
+skit auth rotate-key
+
+skit auth mint api --role admin --label "ci" --ttl-secs 3600 --json
+skit auth mint moq --root /session/<id> --subscribe input --publish output --ttl-secs 3600 --json
+```
+
+`mint` subcommands authenticate using `--token` / `--token-file` (or fall back to `${auth.state_dir}/admin.token` if readable on the host).
+
+### `skit mcp`
+
+> Requires the `mcp` feature flag (enabled in official builds).
+
+Starts the MCP (Model Context Protocol) server over STDIO for integration with MCP-compatible clients (e.g. Claude Desktop, Cursor). This provides admin-level access to StreamKit's control plane without HTTP/WebSocket.
+
+```bash
+skit mcp
+skit -c skit.toml mcp
+```
+
+See [MCP Integration](/reference/configuration/#mcp) for configuration details.
+
 ## Repo Shortcuts
 
 From the repo root:
