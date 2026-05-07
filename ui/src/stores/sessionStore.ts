@@ -8,7 +8,6 @@ import type { Connection, Node, Pipeline, NodeState } from '@/types/types';
 
 interface SessionData {
   pipeline: Pipeline | null;
-  nodeStates: Record<string, NodeState>;
   nodeViewData: Record<string, unknown>;
   isConnected: boolean;
 }
@@ -17,7 +16,6 @@ interface SessionStore {
   sessions: Map<string, SessionData>;
 
   // Actions
-  updateNodeState: (sessionId: string, nodeId: string, state: NodeState) => void;
   updateNodeViewData: (sessionId: string, nodeId: string, data: unknown) => void;
   updateRuntimeSchema: (sessionId: string, nodeId: string, schema: unknown) => void;
   setPipeline: (sessionId: string, pipeline: Pipeline) => void;
@@ -34,32 +32,10 @@ interface SessionStore {
   initSession: (sessionId: string, connected: boolean) => void;
   clearSession: (sessionId: string) => void;
   getSession: (sessionId: string) => SessionData | undefined;
-
-  // Batch actions — apply multiple updates in a single set() call to reduce
-  // the number of store notifications and subscriber re-renders.
-  batchUpdateNodeStates: (sessionId: string, updates: Record<string, NodeState>) => void;
-
-  // Multi-session batch: merge node states for multiple sessions in a single
-  // set() call.  Used by the RAF-based WebSocket flush so that all updates
-  // from one animation frame produce exactly one store mutation.
-  batchUpdateNodeStatesMulti: (stateUpdates: Map<string, Record<string, NodeState>>) => void;
 }
 
 export const useSessionStore = create<SessionStore>((set, get) => ({
   sessions: new Map(),
-
-  updateNodeState: (sessionId, nodeId, state) =>
-    set((prev) => {
-      const session = prev.sessions.get(sessionId);
-      if (!session) return prev; // Ignore updates for unknown/destroyed sessions
-
-      const newSessions = new Map(prev.sessions);
-      newSessions.set(sessionId, {
-        ...session,
-        nodeStates: { ...session.nodeStates, [nodeId]: state },
-      });
-      return { sessions: newSessions };
-    }),
 
   updateNodeViewData: (sessionId, nodeId, data) =>
     set((prev) => {
@@ -95,16 +71,6 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       const session = prev.sessions.get(sessionId);
       const newSessions = new Map(prev.sessions);
 
-      // Extract initial node states from pipeline
-      const nodeStates: Record<string, NodeState> = {};
-      if (pipeline.nodes) {
-        Object.entries(pipeline.nodes).forEach(([nodeId, node]) => {
-          if (node.state) {
-            nodeStates[nodeId] = node.state;
-          }
-        });
-      }
-
       // Extract view data snapshot (e.g. compositor resolved layout) so
       // useServerLayoutSync finds it immediately on mount.
       const incomingViewData =
@@ -114,7 +80,6 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
 
       newSessions.set(sessionId, {
         pipeline,
-        nodeStates: session ? { ...session.nodeStates, ...nodeStates } : nodeStates,
         nodeViewData: { ...(session?.nodeViewData ?? {}), ...incomingViewData },
         isConnected: session?.isConnected ?? false,
       });
@@ -130,17 +95,19 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       const existingNode = session.pipeline.nodes[nodeId];
       const existingParams = existingNode?.params;
 
-      // Type guard: merge params only if both are objects
-      const mergedParams =
+      let mergedParams: unknown;
+      if (
         existingParams &&
         typeof existingParams === 'object' &&
         !Array.isArray(existingParams) &&
-        typeof params === 'object' &&
-        !Array.isArray(params)
-          ? { ...existingParams, ...params }
-          : params;
+        existingParams !== null
+      ) {
+        mergedParams = { ...(existingParams as Record<string, unknown>), ...params };
+      } else {
+        mergedParams = params;
+      }
 
-      const updatedPipeline: Pipeline = {
+      const newPipeline: Pipeline = {
         ...session.pipeline,
         nodes: {
           ...session.pipeline.nodes,
@@ -151,10 +118,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
         },
       };
 
-      newSessions.set(sessionId, {
-        ...session,
-        pipeline: updatedPipeline,
-      });
+      newSessions.set(sessionId, { ...session, pipeline: newPipeline });
       return { sessions: newSessions };
     }),
 
@@ -185,9 +149,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       const session = prev.sessions.get(sessionId);
       if (!session || !session.pipeline) return prev;
 
-      const remainingNodes = Object.fromEntries(
-        Object.entries(session.pipeline.nodes).filter(([id]) => id !== nodeId)
-      ) as typeof session.pipeline.nodes;
+      const { [nodeId]: _, ...remainingNodes } = session.pipeline.nodes;
       const remainingConnections = session.pipeline.connections.filter(
         (c) => c.from_node !== nodeId && c.to_node !== nodeId
       );
@@ -268,7 +230,6 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       const newSessions = new Map(prev.sessions);
       newSessions.set(sessionId, {
         pipeline: null,
-        nodeStates: {},
         nodeViewData: {},
         isConnected: connected,
       });
@@ -285,36 +246,4 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   getSession: (sessionId) => {
     return get().sessions.get(sessionId);
   },
-
-  batchUpdateNodeStates: (sessionId, updates) =>
-    set((prev) => {
-      const session = prev.sessions.get(sessionId);
-      if (!session) return prev;
-
-      const newSessions = new Map(prev.sessions);
-      newSessions.set(sessionId, {
-        ...session,
-        nodeStates: { ...session.nodeStates, ...updates },
-      });
-      return { sessions: newSessions };
-    }),
-
-  batchUpdateNodeStatesMulti: (stateUpdates) =>
-    set((prev) => {
-      if (stateUpdates.size === 0) return prev;
-
-      const newSessions = new Map(prev.sessions);
-
-      for (const [sessionId, updates] of stateUpdates) {
-        const session = newSessions.get(sessionId);
-        if (!session) continue;
-
-        newSessions.set(sessionId, {
-          ...session,
-          nodeStates: { ...session.nodeStates, ...updates },
-        });
-      }
-
-      return { sessions: newSessions };
-    }),
 }));

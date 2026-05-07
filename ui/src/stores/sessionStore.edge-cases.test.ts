@@ -9,7 +9,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 
-import type { Pipeline, NodeState } from '@/types/types';
+import type { Pipeline } from '@/types/types';
 
 import { useSessionStore } from './sessionStore';
 
@@ -21,28 +21,6 @@ describe('sessionStore edge cases', () => {
   });
 
   describe('Multi-Session Edge Cases', () => {
-    it('should handle concurrent updates to different sessions', () => {
-      const session1 = 'session-1';
-      const session2 = 'session-2';
-
-      // Initialize sessions first
-      useSessionStore.getState().initSession(session1, false);
-      useSessionStore.getState().initSession(session2, false);
-
-      // Update both sessions concurrently
-      useSessionStore.getState().updateNodeState(session1, 'node-1', 'Running');
-      useSessionStore.getState().updateNodeState(session2, 'node-2', 'Initializing');
-
-      const s1 = useSessionStore.getState().getSession(session1);
-      const s2 = useSessionStore.getState().getSession(session2);
-
-      expect(s1?.nodeStates['node-1']).toBe('Running');
-      expect(s2?.nodeStates['node-2']).toBe('Initializing');
-      // Ensure sessions are isolated
-      expect(s1?.nodeStates['node-2']).toBeUndefined();
-      expect(s2?.nodeStates['node-1']).toBeUndefined();
-    });
-
     it('should maintain session isolation when updating pipelines', () => {
       const session1 = 'session-1';
       const session2 = 'session-2';
@@ -73,24 +51,6 @@ describe('sessionStore edge cases', () => {
       expect(s1?.pipeline?.nodes['node-2']).toBeUndefined();
       expect(s2?.pipeline?.nodes['node-2']).toBeDefined();
       expect(s2?.pipeline?.nodes['node-1']).toBeUndefined();
-    });
-
-    it('should handle rapid state updates to the same node', () => {
-      const nodeId = 'node-1';
-      const states: NodeState[] = [
-        'Initializing',
-        'Running',
-        { Degraded: { reason: 'test degradation', details: null } },
-        'Running',
-      ];
-
-      useSessionStore.getState().initSession(TEST_SESSION_ID, false);
-      states.forEach((state) => {
-        useSessionStore.getState().updateNodeState(TEST_SESSION_ID, nodeId, state);
-      });
-
-      const session = useSessionStore.getState().getSession(TEST_SESSION_ID);
-      expect(session?.nodeStates[nodeId]).toBe('Running'); // Last update wins
     });
   });
 

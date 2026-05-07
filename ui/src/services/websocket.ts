@@ -308,10 +308,6 @@ export class WebSocketService {
   private flushBatchedUpdates(): void {
     this.batchFlushRafId = null;
 
-    // Convert pending Maps to Records and flush everything.  Jotai atoms
-    // receive per-node updates (node components subscribe directly);
-    // the Zustand store receives a single batchUpdateNodeStatesMulti
-    // call so useNodeStatesSubscription can patch edge alerts.
     const stateUpdates = new Map<string, Record<string, NodeState>>();
     for (const [sessionId, updates] of this.pendingNodeStates) {
       stateUpdates.set(sessionId, Object.fromEntries(updates));
@@ -325,15 +321,8 @@ export class WebSocketService {
     this.pendingNodeStats.clear();
 
     if (stateUpdates.size > 0 || statsUpdates.size > 0) {
-      // Write to Jotai atoms (per-node, fine-grained reactivity)
       batchWriteNodeStates(stateUpdates);
       batchWriteNodeStats(statsUpdates);
-
-      // Keep Zustand nodeStates write for useNodeStatesSubscription which
-      // subscribes to the store to patch ReactFlow edge alerts.
-      if (stateUpdates.size > 0) {
-        useSessionStore.getState().batchUpdateNodeStatesMulti(stateUpdates);
-      }
     }
   }
 
