@@ -862,15 +862,26 @@ struct PluginLogMetadata {
 }
 
 static PLUGIN_LOG_METADATA_CACHE: std::sync::LazyLock<
-    std::sync::Mutex<
+    std::sync::RwLock<
         std::collections::HashMap<(String, tracing::Level), &'static PluginLogMetadata>,
     >,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+> = std::sync::LazyLock::new(|| std::sync::RwLock::new(std::collections::HashMap::new()));
 
 fn plugin_log_static_metadata(target: &str, level: tracing::Level) -> &'static PluginLogMetadata {
-    let mut cache =
-        PLUGIN_LOG_METADATA_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let key = (target.to_string(), level);
+
+    {
+        let cache = PLUGIN_LOG_METADATA_CACHE
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = cache.get(&key) {
+            return entry;
+        }
+    }
+
+    let mut cache = PLUGIN_LOG_METADATA_CACHE
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     cache.entry(key).or_insert_with_key(|(target, level)| {
         let target: &'static str = Box::leak(target.clone().into_boxed_str());
         let callsite: &'static PluginLogCallsite = Box::leak(Box::new(PluginLogCallsite::new()));

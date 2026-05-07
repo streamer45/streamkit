@@ -68,8 +68,7 @@ use cros_codecs::video_frame::{ReadMapping, VideoFrame as CrosVideoFrame, WriteM
 use cros_codecs::{Fourcc as CrosFourcc, FrameLayout, PlaneLayout, Resolution as CrosResolution};
 
 use super::encoder_trait::{self, EncodedPacket, EncoderNodeRunner, StandardVideoEncoder};
-use super::HwAccelMode;
-use super::AV1_CONTENT_TYPE;
+use super::{HwAccelMode, AV1_CONTENT_TYPE, EAGAIN_YIELD_THRESHOLD, MAX_EAGAIN_EMPTY_RETRIES};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -80,15 +79,6 @@ const DEFAULT_RENDER_DEVICE: &str = "/dev/dri/renderD128";
 
 /// AV1 superblock size — coded resolution must be aligned to this.
 const AV1_SB_SIZE: u32 = 64;
-
-/// Maximum number of consecutive retries when the decoder returns
-/// `CheckEvents` or `NotEnoughOutputBuffers` without making progress.
-/// Matches the established pattern in `av1.rs` and `dav1d.rs`.
-const MAX_EAGAIN_EMPTY_RETRIES: u32 = 1000;
-
-/// After this many retries, switch from `thread::yield_now()` to
-/// `thread::sleep(1ms)` to avoid a tight spin-loop.
-const EAGAIN_YIELD_THRESHOLD: u32 = 10;
 
 /// Default constant-quality parameter (0–255, lower = better quality).
 const DEFAULT_QUALITY: u32 = 128;

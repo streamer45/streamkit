@@ -34,7 +34,7 @@ use streamkit_core::{
 };
 use tokio::sync::mpsc;
 
-use super::AV1_CONTENT_TYPE;
+use super::{AV1_CONTENT_TYPE, EAGAIN_YIELD_THRESHOLD, MAX_EAGAIN_EMPTY_RETRIES};
 
 /// Default to constant-quality mode (quantizer-based).  In bitrate mode
 /// rav1e buffers 10+ frames for rate-control look-ahead before producing
@@ -52,18 +52,6 @@ const AV1_DEFAULT_SPEED: u32 = 10;
 /// rav1d / dav1d error code for EAGAIN ("input not consumed, drain pictures
 /// first").  Matches libc `EAGAIN` on Linux.
 const DAV1D_EAGAIN: i32 = -11;
-
-/// Maximum number of consecutive EAGAIN retries in `decode_packet` where
-/// `drain_pictures` returns no frames.  Prevents an infinite busy-loop if the
-/// decoder gets into a pathological state, which would block the
-/// `spawn_blocking` thread and hang the tokio runtime on shutdown.
-const MAX_EAGAIN_EMPTY_RETRIES: u32 = 1000;
-
-/// After this many consecutive empty EAGAIN retries, switch from
-/// `thread::yield_now()` to `thread::sleep(1ms)` to avoid a tight
-/// spin-loop on lightly-loaded systems where `yield_now` returns
-/// immediately.
-const EAGAIN_YIELD_THRESHOLD: u32 = 10;
 
 // ---------------------------------------------------------------------------
 // AV1 OBU validation

@@ -124,7 +124,7 @@ async fn ws_request(
     }
 }
 
-async fn ws_send_fire_and_forget(
+async fn ws_send_and_close(
     server_url: &str,
     payload: RequestPayload,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -791,7 +791,7 @@ pub async fn control_tune_async(
     params.insert(param.to_string(), param_value);
     let update_params = serde_json::Value::Object(params);
 
-    ws_send_fire_and_forget(
+    ws_send_and_close(
         server_url,
         RequestPayload::TuneNodeAsync {
             session_id: session_id.to_string(),
