@@ -149,7 +149,9 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       const session = prev.sessions.get(sessionId);
       if (!session || !session.pipeline) return prev;
 
-      const { [nodeId]: _, ...remainingNodes } = session.pipeline.nodes;
+      const remainingNodes = Object.fromEntries(
+        Object.entries(session.pipeline.nodes).filter(([id]) => id !== nodeId)
+      ) as typeof session.pipeline.nodes;
       const remainingConnections = session.pipeline.connections.filter(
         (c) => c.from_node !== nodeId && c.to_node !== nodeId
       );
