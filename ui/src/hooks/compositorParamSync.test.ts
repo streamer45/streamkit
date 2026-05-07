@@ -15,13 +15,16 @@
  *   - Image overlay config (assetPath) propagates from remote
  */
 
+import { act } from '@testing-library/react';
 import { createStore } from 'jotai';
 import { describe, it, expect, vi } from 'vitest';
 
+import { measureHookRenders } from '@/test/perf';
 import { sessionStore, nodeParamsAtom, nodeKey, writeNodeParams } from '@/stores/sessionAtoms';
 
 import { setLayersInStore } from './compositorAtoms';
 import type { LayerState, TextOverlayState, ImageOverlayState } from './compositorLayerParsers';
+import { useParamAtomSync } from './compositorParamSync';
 import {
   mergeRemoteLayerParams,
   mergeRemoteTextParams,
@@ -284,6 +287,56 @@ describe('useParamAtomSync integration', () => {
     const atomParams = sessionStore.get(nodeParamsAtom(key));
     expect(atomParams).toBeDefined();
     expect((atomParams.layers as Record<string, Record<string, unknown>>)?.in_0?.opacity).toBe(0.5);
+
+    // Clean up
+    sessionStore.set(nodeParamsAtom(key), {});
+  });
+
+  it('atom writes do not cause hook host re-renders (non-React subscription)', () => {
+    const sessionId = 'render-test';
+    const nodeId = 'compositor-render';
+    const key = nodeKey(sessionId, nodeId);
+    const compositorStore = createStore();
+    const dragRef = { current: null };
+
+    setLayersInStore(compositorStore, [makeLayer('in_0')]);
+
+    // Seed the atom so the hook has something to subscribe to
+    sessionStore.set(nodeParamsAtom(key), {
+      width: 1280,
+      height: 720,
+      layers: { in_0: { opacity: 1.0, z_index: 0 } },
+      text_overlays: [],
+      image_overlays: [],
+    });
+
+    const result = measureHookRenders(
+      () => useParamAtomSync(sessionId, nodeId, compositorStore, 1280, 720, dragRef),
+      {
+        initialProps: {},
+        scenario: () => {
+          // 10 remote param writes — should NOT re-render the hook host
+          for (let i = 0; i < 10; i++) {
+            act(() => {
+              writeNodeParams(
+                nodeId,
+                {
+                  width: 1280,
+                  height: 720,
+                  layers: { in_0: { opacity: 0.5 + i * 0.04, z_index: 0 } },
+                  text_overlays: [],
+                  image_overlays: [],
+                },
+                sessionId
+              );
+            });
+          }
+        },
+      }
+    );
+
+    // Only the initial mount render — no re-renders from atom writes
+    expect(result.meanRenderCount).toBeLessThanOrEqual(1);
 
     // Clean up
     sessionStore.set(nodeParamsAtom(key), {});

@@ -3,22 +3,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Remote param synchronisation for the compositor.
+ * Remote param sync for the compositor — subscribes to `nodeParamsAtom` in
+ * the default Jotai store via `defaultSessionStore.sub()` (non-React) and
+ * merges config fields into the per-instance compositor store.
  *
- * Subscribes to the per-node `nodeParamsAtom` in the default (provider-less)
- * Jotai store and merges config-driven fields (opacity, rotation, z_index,
- * mirror, crop, text content, image asset, etc.) into the compositor's
- * per-instance Jotai store.
- *
- * Geometry (x, y, width, height) is NOT taken from params — that is owned
- * by `useServerLayoutSync` which reads server-resolved positions from the
- * view-data atom.  Client-only fields (visible, measuredTextWidth/Height,
- * serverOnly) are preserved from existing state.
- *
- * Uses `defaultSessionStore.sub()` instead of `useAtomValue` so the
- * subscription doesn't trigger React re-renders at the CompositorNode
- * level.  Only the per-layer/overlay atoms that actually changed will
- * wake up their subscriber components (VideoLayer, OpacityControl, etc.).
+ * Geometry and client-only fields (visible, serverOnly, measuredText*)
+ * are preserved — see `compositorServerSync` for geometry ownership.
  */
 
 import { useEffect } from 'react';
@@ -41,7 +31,8 @@ import {
 import { parseLayers, parseTextOverlays, parseImageOverlays } from './compositorLayerParsers';
 import type { LayerState, TextOverlayState, ImageOverlayState } from './compositorLayerParsers';
 
-// ── Pure merge helpers ──────────────────────────────────────────────────────
+// Unlike mergeOverlayState (props path), these skip pickChangedConfigFields
+// because atom writes are already deduplicated by the WS handler's rev check.
 
 export function mergeRemoteLayerParams(current: LayerState[], parsed: LayerState[]): LayerState[] {
   const merged: LayerState[] = parsed.map((p) => {
@@ -54,6 +45,7 @@ export function mergeRemoteLayerParams(current: LayerState[], parsed: LayerState
       width: existing.width,
       height: existing.height,
       visible: existing.visible,
+      // visible is client-only — hidden layers keep stored opacity
       opacity: existing.visible ? p.opacity : existing.opacity,
       serverOnly: existing.serverOnly,
     };
@@ -79,6 +71,7 @@ export function mergeRemoteTextParams(
       width: existing.width,
       height: existing.height,
       visible: existing.visible,
+      // visible is client-only — hidden overlays keep stored opacity
       opacity: existing.visible ? p.opacity : existing.opacity,
       measuredTextWidth: existing.measuredTextWidth,
       measuredTextHeight: existing.measuredTextHeight,
@@ -100,6 +93,7 @@ export function mergeRemoteImageParams(
       width: existing.width,
       height: existing.height,
       visible: existing.visible,
+      // visible is client-only — hidden overlays keep stored opacity
       opacity: existing.visible ? p.opacity : existing.opacity,
     };
   });
