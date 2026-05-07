@@ -66,6 +66,7 @@ import type {
   ResizeHandle,
 } from './compositorLayerParsers';
 import { useCompositorOverlays } from './compositorOverlays';
+import { useParamAtomSync } from './compositorParamSync';
 import { useServerLayoutSync } from './compositorServerSync';
 import type { SourceDimsMap } from './compositorServerSync';
 
@@ -412,6 +413,17 @@ export const useCompositorLayers = (
 
   // ── Server-driven layout (Monitor view only) ───────────────────────────
   useServerLayoutSync(sessionId, nodeId, store, dragStateRef, sourceDimsRef, activeInteractionRef);
+
+  // ── Remote param sync (Monitor view only) ─────────────────────────────
+  useParamAtomSync(
+    sessionId,
+    nodeId,
+    store,
+    canvasWidth,
+    canvasHeight,
+    dragStateRef,
+    activeInteractionRef
+  );
 
   // ── Find layer across all types ─────────────────────────────────────────
   const findAnyLayer = useCallback(
