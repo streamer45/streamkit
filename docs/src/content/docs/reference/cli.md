@@ -84,7 +84,7 @@ skit config schema > skit-schema.json
 
 ### `skit auth`
 
-Manage authentication state (offline — reads files directly, does not require a running server except for `mint`).
+Manage authentication state (mostly offline — reads files directly, does not require a running server except for `mint` and `rotate-key`).
 
 | Subcommand | Description |
 |------------|-------------|
@@ -92,7 +92,7 @@ Manage authentication state (offline — reads files directly, does not require 
 | `print-admin-token --raw` | Print only the token string (for scripting) |
 | `rotate-key` | Rotate the signing key, keep old key for validation, mint a new admin token |
 | `mint api` | Mint an API token via the running server's HTTP API |
-| `mint moq` | Mint a MoQ/WebTransport token via the running server's HTTP API |
+| `mint moq` | Mint a MoQ/WebTransport token via the running server's HTTP API (requires `moq` feature) |
 
 ```bash
 skit auth print-admin-token
@@ -117,7 +117,7 @@ skit mcp
 skit -c skit.toml mcp
 ```
 
-See [MCP Integration](/reference/configuration/#mcp) for configuration details.
+The `[mcp]` config section governs the HTTP transport endpoint only; `skit mcp` (STDIO) works regardless of `[mcp].enabled`. See [Configuration](/reference/configuration/#mcp) for HTTP transport settings.
 
 ## Repo Shortcuts
 

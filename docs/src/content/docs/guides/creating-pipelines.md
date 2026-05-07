@@ -96,6 +96,8 @@ In the DAG format, use the object syntax for `needs` to specify a mode:
         mode: best_effort          # best-effort
 ```
 
+For a worked example using `best_effort` to branch telemetry off a main pipeline, see the [Observability guide](/guides/observability/#session-telemetry-ui-timeline).
+
 The WebSocket API's `Connect` action also accepts a `mode` field. See the [WebSocket API reference](/reference/websocket-api/) for details.
 
 ## Fanout, Backpressure, and Buffers
