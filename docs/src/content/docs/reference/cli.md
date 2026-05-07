@@ -108,7 +108,7 @@ skit auth mint moq --root /session/<id> --subscribe input --publish output --ttl
 
 ### `skit mcp`
 
-> Requires the `mcp` feature flag (enabled in official builds).
+> Requires the `mcp` feature flag.
 
 Starts the MCP (Model Context Protocol) server over STDIO for integration with MCP-compatible clients (e.g. Claude Desktop, Cursor). This provides admin-level access to StreamKit's control plane without HTTP/WebSocket.
 

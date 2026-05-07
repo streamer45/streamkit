@@ -117,10 +117,21 @@ cp samples/audio/system/sample.ogg ./sample.ogg
 
 Run the oneshot pipeline:
 
+**Docker** (auth is enabled by default):
+
 ```bash
 TOKEN=$(docker exec streamkit skit auth print-admin-token --raw)
 curl -X POST http://localhost:4545/api/v1/process \
   -H "Authorization: Bearer $TOKEN" \
+  -F config=@double_volume.yml \
+  -F media=@sample.ogg \
+  --output out.ogg
+```
+
+**Source build on localhost** (auth is disabled by default on loopback):
+
+```bash
+curl -X POST http://localhost:4545/api/v1/process \
   -F config=@double_volume.yml \
   -F media=@sample.ogg \
   --output out.ogg
