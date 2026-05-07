@@ -9,6 +9,9 @@ description: "Synthetic output node for oneshot HTTP pipelines. Sends binary dat
 
 Synthetic output node for oneshot HTTP pipelines. Sends binary data as the HTTP response body.
 
+> [!NOTE]
+> This is a **synthetic node** — it has no runtime implementation. The oneshot engine collects its input and streams it back as the HTTP response. It can only be used in `mode: oneshot` pipelines (via `POST /api/v1/process`), not in dynamic sessions.
+
 ## Categories
 - `transport`
 - `oneshot`

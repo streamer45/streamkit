@@ -27,6 +27,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 > [!CAUTION]
 > StreamKit is pre-`1.0` (`v0.5.0`). Breaking changes may still occur and the security model is still evolving.
 > If you expose a StreamKit instance to other machines, read the [Security](/guides/security/) guide first.
+> If upgrading from an earlier version, check the [release notes](https://github.com/streamer45/streamkit/releases) for breaking changes.
 
 ## A quick look
 
@@ -117,7 +118,7 @@ StreamKit supports two pipeline execution modes:
 
 Dynamic sessions use MoQ (Media over QUIC) over WebTransport (QUIC/UDP) for real-time media transport. This is why the Docker example publishes both TCP and UDP on port `4545`.
 
-Today, WebSocket is the control plane (sessions, edits, and telemetry). WebSocket transport nodes are on the roadmap; in the near term, non-media streams may also use MoQ.
+WebSocket is currently the control plane (sessions, graph edits, and telemetry). WebSocket transport nodes for media are being considered for a future release.
 
 See:
 - [HTTP API](/reference/http-api/)

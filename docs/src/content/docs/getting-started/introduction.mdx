@@ -32,6 +32,18 @@ StreamKit is built for developers who need to process real-time media — whethe
 - **Content analysis** — VAD for speech detection, keyword spotting, or custom safety filters
 - **Your idea** — Add your own node or plugin and compose it into a pipeline
 
+## Key Concepts
+
+| Term | Definition |
+|------|-----------|
+| **Node** | A single processing unit (decode, encode, mix, transform, etc.). Nodes have typed input/output **pins**. |
+| **Pipeline** | A directed graph (DAG) of connected nodes, defined in YAML or the visual editor. |
+| **Oneshot** | A pipeline that processes a single HTTP request and returns a response. Stateless batch mode. |
+| **Dynamic session** | A long-running pipeline managed by the server. Can be reconfigured at runtime. |
+| **Pin** | A typed input or output port on a node. Connections between pins carry **packets** (audio frames, video frames, text, JSON, etc.). |
+| **Plugin** | An extension that adds new node types. Can be native (C ABI `.so`) or WASM. |
+| **MoQ** | Media over QUIC — the real-time transport protocol used for streaming sessions. |
+
 ## How It Works (High-Level)
 
 A pipeline is a graph of processing nodes. Each node runs concurrently and communicates through buffered channels. Outputs can **fan out** to multiple consumers, and connections can be **reliable** (backpressure) or **best-effort** (drop on overload). Pipelines are type-checked before they run, and dynamic sessions can be reconfigured at runtime via the control API.
