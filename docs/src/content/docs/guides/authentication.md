@@ -116,18 +116,14 @@ Admin instances can mint additional (time-bound) tokens via:
 
 ## MoQ/WebTransport tokens
 
-MoQ/WebTransport auth uses a separate JWT audience and is passed as a `?jwt=` query parameter on the gateway URL. Create one via `POST /api/v1/auth/moq-tokens` and connect with:
+MoQ/WebTransport streaming uses a separate JWT audience (`skit-moq`), passed as a `?jwt=` query parameter on the gateway URL. The Web UI handles this automatically; you only need MoQ tokens if you're building a custom MoQ client.
+
+Create one via `POST /api/v1/auth/moq-tokens` (or the CLI: `skit auth mint moq ...`) and connect with:
 
 `https://<host>:<port>/moq?...&jwt=<token>`
 
-The token encodes a root path and publish/subscribe permissions (`put`/`get` in the JWT claims), and StreamKit enforces them before accepting the connection.
-
-### URL helper from `/api/v1/auth/moq-tokens`
-
-The MoQ mint endpoint returns a `url_template` helper:
-
-- If `[server].moq_gateway_url` is configured, `url_template` is a full absolute gateway URL with `?jwt=` appended.
-- Otherwise, `url_template` is a **relative path** like `/<root>?jwt=<token>`; append it to your gateway base URL.
+> [!TIP]
+> The mint endpoint returns a `url_template` field. If `[server].moq_gateway_url` is configured, it's a full absolute URL with `?jwt=` appended; otherwise it's a relative path you append to your gateway base URL.
 
 ## CORS + cookies
 

@@ -23,6 +23,25 @@ To produce telemetry:
 - Use `core::script`’s `telemetry.emit/startSpan/endSpan` API for custom events and spans.
 - Enable native plugin telemetry where available (e.g. `plugin::native::whisper`’s `emit_vad_events: true`).
 
+Example: emit transcription telemetry without stalling the main pipeline:
+
+```yaml
+nodes:
+  whisper_stt:
+    kind: plugin::native::whisper
+    params:
+      emit_vad_events: true
+
+  stt_telemetry:
+    kind: core::telemetry_out
+    params:
+      packet_types: ["Transcription"]
+      max_events_per_sec: 20
+    needs:
+      node: whisper_stt
+      mode: best_effort
+```
+
 ## Metrics (OTLP)
 
 Metrics export is controlled by:

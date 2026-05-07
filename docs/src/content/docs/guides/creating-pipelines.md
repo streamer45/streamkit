@@ -82,62 +82,10 @@ Connections between nodes support two modes that control backpressure behavior:
 
 | Mode | Description | Use Case |
 |------|-------------|----------|
-| `reliable` (default) | Synchronized backpressure - upstream waits for slow consumers | Main data flow, audio/video streams |
+| `reliable` (default) | Synchronized backpressure — upstream waits for slow consumers | Main data flow, audio/video streams |
 | `best_effort` | Drops packets when downstream buffer is full | Observers, metrics taps, debug outputs |
 
-### When to Use Each Mode
-
-**Reliable (default)**: Use for any connection where packet loss is unacceptable. The entire pipeline will slow down to match the slowest consumer. This is the right choice for audio/video streams where gaps would be noticeable.
-
-**Best-effort**: Use for auxiliary outputs that shouldn't stall the main pipeline. Examples:
-
-- Metrics collectors
-- Debug loggers
-- UI visualization taps
-- Optional analytics
-
-### Specifying Connection Mode
-
 In the DAG format, use the object syntax for `needs` to specify a mode:
-
-```yaml
-nodes:
-  moq_peer:
-    kind: transport::moq::peer
-    params:
-      gateway_path: /moq
-      input_broadcasts: [input]
-      output_broadcast: output
-      allow_reconnect: true
-    needs: opus_encoder
-
-  gain:
-    kind: audio::gain
-    params:
-      gain: 1.0
-    needs: opus_decoder
-
-  # Telemetry side-branch - best-effort (won't stall pipeline)
-  telemetry:
-    kind: core::telemetry_out
-    params:
-      packet_types: ["Binary"]
-      max_events_per_sec: 5
-    needs:
-      node: gain
-      mode: best_effort
-
-  opus_decoder:
-    kind: audio::opus::decoder
-    needs:
-      in: moq_peer.audio/data
-
-  opus_encoder:
-    kind: audio::opus::encoder
-    needs: gain
-```
-
-You can mix simple strings and objects in a list:
 
 ```yaml
   mixer:
@@ -148,19 +96,7 @@ You can mix simple strings and objects in a list:
         mode: best_effort          # best-effort
 ```
 
-The WebSocket API's `Connect` action also accepts the `mode` field:
-
-```json
-{
-  "action": "connect",
-  "session_id": "sess_xyz",
-  "from_node": "gain1",
-  "from_pin": "out",
-  "to_node": "metrics",
-  "to_pin": "in",
-  "mode": "best_effort"
-}
-```
+The WebSocket API's `Connect` action also accepts a `mode` field. See the [WebSocket API reference](/reference/websocket-api/) for details.
 
 ## Fanout, Backpressure, and Buffers
 

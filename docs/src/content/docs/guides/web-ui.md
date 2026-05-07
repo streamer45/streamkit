@@ -48,7 +48,7 @@ Design View is the default route and is split into three panes:
   - **Nodes**: the node palette/library (built-ins + loaded plugins).
   - **Plugins**: view/manage loaded plugins and marketplace installs (availability depends on your role/config).
   - **Samples**: example pipelines you can load as a starting point.
-  - **Fragments**: reusable building blocks you can drop into a graph.
+  - **Fragments**: reusable mini-graphs (pre-wired sets of nodes) you can drop into a larger pipeline to share common patterns.
 - **Center pane (canvas)**: a React Flow editor where you:
   - Drag and drop nodes onto the canvas.
   - Connect nodes by drawing edges between ports.
@@ -56,10 +56,6 @@ Design View is the default route and is split into three panes:
 - **Right pane**:
   - **YAML**: the pipeline definition for the canvas (two-way synced).
   - **Inspector** (when a node is selected): inspect/tune that node’s parameters.
-
-### What is a Fragment?
-
-A fragment is a reusable mini-graph (a small, pre-wired set of nodes) that you can insert into a larger pipeline. Use fragments to share common patterns (e.g. “input → preprocess → STT”) without rebuilding them by hand.
 
 ## Monitor View
 
@@ -103,37 +99,6 @@ Then open `http://localhost:3045/stream`. A reliable first run is:
 5. Wait for **Relay: connected** and **Watch: live**, then verify the color-bars canvas is rendering.
 
 No HTTPS/TLS setup is required for local MoQ testing with the Vite dev UI.
-
-## Telemetry Timeline
-
-StreamKit also supports a per-session **telemetry bus** for timeline-style events (VAD start/end, transcription previews, LLM latency spans, etc.).
-
-Telemetry is shown in the Monitor/Stream views when events are present. Events can come from:
-
-- `core::script` (via the `telemetry.*` JavaScript API)
-- Native plugins that emit out-of-band telemetry (e.g. `plugin::native::whisper` with `emit_vad_events: true`)
-- Packet→telemetry adapters:
-  - `core::telemetry_out` (terminal side-branch)
-  - `core::telemetry_tap` (passthrough tap)
-
-Example: emit transcription telemetry without stalling the main pipeline:
-
-```yaml
-nodes:
-  whisper_stt:
-    kind: plugin::native::whisper
-    params:
-      emit_vad_events: true
-
-  stt_telemetry:
-    kind: core::telemetry_out
-    params:
-      packet_types: ["Transcription"]
-      max_events_per_sec: 20
-    needs:
-      node: whisper_stt
-      mode: best_effort
-```
 
 ## Exporting Pipelines
 

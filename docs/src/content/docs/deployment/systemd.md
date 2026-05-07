@@ -12,7 +12,7 @@ This install path is a middle-ground between Docker and "build from source": you
 On a systemd-based Linux host:
 
 ```bash
-export TAG=v0.2.0 # replace with the latest release tag
+export TAG=v0.5.0 # replace with the latest release tag
 curl -fsSL "https://raw.githubusercontent.com/streamer45/streamkit/${TAG}/deploy/systemd/install.sh" -o streamkit-install.sh
 chmod +x streamkit-install.sh
 sudo ./streamkit-install.sh --tag "${TAG}"
