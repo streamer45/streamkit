@@ -19,7 +19,7 @@ Each GitHub Release includes a Linux x86_64 tarball containing both binaries:
 Install steps:
 
 ```bash
-TAG=v0.2.0 # replace with the latest release tag
+TAG=v0.5.0 # replace with the latest release tag
 curl -LO https://github.com/streamer45/streamkit/releases/download/${TAG}/streamkit-${TAG}-linux-x64.tar.gz
 curl -LO https://github.com/streamer45/streamkit/releases/download/${TAG}/streamkit-${TAG}-linux-x64.tar.gz.sha256
 sha256sum -c streamkit-${TAG}-linux-x64.tar.gz.sha256
@@ -81,6 +81,43 @@ Prints the JSON schema for `skit.toml` to stdout (useful for editor autocomplete
 ```bash
 skit config schema > skit-schema.json
 ```
+
+### `skit auth`
+
+Manage authentication state (mostly offline — reads files directly, does not require a running server except for `mint` and `rotate-key`).
+
+| Subcommand | Description |
+|------------|-------------|
+| `print-admin-token` | Print the bootstrap admin token path and value |
+| `print-admin-token --raw` | Print only the token string (for scripting) |
+| `rotate-key` | Rotate the signing key, keep old key for validation, mint a new admin token |
+| `mint api` | Mint an API token via the running server's HTTP API |
+| `mint moq` | Mint a MoQ/WebTransport token via the running server's HTTP API (requires `moq` feature) |
+
+```bash
+skit auth print-admin-token
+skit auth print-admin-token --raw
+
+skit auth rotate-key
+
+skit auth mint api --role admin --label "ci" --ttl-secs 3600 --json
+skit auth mint moq --root /session/<id> --subscribe input --publish output --ttl-secs 3600 --json
+```
+
+`mint` subcommands authenticate using `--token` / `--token-file` (or fall back to `${auth.state_dir}/admin.token` if readable on the host).
+
+### `skit mcp`
+
+> Requires the `mcp` feature flag.
+
+Starts the MCP (Model Context Protocol) server over STDIO for integration with MCP-compatible clients (e.g. Claude Desktop, Cursor). This provides admin-level access to StreamKit's control plane without HTTP/WebSocket.
+
+```bash
+skit mcp
+skit -c skit.toml mcp
+```
+
+The `[mcp]` config section governs the HTTP transport endpoint only; `skit mcp` (STDIO) works regardless of `[mcp].enabled`. See [Configuration](/reference/configuration/#mcp) for HTTP transport settings.
 
 ## Repo Shortcuts
 

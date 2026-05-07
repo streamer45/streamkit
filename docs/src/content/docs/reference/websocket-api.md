@@ -110,7 +110,24 @@ Response `action` values include:
 
 ## Events
 
-Events are broadcast to all connected clients as:
+Events are broadcast to all connected clients. All event payloads are tagged by `event` (not `action`).
+
+| Event | Description |
+|-------|-------------|
+| `nodestatechanged` | A node's state changed (e.g. `Running`, `Ready`, `Recovering`) |
+| `nodestatsupdated` | Throttled stats update (packets processed / discarded / errored) |
+| `nodeparamschanged` | A node's parameters were updated at runtime |
+| `sessioncreated` | A new session was created |
+| `sessiondestroyed` | A session was destroyed |
+| `nodeadded` | A node was added to a session graph |
+| `noderemoved` | A node was removed from a session graph |
+| `connectionadded` | An edge was added between two nodes |
+| `connectionremoved` | An edge was removed between two nodes |
+| `nodeviewdataupdated` | Node-specific view data changed (e.g. compositor resolved layout) |
+| `nodetelemetry` | Out-of-band telemetry from a node (see below) |
+| `runtimeschemasupdated` | A node's runtime param schema was discovered after init |
+
+Example:
 
 ```json
 {
@@ -128,9 +145,6 @@ Events are broadcast to all connected clients as:
 Notes:
 - For simple states, `state` is a string (e.g. `"Running"`, `"Ready"`).
 - For states with additional data, `state` is an object keyed by the state name (e.g. `{ "Recovering": { "reason": "...", "details": null } }`).
-
-> [!NOTE]
-> Event payloads are tagged by `event` (not `action`).
 
 ### Telemetry events (`nodetelemetry`)
 

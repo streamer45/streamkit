@@ -23,6 +23,28 @@ StreamKit has three major pieces:
 - **Plugins**: native (in-process C ABI) and WASM (sandboxed Component Model) — e.g. Slint for dynamic UI overlays, Whisper/SenseVoice for STT, Kokoro/Piper for TTS.
 - **Script node**: sandboxed JavaScript (QuickJS) for lightweight integration and text processing.
 
+## Crate layout
+
+| Crate | Path | Purpose |
+|-------|------|---------|
+| `streamkit-server` | `apps/skit/` | Server binary — HTTP/WS handlers, config, auth, plugins, MCP |
+| `streamkit-client` | `apps/skit-cli/` | CLI client binary (`skit-cli`) |
+| `streamkit-core` | `crates/core/` | Shared traits/types — `ProcessorNode`, `Pin`, `Packet`, `NodeRegistry` |
+| `streamkit-engine` | `crates/engine/` | Pipeline executor — graph builder, oneshot engine, dynamic actor |
+| `streamkit-nodes` | `crates/nodes/` | Built-in nodes (`audio::`, `video::`, `transport::`, `core::`, `containers::`) |
+| `streamkit-api` | `crates/api/` | YAML pipeline parsing, WebSocket protocol, TS type generation |
+| `streamkit-plugin-native` | `crates/plugin-native/` | Native plugin host adapter (C ABI / FFI) |
+| `streamkit-plugin-wasm` | `crates/plugin-wasm/` | WASM plugin host adapter (Component Model) |
+
+The Web UI (`ui/`) is a React 19 + TypeScript app built with Vite and Bun. Official plugins live under `plugins/native/`.
+
+## Data flow
+
+1. A pipeline YAML is parsed by the `api` crate into a validated graph.
+2. The `engine` crate compiles the graph into concrete `ProcessorNode` instances (from `core`) and connects them via bounded async channels.
+3. Each node runs as an independent async task. Packets flow through connections, with backpressure controlled by channel bounds.
+4. For dynamic sessions, the engine actor handles runtime graph mutations (add/remove nodes, connect/disconnect) via the WebSocket control API.
+
 Next:
 - [Creating Pipelines](/guides/creating-pipelines/)
 - [HTTP API](/reference/http-api/)

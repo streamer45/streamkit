@@ -235,6 +235,18 @@ Advanced internal buffer configuration for codec and container nodes. **Only mod
 
 See the [Performance Tuning](/guides/performance) guide for when to adjust these values.
 
+## `[mcp]`
+
+Model Context Protocol endpoint configuration (requires `mcp` feature).
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable the embedded MCP endpoint |
+| `endpoint` | string | `/api/v1/mcp` | Streamable HTTP endpoint path (must be under `/api/`) |
+| `allowed_hosts` | string[] | `[]` | Hostnames accepted by the MCP transport's `Host` header check (DNS rebinding protection). When empty, the check is disabled |
+
+For STDIO transport, use `skit mcp` (see [CLI Reference](/reference/cli/#skit-mcp)).
+
 ## `[log]`
 
 | Option | Type | Default | Description |

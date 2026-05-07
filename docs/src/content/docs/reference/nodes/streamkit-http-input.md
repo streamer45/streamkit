@@ -9,6 +9,9 @@ description: "Synthetic input node for oneshot HTTP pipelines. Receives binary d
 
 Synthetic input node for oneshot HTTP pipelines. Receives binary data from the HTTP request body.
 
+> [!NOTE]
+> This is a **synthetic node** — it has no runtime implementation. The oneshot engine replaces it with the actual HTTP request body at execution time. It can only be used in `mode: oneshot` pipelines (via `POST /api/v1/process`), not in dynamic sessions.
+
 ## Categories
 - `transport`
 - `oneshot`
