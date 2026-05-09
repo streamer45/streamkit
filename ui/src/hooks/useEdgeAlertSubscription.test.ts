@@ -2,11 +2,20 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { renderHook, act } from '@testing-library/react';
+import type { Edge } from '@xyflow/react';
+import React from 'react';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 
-import { sessionStore, nodeStateAtom, nodeKey } from '@/stores/sessionAtoms';
+import { sessionStore, nodeStateAtom, nodeKey, clearSessionAtoms } from '@/stores/sessionAtoms';
 import { useSessionStore } from '@/stores/sessionStore';
 import type { Pipeline, NodeState } from '@/types/types';
+import { isRecord } from '@/utils/pipelineGraph';
+
+import type { UseEdgeAlertSubscriptionOptions } from './useEdgeAlertSubscription';
+import { useEdgeAlertSubscription } from './useEdgeAlertSubscription';
+
+const SESSION_ID = 'test-session-edge-alerts';
 
 function makePipeline(nodes: Record<string, { kind: string; state?: NodeState | null }>): Pipeline {
   const mapped: Pipeline['nodes'] = {};
@@ -23,138 +32,209 @@ function makePipeline(nodes: Record<string, { kind: string; state?: NodeState | 
   };
 }
 
-describe('useEdgeAlertSubscription — Jotai atom integration', () => {
-  const SESSION_ID = 'test-session-edge-alerts';
+function makeEdges(): Edge[] {
+  return [
+    {
+      id: 'source-mixer',
+      source: 'source',
+      sourceHandle: 'out',
+      target: 'mixer',
+      targetHandle: 'audio_in',
+    },
+  ];
+}
 
-  beforeEach(() => {
-    useSessionStore.setState({ sessions: new Map() });
-    // Clear atoms from previous tests
-    for (const key of [...nodeStateAtom.getParams()]) {
-      nodeStateAtom.remove(key);
-    }
-  });
-
-  it('should write node states to Jotai atoms via batchWriteNodeStates', async () => {
-    const { batchWriteNodeStates } = await import('@/stores/sessionAtoms');
-
-    const updates = new Map<string, Record<string, NodeState>>();
-    updates.set(SESSION_ID, {
-      source: 'Running',
-      mixer: 'Running',
+function makeOptions(
+  overrides: Partial<UseEdgeAlertSubscriptionOptions> & {
+    pipeline?: Pipeline;
+    edges?: Edge[];
+  } = {}
+): {
+  options: UseEdgeAlertSubscriptionOptions;
+  getEdges: () => Edge[];
+} {
+  const pipeline =
+    overrides.pipeline ??
+    makePipeline({
+      source: { kind: 'core::passthrough' },
+      mixer: { kind: 'core::mixer' },
     });
-    batchWriteNodeStates(updates);
+  let edges = overrides.edges ?? makeEdges();
+  const setEdges: React.Dispatch<React.SetStateAction<Edge[]>> = (updater) => {
+    edges = typeof updater === 'function' ? updater(edges) : updater;
+  };
+  const pipelineRef = { current: pipeline };
 
-    expect(sessionStore.get(nodeStateAtom(nodeKey(SESSION_ID, 'source')))).toBe('Running');
-    expect(sessionStore.get(nodeStateAtom(nodeKey(SESSION_ID, 'mixer')))).toBe('Running');
-  });
+  return {
+    options: {
+      selectedSessionId: overrides.selectedSessionId ?? SESSION_ID,
+      setEdges: overrides.setEdges ?? setEdges,
+      pipelineRef: pipelineRef as React.RefObject<Pipeline | undefined | null>,
+      topoKey: overrides.topoKey ?? 'topo-1',
+    },
+    getEdges: () => edges,
+  };
+}
 
-  it('should notify Jotai subscribers when node state changes', async () => {
-    const { batchWriteNodeStates } = await import('@/stores/sessionAtoms');
+afterEach(() => {
+  clearSessionAtoms(SESSION_ID);
+  useSessionStore.getState().clearSession(SESSION_ID);
+});
 
-    const key = nodeKey(SESSION_ID, 'mixer');
-    const atom = nodeStateAtom(key);
-    const callback = vi.fn();
+describe('useEdgeAlertSubscription', () => {
+  it('returns topoEffectRanRef that gates edge patching', () => {
+    const { options, getEdges } = makeOptions();
 
-    sessionStore.sub(atom, callback);
+    const { result } = renderHook(() => useEdgeAlertSubscription(options));
 
-    const updates = new Map<string, Record<string, NodeState>>();
-    updates.set(SESSION_ID, { mixer: 'Running' });
-    batchWriteNodeStates(updates);
+    // Initially false — patches should be gated
+    expect(result.current.topoEffectRanRef.current).toBe(false);
 
-    expect(callback).toHaveBeenCalled();
-  });
-
-  it('should not notify Jotai subscribers when value is deeply equal', async () => {
-    const { batchWriteNodeStates } = await import('@/stores/sessionAtoms');
-
-    const key = nodeKey(SESSION_ID, 'mixer');
-    const atom = nodeStateAtom(key);
-
-    // Set initial value
-    const initial = new Map<string, Record<string, NodeState>>();
-    initial.set(SESSION_ID, { mixer: 'Running' });
-    batchWriteNodeStates(initial);
-
-    const callback = vi.fn();
-    sessionStore.sub(atom, callback);
-
-    // Write same value again — batchWriteNodeStates has a deepEqual guard
-    const same = new Map<string, Record<string, NodeState>>();
-    same.set(SESSION_ID, { mixer: 'Running' });
-    batchWriteNodeStates(same);
-
-    expect(callback).not.toHaveBeenCalled();
-  });
-
-  it('should detect degraded slow_input_timeout state in Jotai atoms', async () => {
-    const { batchWriteNodeStates } = await import('@/stores/sessionAtoms');
-    const { extractSlowTimeoutDetailsFromNodeState } = await import('@/utils/pipelineGraph');
-
-    const degradedState: NodeState = {
-      Degraded: {
-        reason: 'slow_input_timeout',
-        details: {
-          slow_pins: ['audio_in'],
-          newly_slow_pins: ['audio_in'],
-          sync_timeout_ms: 100,
+    // Write a degraded state — should NOT patch because gate is closed
+    act(() => {
+      sessionStore.set(nodeStateAtom(nodeKey(SESSION_ID, 'mixer')), {
+        Degraded: {
+          reason: 'slow_input_timeout',
+          details: { slow_pins: ['audio_in'], newly_slow_pins: ['audio_in'], sync_timeout_ms: 100 },
         },
-      },
-    };
+      });
+    });
 
-    const updates = new Map<string, Record<string, NodeState>>();
-    updates.set(SESSION_ID, { mixer: degradedState });
-    batchWriteNodeStates(updates);
-
-    const stored = sessionStore.get(nodeStateAtom(nodeKey(SESSION_ID, 'mixer')));
-    const details = extractSlowTimeoutDetailsFromNodeState(stored);
-
-    expect(details).not.toBeNull();
-    expect(details?.slowPins).toEqual(['audio_in']);
-    expect(details?.newlySlowPins).toEqual(['audio_in']);
-    expect(details?.syncTimeoutMs).toBe(100);
+    const edgesAfterGated = getEdges();
+    const alert = isRecord(edgesAfterGated[0].data) ? edgesAfterGated[0].data['alert'] : undefined;
+    expect(alert).toBeUndefined();
   });
 
-  it('should clear edge alert data when node recovers from degraded state', async () => {
-    const { batchWriteNodeStates } = await import('@/stores/sessionAtoms');
-    const { extractSlowTimeoutDetailsFromNodeState } = await import('@/utils/pipelineGraph');
+  it('patches edges with alert data when a node enters slow_input_timeout', () => {
+    const { options, getEdges } = makeOptions();
 
-    const degradedState: NodeState = {
-      Degraded: {
-        reason: 'slow_input_timeout',
-        details: { slow_pins: ['audio_in'], newly_slow_pins: [], sync_timeout_ms: 100 },
-      },
-    };
+    const { result } = renderHook(() => useEdgeAlertSubscription(options));
 
-    const updates1 = new Map<string, Record<string, NodeState>>();
-    updates1.set(SESSION_ID, { mixer: degradedState });
-    batchWriteNodeStates(updates1);
+    // Open the gate (simulates topology effect having run)
+    act(() => {
+      result.current.topoEffectRanRef.current = true;
+    });
+
+    act(() => {
+      sessionStore.set(nodeStateAtom(nodeKey(SESSION_ID, 'mixer')), {
+        Degraded: {
+          reason: 'slow_input_timeout',
+          details: { slow_pins: ['audio_in'], newly_slow_pins: ['audio_in'], sync_timeout_ms: 100 },
+        },
+      });
+    });
+
+    const patched = getEdges();
+    const alertData = isRecord(patched[0].data) ? patched[0].data['alert'] : undefined;
+    expect(alertData).toBeDefined();
+    expect(isRecord(alertData) && alertData['kind']).toBe('slow_input_timeout');
+  });
+
+  it('clears edge alert when node recovers from degraded state', () => {
+    const { options, getEdges } = makeOptions();
+
+    const { result } = renderHook(() => useEdgeAlertSubscription(options));
+
+    act(() => {
+      result.current.topoEffectRanRef.current = true;
+    });
+
+    // Enter degraded state
+    act(() => {
+      sessionStore.set(nodeStateAtom(nodeKey(SESSION_ID, 'mixer')), {
+        Degraded: {
+          reason: 'slow_input_timeout',
+          details: { slow_pins: ['audio_in'], newly_slow_pins: [], sync_timeout_ms: 100 },
+        },
+      });
+    });
+
+    const degraded = getEdges();
+    const alertBefore = isRecord(degraded[0].data) ? degraded[0].data['alert'] : undefined;
+    expect(alertBefore).toBeDefined();
 
     // Recover
-    const updates2 = new Map<string, Record<string, NodeState>>();
-    updates2.set(SESSION_ID, { mixer: 'Running' });
-    batchWriteNodeStates(updates2);
-
-    const stored = sessionStore.get(nodeStateAtom(nodeKey(SESSION_ID, 'mixer')));
-    const details = extractSlowTimeoutDetailsFromNodeState(stored);
-    expect(details).toBeNull();
-  });
-
-  it('should read node states from atoms for all pipeline nodes', () => {
-    const pipeline = makePipeline({
-      source: { kind: 'core::passthrough', state: 'Running' },
-      mixer: { kind: 'core::mixer', state: 'Running' },
+    act(() => {
+      sessionStore.set(nodeStateAtom(nodeKey(SESSION_ID, 'mixer')), 'Running');
     });
 
-    // Seed atoms
-    sessionStore.set(nodeStateAtom(nodeKey(SESSION_ID, 'source')), 'Running');
-    sessionStore.set(nodeStateAtom(nodeKey(SESSION_ID, 'mixer')), 'Running');
+    const recovered = getEdges();
+    const alertAfter = isRecord(recovered[0].data) ? recovered[0].data['alert'] : undefined;
+    expect(alertAfter).toBeUndefined();
+  });
 
-    const states = new Map<string, NodeState | null>();
-    for (const id of Object.keys(pipeline.nodes)) {
-      states.set(id, sessionStore.get(nodeStateAtom(nodeKey(SESSION_ID, id))));
-    }
+  it('does not patch edges for a non-matching target handle', () => {
+    const edges: Edge[] = [
+      {
+        id: 'source-mixer',
+        source: 'source',
+        sourceHandle: 'out',
+        target: 'mixer',
+        targetHandle: 'video_in', // not the slow pin
+      },
+    ];
+    const { options, getEdges } = makeOptions({ edges });
 
-    expect(states.get('source')).toBe('Running');
-    expect(states.get('mixer')).toBe('Running');
+    const { result } = renderHook(() => useEdgeAlertSubscription(options));
+
+    act(() => {
+      result.current.topoEffectRanRef.current = true;
+    });
+
+    act(() => {
+      sessionStore.set(nodeStateAtom(nodeKey(SESSION_ID, 'mixer')), {
+        Degraded: {
+          reason: 'slow_input_timeout',
+          details: { slow_pins: ['audio_in'], newly_slow_pins: ['audio_in'], sync_timeout_ms: 100 },
+        },
+      });
+    });
+
+    const patched = getEdges();
+    const alert = isRecord(patched[0].data) ? patched[0].data['alert'] : undefined;
+    expect(alert).toBeUndefined();
+  });
+
+  it('resets topoEffectRanRef when selectedSessionId changes', () => {
+    const { options } = makeOptions();
+
+    const { result, rerender } = renderHook(
+      (props: UseEdgeAlertSubscriptionOptions) => useEdgeAlertSubscription(props),
+      { initialProps: options }
+    );
+
+    act(() => {
+      result.current.topoEffectRanRef.current = true;
+    });
+    expect(result.current.topoEffectRanRef.current).toBe(true);
+
+    // Change session — effect re-runs and resets the gate
+    const newOptions = { ...options, selectedSessionId: 'other-session' };
+    rerender(newOptions);
+
+    expect(result.current.topoEffectRanRef.current).toBe(false);
+  });
+
+  it('uses React.startTransition for edge updates', () => {
+    const startTransitionSpy = vi.spyOn(React, 'startTransition');
+    const { options } = makeOptions();
+
+    const { result } = renderHook(() => useEdgeAlertSubscription(options));
+
+    act(() => {
+      result.current.topoEffectRanRef.current = true;
+    });
+
+    act(() => {
+      sessionStore.set(nodeStateAtom(nodeKey(SESSION_ID, 'mixer')), {
+        Degraded: {
+          reason: 'slow_input_timeout',
+          details: { slow_pins: ['audio_in'], newly_slow_pins: [], sync_timeout_ms: 100 },
+        },
+      });
+    });
+
+    expect(startTransitionSpy).toHaveBeenCalled();
+    startTransitionSpy.mockRestore();
   });
 });

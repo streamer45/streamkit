@@ -2,40 +2,41 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { renderHook, act } from '@testing-library/react';
+import { describe, it, expect, afterEach } from 'vitest';
 
-import { sessionStore, nodeStateAtom, nodeKey } from '@/stores/sessionAtoms';
+import { sessionStore, nodeStateAtom, nodeKey, clearSessionAtoms } from '@/stores/sessionAtoms';
 import { useSessionStore } from '@/stores/sessionStore';
 import type { Pipeline, NodeState } from '@/types/types';
 
-describe('useSessionNodeStates — Jotai atom aggregation', () => {
-  const SESSION_ID = 'test-session-node-states';
+import { useSessionNodeStates } from './useSessionNodeStates';
 
-  beforeEach(() => {
-    useSessionStore.setState({ sessions: new Map() });
-    for (const key of [...nodeStateAtom.getParams()]) {
-      nodeStateAtom.remove(key);
-    }
-  });
+const SESSION_ID = 'test-session-node-states';
 
-  function seedPipeline(nodes: Record<string, { kind: string; state?: NodeState | null }>) {
-    const mapped: Pipeline['nodes'] = {};
-    for (const [id, n] of Object.entries(nodes)) {
-      mapped[id] = { kind: n.kind, params: {}, state: n.state ?? null };
-    }
-    const pipeline: Pipeline = {
-      name: null,
-      description: null,
-      mode: 'dynamic',
-      client: null,
-      nodes: mapped,
-      connections: [],
-    };
-    useSessionStore.getState().setPipeline(SESSION_ID, pipeline);
-    return pipeline;
+function seedPipeline(nodes: Record<string, { kind: string; state?: NodeState | null }>) {
+  const mapped: Pipeline['nodes'] = {};
+  for (const [id, n] of Object.entries(nodes)) {
+    mapped[id] = { kind: n.kind, params: {}, state: n.state ?? null };
   }
+  const pipeline: Pipeline = {
+    name: null,
+    description: null,
+    mode: 'dynamic',
+    client: null,
+    nodes: mapped,
+    connections: [],
+  };
+  useSessionStore.getState().initSession(SESSION_ID, true);
+  useSessionStore.getState().setPipeline(SESSION_ID, pipeline);
+}
 
-  it('should read node states from Jotai atoms matching pipeline node IDs', () => {
+afterEach(() => {
+  clearSessionAtoms(SESSION_ID);
+  useSessionStore.getState().clearSession(SESSION_ID);
+});
+
+describe('useSessionNodeStates', () => {
+  it('aggregates per-node Jotai atoms into a session-level record', () => {
     seedPipeline({
       source: { kind: 'core::passthrough' },
       mixer: { kind: 'core::mixer' },
@@ -44,43 +45,67 @@ describe('useSessionNodeStates — Jotai atom aggregation', () => {
     sessionStore.set(nodeStateAtom(nodeKey(SESSION_ID, 'source')), 'Running');
     sessionStore.set(nodeStateAtom(nodeKey(SESSION_ID, 'mixer')), 'Initializing');
 
-    const nodeIds = Object.keys(
-      useSessionStore.getState().getSession(SESSION_ID)?.pipeline?.nodes ?? {}
-    );
+    const { result } = renderHook(() => useSessionNodeStates(SESSION_ID));
 
-    const states: Record<string, NodeState> = {};
-    for (const id of nodeIds) {
-      const s = sessionStore.get(nodeStateAtom(nodeKey(SESSION_ID, id)));
-      if (s != null) states[id] = s;
-    }
-
-    expect(states).toEqual({ source: 'Running', mixer: 'Initializing' });
+    expect(result.current).toEqual({ source: 'Running', mixer: 'Initializing' });
   });
 
-  it('should exclude nodes without state (null atoms)', () => {
+  it('excludes nodes whose atom is null', () => {
     seedPipeline({
       source: { kind: 'core::passthrough' },
       mixer: { kind: 'core::mixer' },
     });
 
-    // Only set state for source, leave mixer as null
     sessionStore.set(nodeStateAtom(nodeKey(SESSION_ID, 'source')), 'Running');
 
-    const nodeIds = Object.keys(
-      useSessionStore.getState().getSession(SESSION_ID)?.pipeline?.nodes ?? {}
-    );
+    const { result } = renderHook(() => useSessionNodeStates(SESSION_ID));
 
-    const states: Record<string, NodeState> = {};
-    for (const id of nodeIds) {
-      const s = sessionStore.get(nodeStateAtom(nodeKey(SESSION_ID, id)));
-      if (s != null) states[id] = s;
-    }
-
-    expect(states).toEqual({ source: 'Running' });
-    expect(states['mixer']).toBeUndefined();
+    expect(result.current).toEqual({ source: 'Running' });
+    expect(result.current['mixer']).toBeUndefined();
   });
 
-  it('should support computing session status from aggregated states', async () => {
+  it('updates when a node state atom changes', () => {
+    seedPipeline({
+      source: { kind: 'core::passthrough' },
+      mixer: { kind: 'core::mixer' },
+    });
+
+    sessionStore.set(nodeStateAtom(nodeKey(SESSION_ID, 'source')), 'Running');
+    sessionStore.set(nodeStateAtom(nodeKey(SESSION_ID, 'mixer')), 'Running');
+
+    const { result } = renderHook(() => useSessionNodeStates(SESSION_ID));
+    expect(result.current).toEqual({ source: 'Running', mixer: 'Running' });
+
+    act(() => {
+      sessionStore.set(nodeStateAtom(nodeKey(SESSION_ID, 'mixer')), 'Initializing');
+    });
+
+    expect(result.current).toEqual({ source: 'Running', mixer: 'Initializing' });
+  });
+
+  it('returns a stable reference when atom values have not changed', () => {
+    seedPipeline({
+      source: { kind: 'core::passthrough' },
+      mixer: { kind: 'core::mixer' },
+    });
+
+    sessionStore.set(nodeStateAtom(nodeKey(SESSION_ID, 'source')), 'Running');
+    sessionStore.set(nodeStateAtom(nodeKey(SESSION_ID, 'mixer')), 'Running');
+
+    const { result } = renderHook(() => useSessionNodeStates(SESSION_ID));
+    const first = result.current;
+
+    // Re-write the same value — batchWriteNodeStates' deepEqual guard would
+    // skip the write, but even without that guard the shallow-equality guard
+    // inside the aggregate atom should return the same reference.
+    act(() => {
+      sessionStore.set(nodeStateAtom(nodeKey(SESSION_ID, 'source')), 'Running');
+    });
+
+    expect(result.current).toBe(first);
+  });
+
+  it('works with computeSessionStatus', async () => {
     const { computeSessionStatus } = await import('@/utils/sessionStatus');
 
     seedPipeline({
@@ -91,20 +116,11 @@ describe('useSessionNodeStates — Jotai atom aggregation', () => {
     sessionStore.set(nodeStateAtom(nodeKey(SESSION_ID, 'source')), 'Running');
     sessionStore.set(nodeStateAtom(nodeKey(SESSION_ID, 'mixer')), 'Running');
 
-    const nodeIds = Object.keys(
-      useSessionStore.getState().getSession(SESSION_ID)?.pipeline?.nodes ?? {}
-    );
-
-    const states: Record<string, NodeState> = {};
-    for (const id of nodeIds) {
-      const s = sessionStore.get(nodeStateAtom(nodeKey(SESSION_ID, id)));
-      if (s != null) states[id] = s;
-    }
-
-    expect(computeSessionStatus(states)).toBe('running');
+    const { result } = renderHook(() => useSessionNodeStates(SESSION_ID));
+    expect(computeSessionStatus(result.current)).toBe('running');
   });
 
-  it('should detect degraded session from Jotai atom states', async () => {
+  it('detects degraded session status', async () => {
     const { computeSessionStatus } = await import('@/utils/sessionStatus');
 
     seedPipeline({
@@ -117,16 +133,7 @@ describe('useSessionNodeStates — Jotai atom aggregation', () => {
       Degraded: { reason: 'slow_input_timeout', details: null },
     });
 
-    const nodeIds = Object.keys(
-      useSessionStore.getState().getSession(SESSION_ID)?.pipeline?.nodes ?? {}
-    );
-
-    const states: Record<string, NodeState> = {};
-    for (const id of nodeIds) {
-      const s = sessionStore.get(nodeStateAtom(nodeKey(SESSION_ID, id)));
-      if (s != null) states[id] = s;
-    }
-
-    expect(computeSessionStatus(states)).toBe('degraded');
+    const { result } = renderHook(() => useSessionNodeStates(SESSION_ID));
+    expect(computeSessionStatus(result.current)).toBe('degraded');
   });
 });
