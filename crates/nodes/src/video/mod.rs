@@ -70,6 +70,16 @@ pub const AV1_CONTENT_TYPE: &str = "video/av1";
 /// MIME-style content type for H.264-encoded video packets.
 pub const H264_CONTENT_TYPE: &str = "video/h264";
 
+/// Maximum number of consecutive EAGAIN retries that produce no output
+/// before the decode loop is considered stuck.
+pub const MAX_EAGAIN_EMPTY_RETRIES: u32 = 1000;
+
+/// After this many consecutive empty EAGAIN retries, switch from
+/// `thread::yield_now()` to `thread::sleep(1ms)` to avoid a tight
+/// spin-loop on lightly-loaded systems where `yield_now` returns
+/// immediately.
+pub const EAGAIN_YIELD_THRESHOLD: u32 = 10;
+
 // ── Hardware acceleration mode ───────────────────────────────────────────────
 //
 // Shared across all HW-accelerated codec modules (Vulkan Video, VA-API, NVENC).

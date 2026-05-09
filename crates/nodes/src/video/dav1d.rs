@@ -39,21 +39,11 @@ use streamkit_core::{
 use tokio::sync::mpsc;
 
 use super::dav1d_ffi::{self, DAV1D_EAGAIN, DAV1D_PIXEL_LAYOUT_I420};
+use super::{EAGAIN_YIELD_THRESHOLD, MAX_EAGAIN_EMPTY_RETRIES};
 
 /// Default to auto-detect (`0`).  dav1d picks a thread count based on the
 /// number of logical cores.
 const DAV1D_DEFAULT_THREADS: u32 = 0;
-
-/// Maximum number of consecutive EAGAIN retries in `decode_packet` where
-/// `drain_pictures` returns no frames.  Prevents an infinite busy-loop if the
-/// decoder gets into a pathological state.
-const MAX_EAGAIN_EMPTY_RETRIES: u32 = 1000;
-
-/// After this many consecutive empty EAGAIN retries, switch from
-/// `thread::yield_now()` to `thread::sleep(1ms)` to avoid a tight
-/// spin-loop on lightly-loaded systems where `yield_now` returns
-/// immediately.
-const EAGAIN_YIELD_THRESHOLD: u32 = 10;
 
 // ---------------------------------------------------------------------------
 // Configuration
