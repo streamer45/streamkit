@@ -1158,14 +1158,15 @@ impl ProcessorNode for NativeNodeWrapper {
                     return;
                 };
                 let result = catch_unwind(AssertUnwindSafe(|| get_schema(guard.handle())));
-                drop(guard);
 
+                // Copy all borrowed plugin strings while the guard is alive;
+                // finish_call (on guard drop) may trigger destroy_instance.
                 let value = match result {
                     Ok(schema_result) => {
                         if !schema_result.success {
                             if !schema_result.error_message.is_null() {
                                 // SAFETY: error_message is a valid C string owned by the plugin
-                                // for the duration of the call.
+                                // while the CallGuard is alive.
                                 let msg = unsafe {
                                     conversions::c_str_to_string(schema_result.error_message)
                                 }
@@ -1181,7 +1182,7 @@ impl ProcessorNode for NativeNodeWrapper {
                             None
                         } else {
                             // SAFETY: json_schema is a valid C string owned by the plugin
-                            // for the duration of the call.
+                            // while the CallGuard is alive.
                             unsafe { conversions::c_str_to_string(schema_result.json_schema) }
                                 .ok()
                                 .and_then(|s| serde_json::from_str(&s).ok())
@@ -1196,6 +1197,7 @@ impl ProcessorNode for NativeNodeWrapper {
                         None
                     },
                 };
+                drop(guard);
                 let _ = tx.send(value);
             })
             .is_err()
@@ -1212,6 +1214,10 @@ impl ProcessorNode for NativeNodeWrapper {
                     timeout_secs = timeout.as_secs_f64(),
                     "runtime_param_schema timed out",
                 );
+                // Prevent further FFI calls on this instance — the schema
+                // thread still holds its CallGuard and will clean up when
+                // the plugin call finishes.
+                self.state.request_drop();
                 None
             },
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => None,
@@ -1801,7 +1807,7 @@ impl NativeNodeWrapper {
                     WorkerCallContext {
                         op: "get_source_config",
                         node: &node_name,
-                        state_tx: Some(&context.state_tx),
+                        state_tx: None,
                         telemetry: Some(&telemetry),
                         metric_labels: &labels_source_config,
                     },
@@ -1815,7 +1821,7 @@ impl NativeNodeWrapper {
                         "get_source_config",
                         &node_name,
                         reply_rx,
-                        Some(&context.state_tx),
+                        None,
                         Some(&telemetry),
                         &labels_source_config,
                     )
@@ -3673,8 +3679,6 @@ mod ffi_guard_tests {
         handle.join().unwrap();
     }
 
-    // ── Fix 4: GetSourceConfig + runtime_param_schema hardening ────────
-
     #[test]
     fn worker_get_source_config_round_trip() {
         let state = test_instance_state_with_api(dummy_api_with_source_config());
@@ -3733,12 +3737,16 @@ mod ffi_guard_tests {
     }
 
     #[test]
-    fn runtime_param_schema_timeout_returns_none() {
+    fn runtime_param_schema_timeout_returns_none_and_poisons_instance() {
         let mut api = dummy_api();
         api.get_runtime_param_schema = Some(worker_stubs::get_runtime_param_schema_slow);
         let wrapper =
             test_wrapper_with_api_and_timeout(api, Some(std::time::Duration::from_millis(10)));
         let result = wrapper.runtime_param_schema();
         assert!(result.is_none(), "slow schema should time out and return None");
+        assert!(
+            wrapper.state.drop_requested.load(Ordering::Acquire),
+            "timeout must request_drop to prevent concurrent FFI calls"
+        );
     }
 }
