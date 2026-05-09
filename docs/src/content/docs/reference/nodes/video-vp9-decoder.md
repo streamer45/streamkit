@@ -33,16 +33,17 @@ Decodes VP9-compressed packets into raw NV12 video frames. Use this before CPU c
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Vp9DecoderConfig",
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
     "threads": {
-      "type": "integer",
+      "default": 2,
       "format": "uint32",
       "minimum": 0,
-      "default": 2
+      "type": "integer"
     }
-  }
+  },
+  "title": "Vp9DecoderConfig",
+  "type": "object"
 }
 ```
 

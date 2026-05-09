@@ -35,26 +35,27 @@ No inputs.
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "MoqPullConfig",
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
-    "url": {
-      "type": "string",
-      "default": ""
+    "broadcast": {
+      "default": "",
+      "type": "string"
     },
     "jwt": {
+      "default": null,
       "description": "Optional JWT for authenticated MoQ relays. When set, it is appended as `?jwt=...`.\n\nThis is compatible with moq-relay and StreamKit's built-in MoQ auth.",
       "type": [
         "string",
         "null"
-      ],
-      "default": null
+      ]
     },
-    "broadcast": {
-      "type": "string",
-      "default": ""
+    "url": {
+      "default": "",
+      "type": "string"
     }
-  }
+  },
+  "title": "MoqPullConfig",
+  "type": "object"
 }
 ```
 

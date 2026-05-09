@@ -10,8 +10,8 @@ description: "Reads binary data from a file and emits it as packets. Supports co
 Reads binary data from a file and emits it as packets. Supports configurable chunk sizes for streaming large files.
 
 ## Categories
-- `core`
 - `io`
+- `file`
 
 ## Pins
 ### Inputs
@@ -33,25 +33,26 @@ No inputs.
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "FileReadConfig",
+  "additionalProperties": false,
   "description": "Configuration for the FileReadNode",
-  "type": "object",
   "properties": {
+    "chunk_size": {
+      "default": 8192,
+      "description": "Size of chunks to read (default: 8192 bytes)",
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
     "path": {
       "description": "Path to the file to read",
       "type": "string"
-    },
-    "chunk_size": {
-      "description": "Size of chunks to read (default: 8192 bytes)",
-      "type": "integer",
-      "format": "uint",
-      "minimum": 0,
-      "default": 8192
     }
   },
   "required": [
     "path"
-  ]
+  ],
+  "title": "FileReadConfig",
+  "type": "object"
 }
 ```
 

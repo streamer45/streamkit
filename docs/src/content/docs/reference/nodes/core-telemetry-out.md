@@ -34,36 +34,37 @@ No outputs.
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "TelemetryOutConfig",
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
-    "packet_types": {
-      "description": "Which packet types to convert to telemetry.\nDefault: `[\"Transcription\", \"Custom\"]`",
-      "type": "array",
+    "event_type_filter": {
+      "default": [],
+      "description": "Filter event types (glob-style prefix patterns like `vad.*`).\nEmpty list means all events are included.",
       "items": {
         "type": "string"
       },
+      "type": "array"
+    },
+    "max_events_per_sec": {
+      "default": 100,
+      "description": "Maximum events per second per event type.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "packet_types": {
       "default": [
         "Transcription",
         "Custom"
-      ]
-    },
-    "event_type_filter": {
-      "description": "Filter event types (glob-style prefix patterns like `vad.*`).\nEmpty list means all events are included.",
-      "type": "array",
+      ],
+      "description": "Which packet types to convert to telemetry.\nDefault: `[\"Transcription\", \"Custom\"]`",
       "items": {
         "type": "string"
       },
-      "default": []
-    },
-    "max_events_per_sec": {
-      "description": "Maximum events per second per event type.",
-      "type": "integer",
-      "format": "uint32",
-      "minimum": 0,
-      "default": 100
+      "type": "array"
     }
-  }
+  },
+  "title": "TelemetryOutConfig",
+  "type": "object"
 }
 ```
 
