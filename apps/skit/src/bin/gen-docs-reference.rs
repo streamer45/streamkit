@@ -1479,7 +1479,7 @@ fn render_config_page(schema: &Value, defaults: &Value) -> Result<String> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Tests use infallible tempfile/write helpers; panicking on failure is appropriate.
 mod tests {
     use super::*;
     use std::io::Write;
