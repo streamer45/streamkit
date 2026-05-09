@@ -5,7 +5,7 @@ title: StreamKit
 description: Open-source real-time media processing engine
 template: splash
 hero:
-  tagline: Build and run real-time media pipelines on your own infrastructure. Speech-to-text, voice agents, live audio/video processing — composable, observable, self-hosted.
+  tagline: Build and run real-time media pipelines on your own infrastructure. Live video compositing, speech-to-text, voice agents, real-time media processing — composable, observable, self-hosted.
   actions:
     - text: Get Started
       link: /getting-started/quick-start/
@@ -55,15 +55,16 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 
 ## Who is this for?
 
-StreamKit is built for developers who need to process real-time media — whether you're building voice features, prototyping an AI audio/video pipeline, or self-hosting alternatives to cloud speech APIs.
+StreamKit is built for developers who need to process real-time media — whether you're compositing live video with overlays, building voice features, or prototyping AI-powered audio/video pipelines.
 
 ## What you can build
 
+- **Video compositing** — Combine live video inputs with text/image overlays using the built-in compositor (PiP, z-ordering, crop/zoom, rotation), with CPU and GPU backends. Encoded via VP9 or AV1 for real-time transport, with a visual scene editor in the Web UI
+- **Live web surfaces** — Render any web page (including WebGL) to video frames via the Servo browser engine and composite them into live streams as overlays or standalone sources
 - **Live transcription** — Ingest audio via MoQ, run Whisper or SenseVoice STT, stream transcription updates to clients
 - **Voice agents** — TTS-powered bots using Kokoro, Piper, or Matcha that respond to audio input
 - **Real-time translation** — Bilingual streams with live subtitles using NLLB or Helsinki models
 - **Audio processing** — Mixing, gain control, format conversion, encoding/decoding pipelines
-- **Video compositing** — Combine live video inputs with text/image overlays using the built-in compositor (PiP, z-ordering, crop/zoom), encoded via VP9 for real-time transport
 - **Content analysis** — VAD for speech detection, keyword spotting, or custom safety filters
 
 ## What it is

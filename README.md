@@ -12,7 +12,7 @@ SPDX-License-Identifier: MPL-2.0
   <br>
 </h1>
 <h4 align="center">Build and run real-time media pipelines on your own infrastructure</h4>
-<p align="center"><em>Speech-to-text, voice agents, live audio/video processing — composable, observable, self-hosted.</em></p>
+<p align="center"><em>Live video compositing, speech-to-text, voice agents, real-time media processing — composable, observable, self-hosted.</em></p>
 <p align="center">
   <a href="https://streamkit.dev"><img src="https://img.shields.io/badge/docs-streamkit.dev-blue?style=flat-square" alt="Documentation"></a>
   <a href="https://demo.streamkit.dev"><img src="https://img.shields.io/badge/demo-try%20it%20live-brightgreen?style=flat-square" alt="Live Demo"></a>
@@ -64,11 +64,12 @@ If you try it and something feels off, please open an issue (or a small PR). For
 
 ## Use cases
 
-- **Speech pipelines** — Build a transcription service: ingest audio via MoQ, run Whisper STT, stream transcription updates to clients.
-- **Real-time translation** — Bilingual streams with live subtitles using NLLB or Helsinki translation models.
-- **Voice agents** — TTS-powered bots that respond to audio input with Kokoro, Piper, or Matcha.
-- **Video compositing** — Combine camera feeds with overlays and PiP layouts using the built-in compositor (CPU or GPU via wgpu), encoded with VP9 or AV1 for real-time transport.
+- **Video compositing** — Combine camera feeds with overlays and PiP layouts using the built-in compositor (CPU or GPU via wgpu), with crop/zoom, rotation, and z-ordering. Encoded with VP9 or AV1 for real-time transport, with a visual scene editor in the Web UI.
+- **Live web surfaces** — Render any web page (including WebGL and dynamic dashboards) to video frames via the Servo browser engine and composite them into live streams as overlays or standalone sources.
 - **Dynamic UI overlays** — Render scriptable, data-driven overlays (scoreboards, lower thirds, watermarks) using the Slint plugin and composite them into live video.
+- **Speech pipelines** — Build a transcription service: ingest audio via MoQ, run Whisper STT, stream transcription updates to clients.
+- **Voice agents** — TTS-powered bots that respond to audio input with Kokoro, Piper, or Matcha.
+- **Real-time translation** — Bilingual streams with live subtitles using NLLB or Helsinki translation models.
 - **Audio processing** — Mixing, gain control, format conversion, and custom routing.
 - **Batch processing** — High-throughput file conversion or offline transcription using the Oneshot HTTP API.
 - **Your idea** — Add your own node or plugin and compose it into a pipeline
@@ -166,10 +167,10 @@ docker run --rm --env-file streamkit.env \
 ## What's included
 
 - Low-latency, real-time pipelines with backpressure and streaming semantics
+- Video compositing with CPU (tiny-skia) and GPU (wgpu) backends — multi-layer scenes with PiP, overlays, crop/zoom, and rotation. VP9 and AV1 codec support, WebM/MP4 muxing, and a dedicated compositor scene editor in the Web UI for visual layout
 - Node graph model (DAG) with built-in nodes plus modular extensions
 - Web UI for building/inspecting pipelines and a client CLI (`skit-cli`) for scripting (included in GitHub Release tarballs)
 - Load testing + observability building blocks (see `samples/loadtest/` and `samples/grafana-dashboard.json`)
-- Video compositing with CPU (tiny-skia) and GPU (wgpu) backends, VP9 and AV1 codec support, and a dedicated compositor UI in the web interface
 - Optional ML plugins + models (mounted externally by default): Whisper/SenseVoice (STT), Kokoro/Piper/Matcha (TTS), NLLB/Helsinki (translation), Slint (dynamic UI overlays). Some models may have restrictive licenses (e.g. NLLB is CC-BY-NC); review model licenses before production use.
 
 ## Development
