@@ -145,3 +145,4 @@ curl -X POST http://localhost:4545/api/v1/process \
 - [Installation Guide](/getting-started/installation/) - Detailed setup options
 - [Creating Pipelines](/guides/creating-pipelines/) - Pipeline syntax and patterns
 - [Web UI Guide](/guides/web-ui/) - Using the visual editor
+- [GPU Setup](/deployment/gpu/) - GPU-accelerated compositing and ML plugins
