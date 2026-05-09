@@ -3,28 +3,18 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Hook that bridges Zustand node-state updates to ReactFlow edges
- * without re-rendering MonitorViewContent.
+ * Hook that patches ReactFlow edge alert metadata (slow-input-timeout
+ * warnings) by subscribing directly to per-node Jotai state atoms.
  *
- * Node components read their `state` directly from per-node Jotai atoms
- * (via {@link useNodeStateFromAtom}), so this hook no longer patches
- * ReactFlow node data for state.  Params are NOT read from atoms in node
- * components — individual controls (sliders, toggles) subscribe to the
- * params atom directly via `useNumericSlider` / `useTuneNode`, which
- * confines re-renders to just the affected control.
- *
- * This hook still subscribes to the Zustand store to patch edge alert
- * metadata (slow-input-timeout warnings).
- *
- * Patches are throttled: the first change applies immediately, then
- * subsequent changes within PATCH_THROTTLE_MS are coalesced into a single
- * deferred patch.
+ * Node components read their `state` from per-node atoms (via
+ * {@link useNodeStateFromAtom}); this hook only patches edge `data.alert`
+ * so that warning badges appear on affected edges.
  */
 
 import type { Edge } from '@xyflow/react';
 import React, { useEffect, useRef } from 'react';
 
-import { useSessionStore } from '@/stores/sessionStore';
+import { sessionStore, nodeStateAtom, nodeKey } from '@/stores/sessionAtoms';
 import type { NodeState, Pipeline } from '@/types/types';
 import {
   isRecord,
@@ -33,7 +23,6 @@ import {
   type SlowTimeoutDetails,
 } from '@/utils/pipelineGraph';
 
-/** Build tooltip lines for a slow-input-timeout alert. */
 function buildSlowInputTooltipLines(
   edge: Edge,
   details: SlowTimeoutDetails | undefined,
@@ -60,10 +49,6 @@ function buildSlowInputTooltipLines(
   return lines;
 }
 
-/**
- * Build edge alert data for slow-input-timeout degradation.
- * Extracted from the main subscription callback to reduce complexity.
- */
 function buildEdgeAlert(
   edge: Edge,
   slowPinsByNode: Map<string, Set<string>>,
@@ -84,9 +69,6 @@ function buildEdgeAlert(
   };
 }
 
-/**
- * Collect slow-input-timeout data from node states for edge alert patching.
- */
 function collectSlowPinData(
   pipeline: Pipeline,
   nodeStates: Record<string, NodeState>
@@ -110,54 +92,41 @@ function collectSlowPinData(
   return { slowPinsByNode, slowDetailsByNode };
 }
 
-export interface UseNodeStatesSubscriptionOptions {
+export interface UseEdgeAlertSubscriptionOptions {
   selectedSessionId: string | null;
   setEdges: React.Dispatch<React.SetStateAction<Edge[]>>;
   pipelineRef: React.RefObject<Pipeline | undefined | null>;
   topoKey: string;
 }
 
-export interface UseNodeStatesSubscriptionReturn {
-  /** Set to `true` by the topology effect after building the initial graph. */
+export interface UseEdgeAlertSubscriptionReturn {
   topoEffectRanRef: React.MutableRefObject<boolean>;
 }
 
-export function useNodeStatesSubscription({
+export function useEdgeAlertSubscription({
   selectedSessionId,
   setEdges,
   pipelineRef,
   topoKey,
-}: UseNodeStatesSubscriptionOptions): UseNodeStatesSubscriptionReturn {
-  // Track previous topoKey to avoid redundant patch effect when topology changes
-  const prevTopoKeyRef = useRef<string>('');
+}: UseEdgeAlertSubscriptionOptions): UseEdgeAlertSubscriptionReturn {
   const topoEffectRanRef = useRef(false);
-  const isInitialMountRef = useRef(true);
-
-  // Keep topoKey accessible from the store subscription without stale closures
-  const topoKeyRef = useRef(topoKey);
-  topoKeyRef.current = topoKey;
 
   useEffect(() => {
     if (!selectedSessionId) return;
 
-    const PATCH_THROTTLE_MS = 100;
+    const pipeline = pipelineRef.current;
+    const nodeIds = pipeline ? Object.keys(pipeline.nodes) : [];
 
-    let prevNodeStates: Record<string, NodeState> | undefined;
-    let lastPatchTime = 0;
-    let throttleTimer: ReturnType<typeof setTimeout> | null = null;
-    let pendingNodeStates: Record<string, NodeState> | null = null;
-    // Reset on every resubscribe so the first patch after a session
-    // switch is treated as an initial mount (applied immediately,
-    // bypassing the throttle).
-    isInitialMountRef.current = true;
-
-    const applyPatch = (nodeStates: Record<string, NodeState>) => {
-      lastPatchTime = performance.now();
-
+    const applyPatch = () => {
       const currentPipeline = pipelineRef.current;
       if (!currentPipeline) return;
 
-      // Patch edge alerts (slow-input-timeout)
+      const nodeStates: Record<string, NodeState> = {};
+      for (const nodeId of Object.keys(currentPipeline.nodes)) {
+        const state = sessionStore.get(nodeStateAtom(nodeKey(selectedSessionId, nodeId)));
+        if (state) nodeStates[nodeId] = state;
+      }
+
       React.startTransition(() => {
         const { slowPinsByNode, slowDetailsByNode } = collectSlowPinData(
           currentPipeline,
@@ -201,63 +170,25 @@ export function useNodeStatesSubscription({
       });
     };
 
-    const unsubscribe = useSessionStore.subscribe((state) => {
-      const session = state.sessions.get(selectedSessionId);
-      const nodeStates = session?.nodeStates;
-
-      // Skip if same reference (store changed for a different reason)
-      if (nodeStates === prevNodeStates) return;
-      prevNodeStates = nodeStates;
-
-      // Skip on initial mount — let the topology effect handle everything
-      if (isInitialMountRef.current) {
-        isInitialMountRef.current = false;
-        prevTopoKeyRef.current = topoKeyRef.current;
-        return;
-      }
-
-      // If topoKey changed, the topology effect will handle the full rebuild
-      if (prevTopoKeyRef.current !== topoKeyRef.current) {
-        prevTopoKeyRef.current = topoKeyRef.current;
-        return;
-      }
-
-      // Don't patch until the topology effect has built the initial graph
+    // Coalesce rapid atom changes (e.g. from a single batchWriteNodeStates
+    // flush) into one patch via queueMicrotask.
+    let pendingFlush = false;
+    const onAtomChange = () => {
       if (!topoEffectRanRef.current) return;
-
-      if (!nodeStates) return;
-
-      // ── Throttled patch ────────────────────────────────────────────────
-      // Apply immediately if enough time elapsed since the last patch;
-      // otherwise buffer and apply after the throttle window.
-      pendingNodeStates = nodeStates;
-      const now = performance.now();
-      const elapsed = now - lastPatchTime;
-
-      if (elapsed >= PATCH_THROTTLE_MS) {
-        // First change or enough time since last patch — apply now.
-        if (throttleTimer !== null) {
-          clearTimeout(throttleTimer);
-          throttleTimer = null;
-        }
-        applyPatch(nodeStates);
-      } else if (throttleTimer === null) {
-        // Schedule a trailing-edge flush.
-        throttleTimer = setTimeout(() => {
-          throttleTimer = null;
-          if (pendingNodeStates) {
-            applyPatch(pendingNodeStates);
-            pendingNodeStates = null;
-          }
-        }, PATCH_THROTTLE_MS - elapsed);
-      }
-    });
-
-    return () => {
-      unsubscribe();
-      if (throttleTimer !== null) clearTimeout(throttleTimer);
+      if (pendingFlush) return;
+      pendingFlush = true;
+      queueMicrotask(() => {
+        pendingFlush = false;
+        applyPatch();
+      });
     };
-  }, [selectedSessionId, setEdges, pipelineRef]);
+
+    const unsubs = nodeIds.map((id) =>
+      sessionStore.sub(nodeStateAtom(nodeKey(selectedSessionId, id)), onAtomChange)
+    );
+
+    return () => unsubs.forEach((u) => u());
+  }, [selectedSessionId, setEdges, pipelineRef, topoKey]);
 
   return { topoEffectRanRef };
 }

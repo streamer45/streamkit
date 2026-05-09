@@ -34,15 +34,6 @@ interface SessionStore {
   initSession: (sessionId: string, connected: boolean) => void;
   clearSession: (sessionId: string) => void;
   getSession: (sessionId: string) => SessionData | undefined;
-
-  // Batch actions — apply multiple updates in a single set() call to reduce
-  // the number of store notifications and subscriber re-renders.
-  batchUpdateNodeStates: (sessionId: string, updates: Record<string, NodeState>) => void;
-
-  // Multi-session batch: merge node states for multiple sessions in a single
-  // set() call.  Used by the RAF-based WebSocket flush so that all updates
-  // from one animation frame produce exactly one store mutation.
-  batchUpdateNodeStatesMulti: (stateUpdates: Map<string, Record<string, NodeState>>) => void;
 }
 
 export const useSessionStore = create<SessionStore>((set, get) => ({
@@ -285,36 +276,4 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   getSession: (sessionId) => {
     return get().sessions.get(sessionId);
   },
-
-  batchUpdateNodeStates: (sessionId, updates) =>
-    set((prev) => {
-      const session = prev.sessions.get(sessionId);
-      if (!session) return prev;
-
-      const newSessions = new Map(prev.sessions);
-      newSessions.set(sessionId, {
-        ...session,
-        nodeStates: { ...session.nodeStates, ...updates },
-      });
-      return { sessions: newSessions };
-    }),
-
-  batchUpdateNodeStatesMulti: (stateUpdates) =>
-    set((prev) => {
-      if (stateUpdates.size === 0) return prev;
-
-      const newSessions = new Map(prev.sessions);
-
-      for (const [sessionId, updates] of stateUpdates) {
-        const session = newSessions.get(sessionId);
-        if (!session) continue;
-
-        newSessions.set(sessionId, {
-          ...session,
-          nodeStates: { ...session.nodeStates, ...updates },
-        });
-      }
-
-      return { sessions: newSessions };
-    }),
 }));

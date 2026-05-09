@@ -4,7 +4,13 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-import { sessionStore, nodeParamsAtom, nodeStatsAtom, nodeKey } from '@/stores/sessionAtoms';
+import {
+  sessionStore,
+  nodeParamsAtom,
+  nodeStateAtom,
+  nodeStatsAtom,
+  nodeKey,
+} from '@/stores/sessionAtoms';
 import { useSessionStore } from '@/stores/sessionStore';
 import type { Response, Event as WsEvent } from '@/types/types';
 
@@ -215,8 +221,7 @@ describe('WebSocketService', () => {
       // State/stats updates are RAF-batched; flush manually.
       service['flushBatchedUpdates']();
 
-      const session = useSessionStore.getState().getSession('session-1');
-      expect(session?.nodeStates['node-1']).toBe('Running');
+      expect(sessionStore.get(nodeStateAtom(nodeKey('session-1', 'node-1')))).toBe('Running');
     });
 
     it('should handle nodestatsupdated event', () => {
