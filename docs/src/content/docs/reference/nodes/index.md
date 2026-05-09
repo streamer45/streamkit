@@ -70,11 +70,22 @@ Notes:
 - [`video::vp9::decoder`](./video-vp9-decoder/)
 - [`video::vp9::encoder`](./video-vp9-encoder/)
 
-### Feature-gated video nodes
+## Feature-gated nodes
 
-These nodes require optional Cargo features and are not included in the default build:
+These nodes require optional Cargo features and may not be included in all builds. Official Docker images include most of these; check `GET /api/v1/schema/nodes` for what's available in your build.
+
+**Video:**
 
 - `video::av1::encoder` — rav1e AV1 encoder (feature: `av1`)
 - `video::av1::decoder` — rav1d AV1 decoder (feature: `av1`)
 - `video::svt_av1::encoder` — SVT-AV1 encoder via FFI (feature: `svt_av1` or `svt_av1_static`)
 - `video::dav1d::decoder` — C dav1d AV1 decoder via FFI (feature: `dav1d`)
+- `video::openh264::encoder` — OpenH264 encoder (feature: `openh264`)
+
+**Containers:**
+
+- `containers::mp4::muxer` — MP4 muxer (feature: `mp4`)
+
+**Transport:**
+
+- `transport::rtmp::*` — RTMP client nodes (feature: `rtmp`)

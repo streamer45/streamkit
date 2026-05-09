@@ -217,4 +217,6 @@ For complete, working examples:
 
 ## Next Steps
 
+- [Plugin Bundle Convention](/architecture/plugin-bundle-convention/) - Directory layout and discovery rules
+- [Publishing Plugins](/guides/publishing-plugins/) - Share plugins via the marketplace
 - [Node Reference](/reference/nodes/) - Built-in node documentation

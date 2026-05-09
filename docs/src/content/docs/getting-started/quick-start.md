@@ -19,7 +19,7 @@ This guide gets you from zero to a working StreamKit installation in minutes.
 ### Option 1: Docker (recommended)
 
 ```bash
-TAG=v0.2.0 # replace with the latest release tag
+TAG=v0.5.0 # replace with the latest release tag
 docker run --rm -d --name streamkit \
   -p 127.0.0.1:4545:4545/tcp \
   -p 127.0.0.1:4545:4545/udp \
@@ -42,7 +42,7 @@ docker stop streamkit
 ### Option 2: GitHub Release + systemd (Linux)
 
 ```bash
-TAG=v0.2.0 # replace with the latest release tag
+TAG=v0.5.0 # replace with the latest release tag
 curl -fsSL https://raw.githubusercontent.com/streamer45/streamkit/${TAG}/deploy/systemd/install.sh -o streamkit-install.sh
 chmod +x streamkit-install.sh
 
@@ -73,67 +73,64 @@ just skit serve
 
 ## Verify
 
-Open [http://localhost:4545](http://localhost:4545) in your browser.
-
-If you see the login screen, StreamKit’s built-in auth is enabled (Docker binds to `0.0.0.0` inside the container). Print the bootstrap admin token and paste it into the UI:
+The Docker image binds to `0.0.0.0` inside the container, so built-in auth is enabled by default. Get the admin token first:
 
 ```bash
 docker exec streamkit skit auth print-admin-token --raw
 ```
 
-If you’re on **Linux** and want a frictionless demo (no login), you can run with host networking and bind to loopback inside the container. In `auth.mode = "auto"`, this keeps built-in auth **disabled**:
+Open [http://localhost:4545](http://localhost:4545) in your browser and paste the token at the login screen.
 
-```bash
-TAG=v0.2.0 # replace with the latest release tag
-docker run --rm -d --name streamkit \
-  --network host \
-  -e SK_SERVER__ADDRESS=127.0.0.1:4545 \
-  ghcr.io/streamer45/streamkit:${TAG}
-```
+> [!TIP]
+> If you’re on **Linux** and want a frictionless demo (no login), you can use host networking with a loopback bind. In `auth.mode = "auto"`, this keeps built-in auth **disabled**:
+>
+> ```bash
+> TAG=v0.5.0 # replace with the latest release tag
+> docker run --rm -d --name streamkit \
+>   --network host \
+>   -e SK_SERVER__ADDRESS=127.0.0.1:4545 \
+>   ghcr.io/streamer45/streamkit:${TAG}
+> ```
+>
+> This only works on Linux. Docker Desktop for macOS/Windows does not support `--network host`.
 
 > [!CAUTION]
-> StreamKit ships with built-in authentication. If you expose the server beyond localhost, keep auth enabled (default in `auth.mode = "auto"`) and follow the [Authentication](/guides/authentication/) and [Security](/guides/security/) guides.
+> If you expose the server beyond localhost, keep auth enabled and follow the [Security](/guides/security/) guide.
 
 ## Run Your First Pipeline
 
 Use a small but useful oneshot pipeline (audio gain), and get audio back:
 
-```bash
-cat > double_volume.yml <<'YAML'
-name: Volume Boost (2×)
-mode: oneshot
-steps:
-  - kind: streamkit::http_input
-  - kind: containers::ogg::demuxer
-  - kind: audio::opus::decoder
-  - kind: audio::gain
-    params:
-      gain: 2.0
-  - kind: audio::opus::encoder
-  - kind: containers::ogg::muxer
-    params:
-      channels: 2
-      chunk_size: 65536
-  - kind: streamkit::http_output
-YAML
-```
-
-If you started via Docker, copy a bundled sample audio file out of the container:
+If you started via Docker, copy the bundled sample pipeline and audio file out of the container:
 
 ```bash
+docker cp streamkit:/opt/streamkit/samples/pipelines/oneshot/double_volume.yml ./double_volume.yml
 docker cp streamkit:/opt/streamkit/samples/audio/system/sample.ogg ./sample.ogg
 ```
 
-If you built from source instead, you already have the sample in the repo:
+If you built from source, you already have both in the repo:
 
 ```bash
+cp samples/pipelines/oneshot/double_volume.yml ./double_volume.yml
 cp samples/audio/system/sample.ogg ./sample.ogg
 ```
 
 Run the oneshot pipeline:
 
+**Docker** (auth is enabled by default):
+
 ```bash
-# Add -H "Authorization: Bearer $TOKEN" if built-in auth is enabled.
+TOKEN=$(docker exec streamkit skit auth print-admin-token --raw)
+curl -X POST http://localhost:4545/api/v1/process \
+  -H "Authorization: Bearer $TOKEN" \
+  -F config=@double_volume.yml \
+  -F media=@sample.ogg \
+  --output out.ogg
+```
+
+**Source build on localhost** (auth is disabled by default on loopback):
+
+```bash
 curl -X POST http://localhost:4545/api/v1/process \
   -F config=@double_volume.yml \
   -F media=@sample.ogg \

@@ -10,7 +10,7 @@ StreamKit provides Docker images for easy deployment.
 ## Quick Start
 
 ```bash
-TAG=v0.2.0 # replace with the latest release tag
+TAG=v0.5.0 # replace with the latest release tag
 docker run --rm --name streamkit \
   -p 127.0.0.1:4545:4545/tcp \
   -p 127.0.0.1:4545:4545/udp \
@@ -33,7 +33,7 @@ docker exec streamkit skit auth print-admin-token --raw
 If you want a frictionless demo (no login) and you’re running on **Linux**, you can run StreamKit with host networking and bind to loopback inside the container. In `auth.mode = "auto"`, this keeps built-in auth **disabled**:
 
 ```bash
-TAG=v0.2.0 # replace with the latest release tag
+TAG=v0.5.0 # replace with the latest release tag
 docker run --rm -d --name streamkit \
   --network host \
   -e SK_SERVER__ADDRESS=127.0.0.1:4545 \
@@ -114,7 +114,7 @@ gdb -p 1
 # docker-compose.yml
 services:
   streamkit:
-    image: ghcr.io/streamer45/streamkit:v0.2.0 # replace with the latest release tag
+    image: ghcr.io/streamer45/streamkit:v0.5.0 # replace with the latest release tag
     ports:
       - "127.0.0.1:4545:4545/tcp"
       - "127.0.0.1:4545:4545/udp"
@@ -138,7 +138,7 @@ Use `env_file` to avoid putting secrets in your `docker-compose.yml`:
 ```yaml
 services:
   streamkit:
-    image: ghcr.io/streamer45/streamkit:v0.2.0-demo
+    image: ghcr.io/streamer45/streamkit:v0.5.0-demo
     env_file:
       - ./streamkit.env
 ```
