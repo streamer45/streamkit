@@ -65,6 +65,7 @@ If you try it and something feels off, please open an issue (or a small PR). For
 ## Use cases
 
 - **Video compositing** — Combine camera feeds with overlays and PiP layouts using the built-in compositor (CPU or GPU via wgpu), with crop/zoom, rotation, and z-ordering. Encoded with VP9 or AV1 for real-time transport, with a visual scene editor in the Web UI.
+- **Live web surfaces** — Render any web page (including WebGL and dynamic dashboards) to video frames via the Servo browser engine and composite them into live streams as overlays or standalone sources.
 - **Dynamic UI overlays** — Render scriptable, data-driven overlays (scoreboards, lower thirds, watermarks) using the Slint plugin and composite them into live video.
 - **Speech pipelines** — Build a transcription service: ingest audio via MoQ, run Whisper STT, stream transcription updates to clients.
 - **Voice agents** — TTS-powered bots that respond to audio input with Kokoro, Piper, or Matcha.
