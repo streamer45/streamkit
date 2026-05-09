@@ -22,9 +22,9 @@ SPDX-License-Identifier: MPL-2.0
 <br>
 
 <p align="center">
-  <img src="docs/public/screenshots/monitor_view.png" alt="StreamKit web UI (Monitor View): visual pipeline editor" width="800">
+  <img src="docs/public/screenshots/compositor.png" alt="StreamKit web UI (Monitor View): visual pipeline editor" width="800">
   <br>
-  <em>Pipeline monitor showing real-time media processing with node metrics</em>
+  <em>Pipeline monitor showing real-time video compositing</em>
 </p>
 
 **StreamKit** is a self-hostable media processing server (written in Rust). You run a single binary (`skit`), then compose pipelines as a node graph (DAG) made from built-in nodes, plugins, and scriptable logic — via a web UI, YAML, or API.
