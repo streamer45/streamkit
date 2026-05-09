@@ -40,12 +40,14 @@ export function useSessionNodeStates(sessionId: string): Record<string, NodeStat
 
     readAll();
 
+    let disposed = false;
     let pending = false;
     const onAtomChange = () => {
       if (pending) return;
       pending = true;
       queueMicrotask(() => {
         pending = false;
+        if (disposed) return;
         readAll();
       });
     };
@@ -54,7 +56,10 @@ export function useSessionNodeStates(sessionId: string): Record<string, NodeStat
       sessionStore.sub(nodeStateAtom(nodeKey(sessionId, id)), onAtomChange)
     );
 
-    return () => unsubs.forEach((u) => u());
+    return () => {
+      disposed = true;
+      unsubs.forEach((u) => u());
+    };
   }, [sessionId, pipeline]);
 
   return nodeStates;

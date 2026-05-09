@@ -170,8 +170,7 @@ export function useEdgeAlertSubscription({
       });
     };
 
-    // Coalesce rapid atom changes (e.g. from a single batchWriteNodeStates
-    // flush) into one patch via queueMicrotask.
+    let disposed = false;
     let pendingFlush = false;
     const onAtomChange = () => {
       if (!topoEffectRanRef.current) return;
@@ -179,6 +178,7 @@ export function useEdgeAlertSubscription({
       pendingFlush = true;
       queueMicrotask(() => {
         pendingFlush = false;
+        if (disposed) return;
         applyPatch();
       });
     };
@@ -187,7 +187,10 @@ export function useEdgeAlertSubscription({
       sessionStore.sub(nodeStateAtom(nodeKey(selectedSessionId, id)), onAtomChange)
     );
 
-    return () => unsubs.forEach((u) => u());
+    return () => {
+      disposed = true;
+      unsubs.forEach((u) => u());
+    };
   }, [selectedSessionId, setEdges, pipelineRef, topoKey]);
 
   return { topoEffectRanRef };
