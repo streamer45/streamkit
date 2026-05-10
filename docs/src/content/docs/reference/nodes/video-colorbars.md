@@ -40,67 +40,68 @@ No inputs.
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ColorBarsConfig",
+  "additionalProperties": false,
   "description": "Configuration for the SMPTE color bars generator.",
-  "type": "object",
   "properties": {
-    "width": {
-      "description": "Frame width in pixels.",
-      "type": "integer",
-      "format": "uint32",
-      "minimum": 0,
-      "default": 640
-    },
-    "height": {
-      "description": "Frame height in pixels.",
-      "type": "integer",
-      "format": "uint32",
-      "minimum": 0,
-      "default": 480
-    },
-    "fps": {
-      "description": "Frames per second.",
-      "type": "integer",
-      "format": "uint32",
-      "minimum": 0,
-      "default": 30
-    },
-    "frame_count": {
-      "description": "Total frames to generate. 0 = infinite (real-time pacing).",
-      "type": "integer",
-      "format": "uint32",
-      "minimum": 0,
-      "default": 0
-    },
-    "pixel_format": {
-      "description": "Output pixel format. Supported: \"nv12\" (default), \"i420\", and \"rgba8\".",
-      "type": "string",
-      "default": "nv12"
+    "animate": {
+      "default": false,
+      "description": "When `true`, horizontally scrolls the color bars each frame so that\nevery frame differs substantially from the previous one.  Useful for\nencoding benchmarks where static content would compress to nearly\nnothing.",
+      "type": "boolean"
     },
     "draw_time": {
+      "default": false,
       "description": "When `true`, draws the current wall-clock time (`HH:MM:SS.mmm`)\nonto each generated frame using a monospace font.\n\nSee also [`draw_time_use_pts`](Self::draw_time_use_pts) for an\nalternative time source.",
-      "type": "boolean",
-      "default": false
-    },
-    "draw_time_use_pts": {
-      "description": "When `true` (and `draw_time` is enabled), stamps the frame's\npresentation timestamp (PTS) instead of the wall-clock time.\nThis is more useful for debugging A/V timing since the stamped\nvalue matches the metadata the downstream pipeline sees.",
-      "type": "boolean",
-      "default": false
+      "type": "boolean"
     },
     "draw_time_font_path": {
+      "default": null,
       "description": "Optional filesystem path to a custom TTF/OTF font used for the\n`draw_time` overlay.  When omitted the bundled DejaVu Sans Mono\nfont (embedded in the binary) is used.",
       "type": [
         "string",
         "null"
-      ],
-      "default": null
+      ]
     },
-    "animate": {
-      "description": "When `true`, horizontally scrolls the color bars each frame so that\nevery frame differs substantially from the previous one.  Useful for\nencoding benchmarks where static content would compress to nearly\nnothing.",
-      "type": "boolean",
-      "default": false
+    "draw_time_use_pts": {
+      "default": false,
+      "description": "When `true` (and `draw_time` is enabled), stamps the frame's\npresentation timestamp (PTS) instead of the wall-clock time.\nThis is more useful for debugging A/V timing since the stamped\nvalue matches the metadata the downstream pipeline sees.",
+      "type": "boolean"
+    },
+    "fps": {
+      "default": 30,
+      "description": "Frames per second.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "frame_count": {
+      "default": 0,
+      "description": "Total frames to generate. 0 = infinite (real-time pacing).",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "height": {
+      "default": 480,
+      "description": "Frame height in pixels.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "pixel_format": {
+      "default": "nv12",
+      "description": "Output pixel format. Supported: \"nv12\" (default), \"i420\", and \"rgba8\".",
+      "type": "string"
+    },
+    "width": {
+      "default": 640,
+      "description": "Frame width in pixels.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
     }
-  }
+  },
+  "title": "ColorBarsConfig",
+  "type": "object"
 }
 ```
 

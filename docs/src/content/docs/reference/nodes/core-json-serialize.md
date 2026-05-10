@@ -33,21 +33,22 @@ Converts structured packets (Text, Transcription) to JSON-formatted text. Useful
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "JsonSerializeConfig",
+  "additionalProperties": false,
   "description": "Configuration for JSON serialization",
-  "type": "object",
   "properties": {
-    "pretty": {
-      "description": "Enable pretty-printing (formatted with indentation)",
-      "type": "boolean",
-      "default": false
-    },
     "newline_delimited": {
+      "default": false,
       "description": "Add newline after each JSON object (for NDJSON format)",
-      "type": "boolean",
-      "default": false
+      "type": "boolean"
+    },
+    "pretty": {
+      "default": false,
+      "description": "Enable pretty-printing (formatted with indentation)",
+      "type": "boolean"
     }
-  }
+  },
+  "title": "JsonSerializeConfig",
+  "type": "object"
 }
 ```
 

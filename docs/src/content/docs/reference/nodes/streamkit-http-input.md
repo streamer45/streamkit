@@ -9,9 +9,6 @@ description: "Synthetic input node for oneshot HTTP pipelines. Receives binary d
 
 Synthetic input node for oneshot HTTP pipelines. Receives binary data from the HTTP request body.
 
-> [!NOTE]
-> This is a **synthetic node** — it has no runtime implementation. The oneshot engine replaces it with the actual HTTP request body at execution time. It can only be used in `mode: oneshot` pipelines (via `POST /api/v1/process`), not in dynamic sessions.
-
 ## Categories
 - `transport`
 - `oneshot`
@@ -36,15 +33,13 @@ No inputs.
 
 ```json
 {
-  "type": "object",
   "additionalProperties": false,
   "properties": {
     "field": {
-      "type": "string",
-      "description": "Multipart field name to bind to this input. Defaults to 'media' when only one http_input node exists; otherwise defaults to the node id."
+      "description": "Multipart field name to bind to this input. Defaults to 'media' when only one http_input node exists; otherwise defaults to the node id.",
+      "type": "string"
     },
     "fields": {
-      "type": "array",
       "description": "Optional list of multipart fields for this node. When set, the node exposes one output pin per entry (pin name matches the field name). Entries may be strings or objects with { name, required }.",
       "items": {
         "oneOf": [
@@ -52,30 +47,32 @@ No inputs.
             "type": "string"
           },
           {
-            "type": "object",
             "additionalProperties": false,
             "properties": {
               "name": {
                 "type": "string"
               },
               "required": {
-                "type": "boolean",
-                "default": true
+                "default": true,
+                "type": "boolean"
               }
             },
             "required": [
               "name"
-            ]
+            ],
+            "type": "object"
           }
         ]
-      }
+      },
+      "type": "array"
     },
     "required": {
-      "type": "boolean",
+      "default": true,
       "description": "If true (default), the request must include this field.",
-      "default": true
+      "type": "boolean"
     }
-  }
+  },
+  "type": "object"
 }
 ```
 

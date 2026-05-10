@@ -33,18 +33,19 @@ Encodes raw PCM audio into Opus-compressed packets. Configurable bitrate, applic
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "OpusEncoderConfig",
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
     "bitrate": {
-      "type": "integer",
-      "minimum": 6000,
-      "maximum": 510000,
-      "multipleOf": 1000,
       "default": 64000,
-      "tunable": false
+      "maximum": 510000,
+      "minimum": 6000,
+      "multipleOf": 1000,
+      "tunable": false,
+      "type": "integer"
     }
-  }
+  },
+  "title": "OpusEncoderConfig",
+  "type": "object"
 }
 ```
 

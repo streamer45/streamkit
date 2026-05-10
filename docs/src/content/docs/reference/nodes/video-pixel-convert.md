@@ -32,16 +32,17 @@ Converts raw video frames between pixel formats (RGBA8, NV12, I420). Insert upst
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "PixelConvertConfig",
+  "additionalProperties": false,
   "description": "Configuration for the pixel format converter node.",
-  "type": "object",
   "properties": {
     "output_format": {
+      "default": "nv12",
       "description": "Target pixel format: `\"nv12\"` (default), `\"i420\"`, or `\"rgba8\"`.",
-      "type": "string",
-      "default": "nv12"
+      "type": "string"
     }
-  }
+  },
+  "title": "PixelConvertConfig",
+  "type": "object"
 }
 ```
 

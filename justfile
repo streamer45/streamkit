@@ -344,7 +344,7 @@ preview-docs: build-docs
 # Generate reference docs (built-in nodes + official plugins)
 gen-docs-reference:
     @echo "Generating reference documentation (nodes + plugins + packets)..."
-    @cargo run -p streamkit-server --bin gen-docs-reference
+    @cargo run -p streamkit-server --features mcp --bin gen-docs-reference
 
 # Lint native plugins
 lint-plugins:

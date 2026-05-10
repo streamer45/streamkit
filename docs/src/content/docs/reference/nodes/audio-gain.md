@@ -32,19 +32,20 @@ Adjusts audio volume by applying a linear gain multiplier to all samples. Suppor
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "AudioGainConfig",
+  "additionalProperties": false,
   "description": "The configuration struct for the AudioGainNode.",
-  "type": "object",
   "properties": {
     "gain": {
-      "description": "A linear multiplier for the audio amplitude (e.g., 0.5 is -6dB).\nThis parameter can be updated in real-time while the node is running.\nValid range: 0.0 to 4.0",
-      "type": "number",
       "default": 1.0,
-      "minimum": 0.0,
+      "description": "A linear multiplier for the audio amplitude (e.g., 0.5 is -6dB).\nThis parameter can be updated in real-time while the node is running.\nValid range: 0.0 to 4.0",
       "maximum": 4.0,
-      "tunable": true
+      "minimum": 0.0,
+      "tunable": true,
+      "type": "number"
     }
-  }
+  },
+  "title": "AudioGainConfig",
+  "type": "object"
 }
 ```
 

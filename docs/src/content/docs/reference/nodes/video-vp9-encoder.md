@@ -36,60 +36,61 @@ Encodes raw video frames (NV12 or I420) into VP9 packets for transport or contai
 
 ```json
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Vp9EncoderConfig",
-  "type": "object",
-  "properties": {
-    "bitrate_kbps": {
-      "type": "integer",
-      "format": "uint32",
-      "minimum": 0,
-      "default": 2500
-    },
-    "keyframe_interval": {
-      "type": "integer",
-      "format": "uint32",
-      "minimum": 0,
-      "default": 120
-    },
-    "threads": {
-      "type": "integer",
-      "format": "uint32",
-      "minimum": 0,
-      "default": 2
-    },
-    "deadline": {
-      "$ref": "#/$defs/Vp9EncoderDeadline"
-    },
-    "cpu_used": {
-      "description": "libvpx `VP8E_SET_CPUUSED` control value.  Higher values trade quality\nfor speed.  Valid range depends on [`deadline`](Vp9EncoderDeadline):\n  - `realtime`: 0–9 (default 6)\n  - `good_quality` / `best_quality`: 0–5",
-      "type": "integer",
-      "format": "int32",
-      "default": 6
-    }
-  },
   "$defs": {
     "Vp9EncoderDeadline": {
       "description": "Controls the CPU time the VP9 encoder is allowed to spend per frame.\n\nMaps to the libvpx `deadline` parameter in `vpx_codec_encode`.",
       "oneOf": [
         {
+          "const": "realtime",
           "description": "Real-time encoding – lowest latency, may sacrifice quality (VPX_DL_REALTIME).",
-          "type": "string",
-          "const": "realtime"
+          "type": "string"
         },
         {
+          "const": "good_quality",
           "description": "Good quality – allows up to ~1 second per frame (VPX_DL_GOOD_QUALITY).",
-          "type": "string",
-          "const": "good_quality"
+          "type": "string"
         },
         {
+          "const": "best_quality",
           "description": "Best quality – unlimited time per frame (VPX_DL_BEST_QUALITY).",
-          "type": "string",
-          "const": "best_quality"
+          "type": "string"
         }
       ]
     }
-  }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "bitrate_kbps": {
+      "default": 2500,
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "cpu_used": {
+      "default": 6,
+      "description": "libvpx `VP8E_SET_CPUUSED` control value.  Higher values trade quality\nfor speed.  Valid range depends on [`deadline`](Vp9EncoderDeadline):\n  - `realtime`: 0–9 (default 6)\n  - `good_quality` / `best_quality`: 0–5",
+      "format": "int32",
+      "type": "integer"
+    },
+    "deadline": {
+      "$ref": "#/$defs/Vp9EncoderDeadline"
+    },
+    "keyframe_interval": {
+      "default": 120,
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "threads": {
+      "default": 2,
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "title": "Vp9EncoderConfig",
+  "type": "object"
 }
 ```
 
