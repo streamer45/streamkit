@@ -30,19 +30,22 @@ Notes:
 - [`audio::pacer`](./audio-pacer/)
 - [`audio::resampler`](./audio-resampler/)
 
-## `containers` (4)
+## `containers` (5)
 
+- [`containers::mp4::muxer`](./containers-mp4-muxer/)
 - [`containers::ogg::demuxer`](./containers-ogg-demuxer/)
 - [`containers::ogg::muxer`](./containers-ogg-muxer/)
 - [`containers::wav::demuxer`](./containers-wav-demuxer/)
 - [`containers::webm::muxer`](./containers-webm-muxer/)
 
-## `core` (10)
+## `core` (12)
 
 - [`core::file_reader`](./core-file-reader/)
 - [`core::file_writer`](./core-file-writer/)
 - [`core::json_serialize`](./core-json-serialize/)
+- [`core::object_store_writer`](./core-object-store-writer/)
 - [`core::pacer`](./core-pacer/)
+- [`core::param_bridge`](./core-param-bridge/)
 - [`core::passthrough`](./core-passthrough/)
 - [`core::script`](./core-script/)
 - [`core::sink`](./core-sink/)
@@ -55,21 +58,27 @@ Notes:
 - [`streamkit::http_input`](./streamkit-http-input/)
 - [`streamkit::http_output`](./streamkit-http-output/)
 
-## `transport` (4)
+## `transport` (6)
 
 - [`transport::http::fetcher`](./transport-http-fetcher/)
+- [`transport::http::mse`](./transport-http-mse/)
 - [`transport::moq::peer`](./transport-moq-peer/)
 - [`transport::moq::publisher`](./transport-moq-publisher/)
 - [`transport::moq::subscriber`](./transport-moq-subscriber/)
+- [`transport::rtmp::publish`](./transport-rtmp-publish/)
 
-## `video` (5)
+## `video` (8)
 
+- [`video::av1::decoder`](./video-av1-decoder/)
+- [`video::av1::encoder`](./video-av1-encoder/)
 - [`video::colorbars`](./video-colorbars/)
 - [`video::compositor`](./video-compositor/)
+- [`video::openh264::encoder`](./video-openh264-encoder/)
 - [`video::pixel_convert`](./video-pixel-convert/)
 - [`video::vp9::decoder`](./video-vp9-decoder/)
 - [`video::vp9::encoder`](./video-vp9-encoder/)
 
+<!-- manual-content-below -->
 ## Feature-gated nodes
 
 These nodes require optional Cargo features and may not be included in all builds. Official Docker images include most of these; check `GET /api/v1/schema/nodes` for what's available in your build.

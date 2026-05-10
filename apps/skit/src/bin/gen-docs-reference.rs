@@ -62,8 +62,9 @@ fn main() -> Result<()> {
     }
 
     // Index page for built-in nodes.
-    let nodes_index = render_nodes_index(&built_in_nodes);
-    write_if_changed(&nodes_dir.join("index.md"), &nodes_index)?;
+    let nodes_index_path = nodes_dir.join("index.md");
+    let nodes_index = render_nodes_index(&built_in_nodes, &nodes_index_path);
+    write_if_changed(&nodes_index_path, &nodes_index)?;
 
     // --- Official native plugins (from repo artifacts) ---
     let mut official_plugins = load_official_native_plugins(&repo_root)?;
@@ -617,7 +618,9 @@ In oneshot pipelines it is resolved during compilation. In dynamic pipelines it 
     }
 }
 
-fn render_nodes_index(defs: &[NodeDefinition]) -> String {
+const MANUAL_CONTENT_MARKER: &str = "<!-- manual-content-below -->";
+
+fn render_nodes_index(defs: &[NodeDefinition], existing_path: &Path) -> String {
     let mut by_namespace: BTreeMap<String, Vec<&NodeDefinition>> = BTreeMap::new();
     for def in defs {
         let ns = def.kind.split("::").next().unwrap_or("unknown").to_string();
@@ -657,7 +660,24 @@ Notes:
         }
     }
 
+    out.push_str(&format!("\n{MANUAL_CONTENT_MARKER}\n"));
+
+    if let Some(manual) = read_manual_content(existing_path) {
+        out.push_str(&manual);
+    }
+
     out
+}
+
+fn read_manual_content(path: &Path) -> Option<String> {
+    let existing = fs::read_to_string(path).ok()?;
+    let marker_pos = existing.find(MANUAL_CONTENT_MARKER)?;
+    let after_marker = &existing[marker_pos + MANUAL_CONTENT_MARKER.len()..];
+    let content = after_marker.strip_prefix('\n').unwrap_or(after_marker);
+    if content.is_empty() {
+        return None;
+    }
+    Some(content.to_string())
 }
 
 fn render_plugins_index(defs: &[PluginNodeDoc]) -> String {
@@ -1456,6 +1476,72 @@ fn render_config_page(schema: &Value, defaults: &Value) -> Result<String> {
     out.push_str("</details>\n");
 
     Ok(out)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Tests use infallible tempfile/write helpers; panicking on failure is appropriate.
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn read_manual_content_preserves_text_below_marker() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "generated stuff\n{MANUAL_CONTENT_MARKER}\n## Hand-written\nKeep me.").unwrap();
+        let result = read_manual_content(f.path()).unwrap();
+        assert!(result.contains("## Hand-written"));
+        assert!(result.contains("Keep me."));
+    }
+
+    #[test]
+    fn read_manual_content_returns_none_when_no_marker() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "generated stuff only").unwrap();
+        assert!(read_manual_content(f.path()).is_none());
+    }
+
+    #[test]
+    fn read_manual_content_returns_none_for_missing_file() {
+        assert!(read_manual_content(Path::new("/does/not/exist")).is_none());
+    }
+
+    #[test]
+    fn read_manual_content_returns_none_when_nothing_after_marker() {
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, "stuff\n{MANUAL_CONTENT_MARKER}\n").unwrap();
+        assert!(read_manual_content(f.path()).is_none());
+    }
+
+    #[test]
+    fn render_nodes_index_embeds_marker_and_preserves_manual_section() {
+        let mut f = NamedTempFile::with_suffix(".md").unwrap();
+        writeln!(f, "old generated\n{MANUAL_CONTENT_MARKER}\n## Custom\nHello").unwrap();
+
+        let defs = vec![NodeDefinition {
+            kind: "test::dummy".to_string(),
+            description: None,
+            param_schema: serde_json::json!({}),
+            inputs: vec![],
+            outputs: vec![],
+            categories: vec![],
+            bidirectional: false,
+        }];
+
+        let result = render_nodes_index(&defs, f.path());
+        assert!(result.contains(MANUAL_CONTENT_MARKER));
+        assert!(result.contains("## Custom"));
+        assert!(result.contains("Hello"));
+        assert!(result.contains("[`test::dummy`]"));
+    }
+
+    #[test]
+    fn config_schema_includes_mcp_section() {
+        let schema = serde_json::to_value(schemars::schema_for!(Config))
+            .expect("failed to generate Config schema");
+        let props = schema.get("properties").and_then(serde_json::Value::as_object).unwrap();
+        assert!(props.contains_key("mcp"), "Config schema must include the mcp section");
+    }
 }
 
 // REUSE-IgnoreEnd
