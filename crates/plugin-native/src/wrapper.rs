@@ -412,6 +412,7 @@ enum WorkerRequest {
     Tick { reply: tokio::sync::oneshot::Sender<WorkerReply> },
     UpdateParams { params_cstr: CString, reply: tokio::sync::oneshot::Sender<Option<String>> },
     OnUpstreamHint { hints: Vec<CString>, reply: tokio::sync::oneshot::Sender<()> },
+    GetSourceConfig { reply: tokio::sync::oneshot::Sender<Option<(std::time::Duration, u64)>> },
 }
 
 struct WorkerReply {
@@ -819,6 +820,50 @@ fn worker_thread_main(
                 }
                 let _ = reply.send(());
             },
+
+            WorkerRequest::GetSourceConfig { reply } => {
+                let result = match state.api().get_source_config {
+                    Some(get_source_config_fn) => {
+                        let Some(guard) = state.begin_call() else {
+                            let _ = reply.send(None);
+                            continue;
+                        };
+                        let start = std::time::Instant::now();
+                        let panic_result =
+                            catch_unwind(AssertUnwindSafe(|| get_source_config_fn(guard.handle())));
+                        let duration = start.elapsed();
+                        drop(guard);
+                        match panic_result {
+                            Ok(cfg) => {
+                                tracing::debug!(
+                                    node = %node_id,
+                                    tick_interval_us = cfg.tick_interval_us,
+                                    max_ticks = cfg.max_ticks,
+                                    duration_s = duration.as_secs_f64(),
+                                    "get_source_config completed",
+                                );
+                                Some((
+                                    std::time::Duration::from_micros(cfg.tick_interval_us.max(1)),
+                                    cfg.max_ticks,
+                                ))
+                            },
+                            Err(payload) => {
+                                let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(
+                                    &*payload,
+                                );
+                                error!(
+                                    plugin_kind = %plugin_kind,
+                                    node_id = %node_id,
+                                    "get_source_config panicked: {msg}",
+                                );
+                                None
+                            },
+                        }
+                    },
+                    None => None,
+                };
+                let _ = reply.send(result);
+            },
         }
     }
 }
@@ -1098,33 +1143,85 @@ impl ProcessorNode for NativeNodeWrapper {
     }
 
     fn runtime_param_schema(&self) -> Option<serde_json::Value> {
-        ffi_guard_with(
-            "runtime_param_schema panicked",
-            |_| None,
-            || {
-                let get_schema = self.state.api().get_runtime_param_schema?;
-                let guard = self.state.begin_call()?;
+        let get_schema = self.state.api().get_runtime_param_schema?;
+        let state = Arc::clone(&self.state);
+        let timeout = self.state.call_timeout.unwrap_or(DEFAULT_CALL_TIMEOUT);
+        let plugin_kind = self.state.plugin_kind.clone();
 
-                let result = get_schema(guard.handle());
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
 
-                if !result.success {
-                    if !result.error_message.is_null() {
-                        let msg = unsafe { conversions::c_str_to_string(result.error_message) }
-                            .unwrap_or_default();
-                        warn!(error = %msg, "Plugin runtime_param_schema failed");
-                    }
-                    return None;
-                }
+        if std::thread::Builder::new()
+            .name("skp-schema".into())
+            .spawn(move || {
+                let Some(guard) = state.begin_call() else {
+                    let _ = tx.send(None);
+                    return;
+                };
+                let result = catch_unwind(AssertUnwindSafe(|| get_schema(guard.handle())));
 
-                if result.json_schema.is_null() {
-                    return None;
-                }
-
-                let json_str = unsafe { conversions::c_str_to_string(result.json_schema) }.ok();
+                // Copy all borrowed plugin strings while the guard is alive;
+                // finish_call (on guard drop) may trigger destroy_instance.
+                let value = match result {
+                    Ok(schema_result) => {
+                        if !schema_result.success {
+                            if !schema_result.error_message.is_null() {
+                                // SAFETY: error_message is a valid C string owned by the plugin
+                                // while the CallGuard is alive.
+                                let msg = unsafe {
+                                    conversions::c_str_to_string(schema_result.error_message)
+                                }
+                                .unwrap_or_default();
+                                warn!(
+                                    plugin_kind = %plugin_kind,
+                                    error = %msg,
+                                    "Plugin runtime_param_schema failed",
+                                );
+                            }
+                            None
+                        } else if schema_result.json_schema.is_null() {
+                            None
+                        } else {
+                            // SAFETY: json_schema is a valid C string owned by the plugin
+                            // while the CallGuard is alive.
+                            unsafe { conversions::c_str_to_string(schema_result.json_schema) }
+                                .ok()
+                                .and_then(|s| serde_json::from_str(&s).ok())
+                        }
+                    },
+                    Err(payload) => {
+                        let msg = streamkit_plugin_sdk_native::ffi_guard::panic_message(&*payload);
+                        error!(
+                            plugin_kind = %plugin_kind,
+                            "runtime_param_schema panicked: {msg}",
+                        );
+                        None
+                    },
+                };
                 drop(guard);
-                json_str.and_then(|s| serde_json::from_str(&s).ok())
+                let _ = tx.send(value);
+            })
+            .is_err()
+        {
+            warn!("Failed to spawn runtime_param_schema worker thread");
+            return None;
+        }
+
+        match rx.recv_timeout(timeout) {
+            Ok(value) => value,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                warn!(
+                    plugin_kind = %self.state.plugin_kind,
+                    timeout_secs = timeout.as_secs_f64(),
+                    "runtime_param_schema timed out",
+                );
+                // Prevent further FFI calls on this instance — the schema
+                // thread still holds its CallGuard and will clean up when
+                // the plugin call finishes.
+                self.state.request_drop();
+                None
             },
-        )
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => None,
+        }
     }
 
     // The run method is complex by necessity - it's an async actor managing FFI calls,
@@ -1701,20 +1798,40 @@ impl NativeNodeWrapper {
             let ti = std::time::Duration::from_micros(self.metadata.tick_interval_us.max(1));
             (ti, self.metadata.max_ticks)
         };
-        let (tick_interval, max_ticks) = ffi_guard_with(
-            "get_source_config panicked",
-            |_| None,
-            || {
-                self.state.api().get_source_config.and_then(|get_source_config_fn| {
-                    self.state.begin_call().map(|guard| {
-                        let cfg = get_source_config_fn(guard.handle());
-                        let ti = std::time::Duration::from_micros(cfg.tick_interval_us.max(1));
-                        (ti, cfg.max_ticks)
-                    })
-                })
-            },
-        )
-        .unwrap_or_else(fallback);
+        let labels_source_config =
+            PluginMetrics::build_labels(&self.state.plugin_kind, "get_source_config");
+        let (tick_interval, max_ticks) = {
+            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+            match self
+                .send_to_worker(
+                    WorkerCallContext {
+                        op: "get_source_config",
+                        node: &node_name,
+                        state_tx: None,
+                        telemetry: Some(&telemetry),
+                        metric_labels: &labels_source_config,
+                    },
+                    &worker.tx,
+                    WorkerRequest::GetSourceConfig { reply: reply_tx },
+                )
+                .await
+            {
+                Ok(()) => self
+                    .await_reply(
+                        "get_source_config",
+                        &node_name,
+                        reply_rx,
+                        None,
+                        Some(&telemetry),
+                        &labels_source_config,
+                    )
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(fallback),
+                Err(_) => fallback(),
+            }
+        };
         let mut tick_count: u64 = 0;
 
         let mut interval = tokio::time::interval(tick_interval);
@@ -2684,6 +2801,35 @@ mod ffi_guard_tests {
             HINT_CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             CResult::success()
         }
+
+        pub extern "C" fn get_source_config_ok(
+            _: CPluginHandle,
+        ) -> streamkit_plugin_sdk_native::types::CSourceConfig {
+            streamkit_plugin_sdk_native::types::CSourceConfig {
+                is_source: true,
+                tick_interval_us: 33333,
+                max_ticks: 100,
+            }
+        }
+
+        static SCHEMA_JSON: &std::ffi::CStr = c"{\"type\":\"object\"}";
+
+        pub extern "C" fn get_runtime_param_schema_some(
+            _: CPluginHandle,
+        ) -> streamkit_plugin_sdk_native::types::CSchemaResult {
+            streamkit_plugin_sdk_native::types::CSchemaResult {
+                success: true,
+                error_message: std::ptr::null(),
+                json_schema: SCHEMA_JSON.as_ptr(),
+            }
+        }
+
+        pub extern "C" fn get_runtime_param_schema_slow(
+            _: CPluginHandle,
+        ) -> streamkit_plugin_sdk_native::types::CSchemaResult {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            streamkit_plugin_sdk_native::types::CSchemaResult::none()
+        }
     }
 
     fn dummy_api_error() -> CNativePluginAPI {
@@ -2708,6 +2854,42 @@ mod ffi_guard_tests {
         let mut api = dummy_api();
         api.on_upstream_hint = Some(worker_stubs::on_hint_ok);
         api
+    }
+
+    fn dummy_api_with_source_config() -> CNativePluginAPI {
+        let mut api = dummy_api();
+        api.get_source_config = Some(worker_stubs::get_source_config_ok);
+        api
+    }
+
+    fn test_wrapper_with_api_and_timeout(
+        api: CNativePluginAPI,
+        timeout: Option<std::time::Duration>,
+    ) -> NativeNodeWrapper {
+        // SAFETY: loading libc is harmless; we never call any symbols from it.
+        let lib = unsafe { Library::new("libc.so.6").expect("libc must be loadable") };
+        let api: &'static CNativePluginAPI = Box::leak(Box::new(api));
+        NativeNodeWrapper {
+            state: Arc::new(InstanceState::new(
+                Arc::new(lib),
+                api,
+                std::ptr::without_provenance_mut::<c_void>(1),
+                8,
+                timeout,
+                "test".to_string(),
+            )),
+            metadata: PluginMetadata {
+                kind: "test".to_string(),
+                description: None,
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                param_schema: serde_json::json!({}),
+                categories: Vec::new(),
+                is_source: false,
+                tick_interval_us: 0,
+                max_ticks: 0,
+            },
+        }
     }
 
     fn test_instance_state_with_api(api: CNativePluginAPI) -> Arc<InstanceState> {
@@ -3495,5 +3677,76 @@ mod ffi_guard_tests {
 
         drop(tx);
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn worker_get_source_config_round_trip() {
+        let state = test_instance_state_with_api(dummy_api_with_source_config());
+        let (tx, rx) = tokio::sync::mpsc::channel::<WorkerRequest>(1);
+
+        let s = Arc::clone(&state);
+        let handle = std::thread::Builder::new()
+            .name("test-worker-source-config".into())
+            .spawn(move || {
+                worker_thread_main(rx, s, Vec::new(), None, None, "test".into(), None, None);
+            })
+            .unwrap();
+
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        tx.blocking_send(WorkerRequest::GetSourceConfig { reply: reply_tx }).unwrap();
+        let reply = reply_rx.blocking_recv().unwrap();
+        let (tick_interval, max_ticks) = reply.expect("get_source_config should return Some");
+        assert_eq!(tick_interval, std::time::Duration::from_micros(33333));
+        assert_eq!(max_ticks, 100);
+
+        drop(tx);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn worker_get_source_config_none_returns_none() {
+        let state = test_instance_state();
+        let (tx, rx) = tokio::sync::mpsc::channel::<WorkerRequest>(1);
+
+        let s = Arc::clone(&state);
+        let handle = std::thread::Builder::new()
+            .name("test-worker-source-config-none".into())
+            .spawn(move || {
+                worker_thread_main(rx, s, Vec::new(), None, None, "test".into(), None, None);
+            })
+            .unwrap();
+
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        tx.blocking_send(WorkerRequest::GetSourceConfig { reply: reply_tx }).unwrap();
+        let reply = reply_rx.blocking_recv().unwrap();
+        assert!(reply.is_none(), "get_source_config should return None when API has no function");
+
+        drop(tx);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn runtime_param_schema_returns_parsed_json() {
+        let mut api = dummy_api();
+        api.get_runtime_param_schema = Some(worker_stubs::get_runtime_param_schema_some);
+        let wrapper =
+            test_wrapper_with_api_and_timeout(api, Some(std::time::Duration::from_secs(5)));
+        let result = wrapper.runtime_param_schema();
+        let schema = result.expect("should return Some schema");
+        assert_eq!(schema, serde_json::json!({"type": "object"}));
+    }
+
+    #[test]
+    fn runtime_param_schema_timeout_returns_none_and_poisons_instance() {
+        let mut api = dummy_api();
+        api.get_runtime_param_schema = Some(worker_stubs::get_runtime_param_schema_slow);
+        let wrapper =
+            test_wrapper_with_api_and_timeout(api, Some(std::time::Duration::from_millis(10)));
+        let result = wrapper.runtime_param_schema();
+        assert!(result.is_none(), "slow schema should time out and return None");
+        assert!(
+            wrapper.state.drop_requested.load(Ordering::Acquire),
+            "timeout must request_drop to prevent concurrent FFI calls"
+        );
     }
 }
