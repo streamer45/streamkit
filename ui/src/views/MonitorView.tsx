@@ -42,8 +42,8 @@ import { DnDProvider, useDnD } from '@/context/DnDContext';
 import { useToast } from '@/context/ToastContext';
 import { useAutoLayout } from '@/hooks/useAutoLayout';
 import { useContextMenu } from '@/hooks/useContextMenu';
+import { useEdgeAlertSubscription } from '@/hooks/useEdgeAlertSubscription';
 import { useMonitorPreview } from '@/hooks/useMonitorPreview';
-import { useNodeStatesSubscription } from '@/hooks/useNodeStatesSubscription';
 import { useReactFlowCommon } from '@/hooks/useReactFlowCommon';
 import { useResolvedColorMode } from '@/hooks/useResolvedColorMode';
 import { useSession } from '@/hooks/useSession';
@@ -466,7 +466,7 @@ const MonitorViewContent: React.FC = () => {
     updateNodePosition,
   });
 
-  const { topoEffectRanRef } = useNodeStatesSubscription({
+  const { topoEffectRanRef } = useEdgeAlertSubscription({
     selectedSessionId,
     setEdges,
     pipelineRef,

@@ -34,11 +34,6 @@ export function useSession(sessionId: string | null) {
     };
   }, [sessionId, wsService]);
 
-  // Get real-time state from Zustand with granular selectors to minimize re-renders.
-  // nodeStates is intentionally NOT subscribed here — it changes on every WS
-  // node-state event and would force the (very large) MonitorViewContent to
-  // re-render each time.  MonitorViewContent patches ReactFlow nodes directly
-  // via a Zustand store subscription instead.
   const pipeline = useSessionStore(
     useCallback(
       (state) => (sessionId ? state.getSession(sessionId)?.pipeline : undefined),

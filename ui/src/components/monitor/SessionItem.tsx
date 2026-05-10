@@ -14,7 +14,6 @@
 
 import * as Tooltip from '@radix-ui/react-tooltip';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useShallow } from 'zustand/shallow';
 
 import {
   SessionItemWrapper,
@@ -39,7 +38,7 @@ import {
 } from '@/components/monitor/MonitorView.styles';
 import { SKTooltip } from '@/components/Tooltip';
 import { Button } from '@/components/ui/Button';
-import { useSessionStore } from '@/stores/sessionStore';
+import { useSessionNodeStates } from '@/hooks/useSessionNodeStates';
 import { shortSessionId, summarizeNodeIssues } from '@/utils/nodeIssues';
 import {
   computeSessionStatus,
@@ -137,9 +136,7 @@ export const InlineCopyButton: React.FC<{
 // ---------------------------------------------------------------------------
 
 export const SessionInfoChip: React.FC<SessionInfoDisplayProps> = React.memo(({ session }) => {
-  const nodeStates = useSessionStore(
-    useShallow((state) => state.sessions.get(session.id)?.nodeStates ?? {})
-  );
+  const nodeStates = useSessionNodeStates(session.id);
 
   const sessionStatus = React.useMemo(() => computeSessionStatus(nodeStates), [nodeStates]);
   const statusColor = React.useMemo(() => getSessionStatusColor(sessionStatus), [sessionStatus]);
@@ -248,9 +245,7 @@ export const SessionInfoChip: React.FC<SessionInfoDisplayProps> = React.memo(({ 
 
 export const SessionItem: React.FC<SessionItemProps> = React.memo(
   ({ session, isActive, onClick, onDelete }) => {
-    const nodeStates = useSessionStore(
-      useShallow((state) => state.sessions.get(session.id)?.nodeStates ?? {})
-    );
+    const nodeStates = useSessionNodeStates(session.id);
 
     const sessionStatus = React.useMemo(() => computeSessionStatus(nodeStates), [nodeStates]);
     const statusColor = React.useMemo(() => getSessionStatusColor(sessionStatus), [sessionStatus]);
