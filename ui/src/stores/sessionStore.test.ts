@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 
-import type { Pipeline, NodeState } from '@/types/types';
+import type { Pipeline } from '@/types/types';
 
 import { useSessionStore } from './sessionStore';
 
@@ -15,46 +15,6 @@ describe('sessionStore', () => {
   beforeEach(() => {
     // Reset store before each test
     useSessionStore.setState({ sessions: new Map() });
-  });
-
-  describe('updateNodeState', () => {
-    it('should ignore update for non-existent session', () => {
-      const nodeId = 'node-1';
-      const state: NodeState = 'Running';
-
-      useSessionStore.getState().updateNodeState(TEST_SESSION_ID, nodeId, state);
-
-      const session = useSessionStore.getState().getSession(TEST_SESSION_ID);
-      expect(session).toBeUndefined();
-    });
-
-    it('should update existing node state', () => {
-      const nodeId = 'node-1';
-      const initialState: NodeState = 'Initializing';
-      const updatedState: NodeState = 'Running';
-
-      useSessionStore.getState().initSession(TEST_SESSION_ID, false);
-      useSessionStore.getState().updateNodeState(TEST_SESSION_ID, nodeId, initialState);
-      useSessionStore.getState().updateNodeState(TEST_SESSION_ID, nodeId, updatedState);
-
-      const session = useSessionStore.getState().getSession(TEST_SESSION_ID);
-      expect(session?.nodeStates[nodeId]).toEqual(updatedState);
-    });
-
-    it('should maintain other node states when updating one', () => {
-      const node1 = 'node-1';
-      const node2 = 'node-2';
-      const state1: NodeState = 'Running';
-      const state2: NodeState = { Stopped: { reason: 'completed' } };
-
-      useSessionStore.getState().initSession(TEST_SESSION_ID, false);
-      useSessionStore.getState().updateNodeState(TEST_SESSION_ID, node1, state1);
-      useSessionStore.getState().updateNodeState(TEST_SESSION_ID, node2, state2);
-
-      const session = useSessionStore.getState().getSession(TEST_SESSION_ID);
-      expect(session?.nodeStates[node1]).toEqual(state1);
-      expect(session?.nodeStates[node2]).toEqual(state2);
-    });
   });
 
   describe('setPipeline', () => {

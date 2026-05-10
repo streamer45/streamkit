@@ -114,6 +114,8 @@ export function useEdgeAlertSubscription({
   useEffect(() => {
     if (!selectedSessionId) return;
 
+    topoEffectRanRef.current = false;
+
     const pipeline = pipelineRef.current;
     const nodeIds = pipeline ? Object.keys(pipeline.nodes) : [];
 

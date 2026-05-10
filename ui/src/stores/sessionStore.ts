@@ -4,11 +4,10 @@
 
 import { create } from 'zustand';
 
-import type { Connection, Node, Pipeline, NodeState } from '@/types/types';
+import type { Connection, Node, NodeState, Pipeline } from '@/types/types';
 
 interface SessionData {
   pipeline: Pipeline | null;
-  nodeStates: Record<string, NodeState>;
   nodeViewData: Record<string, unknown>;
   isConnected: boolean;
 }
@@ -17,7 +16,6 @@ interface SessionStore {
   sessions: Map<string, SessionData>;
 
   // Actions
-  updateNodeState: (sessionId: string, nodeId: string, state: NodeState) => void;
   updateNodeViewData: (sessionId: string, nodeId: string, data: unknown) => void;
   updateRuntimeSchema: (sessionId: string, nodeId: string, schema: unknown) => void;
   setPipeline: (sessionId: string, pipeline: Pipeline) => void;
@@ -38,19 +36,6 @@ interface SessionStore {
 
 export const useSessionStore = create<SessionStore>((set, get) => ({
   sessions: new Map(),
-
-  updateNodeState: (sessionId, nodeId, state) =>
-    set((prev) => {
-      const session = prev.sessions.get(sessionId);
-      if (!session) return prev; // Ignore updates for unknown/destroyed sessions
-
-      const newSessions = new Map(prev.sessions);
-      newSessions.set(sessionId, {
-        ...session,
-        nodeStates: { ...session.nodeStates, [nodeId]: state },
-      });
-      return { sessions: newSessions };
-    }),
 
   updateNodeViewData: (sessionId, nodeId, data) =>
     set((prev) => {
@@ -86,16 +71,6 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       const session = prev.sessions.get(sessionId);
       const newSessions = new Map(prev.sessions);
 
-      // Extract initial node states from pipeline
-      const nodeStates: Record<string, NodeState> = {};
-      if (pipeline.nodes) {
-        Object.entries(pipeline.nodes).forEach(([nodeId, node]) => {
-          if (node.state) {
-            nodeStates[nodeId] = node.state;
-          }
-        });
-      }
-
       // Extract view data snapshot (e.g. compositor resolved layout) so
       // useServerLayoutSync finds it immediately on mount.
       const incomingViewData =
@@ -105,7 +80,6 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
 
       newSessions.set(sessionId, {
         pipeline,
-        nodeStates: session ? { ...session.nodeStates, ...nodeStates } : nodeStates,
         nodeViewData: { ...(session?.nodeViewData ?? {}), ...incomingViewData },
         isConnected: session?.isConnected ?? false,
       });
@@ -259,7 +233,6 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       const newSessions = new Map(prev.sessions);
       newSessions.set(sessionId, {
         pipeline: null,
-        nodeStates: {},
         nodeViewData: {},
         isConnected: connected,
       });
