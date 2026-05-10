@@ -114,6 +114,7 @@ export function useEdgeAlertSubscription({
   useEffect(() => {
     if (!selectedSessionId) return;
 
+    // Must run before MonitorView's topology effect, which re-sets the ref to true.
     topoEffectRanRef.current = false;
 
     const pipeline = pipelineRef.current;
