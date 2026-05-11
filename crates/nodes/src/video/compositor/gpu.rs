@@ -1752,7 +1752,7 @@ mod tests {
             "Pool should have trimmed idle entries, got {}",
             pool.available.len()
         );
-        assert!(pool.available.len() < 10, "Pool must have evicted at least some idle entries",);
+        assert!(pool.available.len() < 10, "Pool must have evicted at least some idle entries");
     }
 
     /// Verify that `BufferPool` also evicts idle entries.

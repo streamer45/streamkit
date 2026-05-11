@@ -352,7 +352,7 @@ fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
-    tracing::info!(instances_cleared = count, "Servo thread shutting down gracefully",);
+    tracing::info!(instances_cleared = count, "Servo thread shutting down gracefully");
     // `servo` is dropped here -- its Drop impl sends Exit and spins
     // until the constellation finishes shutting down.
 }
