@@ -2537,6 +2537,7 @@ mod ffi_guard_tests {
         pub extern "C" fn destroy_instance(_: CPluginHandle) {}
         pub static DESTROY_CALL_COUNT: std::sync::atomic::AtomicUsize =
             std::sync::atomic::AtomicUsize::new(0);
+        pub static GUARD_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
         pub extern "C" fn destroy_instance_counted(_: CPluginHandle) {
             DESTROY_CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
@@ -2653,6 +2654,7 @@ mod ffi_guard_tests {
 
     #[test]
     fn instance_state_drop_destroys_without_request_drop() {
+        let _lock = test_stubs::GUARD_TEST_MUTEX.lock().unwrap();
         test_stubs::DESTROY_CALL_COUNT.store(0, Ordering::SeqCst);
         let lib = unsafe { Library::new("libc.so.6").expect("libc must be loadable") };
         let api: &'static CNativePluginAPI = Box::leak(Box::new(dummy_api_counted_destroy()));
@@ -3564,6 +3566,7 @@ mod ffi_guard_tests {
 
     #[test]
     fn handle_guard_calls_destroy_on_drop() {
+        let _lock = test_stubs::GUARD_TEST_MUTEX.lock().unwrap();
         test_stubs::DESTROY_CALL_COUNT.store(0, Ordering::SeqCst);
         let api: &'static CNativePluginAPI = Box::leak(Box::new(dummy_api_counted_destroy()));
         {
@@ -3582,6 +3585,7 @@ mod ffi_guard_tests {
 
     #[test]
     fn handle_guard_does_not_destroy_when_defused() {
+        let _lock = test_stubs::GUARD_TEST_MUTEX.lock().unwrap();
         test_stubs::DESTROY_CALL_COUNT.store(0, Ordering::SeqCst);
         let api: &'static CNativePluginAPI = Box::leak(Box::new(dummy_api_counted_destroy()));
         {
@@ -3601,6 +3605,7 @@ mod ffi_guard_tests {
 
     #[test]
     fn handle_guard_catches_panic_between_create_and_ok() {
+        let _lock = test_stubs::GUARD_TEST_MUTEX.lock().unwrap();
         test_stubs::DESTROY_CALL_COUNT.store(0, Ordering::SeqCst);
         let api: &'static CNativePluginAPI = Box::leak(Box::new(dummy_api_counted_destroy()));
 
