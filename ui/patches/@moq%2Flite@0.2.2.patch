@@ -1,0 +1,40 @@
+diff --git a/lite/announce.js b/lite/announce.js
+index eaae9b79570e7d17363dd2a1e98961ee446d6086..4a0047c9441e8242c5195eb8a230bd34da76c716 100644
+--- a/lite/announce.js
++++ b/lite/announce.js
+@@ -25,7 +25,7 @@ export class Announce {
+                 // Lite04+: hop count + individual hop IDs
+                 await w.u53(this.hops.length);
+                 for (const id of this.hops) {
+-                    await w.u53(id);
++                    await w.u62(id);
+                 }
+                 break;
+         }
+@@ -52,7 +52,7 @@ export class Announce {
+                     throw new Error(`hop count ${count} exceeds maximum ${MAX_HOPS}`);
+                 hops = [];
+                 for (let i = 0; i < count; i++) {
+-                    hops.push(await r.u53());
++                    hops.push(await r.u62());
+                 }
+                 break;
+             }
+@@ -85,7 +85,7 @@ export class AnnounceInterest {
+                 break;
+             default:
+                 // Lite04+: exclude_hop field
+-                await w.u53(this.excludeHop);
++                await w.u62(this.excludeHop);
+                 break;
+         }
+     }
+@@ -98,7 +98,7 @@ export class AnnounceInterest {
+             case Version.DRAFT_03:
+                 break;
+             default:
+-                excludeHop = await r.u53();
++                excludeHop = await r.u62();
+                 break;
+         }
+         return new AnnounceInterest(prefix, excludeHop);
