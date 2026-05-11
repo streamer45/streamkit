@@ -366,7 +366,7 @@ impl SupertonicNode {
             let latency_ms = start.elapsed().as_millis();
             #[allow(clippy::cast_sign_loss)]
             let sr = self.sample_rate as u64;
-            let duration_ms = if sr > 0 { (sample_count as u64 * 1000 + sr / 2) / sr } else { 0 };
+            let duration_ms = (sample_count as u64 * 1000 + sr / 2).checked_div(sr).unwrap_or(0);
             let _ = output.emit_telemetry(
                 "tts.done",
                 &serde_json::json!({

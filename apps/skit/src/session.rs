@@ -111,12 +111,9 @@ fn create_telemetry_api_event(
 /// (e.g., full transcriptions, LLM responses) through telemetry.
 fn redact_telemetry_data(value: &mut serde_json::Value, max_chars: usize) {
     match value {
-        serde_json::Value::String(s) => {
-            if s.len() > max_chars {
-                // Truncate and add indicator
-                let truncated: String = s.chars().take(max_chars).collect();
-                *s = format!("{truncated}...[truncated]");
-            }
+        serde_json::Value::String(s) if s.len() > max_chars => {
+            let truncated: String = s.chars().take(max_chars).collect();
+            *s = format!("{truncated}...[truncated]");
         },
         serde_json::Value::Object(map) => {
             for v in map.values_mut() {

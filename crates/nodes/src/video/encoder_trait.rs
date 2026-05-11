@@ -404,7 +404,7 @@ pub fn spawn_standard_encode_task<E: StandardVideoEncoder>(
 
             let Some(enc) = encoder.as_mut() else {
                 let _ = result_tx
-                    .blocking_send(Err(format!("{} encoder not initialized", E::CODEC_NAME,)));
+                    .blocking_send(Err(format!("{} encoder not initialized", E::CODEC_NAME)));
                 continue;
             };
 

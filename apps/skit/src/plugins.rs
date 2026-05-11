@@ -905,8 +905,7 @@ impl UnifiedPluginManager {
     fn try_remove_empty_plugin_dir(&self, file_path: &Path) {
         if let Some(parent) = file_path.parent() {
             if parent != self.native_directory && parent.starts_with(&self.native_directory) {
-                let is_empty =
-                    parent.read_dir().map(|mut entries| entries.next().is_none()).unwrap_or(false);
+                let is_empty = parent.read_dir().is_ok_and(|mut entries| entries.next().is_none());
                 if is_empty {
                     let _ = std::fs::remove_dir(parent);
                 }

@@ -47,13 +47,15 @@ url = { version = "2.5.8", optional = true, features = ["serde"] }
 rquickjs = { version = "0.11", features = ["array-buffer", "futures", "loader", "parallel"], optional = true }
 wildmatch = { version = "2.6", optional = true }
 
-moq-native = { version = "0.13.13", optional = true }
-moq-lite = { version = "0.15.15", optional = true }
-hang = { version = "0.15.8", optional = true }
+moq-native = { version = "0.14.0", optional = true }
+moq-lite = { version = "0.16.0", optional = true }
+moq-mux = { version = "0.4.0", optional = true }
+hang = { version = "0.16.0", optional = true }
 
 # For local dev, debugging moq stuff
 # moq-native = { path = "../../moq/rs/moq-native", optional = true }
 # moq-lite = { path = "../../moq/rs/moq", optional = true }
+# moq-mux = { path = "../../moq/rs/moq-mux", optional = true }
 # hang = { path = "../../moq/rs/hang", optional = true }
 
 serde_json = { version = "1.0", optional = true }
@@ -97,7 +99,7 @@ rav1e = { version = "0.8", optional = true, default-features = false, features =
 rav1d = { version = "1.1", optional = true, default-features = false, features = ["bitdepth_8", "bitdepth_16", "asm"] }
 
 # Object storage (optional, behind `object_store` feature)
-opendal = { version = "0.55", optional = true, default-features = false, features = [
+opendal = { version = "0.56", optional = true, default-features = false, features = [
   "services-s3",
 ] }
 
@@ -151,6 +153,7 @@ moq = [
   "dep:url",
   "dep:moq-native",
   "dep:moq-lite",
+  "dep:moq-mux",
   "dep:hang",
   "dep:serde_json",
 ]

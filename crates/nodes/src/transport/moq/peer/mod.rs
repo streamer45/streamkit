@@ -18,7 +18,7 @@ pub use config::MoqPeerConfig;
 use config::{
     infer_kind_from_packet, join_gateway_path, make_broadcast_frame, media_kind_for_packet_type,
     normalize_gateway_path, BidirectionalTaskConfig, BroadcastFrame, DynamicOutputs, FrameResult,
-    MediaCodecConfig, MediaKind, MediaTypeState, NodeStatsDelta, PublisherEvent,
+    HangProducer, MediaCodecConfig, MediaKind, MediaTypeState, NodeStatsDelta, PublisherEvent,
     PublisherReceiveLoopWithSlotConfig, SendResult, SubscriberMediaConfig, SubscriberSendCtx,
     TrackExit,
 };
@@ -915,7 +915,7 @@ impl MoqPeerNode {
             .send(streamkit_core::moq_gateway::MoqConnectionResult::Accepted);
 
         // Create origin for receiving from client
-        let client_publish_origin = moq_lite::Origin::produce();
+        let client_publish_origin = moq_lite::Origin::random().produce();
         let receive_origin = client_publish_origin.consume();
 
         // Accept MoQ session (publisher only sends, no server publish needed)
@@ -971,10 +971,10 @@ impl MoqPeerNode {
             .send(streamkit_core::moq_gateway::MoqConnectionResult::Accepted);
 
         // Create origins for full bidirectional MoQ
-        let server_publish_origin = moq_lite::Origin::produce();
+        let server_publish_origin = moq_lite::Origin::random().produce();
         let send_origin = server_publish_origin.clone();
 
-        let client_publish_origin = moq_lite::Origin::produce();
+        let client_publish_origin = moq_lite::Origin::random().produce();
         let receive_origin = client_publish_origin.consume();
 
         let session = request
@@ -1422,7 +1422,7 @@ impl MoqPeerNode {
             broadcast_consumer.subscribe_track(&hang::catalog::Catalog::default_track()).map_err(
                 |e| StreamKitError::Runtime(format!("Failed to subscribe to catalog track: {e}")),
             )?;
-        let mut catalog_consumer = hang::catalog::CatalogConsumer::new(catalog_track);
+        let mut catalog_consumer = moq_mux::catalog::Consumer::new(catalog_track);
 
         let mut track_handles: HashMap<
             String,
@@ -1735,7 +1735,7 @@ impl MoqPeerNode {
     ) -> Result<Option<moq_lite::GroupConsumer>, moq_lite::Error> {
         tokio::select! {
             biased;
-            group_result = track_consumer.next_group_ordered() => {
+            group_result = track_consumer.next_group() => {
                 match group_result {
                     Ok(Some(group)) => {
                         tracing::debug!(output_pin, "Got next group from publisher");
@@ -1873,7 +1873,7 @@ impl MoqPeerNode {
 
                         // Decode the hang protocol timestamp (varint-encoded microseconds)
                         // and propagate it as PacketMetadata so downstream nodes have timing.
-                        let timestamp = match hang::container::Timestamp::decode(&mut payload) {
+                        let timestamp = match moq_mux::container::Timestamp::decode(&mut payload) {
                             Ok(ts) => ts,
                             Err(e) => {
                                 tracing::warn!("Failed to decode frame timestamp: {e}");
@@ -1971,7 +1971,7 @@ impl MoqPeerNode {
             .send(streamkit_core::moq_gateway::MoqConnectionResult::Accepted);
 
         // Create origin for sending to client
-        let server_publish_origin = moq_lite::Origin::produce();
+        let server_publish_origin = moq_lite::Origin::random().produce();
         let send_origin = server_publish_origin.clone();
 
         // Accept MoQ session (subscriber only receives, no client publish needed)
@@ -2163,8 +2163,8 @@ impl MoqPeerNode {
     ) -> Result<
         (
             moq_lite::BroadcastProducer,
-            Option<hang::container::OrderedProducer>,
-            Option<hang::container::OrderedProducer>,
+            Option<HangProducer>,
+            Option<HangProducer>,
             moq_lite::TrackProducer,
         ),
         StreamKitError,
@@ -2180,7 +2180,10 @@ impl MoqPeerNode {
             let producer = broadcast_producer.create_track(track.clone()).map_err(|e| {
                 StreamKitError::Runtime(format!("Failed to create audio track: {e}"))
             })?;
-            Some((track, hang::container::OrderedProducer::from(producer)))
+            Some((
+                track,
+                moq_mux::container::Producer::new(producer, moq_mux::container::Hang::Legacy),
+            ))
         } else {
             None
         };
@@ -2191,7 +2194,10 @@ impl MoqPeerNode {
             let producer = broadcast_producer.create_track(track.clone()).map_err(|e| {
                 StreamKitError::Runtime(format!("Failed to create video track: {e}"))
             })?;
-            Some((track, hang::container::OrderedProducer::from(producer)))
+            Some((
+                track,
+                moq_mux::container::Producer::new(producer, moq_mux::container::Hang::Legacy),
+            ))
         } else {
             None
         };
@@ -2295,8 +2301,8 @@ impl MoqPeerNode {
     /// Run the main send loop, forwarding packets to the subscriber
     #[allow(clippy::too_many_arguments)]
     async fn run_subscriber_send_loop(
-        audio_track_producer: &mut Option<hang::container::OrderedProducer>,
-        video_track_producer: &mut Option<hang::container::OrderedProducer>,
+        audio_track_producer: &mut Option<HangProducer>,
+        video_track_producer: &mut Option<HangProducer>,
         mut broadcast_rx: broadcast::Receiver<BroadcastFrame>,
         shutdown_rx: &mut broadcast::Receiver<()>,
         output_group_duration_ms: u64,
@@ -2406,24 +2412,15 @@ impl MoqPeerNode {
                 *last_ts_ms = Some(timestamp_ms);
 
                 let timestamp =
-                    hang::container::Timestamp::from_millis(timestamp_ms).map_err(|_| {
+                    moq_mux::container::Timestamp::from_millis(timestamp_ms).map_err(|_| {
                         StreamKitError::Runtime("MoQ frame timestamp overflow".to_string())
                     })?;
 
-                let mut payload = hang::container::BufList::new();
-                payload.push_chunk(broadcast_frame.data);
-
-                if keyframe {
-                    if let Err(e) = track_producer.keyframe() {
-                        tracing::warn!(kind = ?broadcast_frame.kind, "Failed to signal keyframe: {e}");
-                        let _ = ctx
-                            .stats_delta_tx
-                            .try_send(NodeStatsDelta { errored: 1, ..Default::default() });
-                        return Ok(SendResult::Stop);
-                    }
-                }
-
-                let frame = hang::container::Frame { timestamp, payload };
+                let frame = moq_mux::container::Frame {
+                    timestamp,
+                    payload: broadcast_frame.data,
+                    keyframe,
+                };
 
                 if let Err(e) = track_producer.write(frame) {
                     tracing::warn!(kind = ?broadcast_frame.kind, "Failed to write MoQ frame to subscriber: {e}");

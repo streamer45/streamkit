@@ -85,7 +85,7 @@ impl LoadedNativePlugin {
             Library::new(path).map_err(|e| {
                 let path_display = path.display();
                 // libloading::Error contains detailed information about what went wrong
-                anyhow!("Failed to load library '{path_display}': {e}.",)
+                anyhow!("Failed to load library '{path_display}': {e}.")
             })?
         };
 

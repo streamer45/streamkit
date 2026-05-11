@@ -1120,8 +1120,9 @@ impl GpuContext {
 
         // UV buffer: for NV12, 2 bytes per chroma sample; for I420, 1 byte per
         // sample but U and V planes stacked vertically (2× chroma_h rows).
-        let uv_row_bytes: u32 = if format == PixelFormat::I420 { chroma_w } else { chroma_w * 2 };
-        let uv_stride = align_up(uv_row_bytes as usize, 4) as u32;
+        let uv_row_bytes: usize =
+            if format == PixelFormat::I420 { chroma_w as usize } else { chroma_w as usize * 2 };
+        let uv_stride = align_up(uv_row_bytes, 4) as u32;
         let uv_rows: u32 = if format == PixelFormat::I420 { chroma_h * 2 } else { chroma_h };
         let uv_buf_size = u64::from(uv_stride) * u64::from(uv_rows);
         let uv_buf_size_aligned = align_up(uv_buf_size as usize, 4) as u64;
@@ -1228,7 +1229,7 @@ impl GpuContext {
             self.map_and_read_buffer(&staging.y_staging, width as usize, height as usize, y_stride);
         let uv_data = self.map_and_read_buffer(
             &staging.uv_staging,
-            uv_row_bytes as usize,
+            uv_row_bytes,
             uv_rows as usize,
             uv_stride,
         );
