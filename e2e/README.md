@@ -8,7 +8,7 @@ End-to-end tests for StreamKit using Playwright.
 ## Prerequisites
 
 - Bun 1.3.5+
-- Rust 1.92.0+ (for building skit)
+- Rust 1.95.0+ (for building skit)
 - Built UI (`cd ui && bun install && bun run build` or `just build-ui`)
 - Built skit binary (`cargo build -p streamkit-server --bin skit`)
 

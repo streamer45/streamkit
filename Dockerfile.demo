@@ -9,7 +9,7 @@
 ARG SHERPA_ONNX_VERSION=1.12.17
 
 # Stage 1: Build Rust dependencies
-FROM rust:1.92-slim-bookworm AS rust-deps
+FROM rust:1.95-slim-bookworm AS rust-deps
 
 WORKDIR /build
 
@@ -68,7 +68,7 @@ COPY ui/ ./
 RUN bun run build
 
 # Stage 3: Build final server binary with UI embedded
-FROM rust:1.92-slim-bookworm AS rust-builder
+FROM rust:1.95-slim-bookworm AS rust-builder
 
 WORKDIR /build
 
@@ -123,7 +123,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     '
 
 # Stage 4: Build Whisper plugin
-FROM rust:1.92-slim-bookworm AS whisper-builder
+FROM rust:1.95-slim-bookworm AS whisper-builder
 
 WORKDIR /build
 
@@ -175,7 +175,7 @@ RUN mkdir -p /build/models && \
       https://huggingface.co/streamkit/whisper-models/resolve/main/silero_vad.onnx
 
 # Stage 5: Build Kokoro TTS plugin
-FROM rust:1.92-slim-bookworm AS kokoro-builder
+FROM rust:1.95-slim-bookworm AS kokoro-builder
 
 WORKDIR /build
 
@@ -223,7 +223,7 @@ RUN mkdir -p /build/models && \
     rm kokoro-multi-lang-v1_1.tar.bz2
 
 # Stage 6: Build Piper TTS plugin
-FROM rust:1.92-slim-bookworm AS piper-builder
+FROM rust:1.95-slim-bookworm AS piper-builder
 
 WORKDIR /build
 
@@ -280,7 +280,7 @@ RUN mkdir -p /build/models && \
     fi
 
 # Stage 7: Build SenseVoice STT plugin
-FROM rust:1.92-slim-bookworm AS sensevoice-builder
+FROM rust:1.95-slim-bookworm AS sensevoice-builder
 
 WORKDIR /build
 
@@ -324,7 +324,7 @@ RUN mkdir -p /build/models && \
     rm sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2
 
 # Stage 8: Build VAD plugin
-FROM rust:1.92-slim-bookworm AS vad-builder
+FROM rust:1.95-slim-bookworm AS vad-builder
 
 WORKDIR /build
 
@@ -365,7 +365,7 @@ RUN mkdir -p /build/models && \
       https://huggingface.co/streamkit/vad-models/resolve/main/ten-vad.onnx
 
 # Stage 9: Build Matcha TTS plugin
-FROM rust:1.92-slim-bookworm AS matcha-builder
+FROM rust:1.95-slim-bookworm AS matcha-builder
 
 WORKDIR /build
 
@@ -412,7 +412,7 @@ RUN mkdir -p /build/models && \
       https://huggingface.co/streamkit/matcha-models/resolve/main/matcha-icefall-en_US-ljspeech/vocos-22khz-univ.onnx
 
 # Stage 10: Build Helsinki Translation plugin (CPU-only)
-FROM rust:1.92-slim-bookworm AS helsinki-builder
+FROM rust:1.95-slim-bookworm AS helsinki-builder
 
 WORKDIR /build
 
@@ -453,7 +453,7 @@ RUN PIP_BREAK_SYSTEM_PACKAGES=1 pip3 install --no-cache-dir \
     python3 plugins/native/helsinki/download-models.py
 
 # Stage 11: Build Pocket TTS plugin
-FROM rust:1.92-slim-bookworm AS pocket-tts-builder
+FROM rust:1.95-slim-bookworm AS pocket-tts-builder
 
 WORKDIR /build
 
@@ -494,7 +494,7 @@ RUN mkdir -p /build/models && \
     rm pocket-tts-b6369a24.tar.bz2
 
 # Stage 12: Build Supertonic TTS plugin
-FROM rust:1.92-slim-bookworm AS supertonic-builder
+FROM rust:1.95-slim-bookworm AS supertonic-builder
 
 WORKDIR /build
 
@@ -535,7 +535,7 @@ RUN mkdir -p /build/models && \
     rm supertonic-v2-onnx.tar.bz2
 
 # Stage 13: Build AAC Encoder plugin
-FROM rust:1.92-slim-bookworm AS aac-encoder-builder
+FROM rust:1.95-slim-bookworm AS aac-encoder-builder
 
 WORKDIR /build
 
@@ -566,7 +566,7 @@ RUN --mount=type=cache,id=cargo-registry-aac-encoder,target=/usr/local/cargo/reg
     cp target/release/libaac_encoder.so /build/plugins/native/
 
 # Stage 14: Build Slint UI plugin
-FROM rust:1.92-slim-bookworm AS slint-builder
+FROM rust:1.95-slim-bookworm AS slint-builder
 
 WORKDIR /build
 

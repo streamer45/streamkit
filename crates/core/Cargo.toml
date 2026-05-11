@@ -2,7 +2,7 @@
 name = "streamkit-core"
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.92"
+rust-version = "1.95"
 authors = ["Claudio Costa <cstcld91@gmail.com>", "StreamKit Contributors"]
 description = "Core traits and data structures for real-time media processing"
 homepage = "https://streamkit.dev"
