@@ -294,7 +294,7 @@ impl MoqPullNode {
     ) -> Result<(u64, bytes::Bytes), moq_lite::Error> {
         // hang protocol: frame payload is prefixed with a varint timestamp in microseconds.
         // We parse it and forward the remaining bytes (Opus frame data).
-        let timestamp = moq_mux::container::Timestamp::decode(&mut payload)?;
+        let timestamp = hang::container::Timestamp::decode(&mut payload)?;
         #[allow(clippy::cast_possible_truncation)] // MoQ timestamps fit in u64
         let timestamp_us = timestamp.as_micros() as u64;
         Ok((timestamp_us, payload.copy_to_bytes(payload.remaining())))
@@ -310,7 +310,7 @@ impl MoqPullNode {
     ) -> Result<Option<bytes::Bytes>, moq_lite::Error> {
         loop {
             if current_group.is_none() {
-                match track_consumer.next_group().await {
+                match track_consumer.next_group_ordered().await {
                     Ok(Some(group)) => {
                         *current_group = Some(group);
                         *is_first_in_group = true;
@@ -357,7 +357,7 @@ impl MoqPullNode {
 
         let client = super::shared_insecure_client()?;
 
-        let origin = moq_lite::Origin::random().produce();
+        let origin = moq_lite::Origin::produce();
         let consumer = origin.consume();
         let _consumer_session =
             client.clone().with_consume(origin).connect(url).await.map_err(|e| {
@@ -372,7 +372,7 @@ impl MoqPullNode {
 
         let discovery_start = tokio::time::Instant::now();
         let broadcast = loop {
-            if let Some(b) = consumer.get_broadcast(&self.config.broadcast) {
+            if let Some(b) = consumer.consume_broadcast(&self.config.broadcast) {
                 break b;
             }
             if discovery_start.elapsed() >= discovery_timeout {
@@ -395,7 +395,7 @@ impl MoqPullNode {
             broadcast.subscribe_track(&hang::catalog::Catalog::default_track()).map_err(|e| {
                 StreamKitError::Runtime(format!("Failed to subscribe to catalog track: {e}"))
             })?;
-        let mut catalog_consumer = moq_mux::catalog::Consumer::new(raw_catalog_track);
+        let mut catalog_consumer = hang::catalog::CatalogConsumer::new(raw_catalog_track);
 
         // Parse the catalog to discover tracks
         let tracks = self.parse_catalog(&mut catalog_consumer).await?;
@@ -467,7 +467,7 @@ impl MoqPullNode {
     /// (e.g. the browser's video encoder finishing after audio was already ready).
     /// Returns as soon as both audio and video are present, or on timeout.
     async fn settle_catalog(
-        catalog_consumer: &mut moq_mux::catalog::Consumer,
+        catalog_consumer: &mut hang::catalog::CatalogConsumer,
         mut best: Vec<DiscoveredTrack>,
     ) -> Vec<DiscoveredTrack> {
         if Self::has_audio_and_video(&best) {
@@ -506,7 +506,7 @@ impl MoqPullNode {
 
     async fn parse_catalog(
         &self,
-        catalog_consumer: &mut moq_mux::catalog::Consumer,
+        catalog_consumer: &mut hang::catalog::CatalogConsumer,
     ) -> Result<Vec<DiscoveredTrack>, StreamKitError> {
         let catalog_timeout = Duration::from_secs(30);
         let retry_delay = Duration::from_millis(100);
@@ -585,7 +585,7 @@ impl MoqPullNode {
         let client = super::shared_insecure_client()?;
 
         // Create origin for consuming broadcasts only (no publishing to avoid cycles)
-        let origin = moq_lite::Origin::random().produce();
+        let origin = moq_lite::Origin::produce();
         let consumer = origin.consume();
         let _consumer_session =
             client.clone().with_consume(origin).connect(url).await.map_err(|e| {
@@ -593,12 +593,12 @@ impl MoqPullNode {
             })?;
 
         // Wait for broadcast to become available
-        // Note: get_broadcast() only works after announcement, so we primarily rely on announcements
+        // Note: consume_broadcast() only works after announcement, so we primarily rely on announcements
         let broadcast = {
             let mut announcements = consumer.clone();
 
             // Try immediate consume first (works if broadcast already announced)
-            if let Some(broadcast) = consumer.get_broadcast(&self.config.broadcast) {
+            if let Some(broadcast) = consumer.consume_broadcast(&self.config.broadcast) {
                 tracing::info!("Broadcast '{}' is immediately available", self.config.broadcast);
                 broadcast
             } else {
@@ -655,7 +655,7 @@ impl MoqPullNode {
             broadcast.subscribe_track(&hang::catalog::Catalog::default_track()).map_err(|e| {
                 StreamKitError::Runtime(format!("Failed to subscribe to catalog track: {e}"))
             })?;
-        let mut catalog_consumer = moq_mux::catalog::Consumer::new(raw_catalog_track);
+        let mut catalog_consumer = hang::catalog::CatalogConsumer::new(raw_catalog_track);
 
         tracing::debug!(
             "subscribed to catalog track: {}",
@@ -1139,7 +1139,7 @@ mod tests {
     #[test]
     fn test_strip_hang_timestamp_header() {
         let mut buf = BytesMut::new();
-        moq_mux::container::Timestamp::from_micros(123)
+        hang::container::Timestamp::from_micros(123)
             .expect("valid timestamp")
             .encode(&mut buf)
             .expect("encode succeeds");

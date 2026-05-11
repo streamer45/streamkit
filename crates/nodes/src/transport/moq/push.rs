@@ -110,7 +110,7 @@ pub struct MoqPushNode {
 struct DynamicInputState {
     pin_name: String,
     receiver: tokio::sync::mpsc::Receiver<Packet>,
-    producer: moq_mux::container::Producer<moq_mux::container::Hang>,
+    producer: hang::container::OrderedProducer,
     clock: MediaClock,
     seeded: bool,
     first_sent: bool,
@@ -194,7 +194,7 @@ impl ProcessorNode for MoqPushNode {
             },
         };
 
-        let publisher_origin = moq_lite::Origin::random().produce();
+        let publisher_origin = moq_lite::Origin::produce();
         let _publisher_session =
             match client.clone().with_publish(publisher_origin.consume()).connect(url).await {
                 Ok(session) => session,
@@ -249,12 +249,12 @@ impl ProcessorNode for MoqPushNode {
         } else {
             None
         };
-        let mut audio_producer: Option<moq_mux::container::Producer<moq_mux::container::Hang>> =
+        let mut audio_producer: Option<hang::container::OrderedProducer> =
             if let Some(ref at) = audio_track {
                 let producer = broadcast.create_track(at.clone()).map_err(|e| {
                     StreamKitError::Runtime(format!("Failed to create audio track: {e}"))
                 })?;
-                Some(moq_mux::container::Producer::new(producer, moq_mux::container::Hang::Legacy))
+                Some(producer.into())
             } else {
                 None
             };
@@ -265,12 +265,12 @@ impl ProcessorNode for MoqPushNode {
         } else {
             None
         };
-        let mut video_producer: Option<moq_mux::container::Producer<moq_mux::container::Hang>> =
+        let mut video_producer: Option<hang::container::OrderedProducer> =
             if let Some(ref vt) = video_track {
                 let producer = broadcast.create_track(vt.clone()).map_err(|e| {
                     StreamKitError::Runtime(format!("Failed to create video track: {e}"))
                 })?;
-                Some(moq_mux::container::Producer::new(producer, moq_mux::container::Hang::Legacy))
+                Some(producer.into())
             } else {
                 None
             };
@@ -569,11 +569,25 @@ impl ProcessorNode for MoqPushNode {
                 };
 
                 let timestamp =
-                    moq_mux::container::Timestamp::from_millis(timestamp_ms).map_err(|_| {
+                    hang::container::Timestamp::from_millis(timestamp_ms).map_err(|_| {
                         StreamKitError::Runtime("MoQ frame timestamp overflow".to_string())
                     })?;
 
-                let frame = moq_mux::container::Frame { timestamp, payload: data, keyframe };
+                let mut payload = hang::container::BufList::new();
+                payload.push_chunk(data);
+
+                if keyframe {
+                    if let Err(e) = producer.keyframe() {
+                        let err_msg = format!("Failed to signal keyframe: {e}");
+                        tracing::warn!("{err_msg}");
+                        stats_tracker.errored();
+                        stats_tracker.force_send();
+                        state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
+                        return Err(StreamKitError::Runtime(err_msg));
+                    }
+                }
+
+                let frame = hang::container::Frame { timestamp, payload };
 
                 if let Err(e) = producer.write(frame) {
                     let err_msg = format!("Failed to write MoQ frame: {e}");
@@ -787,8 +801,7 @@ impl MoqPushNode {
             // Roll back — subscribers won't discover this track.
             Self::remove_catalog_rendition(catalog, &track_name);
             // Finish the producer so the broadcast doesn't retain a dangling track.
-            let mut tp =
-                moq_mux::container::Producer::new(producer, moq_mux::container::Hang::Legacy);
+            let mut tp: hang::container::OrderedProducer = producer.into();
             let _ = tp.track.finish();
             tracing::error!(
                 pin = %pin.name, track = %track_name,
@@ -812,7 +825,7 @@ impl MoqPushNode {
         dynamic_inputs.push(DynamicInputState {
             pin_name: pin.name.clone(),
             receiver: channel,
-            producer: moq_mux::container::Producer::new(producer, moq_mux::container::Hang::Legacy),
+            producer: producer.into(),
             clock,
             seeded: false,
             first_sent: false,
