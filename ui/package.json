@@ -94,8 +94,5 @@
   },
   "overrides": {
     "@codemirror/view": "$@codemirror/view"
-  },
-  "patchedDependencies": {
-    "@moq/lite@0.2.2": "patches/@moq%2Flite@0.2.2.patch"
   }
 }
