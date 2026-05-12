@@ -179,6 +179,37 @@ def build_manifest(
     return strip_none(manifest)
 
 
+def verify_existing_signature(
+    manifest_path: pathlib.Path,
+    signature_path: pathlib.Path,
+    public_key_path: pathlib.Path | None,
+) -> bool:
+    """Verify an existing manifest's minisign signature.
+
+    Returns True if the signature is valid or if verification cannot be
+    performed (no public key or minisign not installed).
+    """
+    if public_key_path is None or not public_key_path.exists():
+        return True
+    if shutil.which("minisign") is None:
+        return True
+    result = subprocess.run(
+        [
+            "minisign",
+            "-V",
+            "-q",
+            "-p",
+            str(public_key_path),
+            "-m",
+            str(manifest_path),
+            "-x",
+            str(signature_path),
+        ],
+        capture_output=True,
+    )
+    return result.returncode == 0
+
+
 def sign_manifest(manifest_path: pathlib.Path, signing_key: pathlib.Path) -> pathlib.Path:
     signature_path = manifest_path.with_name("manifest.minisig")
     subprocess.run(
@@ -357,6 +388,15 @@ def main() -> int:
         print("No plugins found in metadata", file=sys.stderr)
         return 1
 
+    # Resolve public key path early so it's available for signature verification.
+    public_key_path = None
+    if args.public_key:
+        public_key_path = pathlib.Path(args.public_key)
+    else:
+        default_key = pathlib.Path("docs/public/registry/streamkit.pub")
+        if default_key.exists():
+            public_key_path = default_key
+
     bundle_url_template = args.bundle_url_template.rstrip("/")
     registry_base_url = normalize_base_url(args.registry_base_url)
     published_at = datetime.date.today().isoformat()
@@ -410,6 +450,20 @@ def main() -> int:
                 )
                 print("Manifest differences:", file=sys.stderr)
                 print("".join(diff), file=sys.stderr)
+                return 1
+
+            if not verify_existing_signature(
+                existing["manifest_path"],
+                existing["signature_path"],
+                public_key_path,
+            ):
+                print(
+                    f"ERROR: {plugin_id}@{plugin_version} — existing manifest "
+                    f"signature verification failed. The manifest file may have "
+                    f"been modified after signing. Revert the manual changes or "
+                    f"bump the version to trigger re-signing.",
+                    file=sys.stderr,
+                )
                 return 1
 
             print(f"Reusing existing {plugin_id} v{plugin_version}")
@@ -537,16 +591,6 @@ def main() -> int:
 
     index = {"schema_version": 1, "plugins": registry_plugins}
     write_json(registry_out / "index.json", index)
-
-    # Copy public key if available
-    public_key_path = None
-    if args.public_key:
-        public_key_path = pathlib.Path(args.public_key)
-    else:
-        # Try default location
-        default_key = pathlib.Path("docs/public/registry/streamkit.pub")
-        if default_key.exists():
-            public_key_path = default_key
 
     if public_key_path and public_key_path.exists():
         dest_key = registry_out / "streamkit.pub"
