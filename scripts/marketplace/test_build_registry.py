@@ -61,3 +61,22 @@ class TestBuildManifestRepoField:
         plugin = {k: v for k, v in SAMPLE_PLUGIN.items() if k != "repo"}
         manifest = check_registry_versions.build_manifest_from_plugin(plugin, bundle_block=None)
         assert "repository" not in manifest
+
+
+class TestVerifyExistingSignature:
+    """Tests for verify_existing_signature used during manifest reuse."""
+
+    def test_returns_true_when_public_key_is_none(self, tmp_path):
+        manifest = tmp_path / "manifest.json"
+        manifest.write_text("{}")
+        sig = tmp_path / "manifest.minisig"
+        sig.write_text("dummy")
+        assert build_registry.verify_existing_signature(manifest, sig, None) is True
+
+    def test_returns_true_when_public_key_missing(self, tmp_path):
+        manifest = tmp_path / "manifest.json"
+        manifest.write_text("{}")
+        sig = tmp_path / "manifest.minisig"
+        sig.write_text("dummy")
+        missing = tmp_path / "nonexistent.pub"
+        assert build_registry.verify_existing_signature(manifest, sig, missing) is True
