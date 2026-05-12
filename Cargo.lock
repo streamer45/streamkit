@@ -2432,7 +2432,7 @@ dependencies = [
  "derive_more",
  "hex",
  "lazy_static",
- "moq-lite 0.15.15",
+ "moq-lite",
  "regex",
  "serde",
  "serde_json",
@@ -3523,25 +3523,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "moq-lite"
-version = "0.16.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15b02845fa5cef29b516e0ed60dc95f5904502bf001a8a2790d543fae6571a94"
-dependencies = [
- "bytes",
- "conducer",
- "futures",
- "num_enum",
- "rand 0.9.4",
- "serde",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "web-async",
- "web-transport-trait",
-]
-
-[[package]]
 name = "moq-native"
 version = "0.13.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3553,7 +3534,7 @@ dependencies = [
  "hex",
  "humantime",
  "humantime-serde",
- "moq-lite 0.15.15",
+ "moq-lite",
  "parking_lot",
  "qmux",
  "quinn",
@@ -3573,39 +3554,6 @@ dependencies = [
  "url",
  "web-transport-quinn",
  "x509-parser",
-]
-
-[[package]]
-name = "moq-native"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6942bac34d380bbab511e10069bc0f9615f20109807dab01b52d45e0812dc571"
-dependencies = [
- "anyhow",
- "clap",
- "futures",
- "hex",
- "humantime",
- "humantime-serde",
- "moq-lite 0.16.0",
- "parking_lot",
- "qmux",
- "quinn",
- "rand 0.9.4",
- "rcgen",
- "reqwest 0.12.28",
- "rustls",
- "rustls-native-certs",
- "rustls-pemfile",
- "rustls-webpki",
- "serde",
- "serde_with",
- "time",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "url",
- "web-transport-quinn",
 ]
 
 [[package]]
@@ -6320,8 +6268,8 @@ dependencies = [
  "futures-util",
  "hang",
  "image",
- "moq-lite 0.15.15",
- "moq-native 0.13.13",
+ "moq-lite",
+ "moq-native",
  "ogg",
  "opendal",
  "openh264",
@@ -6450,8 +6398,8 @@ dependencies = [
  "jemalloc_pprof",
  "jsonwebtoken",
  "mime_guess",
- "moq-lite 0.16.0",
- "moq-native 0.14.0",
+ "moq-lite",
+ "moq-native",
  "multer",
  "ogg",
  "opentelemetry",
@@ -9348,9 +9296,9 @@ dependencies = [
 
 [[package]]
 name = "zerofrom"
-version = "0.1.7"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69faa1f2a1ea75661980b013019ed6687ed0e83d069bc1114e2cc74c6c04c4df"
+checksum = "0ec05a11813ea801ff6d75110ad09cd0824ddba17dfe17128ea0d5f68e6c5272"
 dependencies = [
  "zerofrom-derive",
 ]
