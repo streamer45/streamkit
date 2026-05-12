@@ -3967,10 +3967,10 @@ async fn check_batch_node_id_uniqueness(
     let mut duplicates = Vec::new();
     for op in operations {
         match op {
-            streamkit_api::BatchOperation::AddNode { node_id, .. } => {
-                if !live_ids.insert(node_id.clone()) {
-                    duplicates.push(node_id.clone());
-                }
+            streamkit_api::BatchOperation::AddNode { node_id, .. }
+                if !live_ids.insert(node_id.clone()) =>
+            {
+                duplicates.push(node_id.clone());
             },
             streamkit_api::BatchOperation::RemoveNode { node_id } => {
                 live_ids.remove(node_id.as_str());

@@ -43,7 +43,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.92.0"
+          toolchain: "1.95.0"
 
       - name: Restore sccache cache
         uses: actions/cache/restore@v4
@@ -135,7 +135,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.92.0"
+          toolchain: "1.95.0"
 
       - uses: mozilla-actions/sccache-action@v0.0.9
 
@@ -251,7 +251,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.92.0"
+          toolchain: "1.95.0"
 
       - name: Restore sccache cache
         uses: actions/cache/restore@v4

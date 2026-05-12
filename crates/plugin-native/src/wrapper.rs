@@ -159,7 +159,7 @@ fn ffi_guard_unit(f: impl FnOnce()) {
 /// Overridden per-instance when `native_call_timeout_secs` is set in
 /// the skit config.  Also used as the backstop when the reply-side
 /// timeout is configured as `None` (see [`InstanceWorker::await_reply`]).
-pub(crate) const DEFAULT_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+pub(crate) const DEFAULT_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(5);
 
 /// Capacity of the per-instance worker request channel.
 ///
@@ -2156,19 +2156,18 @@ unsafe fn free_packet_buffer_handle(c_packet: *const CPacket) {
                 drop(Box::from_raw(handle.cast::<PooledSamples>()));
             }
         },
-        CPacketType::BinaryWithMeta => {
+        CPacketType::BinaryWithMeta
             // ABI compat: v7/v8 plugins allocate a smaller CBinaryPacket
             // without buffer_handle/free_fn.  Only read those fields when
             // the struct is large enough (v9+).
             if (*c_packet).len
-                >= std::mem::size_of::<streamkit_plugin_sdk_native::types::CBinaryPacket>()
-            {
-                let bp = data.cast::<streamkit_plugin_sdk_native::types::CBinaryPacket>();
-                let handle = (*bp).buffer_handle;
-                if !handle.is_null() {
-                    if let Some(free_fn) = (*bp).free_fn {
-                        free_fn(handle);
-                    }
+                >= std::mem::size_of::<streamkit_plugin_sdk_native::types::CBinaryPacket>() =>
+        {
+            let bp = data.cast::<streamkit_plugin_sdk_native::types::CBinaryPacket>();
+            let handle = (*bp).buffer_handle;
+            if !handle.is_null() {
+                if let Some(free_fn) = (*bp).free_fn {
+                    free_fn(handle);
                 }
             }
         },

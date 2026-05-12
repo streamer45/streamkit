@@ -1032,7 +1032,7 @@ impl AudioMixerNode {
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> RecvResult {
         if slots.is_empty() {
-            tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
+            tokio::time::sleep(tokio::time::Duration::from_hours(1)).await;
             return RecvResult::AllClosed;
         }
 

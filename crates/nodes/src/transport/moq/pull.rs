@@ -514,9 +514,7 @@ impl MoqPullNode {
 
         loop {
             let catalog =
-                match tokio::time::timeout(Duration::from_millis(1000), catalog_consumer.next())
-                    .await
-                {
+                match tokio::time::timeout(Duration::from_secs(1), catalog_consumer.next()).await {
                     Ok(Ok(Some(catalog))) => catalog,
                     Ok(Ok(None)) => {
                         return Err(StreamKitError::Runtime(

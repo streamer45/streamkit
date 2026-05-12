@@ -118,7 +118,7 @@ impl<K, V> ResourceCache<K, V> {
     /// "empty" from "poisoned" should use [`stats`](Self::stats) or
     /// inspect [`get_or_init`](Self::get_or_init) errors instead.
     pub fn len(&self) -> usize {
-        self.inner.lock().map(|guard| guard.len()).unwrap_or(0)
+        self.inner.lock().map_or(0, |guard| guard.len())
     }
 
     /// Returns `true` if the cache contains no entries.

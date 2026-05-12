@@ -1636,7 +1636,7 @@ async fn flush_output(
 
     if !*header_sent {
         if let Some(data) = shared_buffer.take_data() {
-            tracing::info!("Sending WebM header + first frame ({} bytes)", data.len(),);
+            tracing::info!("Sending WebM header + first frame ({} bytes)", data.len());
             if context
                 .output_sender
                 .send(

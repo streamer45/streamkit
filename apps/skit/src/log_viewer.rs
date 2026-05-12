@@ -173,7 +173,7 @@ pub async fn get_logs_handler(
     })?;
 
     let metadata = file.metadata().await.map_err(|e| {
-        warn!("Failed to read log file metadata: {e}",);
+        warn!("Failed to read log file metadata: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
     let file_size = metadata.len();

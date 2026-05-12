@@ -86,10 +86,10 @@ opentelemetry-otlp = { version = "0.31.0", features = [
   "grpc-tonic",
 ] }
 opentelemetry-http = "0.31.0"
-tracing-opentelemetry = "0.32.0"
+tracing-opentelemetry = "0.32.1"
 
 # For system metrics collection
-sysinfo = "0.38"
+sysinfo = "0.39"
 
 # For tokio-console debugging (optional)
 console-subscriber = { version = "0.5", optional = true }

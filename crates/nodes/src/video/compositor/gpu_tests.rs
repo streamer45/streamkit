@@ -801,7 +801,7 @@ fn gpu_circle_crop_with_zoom() {
 
     // Centre should be green (inside the circle).
     let mid = ((canvas_h as usize / 2) * canvas_w as usize + canvas_w as usize / 2) * 4;
-    assert!(buf[mid + 1] > 200, "Centre should be green with circle+zoom, G={}", buf[mid + 1],);
+    assert!(buf[mid + 1] > 200, "Centre should be green with circle+zoom, G={}", buf[mid + 1]);
 
     // Corner should be transparent (outside the circle).  Before the
     // fix, the compressed UV range made the circle too large and the

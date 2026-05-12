@@ -16,7 +16,7 @@ cargo install cargo-watch # one-time prerequisite for just dev
 just dev                  # starts backend + frontend with hot reload
 ```
 
-**Prerequisites:** Rust 1.92+, Bun 1.3+, [Just](https://github.com/casey/just)
+**Prerequisites:** Rust 1.95+, Bun 1.3+, [Just](https://github.com/casey/just)
 
 Run `just --list` to see all available commands.
 
@@ -32,7 +32,7 @@ sudo apt install libvpx-dev
 
 ### Rust toolchain
 
-The repo pins the toolchain via `rust-toolchain.toml` (currently Rust 1.92). Install Rust if you haven't already:
+The repo pins the toolchain via `rust-toolchain.toml` (currently Rust 1.95). Install Rust if you haven't already:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh

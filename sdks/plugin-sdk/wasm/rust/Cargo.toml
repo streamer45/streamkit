@@ -2,7 +2,7 @@
 name = "streamkit-plugin-sdk-wasm"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.92"
+rust-version = "1.95"
 authors = ["Claudio Costa <cstcld91@gmail.com>", "StreamKit Contributors"]
 description = "SDK for writing WASM plugins for StreamKit"
 homepage = "https://streamkit.dev"

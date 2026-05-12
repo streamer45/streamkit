@@ -7,7 +7,7 @@
 # syntax=docker/dockerfile:1
 
 # Stage 1: Build Rust dependencies
-FROM rust:1.92-slim-bookworm AS rust-deps
+FROM rust:1.95-slim-bookworm AS rust-deps
 
 WORKDIR /build
 
@@ -66,7 +66,7 @@ COPY ui/ ./
 RUN bun run build
 
 # Stage 3: Build final server binary with UI embedded
-FROM rust:1.92-slim-bookworm AS rust-builder
+FROM rust:1.95-slim-bookworm AS rust-builder
 
 WORKDIR /build
 

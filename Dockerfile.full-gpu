@@ -19,7 +19,7 @@ ARG CUDA_VERSION
 FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS cuda-dev
 
 # Stage 1: Build Rust dependencies
-FROM rust:1.92-slim-bookworm AS rust-deps
+FROM rust:1.95-slim-bookworm AS rust-deps
 
 WORKDIR /build
 
@@ -92,7 +92,7 @@ COPY ui/ ./
 RUN bun run build
 
 # Stage 3: Build final server binary with UI embedded
-FROM rust:1.92-slim-bookworm AS rust-builder
+FROM rust:1.95-slim-bookworm AS rust-builder
 
 WORKDIR /build
 
@@ -173,7 +173,7 @@ RUN apt-get update && apt-get install -y \
     clang \
     git \
     && rm -rf /var/lib/apt/lists/* \
-    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.92.0
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95.0
 
 ENV PATH="/root/.cargo/bin:${PATH}"
 
@@ -233,7 +233,7 @@ RUN apt-get update && apt-get install -y \
     libclang-dev \
     clang \
     && rm -rf /var/lib/apt/lists/* \
-    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.92.0
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95.0
 
 ENV PATH="/root/.cargo/bin:${PATH}"
 
@@ -289,7 +289,7 @@ RUN apt-get update && apt-get install -y \
     libclang-dev \
     clang \
     && rm -rf /var/lib/apt/lists/* \
-    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.92.0
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95.0
 
 ENV PATH="/root/.cargo/bin:${PATH}"
 
@@ -353,7 +353,7 @@ RUN apt-get update && apt-get install -y \
     libclang-dev \
     clang \
     && rm -rf /var/lib/apt/lists/* \
-    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.92.0
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95.0
 
 ENV PATH="/root/.cargo/bin:${PATH}"
 
@@ -402,7 +402,7 @@ RUN apt-get update && apt-get install -y \
     libclang-dev \
     clang \
     && rm -rf /var/lib/apt/lists/* \
-    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.92.0
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95.0
 
 ENV PATH="/root/.cargo/bin:${PATH}"
 
@@ -448,7 +448,7 @@ RUN apt-get update && apt-get install -y \
     libclang-dev \
     clang \
     && rm -rf /var/lib/apt/lists/* \
-    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.92.0
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95.0
 
 ENV PATH="/root/.cargo/bin:${PATH}"
 
@@ -509,7 +509,7 @@ RUN apt-get update && apt-get install -y \
     libclang-dev \
     clang \
     && rm -rf /var/lib/apt/lists/* \
-    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.92.0
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95.0
 
 ENV PATH="/root/.cargo/bin:${PATH}"
 
@@ -572,7 +572,7 @@ RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
     && rm -rf /var/lib/apt/lists/* \
-    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.92.0
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95.0
 
 ENV PATH="/root/.cargo/bin:${PATH}"
 
@@ -609,7 +609,7 @@ RUN PIP_BREAK_SYSTEM_PACKAGES=1 pip3 install --no-cache-dir \
     python3 plugins/native/helsinki/download-models.py
 
 # Stage 12: Build AAC Encoder plugin (CPU-only, no CUDA needed for audio encoding)
-FROM rust:1.92-slim-bookworm AS aac-encoder-builder
+FROM rust:1.95-slim-bookworm AS aac-encoder-builder
 
 WORKDIR /build
 
@@ -640,7 +640,7 @@ RUN --mount=type=cache,id=cargo-registry-aac-encoder,target=/usr/local/cargo/reg
     cp target/release/libaac_encoder.so /build/plugins/native/
 
 # Stage 13: Build Slint UI plugin
-FROM rust:1.92-slim-bookworm AS slint-builder
+FROM rust:1.95-slim-bookworm AS slint-builder
 
 WORKDIR /build
 

@@ -2028,7 +2028,7 @@ fn to_hex(bytes: &[u8]) -> String {
 }
 
 fn now_ms() -> u128 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|duration| duration.as_millis()).unwrap_or(0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_millis())
 }
 
 #[cfg(test)]
@@ -2108,7 +2108,7 @@ mod tests {
             plugin_dir.to_path_buf(),
             wasm_dir,
             native_dir,
-            Some(std::time::Duration::from_secs(300)),
+            Some(std::time::Duration::from_mins(5)),
         )?;
         Ok(Arc::new(tokio::sync::Mutex::new(manager)))
     }

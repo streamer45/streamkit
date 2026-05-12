@@ -1038,7 +1038,7 @@ mod tests {
         // Tracks ID + size says 100 bytes, but only 10 bytes of content.
         let mut data = Vec::new();
         data.extend_from_slice(&WEBM_TRACKS_ID);
-        data.push(0x80 | 100); // 1-byte VINT = 100
+        data.push(0x80 | 0x64); // 1-byte VINT = 100
         data.extend_from_slice(&[0xCC; 10]); // only 10 bytes
 
         // find_tracks_end returns the *logical* end (ID pos + 4 + 1 + 100 = 105)

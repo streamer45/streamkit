@@ -389,7 +389,7 @@ impl ProcessorNode for ParamBridgeNode {
                     }
                     // Reset sleep to far future so it doesn't fire again.
                     // Cannot use Duration::MAX — Instant + Duration::MAX overflows.
-                    sleep.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_secs(365 * 24 * 3600));
+                    sleep.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_hours(8760));
                 }
             }
         }
