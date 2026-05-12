@@ -8,7 +8,6 @@ artifact: target/plugins/release/libparakeet.so
 description: Fast speech-to-text using NVIDIA Parakeet TDT via sherpa-onnx
 license: MPL-2.0
 homepage: https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3
-repo: https://github.com/streamer45/streamkit
 models:
 - id: parakeet-tdt-0.6b-v3-int8
   name: Parakeet TDT 0.6B v3 (25 languages, INT8)
