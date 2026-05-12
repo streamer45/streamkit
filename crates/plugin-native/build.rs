@@ -28,6 +28,11 @@ fn main() {
     let sdk_dir = manifest_dir.join("../../sdks/plugin-sdk/native/src");
     println!("cargo::rerun-if-changed={}", sdk_dir.display());
 
+    // Docker builds exclude test fixtures via .dockerignore (`**/tests/`).
+    if !fixture_dir.exists() {
+        return;
+    }
+
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR not set"));
 
     // Build the fixture crate.
