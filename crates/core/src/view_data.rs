@@ -53,3 +53,64 @@ pub mod view_data_helpers {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc;
+
+    #[test]
+    fn node_view_data_update_construction() {
+        let ts = SystemTime::now();
+        let update = NodeViewDataUpdate {
+            node_id: "compositor_0".into(),
+            data: serde_json::json!({"layers": 3}),
+            timestamp: ts,
+        };
+        assert_eq!(update.node_id, "compositor_0");
+        assert_eq!(update.data["layers"], 3);
+        assert_eq!(update.timestamp, ts);
+    }
+
+    #[test]
+    fn node_view_data_update_clone() {
+        let update = NodeViewDataUpdate {
+            node_id: "node1".into(),
+            data: serde_json::json!({"key": "value"}),
+            timestamp: SystemTime::now(),
+        };
+        let cloned = update.clone();
+        assert_eq!(cloned.node_id, update.node_id);
+        assert_eq!(cloned.data, update.data);
+    }
+
+    #[test]
+    fn emit_view_data_with_sender() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let sender = Some(tx);
+        view_data_helpers::emit_view_data(
+            &sender,
+            "test_node",
+            || serde_json::json!({"width": 1920}),
+        );
+        let update = rx.try_recv().unwrap();
+        assert_eq!(update.node_id, "test_node");
+        assert_eq!(update.data["width"], 1920);
+    }
+
+    #[test]
+    fn emit_view_data_without_sender_is_noop() {
+        let sender: Option<mpsc::Sender<NodeViewDataUpdate>> = None;
+        view_data_helpers::emit_view_data(&sender, "test_node", || {
+            panic!("closure should not be called when sender is None");
+        });
+    }
+
+    #[test]
+    fn emit_view_data_full_channel_does_not_panic() {
+        let (tx, _rx) = mpsc::channel(1);
+        let sender = Some(tx);
+        view_data_helpers::emit_view_data(&sender, "n", || serde_json::json!(1));
+        view_data_helpers::emit_view_data(&sender, "n", || serde_json::json!(2));
+    }
+}

@@ -116,3 +116,114 @@ pub mod packet_helpers {
         batch
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, Default, PartialEq)]
+    struct TestConfig {
+        #[serde(default)]
+        gain: f32,
+        #[serde(default)]
+        channels: u16,
+    }
+
+    #[test]
+    fn parse_config_optional_with_valid_json() {
+        let params = serde_json::json!({"gain": 0.5, "channels": 2});
+        let cfg: TestConfig = config_helpers::parse_config_optional(Some(&params)).unwrap();
+        assert_eq!(cfg.gain, 0.5);
+        assert_eq!(cfg.channels, 2);
+    }
+
+    #[test]
+    fn parse_config_optional_with_none_returns_default() {
+        let cfg: TestConfig = config_helpers::parse_config_optional(None).unwrap();
+        assert_eq!(cfg, TestConfig::default());
+    }
+
+    #[test]
+    fn parse_config_optional_with_partial_json_fills_defaults() {
+        let params = serde_json::json!({"gain": 1.5});
+        let cfg: TestConfig = config_helpers::parse_config_optional(Some(&params)).unwrap();
+        assert_eq!(cfg.gain, 1.5);
+        assert_eq!(cfg.channels, 0);
+    }
+
+    #[test]
+    fn parse_config_required_with_valid_json() {
+        let params = serde_json::json!({"gain": 2.0, "channels": 1});
+        let cfg: TestConfig = config_helpers::parse_config_required(Some(&params)).unwrap();
+        assert_eq!(cfg.gain, 2.0);
+        assert_eq!(cfg.channels, 1);
+    }
+
+    #[test]
+    fn parse_config_required_with_none_returns_error() {
+        let result = config_helpers::parse_config_required::<TestConfig>(None);
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(err_str.contains("Configuration"), "expected Configuration error, got: {err_str}");
+    }
+
+    #[test]
+    fn parse_config_required_with_invalid_type_returns_error() {
+        let params = serde_json::json!({"gain": "not_a_number"});
+        let result = config_helpers::parse_config_required::<TestConfig>(Some(&params));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_config_with_context_missing_params() {
+        let result = config_helpers::parse_config_with_context::<TestConfig>(None, "AudioGain");
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(err_str.contains("AudioGain"));
+    }
+
+    #[test]
+    fn parse_config_with_context_invalid_json() {
+        let params = serde_json::json!("just a string");
+        let result =
+            config_helpers::parse_config_with_context::<TestConfig>(Some(&params), "AudioGain");
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(err_str.contains("AudioGain"));
+    }
+
+    #[test]
+    fn batch_packets_greedy_single_packet() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let first = Packet::Text(std::sync::Arc::from("hello"));
+        tx.try_send(Packet::Text(std::sync::Arc::from("world"))).unwrap();
+        let batch = packet_helpers::batch_packets_greedy(first, &mut rx, 4);
+        assert_eq!(batch.len(), 2);
+    }
+
+    #[test]
+    fn batch_packets_greedy_empty_channel() {
+        let (_tx, mut rx) = tokio::sync::mpsc::channel::<Packet>(16);
+        let first = Packet::Text(std::sync::Arc::from("only"));
+        let batch = packet_helpers::batch_packets_greedy(first, &mut rx, 8);
+        assert_eq!(batch.len(), 1);
+    }
+
+    #[test]
+    fn batch_packets_greedy_respects_batch_size() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        for i in 0..10 {
+            tx.try_send(Packet::Text(std::sync::Arc::from(format!("{i}")))).unwrap();
+        }
+        let first = Packet::Text(std::sync::Arc::from("first"));
+        let batch = packet_helpers::batch_packets_greedy(first, &mut rx, 3);
+        assert_eq!(batch.len(), 3);
+    }
+
+    #[test]
+    fn default_batch_capacity_is_reasonable() {
+        const { assert!(packet_helpers::DEFAULT_BATCH_CAPACITY >= 8) };
+        const { assert!(packet_helpers::DEFAULT_BATCH_CAPACITY <= 128) };
+    }
+}

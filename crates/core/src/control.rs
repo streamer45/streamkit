@@ -147,3 +147,133 @@ pub enum EngineControlMessage {
     },
     Shutdown,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_control_update_params_serialization_roundtrip() {
+        let msg = NodeControlMessage::UpdateParams(serde_json::json!({"gain": 0.5}));
+        let json = serde_json::to_string(&msg).unwrap();
+        let deserialized: NodeControlMessage = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            NodeControlMessage::UpdateParams(v) => {
+                assert_eq!(v["gain"], 0.5);
+            },
+            _ => panic!("expected UpdateParams"),
+        }
+    }
+
+    #[test]
+    fn node_control_start_serialization_roundtrip() {
+        let msg = NodeControlMessage::Start;
+        let json = serde_json::to_string(&msg).unwrap();
+        let deserialized: NodeControlMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(deserialized, NodeControlMessage::Start));
+    }
+
+    #[test]
+    fn node_control_shutdown_serialization_roundtrip() {
+        let msg = NodeControlMessage::Shutdown;
+        let json = serde_json::to_string(&msg).unwrap();
+        let deserialized: NodeControlMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(deserialized, NodeControlMessage::Shutdown));
+    }
+
+    #[test]
+    fn connection_mode_default_is_reliable() {
+        assert_eq!(ConnectionMode::default(), ConnectionMode::Reliable);
+    }
+
+    #[test]
+    fn connection_mode_serialization_roundtrip() {
+        for mode in [ConnectionMode::Reliable, ConnectionMode::BestEffort] {
+            let json = serde_json::to_string(&mode).unwrap();
+            let deserialized: ConnectionMode = serde_json::from_str(&json).unwrap();
+            assert_eq!(mode, deserialized);
+        }
+    }
+
+    #[test]
+    fn connection_mode_serde_uses_snake_case() {
+        let json = serde_json::to_string(&ConnectionMode::BestEffort).unwrap();
+        assert_eq!(json, "\"best_effort\"");
+    }
+
+    #[test]
+    fn engine_control_add_node() {
+        let msg = EngineControlMessage::AddNode {
+            node_id: "node1".into(),
+            kind: "gain".into(),
+            params: Some(serde_json::json!({"gain": 1.0})),
+        };
+        match msg {
+            EngineControlMessage::AddNode { node_id, kind, params } => {
+                assert_eq!(node_id, "node1");
+                assert_eq!(kind, "gain");
+                assert!(params.is_some());
+            },
+            _ => panic!("expected AddNode"),
+        }
+    }
+
+    #[test]
+    fn engine_control_remove_node() {
+        let msg = EngineControlMessage::RemoveNode { node_id: "node1".into() };
+        assert!(matches!(msg, EngineControlMessage::RemoveNode { node_id } if node_id == "node1"));
+    }
+
+    #[test]
+    fn engine_control_connect() {
+        let msg = EngineControlMessage::Connect {
+            from_node: "a".into(),
+            from_pin: "out".into(),
+            to_node: "b".into(),
+            to_pin: "in".into(),
+            mode: ConnectionMode::BestEffort,
+        };
+        match msg {
+            EngineControlMessage::Connect { from_node, from_pin, to_node, to_pin, mode } => {
+                assert_eq!(from_node, "a");
+                assert_eq!(from_pin, "out");
+                assert_eq!(to_node, "b");
+                assert_eq!(to_pin, "in");
+                assert_eq!(mode, ConnectionMode::BestEffort);
+            },
+            _ => panic!("expected Connect"),
+        }
+    }
+
+    #[test]
+    fn engine_control_disconnect() {
+        let msg = EngineControlMessage::Disconnect {
+            from_node: "a".into(),
+            from_pin: "out".into(),
+            to_node: "b".into(),
+            to_pin: "in".into(),
+        };
+        assert!(matches!(msg, EngineControlMessage::Disconnect { .. }));
+    }
+
+    #[test]
+    fn engine_control_tune_node() {
+        let msg = EngineControlMessage::TuneNode {
+            node_id: "node1".into(),
+            message: NodeControlMessage::UpdateParams(serde_json::json!({"rate": 44100})),
+        };
+        match msg {
+            EngineControlMessage::TuneNode { node_id, message } => {
+                assert_eq!(node_id, "node1");
+                assert!(matches!(message, NodeControlMessage::UpdateParams(_)));
+            },
+            _ => panic!("expected TuneNode"),
+        }
+    }
+
+    #[test]
+    fn engine_control_shutdown() {
+        let msg = EngineControlMessage::Shutdown;
+        assert!(matches!(msg, EngineControlMessage::Shutdown));
+    }
+}
