@@ -135,7 +135,7 @@ pub fn catalog_audio_codec(codec: AudioCodec) -> hang::catalog::AudioCodec {
 /// Map a [`hang::catalog::AudioCodec`] back to our [`AudioCodec`].
 ///
 /// Returns `None` for catalog codecs we don't support yet.
-pub fn audio_codec_from_catalog(catalog_codec: &hang::catalog::AudioCodec) -> Option<AudioCodec> {
+pub const fn audio_codec_from_catalog(catalog_codec: &hang::catalog::AudioCodec) -> Option<AudioCodec> {
     match catalog_codec {
         hang::catalog::AudioCodec::Opus => Some(AudioCodec::Opus),
         // Only accept AAC-LC (profile 2) — matches what catalog_audio_codec() emits.
