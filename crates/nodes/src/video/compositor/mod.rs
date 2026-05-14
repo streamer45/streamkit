@@ -41,7 +41,7 @@ use overlay::{
     decode_image_overlay, rasterize_text_overlay, validate_asset_path, DecodedOverlay,
     OverlaySourceKind,
 };
-use schemars::schema_for;
+
 use smallvec::SmallVec;
 use std::collections::HashMap;
 #[cfg(feature = "gpu")]
@@ -1547,7 +1547,6 @@ impl CompositorNode {
 
 // ── Registration ────────────────────────────────────────────────────────────
 
-#[allow(clippy::expect_used, clippy::missing_panics_doc)]
 pub fn register_compositor_nodes(
     registry: &mut NodeRegistry,
     constraints: &streamkit_core::constraints::GlobalNodeConstraints,
@@ -1555,7 +1554,8 @@ pub fn register_compositor_nodes(
     let limits = constraints.get::<GlobalCompositorConfig>().cloned().unwrap_or_default();
     let (def_inputs, def_outputs) = CompositorNode::definition_pins();
 
-    registry.register_static_with_description(
+    register_static_node!(
+        registry,
         "video::compositor",
         move |params| {
             let config: CompositorConfig = config_helpers::parse_config_optional(params)?;
@@ -1564,11 +1564,9 @@ pub fn register_compositor_nodes(
             }
             Ok(Box::new(CompositorNode::new(config, limits.clone())))
         },
-        serde_json::to_value(schema_for!(CompositorConfig))
-            .expect("CompositorConfig schema should serialize to JSON"),
+        CompositorConfig,
         StaticPins { inputs: def_inputs, outputs: def_outputs },
-        vec!["video".to_string(), "compositing".to_string()],
-        false,
+        ["video", "compositing"],
         "Composites multiple raw video inputs (RGBA8) onto a single canvas with \
          image and text overlays. Supports dynamic pin creation for attaching \
          arbitrary inputs at runtime.",

@@ -1990,28 +1990,21 @@ fn us_to_ticks(duration_us: u64, timescale: u32) -> u32 {
 // Registration
 // ---------------------------------------------------------------------------
 
-use schemars::schema_for;
 use streamkit_core::{config_helpers, registry::StaticPins};
 
 /// Registers the MP4 container nodes.
-///
-/// # Panics
-///
-/// Panics if config schemas cannot be serialized to JSON.
-#[allow(clippy::expect_used)]
 pub fn register_mp4_nodes(registry: &mut NodeRegistry) {
     let default_muxer = Mp4MuxerNode::new(Mp4MuxerConfig::default());
-    registry.register_static_with_description(
+    register_static_node!(
+        registry,
         "containers::mp4::muxer",
         |params| {
             let config = config_helpers::parse_config_with_context(params, "Mp4Muxer")?;
             Ok(Box::new(Mp4MuxerNode::new(config)))
         },
-        serde_json::to_value(schema_for!(Mp4MuxerConfig))
-            .expect("Mp4MuxerConfig schema should serialize to JSON"),
+        Mp4MuxerConfig,
         StaticPins { inputs: default_muxer.input_pins(), outputs: default_muxer.output_pins() },
-        vec!["containers".to_string(), "mp4".to_string()],
-        false,
+        ["containers", "mp4"],
         "Muxes H.264/AV1 video and/or AAC/Opus audio into an MP4 container. \
          Supports fragmented MP4 (fMP4) for DASH/HLS streaming and \
          regular MP4 file output with fast-start.",

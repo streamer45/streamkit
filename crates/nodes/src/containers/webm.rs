@@ -1686,30 +1686,23 @@ async fn flush_output(
     Ok(false)
 }
 
-use schemars::schema_for;
 use streamkit_core::{config_helpers, registry::StaticPins};
 
 /// Registers the WebM container nodes.
-///
-/// # Panics
-///
-/// Panics if config schemas cannot be serialized to JSON (should never happen).
-#[allow(clippy::expect_used)] // Schema serialization should never fail for valid types
 pub fn register_webm_nodes(registry: &mut NodeRegistry) {
     #[cfg(feature = "webm")]
     {
         let default_muxer = WebMMuxerNode::new(WebMMuxerConfig::default());
-        registry.register_static_with_description(
+        register_static_node!(
+            registry,
             "containers::webm::muxer",
             |params| {
                 let config = config_helpers::parse_config_with_context(params, "WebMMuxer")?;
                 Ok(Box::new(WebMMuxerNode::new(config)))
             },
-            serde_json::to_value(schema_for!(WebMMuxerConfig))
-                .expect("WebMMuxerConfig schema should serialize to JSON"),
+            WebMMuxerConfig,
             StaticPins { inputs: default_muxer.input_pins(), outputs: default_muxer.output_pins() },
-            vec!["containers".to_string(), "webm".to_string()],
-            false,
+            ["containers", "webm"],
             "Muxes Opus audio and/or VP9/AV1 video into a WebM container. \
              Produces streamable WebM output compatible with web browsers. \
              Supports audio-only, video-only, or combined audio+video muxing.",

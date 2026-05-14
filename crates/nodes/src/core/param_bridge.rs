@@ -455,24 +455,15 @@ impl ParamBridgeNode {
 }
 
 pub fn register(registry: &mut streamkit_core::NodeRegistry) {
-    use schemars::schema_for;
     use streamkit_core::registry::StaticPins;
 
-    let schema = match serde_json::to_value(schema_for!(ParamBridgeConfig)) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to serialize ParamBridgeConfig schema");
-            return;
-        },
-    };
-
-    registry.register_static_with_description(
+    register_static_node!(
+        registry,
         "core::param_bridge",
         |params| Ok(Box::new(ParamBridgeNode::new(params)?)),
-        schema,
+        ParamBridgeConfig,
         StaticPins { inputs: ParamBridgeNode::input_pins(), outputs: vec![] },
-        vec!["core".to_string(), "control".to_string()],
-        false,
+        ["core", "control"],
         "Bridges data-plane packets to control-plane UpdateParams messages. \
          Accepts any packet type and sends a mapped UpdateParams to a configured \
          target node, enabling cross-node control within the pipeline graph. \

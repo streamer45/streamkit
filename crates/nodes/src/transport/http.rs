@@ -246,23 +246,14 @@ impl ProcessorNode for HttpPullNode {
     }
 }
 
-/// Register HTTP nodes with the registry
-///
-/// # Panics
-///
-/// Panics if the config schema cannot be serialized to JSON (should never happen).
-#[allow(clippy::expect_used)] // Schema serialization should never fail for valid types
+/// Register HTTP nodes with the registry.
 pub fn register_http_nodes(registry: &mut streamkit_core::NodeRegistry) {
-    use schemars::schema_for;
-
-    let factory = HttpPullNode::factory();
-    registry.register_dynamic_with_description(
+    register_dynamic_node!(
+        registry,
         "transport::http::fetcher",
-        move |params| (factory)(params),
-        serde_json::to_value(schema_for!(HttpPullConfig))
-            .expect("HttpPullConfig schema should serialize to JSON"),
-        vec!["transport".to_string(), "http".to_string()],
-        false,
+        HttpPullNode,
+        HttpPullConfig,
+        ["transport", "http"],
         "Fetches binary data from an HTTP/HTTPS URL. \
          Security: this is an SSRF-capable node; restrict it via role allowlists. \
          Redirects are disabled (v0.1.x).",

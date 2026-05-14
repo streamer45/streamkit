@@ -783,23 +783,20 @@ fn set_param(config: &mut EbSvtAv1EncConfiguration, name: &str, value: &str) -> 
 // Registration
 // ---------------------------------------------------------------------------
 
-use schemars::schema_for;
 use streamkit_core::registry::StaticPins;
 
-#[allow(clippy::expect_used, clippy::missing_panics_doc)]
 pub fn register_svt_av1_nodes(registry: &mut NodeRegistry) {
     let default_encoder = SvtAv1EncoderNode::new(SvtAv1EncoderConfig::default());
-    registry.register_static_with_description(
+    register_static_node!(
+        registry,
         "video::svt_av1::encoder",
         |params| {
             let config = config_helpers::parse_config_optional(params)?;
             Ok(Box::new(SvtAv1EncoderNode::new(config)))
         },
-        serde_json::to_value(schema_for!(SvtAv1EncoderConfig))
-            .expect("SvtAv1EncoderConfig schema should serialize to JSON"),
+        SvtAv1EncoderConfig,
         StaticPins { inputs: default_encoder.input_pins(), outputs: default_encoder.output_pins() },
-        vec!["video".to_string(), "codecs".to_string(), "av1".to_string()],
-        false,
+        ["video", "codecs", "av1"],
         "Encodes raw video frames (NV12 or I420) into AV1 packets using SVT-AV1 (Intel/AOMedia). \
          Higher performance than the rav1e encoder, especially at presets 10-13. \
          Insert a video::pixel_convert node upstream if the source outputs RGBA8.",

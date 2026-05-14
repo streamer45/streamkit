@@ -358,35 +358,32 @@ fn demux_wav_streaming_incremental(
     Ok(())
 }
 
-use schemars::schema_for;
 use streamkit_core::{config_helpers, registry::StaticPins};
 
 /// Registers the WAV demuxer node.
 ///
 /// # Panics
 ///
-/// Panics if the default WAV demuxer cannot be created (should never happen)
-/// or if the config schema cannot be serialized to JSON (should never happen).
-#[allow(clippy::expect_used)] // Schema serialization and default config should never fail
+/// Panics if the default WAV demuxer cannot be created (should never happen).
+#[allow(clippy::expect_used)]
 pub fn register_wav_nodes(registry: &mut NodeRegistry) {
     #[cfg(feature = "symphonia")]
     {
         let default_demuxer = WavDemuxerNode::new(WavDemuxerConfig::default())
             .expect("default WAV demuxer config should be valid");
-        registry.register_static_with_description(
+        register_static_node!(
+            registry,
             "containers::wav::demuxer",
             |params| {
                 let config = config_helpers::parse_config_optional(params)?;
                 Ok(Box::new(WavDemuxerNode::new(config)?))
             },
-            serde_json::to_value(schema_for!(WavDemuxerConfig))
-                .expect("WavDemuxerConfig schema should serialize to JSON"),
+            WavDemuxerConfig,
             StaticPins {
                 inputs: default_demuxer.input_pins(),
                 outputs: default_demuxer.output_pins(),
             },
-            vec!["containers".to_string(), "wav".to_string()],
-            false,
+            ["containers", "wav"],
             "Demuxes WAV audio files to raw PCM samples. \
              Accepts binary WAV data and outputs 48kHz stereo f32 audio.",
         );

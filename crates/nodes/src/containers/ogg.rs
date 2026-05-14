@@ -825,53 +825,44 @@ impl ProcessorNode for SymphoniaOggDemuxerNode {
     }
 }
 
-use schemars::schema_for;
 use streamkit_core::{config_helpers, registry::StaticPins};
 
 /// Registers the Ogg container nodes.
-///
-/// # Panics
-///
-/// Panics if config schemas cannot be serialized to JSON (should never happen).
-#[allow(clippy::expect_used)] // Schema serialization should never fail for valid types
 pub fn register_ogg_nodes(registry: &mut NodeRegistry) {
     #[cfg(feature = "ogg")]
     {
         let default_muxer = OggMuxerNode::new(OggMuxerConfig::default());
-        registry.register_static_with_description(
+        register_static_node!(
+            registry,
             "containers::ogg::muxer",
             |params| {
                 let config = config_helpers::parse_config_with_context(params, "OggMuxer")?;
                 Ok(Box::new(OggMuxerNode::new(config)))
             },
-            serde_json::to_value(schema_for!(OggMuxerConfig))
-                .expect("OggMuxerConfig schema should serialize to JSON"),
+            OggMuxerConfig,
             StaticPins { inputs: default_muxer.input_pins(), outputs: default_muxer.output_pins() },
-            vec!["containers".to_string(), "ogg".to_string()],
-            false,
+            ["containers", "ogg"],
             "Muxes Opus audio packets into an Ogg container. \
              Produces streamable Ogg/Opus output for playback or storage.",
         );
     }
 
-    // Use Symphonia-based demuxer if available, otherwise fall back to ogg crate
     #[cfg(feature = "symphonia")]
     {
         let default_demuxer = SymphoniaOggDemuxerNode::new(SymphoniaOggDemuxerConfig::default());
-        registry.register_static_with_description(
+        register_static_node!(
+            registry,
             "containers::ogg::demuxer",
             |params| {
                 let config = config_helpers::parse_config_optional(params)?;
                 Ok(Box::new(SymphoniaOggDemuxerNode::new(config)))
             },
-            serde_json::to_value(schema_for!(SymphoniaOggDemuxerConfig))
-                .expect("SymphoniaOggDemuxerConfig schema should serialize to JSON"),
+            SymphoniaOggDemuxerConfig,
             StaticPins {
                 inputs: default_demuxer.input_pins(),
                 outputs: default_demuxer.output_pins(),
             },
-            vec!["containers".to_string(), "ogg".to_string()],
-            false,
+            ["containers", "ogg"],
             "Demuxes Ogg containers to extract Opus audio packets. \
              Accepts binary Ogg data and outputs Opus-encoded audio frames.",
         );
@@ -879,20 +870,19 @@ pub fn register_ogg_nodes(registry: &mut NodeRegistry) {
     #[cfg(all(feature = "ogg", not(feature = "symphonia")))]
     {
         let default_demuxer = OggDemuxerNode::new(OggDemuxerConfig::default());
-        registry.register_static_with_description(
+        register_static_node!(
+            registry,
             "containers::ogg::demuxer",
             |params| {
                 let config = config_helpers::parse_config_optional(params)?;
                 Ok(Box::new(OggDemuxerNode::new(config)))
             },
-            serde_json::to_value(schema_for!(OggDemuxerConfig))
-                .expect("OggDemuxerConfig schema should serialize to JSON"),
+            OggDemuxerConfig,
             StaticPins {
                 inputs: default_demuxer.input_pins(),
                 outputs: default_demuxer.output_pins(),
             },
-            vec!["containers".to_string(), "ogg".to_string()],
-            false,
+            ["containers", "ogg"],
             "Demuxes Ogg containers to extract Opus audio packets. \
              Accepts binary Ogg data and outputs Opus-encoded audio frames.",
         );

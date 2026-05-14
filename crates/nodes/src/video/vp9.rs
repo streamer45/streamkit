@@ -980,44 +980,39 @@ fn vp9_encoder_available() -> bool {
     u32::try_from(caps).is_ok_and(|caps_u32| (caps_u32 & VPX_CODEC_CAP_ENCODER) != 0)
 }
 
-use schemars::schema_for;
 use streamkit_core::registry::StaticPins;
 
 #[allow(clippy::expect_used, clippy::missing_panics_doc)]
 pub fn register_vp9_nodes(registry: &mut NodeRegistry) {
-    // Verify the hardcoded ABI constants match the linked libvpx at startup.
     assert_vpx_abi_versions();
 
     let default_decoder = Vp9DecoderNode::new(Vp9DecoderConfig::default())
         .expect("default VP9 decoder config should be valid");
-    registry.register_static_with_description(
+    register_static_node!(
+        registry,
         "video::vp9::decoder",
         |params| {
             let config = config_helpers::parse_config_optional(params)?;
             Ok(Box::new(Vp9DecoderNode::new(config)?))
         },
-        serde_json::to_value(schema_for!(Vp9DecoderConfig))
-            .expect("Vp9DecoderConfig schema should serialize to JSON"),
+        Vp9DecoderConfig,
         StaticPins { inputs: default_decoder.input_pins(), outputs: default_decoder.output_pins() },
-        vec!["video".to_string(), "codecs".to_string(), "vp9".to_string()],
-        false,
+        ["video", "codecs", "vp9"],
         "Decodes VP9-compressed packets into raw NV12 video frames. \
          Use this before CPU compositing or analysis pipelines.",
     );
 
     let default_encoder = Vp9EncoderNode::new(Vp9EncoderConfig::default())
         .expect("default VP9 encoder config should be valid");
-    registry.register_static_with_description(
-        "video::vp9::encoder",
+    register_static_node!(
+        registry, "video::vp9::encoder",
         |params| {
             let config = config_helpers::parse_config_optional(params)?;
             Ok(Box::new(Vp9EncoderNode::new(config)?))
         },
-        serde_json::to_value(schema_for!(Vp9EncoderConfig))
-            .expect("Vp9EncoderConfig schema should serialize to JSON"),
+        Vp9EncoderConfig,
         StaticPins { inputs: default_encoder.input_pins(), outputs: default_encoder.output_pins() },
-        vec!["video".to_string(), "codecs".to_string(), "vp9".to_string()],
-        false,
+        ["video", "codecs", "vp9"],
         "Encodes raw video frames (NV12 or I420) into VP9 packets for transport or container muxing. \
          Insert a video::pixel_convert node upstream if the source outputs RGBA8.",
     );

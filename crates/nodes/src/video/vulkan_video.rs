@@ -767,24 +767,22 @@ fn init_vulkan_encode_device(
 // Registration
 // ---------------------------------------------------------------------------
 
-use schemars::schema_for;
 use streamkit_core::registry::StaticPins;
 
 #[allow(clippy::expect_used, clippy::missing_panics_doc)]
 pub fn register_vulkan_video_nodes(registry: &mut NodeRegistry) {
     let default_decoder = VulkanVideoH264DecoderNode::new(VulkanVideoH264DecoderConfig::default())
         .expect("default VulkanVideoH264 decoder config should be valid");
-    registry.register_static_with_description(
+    register_static_node!(
+        registry,
         "video::vulkan_video::h264_decoder",
         |params| {
             let config = config_helpers::parse_config_optional(params)?;
             Ok(Box::new(VulkanVideoH264DecoderNode::new(config)?))
         },
-        serde_json::to_value(schema_for!(VulkanVideoH264DecoderConfig))
-            .expect("VulkanVideoH264DecoderConfig schema should serialize to JSON"),
+        VulkanVideoH264DecoderConfig,
         StaticPins { inputs: default_decoder.input_pins(), outputs: default_decoder.output_pins() },
-        vec!["video".to_string(), "codecs".to_string(), "h264".to_string(), "hw".to_string()],
-        false,
+        ["video", "codecs", "h264", "hw"],
         "Decodes H.264 Annex B packets into raw NV12 video frames using Vulkan Video \
          hardware acceleration. Requires a GPU with Vulkan Video decode support \
          (NVIDIA, AMD, or Intel with recent Mesa drivers). Use video::openh264::decoder \
@@ -793,17 +791,16 @@ pub fn register_vulkan_video_nodes(registry: &mut NodeRegistry) {
 
     let default_encoder = VulkanVideoH264EncoderNode::new(VulkanVideoH264EncoderConfig::default())
         .expect("default VulkanVideoH264 encoder config should be valid");
-    registry.register_static_with_description(
+    register_static_node!(
+        registry,
         "video::vulkan_video::h264_encoder",
         |params| {
             let config = config_helpers::parse_config_optional(params)?;
             Ok(Box::new(VulkanVideoH264EncoderNode::new(config)?))
         },
-        serde_json::to_value(schema_for!(VulkanVideoH264EncoderConfig))
-            .expect("VulkanVideoH264EncoderConfig schema should serialize to JSON"),
+        VulkanVideoH264EncoderConfig,
         StaticPins { inputs: default_encoder.input_pins(), outputs: default_encoder.output_pins() },
-        vec!["video".to_string(), "codecs".to_string(), "h264".to_string(), "hw".to_string()],
-        false,
+        ["video", "codecs", "h264", "hw"],
         "Encodes raw video frames (NV12 or I420) into H.264 Annex B packets using \
          Vulkan Video hardware acceleration. Supports VBR rate control with configurable \
          bitrate. Requires a GPU with Vulkan Video encode support. Use \
