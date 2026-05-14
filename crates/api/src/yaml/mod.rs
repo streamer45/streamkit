@@ -93,10 +93,6 @@ pub enum Needs {
     Map(IndexMap<String, NeedsDependency>),
 }
 
-// ---------------------------------------------------------------------------
-// Declarative `client` section — UI metadata for pipeline rendering
-// ---------------------------------------------------------------------------
-
 /// Top-level `client` section in pipeline YAML.
 ///
 /// Declares what the browser UI should do when rendering this pipeline.
@@ -325,10 +321,6 @@ pub struct FieldHint {
     pub placeholder: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// Declarative overlay controls — interactive widgets for runtime tuning
-// ---------------------------------------------------------------------------
-
 /// The kind of interactive control widget rendered in the StreamView.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, TS)]
 #[ts(export)]
@@ -411,10 +403,6 @@ pub struct ControlConfig {
     #[serde(default)]
     pub options: Option<Vec<SelectOption>>,
 }
-
-// ---------------------------------------------------------------------------
-// User-facing pipeline definition
-// ---------------------------------------------------------------------------
 
 /// The top-level structure for a user-facing pipeline definition.
 /// `serde(untagged)` allows it to be parsed as either a steps-based
