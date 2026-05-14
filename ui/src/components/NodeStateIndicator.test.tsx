@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import { render, screen } from '@testing-library/react';
 import * as RadixTooltip from '@radix-ui/react-tooltip';
+import { render, screen } from '@testing-library/react';
 import { Provider as JotaiProvider } from 'jotai/react';
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
@@ -97,9 +97,15 @@ describe('NodeStateIndicator', () => {
       ];
 
       for (const state of states) {
-        const { unmount } = renderIndicator(state);
-        const dot = document.querySelector('div[class]');
+        const { container, unmount } = renderIndicator(state);
+        const wrapper = container.querySelector('.nodrag');
+        expect(wrapper).not.toBeNull();
+        const indicatorWrapper = wrapper!.firstElementChild;
+        const dot = indicatorWrapper!.firstElementChild as HTMLElement;
         expect(dot).toBeInTheDocument();
+        const styles = window.getComputedStyle(dot);
+        expect(styles.width).toBe('10px');
+        expect(styles.height).toBe('10px');
         unmount();
       }
     });
@@ -114,8 +120,10 @@ describe('NodeStateIndicator', () => {
         discarded: BigInt(0),
         duration_secs: 10,
       };
-      renderIndicator('Running', { stats });
-      // Error badge is only visible when tooltip is open (isTooltipOpen), so it should not be present
+      const { container } = renderIndicator('Running', { stats });
+      const wrapper = container.querySelector('.nodrag');
+      const indicatorWrapper = wrapper!.firstElementChild!;
+      expect(indicatorWrapper.children.length).toBe(1);
     });
   });
 
