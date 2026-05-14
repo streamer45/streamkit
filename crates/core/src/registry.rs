@@ -706,4 +706,104 @@ mod tests {
         let reg = NodeRegistry::with_resource_manager(rm);
         assert!(reg.definitions().is_empty());
     }
+
+    struct StubResource;
+    impl crate::resource_manager::Resource for StubResource {
+        fn size_bytes(&self) -> usize {
+            64
+        }
+        fn resource_type(&self) -> &str {
+            "test"
+        }
+    }
+
+    fn stub_resource_factory() -> AsyncResourceFactory {
+        Arc::new(|_params| {
+            Box::pin(async {
+                Ok(Arc::new(StubResource) as Arc<dyn crate::resource_manager::Resource>)
+            })
+        })
+    }
+
+    fn stub_key_hasher() -> crate::node::ResourceKeyHasher {
+        Arc::new(|_params| "test_hash".to_string())
+    }
+
+    #[test]
+    fn register_static_with_resource() {
+        let rm = Arc::new(ResourceManager::new(ResourcePolicy::default()));
+        let mut reg = NodeRegistry::with_resource_manager(rm);
+        reg.register_static_with_resource(
+            "res_node",
+            stub_factory,
+            stub_resource_factory(),
+            stub_key_hasher(),
+            serde_json::json!({}),
+            stub_pins(),
+            vec!["ml".into()],
+            false,
+        );
+        assert!(reg.contains("res_node"));
+        let def = reg.get_definition("res_node").unwrap();
+        assert_eq!(def.categories, vec!["ml"]);
+    }
+
+    #[test]
+    fn register_dynamic_with_resource() {
+        let rm = Arc::new(ResourceManager::new(ResourcePolicy::default()));
+        let mut reg = NodeRegistry::with_resource_manager(rm);
+        reg.register_dynamic_with_resource(
+            "dyn_res",
+            stub_factory,
+            stub_resource_factory(),
+            stub_key_hasher(),
+            serde_json::json!({}),
+            vec!["ml".into()],
+            false,
+        );
+        assert!(reg.contains("dyn_res"));
+        let defs = reg.definitions();
+        assert_eq!(defs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn create_node_async_success() {
+        let rm = Arc::new(ResourceManager::new(ResourcePolicy::default()));
+        let mut reg = NodeRegistry::with_resource_manager(rm);
+        reg.register_static_with_resource(
+            "res_node",
+            stub_factory,
+            stub_resource_factory(),
+            stub_key_hasher(),
+            serde_json::json!({}),
+            stub_pins(),
+            vec![],
+            false,
+        );
+        let node = reg.create_node_async("res_node", None).await.unwrap();
+        assert_eq!(node.input_pins().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn create_node_async_unknown_kind() {
+        let reg = NodeRegistry::new();
+        let result = reg.create_node_async("missing", None).await;
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn create_node_async_without_resource_manager() {
+        let mut reg = NodeRegistry::new();
+        reg.register_static(
+            "plain",
+            stub_factory,
+            serde_json::json!({}),
+            stub_pins(),
+            vec![],
+            false,
+        );
+        let node = reg.create_node_async("plain", None).await.unwrap();
+        assert_eq!(node.output_pins().len(), 1);
+    }
 }
