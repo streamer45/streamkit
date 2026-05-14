@@ -138,7 +138,8 @@ pub fn catalog_audio_codec(codec: AudioCodec) -> hang::catalog::AudioCodec {
 pub fn audio_codec_from_catalog(catalog_codec: &hang::catalog::AudioCodec) -> Option<AudioCodec> {
     match catalog_codec {
         hang::catalog::AudioCodec::Opus => Some(AudioCodec::Opus),
-        hang::catalog::AudioCodec::AAC(_) => Some(AudioCodec::Aac),
+        // Only accept AAC-LC (profile 2) — matches what catalog_audio_codec() emits.
+        hang::catalog::AudioCodec::AAC(aac) if aac.profile == 2 => Some(AudioCodec::Aac),
         _ => None,
     }
 }

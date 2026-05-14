@@ -677,7 +677,6 @@ impl MoqPullNode {
         let audio_track = discovered_tracks.iter().find(|dt| !dt.track.name.starts_with("video/"));
         let video_track = discovered_tracks.iter().find(|dt| dt.track.name.starts_with("video/"));
 
-        // Catalog → config → Opus fallback.
         let resolved_audio_codec = audio_track
             .and_then(|dt| dt.audio_codec)
             .or(self.config.audio_codec)
@@ -1157,7 +1156,6 @@ mod tests {
             PacketType::EncodedAudio(fmt) => assert_eq!(fmt.codec, AudioCodec::Aac),
             other => panic!("expected EncodedAudio, got {other:?}"),
         }
-        // Stable "out" pin should also reflect the discovered AAC codec.
         let out_pin = pins.iter().find(|p| p.name == "out").unwrap();
         match &out_pin.produces_type {
             PacketType::EncodedAudio(fmt) => assert_eq!(fmt.codec, AudioCodec::Aac),
