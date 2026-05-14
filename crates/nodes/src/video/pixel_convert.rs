@@ -366,7 +366,7 @@ fn convert_frame(
 
 use streamkit_core::registry::StaticPins;
 
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, clippy::missing_panics_doc)]
 pub fn register_pixel_convert_nodes(registry: &mut NodeRegistry) {
     let default_node = PixelConvertNode::new(&PixelConvertConfig::default())
         .expect("default PixelConvertConfig should be valid");
