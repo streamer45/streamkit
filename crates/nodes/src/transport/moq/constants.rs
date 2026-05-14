@@ -132,6 +132,17 @@ pub fn catalog_audio_codec(codec: AudioCodec) -> hang::catalog::AudioCodec {
     }
 }
 
+/// Map a [`hang::catalog::AudioCodec`] back to our [`AudioCodec`].
+///
+/// Returns `None` for catalog codecs we don't support yet.
+pub fn audio_codec_from_catalog(catalog_codec: &hang::catalog::AudioCodec) -> Option<AudioCodec> {
+    match catalog_codec {
+        hang::catalog::AudioCodec::Opus => Some(AudioCodec::Opus),
+        hang::catalog::AudioCodec::AAC(_) => Some(AudioCodec::Aac),
+        _ => None,
+    }
+}
+
 /// Resolve the audio codec from config → input_types → default (Opus).
 ///
 /// Priority order:
@@ -222,6 +233,24 @@ mod tests {
     fn resolve_video_codec_defaults_to_vp9() {
         let input_types = std::collections::HashMap::new();
         assert_eq!(resolve_video_codec(None, &input_types), VideoCodec::Vp9);
+    }
+
+    #[test]
+    fn audio_codec_from_catalog_opus() {
+        assert_eq!(
+            audio_codec_from_catalog(&hang::catalog::AudioCodec::Opus),
+            Some(AudioCodec::Opus)
+        );
+    }
+
+    #[test]
+    fn audio_codec_from_catalog_aac() {
+        assert_eq!(
+            audio_codec_from_catalog(&hang::catalog::AudioCodec::AAC(hang::catalog::AAC {
+                profile: 2,
+            })),
+            Some(AudioCodec::Aac)
+        );
     }
 
     #[test]
