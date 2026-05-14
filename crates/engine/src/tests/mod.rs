@@ -10,6 +10,8 @@ mod async_node_creation;
 mod connection_types;
 #[cfg(feature = "dynamic")]
 mod dynamic_initialize;
+mod graph_builder;
+mod oneshot;
 mod oneshot_linear;
 #[cfg(feature = "dynamic")]
 mod pin_distributor;
