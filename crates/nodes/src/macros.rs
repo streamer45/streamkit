@@ -6,7 +6,7 @@
 macro_rules! register_dynamic_node {
     ($registry:expr, $name:expr, $node_type:ty, $config_type:ty,
      [$($cat:expr),* $(,)?], $desc:expr $(,)?) => {
-        #[allow(clippy::expect_used)]
+        #[allow(clippy::expect_used)] // JsonSchema-derived configs are infallible to serialize
         {
             let factory = <$node_type>::factory();
             $registry.register_dynamic_with_description(
@@ -27,7 +27,7 @@ macro_rules! register_dynamic_node {
 macro_rules! register_dynamic_node_bidirectional {
     ($registry:expr, $name:expr, $node_type:ty, $config_type:ty,
      [$($cat:expr),* $(,)?], $desc:expr $(,)?) => {
-        #[allow(clippy::expect_used)]
+        #[allow(clippy::expect_used)] // JsonSchema-derived configs are infallible to serialize
         {
             let factory = <$node_type>::factory();
             $registry.register_dynamic_with_description(
@@ -47,7 +47,7 @@ macro_rules! register_dynamic_node_bidirectional {
 macro_rules! register_static_node {
     ($registry:expr, $name:expr, $factory:expr, $config_type:ty, $pins:expr,
      [$($cat:expr),* $(,)?], $desc:expr $(,)?) => {
-        #[allow(clippy::expect_used)]
+        #[allow(clippy::expect_used)] // JsonSchema-derived configs are infallible to serialize
         {
             $registry.register_static_with_description(
                 $name,
@@ -63,7 +63,7 @@ macro_rules! register_static_node {
     };
     ($registry:expr, $name:expr, $factory:expr, $config_type:ty, $pins:expr,
      [$($cat:expr),* $(,)?], bidirectional, $desc:expr $(,)?) => {
-        #[allow(clippy::expect_used)]
+        #[allow(clippy::expect_used)] // JsonSchema-derived configs are infallible to serialize
         {
             $registry.register_static_with_description(
                 $name,
