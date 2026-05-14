@@ -246,4 +246,78 @@ describe('useContextMenu', () => {
     expect(result.current.menu?.left).toBe(250);
     expect(result.current.menu?.top).toBe(200); // clientY
   });
+
+  it('should handle pane click when no menus are open', () => {
+    const { result } = renderHook(() => useContextMenu());
+
+    act(() => {
+      result.current.onPaneClick();
+    });
+
+    expect(result.current.menu).toBeNull();
+    expect(result.current.paneMenu).toBeNull();
+  });
+
+  it('should handle multiple pane context menu opens', () => {
+    const { result } = renderHook(() => useContextMenu());
+
+    act(() => {
+      result.current.onPaneContextMenu({
+        preventDefault: () => {},
+        clientX: 100,
+        clientY: 100,
+      } as React.MouseEvent);
+    });
+
+    expect(result.current.paneMenu?.left).toBe(100);
+
+    act(() => {
+      result.current.onPaneContextMenu({
+        preventDefault: () => {},
+        clientX: 500,
+        clientY: 600,
+      } as React.MouseEvent);
+    });
+
+    expect(result.current.paneMenu?.left).toBe(500);
+    expect(result.current.paneMenu?.top).toBe(600);
+    expect(result.current.menu).toBeNull();
+  });
+
+  it('should handle opening both menus alternately', () => {
+    const { result } = renderHook(() => useContextMenu());
+
+    const mockNode: Node = {
+      id: TEST_NODE_ID,
+      position: { x: 0, y: 0 },
+      data: {},
+    };
+
+    act(() => {
+      result.current.onNodeContextMenu(
+        { preventDefault: () => {}, clientX: 10, clientY: 20 } as React.MouseEvent,
+        mockNode
+      );
+    });
+    expect(result.current.menu).not.toBeNull();
+
+    act(() => {
+      result.current.onPaneContextMenu({
+        preventDefault: () => {},
+        clientX: 30,
+        clientY: 40,
+      } as React.MouseEvent);
+    });
+    expect(result.current.menu).toBeNull();
+    expect(result.current.paneMenu).not.toBeNull();
+
+    act(() => {
+      result.current.onNodeContextMenu(
+        { preventDefault: () => {}, clientX: 50, clientY: 60 } as React.MouseEvent,
+        mockNode
+      );
+    });
+    expect(result.current.menu).not.toBeNull();
+    expect(result.current.paneMenu).toBeNull();
+  });
 });
