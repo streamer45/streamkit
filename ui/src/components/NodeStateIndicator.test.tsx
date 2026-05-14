@@ -5,7 +5,6 @@
 import * as RadixTooltip from '@radix-ui/react-tooltip';
 import { render, screen } from '@testing-library/react';
 import { Provider as JotaiProvider } from 'jotai/react';
-import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
 
 import type { NodeState, NodeStats } from '@/types/types';

@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { render, screen, fireEvent } from '@testing-library/react';
-import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
 
 import type { SamplePipeline } from '@/types/generated/api-types';
@@ -19,7 +18,6 @@ function makePipeline(overrides: Partial<SamplePipeline> = {}): SamplePipeline {
     is_system: true,
     mode: 'oneshot',
     is_fragment: false,
-    upload_fields: null,
     ...overrides,
   };
 }
