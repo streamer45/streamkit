@@ -443,3 +443,394 @@ impl NodeRegistry {
         self.info.contains_key(name)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::node::NodeContext;
+    use crate::pins::{InputPin, OutputPin, PinCardinality};
+    use crate::resource_manager::ResourcePolicy;
+    use crate::types::PacketType;
+
+    struct StubNode;
+
+    #[crate::async_trait]
+    impl ProcessorNode for StubNode {
+        fn input_pins(&self) -> Vec<InputPin> {
+            vec![InputPin {
+                name: "in".into(),
+                accepts_types: vec![PacketType::Any],
+                cardinality: PinCardinality::One,
+            }]
+        }
+        fn output_pins(&self) -> Vec<OutputPin> {
+            vec![OutputPin {
+                name: "out".into(),
+                produces_type: PacketType::Text,
+                cardinality: PinCardinality::One,
+            }]
+        }
+        async fn run(self: Box<Self>, _ctx: NodeContext) -> Result<(), StreamKitError> {
+            Ok(())
+        }
+    }
+
+    fn stub_factory(
+        _params: Option<&serde_json::Value>,
+    ) -> Result<Box<dyn ProcessorNode>, StreamKitError> {
+        Ok(Box::new(StubNode))
+    }
+
+    fn stub_pins() -> StaticPins {
+        StaticPins {
+            inputs: vec![InputPin {
+                name: "in".into(),
+                accepts_types: vec![PacketType::Any],
+                cardinality: PinCardinality::One,
+            }],
+            outputs: vec![OutputPin {
+                name: "out".into(),
+                produces_type: PacketType::Text,
+                cardinality: PinCardinality::One,
+            }],
+        }
+    }
+
+    #[test]
+    fn new_registry_is_empty() {
+        let reg = NodeRegistry::new();
+        assert!(reg.definitions().is_empty());
+    }
+
+    #[test]
+    fn register_static_and_list_definitions() {
+        let mut reg = NodeRegistry::new();
+        reg.register_static(
+            "stub",
+            stub_factory,
+            serde_json::json!({}),
+            stub_pins(),
+            vec!["test".into()],
+            false,
+        );
+        let defs = reg.definitions();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].kind, "stub");
+        assert!(!defs[0].bidirectional);
+        assert_eq!(defs[0].categories, vec!["test"]);
+        assert!(defs[0].description.is_none());
+    }
+
+    #[test]
+    fn register_static_with_description() {
+        let mut reg = NodeRegistry::new();
+        reg.register_static_with_description(
+            "described",
+            stub_factory,
+            serde_json::json!({}),
+            stub_pins(),
+            vec![],
+            true,
+            "A test node",
+        );
+        let def = reg.get_definition("described").unwrap();
+        assert_eq!(def.description.as_deref(), Some("A test node"));
+        assert!(def.bidirectional);
+    }
+
+    #[test]
+    fn register_dynamic_and_list_definitions() {
+        let mut reg = NodeRegistry::new();
+        reg.register_dynamic(
+            "dyn_stub",
+            stub_factory,
+            serde_json::json!({}),
+            vec!["dynamic".into()],
+            false,
+        );
+        let defs = reg.definitions();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].kind, "dyn_stub");
+        assert_eq!(defs[0].inputs.len(), 1);
+        assert_eq!(defs[0].outputs.len(), 1);
+    }
+
+    #[test]
+    fn register_dynamic_with_description() {
+        let mut reg = NodeRegistry::new();
+        reg.register_dynamic_with_description(
+            "dyn_desc",
+            stub_factory,
+            serde_json::json!({}),
+            vec![],
+            false,
+            "Dynamic described",
+        );
+        let def = reg.get_definition("dyn_desc").unwrap();
+        assert_eq!(def.description.as_deref(), Some("Dynamic described"));
+    }
+
+    #[test]
+    fn create_node_success() {
+        let mut reg = NodeRegistry::new();
+        reg.register_static(
+            "stub",
+            stub_factory,
+            serde_json::json!({}),
+            stub_pins(),
+            vec![],
+            false,
+        );
+        let node = reg.create_node("stub", None).unwrap();
+        assert_eq!(node.input_pins().len(), 1);
+        assert_eq!(node.output_pins().len(), 1);
+    }
+
+    #[test]
+    fn create_node_unknown_kind() {
+        let reg = NodeRegistry::new();
+        let result = reg.create_node("nonexistent", None);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn create_node_factory_error() {
+        let mut reg = NodeRegistry::new();
+        reg.register_static(
+            "fail",
+            |_| Err(StreamKitError::Configuration("bad params".into())),
+            serde_json::json!({}),
+            stub_pins(),
+            vec![],
+            false,
+        );
+        let result = reg.create_node("fail", None);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("bad params"));
+    }
+
+    #[test]
+    fn get_definition_existing() {
+        let mut reg = NodeRegistry::new();
+        reg.register_static(
+            "stub",
+            stub_factory,
+            serde_json::json!({}),
+            stub_pins(),
+            vec!["cat".into()],
+            false,
+        );
+        let def = reg.get_definition("stub").unwrap();
+        assert_eq!(def.kind, "stub");
+        assert_eq!(def.categories, vec!["cat"]);
+    }
+
+    #[test]
+    fn get_definition_missing() {
+        let reg = NodeRegistry::new();
+        assert!(reg.get_definition("nope").is_none());
+    }
+
+    #[test]
+    fn contains_and_unregister() {
+        let mut reg = NodeRegistry::new();
+        reg.register_static(
+            "stub",
+            stub_factory,
+            serde_json::json!({}),
+            stub_pins(),
+            vec![],
+            false,
+        );
+        assert!(reg.contains("stub"));
+        assert!(!reg.contains("other"));
+
+        assert!(reg.unregister("stub"));
+        assert!(!reg.contains("stub"));
+        assert!(!reg.unregister("stub"));
+    }
+
+    #[test]
+    fn duplicate_registration_overwrites() {
+        let mut reg = NodeRegistry::new();
+        reg.register_static(
+            "stub",
+            stub_factory,
+            serde_json::json!({}),
+            stub_pins(),
+            vec!["first".into()],
+            false,
+        );
+        reg.register_static(
+            "stub",
+            stub_factory,
+            serde_json::json!({}),
+            stub_pins(),
+            vec!["second".into()],
+            true,
+        );
+        let defs = reg.definitions();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].categories, vec!["second"]);
+        assert!(defs[0].bidirectional);
+    }
+
+    #[test]
+    fn node_definition_serialization_roundtrip() {
+        let def = NodeDefinition {
+            kind: "test".into(),
+            description: Some("desc".into()),
+            param_schema: serde_json::json!({"type": "object"}),
+            inputs: vec![InputPin {
+                name: "in".into(),
+                accepts_types: vec![PacketType::Text],
+                cardinality: PinCardinality::One,
+            }],
+            outputs: vec![],
+            categories: vec!["audio".into(), "filters".into()],
+            bidirectional: false,
+        };
+        let json = serde_json::to_string(&def).unwrap();
+        let deserialized: NodeDefinition = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.kind, "test");
+        assert_eq!(deserialized.description.as_deref(), Some("desc"));
+        assert_eq!(deserialized.categories.len(), 2);
+    }
+
+    #[test]
+    fn with_resource_manager() {
+        let rm = Arc::new(ResourceManager::new(ResourcePolicy::default()));
+        let reg = NodeRegistry::with_resource_manager(rm);
+        assert!(reg.definitions().is_empty());
+    }
+
+    #[test]
+    fn set_resource_manager_on_existing_registry() {
+        let mut reg = NodeRegistry::new();
+        reg.register_static(
+            "plain",
+            stub_factory,
+            serde_json::json!({}),
+            stub_pins(),
+            vec![],
+            false,
+        );
+        let rm = Arc::new(ResourceManager::new(ResourcePolicy::default()));
+        reg.set_resource_manager(rm);
+        reg.register_static_with_resource(
+            "res_node",
+            stub_factory,
+            stub_resource_factory(),
+            stub_key_hasher(),
+            serde_json::json!({}),
+            stub_pins(),
+            vec![],
+            false,
+        );
+        assert!(reg.contains("plain"));
+        assert!(reg.contains("res_node"));
+    }
+
+    struct StubResource;
+    impl crate::resource_manager::Resource for StubResource {
+        fn size_bytes(&self) -> usize {
+            64
+        }
+        fn resource_type(&self) -> &str {
+            "test"
+        }
+    }
+
+    fn stub_resource_factory() -> AsyncResourceFactory {
+        Arc::new(|_params| {
+            Box::pin(async {
+                Ok(Arc::new(StubResource) as Arc<dyn crate::resource_manager::Resource>)
+            })
+        })
+    }
+
+    fn stub_key_hasher() -> crate::node::ResourceKeyHasher {
+        Arc::new(|_params| "test_hash".to_string())
+    }
+
+    #[test]
+    fn register_static_with_resource() {
+        let rm = Arc::new(ResourceManager::new(ResourcePolicy::default()));
+        let mut reg = NodeRegistry::with_resource_manager(rm);
+        reg.register_static_with_resource(
+            "res_node",
+            stub_factory,
+            stub_resource_factory(),
+            stub_key_hasher(),
+            serde_json::json!({}),
+            stub_pins(),
+            vec!["ml".into()],
+            false,
+        );
+        assert!(reg.contains("res_node"));
+        let def = reg.get_definition("res_node").unwrap();
+        assert_eq!(def.categories, vec!["ml"]);
+    }
+
+    #[test]
+    fn register_dynamic_with_resource() {
+        let rm = Arc::new(ResourceManager::new(ResourcePolicy::default()));
+        let mut reg = NodeRegistry::with_resource_manager(rm);
+        reg.register_dynamic_with_resource(
+            "dyn_res",
+            stub_factory,
+            stub_resource_factory(),
+            stub_key_hasher(),
+            serde_json::json!({}),
+            vec!["ml".into()],
+            false,
+        );
+        assert!(reg.contains("dyn_res"));
+        let defs = reg.definitions();
+        assert_eq!(defs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn create_node_async_success() {
+        let rm = Arc::new(ResourceManager::new(ResourcePolicy::default()));
+        let mut reg = NodeRegistry::with_resource_manager(rm);
+        reg.register_static_with_resource(
+            "res_node",
+            stub_factory,
+            stub_resource_factory(),
+            stub_key_hasher(),
+            serde_json::json!({}),
+            stub_pins(),
+            vec![],
+            false,
+        );
+        let node = reg.create_node_async("res_node", None).await.unwrap();
+        assert_eq!(node.input_pins().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn create_node_async_unknown_kind() {
+        let reg = NodeRegistry::new();
+        let result = reg.create_node_async("missing", None).await;
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn create_node_async_without_resource_manager() {
+        let mut reg = NodeRegistry::new();
+        reg.register_static(
+            "plain",
+            stub_factory,
+            serde_json::json!({}),
+            stub_pins(),
+            vec![],
+            false,
+        );
+        let node = reg.create_node_async("plain", None).await.unwrap();
+        assert_eq!(node.output_pins().len(), 1);
+    }
+}

@@ -508,3 +508,203 @@ pub type NodeFactory = Arc<
 /// Given parameters, returns a deterministic hash string used as part of the ResourceKey.
 /// Plugins should hash only the parameters that affect resource initialization (e.g., model path, GPU settings).
 pub type ResourceKeyHasher = Arc<dyn Fn(Option<&serde_json::Value>) -> String + Send + Sync>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use tokio::sync::mpsc;
+
+    #[test]
+    fn pipeline_mode_default_is_dynamic() {
+        assert_eq!(PipelineMode::default(), PipelineMode::Dynamic);
+    }
+
+    #[test]
+    fn pipeline_mode_variants_are_distinct() {
+        assert_ne!(PipelineMode::Dynamic, PipelineMode::Oneshot);
+    }
+
+    #[test]
+    fn output_sender_node_name() {
+        let routing = OutputRouting::Direct(HashMap::new());
+        let sender = OutputSender::new("test_node".into(), routing);
+        assert_eq!(sender.node_name(), "test_node");
+    }
+
+    #[test]
+    fn output_sender_try_send_pin_not_found() {
+        let routing = OutputRouting::Direct(HashMap::new());
+        let mut sender = OutputSender::new("node_a".into(), routing);
+        let packet = Packet::Text(Arc::from("hello"));
+        let err = sender.try_send("missing_pin", packet).unwrap_err();
+        assert!(matches!(err, OutputSendError::PinNotFound { .. }));
+        assert!(err.to_string().contains("missing_pin"));
+        assert!(err.to_string().contains("node_a"));
+    }
+
+    #[test]
+    fn output_sender_try_send_direct_success() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut senders = HashMap::new();
+        senders.insert("out".to_string(), tx);
+        let routing = OutputRouting::Direct(senders);
+        let mut sender = OutputSender::new("node_a".into(), routing);
+
+        let packet = Packet::Text(Arc::from("hello"));
+        sender.try_send("out", packet).unwrap();
+
+        let received = rx.try_recv().unwrap();
+        assert!(matches!(received, Packet::Text(ref s) if &**s == "hello"));
+    }
+
+    #[test]
+    fn output_sender_try_send_direct_channel_full() {
+        let (tx, _rx) = mpsc::channel(1);
+        let mut senders = HashMap::new();
+        senders.insert("out".to_string(), tx);
+        let routing = OutputRouting::Direct(senders);
+        let mut sender = OutputSender::new("node_a".into(), routing);
+
+        sender.try_send("out", Packet::Text(Arc::from("1"))).unwrap();
+        let err = sender.try_send("out", Packet::Text(Arc::from("2"))).unwrap_err();
+        assert!(matches!(err, OutputSendError::ChannelFull { .. }));
+    }
+
+    #[test]
+    fn output_sender_try_send_direct_channel_closed() {
+        let (tx, rx) = mpsc::channel(4);
+        let mut senders = HashMap::new();
+        senders.insert("out".to_string(), tx);
+        let routing = OutputRouting::Direct(senders);
+        let mut sender = OutputSender::new("node_a".into(), routing);
+        drop(rx);
+
+        let err = sender.try_send("out", Packet::Text(Arc::from("x"))).unwrap_err();
+        assert!(matches!(err, OutputSendError::ChannelClosed { .. }));
+    }
+
+    #[test]
+    fn output_sender_try_send_routed_success() {
+        let (engine_tx, mut engine_rx) = mpsc::channel(4);
+        let routing = OutputRouting::Routed(engine_tx);
+        let mut sender = OutputSender::new("source".into(), routing);
+
+        sender.try_send("video_out", Packet::Text(Arc::from("frame"))).unwrap();
+
+        let (node_name, pin_name, packet) = engine_rx.try_recv().unwrap();
+        assert_eq!(&*node_name, "source");
+        assert_eq!(&*pin_name, "video_out");
+        assert!(matches!(packet, Packet::Text(ref s) if &**s == "frame"));
+    }
+
+    #[test]
+    fn output_sender_try_send_routed_closed() {
+        let (engine_tx, rx) = mpsc::channel(4);
+        let routing = OutputRouting::Routed(engine_tx);
+        let mut sender = OutputSender::new("source".into(), routing);
+        drop(rx);
+
+        let err = sender.try_send("out", Packet::Text(Arc::from("x"))).unwrap_err();
+        assert!(matches!(err, OutputSendError::ChannelClosed { .. }));
+    }
+
+    #[test]
+    fn output_send_error_display_messages() {
+        let err =
+            OutputSendError::PinNotFound { node_name: "mynode".into(), pin_name: "mypin".into() };
+        let msg = err.to_string();
+        assert!(msg.contains("'mypin'"), "should quote pin name: {msg}");
+        assert!(msg.contains("'mynode'"), "should quote node name: {msg}");
+
+        let err = OutputSendError::ChannelClosed { node_name: "n".into(), pin_name: "p".into() };
+        assert!(err.to_string().contains("closed"));
+
+        let err = OutputSendError::ChannelFull { node_name: "n".into(), pin_name: "p".into() };
+        assert!(err.to_string().contains("full"));
+    }
+
+    #[test]
+    fn output_send_error_clone_and_eq() {
+        let err = OutputSendError::PinNotFound { node_name: "n".into(), pin_name: "p".into() };
+        let cloned = err.clone();
+        assert_eq!(err, cloned);
+    }
+
+    #[test]
+    fn init_context_field_access() {
+        let (state_tx, _rx) = mpsc::channel(4);
+        let ctx = InitContext { node_id: "my_node".into(), state_tx };
+        assert_eq!(ctx.node_id, "my_node");
+    }
+
+    #[test]
+    fn output_sender_pin_name_caching() {
+        let (engine_tx, mut engine_rx) = mpsc::channel(16);
+        let routing = OutputRouting::Routed(engine_tx);
+        let mut sender = OutputSender::new("node".into(), routing);
+
+        sender.try_send("pin_a", Packet::Text(Arc::from("1"))).unwrap();
+        sender.try_send("pin_a", Packet::Text(Arc::from("2"))).unwrap();
+
+        let (_, pin1, _) = engine_rx.try_recv().unwrap();
+        let (_, pin2, _) = engine_rx.try_recv().unwrap();
+        assert!(Arc::ptr_eq(&pin1, &pin2));
+    }
+
+    #[tokio::test]
+    async fn output_sender_send_direct_success() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut senders = HashMap::new();
+        senders.insert("out".to_string(), tx);
+        let routing = OutputRouting::Direct(senders);
+        let mut sender = OutputSender::new("node".into(), routing);
+
+        sender.send("out", Packet::Text(Arc::from("async_pkt"))).await.unwrap();
+        let received = rx.try_recv().unwrap();
+        assert!(matches!(received, Packet::Text(ref s) if &**s == "async_pkt"));
+    }
+
+    #[tokio::test]
+    async fn output_sender_send_direct_pin_not_found() {
+        let routing = OutputRouting::Direct(HashMap::new());
+        let mut sender = OutputSender::new("node".into(), routing);
+        let err = sender.send("nope", Packet::Text(Arc::from("x"))).await.unwrap_err();
+        assert!(matches!(err, OutputSendError::PinNotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn output_sender_send_direct_channel_closed() {
+        let (tx, rx) = mpsc::channel(4);
+        let mut senders = HashMap::new();
+        senders.insert("out".to_string(), tx);
+        let routing = OutputRouting::Direct(senders);
+        let mut sender = OutputSender::new("node".into(), routing);
+        drop(rx);
+        let err = sender.send("out", Packet::Text(Arc::from("x"))).await.unwrap_err();
+        assert!(matches!(err, OutputSendError::ChannelClosed { .. }));
+    }
+
+    #[tokio::test]
+    async fn output_sender_send_routed_success() {
+        let (engine_tx, mut engine_rx) = mpsc::channel(4);
+        let routing = OutputRouting::Routed(engine_tx);
+        let mut sender = OutputSender::new("src".into(), routing);
+
+        sender.send("out", Packet::Text(Arc::from("routed_pkt"))).await.unwrap();
+        let (node_name, pin_name, packet) = engine_rx.try_recv().unwrap();
+        assert_eq!(&*node_name, "src");
+        assert_eq!(&*pin_name, "out");
+        assert!(matches!(packet, Packet::Text(ref s) if &**s == "routed_pkt"));
+    }
+
+    #[tokio::test]
+    async fn output_sender_send_routed_closed() {
+        let (engine_tx, rx) = mpsc::channel(4);
+        let routing = OutputRouting::Routed(engine_tx);
+        let mut sender = OutputSender::new("src".into(), routing);
+        drop(rx);
+        let err = sender.send("out", Packet::Text(Arc::from("x"))).await.unwrap_err();
+        assert!(matches!(err, OutputSendError::ChannelClosed { .. }));
+    }
+}

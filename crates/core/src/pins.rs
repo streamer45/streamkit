@@ -152,3 +152,115 @@ pub enum PinManagementMessage {
     /// hints back to the source.
     AttachHintSender { pin_name: String, hint_tx: tokio::sync::mpsc::Sender<crate::UpstreamHint> },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{AudioFormat, PacketType, SampleFormat};
+
+    #[test]
+    fn input_pin_construction_and_clone() {
+        let pin = InputPin {
+            name: "audio_in".into(),
+            accepts_types: vec![PacketType::Any],
+            cardinality: PinCardinality::One,
+        };
+        let cloned = pin.clone();
+        assert_eq!(cloned.name, "audio_in");
+        assert_eq!(cloned.cardinality, PinCardinality::One);
+    }
+
+    #[test]
+    fn output_pin_construction_and_clone() {
+        let pin = OutputPin {
+            name: "audio_out".into(),
+            produces_type: PacketType::RawAudio(AudioFormat {
+                sample_rate: 48000,
+                channels: 2,
+                sample_format: SampleFormat::F32,
+            }),
+            cardinality: PinCardinality::Broadcast,
+        };
+        let cloned = pin.clone();
+        assert_eq!(cloned.name, "audio_out");
+        assert_eq!(cloned.cardinality, PinCardinality::Broadcast);
+        assert_eq!(cloned.produces_type, pin.produces_type);
+    }
+
+    #[test]
+    fn pin_cardinality_equality() {
+        assert_eq!(PinCardinality::One, PinCardinality::One);
+        assert_eq!(PinCardinality::Broadcast, PinCardinality::Broadcast);
+        assert_eq!(
+            PinCardinality::Dynamic { prefix: "in".into() },
+            PinCardinality::Dynamic { prefix: "in".into() }
+        );
+        assert_ne!(PinCardinality::One, PinCardinality::Broadcast);
+        assert_ne!(
+            PinCardinality::Dynamic { prefix: "in".into() },
+            PinCardinality::Dynamic { prefix: "out".into() }
+        );
+    }
+
+    #[test]
+    fn dynamic_pin_match_exact_prefix() {
+        assert!(PinCardinality::is_dynamic_pin_match("in", "in"));
+    }
+
+    #[test]
+    fn dynamic_pin_match_with_suffix() {
+        assert!(PinCardinality::is_dynamic_pin_match("in", "in_0"));
+        assert!(PinCardinality::is_dynamic_pin_match("in", "in_foo"));
+    }
+
+    #[test]
+    fn dynamic_pin_no_match_partial_prefix() {
+        assert!(!PinCardinality::is_dynamic_pin_match("in", "inside"));
+        assert!(!PinCardinality::is_dynamic_pin_match("in", "internal"));
+    }
+
+    #[test]
+    fn dynamic_pin_no_match_unrelated() {
+        assert!(!PinCardinality::is_dynamic_pin_match("in", "out"));
+        assert!(!PinCardinality::is_dynamic_pin_match("in", "output_0"));
+    }
+
+    #[test]
+    fn pin_cardinality_serialization_roundtrip() {
+        let variants = vec![
+            PinCardinality::One,
+            PinCardinality::Broadcast,
+            PinCardinality::Dynamic { prefix: "layer".into() },
+        ];
+        for v in variants {
+            let json = serde_json::to_string(&v).unwrap();
+            let deserialized: PinCardinality = serde_json::from_str(&json).unwrap();
+            assert_eq!(v, deserialized);
+        }
+    }
+
+    #[test]
+    fn pin_update_no_change_variant() {
+        let update = PinUpdate::NoChange;
+        assert!(matches!(update, PinUpdate::NoChange));
+    }
+
+    #[test]
+    fn pin_update_updated_variant() {
+        let update = PinUpdate::Updated {
+            inputs: vec![InputPin {
+                name: "in".into(),
+                accepts_types: vec![PacketType::Text],
+                cardinality: PinCardinality::One,
+            }],
+            outputs: vec![],
+        };
+        match update {
+            PinUpdate::Updated { inputs, outputs } => {
+                assert_eq!(inputs.len(), 1);
+                assert!(outputs.is_empty());
+            },
+            PinUpdate::NoChange => panic!("expected Updated"),
+        }
+    }
+}

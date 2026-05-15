@@ -147,3 +147,128 @@ pub enum EngineControlMessage {
     },
     Shutdown,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_control_update_params_serialization_roundtrip() {
+        let msg = NodeControlMessage::UpdateParams(serde_json::json!({"gain": 0.5}));
+        let json = serde_json::to_string(&msg).unwrap();
+        let deserialized: NodeControlMessage = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            NodeControlMessage::UpdateParams(v) => {
+                assert_eq!(v["gain"], 0.5);
+            },
+            _ => panic!("expected UpdateParams"),
+        }
+    }
+
+    #[test]
+    fn node_control_start_serialization_roundtrip() {
+        let msg = NodeControlMessage::Start;
+        let json = serde_json::to_string(&msg).unwrap();
+        let deserialized: NodeControlMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(deserialized, NodeControlMessage::Start));
+    }
+
+    #[test]
+    fn node_control_shutdown_serialization_roundtrip() {
+        let msg = NodeControlMessage::Shutdown;
+        let json = serde_json::to_string(&msg).unwrap();
+        let deserialized: NodeControlMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(deserialized, NodeControlMessage::Shutdown));
+    }
+
+    #[test]
+    fn connection_mode_default_is_reliable() {
+        assert_eq!(ConnectionMode::default(), ConnectionMode::Reliable);
+    }
+
+    #[test]
+    fn connection_mode_serialization_roundtrip() {
+        for mode in [ConnectionMode::Reliable, ConnectionMode::BestEffort] {
+            let json = serde_json::to_string(&mode).unwrap();
+            let deserialized: ConnectionMode = serde_json::from_str(&json).unwrap();
+            assert_eq!(mode, deserialized);
+        }
+    }
+
+    #[test]
+    fn connection_mode_serde_uses_snake_case() {
+        let json = serde_json::to_string(&ConnectionMode::BestEffort).unwrap();
+        assert_eq!(json, "\"best_effort\"");
+    }
+
+    #[test]
+    fn engine_control_add_node_debug_snapshot() {
+        let msg = EngineControlMessage::AddNode {
+            node_id: "node1".into(),
+            kind: "gain".into(),
+            params: Some(serde_json::json!({"gain": 1.0})),
+        };
+        let dbg = format!("{msg:?}");
+        assert!(dbg.contains("AddNode"), "Debug must name the variant");
+        assert!(dbg.contains("node1"));
+        assert!(dbg.contains("gain"));
+    }
+
+    #[test]
+    fn engine_control_remove_node_debug_snapshot() {
+        let msg = EngineControlMessage::RemoveNode { node_id: "node1".into() };
+        let dbg = format!("{msg:?}");
+        assert!(dbg.contains("RemoveNode"));
+        assert!(dbg.contains("node1"));
+    }
+
+    #[test]
+    fn engine_control_connect_debug_snapshot() {
+        let msg = EngineControlMessage::Connect {
+            from_node: "src".into(),
+            from_pin: "audio_out".into(),
+            to_node: "dst".into(),
+            to_pin: "audio_in".into(),
+            mode: ConnectionMode::BestEffort,
+        };
+        let dbg = format!("{msg:?}");
+        assert!(dbg.contains("Connect"));
+        assert!(dbg.contains("src"));
+        assert!(dbg.contains("audio_out"));
+        assert!(dbg.contains("dst"));
+        assert!(dbg.contains("audio_in"));
+        assert!(dbg.contains("BestEffort"));
+    }
+
+    #[test]
+    fn engine_control_disconnect_debug_snapshot() {
+        let msg = EngineControlMessage::Disconnect {
+            from_node: "src".into(),
+            from_pin: "out".into(),
+            to_node: "dst".into(),
+            to_pin: "in".into(),
+        };
+        let dbg = format!("{msg:?}");
+        assert!(dbg.contains("Disconnect"));
+        assert!(dbg.contains("src"));
+        assert!(dbg.contains("dst"));
+    }
+
+    #[test]
+    fn engine_control_tune_node_debug_snapshot() {
+        let msg = EngineControlMessage::TuneNode {
+            node_id: "node1".into(),
+            message: NodeControlMessage::UpdateParams(serde_json::json!({"rate": 44100})),
+        };
+        let dbg = format!("{msg:?}");
+        assert!(dbg.contains("TuneNode"));
+        assert!(dbg.contains("node1"));
+        assert!(dbg.contains("UpdateParams"));
+    }
+
+    #[test]
+    fn engine_control_shutdown_debug_snapshot() {
+        let msg = EngineControlMessage::Shutdown;
+        assert_eq!(format!("{msg:?}"), "Shutdown");
+    }
+}

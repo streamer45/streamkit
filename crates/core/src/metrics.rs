@@ -65,3 +65,58 @@ pub const HISTOGRAM_BOUNDARIES_SESSION_DURATION: &[f64] =
 /// minor jitter from severe overruns that cause A/V desync.
 pub const HISTOGRAM_BOUNDARIES_FRAME_OVERRUN: &[f64] =
     &[0.001, 0.005, 0.01, 0.02, 0.033, 0.05, 0.1, 0.5, 1.0];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_sorted_and_positive(name: &str, boundaries: &[f64]) {
+        assert!(!boundaries.is_empty(), "{name} must not be empty");
+        assert!(
+            boundaries[0] > 0.0,
+            "{name} first boundary must be positive, got {}",
+            boundaries[0]
+        );
+        for window in boundaries.windows(2) {
+            assert!(
+                window[0] < window[1],
+                "{name} boundaries must be strictly ascending: {} >= {}",
+                window[0],
+                window[1]
+            );
+        }
+    }
+
+    #[test]
+    fn all_boundary_arrays_sorted_and_positive() {
+        let arrays: &[(&str, &[f64])] = &[
+            ("CODEC_PACKET", HISTOGRAM_BOUNDARIES_CODEC_PACKET),
+            ("FILE_OPERATION", HISTOGRAM_BOUNDARIES_FILE_OPERATION),
+            ("NODE_EXECUTION", HISTOGRAM_BOUNDARIES_NODE_EXECUTION),
+            ("BACKPRESSURE", HISTOGRAM_BOUNDARIES_BACKPRESSURE),
+            ("PACER_LATENESS", HISTOGRAM_BOUNDARIES_PACER_LATENESS),
+            ("CLOCK_OFFSET_MS", HISTOGRAM_BOUNDARIES_CLOCK_OFFSET_MS),
+            ("FRAME_GAP_MS", HISTOGRAM_BOUNDARIES_FRAME_GAP_MS),
+            ("PIPELINE_DURATION", HISTOGRAM_BOUNDARIES_PIPELINE_DURATION),
+            ("HTTP_DURATION", HISTOGRAM_BOUNDARIES_HTTP_DURATION),
+            ("SESSION_DURATION", HISTOGRAM_BOUNDARIES_SESSION_DURATION),
+            ("FRAME_OVERRUN", HISTOGRAM_BOUNDARIES_FRAME_OVERRUN),
+        ];
+        for (name, arr) in arrays {
+            assert_sorted_and_positive(name, arr);
+        }
+    }
+
+    #[test]
+    fn codec_packet_covers_sub_millisecond_to_second() {
+        let b = HISTOGRAM_BOUNDARIES_CODEC_PACKET;
+        assert!(b[0] <= 0.0001, "should start at sub-millisecond range");
+        assert!(*b.last().unwrap() >= 1.0, "should reach at least 1 second");
+    }
+
+    #[test]
+    fn session_duration_covers_hours() {
+        let b = HISTOGRAM_BOUNDARIES_SESSION_DURATION;
+        assert!(*b.last().unwrap() >= 86400.0, "should cover up to 24 hours");
+    }
+}
