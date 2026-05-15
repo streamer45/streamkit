@@ -664,7 +664,7 @@ fn merge_keyframe_metadata(
 
 use streamkit_core::registry::StaticPins;
 
-#[allow(clippy::expect_used, clippy::missing_panics_doc)]
+#[allow(clippy::expect_used, clippy::missing_panics_doc)] // Default config and schema serialization should never fail
 pub fn register_nv_av1_nodes(registry: &mut NodeRegistry) {
     if !shiguredo_nvcodec::is_cuda_library_available() {
         tracing::warn!(

@@ -471,7 +471,7 @@ use streamkit_core::{config_helpers, registry::StaticPins};
 /// # Panics
 ///
 /// Panics if default Opus encoder/decoder cannot be created (should never happen).
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used)] // Schema serialization and default configs should never fail
 pub fn register_opus_nodes(registry: &mut NodeRegistry) {
     #[cfg(feature = "opus")]
     {

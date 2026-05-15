@@ -18,7 +18,6 @@ use super::rtmp_client::{
 };
 use async_trait::async_trait;
 use opentelemetry::KeyValue;
-
 use schemars::JsonSchema;
 use serde::Deserialize;
 use streamkit_core::stats::NodeStatsTracker;

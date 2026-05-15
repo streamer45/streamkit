@@ -1087,7 +1087,7 @@ const fn merge_keyframe_metadata(
 
 use streamkit_core::registry::StaticPins;
 
-#[allow(clippy::expect_used, clippy::missing_panics_doc)]
+#[allow(clippy::expect_used, clippy::missing_panics_doc)] // Default config and schema serialization should never fail
 pub fn register_av1_nodes(registry: &mut NodeRegistry) {
     let default_decoder = Av1DecoderNode::new(Av1DecoderConfig::default())
         .expect("default AV1 decoder config should be valid");

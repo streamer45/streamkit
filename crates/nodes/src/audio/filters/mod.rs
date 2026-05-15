@@ -18,7 +18,7 @@ use resampler::{AudioResamplerConfig, AudioResamplerNode};
 /// # Panics
 ///
 /// Panics if default node configs are invalid (should never happen).
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used)] // Schema serialization should never fail for valid types
 pub fn register_audio_filters(registry: &mut NodeRegistry) {
     #[cfg(feature = "audio_gain")]
     {

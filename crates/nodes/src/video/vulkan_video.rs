@@ -769,7 +769,7 @@ fn init_vulkan_encode_device(
 
 use streamkit_core::registry::StaticPins;
 
-#[allow(clippy::expect_used, clippy::missing_panics_doc)]
+#[allow(clippy::expect_used, clippy::missing_panics_doc)] // Default config and schema serialization should never fail
 pub fn register_vulkan_video_nodes(registry: &mut NodeRegistry) {
     let default_decoder = VulkanVideoH264DecoderNode::new(VulkanVideoH264DecoderConfig::default())
         .expect("default VulkanVideoH264 decoder config should be valid");

@@ -534,7 +534,7 @@ fn copy_dav1d_picture(
 
 use streamkit_core::registry::StaticPins;
 
-#[allow(clippy::expect_used, clippy::missing_panics_doc)]
+#[allow(clippy::expect_used, clippy::missing_panics_doc)] // Default config and schema serialization should never fail
 pub fn register_dav1d_nodes(registry: &mut NodeRegistry) {
     let default_decoder = Dav1dDecoderNode::new(Dav1dDecoderConfig::default())
         .expect("default dav1d decoder config should be valid");

@@ -355,7 +355,7 @@ use streamkit_core::{config_helpers, registry::StaticPins};
 /// # Panics
 ///
 /// Panics if the default MP3 decoder cannot be created (should never happen).
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used)] // Schema serialization and default config should never fail
 pub fn register_mp3_nodes(registry: &mut NodeRegistry) {
     #[cfg(feature = "symphonia")]
     {

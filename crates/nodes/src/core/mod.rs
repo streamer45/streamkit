@@ -34,7 +34,7 @@ use streamkit_core::registry::StaticPins;
 /// # Panics
 ///
 /// Panics if config schemas cannot be serialized to JSON (should never happen).
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used)] // Schema serialization should never fail for valid types
 pub fn register_core_nodes(registry: &mut NodeRegistry, constraints: &GlobalNodeConstraints) {
     let _ = constraints;
 
@@ -127,6 +127,7 @@ pub fn register_core_nodes(registry: &mut NodeRegistry, constraints: &GlobalNode
     {
         let global_config = constraints.get::<script::GlobalScriptConfig>().cloned();
 
+        // Parametrized factory — not suitable for register_dynamic_node! macro
         let factory = script::ScriptNode::factory(global_config);
         registry.register_dynamic_with_description(
             "core::script",
@@ -141,6 +142,7 @@ pub fn register_core_nodes(registry: &mut NodeRegistry, constraints: &GlobalNode
         );
     }
 
+    // Free-function factory — not suitable for register_dynamic_node! macro
     registry.register_dynamic_with_description(
         "core::telemetry_tap",
         telemetry_tap::create_telemetry_tap,

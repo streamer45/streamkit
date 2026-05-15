@@ -322,7 +322,7 @@ use streamkit_core::{config_helpers, registry::StaticPins};
 /// # Panics
 ///
 /// Panics if the default FLAC decoder cannot be created (should never happen).
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used)] // Schema serialization and default config should never fail
 pub fn register_flac_nodes(registry: &mut NodeRegistry) {
     #[cfg(feature = "symphonia")]
     {

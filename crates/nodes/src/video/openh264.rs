@@ -382,7 +382,7 @@ impl OpenH264Encoder {
 
 use streamkit_core::registry::StaticPins;
 
-#[allow(clippy::expect_used, clippy::missing_panics_doc)]
+#[allow(clippy::expect_used, clippy::missing_panics_doc)] // Default config and schema serialization should never fail
 pub fn register_openh264_nodes(registry: &mut NodeRegistry) {
     let default_encoder = OpenH264EncoderNode::new(OpenH264EncoderConfig::default())
         .expect("default OpenH264 encoder config should be valid");

@@ -41,7 +41,6 @@ use overlay::{
     decode_image_overlay, rasterize_text_overlay, validate_asset_path, DecodedOverlay,
     OverlaySourceKind,
 };
-
 use smallvec::SmallVec;
 use std::collections::HashMap;
 #[cfg(feature = "gpu")]

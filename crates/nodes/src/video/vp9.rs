@@ -982,7 +982,7 @@ fn vp9_encoder_available() -> bool {
 
 use streamkit_core::registry::StaticPins;
 
-#[allow(clippy::expect_used, clippy::missing_panics_doc)]
+#[allow(clippy::expect_used, clippy::missing_panics_doc)] // Default config and schema serialization should never fail
 pub fn register_vp9_nodes(registry: &mut NodeRegistry) {
     assert_vpx_abi_versions();
 

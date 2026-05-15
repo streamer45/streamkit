@@ -548,7 +548,7 @@ fn merge_h264_keyframe_metadata(
 
 use streamkit_core::registry::StaticPins;
 
-#[allow(clippy::expect_used, clippy::missing_panics_doc)]
+#[allow(clippy::expect_used, clippy::missing_panics_doc)] // Default config and schema serialization should never fail
 pub fn register_vaapi_h264_nodes(registry: &mut NodeRegistry) {
     let default_decoder = VaapiH264DecoderNode::new(VaapiH264DecoderConfig::default())
         .expect("default VA-API H.264 decoder config should be valid");
