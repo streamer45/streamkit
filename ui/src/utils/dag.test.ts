@@ -4,15 +4,16 @@
 
 import { describe, expect, it } from 'vitest';
 
+import type { Pipeline } from '@/types/types';
+
 import {
   wouldCreateCycle,
   topoLevelsFromEdges,
   topoLevelsFromPipeline,
   orderedNamesFromLevels,
   verticalLayout,
-  type SimpleEdge,
 } from './dag';
-import type { Pipeline } from '@/types/types';
+import type { SimpleEdge } from './dag';
 
 describe('wouldCreateCycle', () => {
   it('returns false when no cycle is created', () => {
