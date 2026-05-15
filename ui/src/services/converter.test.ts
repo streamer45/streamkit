@@ -40,19 +40,15 @@ describe('converter service', () => {
   const MOCK_FILE = new File(['test content'], 'test.ogg', { type: 'audio/ogg' });
   const MOCK_UPLOAD = [{ field: 'media', file: MOCK_FILE }];
 
-  let originalMediaSource: unknown;
-
   beforeEach(() => {
-    // Reset fetch mock before each test
     global.fetch = vi.fn() as never;
     vi.useFakeTimers();
-    originalMediaSource = (globalThis as { MediaSource?: unknown }).MediaSource;
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
-    (globalThis as { MediaSource?: unknown }).MediaSource = originalMediaSource as never;
+    vi.unstubAllGlobals();
   });
 
   describe('convertFile - Streaming (JSON)', () => {
@@ -110,9 +106,9 @@ describe('converter service', () => {
 
   describe('convertFile - MSE Streaming (WebM)', () => {
     it('should handle WebM streaming for MSE playback', async () => {
-      (globalThis as { MediaSource?: unknown }).MediaSource = {
+      vi.stubGlobal('MediaSource', {
         isTypeSupported: vi.fn().mockReturnValue(true),
-      } as never;
+      });
 
       const mockBody = new ReadableStream({
         start(controller) {
@@ -136,9 +132,9 @@ describe('converter service', () => {
     });
 
     it('should wrap WebM stream with cancellation support', async () => {
-      (globalThis as { MediaSource?: unknown }).MediaSource = {
+      vi.stubGlobal('MediaSource', {
         isTypeSupported: vi.fn().mockReturnValue(true),
-      } as never;
+      });
 
       const mockReader = {
         read: vi.fn().mockResolvedValue({ done: true, value: undefined }),
@@ -205,7 +201,10 @@ describe('converter service', () => {
       const removeChildSpy = vi
         .spyOn(document.body, 'removeChild')
         .mockImplementation(() => null as never);
-      vi.spyOn(document, 'createElement').mockReturnValue(mockLink as never);
+      const realCreate = document.createElement.bind(document);
+      vi.spyOn(document, 'createElement').mockImplementation((tag: string) =>
+        tag === 'a' ? (mockLink as never) : realCreate(tag)
+      );
 
       (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
         ok: true,
@@ -235,7 +234,10 @@ describe('converter service', () => {
 
       vi.spyOn(document.body, 'appendChild').mockImplementation(() => null as never);
       vi.spyOn(document.body, 'removeChild').mockImplementation(() => null as never);
-      vi.spyOn(document, 'createElement').mockReturnValue(mockLink as never);
+      const realCreate = document.createElement.bind(document);
+      vi.spyOn(document, 'createElement').mockImplementation((tag: string) =>
+        tag === 'a' ? (mockLink as never) : realCreate(tag)
+      );
       global.URL.createObjectURL = vi.fn().mockReturnValue('blob:url');
 
       (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
@@ -416,6 +418,144 @@ describe('converter service', () => {
 
     it('should handle JSON content type', () => {
       expect(getExtensionFromContentType('application/json')).toBe('.json');
+    });
+  });
+
+  describe('convertFile - MSE Streaming (MP4)', () => {
+    it('should handle MP4 streaming when MSE supports the type', async () => {
+      vi.stubGlobal('MediaSource', {
+        isTypeSupported: vi.fn().mockReturnValue(true),
+      });
+
+      const mockBody = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array([0x00, 0x00, 0x00, 0x1c]));
+          controller.close();
+        },
+      });
+
+      (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+        ok: true,
+        headers: new Headers({ 'Content-Type': 'video/mp4' }),
+        body: mockBody,
+      } as Response);
+
+      const result = await convertFile(MOCK_YAML, MOCK_UPLOAD, 'playback');
+
+      expect(result.success).toBe(true);
+      expect(result.useStreaming).toBe(true);
+      expect(result.contentType).toBe('video/mp4');
+    });
+
+    it('should fall back to blob for MP4 when MSE is unavailable', async () => {
+      vi.stubGlobal('MediaSource', undefined);
+
+      const mockBlob = new Blob(['video data'], { type: 'video/mp4' });
+      global.URL.createObjectURL = vi.fn().mockReturnValue('blob:mp4-url');
+
+      (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+        ok: true,
+        headers: new Headers({ 'Content-Type': 'video/mp4' }),
+        body: new ReadableStream(),
+        blob: vi.fn().mockResolvedValue(mockBlob),
+      } as never);
+
+      const result = await convertFile(MOCK_YAML, MOCK_UPLOAD, 'playback');
+
+      expect(result.success).toBe(true);
+      expect(result.useStreaming).toBe(false);
+      expect(result.mediaUrl).toBe('blob:mp4-url');
+    });
+  });
+
+  describe('convertFile - WebM blob strategy', () => {
+    it('should force blob playback when webmPlayback is "blob"', async () => {
+      vi.stubGlobal('MediaSource', {
+        isTypeSupported: vi.fn().mockReturnValue(true),
+      });
+
+      const mockBlob = new Blob(['webm data'], { type: 'audio/webm' });
+      global.URL.createObjectURL = vi.fn().mockReturnValue('blob:webm-blob-url');
+
+      (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+        ok: true,
+        headers: new Headers({ 'Content-Type': 'audio/webm' }),
+        body: new ReadableStream(),
+        blob: vi.fn().mockResolvedValue(mockBlob),
+      } as never);
+
+      const result = await convertFile(MOCK_YAML, MOCK_UPLOAD, 'playback', undefined, {
+        webmPlayback: 'blob',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.useStreaming).toBe(false);
+    });
+  });
+
+  describe('convertFile - Multiple uploads', () => {
+    it('should include all upload fields in FormData', async () => {
+      (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+        ok: true,
+        headers: new Headers({ 'Content-Type': 'audio/ogg' }),
+        blob: vi.fn().mockResolvedValue(new Blob()),
+      } as never);
+
+      const file1 = new File(['a'], 'audio.ogg', { type: 'audio/ogg' });
+      const file2 = new File(['b'], 'image.png', { type: 'image/png' });
+      const uploads = [
+        { field: 'media', file: file1 },
+        { field: 'overlay', file: file2 },
+      ];
+
+      await convertFile(MOCK_YAML, uploads, 'download');
+
+      const callArgs = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+      const formData = callArgs[1]?.body as FormData;
+
+      expect(formData.get('media')).toBeInstanceOf(File);
+      expect(formData.get('overlay')).toBeInstanceOf(File);
+    });
+  });
+
+  describe('convertFile - HTTP error with empty body', () => {
+    it('should handle error response with empty text', async () => {
+      (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        text: vi.fn().mockResolvedValue(''),
+      } as never);
+
+      const result = await convertFile(MOCK_YAML, MOCK_UPLOAD, 'playback');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Conversion failed: Internal Server Error');
+    });
+  });
+
+  describe('convertFile - Download with no file', () => {
+    it('should use default filename when no file provided', async () => {
+      const mockBlob = new Blob(['data']);
+      const mockLink = { href: '', download: '', click: vi.fn() };
+
+      vi.spyOn(document.body, 'appendChild').mockImplementation(() => null as never);
+      vi.spyOn(document.body, 'removeChild').mockImplementation(() => null as never);
+      const realCreate = document.createElement.bind(document);
+      vi.spyOn(document, 'createElement').mockImplementation((tag: string) =>
+        tag === 'a' ? (mockLink as never) : realCreate(tag)
+      );
+      global.URL.createObjectURL = vi.fn().mockReturnValue('blob:url');
+
+      (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+        ok: true,
+        headers: new Headers({ 'Content-Type': 'audio/wav' }),
+        blob: vi.fn().mockResolvedValue(mockBlob),
+      } as never);
+
+      await convertFile(MOCK_YAML, null, 'download');
+
+      expect(mockLink.download).toBe('output.wav');
     });
   });
 });
