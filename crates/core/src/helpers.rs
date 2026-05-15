@@ -194,7 +194,23 @@ mod tests {
     }
 
     #[test]
-    fn batch_packets_greedy_single_packet() {
+    fn parse_config_optional_with_invalid_type_falls_back_to_default() {
+        let params = serde_json::json!({"gain": "not_a_number"});
+        let cfg: TestConfig = config_helpers::parse_config_optional(Some(&params)).unwrap();
+        assert_eq!(cfg, TestConfig::default());
+    }
+
+    #[test]
+    fn parse_config_with_context_valid_json() {
+        let params = serde_json::json!({"gain": 3.0, "channels": 4});
+        let cfg: TestConfig =
+            config_helpers::parse_config_with_context(Some(&params), "AudioGain").unwrap();
+        assert_eq!(cfg.gain, 3.0);
+        assert_eq!(cfg.channels, 4);
+    }
+
+    #[test]
+    fn batch_packets_greedy_drains_one_extra_packet() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
         let first = Packet::Text(std::sync::Arc::from("hello"));
         tx.try_send(Packet::Text(std::sync::Arc::from("world"))).unwrap();

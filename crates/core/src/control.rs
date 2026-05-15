@@ -202,78 +202,73 @@ mod tests {
     }
 
     #[test]
-    fn engine_control_add_node() {
+    fn engine_control_add_node_debug_snapshot() {
         let msg = EngineControlMessage::AddNode {
             node_id: "node1".into(),
             kind: "gain".into(),
             params: Some(serde_json::json!({"gain": 1.0})),
         };
-        match msg {
-            EngineControlMessage::AddNode { node_id, kind, params } => {
-                assert_eq!(node_id, "node1");
-                assert_eq!(kind, "gain");
-                assert!(params.is_some());
-            },
-            _ => panic!("expected AddNode"),
-        }
+        let dbg = format!("{msg:?}");
+        assert!(dbg.contains("AddNode"), "Debug must name the variant");
+        assert!(dbg.contains("node1"));
+        assert!(dbg.contains("gain"));
     }
 
     #[test]
-    fn engine_control_remove_node() {
+    fn engine_control_remove_node_debug_snapshot() {
         let msg = EngineControlMessage::RemoveNode { node_id: "node1".into() };
-        assert!(matches!(msg, EngineControlMessage::RemoveNode { node_id } if node_id == "node1"));
+        let dbg = format!("{msg:?}");
+        assert!(dbg.contains("RemoveNode"));
+        assert!(dbg.contains("node1"));
     }
 
     #[test]
-    fn engine_control_connect() {
+    fn engine_control_connect_debug_snapshot() {
         let msg = EngineControlMessage::Connect {
-            from_node: "a".into(),
-            from_pin: "out".into(),
-            to_node: "b".into(),
-            to_pin: "in".into(),
+            from_node: "src".into(),
+            from_pin: "audio_out".into(),
+            to_node: "dst".into(),
+            to_pin: "audio_in".into(),
             mode: ConnectionMode::BestEffort,
         };
-        match msg {
-            EngineControlMessage::Connect { from_node, from_pin, to_node, to_pin, mode } => {
-                assert_eq!(from_node, "a");
-                assert_eq!(from_pin, "out");
-                assert_eq!(to_node, "b");
-                assert_eq!(to_pin, "in");
-                assert_eq!(mode, ConnectionMode::BestEffort);
-            },
-            _ => panic!("expected Connect"),
-        }
+        let dbg = format!("{msg:?}");
+        assert!(dbg.contains("Connect"));
+        assert!(dbg.contains("src"));
+        assert!(dbg.contains("audio_out"));
+        assert!(dbg.contains("dst"));
+        assert!(dbg.contains("audio_in"));
+        assert!(dbg.contains("BestEffort"));
     }
 
     #[test]
-    fn engine_control_disconnect() {
+    fn engine_control_disconnect_debug_snapshot() {
         let msg = EngineControlMessage::Disconnect {
-            from_node: "a".into(),
+            from_node: "src".into(),
             from_pin: "out".into(),
-            to_node: "b".into(),
+            to_node: "dst".into(),
             to_pin: "in".into(),
         };
-        assert!(matches!(msg, EngineControlMessage::Disconnect { .. }));
+        let dbg = format!("{msg:?}");
+        assert!(dbg.contains("Disconnect"));
+        assert!(dbg.contains("src"));
+        assert!(dbg.contains("dst"));
     }
 
     #[test]
-    fn engine_control_tune_node() {
+    fn engine_control_tune_node_debug_snapshot() {
         let msg = EngineControlMessage::TuneNode {
             node_id: "node1".into(),
             message: NodeControlMessage::UpdateParams(serde_json::json!({"rate": 44100})),
         };
-        match msg {
-            EngineControlMessage::TuneNode { node_id, message } => {
-                assert_eq!(node_id, "node1");
-                assert!(matches!(message, NodeControlMessage::UpdateParams(_)));
-            },
-            _ => panic!("expected TuneNode"),
-        }
+        let dbg = format!("{msg:?}");
+        assert!(dbg.contains("TuneNode"));
+        assert!(dbg.contains("node1"));
+        assert!(dbg.contains("UpdateParams"));
     }
 
     #[test]
-    fn engine_control_shutdown() {
+    fn engine_control_shutdown_debug_snapshot() {
         let msg = EngineControlMessage::Shutdown;
-        assert!(matches!(msg, EngineControlMessage::Shutdown));
+        assert_eq!(format!("{msg:?}"), "Shutdown");
     }
 }

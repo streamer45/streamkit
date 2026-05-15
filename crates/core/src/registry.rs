@@ -707,6 +707,33 @@ mod tests {
         assert!(reg.definitions().is_empty());
     }
 
+    #[test]
+    fn set_resource_manager_on_existing_registry() {
+        let mut reg = NodeRegistry::new();
+        reg.register_static(
+            "plain",
+            stub_factory,
+            serde_json::json!({}),
+            stub_pins(),
+            vec![],
+            false,
+        );
+        let rm = Arc::new(ResourceManager::new(ResourcePolicy::default()));
+        reg.set_resource_manager(rm);
+        reg.register_static_with_resource(
+            "res_node",
+            stub_factory,
+            stub_resource_factory(),
+            stub_key_hasher(),
+            serde_json::json!({}),
+            stub_pins(),
+            vec![],
+            false,
+        );
+        assert!(reg.contains("plain"));
+        assert!(reg.contains("res_node"));
+    }
+
     struct StubResource;
     impl crate::resource_manager::Resource for StubResource {
         fn size_bytes(&self) -> usize {
