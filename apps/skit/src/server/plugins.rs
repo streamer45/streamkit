@@ -1,0 +1,850 @@
+// SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+//
+// SPDX-License-Identifier: MPL-2.0
+
+use super::{
+    active_namespaced_kind, error, info, origin_key, plugin_active_dir, plugin_paths, warn,
+    ActivePluginRecord, AnyhowError, AppState, Arc, AsyncWriteExt, Context, Deserialize, HeaderMap,
+    InstallPluginRequest, IntoResponse, Json, MarketplaceUrlPolicy, Multipart, MultipartError,
+    OriginKey, Path, Query, Response, Serialize, State, StatusCode,
+};
+
+pub(super) async fn list_plugins_handler(
+    State(app_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let perms = crate::role_extractor::get_permissions(&headers, &app_state);
+
+    let mut plugins = app_state.plugin_manager.lock().await.list_plugins();
+
+    plugins.retain(|plugin| perms.is_plugin_allowed(&plugin.kind));
+
+    Json(plugins)
+}
+
+pub(super) async fn upload_plugin_handler(
+    State(app_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Result<impl IntoResponse, PluginHttpError> {
+    // Global hard gate: do not allow runtime plugin uploads unless explicitly enabled.
+    if !app_state.config.plugins.http_management.allow_http_management {
+        return Err(PluginHttpError::Forbidden(
+            "Plugin uploads are disabled by configuration. Set [plugins].allow_http_management = true to enable."
+                .to_string(),
+        ));
+    }
+
+    let perms = crate::role_extractor::get_permissions(&headers, &app_state);
+
+    if !perms.load_plugins {
+        return Err(PluginHttpError::Forbidden(
+            "Permission denied: cannot load plugins".to_string(),
+        ));
+    }
+
+    let mut plugin_file_name: Option<String> = None;
+    let mut temp_file_path: Option<std::path::PathBuf> = None;
+    let mut declared_kind: Option<String> = None;
+
+    while let Some(field) = multipart.next_field().await? {
+        let name = field.name().unwrap_or("").to_string();
+        if name == "kind" {
+            if declared_kind.is_some() {
+                return Err(PluginHttpError::BadRequest(
+                    "Multiple 'kind' fields provided".to_string(),
+                ));
+            }
+            let value = field.text().await.map_err(|e| {
+                PluginHttpError::BadRequest(format!("Failed to read 'kind' field: {e}"))
+            })?;
+            let value = value.trim().to_string();
+            if value.is_empty() {
+                return Err(PluginHttpError::BadRequest(
+                    "Plugin kind must not be empty".to_string(),
+                ));
+            }
+            declared_kind = Some(value);
+            continue;
+        }
+
+        if name != "plugin" {
+            continue;
+        }
+
+        if let Some(existing) = temp_file_path.as_ref() {
+            let _ = tokio::fs::remove_file(existing).await;
+            return Err(PluginHttpError::BadRequest(
+                "Multiple 'plugin' fields provided".to_string(),
+            ));
+        }
+
+        let mut field = field;
+        let file_name =
+            field.file_name().map(std::string::ToString::to_string).ok_or_else(|| {
+                PluginHttpError::BadRequest(
+                    "Uploaded plugin file must include a filename".to_string(),
+                )
+            })?;
+
+        // Stream upload to a temp file to avoid buffering large artifacts in memory.
+        let tmp_name = format!("streamkit-plugin-upload-{}", uuid::Uuid::new_v4());
+        let tmp_path = std::env::temp_dir().join(tmp_name);
+        let mut file = tokio::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&tmp_path)
+            .await
+            .map_err(|e| PluginHttpError::BadRequest(format!("Failed to create temp file: {e}")))?;
+
+        let mut total_bytes: usize = 0;
+        loop {
+            match field.chunk().await {
+                Ok(Some(chunk)) => {
+                    total_bytes = total_bytes.saturating_add(chunk.len());
+                    if total_bytes > app_state.config.server.max_body_size {
+                        let _ = tokio::fs::remove_file(&tmp_path).await;
+                        return Err(PluginHttpError::BadRequest(format!(
+                            "Plugin upload exceeds configured max body size ({} bytes)",
+                            app_state.config.server.max_body_size
+                        )));
+                    }
+                    if let Err(e) = file.write_all(&chunk).await {
+                        let _ = tokio::fs::remove_file(&tmp_path).await;
+                        return Err(PluginHttpError::BadRequest(format!(
+                            "Failed to write temp file: {e}"
+                        )));
+                    }
+                },
+                Ok(None) => break,
+                Err(e) => {
+                    let _ = tokio::fs::remove_file(&tmp_path).await;
+                    return Err(PluginHttpError::BadRequest(format!(
+                        "Failed to read plugin upload stream: {e}"
+                    )));
+                },
+            }
+        }
+
+        // Ensure all data is flushed to disk before we try to load the plugin.
+        // This is important because load_from_temp_file uses sync file operations.
+        if let Err(e) = file.flush().await {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(PluginHttpError::BadRequest(format!("Failed to flush temp file: {e}")));
+        }
+        if let Err(e) = file.sync_all().await {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(PluginHttpError::BadRequest(format!("Failed to sync temp file: {e}")));
+        }
+        // Explicitly drop the file handle to ensure it's closed before we read it
+        drop(file);
+
+        plugin_file_name = Some(file_name);
+        temp_file_path = Some(tmp_path);
+    }
+
+    let file_name = plugin_file_name
+        .ok_or_else(|| PluginHttpError::BadRequest("Missing 'plugin' file field".to_string()))?;
+    let tmp_path = temp_file_path
+        .ok_or_else(|| PluginHttpError::BadRequest("Missing 'plugin' file field".to_string()))?;
+
+    let extension = std::path::Path::new(&file_name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default();
+    let placeholder_kind = match extension {
+        "wasm" => Some("plugin::wasm::placeholder"),
+        "so" | "dylib" | "dll" => Some("plugin::native::placeholder"),
+        _ => None,
+    };
+
+    if let Some(kind) = declared_kind.as_ref() {
+        if let Some(placeholder) = placeholder_kind {
+            let expected_prefix = if placeholder.starts_with("plugin::wasm::") {
+                "plugin::wasm::"
+            } else {
+                "plugin::native::"
+            };
+            if !kind.starts_with(expected_prefix) {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(PluginHttpError::BadRequest(format!(
+                    "Declared plugin kind '{kind}' does not match uploaded file type"
+                )));
+            }
+        }
+        if !perms.is_plugin_allowed(kind) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(PluginHttpError::Forbidden(format!(
+                "Permission denied: plugin '{kind}' not allowed"
+            )));
+        }
+    } else if let Some(placeholder) = placeholder_kind {
+        if !perms.is_plugin_allowed(placeholder) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(PluginHttpError::BadRequest(
+                "Plugin kind must be provided when allowed_plugins is restricted".to_string(),
+            ));
+        }
+    }
+
+    let summary = match tokio::task::spawn_blocking({
+        let manager = Arc::clone(&app_state.plugin_manager);
+        let file_name = file_name.clone();
+        let tmp_path = tmp_path.clone();
+        move || {
+            let mut mgr = manager.blocking_lock();
+            mgr.load_from_temp_file(&file_name, &tmp_path)
+        }
+    })
+    .await
+    {
+        Ok(Ok(summary)) => summary,
+        Ok(Err(err)) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(PluginHttpError::from(err));
+        },
+        Err(err) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(PluginHttpError::BadRequest(format!("Plugin load task failed: {err}")));
+        },
+    };
+
+    if !perms.is_plugin_allowed(&summary.kind) {
+        let _ = tokio::task::spawn_blocking({
+            let manager = Arc::clone(&app_state.plugin_manager);
+            let kind = summary.kind.clone();
+            move || {
+                let mut mgr = manager.blocking_lock();
+                let _ = mgr.unload_plugin(&kind, true);
+            }
+        })
+        .await;
+
+        return Err(PluginHttpError::Forbidden(format!(
+            "Permission denied: plugin '{}' not allowed",
+            summary.kind
+        )));
+    }
+
+    if let Some(kind) = declared_kind.as_ref() {
+        if summary.kind != *kind {
+            let _ = tokio::task::spawn_blocking({
+                let manager = Arc::clone(&app_state.plugin_manager);
+                let summary_kind = summary.kind.clone();
+                move || {
+                    let mut mgr = manager.blocking_lock();
+                    let _ = mgr.unload_plugin(&summary_kind, true);
+                }
+            })
+            .await;
+
+            return Err(PluginHttpError::BadRequest(format!(
+                "Uploaded plugin kind '{}' does not match declared kind '{}'",
+                summary.kind, kind
+            )));
+        }
+    }
+
+    Ok((StatusCode::CREATED, Json(summary)))
+}
+
+#[derive(Debug, Serialize)]
+struct InstallPluginResponse {
+    job_id: String,
+}
+
+pub(super) async fn install_plugin_handler(
+    State(app_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<InstallPluginRequest>,
+) -> Result<impl IntoResponse, PluginHttpError> {
+    if !app_state.config.plugins.marketplace.marketplace_enabled {
+        return Err(PluginHttpError::Forbidden(
+            "Marketplace installs are disabled by configuration. Set [plugins].marketplace_enabled = true to enable."
+                .to_string(),
+        ));
+    }
+
+    let perms = crate::role_extractor::get_permissions(&headers, &app_state);
+    if !perms.load_plugins {
+        return Err(PluginHttpError::Forbidden(
+            "Permission denied: cannot install plugins".to_string(),
+        ));
+    }
+
+    if !app_state.marketplace_jobs.is_registry_configured(&request.registry) {
+        return Err(PluginHttpError::BadRequest(format!(
+            "Registry '{registry}' is not configured",
+            registry = request.registry
+        )));
+    }
+
+    let job_id = app_state.marketplace_jobs.enqueue(request, perms).await;
+    Ok((StatusCode::ACCEPTED, Json(InstallPluginResponse { job_id })))
+}
+
+#[derive(Debug, Serialize)]
+struct MarketplaceRegistry {
+    id: String,
+    url: String,
+}
+
+pub(super) async fn list_marketplace_registries_handler(
+    State(app_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    if !app_state.config.plugins.marketplace.marketplace_enabled {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Marketplace browsing is disabled by configuration. Set [plugins].marketplace_enabled = true to enable."
+                .to_string(),
+        ));
+    }
+
+    let perms = crate::role_extractor::get_permissions(&headers, &app_state);
+    if !perms.load_plugins {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Permission denied: cannot view marketplace".to_string(),
+        ));
+    }
+
+    let registries = app_state.marketplace_jobs.registries();
+    let payload: Vec<MarketplaceRegistry> =
+        registries.into_iter().map(|url| MarketplaceRegistry { id: url.clone(), url }).collect();
+    Ok(Json(payload))
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct MarketplacePluginsQuery {
+    registry: String,
+    q: Option<String>,
+}
+
+pub(super) async fn validate_marketplace_registry_url(
+    config: &crate::config::PluginConfig,
+    registry: &str,
+) -> anyhow::Result<(MarketplaceUrlPolicy, reqwest::Url, OriginKey)> {
+    let policy = MarketplaceUrlPolicy::from_config(config);
+    let registry_url = policy.validate_url("registry index", registry, None).await?;
+    let registry_origin = origin_key(&registry_url)?;
+    Ok((policy, registry_url, registry_origin))
+}
+
+pub(super) async fn validate_marketplace_plugin_urls(
+    policy: &MarketplaceUrlPolicy,
+    registry_origin: &OriginKey,
+    version: &crate::marketplace::RegistryPluginVersion,
+) -> anyhow::Result<(reqwest::Url, reqwest::Url)> {
+    let manifest_url =
+        policy.validate_url("manifest url", &version.manifest_url, Some(registry_origin)).await?;
+    let signature_url_value = version
+        .signature_url
+        .as_deref()
+        .map_or_else(|| format!("{}.minisig", manifest_url.as_str()), str::to_string);
+    let signature_url =
+        policy.validate_url("signature url", &signature_url_value, Some(registry_origin)).await?;
+    Ok((manifest_url, signature_url))
+}
+
+pub(super) async fn list_marketplace_plugins_handler(
+    State(app_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<MarketplacePluginsQuery>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    if !app_state.config.plugins.marketplace.marketplace_enabled {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Marketplace browsing is disabled by configuration. Set [plugins].marketplace_enabled = true to enable."
+                .to_string(),
+        ));
+    }
+
+    let perms = crate::role_extractor::get_permissions(&headers, &app_state);
+    if !perms.load_plugins {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Permission denied: cannot view marketplace".to_string(),
+        ));
+    }
+
+    let registry = query.registry.trim();
+    if registry.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "Registry is required".to_string()));
+    }
+    if !app_state.marketplace_jobs.is_registry_configured(registry) {
+        return Err((StatusCode::BAD_REQUEST, format!("Registry '{registry}' is not configured")));
+    }
+
+    let (policy, registry_url, registry_origin) =
+        validate_marketplace_registry_url(&app_state.config.plugins, registry)
+            .await
+            .map_err(|err| (StatusCode::BAD_REQUEST, format!("Registry URL rejected: {err}")))?;
+
+    let registry_client = app_state.marketplace_jobs.registry_client();
+    let mut index = registry_client
+        .fetch_index_with_policy(&registry_url, &policy, &registry_origin)
+        .await
+        .map_err(|err| {
+            (StatusCode::BAD_GATEWAY, format!("Failed to fetch registry index: {err}"))
+        })?;
+
+    let filter = query.q.as_deref().map(str::trim).filter(|val| !val.is_empty());
+    if let Some(filter) = filter {
+        let filter = filter.to_lowercase();
+        index.plugins.retain(|plugin| marketplace_plugin_matches(plugin, &filter));
+    }
+
+    Ok(Json(index))
+}
+
+pub(super) fn marketplace_plugin_matches(
+    plugin: &crate::marketplace::RegistryPlugin,
+    filter: &str,
+) -> bool {
+    if plugin.id.to_lowercase().contains(filter) {
+        return true;
+    }
+    if let Some(name) = plugin.name.as_ref() {
+        if name.to_lowercase().contains(filter) {
+            return true;
+        }
+    }
+    if let Some(description) = plugin.description.as_ref() {
+        if description.to_lowercase().contains(filter) {
+            return true;
+        }
+    }
+    false
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct MarketplacePluginQuery {
+    registry: String,
+    version: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct MarketplaceSignatureStatus {
+    verified: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    key_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct MarketplacePluginDetails {
+    registry: String,
+    plugin: crate::marketplace::RegistryPlugin,
+    version: crate::marketplace::RegistryPluginVersion,
+    manifest: crate::marketplace::PluginManifest,
+    signature: MarketplaceSignatureStatus,
+    allow_native_marketplace: bool,
+}
+
+pub(super) async fn get_marketplace_plugin_handler(
+    State(app_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(plugin_id): Path<String>,
+    Query(query): Query<MarketplacePluginQuery>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    if !app_state.config.plugins.marketplace.marketplace_enabled {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Marketplace browsing is disabled by configuration. Set [plugins].marketplace_enabled = true to enable."
+                .to_string(),
+        ));
+    }
+
+    let perms = crate::role_extractor::get_permissions(&headers, &app_state);
+    if !perms.load_plugins {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Permission denied: cannot view marketplace".to_string(),
+        ));
+    }
+
+    let registry = query.registry.trim();
+    if registry.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "Registry is required".to_string()));
+    }
+    if !app_state.marketplace_jobs.is_registry_configured(registry) {
+        return Err((StatusCode::BAD_REQUEST, format!("Registry '{registry}' is not configured")));
+    }
+
+    let plugin_id = plugin_id.trim();
+    if plugin_id.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "Plugin id is required".to_string()));
+    }
+    if let Err(err) = plugin_paths::validate_path_component("plugin id", plugin_id) {
+        return Err((StatusCode::BAD_REQUEST, err.to_string()));
+    }
+
+    let (policy, registry_url, registry_origin) =
+        validate_marketplace_registry_url(&app_state.config.plugins, registry)
+            .await
+            .map_err(|err| (StatusCode::BAD_REQUEST, format!("Registry URL rejected: {err}")))?;
+
+    let registry_client = app_state.marketplace_jobs.registry_client();
+    let signature_verifier = app_state.marketplace_jobs.verifier();
+    let index = registry_client
+        .fetch_index_with_policy(&registry_url, &policy, &registry_origin)
+        .await
+        .map_err(|err| {
+            (StatusCode::BAD_GATEWAY, format!("Failed to fetch registry index: {err}"))
+        })?;
+
+    let plugin =
+        index.plugins.into_iter().find(|plugin| plugin.id == plugin_id).ok_or_else(|| {
+            (StatusCode::NOT_FOUND, format!("Plugin '{plugin_id}' not found in registry"))
+        })?;
+
+    let requested_version = query.version.as_deref().map(str::trim).filter(|val| !val.is_empty());
+    let version_entry = if let Some(requested_version) = requested_version {
+        plugin.versions.iter().find(|version| version.version == requested_version)
+    } else if let Some(latest) = plugin.latest.as_ref() {
+        plugin
+            .versions
+            .iter()
+            .find(|version| version.version == *latest)
+            .or_else(|| plugin.versions.first())
+    } else {
+        plugin.versions.first()
+    }
+    .cloned()
+    .ok_or_else(|| {
+        (StatusCode::NOT_FOUND, format!("No versions available for plugin '{plugin_id}'"))
+    })?;
+
+    let (manifest_url, signature_url) =
+        validate_marketplace_plugin_urls(&policy, &registry_origin, &version_entry).await.map_err(
+            |err| (StatusCode::BAD_GATEWAY, format!("Registry returned invalid URLs: {err}")),
+        )?;
+
+    let manifest_entry = registry_client
+        .fetch_manifest_raw_with_policy(&manifest_url, &policy, &registry_origin)
+        .await
+        .map_err(|err| {
+            (StatusCode::BAD_GATEWAY, format!("Failed to fetch plugin manifest: {err}"))
+        })?;
+
+    let signature = match registry_client
+        .fetch_text_with_policy("signature url", &signature_url, &policy, &registry_origin)
+        .await
+    {
+        Ok(signature_text) => {
+            match signature_verifier.verify(manifest_entry.bytes.as_ref(), &signature_text) {
+                Ok(verified_signature) => MarketplaceSignatureStatus {
+                    verified: true,
+                    key_id: Some(verified_signature.key_id),
+                    error: None,
+                },
+                Err(err) => MarketplaceSignatureStatus {
+                    verified: false,
+                    key_id: None,
+                    error: Some(err.to_string()),
+                },
+            }
+        },
+        Err(err) => MarketplaceSignatureStatus {
+            verified: false,
+            key_id: None,
+            error: Some(err.to_string()),
+        },
+    };
+
+    Ok(Json(MarketplacePluginDetails {
+        registry: registry.to_string(),
+        plugin,
+        version: version_entry,
+        manifest: manifest_entry.manifest,
+        signature,
+        allow_native_marketplace: app_state.config.plugins.marketplace.allow_native_marketplace,
+    }))
+}
+
+pub(super) async fn find_active_record_for_kind(
+    plugin_dir: &std::path::Path,
+    kind: &str,
+) -> Option<(std::path::PathBuf, ActivePluginRecord)> {
+    let active_dir = plugin_active_dir(plugin_dir);
+    let mut entries = match tokio::fs::read_dir(&active_dir).await {
+        Ok(entries) => entries,
+        Err(err) => {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                warn!(error = %err, dir = ?active_dir, "Failed to read active plugin records");
+            }
+            return None;
+        },
+    };
+
+    loop {
+        let entry = match entries.next_entry().await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => break,
+            Err(err) => {
+                warn!(error = %err, dir = ?active_dir, "Failed to iterate active plugin records");
+                break;
+            },
+        };
+
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let bytes = match tokio::fs::read(&path).await {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                warn!(error = %err, file = ?path, "Failed to read active plugin record");
+                continue;
+            },
+        };
+        let record: ActivePluginRecord = match serde_json::from_slice(&bytes) {
+            Ok(record) => record,
+            Err(err) => {
+                warn!(error = %err, file = ?path, "Failed to parse active plugin record");
+                continue;
+            },
+        };
+        if active_namespaced_kind(&record) == kind {
+            return Some((path, record));
+        }
+    }
+
+    None
+}
+
+pub(super) async fn remove_active_record_and_bundle(
+    plugin_dir: &std::path::Path,
+    record_path: &std::path::Path,
+    record: &ActivePluginRecord,
+) -> Result<(), anyhow::Error> {
+    tokio::fs::remove_file(record_path).await.with_context(|| {
+        format!("Failed to remove active record {record_path}", record_path = record_path.display())
+    })?;
+
+    let base_real = plugin_paths::canonicalize_existing_dir(plugin_dir).await?;
+    plugin_paths::validate_path_component("plugin id", &record.plugin_id)?;
+    plugin_paths::validate_path_component("plugin version", &record.version)?;
+
+    let bundles_root = plugin_dir.join("bundles").join(&record.plugin_id);
+    let bundle_dir = bundles_root.join(&record.version);
+    if tokio::fs::try_exists(&bundle_dir).await.unwrap_or(false) {
+        let bundle_dir_real =
+            plugin_paths::ensure_existing_dir_under(&base_real, &bundle_dir, "bundle").await?;
+        tokio::fs::remove_dir_all(&bundle_dir_real).await.with_context(|| {
+            format!(
+                "Failed to remove bundle directory {bundle_dir_real}",
+                bundle_dir_real = bundle_dir_real.display()
+            )
+        })?;
+    }
+
+    if tokio::fs::try_exists(&bundles_root).await.unwrap_or(false) {
+        let bundles_root_real =
+            plugin_paths::ensure_existing_dir_under(&base_real, &bundles_root, "bundles").await?;
+        let mut entries = tokio::fs::read_dir(&bundles_root_real).await?;
+        if entries.next_entry().await?.is_none() {
+            let _ = tokio::fs::remove_dir(&bundles_root_real).await;
+        }
+    }
+
+    let cache_root = plugin_dir.join("cache").join(&record.plugin_id);
+    if tokio::fs::try_exists(&cache_root).await.unwrap_or(false) {
+        let cache_root_real =
+            plugin_paths::ensure_existing_dir_under(&base_real, &cache_root, "cache").await?;
+        let _ = tokio::fs::remove_dir_all(&cache_root_real).await;
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct DeletePluginQuery {
+    #[serde(default)]
+    keep_file: bool,
+}
+
+pub(super) async fn delete_plugin_handler(
+    State(app_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(kind): Path<String>,
+    Query(query): Query<DeletePluginQuery>,
+) -> Result<impl IntoResponse, PluginHttpError> {
+    // Global hard gate: do not allow runtime plugin deletion unless explicitly enabled.
+    if !app_state.config.plugins.http_management.allow_http_management {
+        return Err(PluginHttpError::Forbidden(
+            "Plugin deletion is disabled by configuration. Set [plugins].allow_http_management = true to enable."
+                .to_string(),
+        ));
+    }
+
+    let perms = crate::role_extractor::get_permissions(&headers, &app_state);
+
+    if !perms.delete_plugins {
+        warn!(
+            plugin_kind = %kind,
+            delete_plugins = perms.delete_plugins,
+            "Blocked attempt to delete plugin: permission denied"
+        );
+        return Err(PluginHttpError::Forbidden(
+            "Permission denied: cannot delete plugins".to_string(),
+        ));
+    }
+
+    let plugin_dir = std::path::PathBuf::from(&app_state.config.plugins.directory);
+    let active_record = find_active_record_for_kind(&plugin_dir, &kind).await;
+
+    info!(plugin_kind = %kind, keep_file = query.keep_file, "Deleting plugin");
+    let summary = match tokio::task::spawn_blocking({
+        let manager = Arc::clone(&app_state.plugin_manager);
+        let kind = kind.clone();
+        let remove_file = !query.keep_file;
+        move || {
+            let mut mgr = manager.blocking_lock();
+            mgr.unload_plugin(&kind, remove_file)
+        }
+    })
+    .await
+    {
+        Ok(Ok(summary)) => summary,
+        Ok(Err(err)) => return Err(PluginHttpError::from(err)),
+        Err(err) => {
+            return Err(PluginHttpError::BadRequest(format!("Plugin unload task failed: {err}")));
+        },
+    };
+
+    // Unregister any asset types owned by this plugin so the CRUD endpoints
+    // stop serving stale types.  User-uploaded files are intentionally left
+    // in place — they will become available again if the plugin is re-installed.
+    //
+    // For marketplace plugins use the authoritative `plugin_id` from the
+    // active record (matches `manifest.id` used during registration).
+    // For non-marketplace plugins fall back to `original_kind` which, by
+    // convention, equals the manifest `id`.
+    let unregister_id =
+        active_record.as_ref().map_or(&summary.original_kind, |(_, record)| &record.plugin_id);
+    app_state.plugin_asset_registry.unregister_plugin(unregister_id).await;
+
+    if let Some((record_path, record)) = active_record {
+        if query.keep_file {
+            info!(
+                plugin_id = %record.plugin_id,
+                version = %record.version,
+                "Kept marketplace bundle and active record for unloaded plugin"
+            );
+        } else if let Err(err) =
+            remove_active_record_and_bundle(&plugin_dir, &record_path, &record).await
+        {
+            return Err(PluginHttpError::BadRequest(format!(
+                "Failed to uninstall marketplace plugin: {err}"
+            )));
+        }
+    }
+
+    Ok(Json(summary))
+}
+
+pub(super) async fn get_job_handler(
+    State(app_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(job_id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let perms = crate::role_extractor::get_permissions(&headers, &app_state);
+    if !perms.load_plugins {
+        return Err((StatusCode::FORBIDDEN, "Permission denied: cannot view jobs".to_string()));
+    }
+
+    app_state
+        .marketplace_jobs
+        .get_job(&job_id)
+        .await
+        .map(Json)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Job '{job_id}' not found")))
+}
+
+pub(super) async fn cancel_job_handler(
+    State(app_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(job_id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let perms = crate::role_extractor::get_permissions(&headers, &app_state);
+    if !perms.load_plugins {
+        return Err((StatusCode::FORBIDDEN, "Permission denied: cannot cancel jobs".to_string()));
+    }
+
+    app_state
+        .marketplace_jobs
+        .cancel_job(&job_id)
+        .await
+        .map(Json)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Job '{job_id}' not found")))
+}
+
+#[derive(Debug)]
+pub(super) enum PluginHttpError {
+    BadRequest(String),
+    Forbidden(String),
+    Multipart(MultipartError),
+    Manager(AnyhowError),
+}
+
+impl IntoResponse for PluginHttpError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg).into_response(),
+            Self::Forbidden(msg) => (StatusCode::FORBIDDEN, msg).into_response(),
+            Self::Multipart(err) => {
+                error!(error = %err, "Multipart error processing plugin request");
+                (StatusCode::BAD_REQUEST, format!("Invalid multipart payload: {err}"))
+                    .into_response()
+            },
+            Self::Manager(err) => {
+                error!(error = %err, "Plugin manager error");
+                (StatusCode::UNPROCESSABLE_ENTITY, err.to_string()).into_response()
+            },
+        }
+    }
+}
+
+impl From<MultipartError> for PluginHttpError {
+    fn from(err: MultipartError) -> Self {
+        Self::Multipart(err)
+    }
+}
+
+impl From<AnyhowError> for PluginHttpError {
+    fn from(err: AnyhowError) -> Self {
+        Self::Manager(err)
+    }
+}
+
+#[cfg(test)]
+mod marketplace_url_tests {
+    use super::{validate_marketplace_plugin_urls, validate_marketplace_registry_url};
+    use anyhow::{bail, Result};
+
+    #[tokio::test]
+    async fn browsing_rejects_cross_origin_manifest() -> Result<()> {
+        let mut config = crate::config::PluginConfig::default();
+        config.marketplace.security.marketplace_require_registry_origin = true;
+        let (policy, _registry_url, registry_origin) =
+            validate_marketplace_registry_url(&config, "https://registry.example.com/index.json")
+                .await?;
+
+        let version = crate::marketplace::RegistryPluginVersion {
+            version: "1.0.0".to_string(),
+            manifest_url: "https://evil.example.com/manifest.json".to_string(),
+            signature_url: Some("https://registry.example.com/manifest.minisig".to_string()),
+            published_at: None,
+        };
+
+        match validate_marketplace_plugin_urls(&policy, &registry_origin, &version).await {
+            Ok(_) => bail!("expected origin rejection"),
+            Err(err) => assert!(err.to_string().contains("origin")),
+        }
+
+        Ok(())
+    }
+}
