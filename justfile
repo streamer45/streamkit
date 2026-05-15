@@ -230,7 +230,6 @@ test-skit-gpu:
     @cargo test -p streamkit-engine --features gpu
     @cargo test -p streamkit-nodes --features nvcodec
 
-# --- Coverage ---
 # Coverage runs use an isolated target dir (target/coverage) so they don't
 # invalidate the shared rust-cache key used by lint/test in CI.
 
