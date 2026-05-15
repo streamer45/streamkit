@@ -35,6 +35,22 @@ jobs:
       - name: Test
         run: bun run test:run
 
+      - name: Coverage
+        # Informational during initial rollout — see codecov.yml.
+        continue-on-error: true
+        run: bun run test:coverage
+
+      - name: Upload coverage to Codecov
+        if: always()
+        continue-on-error: true
+        uses: codecov/codecov-action@v4
+        with:
+          files: ui/coverage/lcov.info
+          flags: ui
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
       - name: Build
         run: bun run build
 

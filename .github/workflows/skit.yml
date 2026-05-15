@@ -152,6 +152,86 @@ jobs:
           path: ~/.cache/sccache
           key: sccache-skit-test-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
 
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-22.04
+    # Coverage is informational during the initial rollout; do not block
+    # `all-checks` if it fails. See codecov.yml for the ratcheting plan.
+    continue-on-error: true
+    env:
+      # Isolate from the lint/test shared rust-cache; instrumented builds
+      # would otherwise poison that cache for non-coverage jobs.
+      CARGO_LLVM_COV_TARGET_DIR: target/coverage
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      - uses: actions/checkout@v5
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+
+      - name: Build UI
+        working-directory: ./ui
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Install system dependencies (libvpx for VP9, nasm for AV1 assembly)
+        run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: skit-coverage
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+
+      - name: Install cargo-llvm-cov and cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov,cargo-nextest
+
+      - name: Collect coverage
+        run: |
+          cargo llvm-cov clean --workspace
+          cargo llvm-cov --workspace --no-report nextest -- --skip gpu_tests::
+          cargo llvm-cov --no-report nextest -p streamkit-server --features "moq"
+          cargo llvm-cov --no-report nextest -p streamkit-server --features "mcp"
+          cargo llvm-cov report --lcov --output-path target/coverage/lcov.info
+
+      - name: Upload lcov artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage-lcov
+          path: target/coverage/lcov.info
+          if-no-files-found: warn
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: target/coverage/lcov.info
+          flags: backend
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
   test-gpu:
     name: Test (GPU)
     # Skip for fork PRs — self-hosted runners must not execute untrusted code.

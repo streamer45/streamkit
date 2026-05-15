@@ -230,6 +230,47 @@ test-skit-gpu:
     @cargo test -p streamkit-engine --features gpu
     @cargo test -p streamkit-nodes --features nvcodec
 
+# --- Coverage ---
+# Coverage runs use an isolated target dir (target/coverage) so they don't
+# invalidate the shared rust-cache key used by lint/test in CI.
+
+# Install host tooling required for coverage runs. Safe to re-run.
+install-cov-tools:
+    @echo "Installing coverage tooling..."
+    @cargo install --locked cargo-llvm-cov
+    @cargo install --locked cargo-nextest
+    @rustup component add llvm-tools-preview
+
+# Backend coverage across the workspace + feature-gated server runs (no GPU tests). Produces lcov + html under target/coverage/.
+cov-skit:
+    @echo "Collecting backend coverage..."
+    @CARGO_LLVM_COV_TARGET_DIR=target/coverage \
+        cargo llvm-cov clean --workspace
+    @CARGO_LLVM_COV_TARGET_DIR=target/coverage \
+        cargo llvm-cov --workspace --no-report nextest -- --skip gpu_tests::
+    @CARGO_LLVM_COV_TARGET_DIR=target/coverage \
+        cargo llvm-cov --no-report nextest -p streamkit-server --features "moq"
+    @CARGO_LLVM_COV_TARGET_DIR=target/coverage \
+        cargo llvm-cov --no-report nextest -p streamkit-server --features "mcp"
+    @CARGO_LLVM_COV_TARGET_DIR=target/coverage \
+        cargo llvm-cov report --lcov --output-path target/coverage/lcov.info
+    @CARGO_LLVM_COV_TARGET_DIR=target/coverage \
+        cargo llvm-cov report --html --output-dir target/coverage/html
+    @echo "Backend coverage report: target/coverage/html/index.html"
+
+# Open the latest backend HTML report (local dev only).
+cov-skit-open: cov-skit
+    @xdg-open target/coverage/html/index.html
+
+# Frontend coverage via the configured v8 provider.
+[working-directory: 'ui']
+cov-ui: install-ui
+    @echo "Collecting UI coverage..."
+    @bun run test:coverage
+
+# Run both backend and frontend coverage.
+cov: cov-skit cov-ui
+
 # Lint and format check the skit code
 # Note: We exclude dhat-heap since it's mutually exclusive with profiling (both define global allocators)
 lint-skit:

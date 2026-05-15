@@ -1,0 +1,107 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Codecov configuration. Initial rollout is informational only — gates are
+# disabled below and will be ratcheted up once a baseline has been collected.
+
+codecov:
+  require_ci_to_pass: false
+
+coverage:
+  precision: 2
+  round: down
+  status:
+    project:
+      backend:
+        flags:
+          - backend
+        target: auto
+        threshold: 100%
+        informational: true
+      ui:
+        flags:
+          - ui
+        target: auto
+        threshold: 100%
+        informational: true
+    patch:
+      default:
+        target: auto
+        threshold: 100%
+        informational: true
+
+flag_management:
+  default_rules:
+    carryforward: true
+  individual_flags:
+    - name: backend
+      paths:
+        - apps/
+        - crates/
+    - name: ui
+      paths:
+        - ui/src/
+
+component_management:
+  default_rules:
+    statuses:
+      - type: project
+        target: auto
+        threshold: 100%
+        informational: true
+  individual_components:
+    - component_id: core
+      name: core
+      paths:
+        - crates/core/**
+    - component_id: engine
+      name: engine
+      paths:
+        - crates/engine/**
+    - component_id: api
+      name: api
+      paths:
+        - crates/api/**
+    - component_id: nodes
+      name: nodes
+      paths:
+        - crates/nodes/**
+    - component_id: server
+      name: server
+      paths:
+        - apps/skit/**
+    - component_id: plugin-native
+      name: plugin-native
+      paths:
+        - crates/plugin-native/**
+    - component_id: plugin-wasm
+      name: plugin-wasm
+      paths:
+        - crates/plugin-wasm/**
+    - component_id: ui-services
+      name: ui-services
+      paths:
+        - ui/src/services/**
+        - ui/src/hooks/**
+        - ui/src/stores/**
+    - component_id: ui-components
+      name: ui-components
+      paths:
+        - ui/src/components/**
+
+comment:
+  layout: "header, diff, flags, components, files"
+  behavior: default
+  require_changes: false
+
+ignore:
+  - "**/generated/**"
+  - "**/benches/**"
+  - "**/examples/**"
+  - "tests/pipeline-validation/**"
+  - "plugins/**"
+  - "ui/src/types/generated/**"
+  - "apps/skit-cli/**"
+  - "sdks/**"
+  - "docs/**"

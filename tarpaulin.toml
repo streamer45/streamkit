@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Fallback Rust coverage config (used only if `cargo-llvm-cov` becomes
+# unavailable). The primary tool is `cargo-llvm-cov` (see `just cov-skit`
+# and `.github/workflows/skit.yml`'s `coverage` job).
+
+[default]
+engine = "llvm"
+workspace = true
+skip-clean = true
+target-dir = "target/tarpaulin"
+out = ["Lcov", "Html"]
+output-dir = "target/tarpaulin"
+exclude-files = [
+    "**/generated/**",
+    "**/benches/**",
+    "**/examples/**",
+    "tests/pipeline-validation/**",
+    "plugins/**",
+    "sdks/**",
+    "apps/skit-cli/**",
+]
+# Mirror `just test-skit`: GPU tests run on the self-hosted runner only.
+exclude = ["pipeline-validation"]
