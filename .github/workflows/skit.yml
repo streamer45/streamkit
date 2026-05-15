@@ -162,6 +162,10 @@ jobs:
       # Isolate from the lint/test shared rust-cache; instrumented builds
       # would otherwise poison that cache for non-coverage jobs.
       CARGO_LLVM_COV_TARGET_DIR: target/coverage
+      # Coverage instrumentation produces per-PR object files that don't
+      # cache usefully across runs; bypass the workflow-level sccache to
+      # avoid the "sccache not installed" failure and unnecessary indirection.
+      RUSTC_WRAPPER: ""
     steps:
       - name: Free disk space
         uses: jlumbroso/free-disk-space@main
