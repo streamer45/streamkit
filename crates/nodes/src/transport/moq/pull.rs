@@ -17,6 +17,8 @@ use streamkit_core::types::{
     AudioCodec, EncodedAudioFormat, EncodedVideoFormat, Packet, PacketMetadata, PacketType,
     VideoCodec,
 };
+
+use super::constants::audio_codec_from_catalog;
 use streamkit_core::{
     state_helpers, stats::NodeStatsTracker, InputPin, NodeContext, OutputPin, PinCardinality,
     ProcessorNode, StreamKitError,
@@ -24,12 +26,14 @@ use streamkit_core::{
 
 /// A catalog-discovered track with optional codec metadata.
 ///
-/// Wraps [`moq_lite::Track`] with the video codec detected from the MoQ
+/// Wraps [`moq_lite::Track`] with the codec detected from the MoQ
 /// catalog so that output pins can advertise the correct codec type.
 struct DiscoveredTrack {
     track: moq_lite::Track,
     /// `Some(codec)` for video tracks; `None` for audio.
     video_codec: Option<VideoCodec>,
+    /// `Some(codec)` for audio tracks; `None` for video.
+    audio_codec: Option<AudioCodec>,
 }
 
 #[derive(Deserialize, Debug, JsonSchema, Clone, Default)]
@@ -41,13 +45,17 @@ pub struct MoqPullConfig {
     /// This is compatible with moq-relay and StreamKit's built-in MoQ auth.
     pub jwt: Option<String>,
     pub broadcast: String,
+    /// Fallback audio codec used before catalog discovery completes or when the
+    /// catalog contains no audio rendition. When `None`, defaults to Opus.
+    /// A catalog-advertised codec, when discovered, takes precedence.
+    pub audio_codec: Option<AudioCodec>,
 }
 
 /// A node that connects to a MoQ server, subscribes to a broadcast,
 /// and outputs the received media as encoded packets.
 ///
 /// This node performs catalog discovery during initialization and supports
-/// both audio (Opus) and video (VP9/AV1) tracks.
+/// both audio (Opus/AAC) and video (VP9/AV1/H264) tracks.
 ///
 /// **Output pins**
 /// - Always exposes a stable `out` pin (audio) for backward-compatible pipelines.
@@ -63,41 +71,29 @@ pub struct MoqPullNode {
 
 impl MoqPullNode {
     pub fn new(config: MoqPullConfig) -> Self {
-        Self {
-            config,
-            // Start with a single stable output pin.
-            // TODO: hardcoded to Opus — once the Binary→EncodedAudio gap
-            // is resolved and AAC MoQ broadcasts are possible, this should
-            // respect an `audio_codec` config field (like moq_peer/moq_push).
-            output_pins: vec![OutputPin {
-                name: "out".to_string(),
-                produces_type: PacketType::EncodedAudio(EncodedAudioFormat {
-                    codec: AudioCodec::Opus,
-                    codec_private: None,
-                }),
-                cardinality: PinCardinality::Broadcast,
-            }],
-        }
+        let audio_codec = config.audio_codec.unwrap_or(AudioCodec::Opus);
+        Self { output_pins: vec![Self::stable_out_pin(audio_codec)], config }
     }
 
-    /// The stable output pin always advertises Opus.
-    ///
-    /// TODO: should respect an `audio_codec` config once AAC MoQ broadcasts
-    /// are supported (currently blocked by the Binary→EncodedAudio C ABI gap).
-    fn stable_out_pin() -> OutputPin {
+    fn stable_out_pin(audio_codec: AudioCodec) -> OutputPin {
         OutputPin {
             name: "out".to_string(),
             produces_type: PacketType::EncodedAudio(EncodedAudioFormat {
-                codec: AudioCodec::Opus,
+                codec: audio_codec,
                 codec_private: None,
             }),
             cardinality: PinCardinality::Broadcast,
         }
     }
 
-    fn output_pins_for_tracks(tracks: &[DiscoveredTrack]) -> Vec<OutputPin> {
+    fn output_pins_for_tracks(
+        tracks: &[DiscoveredTrack],
+        default_audio_codec: AudioCodec,
+    ) -> Vec<OutputPin> {
         let mut pins = Vec::with_capacity(1 + tracks.len());
-        pins.push(Self::stable_out_pin());
+        let stable_codec =
+            tracks.iter().find_map(|dt| dt.audio_codec).unwrap_or(default_audio_codec);
+        pins.push(Self::stable_out_pin(stable_codec));
         for dt in tracks {
             if dt.track.name == "out" {
                 continue;
@@ -111,10 +107,8 @@ impl MoqPullNode {
                     level: None,
                 })
             } else {
-                // TODO: hardcoded to Opus — should use the catalog's
-                // audio codec once AAC MoQ broadcasts are supported.
                 PacketType::EncodedAudio(EncodedAudioFormat {
-                    codec: AudioCodec::Opus,
+                    codec: dt.audio_codec.unwrap_or(default_audio_codec),
                     codec_private: None,
                 })
             };
@@ -165,7 +159,8 @@ impl ProcessorNode for MoqPullNode {
             return Ok(streamkit_core::pins::PinUpdate::NoChange);
         }
 
-        let new_output_pins = Self::output_pins_for_tracks(&tracks);
+        let default_audio_codec = self.config.audio_codec.unwrap_or(AudioCodec::Opus);
+        let new_output_pins = Self::output_pins_for_tracks(&tracks, default_audio_codec);
         for pin in &new_output_pins {
             tracing::info!(
                 node_id = %ctx.node_id,
@@ -414,14 +409,15 @@ impl MoqPullNode {
         let mut tracks = Vec::new();
 
         for (name, config) in &catalog.audio.renditions {
-            if matches!(config.codec, hang::catalog::AudioCodec::Opus) {
-                tracing::info!(track = %name, "found opus audio track");
+            if let Some(codec) = audio_codec_from_catalog(&config.codec) {
+                tracing::info!(track = %name, ?codec, "found audio track");
                 tracks.push(DiscoveredTrack {
                     track: moq_lite::Track { name: name.clone(), priority: 80 },
                     video_codec: None,
+                    audio_codec: Some(codec),
                 });
             } else {
-                tracing::debug!(track = %name, codec = %config.codec, "skipping non-opus audio track");
+                tracing::debug!(track = %name, codec = ?config.codec, "skipping unsupported audio track");
             }
         }
 
@@ -432,6 +428,7 @@ impl MoqPullNode {
                     tracks.push(DiscoveredTrack {
                         track: moq_lite::Track { name: name.clone(), priority: 60 },
                         video_codec: Some(VideoCodec::Vp9),
+                        audio_codec: None,
                     });
                 },
                 hang::catalog::VideoCodec::AV1(_) => {
@@ -439,6 +436,7 @@ impl MoqPullNode {
                     tracks.push(DiscoveredTrack {
                         track: moq_lite::Track { name: name.clone(), priority: 60 },
                         video_codec: Some(VideoCodec::Av1),
+                        audio_codec: None,
                     });
                 },
                 hang::catalog::VideoCodec::H264(_) => {
@@ -446,6 +444,7 @@ impl MoqPullNode {
                     tracks.push(DiscoveredTrack {
                         track: moq_lite::Track { name: name.clone(), priority: 60 },
                         video_codec: Some(VideoCodec::H264),
+                        audio_codec: None,
                     });
                 },
                 _ => {
@@ -677,6 +676,11 @@ impl MoqPullNode {
         let audio_track = discovered_tracks.iter().find(|dt| !dt.track.name.starts_with("video/"));
         let video_track = discovered_tracks.iter().find(|dt| dt.track.name.starts_with("video/"));
 
+        let resolved_audio_codec = audio_track
+            .and_then(|dt| dt.audio_codec)
+            .or(self.config.audio_codec)
+            .unwrap_or(AudioCodec::Opus);
+
         if audio_track.is_none() && video_track.is_none() {
             return Err(StreamKitError::Runtime(
                 "No audio or video tracks found in broadcast".to_string(),
@@ -859,11 +863,9 @@ impl MoqPullNode {
                     };
 
                     let (last_ts, default_dur, clock, is_first_in_group) = match source {
-                        // TODO: always uses Opus duration — should be
-                        // codec-aware once AAC MoQ broadcasts are supported.
                         ReadSource::Audio => (
                             &mut last_audio_timestamp_us,
-                            AudioCodec::Opus.default_frame_duration_us(),
+                            resolved_audio_codec.default_frame_duration_us(),
                             &mut audio_clock,
                             &mut audio_is_first_in_group,
                         ),
@@ -1092,8 +1094,9 @@ mod tests {
         let tracks = vec![DiscoveredTrack {
             track: moq_lite::Track { name: "audio/data".to_string(), priority: 0 },
             video_codec: None,
+            audio_codec: Some(AudioCodec::Opus),
         }];
-        let pins = MoqPullNode::output_pins_for_tracks(&tracks);
+        let pins = MoqPullNode::output_pins_for_tracks(&tracks, AudioCodec::Opus);
         assert!(pins.iter().any(|p| p.name == "out"));
         assert!(pins.iter().any(|p| p.name == "audio/data"));
     }
@@ -1103,8 +1106,9 @@ mod tests {
         let tracks = vec![DiscoveredTrack {
             track: moq_lite::Track { name: "out".to_string(), priority: 0 },
             video_codec: None,
+            audio_codec: Some(AudioCodec::Opus),
         }];
-        let pins = MoqPullNode::output_pins_for_tracks(&tracks);
+        let pins = MoqPullNode::output_pins_for_tracks(&tracks, AudioCodec::Opus);
         assert_eq!(pins.iter().filter(|p| p.name == "out").count(), 1);
     }
 
@@ -1113,8 +1117,9 @@ mod tests {
         let tracks = vec![DiscoveredTrack {
             track: moq_lite::Track { name: "video/data".to_string(), priority: 60 },
             video_codec: Some(VideoCodec::Av1),
+            audio_codec: None,
         }];
-        let pins = MoqPullNode::output_pins_for_tracks(&tracks);
+        let pins = MoqPullNode::output_pins_for_tracks(&tracks, AudioCodec::Opus);
         let video_pin = pins.iter().find(|p| p.name == "video/data").unwrap();
         match &video_pin.produces_type {
             PacketType::EncodedVideo(fmt) => assert_eq!(fmt.codec, VideoCodec::Av1),
@@ -1127,12 +1132,69 @@ mod tests {
         let tracks = vec![DiscoveredTrack {
             track: moq_lite::Track { name: "video/data".to_string(), priority: 60 },
             video_codec: Some(VideoCodec::Vp9),
+            audio_codec: None,
         }];
-        let pins = MoqPullNode::output_pins_for_tracks(&tracks);
+        let pins = MoqPullNode::output_pins_for_tracks(&tracks, AudioCodec::Opus);
         let video_pin = pins.iter().find(|p| p.name == "video/data").unwrap();
         match &video_pin.produces_type {
             PacketType::EncodedVideo(fmt) => assert_eq!(fmt.codec, VideoCodec::Vp9),
             other => panic!("expected EncodedVideo, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_output_pins_for_tracks_aac_audio() {
+        let tracks = vec![DiscoveredTrack {
+            track: moq_lite::Track { name: "audio/data".to_string(), priority: 80 },
+            video_codec: None,
+            audio_codec: Some(AudioCodec::Aac),
+        }];
+        let pins = MoqPullNode::output_pins_for_tracks(&tracks, AudioCodec::Opus);
+        let audio_pin = pins.iter().find(|p| p.name == "audio/data").unwrap();
+        match &audio_pin.produces_type {
+            PacketType::EncodedAudio(fmt) => assert_eq!(fmt.codec, AudioCodec::Aac),
+            other => panic!("expected EncodedAudio, got {other:?}"),
+        }
+        let out_pin = pins.iter().find(|p| p.name == "out").unwrap();
+        match &out_pin.produces_type {
+            PacketType::EncodedAudio(fmt) => assert_eq!(fmt.codec, AudioCodec::Aac),
+            other => panic!("expected EncodedAudio on out, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_output_pins_for_tracks_uses_config_default_when_no_audio_discovered() {
+        let tracks = vec![DiscoveredTrack {
+            track: moq_lite::Track { name: "video/data".to_string(), priority: 60 },
+            video_codec: Some(VideoCodec::Vp9),
+            audio_codec: None,
+        }];
+        let pins = MoqPullNode::output_pins_for_tracks(&tracks, AudioCodec::Aac);
+        let out_pin = pins.iter().find(|p| p.name == "out").unwrap();
+        match &out_pin.produces_type {
+            PacketType::EncodedAudio(fmt) => assert_eq!(fmt.codec, AudioCodec::Aac),
+            other => panic!("expected EncodedAudio(Aac) on out, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_new_defaults_to_opus() {
+        let node = MoqPullNode::new(MoqPullConfig::default());
+        let out_pin = node.output_pins.iter().find(|p| p.name == "out").unwrap();
+        match &out_pin.produces_type {
+            PacketType::EncodedAudio(fmt) => assert_eq!(fmt.codec, AudioCodec::Opus),
+            other => panic!("expected EncodedAudio(Opus), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_new_respects_audio_codec_config() {
+        let config = MoqPullConfig { audio_codec: Some(AudioCodec::Aac), ..Default::default() };
+        let node = MoqPullNode::new(config);
+        let out_pin = node.output_pins.iter().find(|p| p.name == "out").unwrap();
+        match &out_pin.produces_type {
+            PacketType::EncodedAudio(fmt) => assert_eq!(fmt.codec, AudioCodec::Aac),
+            other => panic!("expected EncodedAudio(Aac), got {other:?}"),
         }
     }
 
@@ -1187,5 +1249,51 @@ mod tests {
             worst_case_ms <= 1000,
             "worst-case cancel spin should be under 1 second, got {worst_case_ms}ms"
         );
+    }
+
+    /// Validate that every `transport::moq::subscriber` node in the sample
+    /// pipelines can be deserialized into [`MoqPullConfig`] (catches stale
+    /// fields rejected by `deny_unknown_fields`).
+    #[test]
+    fn sample_pipeline_subscriber_configs_deserialize() {
+        let sample_dirs = ["samples/pipelines/dynamic", "samples/loadtest/pipelines"];
+        let workspace =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+
+        for dir in &sample_dirs {
+            let abs = workspace.join(dir);
+            let Ok(entries) = std::fs::read_dir(&abs) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("yml") {
+                    continue;
+                }
+                let content = std::fs::read_to_string(&path).unwrap();
+                let doc: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
+                let Some(nodes) = doc.get("nodes").and_then(|n| n.as_mapping()) else {
+                    continue;
+                };
+                for (name, node) in nodes {
+                    let kind = node.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+                    if kind != "transport::moq::subscriber" {
+                        continue;
+                    }
+                    let params = node
+                        .get("params")
+                        .cloned()
+                        .unwrap_or(serde_yaml::Value::Mapping(serde_yaml::Mapping::default()));
+                    let result = serde_yaml::from_value::<MoqPullConfig>(params);
+                    assert!(
+                        result.is_ok(),
+                        "sample {}: node '{}' has invalid MoqPullConfig: {}",
+                        path.display(),
+                        name.as_str().unwrap_or("?"),
+                        result.unwrap_err()
+                    );
+                }
+            }
+        }
     }
 }

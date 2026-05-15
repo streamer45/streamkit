@@ -987,4 +987,10 @@ mod tests {
         assert!(AudioCodec::from_c_name("mp3").is_err());
         assert!(VideoCodec::from_c_name("hevc").is_err());
     }
+
+    #[test]
+    fn audio_codec_default_frame_durations() {
+        assert_eq!(AudioCodec::Opus.default_frame_duration_us(), 20_000);
+        assert_eq!(AudioCodec::Aac.default_frame_duration_us(), 21_333);
+    }
 }

@@ -22,8 +22,6 @@ nodes:
     params:
       url: http://127.0.0.1:4443
       broadcast: input
-      backoff_cap: 4
-      max_retries: 10
   opus_decoder:
     kind: audio::opus::decoder
     needs: moq_input
