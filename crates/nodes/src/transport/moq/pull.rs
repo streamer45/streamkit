@@ -1283,7 +1283,7 @@ mod tests {
                     let params = node
                         .get("params")
                         .cloned()
-                        .unwrap_or(serde_yaml::Value::Mapping(Default::default()));
+                        .unwrap_or(serde_yaml::Value::Mapping(serde_yaml::Mapping::default()));
                     let result = serde_yaml::from_value::<MoqPullConfig>(params);
                     assert!(
                         result.is_ok(),
