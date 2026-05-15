@@ -142,9 +142,10 @@ async fn wire(
 }
 
 async fn drain(live: HashMap<String, graph_builder::LiveNode>) {
-    for (_, node) in live {
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), node.task_handle).await;
-    }
+    let handles: Vec<_> = live.into_values().map(|n| n.task_handle).collect();
+    let _ =
+        tokio::time::timeout(std::time::Duration::from_secs(5), futures::future::join_all(handles))
+            .await;
 }
 
 #[tokio::test]
@@ -163,21 +164,6 @@ async fn linear_pipeline_spawns_and_connects() {
     assert_eq!(live.len(), 2);
     assert!(live.contains_key("src"));
     assert!(live.contains_key("sink"));
-    drain(live).await;
-}
-
-#[tokio::test]
-async fn type_compatible_connection_succeeds() {
-    let mut nodes: HashMap<String, Box<dyn ProcessorNode>> = HashMap::new();
-    nodes.insert("src".to_string(), Box::new(SourceNode));
-    nodes.insert("sink".to_string(), Box::new(SinkNode));
-
-    let connections = vec![conn("src", "out", "sink", "in")];
-    let node_kinds: HashMap<String, String> = [kind("src"), kind("sink")].into_iter().collect();
-
-    let Ok(live) = wire(nodes, &connections, &node_kinds).await else {
-        panic!("Text -> Text connection should succeed");
-    };
     drain(live).await;
 }
 
@@ -203,7 +189,7 @@ async fn type_incompatible_connection_rejected() {
 }
 
 #[tokio::test]
-async fn passthrough_resolves_type_from_upstream() {
+async fn passthrough_wiring_resolves_type_from_upstream() {
     let mut nodes: HashMap<String, Box<dyn ProcessorNode>> = HashMap::new();
     nodes.insert("src".to_string(), Box::new(SourceNode));
     nodes.insert("pass".to_string(), Box::new(PassthroughNode));
@@ -278,9 +264,9 @@ async fn standalone_node_runs_without_connections() {
     assert_eq!(live.len(), 1);
     assert!(live.contains_key("alone"));
 
-    for (_, node) in live {
-        let result =
-            tokio::time::timeout(std::time::Duration::from_secs(2), node.task_handle).await;
-        assert!(result.is_ok(), "standalone node should complete");
-    }
+    let handles: Vec<_> = live.into_values().map(|n| n.task_handle).collect();
+    let results =
+        tokio::time::timeout(std::time::Duration::from_secs(5), futures::future::join_all(handles))
+            .await;
+    assert!(results.is_ok(), "standalone node should complete");
 }

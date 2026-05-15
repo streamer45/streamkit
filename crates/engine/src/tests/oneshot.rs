@@ -147,9 +147,10 @@ async fn linear_pipeline_runs_to_completion() {
 
     assert_eq!(received, "payload");
 
-    for (_, node) in live {
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), node.task_handle).await;
-    }
+    let handles: Vec<_> = live.into_values().map(|n| n.task_handle).collect();
+    let _ =
+        tokio::time::timeout(std::time::Duration::from_secs(5), futures::future::join_all(handles))
+            .await;
 }
 
 #[tokio::test]
@@ -200,11 +201,11 @@ async fn cancellation_token_stops_pipeline() {
 
     token.cancel();
 
-    for (_, node) in live {
-        let result =
-            tokio::time::timeout(std::time::Duration::from_secs(3), node.task_handle).await;
-        assert!(result.is_ok(), "cancelled node should finish promptly");
-    }
+    let handles: Vec<_> = live.into_values().map(|n| n.task_handle).collect();
+    let result =
+        tokio::time::timeout(std::time::Duration::from_secs(3), futures::future::join_all(handles))
+            .await;
+    assert!(result.is_ok(), "cancelled nodes should finish promptly");
 }
 
 #[tokio::test]

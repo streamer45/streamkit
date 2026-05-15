@@ -330,6 +330,11 @@ async fn best_effort_drops_when_full() {
     }
 
     assert!(!received.is_empty(), "should have received at least one packet");
+    assert!(
+        received.len() < 5,
+        "best-effort should drop packets when the channel is full, got all {}/5",
+        received.len()
+    );
 
     drop(data_tx);
     drop(config_tx);
