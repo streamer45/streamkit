@@ -35,9 +35,7 @@ nodes:
   moq_subscriber:
     kind: transport::moq::subscriber
     params:
-      backoff_cap: 4
       broadcast: input
-      max_retries: 5
       url: http://localhost:4443
       # Optional: JWT for authenticated relays (appended as `?jwt=...`).
       # jwt: "<token>"

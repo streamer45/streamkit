@@ -43,16 +43,12 @@ nodes:
     params:
       url: http://127.0.0.1:4443
       broadcast: screen-input
-      backoff_cap: 4
-      max_retries: 10
 
   moq_cam_input:
     kind: transport::moq::subscriber
     params:
       url: http://127.0.0.1:4443
       broadcast: cam-input
-      backoff_cap: 4
-      max_retries: 10
 
   # --- Video path: decode both sources → composite → encode ---
 

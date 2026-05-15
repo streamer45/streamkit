@@ -36,8 +36,6 @@ nodes:
     params:
       url: http://127.0.0.1:4443
       broadcast: input
-      backoff_cap: 4
-      max_retries: 10
 
   # --- Video path: decode webcam → composite over colorbars → encode ---
 
