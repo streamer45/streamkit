@@ -10,8 +10,9 @@ import {
   topoLevelsFromPipeline,
   orderedNamesFromLevels,
   verticalLayout,
+  type SimpleEdge,
 } from './dag';
-import type { SimpleEdge } from './dag';
+import type { Pipeline } from '@/types/types';
 
 describe('wouldCreateCycle', () => {
   it('returns false when no cycle is created', () => {
@@ -95,7 +96,7 @@ describe('topoLevelsFromPipeline', () => {
     const pipeline = {
       nodes: { src: {}, dst: {} },
       connections: [{ from_node: 'src', to_node: 'dst', from_pin: 'out', to_pin: 'in' }],
-    } as never;
+    } as unknown as Pipeline;
 
     const result = topoLevelsFromPipeline(pipeline);
     expect(result.levelByNode['src']).toBe(0);

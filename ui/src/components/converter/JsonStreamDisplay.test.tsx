@@ -5,6 +5,8 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 
+import { componentsLogger } from '@/utils/logger';
+
 import { JsonStreamDisplay } from './JsonStreamDisplay';
 
 vi.mock('@/utils/logger', () => ({
@@ -164,6 +166,7 @@ describe('JsonStreamDisplay', () => {
 
     await waitFor(() => {
       expect(screen.queryByText('ok')).not.toBeInTheDocument();
+      expect(componentsLogger.warn).toHaveBeenCalled();
     });
   });
 });

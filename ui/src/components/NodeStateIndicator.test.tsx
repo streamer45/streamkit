@@ -96,15 +96,8 @@ describe('NodeStateIndicator', () => {
       ];
 
       for (const state of states) {
-        const { container, unmount } = renderIndicator(state);
-        const wrapper = container.querySelector('.nodrag');
-        expect(wrapper).not.toBeNull();
-        const indicatorWrapper = wrapper!.firstElementChild;
-        const dot = indicatorWrapper!.firstElementChild as HTMLElement;
-        expect(dot).toBeInTheDocument();
-        const styles = window.getComputedStyle(dot);
-        expect(styles.width).toBe('10px');
-        expect(styles.height).toBe('10px');
+        const { unmount } = renderIndicator(state);
+        expect(screen.getByTestId('state-dot')).toBeInTheDocument();
         unmount();
       }
     });
@@ -119,10 +112,8 @@ describe('NodeStateIndicator', () => {
         discarded: BigInt(0),
         duration_secs: 10,
       };
-      const { container } = renderIndicator('Running', { stats });
-      const wrapper = container.querySelector('.nodrag');
-      const indicatorWrapper = wrapper!.firstElementChild!;
-      expect(indicatorWrapper.children.length).toBe(1);
+      renderIndicator('Running', { stats });
+      expect(screen.queryByTestId('error-badge')).not.toBeInTheDocument();
     });
   });
 

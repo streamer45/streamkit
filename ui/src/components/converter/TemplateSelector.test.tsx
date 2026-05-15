@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 
 import type { SamplePipeline } from '@/types/generated/api-types';
@@ -45,10 +45,10 @@ describe('TemplateSelector', () => {
 
   it('renders section headers with counts', () => {
     render(<TemplateSelector {...defaultProps} />);
-    expect(screen.getByText('System Pipelines')).toBeInTheDocument();
-    expect(screen.getByText('User Pipelines')).toBeInTheDocument();
-    const counts = screen.getAllByText('1');
-    expect(counts.length).toBe(2);
+    const systemHeader = screen.getByText('System Pipelines').closest('div')!;
+    const userHeader = screen.getByText('User Pipelines').closest('div')!;
+    expect(within(systemHeader).getByText('1')).toBeInTheDocument();
+    expect(within(userHeader).getByText('1')).toBeInTheDocument();
   });
 
   it('renders empty state when no templates match filters', () => {

@@ -451,8 +451,8 @@ export const NodeStateIndicator: React.FC<NodeStateIndicatorProps> = ({
         style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'help' }}
       >
         <IndicatorWrapper>
-          <StateIndicator color={color} />
-          {hasErrors && <ErrorBadge />}
+          <StateIndicator color={color} data-testid="state-dot" />
+          {hasErrors && <ErrorBadge data-testid="error-badge" />}
         </IndicatorWrapper>
         {showLabel && <span style={{ color: 'var(--sk-text-muted)', fontSize: 11 }}>{label}</span>}
       </div>

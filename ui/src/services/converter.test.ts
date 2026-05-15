@@ -40,19 +40,15 @@ describe('converter service', () => {
   const MOCK_FILE = new File(['test content'], 'test.ogg', { type: 'audio/ogg' });
   const MOCK_UPLOAD = [{ field: 'media', file: MOCK_FILE }];
 
-  let originalMediaSource: unknown;
-
   beforeEach(() => {
-    // Reset fetch mock before each test
     global.fetch = vi.fn() as never;
     vi.useFakeTimers();
-    originalMediaSource = (globalThis as { MediaSource?: unknown }).MediaSource;
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
-    (globalThis as { MediaSource?: unknown }).MediaSource = originalMediaSource as never;
+    vi.unstubAllGlobals();
   });
 
   describe('convertFile - Streaming (JSON)', () => {
@@ -110,9 +106,9 @@ describe('converter service', () => {
 
   describe('convertFile - MSE Streaming (WebM)', () => {
     it('should handle WebM streaming for MSE playback', async () => {
-      (globalThis as { MediaSource?: unknown }).MediaSource = {
+      vi.stubGlobal('MediaSource', {
         isTypeSupported: vi.fn().mockReturnValue(true),
-      } as never;
+      });
 
       const mockBody = new ReadableStream({
         start(controller) {
@@ -136,9 +132,9 @@ describe('converter service', () => {
     });
 
     it('should wrap WebM stream with cancellation support', async () => {
-      (globalThis as { MediaSource?: unknown }).MediaSource = {
+      vi.stubGlobal('MediaSource', {
         isTypeSupported: vi.fn().mockReturnValue(true),
-      } as never;
+      });
 
       const mockReader = {
         read: vi.fn().mockResolvedValue({ done: true, value: undefined }),
@@ -205,7 +201,10 @@ describe('converter service', () => {
       const removeChildSpy = vi
         .spyOn(document.body, 'removeChild')
         .mockImplementation(() => null as never);
-      vi.spyOn(document, 'createElement').mockReturnValue(mockLink as never);
+      const realCreate = document.createElement.bind(document);
+      vi.spyOn(document, 'createElement').mockImplementation((tag: string) =>
+        tag === 'a' ? (mockLink as never) : realCreate(tag)
+      );
 
       (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
         ok: true,
@@ -235,7 +234,10 @@ describe('converter service', () => {
 
       vi.spyOn(document.body, 'appendChild').mockImplementation(() => null as never);
       vi.spyOn(document.body, 'removeChild').mockImplementation(() => null as never);
-      vi.spyOn(document, 'createElement').mockReturnValue(mockLink as never);
+      const realCreate = document.createElement.bind(document);
+      vi.spyOn(document, 'createElement').mockImplementation((tag: string) =>
+        tag === 'a' ? (mockLink as never) : realCreate(tag)
+      );
       global.URL.createObjectURL = vi.fn().mockReturnValue('blob:url');
 
       (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
@@ -421,9 +423,9 @@ describe('converter service', () => {
 
   describe('convertFile - MSE Streaming (MP4)', () => {
     it('should handle MP4 streaming when MSE supports the type', async () => {
-      (globalThis as { MediaSource?: unknown }).MediaSource = {
+      vi.stubGlobal('MediaSource', {
         isTypeSupported: vi.fn().mockReturnValue(true),
-      } as never;
+      });
 
       const mockBody = new ReadableStream({
         start(controller) {
@@ -446,7 +448,7 @@ describe('converter service', () => {
     });
 
     it('should fall back to blob for MP4 when MSE is unavailable', async () => {
-      delete (globalThis as { MediaSource?: unknown }).MediaSource;
+      vi.stubGlobal('MediaSource', undefined);
 
       const mockBlob = new Blob(['video data'], { type: 'video/mp4' });
       global.URL.createObjectURL = vi.fn().mockReturnValue('blob:mp4-url');
@@ -468,9 +470,9 @@ describe('converter service', () => {
 
   describe('convertFile - WebM blob strategy', () => {
     it('should force blob playback when webmPlayback is "blob"', async () => {
-      (globalThis as { MediaSource?: unknown }).MediaSource = {
+      vi.stubGlobal('MediaSource', {
         isTypeSupported: vi.fn().mockReturnValue(true),
-      } as never;
+      });
 
       const mockBlob = new Blob(['webm data'], { type: 'audio/webm' });
       global.URL.createObjectURL = vi.fn().mockReturnValue('blob:webm-blob-url');
@@ -539,7 +541,10 @@ describe('converter service', () => {
 
       vi.spyOn(document.body, 'appendChild').mockImplementation(() => null as never);
       vi.spyOn(document.body, 'removeChild').mockImplementation(() => null as never);
-      vi.spyOn(document, 'createElement').mockReturnValue(mockLink as never);
+      const realCreate = document.createElement.bind(document);
+      vi.spyOn(document, 'createElement').mockImplementation((tag: string) =>
+        tag === 'a' ? (mockLink as never) : realCreate(tag)
+      );
       global.URL.createObjectURL = vi.fn().mockReturnValue('blob:url');
 
       (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
