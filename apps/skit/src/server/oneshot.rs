@@ -463,6 +463,7 @@ where
 }
 
 /// The Axum handler for a oneshot multipart processing request.
+// coordinates multipart routing, RBAC, engine setup, and response streaming in one handler
 #[allow(clippy::cognitive_complexity)]
 pub(super) async fn process_oneshot_pipeline_handler(
     State(app_state): State<Arc<AppState>>,

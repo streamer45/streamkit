@@ -73,6 +73,7 @@ mod validation;
 pub use sessions::{apply_batch_operations, tune_session_node, validate_batch_operations};
 pub use validation::{check_file_path_security, is_synthetic_kind, synthetic_node_definitions};
 
+// consumed by crate::mcp (lib target only); unused in the binary target
 #[cfg(feature = "mcp")]
 #[allow(unused_imports)]
 pub use sessions::{

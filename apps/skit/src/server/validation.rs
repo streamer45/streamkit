@@ -813,6 +813,7 @@ pub fn check_file_path_security(
 }
 
 #[cfg(test)]
+// test fixtures use expect for explicit setup failures
 #[allow(clippy::expect_used)]
 mod validate_pipeline_tests {
     use super::*;

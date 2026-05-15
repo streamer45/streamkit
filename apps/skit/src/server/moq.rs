@@ -5,7 +5,6 @@
 use super::{debug, error, info, warn, AppState, Arc, Config, SocketAddr};
 
 #[cfg(feature = "moq")]
-#[allow(clippy::unused_async)]
 pub(super) fn start_moq_webtransport_acceptor(
     app_state: &Arc<AppState>,
     config: &Config,
