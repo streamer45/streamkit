@@ -464,35 +464,32 @@ impl ProcessorNode for OpusEncoderNode {
     }
 }
 
-use schemars::schema_for;
 use streamkit_core::{config_helpers, registry::StaticPins};
 
 /// Registers the Opus codec nodes.
 ///
 /// # Panics
 ///
-/// Panics if default Opus encoder/decoder cannot be created (should never happen)
-/// or if config schemas cannot be serialized to JSON (should never happen).
+/// Panics if default Opus encoder/decoder cannot be created (should never happen).
 #[allow(clippy::expect_used)] // Schema serialization and default configs should never fail
 pub fn register_opus_nodes(registry: &mut NodeRegistry) {
     #[cfg(feature = "opus")]
     {
         let default_decoder = OpusDecoderNode::new(OpusDecoderConfig::default())
             .expect("default Opus decoder config should be valid");
-        registry.register_static_with_description(
+        register_static_node!(
+            registry,
             "audio::opus::decoder",
             |params| {
                 let config = config_helpers::parse_config_optional(params)?;
                 Ok(Box::new(OpusDecoderNode::new(config)?))
             },
-            serde_json::to_value(schema_for!(OpusDecoderConfig))
-                .expect("OpusDecoderConfig schema should serialize to JSON"),
+            OpusDecoderConfig,
             StaticPins {
                 inputs: default_decoder.input_pins(),
                 outputs: default_decoder.output_pins(),
             },
-            vec!["audio".to_string(), "codecs".to_string(), "opus".to_string()],
-            false,
+            ["audio", "codecs", "opus"],
             "Decodes Opus-compressed audio packets into raw PCM samples. \
              Opus is the preferred codec for real-time audio due to its low latency \
              and excellent quality across all bitrates.",
@@ -500,20 +497,19 @@ pub fn register_opus_nodes(registry: &mut NodeRegistry) {
 
         let default_encoder = OpusEncoderNode::new(OpusEncoderConfig::default())
             .expect("default Opus encoder config should be valid");
-        registry.register_static_with_description(
+        register_static_node!(
+            registry,
             "audio::opus::encoder",
             |params| {
                 let config = config_helpers::parse_config_optional(params)?;
                 Ok(Box::new(OpusEncoderNode::new(config)?))
             },
-            serde_json::to_value(schema_for!(OpusEncoderConfig))
-                .expect("OpusEncoderConfig schema should serialize to JSON"),
+            OpusEncoderConfig,
             StaticPins {
                 inputs: default_encoder.input_pins(),
                 outputs: default_encoder.output_pins(),
             },
-            vec!["audio".to_string(), "codecs".to_string(), "opus".to_string()],
-            false,
+            ["audio", "codecs", "opus"],
             "Encodes raw PCM audio into Opus-compressed packets. \
              Configurable bitrate, application mode (VoIP/audio), and complexity settings. \
              Ideal for streaming and real-time communication.",

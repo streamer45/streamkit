@@ -65,23 +65,17 @@ impl ProcessorNode for SinkNode {
     }
 }
 
+#[allow(clippy::missing_panics_doc)] // Panics only if JsonSchema-derived config fails to serialize (infallible)
 pub fn register(registry: &mut streamkit_core::NodeRegistry) {
-    use schemars::schema_for;
-
-    let schema = match serde_json::to_value(schema_for!(SinkConfig)) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to serialize SinkConfig schema");
-            return;
-        },
-    };
-
+    #[allow(clippy::expect_used)] // JsonSchema-derived configs are infallible to serialize
     registry.register_dynamic_with_description(
         "core::sink",
         |params| Ok(Box::new(SinkNode::new(params)?)),
-        schema,
+        serde_json::to_value(schemars::schema_for!(SinkConfig))
+            .expect("SinkConfig schema should serialize to JSON"),
         vec!["core".to_string(), "observability".to_string()],
         false,
-        "Accepts packets and discards them. Useful for terminating side-branches (e.g., telemetry taps) without affecting the main pipeline.",
+        "Accepts packets and discards them. Useful for terminating side-branches \
+         (e.g., telemetry taps) without affecting the main pipeline.",
     );
 }

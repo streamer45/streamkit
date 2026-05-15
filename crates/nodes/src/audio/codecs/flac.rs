@@ -315,35 +315,32 @@ fn decode_flac_streaming_incremental(
     Ok(())
 }
 
-use schemars::schema_for;
 use streamkit_core::{config_helpers, registry::StaticPins};
 
 /// Registers the FLAC decoder node.
 ///
 /// # Panics
 ///
-/// Panics if the default FLAC decoder cannot be created (should never happen)
-/// or if the config schema cannot be serialized to JSON (should never happen).
+/// Panics if the default FLAC decoder cannot be created (should never happen).
 #[allow(clippy::expect_used)] // Schema serialization and default config should never fail
 pub fn register_flac_nodes(registry: &mut NodeRegistry) {
     #[cfg(feature = "symphonia")]
     {
         let default_decoder = FlacDecoderNode::new(FlacDecoderConfig::default())
             .expect("default FLAC decoder config should be valid");
-        registry.register_static_with_description(
+        register_static_node!(
+            registry,
             "audio::flac::decoder",
             |params| {
                 let config = config_helpers::parse_config_optional(params)?;
                 Ok(Box::new(FlacDecoderNode::new(config)?))
             },
-            serde_json::to_value(schema_for!(FlacDecoderConfig))
-                .expect("FlacDecoderConfig schema should serialize to JSON"),
+            FlacDecoderConfig,
             StaticPins {
                 inputs: default_decoder.input_pins(),
                 outputs: default_decoder.output_pins(),
             },
-            vec!["audio".to_string(), "codecs".to_string(), "flac".to_string()],
-            false,
+            ["audio", "codecs", "flac"],
             "Decodes FLAC audio data to raw PCM samples. \
              Accepts binary FLAC data and outputs 48kHz stereo f32 audio.",
         );

@@ -21,7 +21,6 @@ use streamkit_core::{
     ProcessorNode, StreamKitError,
 };
 
-use schemars::schema_for;
 use streamkit_core::registry::StaticPins;
 
 const fn default_width() -> u32 {
@@ -771,22 +770,20 @@ fn stamp_time(
 
 // ── Registration ────────────────────────────────────────────────────────────
 
-#[allow(clippy::expect_used, clippy::missing_panics_doc)]
 pub fn register_colorbars_nodes(registry: &mut NodeRegistry) {
     let default_node =
         ColorBarsNode { config: ColorBarsConfig::default(), pixel_format: PixelFormat::Nv12 };
-    registry.register_static_with_description(
+    register_static_node!(
+        registry,
         "video::colorbars",
         |params| {
             let config: ColorBarsConfig = config_helpers::parse_config_optional(params)?;
             let pixel_format = parse_pixel_format(&config.pixel_format)?;
             Ok(Box::new(ColorBarsNode { config, pixel_format }))
         },
-        serde_json::to_value(schema_for!(ColorBarsConfig))
-            .expect("ColorBarsConfig schema should serialize to JSON"),
+        ColorBarsConfig,
         StaticPins { inputs: default_node.input_pins(), outputs: default_node.output_pins() },
-        vec!["video".to_string(), "generators".to_string()],
-        false,
+        ["video", "generators"],
         "Generates SMPTE EIA 75% color bar test frames. \
          Supports NV12 (default), I420, and RGBA8 pixel formats via the pixel_format config. \
          Use with a video encoder for pipeline testing and validation.",

@@ -532,24 +532,22 @@ fn copy_dav1d_picture(
 // Registration
 // ---------------------------------------------------------------------------
 
-use schemars::schema_for;
 use streamkit_core::registry::StaticPins;
 
-#[allow(clippy::expect_used, clippy::missing_panics_doc)]
+#[allow(clippy::expect_used, clippy::missing_panics_doc)] // Default config and schema serialization should never fail
 pub fn register_dav1d_nodes(registry: &mut NodeRegistry) {
     let default_decoder = Dav1dDecoderNode::new(Dav1dDecoderConfig::default())
         .expect("default dav1d decoder config should be valid");
-    registry.register_static_with_description(
+    register_static_node!(
+        registry,
         "video::dav1d::decoder",
         |params| {
             let config = config_helpers::parse_config_optional(params)?;
             Ok(Box::new(Dav1dDecoderNode::new(config)?))
         },
-        serde_json::to_value(schema_for!(Dav1dDecoderConfig))
-            .expect("Dav1dDecoderConfig schema should serialize to JSON"),
+        Dav1dDecoderConfig,
         StaticPins { inputs: default_decoder.input_pins(), outputs: default_decoder.output_pins() },
-        vec!["video".to_string(), "codecs".to_string(), "av1".to_string()],
-        false,
+        ["video", "codecs", "av1"],
         "Decodes AV1-compressed packets into raw NV12 video frames using the C dav1d library. \
          Unlike the rav1d (pure-Rust) decoder, dav1d handles corrupt/truncated bitstreams \
          gracefully via error codes instead of panicking.",

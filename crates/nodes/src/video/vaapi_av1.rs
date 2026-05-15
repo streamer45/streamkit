@@ -1313,30 +1313,22 @@ fn merge_av1_keyframe_metadata(
 // Registration
 // ---------------------------------------------------------------------------
 
-use schemars::schema_for;
 use streamkit_core::registry::StaticPins;
 
-#[allow(clippy::expect_used, clippy::missing_panics_doc)]
+#[allow(clippy::expect_used, clippy::missing_panics_doc)] // Default config and schema serialization should never fail
 pub fn register_vaapi_av1_nodes(registry: &mut NodeRegistry) {
     let default_decoder = VaapiAv1DecoderNode::new(VaapiAv1DecoderConfig::default())
         .expect("default VA-API AV1 decoder config should be valid");
-    registry.register_static_with_description(
+    register_static_node!(
+        registry,
         "video::vaapi::av1_decoder",
         |params| {
             let config = config_helpers::parse_config_optional(params)?;
             Ok(Box::new(VaapiAv1DecoderNode::new(config)?))
         },
-        serde_json::to_value(schema_for!(VaapiAv1DecoderConfig))
-            .expect("VaapiAv1DecoderConfig schema should serialize to JSON"),
+        VaapiAv1DecoderConfig,
         StaticPins { inputs: default_decoder.input_pins(), outputs: default_decoder.output_pins() },
-        vec![
-            "video".to_string(),
-            "codecs".to_string(),
-            "av1".to_string(),
-            "hw".to_string(),
-            "vaapi".to_string(),
-        ],
-        false,
+        ["video", "codecs", "av1", "hw", "vaapi"],
         "Decodes AV1-compressed packets into raw NV12 video frames using VA-API \
          hardware acceleration. Requires a VA-API capable GPU (Intel Arc+, AMD, \
          or NVIDIA with nvidia-vaapi-driver).",
@@ -1344,23 +1336,16 @@ pub fn register_vaapi_av1_nodes(registry: &mut NodeRegistry) {
 
     let default_encoder = VaapiAv1EncoderNode::new(VaapiAv1EncoderConfig::default())
         .expect("default VA-API AV1 encoder config should be valid");
-    registry.register_static_with_description(
+    register_static_node!(
+        registry,
         "video::vaapi::av1_encoder",
         |params| {
             let config = config_helpers::parse_config_optional(params)?;
             Ok(Box::new(VaapiAv1EncoderNode::new(config)?))
         },
-        serde_json::to_value(schema_for!(VaapiAv1EncoderConfig))
-            .expect("VaapiAv1EncoderConfig schema should serialize to JSON"),
+        VaapiAv1EncoderConfig,
         StaticPins { inputs: default_encoder.input_pins(), outputs: default_encoder.output_pins() },
-        vec![
-            "video".to_string(),
-            "codecs".to_string(),
-            "av1".to_string(),
-            "hw".to_string(),
-            "vaapi".to_string(),
-        ],
-        false,
+        ["video", "codecs", "av1", "hw", "vaapi"],
         "Encodes raw NV12/I420 video frames into AV1-compressed packets using VA-API \
          hardware acceleration. Uses constant-quality (CQP) rate control. Requires a \
          VA-API capable GPU with AV1 encode support (Intel Arc+, AMD).",

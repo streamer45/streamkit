@@ -237,21 +237,14 @@ pub fn create_telemetry_out(
     Ok(Box::new(TelemetryOutNode::new(params.cloned())?))
 }
 
+#[allow(clippy::missing_panics_doc)] // Panics only if JsonSchema-derived config fails to serialize (infallible)
 pub fn register(registry: &mut streamkit_core::NodeRegistry) {
-    use schemars::schema_for;
-
-    let schema = match serde_json::to_value(schema_for!(TelemetryOutConfig)) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to serialize TelemetryOutConfig schema");
-            return;
-        },
-    };
-
+    #[allow(clippy::expect_used)] // JsonSchema-derived configs are infallible to serialize
     registry.register_dynamic_with_description(
         "core::telemetry_out",
         create_telemetry_out,
-        schema,
+        serde_json::to_value(schemars::schema_for!(TelemetryOutConfig))
+            .expect("TelemetryOutConfig schema should serialize to JSON"),
         vec!["core".to_string(), "observability".to_string()],
         false,
         "Consumes packets and emits telemetry events to the session bus (WebSocket). \

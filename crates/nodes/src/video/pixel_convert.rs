@@ -364,24 +364,22 @@ fn convert_frame(
 
 // ── Registration ────────────────────────────────────────────────────────────
 
-use schemars::schema_for;
 use streamkit_core::registry::StaticPins;
 
-#[allow(clippy::expect_used, clippy::missing_panics_doc)]
+#[allow(clippy::expect_used, clippy::missing_panics_doc)] // Default config and schema serialization should never fail
 pub fn register_pixel_convert_nodes(registry: &mut NodeRegistry) {
     let default_node = PixelConvertNode::new(&PixelConvertConfig::default())
         .expect("default PixelConvertConfig should be valid");
-    registry.register_static_with_description(
+    register_static_node!(
+        registry,
         "video::pixel_convert",
         |params| {
             let config: PixelConvertConfig = config_helpers::parse_config_optional(params)?;
             Ok(Box::new(PixelConvertNode::new(&config)?))
         },
-        serde_json::to_value(schema_for!(PixelConvertConfig))
-            .expect("PixelConvertConfig schema should serialize to JSON"),
+        PixelConvertConfig,
         StaticPins { inputs: default_node.input_pins(), outputs: default_node.output_pins() },
-        vec!["video".to_string(), "convert".to_string()],
-        false,
+        ["video", "convert"],
         "Converts raw video frames between pixel formats (RGBA8, NV12, I420). \
          Insert upstream of nodes that require a specific format (e.g. VP9 encoder). \
          Passthrough when input format already matches the target.",

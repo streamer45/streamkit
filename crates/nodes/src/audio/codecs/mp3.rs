@@ -348,35 +348,32 @@ fn decode_mp3_streaming_incremental(
     Ok(())
 }
 
-use schemars::schema_for;
 use streamkit_core::{config_helpers, registry::StaticPins};
 
 /// Registers the MP3 decoder node.
 ///
 /// # Panics
 ///
-/// Panics if the default MP3 decoder cannot be created (should never happen)
-/// or if the config schema cannot be serialized to JSON (should never happen).
+/// Panics if the default MP3 decoder cannot be created (should never happen).
 #[allow(clippy::expect_used)] // Schema serialization and default config should never fail
 pub fn register_mp3_nodes(registry: &mut NodeRegistry) {
     #[cfg(feature = "symphonia")]
     {
         let default_decoder = Mp3DecoderNode::new(Mp3DecoderConfig::default())
             .expect("default MP3 decoder config should be valid");
-        registry.register_static_with_description(
+        register_static_node!(
+            registry,
             "audio::mp3::decoder",
             |params| {
                 let config = config_helpers::parse_config_optional(params)?;
                 Ok(Box::new(Mp3DecoderNode::new(config)?))
             },
-            serde_json::to_value(schema_for!(Mp3DecoderConfig))
-                .expect("Mp3DecoderConfig schema should serialize to JSON"),
+            Mp3DecoderConfig,
             StaticPins {
                 inputs: default_decoder.input_pins(),
                 outputs: default_decoder.output_pins(),
             },
-            vec!["audio".to_string(), "codecs".to_string(), "mp3".to_string()],
-            false,
+            ["audio", "codecs", "mp3"],
             "Decodes MP3 audio data to raw PCM samples. \
              Accepts binary MP3 data and outputs 48kHz stereo f32 audio.",
         );

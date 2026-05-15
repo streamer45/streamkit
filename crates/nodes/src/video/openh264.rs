@@ -380,24 +380,22 @@ impl OpenH264Encoder {
 // Registration
 // ---------------------------------------------------------------------------
 
-use schemars::schema_for;
 use streamkit_core::registry::StaticPins;
 
-#[allow(clippy::expect_used, clippy::missing_panics_doc)]
+#[allow(clippy::expect_used, clippy::missing_panics_doc)] // Default config and schema serialization should never fail
 pub fn register_openh264_nodes(registry: &mut NodeRegistry) {
     let default_encoder = OpenH264EncoderNode::new(OpenH264EncoderConfig::default())
         .expect("default OpenH264 encoder config should be valid");
-    registry.register_static_with_description(
+    register_static_node!(
+        registry,
         "video::openh264::encoder",
         |params| {
             let config = config_helpers::parse_config_optional(params)?;
             Ok(Box::new(OpenH264EncoderNode::new(config)?))
         },
-        serde_json::to_value(schema_for!(OpenH264EncoderConfig))
-            .expect("OpenH264EncoderConfig schema should serialize to JSON"),
+        OpenH264EncoderConfig,
         StaticPins { inputs: default_encoder.input_pins(), outputs: default_encoder.output_pins() },
-        vec!["video".to_string(), "codecs".to_string(), "h264".to_string()],
-        false,
+        ["video", "codecs", "h264"],
         "Encodes raw video frames (NV12 or I420) into H.264 Annex B packets using OpenH264 \
          (Constrained Baseline profile). Insert a video::pixel_convert node upstream if the \
          source outputs RGBA8.",

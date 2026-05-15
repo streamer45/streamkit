@@ -598,22 +598,13 @@ fn find_tracks_end(data: &[u8]) -> Option<usize> {
 }
 
 /// Register HTTP MSE nodes with the registry.
-///
-/// # Panics
-///
-/// Panics if the config schema cannot be serialized to JSON (should never happen).
-#[allow(clippy::expect_used)]
 pub fn register_http_mse_nodes(registry: &mut streamkit_core::NodeRegistry) {
-    use schemars::schema_for;
-
-    let factory = HttpMseNode::factory();
-    registry.register_dynamic_with_description(
+    register_dynamic_node!(
+        registry,
         "transport::http::mse",
-        move |params| (factory)(params),
-        serde_json::to_value(schema_for!(HttpMseConfig))
-            .expect("HttpMseConfig schema should serialize to JSON"),
-        vec!["transport".to_string(), "http".to_string(), "mse".to_string()],
-        false,
+        HttpMseNode,
+        HttpMseConfig,
+        ["transport", "http", "mse"],
         "Serves WebM streams to HTTP clients for MSE (Media Source Extensions) playback. \
          Accepts binary data from an upstream WebM muxer and broadcasts to multiple \
          concurrent HTTP clients with init segment replay for late-joiners.",

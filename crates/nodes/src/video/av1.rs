@@ -1085,41 +1085,38 @@ const fn merge_keyframe_metadata(
 // Registration
 // ---------------------------------------------------------------------------
 
-use schemars::schema_for;
 use streamkit_core::registry::StaticPins;
 
-#[allow(clippy::expect_used, clippy::missing_panics_doc)]
+#[allow(clippy::expect_used, clippy::missing_panics_doc)] // Default config and schema serialization should never fail
 pub fn register_av1_nodes(registry: &mut NodeRegistry) {
     let default_decoder = Av1DecoderNode::new(Av1DecoderConfig::default())
         .expect("default AV1 decoder config should be valid");
-    registry.register_static_with_description(
+    register_static_node!(
+        registry,
         "video::av1::decoder",
         |params| {
             let config = config_helpers::parse_config_optional(params)?;
             Ok(Box::new(Av1DecoderNode::new(config)?))
         },
-        serde_json::to_value(schema_for!(Av1DecoderConfig))
-            .expect("Av1DecoderConfig schema should serialize to JSON"),
+        Av1DecoderConfig,
         StaticPins { inputs: default_decoder.input_pins(), outputs: default_decoder.output_pins() },
-        vec!["video".to_string(), "codecs".to_string(), "av1".to_string()],
-        false,
+        ["video", "codecs", "av1"],
         "Decodes AV1-compressed packets into raw NV12 video frames using rav1d (pure-Rust dav1d). \
          Use this before CPU compositing or analysis pipelines.",
     );
 
     let default_encoder = Av1EncoderNode::new(Av1EncoderConfig::default())
         .expect("default AV1 encoder config should be valid");
-    registry.register_static_with_description(
+    register_static_node!(
+        registry,
         "video::av1::encoder",
         |params| {
             let config = config_helpers::parse_config_optional(params)?;
             Ok(Box::new(Av1EncoderNode::new(config)?))
         },
-        serde_json::to_value(schema_for!(Av1EncoderConfig))
-            .expect("Av1EncoderConfig schema should serialize to JSON"),
+        Av1EncoderConfig,
         StaticPins { inputs: default_encoder.input_pins(), outputs: default_encoder.output_pins() },
-        vec!["video".to_string(), "codecs".to_string(), "av1".to_string()],
-        false,
+        ["video", "codecs", "av1"],
         "Encodes raw video frames (NV12 or I420) into AV1 packets using rav1e (pure-Rust). \
          Insert a video::pixel_convert node upstream if the source outputs RGBA8.",
     );

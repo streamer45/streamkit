@@ -18,7 +18,6 @@ use super::rtmp_client::{
 };
 use async_trait::async_trait;
 use opentelemetry::KeyValue;
-use schemars::schema_for;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use streamkit_core::stats::NodeStatsTracker;
@@ -1159,12 +1158,6 @@ fn build_aac_audio_specific_config(sample_rate: u32, channels: u8) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 /// Registers all RTMP transport nodes with the engine's registry.
-///
-/// # Panics
-///
-/// Panics if `RtmpPublishConfig`'s JSON schema fails to serialize, which
-/// should never happen for a valid `schemars`-derived type.
-#[allow(clippy::expect_used)] // Schema serialization should never fail for valid types
 pub fn register_rtmp_nodes(registry: &mut NodeRegistry) {
     let default_node = RtmpPublishNode::new(RtmpPublishConfig {
         url: String::new(),
@@ -1174,17 +1167,16 @@ pub fn register_rtmp_nodes(registry: &mut NodeRegistry) {
         channels: default_channels(),
     });
 
-    registry.register_static_with_description(
+    register_static_node!(
+        registry,
         "transport::rtmp::publish",
         |params| {
             let config = config_helpers::parse_config_required(params)?;
             Ok(Box::new(RtmpPublishNode::new(config)))
         },
-        serde_json::to_value(schema_for!(RtmpPublishConfig))
-            .expect("RtmpPublishConfig schema should serialize to JSON"),
+        RtmpPublishConfig,
         StaticPins { inputs: default_node.input_pins(), outputs: default_node.output_pins() },
-        vec!["transport".to_string(), "rtmp".to_string()],
-        false,
+        ["transport", "rtmp"],
         "Publishes encoded H.264 video and AAC audio to an RTMP endpoint. \
          Accepts Annex B H.264 on the 'video' pin and raw AAC frames on the 'audio' pin, \
          converting to the RTMP/FLV wire format. Supports both RTMP and RTMPS (TLS).",

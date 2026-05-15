@@ -546,30 +546,22 @@ fn merge_h264_keyframe_metadata(
 // Registration
 // ---------------------------------------------------------------------------
 
-use schemars::schema_for;
 use streamkit_core::registry::StaticPins;
 
-#[allow(clippy::expect_used, clippy::missing_panics_doc)]
+#[allow(clippy::expect_used, clippy::missing_panics_doc)] // Default config and schema serialization should never fail
 pub fn register_vaapi_h264_nodes(registry: &mut NodeRegistry) {
     let default_decoder = VaapiH264DecoderNode::new(VaapiH264DecoderConfig::default())
         .expect("default VA-API H.264 decoder config should be valid");
-    registry.register_static_with_description(
+    register_static_node!(
+        registry,
         "video::vaapi::h264_decoder",
         |params| {
             let config = config_helpers::parse_config_optional(params)?;
             Ok(Box::new(VaapiH264DecoderNode::new(config)?))
         },
-        serde_json::to_value(schema_for!(VaapiH264DecoderConfig))
-            .expect("VaapiH264DecoderConfig schema should serialize to JSON"),
+        VaapiH264DecoderConfig,
         StaticPins { inputs: default_decoder.input_pins(), outputs: default_decoder.output_pins() },
-        vec![
-            "video".to_string(),
-            "codecs".to_string(),
-            "h264".to_string(),
-            "hw".to_string(),
-            "vaapi".to_string(),
-        ],
-        false,
+        ["video", "codecs", "h264", "hw", "vaapi"],
         "Decodes H.264-compressed packets into raw NV12 video frames using VA-API \
          hardware acceleration. Requires a VA-API capable GPU (Intel Sandy Bridge+, \
          AMD, or NVIDIA with nvidia-vaapi-driver).",
@@ -577,23 +569,16 @@ pub fn register_vaapi_h264_nodes(registry: &mut NodeRegistry) {
 
     let default_encoder = VaapiH264EncoderNode::new(VaapiH264EncoderConfig::default())
         .expect("default VA-API H.264 encoder config should be valid");
-    registry.register_static_with_description(
+    register_static_node!(
+        registry,
         "video::vaapi::h264_encoder",
         |params| {
             let config = config_helpers::parse_config_optional(params)?;
             Ok(Box::new(VaapiH264EncoderNode::new(config)?))
         },
-        serde_json::to_value(schema_for!(VaapiH264EncoderConfig))
-            .expect("VaapiH264EncoderConfig schema should serialize to JSON"),
+        VaapiH264EncoderConfig,
         StaticPins { inputs: default_encoder.input_pins(), outputs: default_encoder.output_pins() },
-        vec![
-            "video".to_string(),
-            "codecs".to_string(),
-            "h264".to_string(),
-            "hw".to_string(),
-            "vaapi".to_string(),
-        ],
-        false,
+        ["video", "codecs", "h264", "hw", "vaapi"],
         "Encodes raw NV12/I420 video frames into H.264-compressed packets using VA-API \
          hardware acceleration. Uses constant-quality (CQP) rate control. Requires a \
          VA-API capable GPU with H.264 encode support (Intel, AMD).",

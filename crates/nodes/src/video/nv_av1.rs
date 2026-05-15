@@ -662,14 +662,10 @@ fn merge_keyframe_metadata(
 // Registration
 // ---------------------------------------------------------------------------
 
-use schemars::schema_for;
 use streamkit_core::registry::StaticPins;
 
-#[allow(clippy::expect_used, clippy::missing_panics_doc)]
+#[allow(clippy::expect_used, clippy::missing_panics_doc)] // Default config and schema serialization should never fail
 pub fn register_nv_av1_nodes(registry: &mut NodeRegistry) {
-    // Runtime capability check: verify that CUDA libraries are loadable.
-    // If not, log a warning but still register the nodes — they will fail
-    // at runtime with a clear error when the pipeline starts.
     if !shiguredo_nvcodec::is_cuda_library_available() {
         tracing::warn!(
             "CUDA libraries not available — NV AV1 encoder/decoder nodes \
@@ -679,23 +675,16 @@ pub fn register_nv_av1_nodes(registry: &mut NodeRegistry) {
 
     let default_decoder = NvAv1DecoderNode::new(NvAv1DecoderConfig::default())
         .expect("default NV AV1 decoder config should be valid");
-    registry.register_static_with_description(
+    register_static_node!(
+        registry,
         "video::nv::av1_decoder",
         |params| {
             let config = config_helpers::parse_config_optional(params)?;
             Ok(Box::new(NvAv1DecoderNode::new(config)?))
         },
-        serde_json::to_value(schema_for!(NvAv1DecoderConfig))
-            .expect("NvAv1DecoderConfig schema should serialize to JSON"),
+        NvAv1DecoderConfig,
         StaticPins { inputs: default_decoder.input_pins(), outputs: default_decoder.output_pins() },
-        vec![
-            "video".to_string(),
-            "codecs".to_string(),
-            "av1".to_string(),
-            "hw".to_string(),
-            "nvidia".to_string(),
-        ],
-        false,
+        ["video", "codecs", "av1", "hw", "nvidia"],
         "Decodes AV1-compressed packets into raw NV12 video frames using \
          NVIDIA NVDEC hardware acceleration. Requires an NVIDIA RTX 30xx \
          (Ampere) or newer GPU.",
@@ -703,23 +692,16 @@ pub fn register_nv_av1_nodes(registry: &mut NodeRegistry) {
 
     let default_encoder = NvAv1EncoderNode::new(NvAv1EncoderConfig::default())
         .expect("default NV AV1 encoder config should be valid");
-    registry.register_static_with_description(
+    register_static_node!(
+        registry,
         "video::nv::av1_encoder",
         |params| {
             let config = config_helpers::parse_config_optional(params)?;
             Ok(Box::new(NvAv1EncoderNode::new(config)?))
         },
-        serde_json::to_value(schema_for!(NvAv1EncoderConfig))
-            .expect("NvAv1EncoderConfig schema should serialize to JSON"),
+        NvAv1EncoderConfig,
         StaticPins { inputs: default_encoder.input_pins(), outputs: default_encoder.output_pins() },
-        vec![
-            "video".to_string(),
-            "codecs".to_string(),
-            "av1".to_string(),
-            "hw".to_string(),
-            "nvidia".to_string(),
-        ],
-        false,
+        ["video", "codecs", "av1", "hw", "nvidia"],
         "Encodes raw video frames (NV12 or I420) into AV1 packets using \
          NVIDIA NVENC hardware acceleration. Requires an NVIDIA RTX 40xx \
          (Ada Lovelace) or newer GPU. Insert a video::pixel_convert node \

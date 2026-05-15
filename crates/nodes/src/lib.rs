@@ -5,6 +5,9 @@
 use streamkit_core::constraints::GlobalNodeConstraints;
 use streamkit_core::NodeRegistry;
 
+#[macro_use]
+mod macros;
+
 pub mod audio;
 pub mod containers;
 pub mod core;
