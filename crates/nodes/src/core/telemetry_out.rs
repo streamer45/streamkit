@@ -237,7 +237,7 @@ pub fn create_telemetry_out(
     Ok(Box::new(TelemetryOutNode::new(params.cloned())?))
 }
 
-#[allow(clippy::missing_panics_doc)]
+#[allow(clippy::missing_panics_doc)] // Panics only if JsonSchema-derived config fails to serialize (infallible)
 pub fn register(registry: &mut streamkit_core::NodeRegistry) {
     #[allow(clippy::expect_used)] // JsonSchema-derived configs are infallible to serialize
     registry.register_dynamic_with_description(

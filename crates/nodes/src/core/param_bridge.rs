@@ -454,6 +454,7 @@ impl ParamBridgeNode {
     }
 }
 
+#[allow(clippy::missing_panics_doc)] // Panics only if JsonSchema-derived config fails to serialize (infallible)
 pub fn register(registry: &mut streamkit_core::NodeRegistry) {
     use streamkit_core::registry::StaticPins;
 
