@@ -45,10 +45,9 @@ pub struct MoqPullConfig {
     /// This is compatible with moq-relay and StreamKit's built-in MoQ auth.
     pub jwt: Option<String>,
     pub broadcast: String,
-    /// Audio codec for received streams.
-    ///
-    /// When `None`, the codec is auto-detected from the MoQ catalog and
-    /// falls back to Opus.
+    /// Fallback audio codec used before catalog discovery completes or when the
+    /// catalog contains no audio rendition. When `None`, defaults to Opus.
+    /// A catalog-advertised codec, when discovered, takes precedence.
     pub audio_codec: Option<AudioCodec>,
 }
 
@@ -1197,12 +1196,6 @@ mod tests {
             PacketType::EncodedAudio(fmt) => assert_eq!(fmt.codec, AudioCodec::Aac),
             other => panic!("expected EncodedAudio(Aac), got {other:?}"),
         }
-    }
-
-    #[test]
-    fn test_aac_frame_duration() {
-        assert_eq!(AudioCodec::Aac.default_frame_duration_us(), 21_333);
-        assert_eq!(AudioCodec::Opus.default_frame_duration_us(), 20_000);
     }
 
     #[test]

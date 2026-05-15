@@ -257,6 +257,16 @@ mod tests {
     }
 
     #[test]
+    fn audio_codec_from_catalog_rejects_non_lc_aac() {
+        assert_eq!(
+            audio_codec_from_catalog(&hang::catalog::AudioCodec::AAC(hang::catalog::AAC {
+                profile: 5,
+            })),
+            None
+        );
+    }
+
+    #[test]
     fn resolve_audio_codec_prefers_config() {
         let input_types = std::collections::HashMap::new();
         assert_eq!(resolve_audio_codec(Some(AudioCodec::Aac), &input_types), AudioCodec::Aac);
