@@ -2,12 +2,32 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-use super::{
-    compile, global, header, raw_multer, AppError, AppState, Arc, Body, Bytes, CancellationToken,
-    Duration, HashMap, HashSet, HeaderMap, Infallible, Instant, IntoResponse, KeyValue, OnceLock,
-    OneshotEngineConfig, OneshotInput, Pin, Pipeline, Poll, ReceiverStream, Response, State,
-    Stream, StreamExt, TaskContext, UserPipeline,
+use std::collections::{HashMap, HashSet};
+use std::convert::Infallible;
+use std::pin::Pin;
+use std::sync::{Arc, OnceLock};
+use std::task::{Context as TaskContext, Poll};
+use std::time::{Duration, Instant};
+
+use axum::{
+    body::Body,
+    extract::State,
+    http::{header, HeaderMap},
+    response::{IntoResponse, Response},
 };
+use bytes::Bytes;
+use futures::{Stream, StreamExt};
+use multer as raw_multer;
+use opentelemetry::{global, KeyValue};
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_util::sync::CancellationToken;
+
+use crate::state::AppState;
+use streamkit_api::yaml::{compile, UserPipeline};
+use streamkit_api::Pipeline;
+use streamkit_engine::{OneshotEngineConfig, OneshotInput};
+
+use super::AppError;
 
 /// Type alias for a boxed byte stream used in media processing
 type MediaStream = Box<dyn Stream<Item = Result<Bytes, axum::Error>> + Unpin + Send>;
@@ -463,7 +483,7 @@ where
 }
 
 /// The Axum handler for a oneshot multipart processing request.
-// coordinates multipart routing, RBAC, engine setup, and response streaming in one handler
+// splitting would require threading cancel_token + engine state through many closures
 #[allow(clippy::cognitive_complexity)]
 pub(super) async fn process_oneshot_pipeline_handler(
     State(app_state): State<Arc<AppState>>,

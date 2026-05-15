@@ -2,11 +2,18 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+use std::convert::Infallible;
+use std::net::SocketAddr;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::OnceLock;
+use std::task::{Context as TaskContext, Poll};
+use std::time::Instant;
+
 use axum::{
     body::Body,
     extract::{
-        multipart::MultipartError, ws::WebSocketUpgrade, DefaultBodyLimit, MatchedPath, Multipart,
-        Path, Query, State,
+        multipart::MultipartError, ws::WebSocketUpgrade, DefaultBodyLimit, MatchedPath, Path, State,
     },
     http::{header, HeaderMap, StatusCode},
     middleware::{self, Next},
@@ -14,18 +21,11 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
-use bytes::Bytes;
-use multer as raw_multer;
+use futures::StreamExt;
 use opentelemetry::{global, KeyValue};
 use rust_embed::RustEmbed;
-use std::collections::{HashMap, HashSet};
-use std::convert::Infallible;
-use std::net::SocketAddr;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::OnceLock;
-use std::task::{Context as TaskContext, Poll};
-use std::time::{Duration, Instant};
+use serde::Serialize;
+use tokio_stream::wrappers::ReceiverStream;
 use tower::limit::ConcurrencyLimitLayer;
 use tower::ServiceBuilder;
 use tower_http::{
@@ -35,34 +35,18 @@ use tower_http::{
 };
 use tracing::{debug, error, info, warn};
 
-use crate::file_security;
-use crate::marketplace_installer::InstallPluginRequest;
-use crate::marketplace_security::{origin_key, MarketplaceUrlPolicy, OriginKey};
-use crate::plugin_paths;
-use crate::plugin_records::{
-    active_dir as plugin_active_dir, namespaced_kind as active_namespaced_kind, ActivePluginRecord,
-};
+use crate::config::Config;
 use crate::plugins::UnifiedPluginManager;
 use crate::profiling;
+use crate::session::SessionManager;
 use crate::state::AppState;
 use crate::websocket;
-use streamkit_api::yaml::{compile, UserPipeline};
-use streamkit_api::Pipeline;
-use streamkit_api::{ApiPipeline, Event as ApiEvent, EventPayload, MessageType};
-use streamkit_core::control::EngineControlMessage;
+use streamkit_api::ApiPipeline;
 use streamkit_core::error::StreamKitError;
-use streamkit_engine::{Engine, OneshotEngineConfig, OneshotInput};
+use streamkit_engine::Engine;
 
-use crate::session::SessionManager;
-
-use crate::config::Config;
-use tokio_stream::wrappers::ReceiverStream;
-use tokio_util::sync::CancellationToken;
-
-use anyhow::{Context, Error as AnyhowError};
-use futures::{Stream, StreamExt};
-use serde::{Deserialize, Serialize};
-use tokio::io::AsyncWriteExt;
+#[cfg(feature = "profiling")]
+use axum::extract::Query;
 
 mod moq;
 mod oneshot;
@@ -71,7 +55,6 @@ mod sessions;
 mod validation;
 
 pub use sessions::{apply_batch_operations, tune_session_node, validate_batch_operations};
-pub use validation::{check_file_path_security, is_synthetic_kind, synthetic_node_definitions};
 
 // consumed by crate::mcp (lib target only); unused in the binary target
 #[cfg(feature = "mcp")]
@@ -82,9 +65,12 @@ pub use sessions::{
 };
 #[cfg(feature = "mcp")]
 #[allow(unused_imports)]
+pub use validation::validate_pipeline_yaml;
+#[allow(unused_imports)]
 pub use validation::{
-    validate_pipeline_yaml, DiagnosticKind, PipelineMode, ValidateDiagnostic, ValidateGraph,
-    ValidateGraphConnection, ValidateGraphNode, ValidateResponse,
+    check_file_path_security, is_synthetic_kind, synthetic_node_definitions, DiagnosticKind,
+    PipelineMode, ValidateDiagnostic, ValidateGraph, ValidateGraphConnection, ValidateGraphNode,
+    ValidateResponse,
 };
 
 #[derive(RustEmbed)]

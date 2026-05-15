@@ -2,10 +2,24 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-use super::{
-    compile, debug, file_security, info, read_registry, warn, AppError, AppState, Arc, Deserialize,
-    HashMap, HeaderMap, IntoResponse, Json, Pipeline, Serialize, State, StatusCode,
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use axum::{
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
+    Json,
 };
+use serde::{Deserialize, Serialize};
+use tracing::{debug, info, warn};
+
+use crate::file_security;
+use crate::state::AppState;
+use streamkit_api::yaml::compile;
+use streamkit_api::Pipeline;
+
+use super::{read_registry, AppError};
 
 // ---------------------------------------------------------------------------
 // POST /api/v1/validate — stateless pipeline dry-run

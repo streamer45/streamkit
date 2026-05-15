@@ -2,12 +2,26 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-use super::{
-    active_namespaced_kind, error, info, origin_key, plugin_active_dir, plugin_paths, warn,
-    ActivePluginRecord, AnyhowError, AppState, Arc, AsyncWriteExt, Context, Deserialize, HeaderMap,
-    InstallPluginRequest, IntoResponse, Json, MarketplaceUrlPolicy, Multipart, MultipartError,
-    OriginKey, Path, Query, Response, Serialize, State, StatusCode,
+use std::sync::Arc;
+
+use anyhow::{Context, Error as AnyhowError};
+use axum::{
+    extract::{multipart::MultipartError, Multipart, Path, Query, State},
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    Json,
 };
+use serde::{Deserialize, Serialize};
+use tokio::io::AsyncWriteExt;
+use tracing::{error, info, warn};
+
+use crate::marketplace_installer::InstallPluginRequest;
+use crate::marketplace_security::{origin_key, MarketplaceUrlPolicy, OriginKey};
+use crate::plugin_paths;
+use crate::plugin_records::{
+    active_dir as plugin_active_dir, namespaced_kind as active_namespaced_kind, ActivePluginRecord,
+};
+use crate::state::AppState;
 
 pub(super) async fn list_plugins_handler(
     State(app_state): State<Arc<AppState>>,
