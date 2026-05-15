@@ -1250,4 +1250,50 @@ mod tests {
             "worst-case cancel spin should be under 1 second, got {worst_case_ms}ms"
         );
     }
+
+    /// Validate that every `transport::moq::subscriber` node in the sample
+    /// pipelines can be deserialized into [`MoqPullConfig`] (catches stale
+    /// fields rejected by `deny_unknown_fields`).
+    #[test]
+    fn sample_pipeline_subscriber_configs_deserialize() {
+        let sample_dirs = ["samples/pipelines/dynamic", "samples/loadtest/pipelines"];
+        let workspace =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+
+        for dir in &sample_dirs {
+            let abs = workspace.join(dir);
+            let Ok(entries) = std::fs::read_dir(&abs) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("yml") {
+                    continue;
+                }
+                let content = std::fs::read_to_string(&path).unwrap();
+                let doc: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
+                let Some(nodes) = doc.get("nodes").and_then(|n| n.as_mapping()) else {
+                    continue;
+                };
+                for (name, node) in nodes {
+                    let kind = node.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+                    if kind != "transport::moq::subscriber" {
+                        continue;
+                    }
+                    let params = node
+                        .get("params")
+                        .cloned()
+                        .unwrap_or(serde_yaml::Value::Mapping(Default::default()));
+                    let result = serde_yaml::from_value::<MoqPullConfig>(params);
+                    assert!(
+                        result.is_ok(),
+                        "sample {}: node '{}' has invalid MoqPullConfig: {}",
+                        path.display(),
+                        name.as_str().unwrap_or("?"),
+                        result.unwrap_err()
+                    );
+                }
+            }
+        }
+    }
 }
