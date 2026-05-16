@@ -632,3 +632,280 @@ impl From<std::io::Error> for SamplesError {
         Self::Io(e)
     }
 }
+
+#[cfg(test)]
+// reason: tests use expect/unwrap-style helpers so a failed assertion produces
+// a single clear panic instead of nested Result-handling boilerplate.
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use streamkit_api::EngineMode;
+
+    fn invalid_filename_msg(err: &SamplesError) -> &str {
+        match err {
+            SamplesError::InvalidFilename(msg) => msg.as_str(),
+            other => panic!("expected InvalidFilename, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_filename_accepts_yml_yaml_and_uppercase() {
+        for ok in ["foo.yml", "foo.yaml", "FOO.YML", "FOO.YAML", "Foo.Yml", "mixed.YaMl"] {
+            assert!(validate_filename(ok).is_ok(), "expected `{ok}` to be accepted");
+        }
+    }
+
+    #[test]
+    fn validate_filename_rejects_empty() {
+        let err = validate_filename("").expect_err("empty filename must be rejected");
+        assert!(matches!(err, SamplesError::InvalidFilename(_)));
+        assert!(invalid_filename_msg(&err).to_ascii_lowercase().contains("empty"));
+    }
+
+    #[test]
+    fn validate_filename_rejects_too_long() {
+        // 252 alphanumeric + ".yml" (4) = 256 chars total, which is > 255 (MAX_FILENAME_LENGTH)
+        let too_long = format!("{}.yml", "a".repeat(252));
+        assert_eq!(too_long.len(), MAX_FILENAME_LENGTH + 1);
+
+        let err = validate_filename(&too_long).expect_err("over-length filename must be rejected");
+        assert!(matches!(err, SamplesError::InvalidFilename(_)));
+        assert!(invalid_filename_msg(&err).to_ascii_lowercase().contains("long"));
+    }
+
+    #[test]
+    fn validate_filename_accepts_max_length() {
+        // 251 alphanumeric + ".yml" (4) = 255 chars total == MAX_FILENAME_LENGTH (boundary).
+        let at_limit = format!("{}.yml", "a".repeat(251));
+        assert_eq!(at_limit.len(), MAX_FILENAME_LENGTH);
+        assert!(validate_filename(&at_limit).is_ok());
+    }
+
+    #[test]
+    fn validate_filename_rejects_path_traversal_and_separators() {
+        for bad in ["../foo.yml", "foo..yml", "..yml.yml", "foo/bar.yml", "foo\\bar.yml"] {
+            match validate_filename(bad) {
+                Err(SamplesError::InvalidFilename(_)) => {},
+                Ok(()) => panic!("expected `{bad}` to be rejected"),
+                Err(other) => panic!("expected InvalidFilename for `{bad}`, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn validate_filename_rejects_missing_or_wrong_extension() {
+        for bad in ["foo", "foo.", "foo.txt", "foo.json", "yaml"] {
+            match validate_filename(bad) {
+                Err(SamplesError::InvalidFilename(_)) => {},
+                Ok(()) => panic!("expected `{bad}` to be rejected as missing/wrong extension"),
+                Err(other) => panic!("expected InvalidFilename for `{bad}`, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn filename_to_name_strips_extension_and_capitalises() {
+        assert_eq!(filename_to_name("hello_world.yml"), "Hello World");
+        assert_eq!(filename_to_name("single.yaml"), "Single");
+        assert_eq!(filename_to_name("multi_word_pipeline.yml"), "Multi Word Pipeline");
+    }
+
+    #[test]
+    fn filename_to_name_without_extension_still_capitalises() {
+        assert_eq!(filename_to_name("bare"), "Bare");
+        assert_eq!(filename_to_name("two_words"), "Two Words");
+    }
+
+    #[test]
+    fn filename_to_name_empty_input_returns_empty() {
+        assert_eq!(filename_to_name(""), "");
+    }
+
+    #[test]
+    fn filename_to_name_collapses_internal_whitespace() {
+        assert_eq!(filename_to_name("a__b.yml"), "A B");
+    }
+
+    #[test]
+    fn generate_safe_filename_slugifies_to_underscore_lowercase_yml() {
+        assert_eq!(generate_safe_filename("My Pipeline"), "my_pipeline.yml");
+        assert_eq!(generate_safe_filename("HELLO"), "hello.yml");
+        assert_eq!(generate_safe_filename("keep-dashes"), "keep-dashes.yml");
+        assert_eq!(generate_safe_filename("snake_case"), "snake_case.yml");
+    }
+
+    #[test]
+    fn generate_safe_filename_strips_disallowed_characters() {
+        assert_eq!(generate_safe_filename("a/b\\c"), "a_b_c.yml");
+        assert_eq!(generate_safe_filename("dots..everywhere"), "dots__everywhere.yml");
+        assert_eq!(generate_safe_filename("weird!@#name"), "weird___name.yml");
+    }
+
+    #[test]
+    fn generate_safe_filename_trims_leading_and_trailing_underscores() {
+        assert_eq!(generate_safe_filename("/etc/passwd"), "etc_passwd.yml");
+        assert_eq!(generate_safe_filename("...trailing..."), "trailing.yml");
+    }
+
+    #[test]
+    fn generate_safe_filename_empty_uses_timestamp_fallback() {
+        // Either an empty string or one that becomes empty after sanitisation
+        // must produce a deterministic, validator-passing fallback.
+        for input in ["", "/", "..", "___", "!!!"] {
+            let result = generate_safe_filename(input);
+            let ends_with_yml = std::path::Path::new(&result)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("yml"));
+            assert!(
+                result.starts_with("pipeline_") && ends_with_yml,
+                "input `{input}` produced unexpected fallback `{result}`"
+            );
+            // The numeric portion must be all digits (the unix timestamp).
+            let middle = result
+                .strip_prefix("pipeline_")
+                .and_then(|s| s.strip_suffix(".yml"))
+                .expect("fallback must have the documented shape");
+            assert!(
+                !middle.is_empty() && middle.chars().all(|c| c.is_ascii_digit()),
+                "fallback timestamp portion of `{result}` was not numeric"
+            );
+        }
+    }
+
+    #[test]
+    fn generate_safe_filename_round_trips_through_validate() {
+        // Property: every output of generate_safe_filename must be accepted by
+        // validate_filename, including for hostile inputs.
+        for input in [
+            "ok",
+            "My Pipeline",
+            "a/b/c",
+            "..\\..\\etc\\passwd",
+            "weird!@#name",
+            "",
+            "...",
+            "___",
+            "trailing///",
+        ] {
+            let generated = generate_safe_filename(input);
+            assert!(
+                validate_filename(&generated).is_ok(),
+                "input `{input}` produced `{generated}` which validate_filename rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn has_yaml_extension_accepts_yml_and_yaml_case_insensitive() {
+        for ok in ["foo.yml", "foo.yaml", "foo.YML", "foo.YAML", "foo.YmL"] {
+            assert!(has_yaml_extension(ok), "expected `{ok}` to be recognised");
+        }
+    }
+
+    #[test]
+    fn has_yaml_extension_rejects_other_or_missing_extensions() {
+        for bad in ["foo.txt", "foo", "foo.json", "foo.yml.gz", "yaml", ""] {
+            assert!(!has_yaml_extension(bad), "expected `{bad}` to be rejected");
+        }
+    }
+
+    #[test]
+    fn mode_to_string_maps_every_variant() {
+        // Exhaustive match guards against future drift: a new variant will
+        // fail to compile until this table is updated.
+        for mode in [EngineMode::OneShot, EngineMode::Dynamic] {
+            let expected = match mode {
+                EngineMode::OneShot => "oneshot",
+                EngineMode::Dynamic => "dynamic",
+            };
+            assert_eq!(mode_to_string(mode), expected);
+        }
+    }
+
+    #[test]
+    fn parse_pipeline_metadata_extracts_name_description_and_mode() {
+        let yaml = "
+name: \"My Sample\"
+description: \"A nice description\"
+mode: oneshot
+nodes:
+  input:
+    kind: streamkit::http_input
+  output:
+    kind: streamkit::http_output
+    needs: input
+";
+        let path = std::path::Path::new("test.yml");
+        let (name, description, mode) = parse_pipeline_metadata(yaml, path);
+
+        assert_eq!(name.as_deref(), Some("My Sample"));
+        assert_eq!(description.as_deref(), Some("A nice description"));
+        assert_eq!(mode, EngineMode::OneShot);
+    }
+
+    #[test]
+    fn parse_pipeline_metadata_works_for_steps_form() {
+        let yaml = "
+name: \"Linear\"
+description: \"Steps form\"
+mode: dynamic
+steps:
+  - kind: streamkit::http_input
+  - kind: streamkit::http_output
+";
+        let path = std::path::Path::new("steps.yml");
+        let (name, description, mode) = parse_pipeline_metadata(yaml, path);
+
+        assert_eq!(name.as_deref(), Some("Linear"));
+        assert_eq!(description.as_deref(), Some("Steps form"));
+        assert_eq!(mode, EngineMode::Dynamic);
+    }
+
+    #[test]
+    fn parse_pipeline_metadata_missing_optional_fields_returns_none() {
+        // No name, no description, no explicit mode -- mode must default
+        // (not error) and the name/description options must be None.
+        let yaml = "
+nodes:
+  input:
+    kind: streamkit::http_input
+";
+        let path = std::path::Path::new("anon.yml");
+        let (name, description, mode) = parse_pipeline_metadata(yaml, path);
+
+        assert!(name.is_none(), "expected no name, got {name:?}");
+        assert!(description.is_none(), "expected no description, got {description:?}");
+        assert_eq!(mode, EngineMode::default());
+        assert_eq!(mode, EngineMode::Dynamic, "Dynamic must be the documented default");
+    }
+
+    #[test]
+    fn parse_pipeline_metadata_mode_defaults_when_omitted() {
+        let yaml = "
+name: \"No mode\"
+nodes:
+  input:
+    kind: streamkit::http_input
+";
+        let path = std::path::Path::new("no-mode.yml");
+        let (name, _, mode) = parse_pipeline_metadata(yaml, path);
+
+        assert_eq!(name.as_deref(), Some("No mode"));
+        assert_eq!(mode, EngineMode::default());
+    }
+
+    #[test]
+    fn parse_pipeline_metadata_returns_defaults_on_malformed_yaml() {
+        // Garbage that is neither a Steps nor a Dag pipeline. The helper
+        // is intentionally lenient -- it logs and returns defaults rather
+        // than propagating an error, since the listing code uses it for
+        // best-effort enrichment.
+        let yaml = "this: is: not: valid: yaml: at: all: [";
+        let path = std::path::Path::new("broken.yml");
+        let (name, description, mode) = parse_pipeline_metadata(yaml, path);
+
+        assert!(name.is_none());
+        assert!(description.is_none());
+        assert_eq!(mode, EngineMode::default());
+    }
+}
