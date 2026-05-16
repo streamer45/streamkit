@@ -727,6 +727,7 @@ pub(super) async fn tune_session_node_inner(
 }
 
 #[cfg(test)]
+// test assertions intentionally use unwrap/expect so a failed setup panics with a clear message
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod sessions_batch_tests {
     use super::*;
@@ -813,8 +814,6 @@ mod sessions_batch_tests {
         );
     }
 
-    // ---- check_batch_node_id_uniqueness ----
-
     #[tokio::test]
     async fn check_uniqueness_empty_ops_returns_empty() {
         let (session, _rx) = fresh_session().await;
@@ -879,8 +878,6 @@ mod sessions_batch_tests {
         assert_eq!(conflicts, vec!["delta".to_string()]);
         let _ = session.shutdown_and_wait().await;
     }
-
-    // ---- validate_batch_operations ----
 
     #[tokio::test]
     async fn validate_empty_ops_returns_no_errors() {
@@ -996,8 +993,6 @@ mod sessions_batch_tests {
         assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
         let _ = session.shutdown_and_wait().await;
     }
-
-    // ---- apply_batch_operations ----
 
     #[tokio::test]
     async fn apply_duplicate_id_is_rejected_and_pipeline_unchanged() {
