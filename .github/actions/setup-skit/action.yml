@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
 name: Set up Skit CI environment
 description: >
   Common prelude for Skit CI jobs on ubuntu-22.04: free disk space, install
