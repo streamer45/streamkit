@@ -242,11 +242,6 @@ describe('deleteFontAsset', () => {
   });
 });
 
-// ── loadFontAssets ──────────────────────────────────────────────────────────
-// Verifies that browser FontFace registration uses the right family name +
-// served URL derived from the asset path, and that failures in a single font
-// do not reject the whole load.
-
 type FontFaceCall = {
   family: string;
   source: string;
@@ -356,8 +351,6 @@ describe('loadFontAssets', () => {
     expect(load).toHaveBeenCalledTimes(1);
   });
 });
-
-// ── React Query hooks ───────────────────────────────────────────────────────
 
 const makeWrapper = (client: QueryClient) => {
   return ({ children }: { children: React.ReactNode }) =>
