@@ -12,7 +12,7 @@ pub struct CatalogConsumer {
 }
 
 impl CatalogConsumer {
-    pub fn new(track: moq_lite::TrackConsumer) -> Self {
+    pub const fn new(track: moq_lite::TrackConsumer) -> Self {
         Self { track, group: None }
     }
 

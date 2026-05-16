@@ -2423,7 +2423,7 @@ impl MoqPeerNode {
 
                 let frame = hang::container::Frame { timestamp, payload: broadcast_frame.data };
 
-                if let Err(e) = track_producer.write(frame) {
+                if let Err(e) = track_producer.write(&frame) {
                     tracing::warn!(kind = ?broadcast_frame.kind, "Failed to write MoQ frame to subscriber: {e}");
                     let _ = ctx
                         .stats_delta_tx

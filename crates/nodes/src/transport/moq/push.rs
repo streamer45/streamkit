@@ -586,7 +586,7 @@ impl ProcessorNode for MoqPushNode {
 
                 let frame = hang::container::Frame { timestamp, payload: data };
 
-                if let Err(e) = producer.write(frame) {
+                if let Err(e) = producer.write(&frame) {
                     let err_msg = format!("Failed to write MoQ frame: {e}");
                     tracing::warn!("{err_msg}");
                     stats_tracker.errored();

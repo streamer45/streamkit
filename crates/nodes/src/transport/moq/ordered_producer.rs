@@ -24,7 +24,7 @@ pub struct OrderedProducer {
 
 #[allow(dead_code)]
 impl OrderedProducer {
-    pub fn new(inner: moq_lite::TrackProducer) -> Self {
+    pub const fn new(inner: moq_lite::TrackProducer) -> Self {
         Self {
             track: inner,
             group: None,
@@ -34,7 +34,7 @@ impl OrderedProducer {
         }
     }
 
-    pub fn with_max_group_duration(mut self, duration: Timestamp) -> Self {
+    pub const fn with_max_group_duration(mut self, duration: Timestamp) -> Self {
         self.max_group_duration = Some(duration);
         self
     }
@@ -50,7 +50,7 @@ impl OrderedProducer {
     /// Encode a [`Frame`] into the current MoQ group, creating a new group when
     /// needed (first frame, after `keyframe()`, or when `max_group_duration` is
     /// exceeded).
-    pub fn write(&mut self, frame: Frame) -> Result<(), hang::Error> {
+    pub fn write(&mut self, frame: &Frame) -> Result<(), hang::Error> {
         tracing::trace!(?frame, "write frame");
 
         if let (Some(max_duration), Some(group_start)) = (self.max_group_duration, self.group_start)
@@ -72,7 +72,8 @@ impl OrderedProducer {
             self.group_frames = 0;
         }
 
-        let mut group = self.group.take().expect("group should exist");
+        #[allow(clippy::unwrap_used)] // is_none branch above guarantees Some
+        let mut group = self.group.take().unwrap();
         frame.encode(&mut group)?;
         self.group.replace(group);
 
@@ -86,7 +87,8 @@ impl OrderedProducer {
                 frame.timestamp.checked_sub(group_start).unwrap_or(Timestamp::ZERO).as_micros();
             let max = max_duration.as_micros();
 
-            if elapsed * (self.group_frames as u128 + 1) >= max * self.group_frames as u128 {
+            if elapsed * (u128::from(self.group_frames) + 1) >= max * u128::from(self.group_frames)
+            {
                 if let Some(mut group) = self.group.take() {
                     group.finish()?;
                 }
