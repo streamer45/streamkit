@@ -1103,3 +1103,340 @@ pub fn generate_default() -> Result<String, toml::ser::Error> {
     let default_config = Config::default();
     toml::to_string_pretty(&default_config)
 }
+
+#[cfg(test)]
+// `unwrap` / `expect` are idiomatic in tests where the panic IS the assertion.
+// `result_large_err` fires on the closure passed to `figment::Jail::expect_with`,
+// whose `Err` variant size is fixed by the upstream API.
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::result_large_err)]
+mod tests {
+    use super::*;
+    use crate::permissions::Permissions;
+
+    #[derive(Deserialize, Debug, PartialEq, Eq)]
+    struct ClampWrapper {
+        #[serde(default, deserialize_with = "deserialize_clamp_timeout")]
+        v: Option<u64>,
+    }
+
+    #[test]
+    fn deserialize_clamp_timeout_preserves_none() {
+        let w: ClampWrapper = serde_json::from_str(r#"{"v": null}"#).unwrap();
+        assert_eq!(w.v, None);
+    }
+
+    #[test]
+    fn deserialize_clamp_timeout_clamps_zero_to_one() {
+        let w: ClampWrapper = serde_json::from_str(r#"{"v": 0}"#).unwrap();
+        assert_eq!(w.v, Some(1));
+    }
+
+    #[test]
+    fn deserialize_clamp_timeout_preserves_one() {
+        let w: ClampWrapper = serde_json::from_str(r#"{"v": 1}"#).unwrap();
+        assert_eq!(w.v, Some(1));
+    }
+
+    #[test]
+    fn deserialize_clamp_timeout_preserves_large_values() {
+        let w: ClampWrapper = serde_json::from_str(r#"{"v": 60000}"#).unwrap();
+        assert_eq!(w.v, Some(60_000));
+    }
+
+    #[test]
+    fn engine_perf_profile_low_latency_capacities() {
+        assert_eq!(EnginePerfProfile::LowLatency.node_input_capacity(), 8);
+        assert_eq!(EnginePerfProfile::LowLatency.pin_distributor_capacity(), 4);
+    }
+
+    #[test]
+    fn engine_perf_profile_balanced_capacities() {
+        assert_eq!(EnginePerfProfile::Balanced.node_input_capacity(), 32);
+        assert_eq!(EnginePerfProfile::Balanced.pin_distributor_capacity(), 16);
+    }
+
+    #[test]
+    fn engine_perf_profile_high_throughput_capacities() {
+        assert_eq!(EnginePerfProfile::HighThroughput.node_input_capacity(), 128);
+        assert_eq!(EnginePerfProfile::HighThroughput.pin_distributor_capacity(), 64);
+    }
+
+    #[test]
+    fn resolved_node_input_capacity_explicit_beats_profile() {
+        let cfg = EngineConfig {
+            profile: Some(EnginePerfProfile::Balanced),
+            node_input_capacity: Some(7),
+            ..EngineConfig::default()
+        };
+        assert_eq!(cfg.resolved_node_input_capacity(), Some(7));
+    }
+
+    #[test]
+    fn resolved_node_input_capacity_falls_back_to_profile() {
+        let cfg = EngineConfig {
+            profile: Some(EnginePerfProfile::HighThroughput),
+            node_input_capacity: None,
+            ..EngineConfig::default()
+        };
+        assert_eq!(cfg.resolved_node_input_capacity(), Some(128));
+    }
+
+    #[test]
+    fn resolved_node_input_capacity_none_when_unset() {
+        let cfg = EngineConfig::default();
+        assert_eq!(cfg.resolved_node_input_capacity(), None);
+    }
+
+    #[test]
+    fn resolved_pin_distributor_capacity_explicit_beats_profile() {
+        let cfg = EngineConfig {
+            profile: Some(EnginePerfProfile::Balanced),
+            pin_distributor_capacity: Some(3),
+            ..EngineConfig::default()
+        };
+        assert_eq!(cfg.resolved_pin_distributor_capacity(), Some(3));
+    }
+
+    #[test]
+    fn resolved_pin_distributor_capacity_falls_back_to_profile() {
+        let cfg = EngineConfig {
+            profile: Some(EnginePerfProfile::LowLatency),
+            pin_distributor_capacity: None,
+            ..EngineConfig::default()
+        };
+        assert_eq!(cfg.resolved_pin_distributor_capacity(), Some(4));
+    }
+
+    #[test]
+    fn resolved_pin_distributor_capacity_none_when_unset() {
+        let cfg = EngineConfig::default();
+        assert_eq!(cfg.resolved_pin_distributor_capacity(), None);
+    }
+
+    #[test]
+    fn default_engine_batch_size_is_32() {
+        assert_eq!(default_engine_batch_size(), 32);
+    }
+
+    #[test]
+    fn normalize_allowed_samples_strips_default_samples_dir_prefix() {
+        let mut patterns = vec![
+            "samples/pipelines/oneshot/a.yml".to_string(),
+            "./samples/pipelines/dynamic/b.yml".to_string(),
+            "samples/pipelines/dyn/c.yml".to_string(),
+            "oneshot/d.yml".to_string(),
+        ];
+        normalize_allowed_samples("./samples/pipelines", &mut patterns);
+        assert_eq!(
+            patterns,
+            vec![
+                "oneshot/a.yml".to_string(),
+                "dynamic/b.yml".to_string(),
+                "dyn/c.yml".to_string(),
+                "oneshot/d.yml".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn normalize_allowed_samples_strips_custom_samples_dir() {
+        let mut patterns = vec![
+            "/data/skit/samples/oneshot/foo.yml".to_string(),
+            "/data/skit/samples/bar.yml".to_string(),
+        ];
+        normalize_allowed_samples("/data/skit/samples", &mut patterns);
+        assert_eq!(patterns, vec!["oneshot/foo.yml".to_string(), "bar.yml".to_string()]);
+    }
+
+    #[test]
+    fn normalize_allowed_samples_leaves_unrelated_absolute_paths_intact() {
+        let mut patterns = vec!["/etc/passwd".to_string(), "/some/other/path.yml".to_string()];
+        normalize_allowed_samples("./samples/pipelines", &mut patterns);
+        assert_eq!(patterns, vec!["/etc/passwd".to_string(), "/some/other/path.yml".to_string()]);
+    }
+
+    #[test]
+    fn normalize_allowed_samples_handles_wildcard_and_blank_patterns() {
+        let mut patterns = vec![
+            "*".to_string(),
+            "   ".to_string(),
+            "samples/pipelines/x.yml".to_string(),
+            "oneshot/already.yml".to_string(),
+        ];
+        normalize_allowed_samples("./samples/pipelines", &mut patterns);
+        assert_eq!(
+            patterns,
+            vec![
+                "*".to_string(),
+                String::new(),
+                "x.yml".to_string(),
+                "oneshot/already.yml".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn normalize_permissions_config_normalizes_each_role_allowed_samples() {
+        let mut config = Config::default();
+        config.server.samples_dir = "./samples/pipelines".to_string();
+        let perms = Permissions {
+            allowed_samples: vec![
+                "samples/pipelines/oneshot/foo.yml".to_string(),
+                "./samples/pipelines/dynamic/bar.yml".to_string(),
+            ],
+            ..Permissions::default()
+        };
+        config.permissions.roles.insert("custom".to_string(), perms);
+
+        normalize_permissions_config(&mut config);
+
+        let custom = config.permissions.roles.get("custom").expect("custom role must be preserved");
+        assert_eq!(
+            custom.allowed_samples,
+            vec!["oneshot/foo.yml".to_string(), "dynamic/bar.yml".to_string()]
+        );
+    }
+
+    #[test]
+    fn normalize_permissions_config_preserves_explicit_default_role() {
+        let mut config = Config::default();
+        config.permissions.default_role = "myrole".to_string();
+        normalize_permissions_config(&mut config);
+        assert_eq!(config.permissions.default_role, "myrole");
+    }
+
+    #[test]
+    fn default_permissions_config_has_admin_user_viewer_roles() {
+        let config = Config::default();
+        assert!(config.permissions.roles.contains_key("admin"));
+        assert!(config.permissions.roles.contains_key("user"));
+        assert!(config.permissions.roles.contains_key("viewer"));
+    }
+
+    #[test]
+    fn default_permissions_default_role_is_admin() {
+        let config = Config::default();
+        assert_eq!(config.permissions.default_role, "admin");
+    }
+
+    #[test]
+    fn generate_default_returns_parseable_toml_with_expected_defaults() {
+        let serialized = generate_default().expect("default config should serialize to TOML");
+        let parsed: Config = toml::from_str(&serialized).expect("default TOML must round-trip");
+
+        assert_eq!(parsed.server.address, "127.0.0.1:4545");
+        assert_eq!(parsed.server.samples_dir, "./samples/pipelines");
+        assert_eq!(parsed.engine.packet_batch_size, 32);
+        assert!(parsed.engine.profile.is_none());
+        assert!(parsed.engine.node_input_capacity.is_none());
+        assert!(!parsed.mcp.enabled);
+    }
+
+    // `figment::Jail` runs each closure in a sandboxed cwd with isolated env
+    // vars (restored on drop) — required because `load` reads SK_-prefixed env
+    // vars and a `Toml::file` relative to the current directory.
+
+    #[test]
+    fn load_minimal_toml_returns_documented_defaults() {
+        figment::Jail::expect_with(|jail| {
+            jail.create_file("skit.toml", "")?;
+            let result = load("skit.toml").expect("loading empty TOML must succeed");
+
+            assert!(result.file_missing.is_none(), "file should be reported as present");
+            assert_eq!(result.config.server.address, "127.0.0.1:4545");
+            assert_eq!(result.config.engine.packet_batch_size, 32);
+            assert!(result.config.permissions.roles.contains_key("admin"));
+            assert!(result.config.permissions.roles.contains_key("user"));
+            assert!(result.config.permissions.roles.contains_key("viewer"));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn load_reports_missing_file_without_error() {
+        figment::Jail::expect_with(|_jail| {
+            let result = load("does-not-exist.toml").expect("missing file is not an error");
+            assert_eq!(result.file_missing.as_deref(), Some("does-not-exist.toml"));
+            assert_eq!(result.config.server.address, "127.0.0.1:4545");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn load_env_var_overrides_toml_value() {
+        figment::Jail::expect_with(|jail| {
+            jail.create_file(
+                "skit.toml",
+                r#"[server]
+address = "127.0.0.1:1234"
+"#,
+            )?;
+            jail.set_env("SK_SERVER__ADDRESS", "127.0.0.1:9999");
+
+            let result = load("skit.toml").expect("load with env override must succeed");
+            assert_eq!(result.config.server.address, "127.0.0.1:9999");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn load_toml_values_override_defaults() {
+        figment::Jail::expect_with(|jail| {
+            jail.create_file(
+                "skit.toml",
+                r#"[engine]
+packet_batch_size = 64
+profile = "low-latency"
+
+[server]
+samples_dir = "/srv/skit/samples"
+"#,
+            )?;
+            let result = load("skit.toml").expect("load with overrides must succeed");
+            assert_eq!(result.config.engine.packet_batch_size, 64);
+            assert!(matches!(result.config.engine.profile, Some(EnginePerfProfile::LowLatency)));
+            assert_eq!(result.config.server.samples_dir, "/srv/skit/samples");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn load_invalid_toml_returns_err() {
+        figment::Jail::expect_with(|jail| {
+            jail.create_file("skit.toml", "this is = not [ valid TOML\n")?;
+            let result = load("skit.toml");
+            assert!(result.is_err(), "expected Err for malformed TOML, got: {result:?}");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn load_normalizes_allowed_samples_in_roles() {
+        figment::Jail::expect_with(|jail| {
+            jail.create_file(
+                "skit.toml",
+                r#"[server]
+samples_dir = "./samples/pipelines"
+
+[permissions.roles.custom]
+create_sessions = true
+allowed_samples = ["samples/pipelines/oneshot/foo.yml", "dynamic/bar.yml"]
+allowed_nodes = []
+allowed_plugins = []
+"#,
+            )?;
+            let result = load("skit.toml").expect("load with custom role");
+            let custom = result
+                .config
+                .permissions
+                .roles
+                .get("custom")
+                .expect("custom role survives load + normalize");
+            assert_eq!(
+                custom.allowed_samples,
+                vec!["oneshot/foo.yml".to_string(), "dynamic/bar.yml".to_string()]
+            );
+            Ok(())
+        });
+    }
+}
