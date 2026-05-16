@@ -2,8 +2,11 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import type { Getter } from '@moq/signals';
-import { describe, expect, it, vi } from 'vitest';
+import * as Hang from '@moq/hang';
+import * as Publish from '@moq/publish';
+import { Effect, type Getter } from '@moq/signals';
+import * as Watch from '@moq/watch';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PublishTrackConfig } from '@/types/types';
 
@@ -17,7 +20,10 @@ import {
   buildVideoEncoderConfig,
   validateTrackCodecs,
   NULL_MOQ_REFS,
+  performConnect,
   type ConnectAttempt,
+  type ConnectableState,
+  type ConnectDecision,
 } from './streamStoreHelpers';
 
 /** Factory helper to reduce boilerplate in track-related tests. */
@@ -41,7 +47,7 @@ vi.mock('@moq/hang', () => ({
 vi.mock('@moq/publish', () => ({
   Broadcast: vi.fn(),
   Lite: { Path: { from: vi.fn() } },
-  Source: { Microphone: vi.fn(), Camera: vi.fn() },
+  Source: { Microphone: vi.fn(), Camera: vi.fn(), Screen: vi.fn() },
 }));
 vi.mock('@moq/watch', () => ({
   Broadcast: vi.fn(),
@@ -52,6 +58,7 @@ vi.mock('@moq/watch', () => ({
 }));
 vi.mock('@moq/signals', () => ({
   Effect: vi.fn(),
+  Signal: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -854,5 +861,488 @@ describe('validateTrackCodecs', () => {
       unrecognizedCalls[0]?.some((a: unknown) => typeof a === 'string' && a.includes('aac'))
     ).toBe(true);
     logSpy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// performConnect
+// ---------------------------------------------------------------------------
+
+describe('performConnect', () => {
+  /** Minimal mock that behaves like a @moq/signals Signal<T>. */
+  function createMockSignal<T>(initial: T) {
+    type Listener = (value: T) => void;
+    let current = initial;
+    const listeners: Listener[] = [];
+
+    const mock = {
+      peek: () => current,
+      subscribe: (listener: Listener) => {
+        listeners.push(listener);
+        return () => {
+          const idx = listeners.indexOf(listener);
+          if (idx >= 0) listeners.splice(idx, 1);
+        };
+      },
+      set: (value: T) => {
+        current = value;
+        for (const l of [...listeners]) l(value);
+      },
+    };
+
+    return mock as typeof mock & Getter<T>;
+  }
+
+  type EffectSub = [signal: unknown, cb: (v: unknown) => void];
+
+  /** Mock Effect that records subscriptions without auto-invoking callbacks.
+   *  Tests trigger callbacks manually via `_subs` to simulate signal changes. */
+  function createMockEffect() {
+    const subs: EffectSub[] = [];
+    return {
+      subscribe: vi.fn((signal: unknown, cb: (v: unknown) => void) => {
+        subs.push([signal, cb]);
+      }),
+      close: vi.fn(),
+      _subs: subs,
+    };
+  }
+
+  function asMock(fn: unknown): ReturnType<typeof vi.fn> {
+    return fn as ReturnType<typeof vi.fn>;
+  }
+
+  function makeState(overrides?: Partial<ConnectableState>): ConnectableState {
+    return {
+      connectionMode: 'session',
+      enablePublish: false,
+      enableWatch: true,
+      serverUrl: 'http://localhost:4545/moq',
+      moqToken: '',
+      inputBroadcast: 'input',
+      outputBroadcast: 'output',
+      pipelineNeedsAudio: false,
+      pipelineNeedsVideo: false,
+      pipelineOutputsAudio: true,
+      pipelineOutputsVideo: true,
+      isExternalRelay: false,
+      videoSourceType: 'camera',
+      tracks: [],
+      publishBroadcasts: [],
+      status: 'connecting',
+      errorMessage: '',
+      isMicEnabled: false,
+      isCameraEnabled: false,
+      micStatus: 'disabled',
+      cameraStatus: 'disabled',
+      watchStatus: 'disabled',
+      isSecondaryCameraEnabled: false,
+      secondaryCameraStatus: 'disabled',
+      connectingStep: '',
+      ...overrides,
+    } as ConnectableState;
+  }
+
+  type OkDecision = Extract<ConnectDecision, { ok: true }>;
+  function makeOkDecision(overrides?: Partial<OkDecision>): OkDecision {
+    return {
+      ok: true as const,
+      trimmedServerUrl: 'http://localhost:4545/moq',
+      shouldWatch: true,
+      shouldPublish: false,
+      ...overrides,
+    };
+  }
+
+  type SetterFn = (partial: Partial<ConnectableState>) => void;
+
+  let mockEffect: ReturnType<typeof createMockEffect>;
+  let connEstablished: ReturnType<typeof createMockSignal<object | undefined>>;
+  let connStatus: ReturnType<typeof createMockSignal<string>>;
+  let watchStatusSig: ReturnType<typeof createMockSignal<string>>;
+  let state: ConnectableState;
+  let set: ReturnType<typeof vi.fn<SetterFn>>;
+  let get: () => ConnectableState;
+
+  /** Configure Publish.* mocks for a publish path test. Returns the underlying
+   *  mock signals so tests can manipulate them (e.g. trigger the mic-ready
+   *  Effect subscription before the warning threshold elapses). */
+  function setupPublishMocks(opts?: {
+    micSourceReady?: boolean;
+    camSourceReady?: boolean;
+    catalogReady?: boolean;
+  }) {
+    const { micSourceReady = true, camSourceReady = true, catalogReady = true } = opts ?? {};
+
+    const micSource = createMockSignal<object | undefined>(micSourceReady ? {} : undefined);
+    const camSource = createMockSignal<object | undefined>(camSourceReady ? {} : undefined);
+    const catalog = createMockSignal<object | undefined>(
+      catalogReady ? { ready: true } : undefined
+    );
+    const audioEnabledSet = vi.fn();
+
+    asMock(Publish.Source.Microphone).mockImplementation(function () {
+      return { source: micSource, close: vi.fn() };
+    });
+    asMock(Publish.Source.Camera).mockImplementation(function () {
+      return { source: camSource, close: vi.fn() };
+    });
+    asMock(Publish.Broadcast).mockImplementation(function () {
+      return {
+        video: { catalog },
+        audio: { enabled: { set: audioEnabledSet } },
+        close: vi.fn(),
+      };
+    });
+
+    return { micSource, camSource, catalog, audioEnabledSet };
+  }
+
+  beforeEach(() => {
+    mockEffect = createMockEffect();
+    connEstablished = createMockSignal<object | undefined>({});
+    connStatus = createMockSignal<string>('connected');
+    watchStatusSig = createMockSignal<string>('live');
+
+    state = makeState();
+    set = vi.fn<SetterFn>((partial) => {
+      Object.assign(state, partial);
+    });
+    get = () => state;
+
+    asMock(Hang.Moq.Connection.Reload).mockImplementation(function () {
+      return { established: connEstablished, status: connStatus, close: vi.fn() };
+    });
+    asMock(Effect).mockImplementation(function () {
+      return mockEffect;
+    });
+    asMock(Watch.Broadcast).mockImplementation(function () {
+      return { status: watchStatusSig, close: vi.fn() };
+    });
+    asMock(Watch.Sync).mockImplementation(function () {
+      return { close: vi.fn() };
+    });
+    asMock(Watch.Audio.Source).mockImplementation(function () {
+      return { close: vi.fn() };
+    });
+    asMock(Watch.Audio.Decoder).mockImplementation(function () {
+      return { close: vi.fn() };
+    });
+    asMock(Watch.Audio.Emitter).mockImplementation(function () {
+      return { close: vi.fn() };
+    });
+    asMock(Watch.Video.Source).mockImplementation(function () {
+      return { close: vi.fn() };
+    });
+    asMock(Watch.Video.Decoder).mockImplementation(function () {
+      return { close: vi.fn() };
+    });
+    asMock(Watch.Video.Renderer).mockImplementation(function () {
+      return { close: vi.fn() };
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it('returns false when abortSignal is already aborted', async () => {
+    const abort = new AbortController();
+    abort.abort();
+
+    const result = await performConnect(state, makeOkDecision(), get, set, abort.signal);
+
+    expect(result).toBe(false);
+    // No error state should be set — caller already knows about the abort.
+    expect(state.errorMessage).toBe('');
+  });
+
+  it('transitions to connected for a watch-only connection', async () => {
+    const decision = makeOkDecision({ shouldWatch: true, shouldPublish: false });
+    const abort = new AbortController();
+
+    const result = await performConnect(state, decision, get, set, abort.signal);
+
+    expect(result).toBe(true);
+    expect(state.status).toBe('connected');
+    expect(state.connectingStep).toBe('');
+    expect(state.isMicEnabled).toBe(false);
+    expect(state.isCameraEnabled).toBe(false);
+  });
+
+  it('syncs watchStatus from the broadcast signal during watch setup', async () => {
+    watchStatusSig = createMockSignal<string>('pending');
+    asMock(Watch.Broadcast).mockImplementation(function () {
+      return { status: watchStatusSig, close: vi.fn() };
+    });
+
+    const decision = makeOkDecision({ shouldWatch: true, shouldPublish: false });
+    const abort = new AbortController();
+
+    await performConnect(state, decision, get, set, abort.signal);
+
+    const watchCall = set.mock.calls.find(
+      (call: unknown[]) => (call[0] as Record<string, unknown>).watchStatus === 'pending'
+    );
+    expect(watchCall).toBeDefined();
+  });
+
+  it('transitions to connected with mic and camera enabled for publish + watch', async () => {
+    state = makeState({ pipelineNeedsAudio: true, pipelineNeedsVideo: true });
+    setupPublishMocks();
+
+    const decision = makeOkDecision({ shouldWatch: true, shouldPublish: true });
+    const abort = new AbortController();
+
+    const result = await performConnect(state, decision, get, set, abort.signal);
+
+    expect(result).toBe(true);
+    expect(state.status).toBe('connected');
+    expect(state.isMicEnabled).toBe(true);
+    expect(state.isCameraEnabled).toBe(true);
+  });
+
+  it('defers audio publishing until the video catalog is ready', async () => {
+    state = makeState({ pipelineNeedsAudio: true, pipelineNeedsVideo: true });
+    const { audioEnabledSet } = setupPublishMocks();
+
+    const decision = makeOkDecision({ shouldWatch: false, shouldPublish: true });
+    const abort = new AbortController();
+
+    await performConnect(state, decision, get, set, abort.signal);
+
+    // For combined audio+video publish, audio is started disabled and explicitly
+    // re-enabled after the video catalog is observed (prevents the ~0.7s A/V
+    // desync caused by VP9 encoder startup).
+    expect(audioEnabledSet).toHaveBeenCalledWith(true);
+  });
+
+  it('sets micStatus to requesting when mic source is initially unavailable', async () => {
+    state = makeState({ pipelineNeedsAudio: true, pipelineNeedsVideo: false });
+    setupPublishMocks({ micSourceReady: false });
+
+    const decision = makeOkDecision({ shouldWatch: false, shouldPublish: true });
+    const abort = new AbortController();
+
+    await performConnect(state, decision, get, set, abort.signal);
+
+    const micCall = set.mock.calls.find(
+      (call: unknown[]) => (call[0] as Record<string, unknown>).micStatus === 'requesting'
+    );
+    expect(micCall).toBeDefined();
+  });
+
+  it('sets error state when the relay connection times out', async () => {
+    vi.useFakeTimers();
+
+    connEstablished = createMockSignal<object | undefined>(undefined);
+    asMock(Hang.Moq.Connection.Reload).mockImplementation(function () {
+      return { established: connEstablished, status: connStatus, close: vi.fn() };
+    });
+
+    const decision = makeOkDecision({ shouldWatch: true, shouldPublish: false });
+    const abort = new AbortController();
+
+    const promise = performConnect(state, decision, get, set, abort.signal);
+    // performConnect awaits the connection signal with a 12s timeout
+    await vi.advanceTimersByTimeAsync(12_000);
+    const result = await promise;
+
+    expect(result).toBe(false);
+    expect(state.status).toBe('disconnected');
+    expect(state.errorMessage).toContain('Connection failed:');
+    expect(state.errorMessage).toContain('Timed out');
+  });
+
+  it('returns false without overwriting state when aborted mid-connect', async () => {
+    connEstablished = createMockSignal<object | undefined>(undefined);
+    asMock(Hang.Moq.Connection.Reload).mockImplementation(function () {
+      return { established: connEstablished, status: connStatus, close: vi.fn() };
+    });
+
+    const abort = new AbortController();
+    const promise = performConnect(state, makeOkDecision(), get, set, abort.signal);
+
+    abort.abort();
+    const result = await promise;
+
+    expect(result).toBe(false);
+    // Aborted attempts must not overwrite the store with a disconnected/error
+    // state — that would clobber a newer connect attempt or a manual disconnect.
+    expect(state.errorMessage).toBe('');
+    expect(state.status).not.toBe('disconnected');
+  });
+
+  it('cleans up resources and reports error when watch setup throws', async () => {
+    const connClose = vi.fn();
+    asMock(Hang.Moq.Connection.Reload).mockImplementation(function () {
+      return { established: connEstablished, status: connStatus, close: connClose };
+    });
+    asMock(Watch.Broadcast).mockImplementation(function () {
+      throw new Error('Watch init failed');
+    });
+
+    const decision = makeOkDecision({ shouldWatch: true, shouldPublish: false });
+    const abort = new AbortController();
+
+    const result = await performConnect(state, decision, get, set, abort.signal);
+
+    expect(result).toBe(false);
+    expect(state.status).toBe('disconnected');
+    expect(state.errorMessage).toContain('Watch init failed');
+    expect(connClose).toHaveBeenCalled();
+  });
+
+  describe('schedulePostConnectWarnings — watch broadcast', () => {
+    it('warns when the watch broadcast is not live after the 10s threshold', async () => {
+      vi.useFakeTimers();
+
+      watchStatusSig = createMockSignal<string>('pending');
+      asMock(Watch.Broadcast).mockImplementation(function () {
+        return { status: watchStatusSig, close: vi.fn() };
+      });
+
+      const decision = makeOkDecision({ shouldWatch: true, shouldPublish: false });
+      const abort = new AbortController();
+
+      await performConnect(state, decision, get, set, abort.signal);
+      expect(state.status).toBe('connected');
+
+      vi.advanceTimersByTime(10_000);
+
+      expect(state.errorMessage).toContain('not live yet');
+    });
+
+    it('does not warn when the watch broadcast is already live', async () => {
+      vi.useFakeTimers();
+
+      const decision = makeOkDecision({ shouldWatch: true, shouldPublish: false });
+      const abort = new AbortController();
+
+      await performConnect(state, decision, get, set, abort.signal);
+
+      const errorBefore = state.errorMessage;
+      vi.advanceTimersByTime(10_000);
+
+      expect(state.errorMessage).toBe(errorBefore);
+    });
+
+    it('skips the watch-broadcast warning when disconnected before threshold', async () => {
+      vi.useFakeTimers();
+
+      watchStatusSig = createMockSignal<string>('pending');
+      asMock(Watch.Broadcast).mockImplementation(function () {
+        return { status: watchStatusSig, close: vi.fn() };
+      });
+
+      const decision = makeOkDecision({ shouldWatch: true, shouldPublish: false });
+      const abort = new AbortController();
+
+      await performConnect(state, decision, get, set, abort.signal);
+      expect(state.status).toBe('connected');
+
+      // Simulate the store transitioning out of `connected` before the timer fires
+      // — the warning callback should bail out without setting an error message.
+      state.status = 'disconnected';
+      state.errorMessage = '';
+
+      vi.advanceTimersByTime(10_000);
+
+      expect(state.errorMessage).toBe('');
+    });
+  });
+
+  describe('schedulePostConnectWarnings — microphone', () => {
+    it('warns when the microphone is not ready after the 10s threshold', async () => {
+      vi.useFakeTimers();
+
+      state = makeState({ pipelineNeedsAudio: true, pipelineNeedsVideo: false });
+      setupPublishMocks({ micSourceReady: false });
+
+      const decision = makeOkDecision({ shouldWatch: false, shouldPublish: true });
+      const abort = new AbortController();
+
+      await performConnect(state, decision, get, set, abort.signal);
+      expect(state.status).toBe('connected');
+
+      vi.advanceTimersByTime(10_000);
+
+      expect(state.micStatus).toBe('error');
+      expect(state.errorMessage).toContain('microphone is not available');
+    });
+
+    it('does not warn when the microphone source is immediately available', async () => {
+      vi.useFakeTimers();
+
+      state = makeState({ pipelineNeedsAudio: true, pipelineNeedsVideo: false });
+      setupPublishMocks({ micSourceReady: true });
+
+      const decision = makeOkDecision({ shouldWatch: false, shouldPublish: true });
+      const abort = new AbortController();
+
+      await performConnect(state, decision, get, set, abort.signal);
+
+      vi.advanceTimersByTime(10_000);
+
+      expect(state.micStatus).not.toBe('error');
+    });
+
+    it('does not warn when the microphone becomes ready before the threshold', async () => {
+      vi.useFakeTimers();
+
+      state = makeState({ pipelineNeedsAudio: true, pipelineNeedsVideo: false });
+      const { micSource } = setupPublishMocks({ micSourceReady: false });
+
+      const decision = makeOkDecision({ shouldWatch: false, shouldPublish: true });
+      const abort = new AbortController();
+
+      await performConnect(state, decision, get, set, abort.signal);
+
+      // Drive the Effect subscription that was registered for the mic source —
+      // the warning closure should observe `wasEverReady` becoming true.
+      for (const [sig, cb] of mockEffect._subs) {
+        if (sig === micSource) cb({});
+      }
+
+      vi.advanceTimersByTime(10_000);
+
+      expect(state.micStatus).not.toBe('error');
+    });
+  });
+
+  describe('setupConnectionStatusSync — connection health updates', () => {
+    it('sets a disconnect error when the connection drops after being connected', async () => {
+      const decision = makeOkDecision({ shouldWatch: true, shouldPublish: false });
+      const abort = new AbortController();
+
+      await performConnect(state, decision, get, set, abort.signal);
+      expect(state.status).toBe('connected');
+
+      // Trigger the connection-status subscription registered by
+      // setupConnectionStatusSync. With the store already in `connected`, a
+      // drop should propagate to `disconnected` with a helpful error message.
+      const connSub = mockEffect._subs.find(([sig]) => sig === connStatus);
+      expect(connSub).toBeDefined();
+      connSub![1]('disconnected');
+
+      expect(state.status).toBe('disconnected');
+      expect(state.errorMessage).toContain('Disconnected from MoQ gateway');
+    });
+
+    it('maps connecting relay status to a connecting store status', async () => {
+      const decision = makeOkDecision({ shouldWatch: true, shouldPublish: false });
+      const abort = new AbortController();
+
+      await performConnect(state, decision, get, set, abort.signal);
+      expect(state.status).toBe('connected');
+
+      const connSub = mockEffect._subs.find(([sig]) => sig === connStatus);
+      connSub![1]('connecting');
+
+      expect(state.status).toBe('connecting');
+      // Connecting-mid-session is not an error condition — no error message.
+      expect(state.errorMessage).not.toContain('Disconnected');
+    });
   });
 });
