@@ -1103,7 +1103,6 @@ mod tests {
             assert_node_telemetry(&api_event, "sess-x", "node-7", "core::telemetry/event@1");
         assert_eq!(ts_us, None);
 
-        // Timestamp must be a synthetic "now" value and look like RFC3339 with a Z suffix.
         assert!(ts_str.ends_with('Z'), "expected RFC3339 Z suffix, got {ts_str}");
         let after = SystemTime::now();
         let lower = system_time_to_rfc3339(before - Duration::from_secs(1));
