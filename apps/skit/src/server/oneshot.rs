@@ -675,3 +675,346 @@ pub(super) async fn process_oneshot_pipeline_handler(
 
     Ok(build_streaming_response(pipeline_result, oneshot_start_time, oneshot_duration_histogram))
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+    use serde_json::json;
+    use streamkit_api::{Connection, ConnectionMode, Node, Pipeline};
+
+    fn header_map(content_type: Option<&str>) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        if let Some(value) = content_type {
+            headers.insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_str(value).expect("valid header value"),
+            );
+        }
+        headers
+    }
+
+    fn bad_request(err: AppError) -> String {
+        match err {
+            AppError::BadRequest(msg) => msg,
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    fn expect_bindings_bad_request(result: Result<Vec<HttpInputBinding>, AppError>) -> String {
+        match result {
+            Ok(bindings) => panic!("expected BadRequest, got Ok with {} bindings", bindings.len()),
+            Err(e) => bad_request(e),
+        }
+    }
+
+    fn http_input(params: Option<serde_json::Value>) -> Node {
+        Node { kind: "streamkit::http_input".to_string(), params, state: None }
+    }
+
+    fn sink_node() -> Node {
+        Node { kind: "streamkit::http_output".to_string(), params: None, state: None }
+    }
+
+    fn connection(from_node: &str, from_pin: &str) -> Connection {
+        Connection {
+            from_node: from_node.to_string(),
+            from_pin: from_pin.to_string(),
+            to_node: "sink".to_string(),
+            to_pin: "in".to_string(),
+            mode: ConnectionMode::default(),
+        }
+    }
+
+    fn pipeline_with(nodes: Vec<(&str, Node)>, connections: Vec<Connection>) -> Pipeline {
+        let mut p = Pipeline::default();
+        for (name, node) in nodes {
+            p.nodes.insert(name.to_string(), node);
+        }
+        p.connections = connections;
+        p
+    }
+
+    // -- extract_multipart_boundary -----------------------------------------
+
+    #[test]
+    fn boundary_missing_content_type_is_bad_request() {
+        let err = extract_multipart_boundary(&header_map(None)).expect_err("must fail");
+        let msg = bad_request(err);
+        assert!(msg.starts_with("Missing Content-Type"), "unexpected msg: {msg}");
+    }
+
+    #[test]
+    fn boundary_invalid_header_bytes_is_bad_request() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_bytes(b"multipart/form-data; boundary=\xFF").expect("bytes header"),
+        );
+        let err = extract_multipart_boundary(&headers).expect_err("must fail");
+        let msg = bad_request(err);
+        assert!(msg.starts_with("Invalid Content-Type"), "unexpected msg: {msg}");
+    }
+
+    #[test]
+    fn boundary_non_multipart_content_type_is_bad_request_mentioning_multipart() {
+        let err = extract_multipart_boundary(&header_map(Some("application/json")))
+            .expect_err("must fail");
+        let msg = bad_request(err);
+        assert!(msg.starts_with("Invalid multipart boundary"), "unexpected msg: {msg}");
+        assert!(msg.to_lowercase().contains("multipart"), "msg should mention multipart: {msg}");
+    }
+
+    #[test]
+    fn boundary_extracted_from_simple_content_type() {
+        let value =
+            extract_multipart_boundary(&header_map(Some("multipart/form-data; boundary=abcd1234")))
+                .expect("ok");
+        assert_eq!(value, "abcd1234");
+    }
+
+    #[test]
+    fn boundary_strips_surrounding_quotes() {
+        let value =
+            extract_multipart_boundary(&header_map(Some("multipart/form-data; boundary=\"abcd\"")))
+                .expect("ok");
+        assert_eq!(value, "abcd");
+    }
+
+    #[test]
+    fn boundary_parsed_regardless_of_parameter_order() {
+        let value = extract_multipart_boundary(&header_map(Some(
+            "multipart/form-data; charset=utf-8; boundary=xyz789",
+        )))
+        .expect("ok");
+        assert_eq!(value, "xyz789");
+    }
+
+    // -- determine_http_input_bindings --------------------------------------
+
+    fn single_input_pipeline(params: Option<serde_json::Value>) -> Pipeline {
+        pipeline_with(vec![("input", http_input(params)), ("sink", sink_node())], vec![])
+    }
+
+    #[test]
+    fn single_http_input_no_params_yields_implicit_media_binding() {
+        let pipeline = single_input_pipeline(None);
+        let bindings = determine_http_input_bindings(&pipeline).expect("ok");
+        assert_eq!(bindings.len(), 1);
+        let b = &bindings[0];
+        assert_eq!(b.node_id, "input");
+        assert_eq!(b.field_name, "media");
+        // NOTE: the production code currently reports required=true here even
+        // though the back-compat path elsewhere treats implicit media as
+        // optional. See follow-ups in the PR description.
+        assert!(b.required);
+    }
+
+    #[test]
+    fn single_http_input_with_explicit_field_adds_back_compat_media_binding() {
+        let pipeline = single_input_pipeline(Some(json!({"field": "audio"})));
+        let mut bindings = determine_http_input_bindings(&pipeline).expect("ok");
+        bindings.sort_by(|a, b| a.field_name.cmp(&b.field_name));
+
+        assert_eq!(bindings.len(), 2, "back-compat implicit 'media' is appended");
+        let audio = &bindings[0];
+        assert_eq!(audio.field_name, "audio");
+        assert!(audio.required, "explicit single-field default is required=true");
+
+        let media = &bindings[1];
+        assert_eq!(media.field_name, "media");
+        assert!(!media.required, "implicit media back-compat binding is optional");
+    }
+
+    #[test]
+    fn single_http_input_with_field_and_required_false_respects_flag() {
+        let pipeline = single_input_pipeline(Some(json!({"field": "audio", "required": false})));
+        let bindings = determine_http_input_bindings(&pipeline).expect("ok");
+        let audio = bindings.iter().find(|b| b.field_name == "audio").expect("audio binding");
+        assert!(!audio.required);
+    }
+
+    #[test]
+    fn multiple_http_inputs_default_field_name_to_node_id() {
+        let pipeline = pipeline_with(
+            vec![("alpha", http_input(None)), ("beta", http_input(None)), ("sink", sink_node())],
+            vec![],
+        );
+        let bindings = determine_http_input_bindings(&pipeline).expect("ok");
+        assert_eq!(bindings.len(), 2);
+        let mut by_node: HashMap<&str, &HttpInputBinding> = HashMap::new();
+        for b in &bindings {
+            by_node.insert(b.node_id.as_str(), b);
+        }
+        assert_eq!(by_node["alpha"].field_name, "alpha");
+        assert_eq!(by_node["beta"].field_name, "beta");
+        assert!(by_node["alpha"].required && by_node["beta"].required);
+    }
+
+    #[test]
+    fn fields_array_of_strings_makes_required_bindings() {
+        let pipeline = single_input_pipeline(Some(json!({"fields": ["audio", "video"]})));
+        let bindings = determine_http_input_bindings(&pipeline).expect("ok");
+        assert_eq!(bindings.len(), 2);
+        for b in &bindings {
+            assert!(b.required, "string entries default to required=true");
+            assert_eq!(b.node_id, "input");
+        }
+        let names: HashSet<&str> = bindings.iter().map(|b| b.field_name.as_str()).collect();
+        assert!(names.contains("audio") && names.contains("video"));
+    }
+
+    #[test]
+    fn fields_array_of_objects_respects_required_flag() {
+        let pipeline = single_input_pipeline(Some(json!({
+            "fields": [
+                {"name": "audio", "required": false},
+                {"name": "video"},
+            ]
+        })));
+        let bindings = determine_http_input_bindings(&pipeline).expect("ok");
+        let audio = bindings.iter().find(|b| b.field_name == "audio").expect("audio");
+        let video = bindings.iter().find(|b| b.field_name == "video").expect("video");
+        assert!(!audio.required);
+        assert!(video.required, "object without 'required' defaults to true");
+    }
+
+    #[test]
+    fn fields_object_name_is_trimmed() {
+        let pipeline = single_input_pipeline(Some(json!({
+            "fields": [{"name": "  audio  "}]
+        })));
+        let bindings = determine_http_input_bindings(&pipeline).expect("ok");
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].field_name, "audio");
+    }
+
+    #[test]
+    fn fields_empty_array_is_bad_request() {
+        let pipeline = single_input_pipeline(Some(json!({"fields": []})));
+        let msg = expect_bindings_bad_request(determine_http_input_bindings(&pipeline));
+        assert!(msg.contains("at least one field"), "unexpected msg: {msg}");
+    }
+
+    #[test]
+    fn fields_non_array_is_bad_request() {
+        let pipeline = single_input_pipeline(Some(json!({"fields": "audio"})));
+        let msg = expect_bindings_bad_request(determine_http_input_bindings(&pipeline));
+        assert!(msg.contains("must be an array"), "unexpected msg: {msg}");
+    }
+
+    // Pins current behavior when both `field` and `fields` are provided. The
+    // production code's if-let / else-if-let branching silently ignores `field`
+    // when `fields` is present; the documented intent (see PR follow-ups) is to
+    // return BadRequest. This test exists so a future fix is intentional.
+    #[test]
+    fn both_field_and_fields_currently_uses_fields_and_ignores_field() {
+        let pipeline = single_input_pipeline(Some(json!({
+            "field": "ignored",
+            "fields": ["audio"],
+        })));
+        let bindings = determine_http_input_bindings(&pipeline).expect("ok (currently)");
+        let names: Vec<&str> = bindings.iter().map(|b| b.field_name.as_str()).collect();
+        assert!(names.contains(&"audio"), "fields wins: {names:?}");
+        assert!(!names.contains(&"ignored"), "field branch silently dropped: {names:?}");
+    }
+
+    #[test]
+    fn fields_object_without_name_is_bad_request() {
+        let pipeline = single_input_pipeline(Some(json!({"fields": [{"required": true}]})));
+        let msg = expect_bindings_bad_request(determine_http_input_bindings(&pipeline));
+        assert!(msg.contains("must include 'name'"), "unexpected msg: {msg}");
+    }
+
+    #[test]
+    fn fields_object_with_empty_name_is_bad_request() {
+        let pipeline = single_input_pipeline(Some(json!({"fields": [{"name": "   "}]})));
+        let msg = expect_bindings_bad_request(determine_http_input_bindings(&pipeline));
+        assert!(msg.contains("must not be empty"), "unexpected msg: {msg}");
+    }
+
+    #[test]
+    fn fields_object_with_non_string_name_is_bad_request() {
+        let pipeline = single_input_pipeline(Some(json!({"fields": [{"name": 42}]})));
+        let msg = expect_bindings_bad_request(determine_http_input_bindings(&pipeline));
+        assert!(msg.contains("must be a string"), "unexpected msg: {msg}");
+    }
+
+    #[test]
+    fn fields_entry_of_unsupported_type_is_bad_request() {
+        let pipeline = single_input_pipeline(Some(json!({"fields": [42]})));
+        let msg = expect_bindings_bad_request(determine_http_input_bindings(&pipeline));
+        assert!(msg.contains("must be strings or objects"), "unexpected msg: {msg}");
+    }
+
+    #[test]
+    fn duplicate_field_name_across_nodes_is_bad_request() {
+        let pipeline = pipeline_with(
+            vec![
+                ("alpha", http_input(Some(json!({"field": "shared"})))),
+                ("beta", http_input(Some(json!({"field": "shared"})))),
+                ("sink", sink_node()),
+            ],
+            vec![],
+        );
+        let msg = expect_bindings_bad_request(determine_http_input_bindings(&pipeline));
+        assert!(msg.starts_with("Duplicate multipart field name"), "unexpected msg: {msg}");
+    }
+
+    #[test]
+    fn pin_name_matches_field_when_connection_references_it() {
+        let pipeline = pipeline_with(
+            vec![
+                ("input", http_input(Some(json!({"fields": ["audio", "video"]})))),
+                ("sink", sink_node()),
+            ],
+            vec![connection("input", "audio")],
+        );
+        let bindings = determine_http_input_bindings(&pipeline).expect("ok");
+        let audio = bindings.iter().find(|b| b.field_name == "audio").expect("audio");
+        let video = bindings.iter().find(|b| b.field_name == "video").expect("video");
+        assert_eq!(audio.output_pin, "audio", "matching pin name wins");
+        assert_eq!(
+            video.output_pin, "video",
+            "non-referenced field falls back to its own field_name in fields-mode"
+        );
+    }
+
+    #[test]
+    fn pin_name_falls_back_to_legacy_out_for_single_binding_steps_format() {
+        let pipeline = pipeline_with(
+            vec![("input", http_input(None)), ("sink", sink_node())],
+            vec![connection("input", "out")],
+        );
+        let bindings = determine_http_input_bindings(&pipeline).expect("ok");
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].field_name, "media");
+        assert_eq!(
+            bindings[0].output_pin, "out",
+            "single legacy 'out' pin should override default field_name pin"
+        );
+    }
+
+    #[test]
+    fn pin_name_does_not_apply_legacy_out_fallback_when_fields_param_is_set() {
+        let pipeline = pipeline_with(
+            vec![("input", http_input(Some(json!({"fields": ["audio"]})))), ("sink", sink_node())],
+            vec![connection("input", "out")],
+        );
+        let bindings = determine_http_input_bindings(&pipeline).expect("ok");
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].field_name, "audio");
+        assert_eq!(
+            bindings[0].output_pin, "audio",
+            "fields-mode never collapses to a legacy 'out' pin"
+        );
+    }
+
+    #[test]
+    fn no_http_inputs_returns_empty_bindings() {
+        let pipeline = pipeline_with(vec![("sink", sink_node())], vec![]);
+        let bindings = determine_http_input_bindings(&pipeline).expect("ok");
+        assert!(bindings.is_empty());
+    }
+}
