@@ -730,3 +730,405 @@ impl SessionManager {
         self.sessions.values().cloned().collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+    use streamkit_core::types::{CustomEncoding, CustomPacketData};
+    use time::OffsetDateTime;
+
+    fn make_event(
+        node_id: &str,
+        type_id: &str,
+        data: serde_json::Value,
+        timestamp_us: Option<u64>,
+    ) -> TelemetryEvent {
+        TelemetryEvent {
+            session_id: None,
+            node_id: node_id.to_string(),
+            packet: CustomPacketData {
+                type_id: type_id.to_string(),
+                encoding: CustomEncoding::Json,
+                data,
+                metadata: timestamp_us.map(|ts| streamkit_core::types::PacketMetadata {
+                    timestamp_us: Some(ts),
+                    duration_us: None,
+                    sequence: None,
+                    keyframe: None,
+                }),
+            },
+        }
+    }
+
+    #[test]
+    fn system_time_to_rfc3339_renders_unix_epoch() {
+        let rendered = system_time_to_rfc3339(UNIX_EPOCH);
+        assert!(
+            rendered.starts_with("1970-01-01T00:00:00"),
+            "expected 1970-01-01T00:00:00 prefix, got {rendered}"
+        );
+        assert!(rendered.ends_with('Z'), "expected trailing Z, got {rendered}");
+    }
+
+    // 1_700_000_000s after the unix epoch is 2023-11-14T22:13:20 UTC; that fixed
+    // instant is the reference value reused across timestamp tests below.
+    const REFERENCE_SECS: u64 = 1_700_000_000;
+    const REFERENCE_RFC3339: &str = "2023-11-14T22:13:20Z";
+
+    #[test]
+    fn system_time_to_rfc3339_renders_known_instant() {
+        let instant = UNIX_EPOCH + Duration::from_secs(REFERENCE_SECS);
+        let rendered = system_time_to_rfc3339(instant);
+        assert_eq!(rendered, REFERENCE_RFC3339);
+    }
+
+    #[test]
+    fn timestamp_us_to_rfc3339_renders_unix_epoch() {
+        let rendered = timestamp_us_to_rfc3339(0);
+        assert!(
+            rendered.starts_with("1970-01-01T00:00:00"),
+            "expected unix epoch prefix, got {rendered}"
+        );
+        assert!(rendered.ends_with('Z'));
+    }
+
+    #[test]
+    fn timestamp_us_to_rfc3339_interprets_microseconds() {
+        let micros = REFERENCE_SECS * 1_000_000;
+        let rendered = timestamp_us_to_rfc3339(micros);
+        assert_eq!(rendered, REFERENCE_RFC3339);
+    }
+
+    #[test]
+    fn timestamp_us_to_rfc3339_matches_system_time_path() {
+        let micros = REFERENCE_SECS * 1_000_000 + 123_456;
+        let via_us = timestamp_us_to_rfc3339(micros);
+        let via_systime = system_time_to_rfc3339(UNIX_EPOCH + Duration::from_micros(micros));
+        assert_eq!(via_us, via_systime);
+    }
+
+    // Avoids requiring `time/parsing` as a dev-dep: instead of parsing the
+    // rendered string, we verify the helper agrees with the canonical
+    // OffsetDateTime formatter and that the SystemTime -> OffsetDateTime
+    // conversion preserves the instant to within 1 ms.
+    #[test]
+    fn system_time_to_rfc3339_round_trips_within_one_ms() {
+        let now = SystemTime::now();
+        let rendered = system_time_to_rfc3339(now);
+        let from_systime = OffsetDateTime::from(now);
+        let Ok(canonical) = from_systime.format(&Rfc3339) else {
+            panic!("OffsetDateTime should always format as RFC3339");
+        };
+        assert_eq!(rendered, canonical);
+
+        let Ok(elapsed) = now.duration_since(UNIX_EPOCH) else {
+            panic!("SystemTime::now() should be at or after UNIX_EPOCH");
+        };
+        let now_nanos = elapsed.as_nanos();
+        let dt_signed_nanos = from_systime.unix_timestamp_nanos();
+        let dt_nanos = u128::try_from(dt_signed_nanos).unwrap_or(0);
+        let diff_ns = dt_nanos.abs_diff(now_nanos);
+        assert!(
+            diff_ns <= 1_000_000,
+            "OffsetDateTime drifted from SystemTime by {diff_ns}ns (> 1ms)"
+        );
+    }
+
+    #[test]
+    fn normalize_optional_name_returns_none_for_missing_input() {
+        assert_eq!(normalize_optional_name(None), None);
+    }
+
+    #[test]
+    fn normalize_optional_name_returns_none_for_empty_string() {
+        assert_eq!(normalize_optional_name(Some(String::new())), None);
+    }
+
+    #[test]
+    fn normalize_optional_name_returns_none_for_whitespace_only() {
+        assert_eq!(normalize_optional_name(Some("   ".to_string())), None);
+        assert_eq!(normalize_optional_name(Some("\t\n  ".to_string())), None);
+    }
+
+    #[test]
+    fn normalize_optional_name_trims_surrounding_whitespace() {
+        assert_eq!(
+            normalize_optional_name(Some("  hello  ".to_string())),
+            Some("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_optional_name_passes_through_clean_string() {
+        assert_eq!(normalize_optional_name(Some("hello".to_string())), Some("hello".to_string()));
+    }
+
+    #[test]
+    fn fnv1a_64_empty_input_returns_offset_basis() {
+        // Canonical FNV-1a 64-bit offset basis per the algorithm spec.
+        assert_eq!(fnv1a_64(""), 0xcbf2_9ce4_8422_2325);
+    }
+
+    #[test]
+    fn fnv1a_64_is_stable_across_calls() {
+        let a = fnv1a_64("streamkit");
+        let b = fnv1a_64("streamkit");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn fnv1a_64_distinguishes_distinct_inputs() {
+        let inputs = ["a", "b", "ab", "ba", "streamkit", "Streamkit", "session-1"];
+        let hashes: HashSet<u64> = inputs.iter().map(|s| fnv1a_64(s)).collect();
+        assert_eq!(
+            hashes.len(),
+            inputs.len(),
+            "expected distinct hashes for {inputs:?}, got {hashes:?}"
+        );
+    }
+
+    fn is_valid_session_name(name: &str) -> bool {
+        let parts: Vec<&str> = name.split('-').collect();
+        let [adj, noun, suffix] = match parts.as_slice() {
+            [adj, noun, suffix] => [*adj, *noun, *suffix],
+            _ => return false,
+        };
+        if adj.is_empty() || !adj.chars().all(|c| c.is_ascii_lowercase()) {
+            return false;
+        }
+        if noun.is_empty() || !noun.chars().all(|c| c.is_ascii_lowercase()) {
+            return false;
+        }
+        suffix.len() == 4
+            && suffix.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    }
+
+    #[test]
+    fn generate_session_name_matches_documented_shape() {
+        let name = generate_session_name("abc-123");
+        assert!(is_valid_session_name(&name), "name {name} did not match shape");
+    }
+
+    #[test]
+    fn generate_session_name_is_deterministic() {
+        let id = "550e8400-e29b-41d4-a716-446655440000";
+        assert_eq!(generate_session_name(id), generate_session_name(id));
+    }
+
+    #[test]
+    fn generate_session_name_diversifies_across_ids() {
+        let ids: Vec<String> = (0..16).map(|i| format!("session-{i}")).collect();
+        let names: HashSet<String> = ids.iter().map(|id| generate_session_name(id)).collect();
+        assert!(
+            names.len() >= ids.len() - 1,
+            "expected nearly distinct names for {ids:?}, got {names:?}"
+        );
+        assert!(
+            names.len() >= 10,
+            "expected at least 10 unique names across 16 ids, got {}",
+            names.len()
+        );
+        for name in &names {
+            assert!(is_valid_session_name(name), "invalid name in batch: {name}");
+        }
+    }
+
+    // The suffix is derived from `(hash >> 16) & 0xffff` per the implementation;
+    // this guards against accidental refactors that change the formula.
+    #[test]
+    fn generate_session_name_hex_suffix_derives_from_fnv1a() {
+        for id in ["a", "session-xyz", "1234567890", "the quick brown fox"] {
+            let name = generate_session_name(id);
+            let Some(suffix) = name.split('-').next_back() else {
+                panic!("generated name {name} has no '-' separator");
+            };
+            let expected = format!("{:04x}", (fnv1a_64(id) >> 16) & 0xffff);
+            assert_eq!(suffix, expected, "suffix mismatch for id={id} (name={name})");
+        }
+    }
+
+    #[test]
+    fn redact_leaves_short_strings_unchanged() {
+        let mut value = serde_json::json!("hello");
+        redact_telemetry_data(&mut value, 16);
+        assert_eq!(value, serde_json::json!("hello"));
+    }
+
+    #[test]
+    fn redact_truncates_long_strings_with_marker() {
+        let mut value = serde_json::json!("abcdefghijklmnop");
+        redact_telemetry_data(&mut value, 5);
+        assert_eq!(value, serde_json::json!("abcde...[truncated]"));
+    }
+
+    #[test]
+    fn redact_with_zero_max_chars_replaces_payload_with_marker() {
+        let mut value = serde_json::json!("non-empty");
+        redact_telemetry_data(&mut value, 0);
+        assert_eq!(value, serde_json::json!("...[truncated]"));
+    }
+
+    #[test]
+    fn redact_recurses_into_objects_and_arrays() {
+        let mut value = serde_json::json!({
+            "shallow": "ok",
+            "data": {
+                "foo": {
+                    "bar": "this string is definitely longer than the limit"
+                },
+                "list": ["short", "this one is also far longer than the limit"]
+            }
+        });
+        redact_telemetry_data(&mut value, 8);
+
+        assert_eq!(value["shallow"], serde_json::json!("ok"));
+        assert_eq!(value["data"]["foo"]["bar"], serde_json::json!("this str...[truncated]"));
+        assert_eq!(value["data"]["list"][0], serde_json::json!("short"));
+        assert_eq!(value["data"]["list"][1], serde_json::json!("this one...[truncated]"));
+    }
+
+    #[test]
+    fn redact_leaves_non_string_scalars_unchanged() {
+        let mut value = serde_json::json!({
+            "n": 42,
+            "f": 2.5,
+            "b": true,
+            "null": serde_json::Value::Null,
+            "arr": [1, 2, 3],
+        });
+        let snapshot = value.clone();
+        redact_telemetry_data(&mut value, 1);
+        assert_eq!(value, snapshot);
+    }
+
+    #[test]
+    fn redact_preserves_object_keys() {
+        let mut value = serde_json::json!({
+            "keep_me": "loooooooooooong value here",
+            "and_me": "x",
+            "nested": {"inner": "loooooooooooong"},
+        });
+        redact_telemetry_data(&mut value, 3);
+        let Some(obj) = value.as_object() else {
+            panic!("root must remain an object after redaction");
+        };
+        let keys: HashSet<&str> = obj.keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            HashSet::from(["keep_me", "and_me", "nested"]),
+            "object keys must not be dropped by redaction"
+        );
+        let Some(nested) = value["nested"].as_object() else {
+            panic!("nested value must remain an object after redaction");
+        };
+        assert!(nested.contains_key("inner"));
+    }
+
+    fn assert_node_telemetry(
+        event: &ApiEvent,
+        expected_session: &str,
+        expected_node: &str,
+        expected_type: &str,
+    ) -> (serde_json::Value, Option<u64>, String) {
+        assert_eq!(event.message_type, MessageType::Event);
+        assert!(event.correlation_id.is_none());
+        match &event.payload {
+            EventPayload::NodeTelemetry {
+                session_id,
+                node_id,
+                type_id,
+                data,
+                timestamp_us,
+                timestamp,
+            } => {
+                assert_eq!(session_id, expected_session);
+                assert_eq!(node_id, expected_node);
+                assert_eq!(type_id, expected_type);
+                (data.clone(), *timestamp_us, timestamp.clone())
+            },
+            other => panic!("expected NodeTelemetry payload, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_telemetry_api_event_populates_envelope_and_redacts_data() {
+        let event = make_event(
+            "node-42",
+            "plugin::native::vad/vad-event@1",
+            serde_json::json!({
+                "event_type": "transcript",
+                "text": "this transcript should certainly be truncated",
+                "confidence": 0.97,
+            }),
+            Some(REFERENCE_SECS * 1_000_000),
+        );
+
+        let api_event = create_telemetry_api_event("sess-1", &event, 4);
+
+        let (data, ts_us, ts_str) = assert_node_telemetry(
+            &api_event,
+            "sess-1",
+            "node-42",
+            "plugin::native::vad/vad-event@1",
+        );
+        assert_eq!(ts_us, Some(REFERENCE_SECS * 1_000_000));
+        assert_eq!(ts_str, REFERENCE_RFC3339);
+
+        assert_eq!(data["event_type"], serde_json::json!("tran...[truncated]"));
+        assert_eq!(
+            data["text"],
+            serde_json::json!("this...[truncated]"),
+            "long text field was not truncated"
+        );
+        assert_eq!(
+            data["confidence"],
+            serde_json::json!(0.97),
+            "numeric fields must pass through unchanged"
+        );
+    }
+
+    #[test]
+    fn create_telemetry_api_event_falls_back_to_now_when_metadata_absent() {
+        let before = SystemTime::now();
+        let event = make_event(
+            "node-7",
+            "core::telemetry/event@1",
+            serde_json::json!({"event_type": "ping"}),
+            None,
+        );
+
+        let api_event = create_telemetry_api_event("sess-x", &event, 64);
+        let (_data, ts_us, ts_str) =
+            assert_node_telemetry(&api_event, "sess-x", "node-7", "core::telemetry/event@1");
+        assert_eq!(ts_us, None);
+
+        assert!(ts_str.ends_with('Z'), "expected RFC3339 Z suffix, got {ts_str}");
+        let after = SystemTime::now();
+        let lower = system_time_to_rfc3339(before - Duration::from_secs(1));
+        let upper = system_time_to_rfc3339(after + Duration::from_secs(1));
+        assert!(
+            ts_str.as_str() >= lower.as_str() && ts_str.as_str() <= upper.as_str(),
+            "timestamp {ts_str} not within [{lower}, {upper}] window"
+        );
+    }
+
+    // Telemetry data is documented as an object, but the helper must not panic
+    // on non-object payloads and string-typed `data` must still be redacted.
+    #[test]
+    fn create_telemetry_api_event_handles_non_record_payload() {
+        let event = make_event(
+            "node-bare",
+            "plugin::test/raw@1",
+            serde_json::json!("this is a fairly long bare-string payload"),
+            Some(0),
+        );
+
+        let api_event = create_telemetry_api_event("sess-bare", &event, 8);
+        let (data, ts_us, ts_str) =
+            assert_node_telemetry(&api_event, "sess-bare", "node-bare", "plugin::test/raw@1");
+        assert_eq!(ts_us, Some(0));
+        assert!(ts_str.starts_with("1970-01-01T00:00:00"));
+        assert_eq!(data, serde_json::json!("this is ...[truncated]"));
+    }
+}
