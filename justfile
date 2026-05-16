@@ -240,15 +240,14 @@ install-cov-tools:
     @cargo install --locked cargo-nextest
     @rustup component add llvm-tools-preview
 
-# Backend coverage across the workspace + feature-gated server runs (no GPU tests). Produces lcov + html under target/coverage/.
-cov-skit:
+# Backend coverage across the workspace + the non-default mcp feature
+# (no GPU tests). Produces lcov + html under target/coverage/.
+cov-skit: install-cov-tools
     @echo "Collecting backend coverage..."
     @CARGO_LLVM_COV_TARGET_DIR=target/coverage \
         cargo llvm-cov clean --workspace
     @CARGO_LLVM_COV_TARGET_DIR=target/coverage \
         cargo llvm-cov --workspace --no-report nextest -- --skip gpu_tests::
-    @CARGO_LLVM_COV_TARGET_DIR=target/coverage \
-        cargo llvm-cov --no-report nextest -p streamkit-server --features "moq"
     @CARGO_LLVM_COV_TARGET_DIR=target/coverage \
         cargo llvm-cov --no-report nextest -p streamkit-server --features "mcp"
     @CARGO_LLVM_COV_TARGET_DIR=target/coverage \

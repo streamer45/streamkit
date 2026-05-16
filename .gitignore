@@ -80,4 +80,3 @@ e2e/.playwright
 # Coverage artifacts (backend via cargo-llvm-cov, frontend via Vitest v8)
 /target/coverage
 /ui/coverage
-/ui/lcov-report

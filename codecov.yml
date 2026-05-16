@@ -4,6 +4,16 @@
 
 # Codecov configuration. Initial rollout is informational only — gates are
 # disabled below and will be ratcheted up once a baseline has been collected.
+#
+# Ratchet plan (concrete meaning of "ratcheted up"):
+#   Phase 1 (now):     informational: true,  threshold: 100% (no gating)
+#   Phase 2 (~2 wks):  informational: false, project.threshold: 1%
+#                        (any coverage drop >1% blocks the PR)
+#   Phase 3 (~4 wks):  add patch.target: 70% (new code must hit 70%)
+# Phase transitions are intentionally manual — edit this file and remove
+# `informational: true` / tighten `threshold` / `target` as the baseline
+# settles. The `backend` and `ui` flag totals on the Codecov dashboard are
+# the headline numbers to watch when deciding when to advance.
 
 codecov:
   require_ci_to_pass: false

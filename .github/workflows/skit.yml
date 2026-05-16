@@ -219,8 +219,10 @@ jobs:
       - name: Collect coverage
         run: |
           cargo llvm-cov clean --workspace
+          # `moq` is in streamkit-server's default features, so the
+          # --workspace run already covers it. `mcp` is not in default,
+          # hence the extra pass.
           cargo llvm-cov --workspace --no-report nextest -- --skip gpu_tests::
-          cargo llvm-cov --no-report nextest -p streamkit-server --features "moq"
           cargo llvm-cov --no-report nextest -p streamkit-server --features "mcp"
           cargo llvm-cov report --lcov --output-path target/coverage/lcov.info
 
