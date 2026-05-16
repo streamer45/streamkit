@@ -634,6 +634,8 @@ impl From<std::io::Error> for SamplesError {
 }
 
 #[cfg(test)]
+// reason: tests use expect/unwrap-style helpers so a failed assertion produces
+// a single clear panic instead of nested Result-handling boilerplate.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
@@ -721,7 +723,6 @@ mod tests {
 
     #[test]
     fn filename_to_name_collapses_internal_whitespace() {
-        // Underscores become spaces, then split_whitespace collapses runs.
         assert_eq!(filename_to_name("a__b.yml"), "A B");
     }
 
@@ -742,7 +743,6 @@ mod tests {
 
     #[test]
     fn generate_safe_filename_trims_leading_and_trailing_underscores() {
-        // Disallowed leading/trailing characters become '_' which is then trimmed.
         assert_eq!(generate_safe_filename("/etc/passwd"), "etc_passwd.yml");
         assert_eq!(generate_safe_filename("...trailing..."), "trailing.yml");
     }
