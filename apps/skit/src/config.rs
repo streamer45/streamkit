@@ -1105,19 +1105,13 @@ pub fn generate_default() -> Result<String, toml::ser::Error> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    // figment::Jail closures return Result<(), figment::Error>, whose Err
-    // variant exceeds clippy's `result_large_err` threshold. The signature
-    // is fixed by the figment::Jail API.
-    clippy::result_large_err
-)]
+// `unwrap` / `expect` are idiomatic in tests where the panic IS the assertion.
+// `result_large_err` fires on the closure passed to `figment::Jail::expect_with`,
+// whose `Err` variant size is fixed by the upstream API.
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::result_large_err)]
 mod tests {
     use super::*;
     use crate::permissions::Permissions;
-
-    // ── deserialize_clamp_timeout ──────────────────────────────────────────
 
     #[derive(Deserialize, Debug, PartialEq, Eq)]
     struct ClampWrapper {
@@ -1149,8 +1143,6 @@ mod tests {
         assert_eq!(w.v, Some(60_000));
     }
 
-    // ── EnginePerfProfile capacities ───────────────────────────────────────
-
     #[test]
     fn engine_perf_profile_low_latency_capacities() {
         assert_eq!(EnginePerfProfile::LowLatency.node_input_capacity(), 8);
@@ -1168,8 +1160,6 @@ mod tests {
         assert_eq!(EnginePerfProfile::HighThroughput.node_input_capacity(), 128);
         assert_eq!(EnginePerfProfile::HighThroughput.pin_distributor_capacity(), 64);
     }
-
-    // ── EngineConfig resolved capacities ───────────────────────────────────
 
     #[test]
     fn resolved_node_input_capacity_explicit_beats_profile() {
@@ -1223,14 +1213,10 @@ mod tests {
         assert_eq!(cfg.resolved_pin_distributor_capacity(), None);
     }
 
-    // ── default_engine_batch_size ──────────────────────────────────────────
-
     #[test]
     fn default_engine_batch_size_is_32() {
         assert_eq!(default_engine_batch_size(), 32);
     }
-
-    // ── normalize_allowed_samples ──────────────────────────────────────────
 
     #[test]
     fn normalize_allowed_samples_strips_default_samples_dir_prefix() {
@@ -1289,8 +1275,6 @@ mod tests {
         );
     }
 
-    // ── normalize_permissions_config ───────────────────────────────────────
-
     #[test]
     fn normalize_permissions_config_normalizes_each_role_allowed_samples() {
         let mut config = Config::default();
@@ -1335,8 +1319,6 @@ mod tests {
         assert_eq!(config.permissions.default_role, "admin");
     }
 
-    // ── generate_default ───────────────────────────────────────────────────
-
     #[test]
     fn generate_default_returns_parseable_toml_with_expected_defaults() {
         let serialized = generate_default().expect("default config should serialize to TOML");
@@ -1350,11 +1332,9 @@ mod tests {
         assert!(!parsed.mcp.enabled);
     }
 
-    // ── load ──────────────────────────────────────────────────────────────
-    //
-    // `load` reads from defaults + a TOML file + `SK_`-prefixed env vars.
-    // We use `figment::Jail` so each test gets an isolated cwd and env-var
-    // namespace that is restored on drop.
+    // `figment::Jail` runs each closure in a sandboxed cwd with isolated env
+    // vars (restored on drop) — required because `load` reads SK_-prefixed env
+    // vars and a `Toml::file` relative to the current directory.
 
     #[test]
     fn load_minimal_toml_returns_documented_defaults() {
