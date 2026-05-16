@@ -24,10 +24,6 @@ beforeEach(() => {
   useTelemetryStore.setState({ sessions: new Map(), defaultMaxEvents: 100 });
 });
 
-// ---------------------------------------------------------------------------
-// parseTelemetryEvent
-// ---------------------------------------------------------------------------
-
 describe('parseTelemetryEvent', () => {
   const basePayload = {
     session_id: 's1',
@@ -148,10 +144,6 @@ describe('parseTelemetryEvent', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// useTelemetryStore.addEvent
-// ---------------------------------------------------------------------------
-
 describe('useTelemetryStore.addEvent', () => {
   it('creates a fresh session entry with defaults when none exists', () => {
     const event = makeEvent({ sessionId: 's1' });
@@ -201,10 +193,6 @@ describe('useTelemetryStore.addEvent', () => {
     expect(getEvents('s1').map((e) => e.id)).toEqual(['b', 'c']);
   });
 });
-
-// ---------------------------------------------------------------------------
-// useTelemetryStore.clearSession / setEnabled / setMaxEvents
-// ---------------------------------------------------------------------------
 
 describe('useTelemetryStore.clearSession', () => {
   it('removes the entire session entry', () => {
@@ -262,10 +250,6 @@ describe('useTelemetryStore.setMaxEvents', () => {
     expect(useTelemetryStore.getState().sessions.get('s1')?.maxEvents).toBe(5);
   });
 });
-
-// ---------------------------------------------------------------------------
-// Query helpers
-// ---------------------------------------------------------------------------
 
 describe('useTelemetryStore query helpers', () => {
   it('getEvents returns empty array for missing session', () => {
