@@ -191,6 +191,8 @@ fn check_path_allowed(
     false
 }
 
+// `unwrap`/`expect` in tests: fixture setup failures should surface as panics at
+// the failing operation rather than be propagated; this is the recommended test idiom.
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -225,8 +227,6 @@ mod tests {
     fn glob_under(dir: &Path) -> String {
         format!("{}/**", dir.display())
     }
-
-    // ------------------------ validate_file_path ------------------------
 
     #[test]
     fn validate_file_path_accepts_file_inside_allowed_dir() {
@@ -335,8 +335,6 @@ mod tests {
         assert!(err.contains("outside allowed directories"), "unexpected error: {err}");
     }
 
-    // ------------------------ validate_write_path ------------------------
-
     #[test]
     fn validate_write_path_empty_allowlist_returns_disabled_message() {
         let cfg = write_config(&[]);
@@ -410,8 +408,6 @@ mod tests {
         let err = validate_write_path("/", &cfg).expect_err("root path has no file name");
         assert!(err.contains("must include a file name"), "unexpected error: {err}");
     }
-
-    // ------------------------ check_path_allowed ------------------------
 
     #[test]
     fn check_path_allowed_double_star_matches_everything() {
