@@ -1422,7 +1422,8 @@ impl MoqPeerNode {
             broadcast_consumer.subscribe_track(&hang::catalog::Catalog::default_track()).map_err(
                 |e| StreamKitError::Runtime(format!("Failed to subscribe to catalog track: {e}")),
             )?;
-        let mut catalog_consumer = crate::transport::moq::catalog_consumer::CatalogConsumer::new(catalog_track);
+        let mut catalog_consumer =
+            crate::transport::moq::catalog_consumer::CatalogConsumer::new(catalog_track);
 
         let mut track_handles: HashMap<
             String,

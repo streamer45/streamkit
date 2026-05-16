@@ -675,12 +675,13 @@ impl MoqPullNode {
         // Warn when the catalog codec differs from the output pin set during
         // initialize(). This can happen when init fails to discover the catalog
         // (timeout) and the pin remains at the constructor's default codec.
-        let out_pin_codec = self.output_pins.iter().find(|p| p.name == "out").and_then(|p| {
-            match &p.produces_type {
-                PacketType::EncodedAudio(fmt) => Some(fmt.codec),
-                _ => None,
-            }
-        });
+        let out_pin_codec =
+            self.output_pins.iter().find(|p| p.name == "out").and_then(|p| {
+                match &p.produces_type {
+                    PacketType::EncodedAudio(fmt) => Some(fmt.codec),
+                    _ => None,
+                }
+            });
         if let Some(pin_codec) = out_pin_codec {
             if pin_codec != resolved_audio_codec {
                 tracing::warn!(

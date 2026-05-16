@@ -53,8 +53,7 @@ impl OrderedProducer {
     pub fn write(&mut self, frame: Frame) -> Result<(), hang::Error> {
         tracing::trace!(?frame, "write frame");
 
-        if let (Some(max_duration), Some(group_start)) =
-            (self.max_group_duration, self.group_start)
+        if let (Some(max_duration), Some(group_start)) = (self.max_group_duration, self.group_start)
         {
             if self.group.is_some()
                 && frame.timestamp.checked_sub(group_start).unwrap_or(Timestamp::ZERO)
@@ -81,14 +80,10 @@ impl OrderedProducer {
 
         // Estimate the next frame's timestamp and close the group now if it
         // would exceed the limit.
-        if let (Some(max_duration), Some(group_start)) =
-            (self.max_group_duration, self.group_start)
+        if let (Some(max_duration), Some(group_start)) = (self.max_group_duration, self.group_start)
         {
-            let elapsed = frame
-                .timestamp
-                .checked_sub(group_start)
-                .unwrap_or(Timestamp::ZERO)
-                .as_micros();
+            let elapsed =
+                frame.timestamp.checked_sub(group_start).unwrap_or(Timestamp::ZERO).as_micros();
             let max = max_duration.as_micros();
 
             if elapsed * (self.group_frames as u128 + 1) >= max * self.group_frames as u128 {
