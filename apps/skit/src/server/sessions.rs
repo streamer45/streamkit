@@ -725,3 +725,466 @@ pub(super) async fn tune_session_node_inner(
 
     Ok(())
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod sessions_batch_tests {
+    use super::*;
+    use crate::config::SecurityConfig;
+    use crate::permissions::Permissions;
+    use crate::session::Session;
+    use crate::state::BroadcastEvent;
+    use streamkit_api::{BatchOperation, ConnectionMode, ValidationErrorType};
+    use streamkit_engine::Engine;
+    use tempfile::NamedTempFile;
+    use tokio::sync::broadcast;
+
+    /// Spin up a real `Engine` + `Session` for unit-testing the batch
+    /// helpers.  Mirrors `create_dynamic_session` minus the YAML compile
+    /// and `SessionManager` insertion: tests only inspect the durable
+    /// pipeline model owned by the returned session.  The receiver is
+    /// kept alive so the engine actor's broadcast sender does not error
+    /// on send (which would still be benign, but noisy).
+    async fn fresh_session() -> (Session, broadcast::Receiver<BroadcastEvent>) {
+        let engine = Engine::without_plugins();
+        let config = crate::config::Config::default();
+        let (tx, rx) = broadcast::channel(16);
+        let session = Session::create(
+            &engine,
+            &config,
+            Some("batch-helpers-test".to_string()),
+            tx,
+            Some("test-role".to_string()),
+        )
+        .await
+        .expect("Session::create on a fresh engine should succeed");
+        (session, rx)
+    }
+
+    /// Permissions that allow `core::passthrough` only.  Anything else
+    /// (notably `core::sink`) is forbidden, which gives us a clean
+    /// permission-denied path without depending on `Permissions::user`'s
+    /// exact allow-list.
+    fn passthrough_only_perms() -> Permissions {
+        let mut perms = Permissions::user();
+        perms.allowed_nodes = vec!["core::passthrough".to_string()];
+        perms
+    }
+
+    fn add_op(node_id: &str, kind: &str) -> BatchOperation {
+        BatchOperation::AddNode {
+            node_id: node_id.to_string(),
+            kind: kind.to_string(),
+            params: None,
+        }
+    }
+
+    fn remove_op(node_id: &str) -> BatchOperation {
+        BatchOperation::RemoveNode { node_id: node_id.to_string() }
+    }
+
+    fn connect_op(from: (&str, &str), to: (&str, &str)) -> BatchOperation {
+        BatchOperation::Connect {
+            from_node: from.0.to_string(),
+            from_pin: from.1.to_string(),
+            to_node: to.0.to_string(),
+            to_pin: to.1.to_string(),
+            mode: ConnectionMode::Reliable,
+        }
+    }
+
+    fn disconnect_op(from: (&str, &str), to: (&str, &str)) -> BatchOperation {
+        BatchOperation::Disconnect {
+            from_node: from.0.to_string(),
+            from_pin: from.1.to_string(),
+            to_node: to.0.to_string(),
+            to_pin: to.1.to_string(),
+        }
+    }
+
+    /// Seed the session's durable pipeline model directly.  We bypass
+    /// the engine because these unit tests only exercise the helpers'
+    /// view of `pipeline.nodes`, not the actor's state.
+    async fn preinsert_node(session: &Session, node_id: &str, kind: &str) {
+        let mut pipeline = session.pipeline.lock().await;
+        pipeline.nodes.insert(
+            node_id.to_string(),
+            streamkit_api::Node { kind: kind.to_string(), params: None, state: None },
+        );
+    }
+
+    // ---- check_batch_node_id_uniqueness ----
+
+    #[tokio::test]
+    async fn check_uniqueness_empty_ops_returns_empty() {
+        let (session, _rx) = fresh_session().await;
+        let conflicts = check_batch_node_id_uniqueness(&session, &[]).await;
+        assert!(conflicts.is_empty(), "expected no conflicts, got: {conflicts:?}");
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn check_uniqueness_addnode_collides_with_existing_pipeline_node() {
+        let (session, _rx) = fresh_session().await;
+        preinsert_node(&session, "alpha", "core::passthrough").await;
+
+        let ops = vec![add_op("alpha", "core::passthrough")];
+        let conflicts = check_batch_node_id_uniqueness(&session, &ops).await;
+
+        assert_eq!(conflicts, vec!["alpha".to_string()]);
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn check_uniqueness_duplicate_within_batch_reports_id_once() {
+        let (session, _rx) = fresh_session().await;
+        let ops = vec![add_op("beta", "core::passthrough"), add_op("beta", "core::passthrough")];
+
+        let conflicts = check_batch_node_id_uniqueness(&session, &ops).await;
+
+        // First Add seeds the live set; the second Add for the same id
+        // is the one reported.  The contract is "per collision", which
+        // for two identical Adds means one entry.
+        assert_eq!(conflicts, vec!["beta".to_string()]);
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn check_uniqueness_remove_then_add_for_existing_node_does_not_conflict() {
+        let (session, _rx) = fresh_session().await;
+        preinsert_node(&session, "gamma", "core::passthrough").await;
+
+        let ops = vec![remove_op("gamma"), add_op("gamma", "core::passthrough")];
+        let conflicts = check_batch_node_id_uniqueness(&session, &ops).await;
+
+        assert!(
+            conflicts.is_empty(),
+            "RemoveNode before AddNode for the same id must not report a conflict, got: {conflicts:?}",
+        );
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    // Documents the current order-sensitive behavior: an AddNode that
+    // collides with the live pipeline is reported as a conflict even
+    // when a later RemoveNode in the same batch would clear it.  See
+    // the follow-up note in the PR description.
+    #[tokio::test]
+    async fn check_uniqueness_add_then_remove_for_existing_node_still_conflicts() {
+        let (session, _rx) = fresh_session().await;
+        preinsert_node(&session, "delta", "core::passthrough").await;
+
+        let ops = vec![add_op("delta", "core::passthrough"), remove_op("delta")];
+        let conflicts = check_batch_node_id_uniqueness(&session, &ops).await;
+
+        assert_eq!(conflicts, vec!["delta".to_string()]);
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    // ---- validate_batch_operations ----
+
+    #[tokio::test]
+    async fn validate_empty_ops_returns_no_errors() {
+        let (session, _rx) = fresh_session().await;
+        let errors = validate_batch_operations(
+            &session,
+            &[],
+            &passthrough_only_perms(),
+            &SecurityConfig::default(),
+        )
+        .await;
+        assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn validate_forbidden_node_kind_reports_permission_denied() {
+        let (session, _rx) = fresh_session().await;
+        let ops = vec![add_op("forbidden", "core::sink")];
+
+        let errors = validate_batch_operations(
+            &session,
+            &ops,
+            &passthrough_only_perms(),
+            &SecurityConfig::default(),
+        )
+        .await;
+
+        assert_eq!(errors.len(), 1, "expected exactly one error, got {errors:?}");
+        let err = &errors[0];
+        assert!(matches!(err.error_type, ValidationErrorType::Error));
+        assert_eq!(err.node_id.as_deref(), Some("forbidden"));
+        assert!(err.connection_id.is_none());
+        assert!(
+            err.message.starts_with("Permission denied:"),
+            "expected 'Permission denied:' prefix, got: {}",
+            err.message,
+        );
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn validate_file_reader_outside_allowed_paths_reports_file_security_error() {
+        let (session, _rx) = fresh_session().await;
+        // Admin perms so the kind itself is allowed: only the file-path
+        // check should fire.
+        let perms = Permissions::admin();
+        // Default allowed_file_paths is `["samples/**"]` (relative to
+        // cwd).  A real existing file outside that glob must fail the
+        // security check.
+        let tmp = NamedTempFile::new().expect("failed to create tempfile");
+        let outside_path = tmp.path().to_string_lossy().to_string();
+
+        let ops = vec![BatchOperation::AddNode {
+            node_id: "reader".to_string(),
+            kind: "core::file_reader".to_string(),
+            params: Some(serde_json::json!({ "path": outside_path })),
+        }];
+
+        let errors =
+            validate_batch_operations(&session, &ops, &perms, &SecurityConfig::default()).await;
+
+        assert_eq!(errors.len(), 1, "expected one file-security error, got {errors:?}");
+        let err = &errors[0];
+        assert!(matches!(err.error_type, ValidationErrorType::Error));
+        assert_eq!(err.node_id.as_deref(), Some("reader"));
+        assert!(
+            err.message.starts_with("Invalid file path:"),
+            "expected 'Invalid file path:' prefix, got: {}",
+            err.message,
+        );
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn validate_duplicate_id_in_batch_is_reported() {
+        let (session, _rx) = fresh_session().await;
+        let ops = vec![add_op("dup", "core::passthrough"), add_op("dup", "core::passthrough")];
+
+        let errors = validate_batch_operations(
+            &session,
+            &ops,
+            &passthrough_only_perms(),
+            &SecurityConfig::default(),
+        )
+        .await;
+
+        let dup_errs: Vec<_> =
+            errors.iter().filter(|e| e.node_id.as_deref() == Some("dup")).collect();
+        assert!(!dup_errs.is_empty(), "expected a duplicate-id error for 'dup', got: {errors:?}");
+        assert!(matches!(dup_errs[0].error_type, ValidationErrorType::Error));
+        assert!(
+            dup_errs[0].message.contains("already exists"),
+            "expected 'already exists' in message, got: {}",
+            dup_errs[0].message,
+        );
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn validate_happy_path_returns_no_errors() {
+        let (session, _rx) = fresh_session().await;
+        let ops = vec![add_op("a", "core::passthrough"), add_op("b", "core::passthrough")];
+
+        let errors = validate_batch_operations(
+            &session,
+            &ops,
+            &passthrough_only_perms(),
+            &SecurityConfig::default(),
+        )
+        .await;
+
+        assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    // ---- apply_batch_operations ----
+
+    #[tokio::test]
+    async fn apply_duplicate_id_is_rejected_and_pipeline_unchanged() {
+        let (session, _rx) = fresh_session().await;
+        preinsert_node(&session, "existing", "core::passthrough").await;
+        let before_len = session.pipeline.lock().await.nodes.len();
+
+        let ops = vec![add_op("existing", "core::passthrough")];
+        let result = apply_batch_operations(
+            &session,
+            ops,
+            &passthrough_only_perms(),
+            &SecurityConfig::default(),
+        )
+        .await;
+
+        let err = result.expect_err("expected Err for duplicate id");
+        assert!(err.contains("already exists"), "unexpected error message: {err}");
+
+        let after = session.pipeline.lock().await;
+        assert_eq!(after.nodes.len(), before_len, "pipeline must not be mutated on rejection");
+        assert!(after.nodes.contains_key("existing"));
+        drop(after);
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn apply_forbidden_kind_is_rejected_and_pipeline_unchanged() {
+        let (session, _rx) = fresh_session().await;
+        let before_len = session.pipeline.lock().await.nodes.len();
+
+        let ops = vec![add_op("nope", "core::sink")];
+        let result = apply_batch_operations(
+            &session,
+            ops,
+            &passthrough_only_perms(),
+            &SecurityConfig::default(),
+        )
+        .await;
+
+        let err = result.expect_err("expected Err for forbidden kind");
+        assert!(err.starts_with("Permission denied:"), "unexpected error message: {err}");
+
+        let after = session.pipeline.lock().await;
+        assert_eq!(after.nodes.len(), before_len);
+        assert!(!after.nodes.contains_key("nope"));
+        drop(after);
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn apply_happy_addnode_mutates_pipeline_and_records_params() {
+        let (session, _rx) = fresh_session().await;
+
+        let ops = vec![BatchOperation::AddNode {
+            node_id: "new".to_string(),
+            kind: "core::passthrough".to_string(),
+            params: Some(serde_json::json!({ "k": "v" })),
+        }];
+        apply_batch_operations(
+            &session,
+            ops,
+            &passthrough_only_perms(),
+            &SecurityConfig::default(),
+        )
+        .await
+        .expect("happy AddNode must succeed");
+
+        let pipeline = session.pipeline.lock().await;
+        let node = pipeline.nodes.get("new").expect("'new' should be in pipeline.nodes");
+        assert_eq!(node.kind, "core::passthrough");
+        assert_eq!(node.params, Some(serde_json::json!({ "k": "v" })));
+        drop(pipeline);
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn apply_connect_after_addnode_records_connection() {
+        let (session, _rx) = fresh_session().await;
+        let ops = vec![
+            add_op("src", "core::passthrough"),
+            add_op("dst", "core::passthrough"),
+            connect_op(("src", "out"), ("dst", "in")),
+        ];
+
+        apply_batch_operations(
+            &session,
+            ops,
+            &passthrough_only_perms(),
+            &SecurityConfig::default(),
+        )
+        .await
+        .expect("connect after AddNode must succeed");
+
+        let pipeline = session.pipeline.lock().await;
+        assert!(pipeline.nodes.contains_key("src"));
+        assert!(pipeline.nodes.contains_key("dst"));
+        let conn = pipeline
+            .connections
+            .iter()
+            .find(|c| c.from_node == "src" && c.to_node == "dst")
+            .expect("expected a 'src -> dst' connection");
+        assert_eq!(conn.from_pin, "out");
+        assert_eq!(conn.to_pin, "in");
+        assert_eq!(conn.mode, ConnectionMode::Reliable);
+        drop(pipeline);
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn apply_disconnect_removes_existing_connection() {
+        let (session, _rx) = fresh_session().await;
+        let setup = vec![
+            add_op("a", "core::passthrough"),
+            add_op("b", "core::passthrough"),
+            connect_op(("a", "out"), ("b", "in")),
+        ];
+        apply_batch_operations(
+            &session,
+            setup,
+            &passthrough_only_perms(),
+            &SecurityConfig::default(),
+        )
+        .await
+        .expect("setup batch must succeed");
+        assert_eq!(session.pipeline.lock().await.connections.len(), 1);
+
+        let ops = vec![disconnect_op(("a", "out"), ("b", "in"))];
+        apply_batch_operations(
+            &session,
+            ops,
+            &passthrough_only_perms(),
+            &SecurityConfig::default(),
+        )
+        .await
+        .expect("disconnect must succeed");
+
+        let pipeline = session.pipeline.lock().await;
+        assert!(
+            pipeline.connections.is_empty(),
+            "connection should be removed, got: {:?}",
+            pipeline.connections,
+        );
+        drop(pipeline);
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn apply_removenode_drops_node_and_incident_connections() {
+        let (session, _rx) = fresh_session().await;
+        let setup = vec![
+            add_op("a", "core::passthrough"),
+            add_op("b", "core::passthrough"),
+            add_op("c", "core::passthrough"),
+            connect_op(("a", "out"), ("b", "in")),
+            connect_op(("b", "out"), ("c", "in")),
+        ];
+        apply_batch_operations(
+            &session,
+            setup,
+            &passthrough_only_perms(),
+            &SecurityConfig::default(),
+        )
+        .await
+        .expect("setup batch must succeed");
+        assert_eq!(session.pipeline.lock().await.connections.len(), 2);
+
+        let ops = vec![remove_op("b")];
+        apply_batch_operations(
+            &session,
+            ops,
+            &passthrough_only_perms(),
+            &SecurityConfig::default(),
+        )
+        .await
+        .expect("RemoveNode must succeed");
+
+        let pipeline = session.pipeline.lock().await;
+        assert!(!pipeline.nodes.contains_key("b"), "'b' should be removed");
+        assert!(pipeline.nodes.contains_key("a"));
+        assert!(pipeline.nodes.contains_key("c"));
+        assert!(
+            pipeline.connections.is_empty(),
+            "all connections incident on 'b' should be removed, got: {:?}",
+            pipeline.connections,
+        );
+        drop(pipeline);
+        let _ = session.shutdown_and_wait().await;
+    }
+}
