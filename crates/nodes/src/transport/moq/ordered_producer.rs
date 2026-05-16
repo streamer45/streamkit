@@ -13,7 +13,7 @@ use hang::container::{Frame, Timestamp};
 /// which pulls heavy deps (mp4-atom, h264-parser, m3u8-rs) that StreamKit does
 /// not need.
 #[derive(Clone)]
-#[allow(dead_code)]
+#[allow(dead_code)] // vendored API surface retained for parity with upstream hang
 pub struct OrderedProducer {
     pub track: moq_lite::TrackProducer,
     group: Option<moq_lite::GroupProducer>,
@@ -22,7 +22,7 @@ pub struct OrderedProducer {
     max_group_duration: Option<Timestamp>,
 }
 
-#[allow(dead_code)]
+#[allow(dead_code)] // vendored API surface retained for parity with upstream hang
 impl OrderedProducer {
     pub const fn new(inner: moq_lite::TrackProducer) -> Self {
         Self {

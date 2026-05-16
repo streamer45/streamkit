@@ -1265,7 +1265,7 @@ mod tests {
 
     #[test]
     fn test_track_selection_uses_codec_fields() {
-        let tracks = vec![
+        let tracks = [
             DiscoveredTrack {
                 track: moq_lite::Track { name: "my-custom-audio".to_string(), priority: 80 },
                 video_codec: None,
@@ -1285,7 +1285,7 @@ mod tests {
 
     #[test]
     fn test_has_audio_and_video_uses_codec_fields() {
-        let both = vec![
+        let both = [
             DiscoveredTrack {
                 track: moq_lite::Track { name: "x".to_string(), priority: 0 },
                 video_codec: None,
@@ -1299,7 +1299,7 @@ mod tests {
         ];
         assert!(MoqPullNode::has_audio_and_video(&both));
 
-        let audio_only = vec![DiscoveredTrack {
+        let audio_only = [DiscoveredTrack {
             track: moq_lite::Track { name: "z".to_string(), priority: 0 },
             video_codec: None,
             audio_codec: Some(AudioCodec::Aac),
@@ -1309,7 +1309,7 @@ mod tests {
 
     #[test]
     fn test_output_pins_for_tracks_uses_codec_not_name() {
-        let tracks = vec![DiscoveredTrack {
+        let tracks = [DiscoveredTrack {
             track: moq_lite::Track { name: "non-standard-name".to_string(), priority: 60 },
             video_codec: Some(VideoCodec::Av1),
             audio_codec: None,
