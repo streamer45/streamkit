@@ -220,4 +220,5 @@ Read the relevant guide **before** starting work in that area:
 | [`agent_docs/render-performance.md`](agent_docs/render-performance.md) | Compositor perf profiling, render regression testing |
 | [`agent_docs/adding-plugins.md`](agent_docs/adding-plugins.md) | Making a plugin official — full checklist |
 | [`agent_docs/common-pitfalls.md`](agent_docs/common-pitfalls.md) | Known mistakes agents make — read this first if unsure |
+| [`agent_docs/coverage.md`](agent_docs/coverage.md) | Adding tests — what to cover, what NOT to cover, the 80% practical standard |
 | [`agent_docs/skills-setup.md`](agent_docs/skills-setup.md) | Install curated [skills.sh](https://skills.sh/) packages for React, Playwright, etc. |

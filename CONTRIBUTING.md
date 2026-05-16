@@ -160,6 +160,22 @@ There's a warning-only commit hook - it won't block you, just nudges you toward 
 - Use conventional commit format for PR titles (they become squash-merge commits)
 - CI must pass: tests, formatting, clippy, TypeScript compilation, license headers
 
+## Testing & Coverage
+
+Aim for **≥ 80% coverage on new or changed lines**, with higher bars for
+core engine, API, and server hot-path code, and lower expectations for UI
+glue, generated code, and thin wrappers. What gets covered matters more
+than the percentage — focus tests on critical business rules, complex
+branching, bug-prone areas, and public APIs. Don't write superficial
+tests just to move the number.
+
+Coverage commands: `just cov-skit` (backend), `cd ui && bun run
+test:coverage` (UI), `just cov` (both). The dashboard lives at
+<https://app.codecov.io/gh/streamer45/streamkit>.
+
+See [`agent_docs/coverage.md`](agent_docs/coverage.md) for the full
+testing-and-coverage guidelines.
+
 ## Plugins
 
 **Native plugins** (fast, no sandbox): See `examples/plugins/gain-native/`
