@@ -14,7 +14,7 @@
     "test": "vitest",
     "test:run": "vitest run",
     "test:ui": "vitest --ui",
-    "test:coverage": "vitest --coverage",
+    "test:coverage": "vitest run --coverage",
     "test:perf": "UPDATE_PERF_BASELINE=1 vitest run --reporter=verbose perf.test",
     "prepare": "cd .. && husky .husky"
   },

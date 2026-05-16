@@ -1,0 +1,132 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Codecov configuration. Initial rollout is informational only — gates are
+# disabled below and will be ratcheted up once a baseline has been collected.
+#
+# Ratchet plan (concrete meaning of "ratcheted up"):
+#   Phase 1 (now):     informational: true,  threshold: 100% (no gating)
+#   Phase 2 (~2 wks):  informational: false, project.threshold: 1%
+#                        (any coverage drop >1% blocks the PR)
+#   Phase 3 (~4 wks):  add patch.target: 70% (new code must hit 70%)
+# Phase transitions are intentionally manual — edit this file and remove
+# `informational: true` / tighten `threshold` / `target` as the baseline
+# settles. The `backend` and `ui` flag totals on the Codecov dashboard are
+# the headline numbers to watch when deciding when to advance.
+
+codecov:
+  require_ci_to_pass: false
+
+coverage:
+  precision: 2
+  round: down
+  status:
+    project:
+      backend:
+        flags:
+          - backend
+        target: auto
+        threshold: 100%
+        informational: true
+      ui:
+        flags:
+          - ui
+        target: auto
+        threshold: 100%
+        informational: true
+    patch:
+      default:
+        target: auto
+        threshold: 100%
+        informational: true
+
+# Flags are project-level rollups uploaded from CI (one per workflow).
+# Their `paths` are intentionally broader than the named components below:
+# anything under `apps/` or `crates/` not covered by a specific component
+# still contributes to the `backend` flag total. Components are the
+# granular signal; flags are the headline number.
+flag_management:
+  default_rules:
+    carryforward: true
+  individual_flags:
+    - name: backend
+      paths:
+        - apps/
+        - crates/
+    - name: ui
+      paths:
+        - ui/src/
+
+# Components below cover the core/engine/api/nodes/server hot paths plus
+# the two plugin crates and the most-tested UI subtrees. Code under
+# `apps/skit-cli/`, `sdks/`, and the plugin/native workspaces is excluded
+# from coverage entirely (see the `ignore` block at the bottom) because
+# those workspaces are either thin protocol wrappers, vendored, or not
+# built in the standard CI matrix. Add new components here as new
+# subsystems land — keep the list small to make the dashboard readable.
+component_management:
+  default_rules:
+    statuses:
+      - type: project
+        target: auto
+        threshold: 100%
+        informational: true
+  individual_components:
+    - component_id: core
+      name: core
+      paths:
+        - crates/core/**
+    - component_id: engine
+      name: engine
+      paths:
+        - crates/engine/**
+    - component_id: api
+      name: api
+      paths:
+        - crates/api/**
+    - component_id: nodes
+      name: nodes
+      paths:
+        - crates/nodes/**
+    - component_id: server
+      name: server
+      paths:
+        - apps/skit/**
+    - component_id: plugin-native
+      name: plugin-native
+      paths:
+        - crates/plugin-native/**
+    - component_id: plugin-wasm
+      name: plugin-wasm
+      paths:
+        - crates/plugin-wasm/**
+    - component_id: ui-services
+      name: ui-services
+      paths:
+        - ui/src/services/**
+        - ui/src/hooks/**
+        - ui/src/stores/**
+    - component_id: ui-components
+      name: ui-components
+      paths:
+        - ui/src/components/**
+
+comment:
+  layout: "header, diff, flags, components, files"
+  behavior: default
+  # Comment on every PR during Phase 1 so the team sees the numbers
+  # land. Flip to `true` at Phase 2 (when gates become enforcing) so
+  # the bot only speaks up when coverage actually changed.
+  require_changes: false
+
+ignore:
+  - "**/generated/**"
+  - "**/benches/**"
+  - "**/examples/**"
+  - "tests/pipeline-validation/**"
+  - "plugins/**"
+  - "ui/src/types/generated/**"
+  - "apps/skit-cli/**"
+  - "sdks/**"
+  - "docs/**"

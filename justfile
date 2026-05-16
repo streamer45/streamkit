@@ -230,6 +230,48 @@ test-skit-gpu:
     @cargo test -p streamkit-engine --features gpu
     @cargo test -p streamkit-nodes --features nvcodec
 
+# Coverage runs use an isolated target dir (target/coverage) so they don't
+# invalidate the shared rust-cache key used by lint/test in CI.
+
+# Install host tooling required for coverage runs. No-op on warm setups
+# (the `command -v` guards short-circuit `cargo install`'s slow version
+# resolution when the binaries are already on PATH).
+install-cov-tools:
+    @echo "Installing coverage tooling..."
+    @command -v cargo-llvm-cov >/dev/null || cargo install --locked cargo-llvm-cov
+    @command -v cargo-nextest >/dev/null || cargo install --locked cargo-nextest
+    @rustup component add llvm-tools-preview
+
+# Backend coverage across the workspace + the non-default mcp feature
+# (no GPU tests). Produces lcov + html under target/coverage/.
+cov-skit: install-cov-tools
+    @echo "Collecting backend coverage..."
+    @CARGO_LLVM_COV_TARGET_DIR=target/coverage \
+        cargo llvm-cov clean --workspace
+    @CARGO_LLVM_COV_TARGET_DIR=target/coverage \
+        cargo llvm-cov --workspace --no-report nextest -- --skip gpu_tests::
+    @CARGO_LLVM_COV_TARGET_DIR=target/coverage \
+        cargo llvm-cov --no-report nextest -p streamkit-server --features "mcp"
+    @CARGO_LLVM_COV_TARGET_DIR=target/coverage \
+        cargo llvm-cov report --lcov --output-path target/coverage/lcov.info
+    @CARGO_LLVM_COV_TARGET_DIR=target/coverage \
+        cargo llvm-cov report --html --output-dir target/coverage/html
+    @echo "Backend coverage report: target/coverage/html/index.html"
+
+# Open the previously-generated backend HTML report. Run `just cov-skit
+# cov-skit-open` to regenerate and open.
+cov-skit-open:
+    @xdg-open target/coverage/html/index.html
+
+# Frontend coverage via the configured v8 provider.
+[working-directory: 'ui']
+cov-ui: install-ui
+    @echo "Collecting UI coverage..."
+    @bun run test:coverage
+
+# Run both backend and frontend coverage.
+cov: cov-skit cov-ui
+
 # Lint and format check the skit code
 # Note: We exclude dhat-heap since it's mutually exclusive with profiling (both define global allocators)
 lint-skit:

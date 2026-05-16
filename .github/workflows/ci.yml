@@ -63,6 +63,9 @@ jobs:
       needs.changes.outputs.rust == 'true' ||
       needs.changes.outputs.ui == 'true'
     uses: ./.github/workflows/skit.yml
+    # Reusable workflows don't inherit secrets by default; pass them
+    # through so the Coverage job can read CODECOV_TOKEN.
+    secrets: inherit
 
   ui:
     name: UI
@@ -72,6 +75,7 @@ jobs:
       needs.changes.outputs.ci == 'true' ||
       needs.changes.outputs.ui == 'true'
     uses: ./.github/workflows/ui.yml
+    secrets: inherit
 
   plugins:
     name: Plugins
