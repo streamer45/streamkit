@@ -4,8 +4,38 @@
 
 use crate::dynamic_messages::{ConnectionId, PinConfigMsg};
 use crate::dynamic_pin_distributor::PinDistributorActor;
+use std::sync::{Arc, Mutex};
 use streamkit_core::types::Packet;
 use tokio::sync::mpsc;
+
+struct WarnCollector(Arc<Mutex<Vec<String>>>);
+
+#[allow(clippy::unwrap_used)]
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCollector {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if *event.metadata().level() == tracing::Level::WARN {
+            struct Visitor(String);
+            impl tracing::field::Visit for Visitor {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    if field.name() == "message" {
+                        self.0 = format!("{value:?}");
+                    }
+                }
+            }
+            let mut v = Visitor(String::new());
+            event.record(&mut v);
+            self.0.lock().unwrap().push(v.0);
+        }
+    }
+}
 
 #[tokio::test]
 async fn pin_distributor_fanout_delivers_to_all_outputs() {
@@ -79,17 +109,25 @@ async fn pin_distributor_fanout_delivers_to_all_outputs() {
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 async fn pin_distributor_removes_closed_outputs() {
+    use tracing::instrument::WithSubscriber;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    let warnings: Arc<Mutex<Vec<String>>> = Arc::default();
+    let subscriber = tracing_subscriber::registry().with(WarnCollector(Arc::clone(&warnings)));
+
     let (data_tx, data_rx) = mpsc::channel(8);
     let (config_tx, config_rx) = mpsc::channel(8);
 
     let actor =
         PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
-    let actor_handle = tokio::spawn(actor.run());
+    let actor_handle =
+        tokio::spawn(actor.run().with_subscriber(tracing::Dispatch::new(subscriber)));
 
     let (open_tx, mut open_rx) = mpsc::channel(8);
     let (closed_tx, closed_rx) = mpsc::channel::<Packet>(1);
-    drop(closed_rx); // immediately close this downstream
+    drop(closed_rx);
 
     let open_id = ConnectionId::new(
         "node_a".to_string(),
@@ -125,27 +163,46 @@ async fn pin_distributor_removes_closed_outputs() {
         panic!("failed to add closed connection: {e}");
     }
 
-    if let Err(e) = data_tx.send(Packet::Text("one".into())).await {
-        panic!("failed to send packet 1: {e}");
-    }
-    if let Err(e) = data_tx.send(Packet::Text("two".into())).await {
-        panic!("failed to send packet 2: {e}");
+    if let Err(e) = data_tx.send(Packet::Text("trigger_removal".into())).await {
+        panic!("failed to send trigger packet: {e}");
     }
 
-    let Some(pkt1) = open_rx.recv().await else {
-        panic!("open output closed unexpectedly (packet 1)");
+    let Some(pkt) = open_rx.recv().await else {
+        panic!("open output closed unexpectedly");
     };
-    match pkt1 {
-        Packet::Text(s) => assert_eq!(s.as_ref(), "one"),
+    match pkt {
+        Packet::Text(s) => assert_eq!(s.as_ref(), "trigger_removal"),
         other => panic!("unexpected packet: {other:?}"),
     }
-    let Some(pkt2) = open_rx.recv().await else {
-        panic!("open output closed unexpectedly (packet 2)");
-    };
-    match pkt2 {
-        Packet::Text(s) => assert_eq!(s.as_ref(), "two"),
-        other => panic!("unexpected packet: {other:?}"),
+
+    tokio::task::yield_now().await;
+
+    let removal_warnings = warnings.lock().unwrap().len();
+    assert_eq!(
+        removal_warnings, 1,
+        "first packet should trigger exactly one closed-output warning"
+    );
+
+    for i in 0..5 {
+        if let Err(e) = data_tx.send(Packet::Text(format!("after_{i}").into())).await {
+            panic!("failed to send follow-up packet {i}: {e}");
+        }
+        let Some(pkt) = open_rx.recv().await else {
+            panic!("open output closed unexpectedly on follow-up {i}");
+        };
+        match pkt {
+            Packet::Text(s) => assert_eq!(s.as_ref(), &format!("after_{i}")),
+            other => panic!("unexpected follow-up packet: {other:?}"),
+        }
     }
+
+    tokio::task::yield_now().await;
+
+    let total_warnings = warnings.lock().unwrap().len();
+    assert_eq!(
+        total_warnings, 1,
+        "no additional warnings expected after closed output is removed, got {total_warnings}"
+    );
 
     drop(data_tx);
     drop(config_tx);
