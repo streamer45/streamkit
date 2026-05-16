@@ -693,15 +693,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "buf-list"
-version = "1.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6b175f9cf8fffedd4c4b18bcfef092356e952b81f596e148f18e98280994593"
-dependencies = [
- "bytes",
-]
-
-[[package]]
 name = "built"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2424,13 +2415,11 @@ dependencies = [
 
 [[package]]
 name = "hang"
-version = "0.15.8"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc07f0e24419d458e469ad549065c25d3daf00f9c0132cb208f72ac270f7f109"
+checksum = "59435f843c8a41ac499ce68828d16c575438e34ffa85b1ea46ba2529bb2a5b16"
 dependencies = [
- "buf-list",
  "bytes",
- "conducer",
  "derive_more",
  "hex",
  "lazy_static",
@@ -2440,8 +2429,6 @@ dependencies = [
  "serde_json",
  "serde_with",
  "thiserror 2.0.18",
- "tokio",
- "tracing",
  "url",
 ]
 
@@ -3507,9 +3494,9 @@ dependencies = [
 
 [[package]]
 name = "moq-lite"
-version = "0.15.15"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d347495ba1fb0c102ab9cdfc149519bdcd9ad9d3bf2eda5e60e82f9dadf7e98"
+checksum = "15b02845fa5cef29b516e0ed60dc95f5904502bf001a8a2790d543fae6571a94"
 dependencies = [
  "bytes",
  "conducer",
@@ -3526,9 +3513,9 @@ dependencies = [
 
 [[package]]
 name = "moq-native"
-version = "0.13.13"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe7a49a0659c303b9eb08f3cfb4587725a756c2f005b65179554a82a362f402d"
+checksum = "6942bac34d380bbab511e10069bc0f9615f20109807dab01b52d45e0812dc571"
 dependencies = [
  "anyhow",
  "clap",
@@ -3555,7 +3542,6 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "web-transport-quinn",
- "x509-parser",
 ]
 
 [[package]]

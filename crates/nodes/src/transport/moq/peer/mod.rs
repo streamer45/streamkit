@@ -915,7 +915,7 @@ impl MoqPeerNode {
             .send(streamkit_core::moq_gateway::MoqConnectionResult::Accepted);
 
         // Create origin for receiving from client
-        let client_publish_origin = moq_lite::Origin::produce();
+        let client_publish_origin = moq_lite::Origin::random().produce();
         let receive_origin = client_publish_origin.consume();
 
         // Accept MoQ session (publisher only sends, no server publish needed)
@@ -971,10 +971,10 @@ impl MoqPeerNode {
             .send(streamkit_core::moq_gateway::MoqConnectionResult::Accepted);
 
         // Create origins for full bidirectional MoQ
-        let server_publish_origin = moq_lite::Origin::produce();
+        let server_publish_origin = moq_lite::Origin::random().produce();
         let send_origin = server_publish_origin.clone();
 
-        let client_publish_origin = moq_lite::Origin::produce();
+        let client_publish_origin = moq_lite::Origin::random().produce();
         let receive_origin = client_publish_origin.consume();
 
         let session = request
@@ -1422,7 +1422,8 @@ impl MoqPeerNode {
             broadcast_consumer.subscribe_track(&hang::catalog::Catalog::default_track()).map_err(
                 |e| StreamKitError::Runtime(format!("Failed to subscribe to catalog track: {e}")),
             )?;
-        let mut catalog_consumer = hang::catalog::CatalogConsumer::new(catalog_track);
+        let mut catalog_consumer =
+            crate::transport::moq::catalog_consumer::CatalogConsumer::new(catalog_track);
 
         let mut track_handles: HashMap<
             String,
@@ -1735,7 +1736,7 @@ impl MoqPeerNode {
     ) -> Result<Option<moq_lite::GroupConsumer>, moq_lite::Error> {
         tokio::select! {
             biased;
-            group_result = track_consumer.next_group_ordered() => {
+            group_result = track_consumer.next_group() => {
                 match group_result {
                     Ok(Some(group)) => {
                         tracing::debug!(output_pin, "Got next group from publisher");
@@ -1971,7 +1972,7 @@ impl MoqPeerNode {
             .send(streamkit_core::moq_gateway::MoqConnectionResult::Accepted);
 
         // Create origin for sending to client
-        let server_publish_origin = moq_lite::Origin::produce();
+        let server_publish_origin = moq_lite::Origin::random().produce();
         let send_origin = server_publish_origin.clone();
 
         // Accept MoQ session (subscriber only receives, no client publish needed)
@@ -2163,8 +2164,8 @@ impl MoqPeerNode {
     ) -> Result<
         (
             moq_lite::BroadcastProducer,
-            Option<hang::container::OrderedProducer>,
-            Option<hang::container::OrderedProducer>,
+            Option<crate::transport::moq::ordered_producer::OrderedProducer>,
+            Option<crate::transport::moq::ordered_producer::OrderedProducer>,
             moq_lite::TrackProducer,
         ),
         StreamKitError,
@@ -2180,7 +2181,7 @@ impl MoqPeerNode {
             let producer = broadcast_producer.create_track(track.clone()).map_err(|e| {
                 StreamKitError::Runtime(format!("Failed to create audio track: {e}"))
             })?;
-            Some((track, hang::container::OrderedProducer::from(producer)))
+            Some((track, crate::transport::moq::ordered_producer::OrderedProducer::from(producer)))
         } else {
             None
         };
@@ -2191,7 +2192,7 @@ impl MoqPeerNode {
             let producer = broadcast_producer.create_track(track.clone()).map_err(|e| {
                 StreamKitError::Runtime(format!("Failed to create video track: {e}"))
             })?;
-            Some((track, hang::container::OrderedProducer::from(producer)))
+            Some((track, crate::transport::moq::ordered_producer::OrderedProducer::from(producer)))
         } else {
             None
         };
@@ -2295,8 +2296,8 @@ impl MoqPeerNode {
     /// Run the main send loop, forwarding packets to the subscriber
     #[allow(clippy::too_many_arguments)]
     async fn run_subscriber_send_loop(
-        audio_track_producer: &mut Option<hang::container::OrderedProducer>,
-        video_track_producer: &mut Option<hang::container::OrderedProducer>,
+        audio_track_producer: &mut Option<crate::transport::moq::ordered_producer::OrderedProducer>,
+        video_track_producer: &mut Option<crate::transport::moq::ordered_producer::OrderedProducer>,
         mut broadcast_rx: broadcast::Receiver<BroadcastFrame>,
         shutdown_rx: &mut broadcast::Receiver<()>,
         output_group_duration_ms: u64,
@@ -2410,9 +2411,6 @@ impl MoqPeerNode {
                         StreamKitError::Runtime("MoQ frame timestamp overflow".to_string())
                     })?;
 
-                let mut payload = hang::container::BufList::new();
-                payload.push_chunk(broadcast_frame.data);
-
                 if keyframe {
                     if let Err(e) = track_producer.keyframe() {
                         tracing::warn!(kind = ?broadcast_frame.kind, "Failed to signal keyframe: {e}");
@@ -2423,9 +2421,9 @@ impl MoqPeerNode {
                     }
                 }
 
-                let frame = hang::container::Frame { timestamp, payload };
+                let frame = hang::container::Frame { timestamp, payload: broadcast_frame.data };
 
-                if let Err(e) = track_producer.write(frame) {
+                if let Err(e) = track_producer.write(&frame) {
                     tracing::warn!(kind = ?broadcast_frame.kind, "Failed to write MoQ frame to subscriber: {e}");
                     let _ = ctx
                         .stats_delta_tx

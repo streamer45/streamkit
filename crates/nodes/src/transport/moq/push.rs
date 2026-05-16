@@ -110,7 +110,7 @@ pub struct MoqPushNode {
 struct DynamicInputState {
     pin_name: String,
     receiver: tokio::sync::mpsc::Receiver<Packet>,
-    producer: hang::container::OrderedProducer,
+    producer: super::ordered_producer::OrderedProducer,
     clock: MediaClock,
     seeded: bool,
     first_sent: bool,
@@ -194,7 +194,7 @@ impl ProcessorNode for MoqPushNode {
             },
         };
 
-        let publisher_origin = moq_lite::Origin::produce();
+        let publisher_origin = moq_lite::Origin::random().produce();
         let _publisher_session =
             match client.clone().with_publish(publisher_origin.consume()).connect(url).await {
                 Ok(session) => session,
@@ -249,7 +249,7 @@ impl ProcessorNode for MoqPushNode {
         } else {
             None
         };
-        let mut audio_producer: Option<hang::container::OrderedProducer> =
+        let mut audio_producer: Option<super::ordered_producer::OrderedProducer> =
             if let Some(ref at) = audio_track {
                 let producer = broadcast.create_track(at.clone()).map_err(|e| {
                     StreamKitError::Runtime(format!("Failed to create audio track: {e}"))
@@ -265,7 +265,7 @@ impl ProcessorNode for MoqPushNode {
         } else {
             None
         };
-        let mut video_producer: Option<hang::container::OrderedProducer> =
+        let mut video_producer: Option<super::ordered_producer::OrderedProducer> =
             if let Some(ref vt) = video_track {
                 let producer = broadcast.create_track(vt.clone()).map_err(|e| {
                     StreamKitError::Runtime(format!("Failed to create video track: {e}"))
@@ -573,9 +573,6 @@ impl ProcessorNode for MoqPushNode {
                         StreamKitError::Runtime("MoQ frame timestamp overflow".to_string())
                     })?;
 
-                let mut payload = hang::container::BufList::new();
-                payload.push_chunk(data);
-
                 if keyframe {
                     if let Err(e) = producer.keyframe() {
                         let err_msg = format!("Failed to signal keyframe: {e}");
@@ -587,9 +584,9 @@ impl ProcessorNode for MoqPushNode {
                     }
                 }
 
-                let frame = hang::container::Frame { timestamp, payload };
+                let frame = hang::container::Frame { timestamp, payload: data };
 
-                if let Err(e) = producer.write(frame) {
+                if let Err(e) = producer.write(&frame) {
                     let err_msg = format!("Failed to write MoQ frame: {e}");
                     tracing::warn!("{err_msg}");
                     stats_tracker.errored();
@@ -801,7 +798,7 @@ impl MoqPushNode {
             // Roll back — subscribers won't discover this track.
             Self::remove_catalog_rendition(catalog, &track_name);
             // Finish the producer so the broadcast doesn't retain a dangling track.
-            let mut tp: hang::container::OrderedProducer = producer.into();
+            let mut tp: super::ordered_producer::OrderedProducer = producer.into();
             let _ = tp.track.finish();
             tracing::error!(
                 pin = %pin.name, track = %track_name,
