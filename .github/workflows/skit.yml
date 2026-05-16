@@ -203,6 +203,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: skit-coverage
+          # Point the cache at the same target dir we redirected Cargo to
+          # via CARGO_LLVM_COV_TARGET_DIR. Without this, rust-cache would
+          # cache the (empty) default target/ and skip the actual build
+          # artifacts under target/coverage.
+          workspaces: ". -> target/coverage"
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
 
