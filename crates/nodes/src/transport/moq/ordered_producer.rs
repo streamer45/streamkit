@@ -233,8 +233,6 @@ mod tests {
         assert!(op.group.is_some());
         assert_eq!(op.group_start, Some(ts(0)));
 
-        // Frame at the max duration boundary closes the old group and
-        // starts a fresh one for this frame.
         op.write(&make_frame(10_000)).unwrap();
         assert!(op.group.is_some());
         assert_eq!(op.group_start, Some(ts(10_000)));
