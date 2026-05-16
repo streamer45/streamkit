@@ -95,7 +95,7 @@ harder.
 | Backend tests only | `cargo test --workspace` |
 | UI tests only | `just test-ui` |
 
-Reports land under `target/llvm-cov/html/` (backend) and
+Reports land under `target/coverage/html/` (backend) and
 `ui/coverage/lcov-report/` (UI). Open `index.html` in either to drill
 down per file.
 
