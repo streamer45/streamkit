@@ -208,4 +208,4 @@ See [AGENTS.md](AGENTS.md) for repo-specific agent guidance.
 
 ## License
 
-Mozilla Public License 2.0 - see [LICENSE](LICENSE) for details.
+Mozilla Public License 2.0 — see [LICENSE](LICENSE) for details.
