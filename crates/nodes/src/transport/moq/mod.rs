@@ -11,7 +11,9 @@
 
 #![cfg(feature = "moq")]
 
+mod catalog_consumer;
 mod constants;
+mod ordered_producer;
 mod peer;
 mod pull;
 mod push;

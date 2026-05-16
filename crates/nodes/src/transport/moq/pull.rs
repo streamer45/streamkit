@@ -7,7 +7,6 @@
 use crate::video::{AV1_CONTENT_TYPE, H264_CONTENT_TYPE, VP9_CONTENT_TYPE};
 use async_trait::async_trait;
 use bytes::Buf;
-use moq_lite::AsPath;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::borrow::Cow;
@@ -98,7 +97,7 @@ impl MoqPullNode {
             if dt.track.name == "out" {
                 continue;
             }
-            let produces_type = if dt.track.name.starts_with("video/") {
+            let produces_type = if dt.video_codec.is_some() {
                 PacketType::EncodedVideo(EncodedVideoFormat {
                     codec: dt.video_codec.unwrap_or(VideoCodec::Vp9),
                     bitstream_format: None,
@@ -305,7 +304,7 @@ impl MoqPullNode {
     ) -> Result<Option<bytes::Bytes>, moq_lite::Error> {
         loop {
             if current_group.is_none() {
-                match track_consumer.next_group_ordered().await {
+                match track_consumer.next_group().await {
                     Ok(Some(group)) => {
                         *current_group = Some(group);
                         *is_first_in_group = true;
@@ -352,7 +351,7 @@ impl MoqPullNode {
 
         let client = super::shared_insecure_client()?;
 
-        let origin = moq_lite::Origin::produce();
+        let origin = moq_lite::Origin::random().produce();
         let consumer = origin.consume();
         let _consumer_session =
             client.clone().with_consume(origin).connect(url).await.map_err(|e| {
@@ -367,7 +366,7 @@ impl MoqPullNode {
 
         let discovery_start = tokio::time::Instant::now();
         let broadcast = loop {
-            if let Some(b) = consumer.consume_broadcast(&self.config.broadcast) {
+            if let Some(b) = consumer.get_broadcast(&self.config.broadcast) {
                 break b;
             }
             if discovery_start.elapsed() >= discovery_timeout {
@@ -390,7 +389,7 @@ impl MoqPullNode {
             broadcast.subscribe_track(&hang::catalog::Catalog::default_track()).map_err(|e| {
                 StreamKitError::Runtime(format!("Failed to subscribe to catalog track: {e}"))
             })?;
-        let mut catalog_consumer = hang::catalog::CatalogConsumer::new(raw_catalog_track);
+        let mut catalog_consumer = super::catalog_consumer::CatalogConsumer::new(raw_catalog_track);
 
         // Parse the catalog to discover tracks
         let tracks = self.parse_catalog(&mut catalog_consumer).await?;
@@ -458,15 +457,15 @@ impl MoqPullNode {
 
     /// Returns true if the track list contains both an audio and a video track.
     fn has_audio_and_video(tracks: &[DiscoveredTrack]) -> bool {
-        tracks.iter().any(|dt| dt.track.name.starts_with("audio/"))
-            && tracks.iter().any(|dt| dt.track.name.starts_with("video/"))
+        tracks.iter().any(|dt| dt.audio_codec.is_some())
+            && tracks.iter().any(|dt| dt.video_codec.is_some())
     }
 
     /// After finding initial tracks, wait for catalog updates that might add more
     /// (e.g. the browser's video encoder finishing after audio was already ready).
     /// Returns as soon as both audio and video are present, or on timeout.
     async fn settle_catalog(
-        catalog_consumer: &mut hang::catalog::CatalogConsumer,
+        catalog_consumer: &mut super::catalog_consumer::CatalogConsumer,
         mut best: Vec<DiscoveredTrack>,
     ) -> Vec<DiscoveredTrack> {
         if Self::has_audio_and_video(&best) {
@@ -505,7 +504,7 @@ impl MoqPullNode {
 
     async fn parse_catalog(
         &self,
-        catalog_consumer: &mut hang::catalog::CatalogConsumer,
+        catalog_consumer: &mut super::catalog_consumer::CatalogConsumer,
     ) -> Result<Vec<DiscoveredTrack>, StreamKitError> {
         let catalog_timeout = Duration::from_secs(30);
         let retry_delay = Duration::from_millis(100);
@@ -584,7 +583,7 @@ impl MoqPullNode {
         let client = super::shared_insecure_client()?;
 
         // Create origin for consuming broadcasts only (no publishing to avoid cycles)
-        let origin = moq_lite::Origin::produce();
+        let origin = moq_lite::Origin::random().produce();
         let consumer = origin.consume();
         let _consumer_session =
             client.clone().with_consume(origin).connect(url).await.map_err(|e| {
@@ -592,12 +591,10 @@ impl MoqPullNode {
             })?;
 
         // Wait for broadcast to become available
-        // Note: consume_broadcast() only works after announcement, so we primarily rely on announcements
         let broadcast = {
             let mut announcements = consumer.clone();
 
-            // Try immediate consume first (works if broadcast already announced)
-            if let Some(broadcast) = consumer.consume_broadcast(&self.config.broadcast) {
+            if let Some(broadcast) = consumer.get_broadcast(&self.config.broadcast) {
                 tracing::info!("Broadcast '{}' is immediately available", self.config.broadcast);
                 broadcast
             } else {
@@ -627,15 +624,12 @@ impl MoqPullNode {
                             }
                             Some((path, maybe_broadcast)) = announcements.announced() => {
                                 if let Some(broadcast) = maybe_broadcast {
-                                    // Compare paths without allocation - bind path to extend lifetime
-                                    let announced_path = path.as_path();
-                                    let path_str = announced_path.as_str();
-                                    if path_str == self.config.broadcast {
+                                    if path.as_str() == self.config.broadcast {
                                         tracing::info!("Broadcast '{}' has been announced", self.config.broadcast);
                                         break broadcast;
                                     }
                                     // Different broadcast announced, continue waiting
-                    tracing::trace!("Different broadcast announced: {}", path_str);
+                    tracing::trace!("Different broadcast announced: {}", path.as_str());
                                 }
                             }
                             else => {
@@ -654,7 +648,7 @@ impl MoqPullNode {
             broadcast.subscribe_track(&hang::catalog::Catalog::default_track()).map_err(|e| {
                 StreamKitError::Runtime(format!("Failed to subscribe to catalog track: {e}"))
             })?;
-        let mut catalog_consumer = hang::catalog::CatalogConsumer::new(raw_catalog_track);
+        let mut catalog_consumer = super::catalog_consumer::CatalogConsumer::new(raw_catalog_track);
 
         tracing::debug!(
             "subscribed to catalog track: {}",
@@ -670,16 +664,33 @@ impl MoqPullNode {
             ));
         }
 
-        // Find the first audio and video tracks. Track type is determined by
-        // the hang protocol's canonical track name prefix (`audio/…` / `video/…`),
-        // consistent with how parse_catalog() discovers them from codec info.
-        let audio_track = discovered_tracks.iter().find(|dt| !dt.track.name.starts_with("video/"));
-        let video_track = discovered_tracks.iter().find(|dt| dt.track.name.starts_with("video/"));
+        let audio_track = discovered_tracks.iter().find(|dt| dt.audio_codec.is_some());
+        let video_track = discovered_tracks.iter().find(|dt| dt.video_codec.is_some());
 
         let resolved_audio_codec = audio_track
             .and_then(|dt| dt.audio_codec)
             .or(self.config.audio_codec)
             .unwrap_or(AudioCodec::Opus);
+
+        // Warn when the catalog codec differs from the output pin set during
+        // initialize(). This can happen when init fails to discover the catalog
+        // (timeout) and the pin remains at the constructor's default codec.
+        let out_pin_codec = self.output_pins.iter().find(|p| p.name == "out").and_then(|p| {
+            match &p.produces_type {
+                PacketType::EncodedAudio(fmt) => Some(fmt.codec),
+                _ => None,
+            }
+        });
+        if let Some(pin_codec) = out_pin_codec {
+            if pin_codec != resolved_audio_codec {
+                tracing::warn!(
+                    advertised = ?pin_codec,
+                    discovered = ?resolved_audio_codec,
+                    "Catalog audio codec differs from output pin; \
+                     pin was set during init before catalog was available"
+                );
+            }
+        }
 
         if audio_track.is_none() && video_track.is_none() {
             return Err(StreamKitError::Runtime(
@@ -1249,6 +1260,80 @@ mod tests {
             worst_case_ms <= 1000,
             "worst-case cancel spin should be under 1 second, got {worst_case_ms}ms"
         );
+    }
+
+    #[test]
+    fn test_track_selection_uses_codec_fields() {
+        let tracks = vec![
+            DiscoveredTrack {
+                track: moq_lite::Track { name: "my-custom-audio".to_string(), priority: 80 },
+                video_codec: None,
+                audio_codec: Some(AudioCodec::Opus),
+            },
+            DiscoveredTrack {
+                track: moq_lite::Track { name: "my-custom-video".to_string(), priority: 60 },
+                video_codec: Some(VideoCodec::Vp9),
+                audio_codec: None,
+            },
+        ];
+        let audio = tracks.iter().find(|dt| dt.audio_codec.is_some());
+        let video = tracks.iter().find(|dt| dt.video_codec.is_some());
+        assert_eq!(audio.unwrap().track.name, "my-custom-audio");
+        assert_eq!(video.unwrap().track.name, "my-custom-video");
+    }
+
+    #[test]
+    fn test_has_audio_and_video_uses_codec_fields() {
+        let both = vec![
+            DiscoveredTrack {
+                track: moq_lite::Track { name: "x".to_string(), priority: 0 },
+                video_codec: None,
+                audio_codec: Some(AudioCodec::Opus),
+            },
+            DiscoveredTrack {
+                track: moq_lite::Track { name: "y".to_string(), priority: 0 },
+                video_codec: Some(VideoCodec::Av1),
+                audio_codec: None,
+            },
+        ];
+        assert!(MoqPullNode::has_audio_and_video(&both));
+
+        let audio_only = vec![DiscoveredTrack {
+            track: moq_lite::Track { name: "z".to_string(), priority: 0 },
+            video_codec: None,
+            audio_codec: Some(AudioCodec::Aac),
+        }];
+        assert!(!MoqPullNode::has_audio_and_video(&audio_only));
+    }
+
+    #[test]
+    fn test_output_pins_for_tracks_uses_codec_not_name() {
+        let tracks = vec![DiscoveredTrack {
+            track: moq_lite::Track { name: "non-standard-name".to_string(), priority: 60 },
+            video_codec: Some(VideoCodec::Av1),
+            audio_codec: None,
+        }];
+        let pins = MoqPullNode::output_pins_for_tracks(&tracks, AudioCodec::Opus);
+        let pin = pins.iter().find(|p| p.name == "non-standard-name").unwrap();
+        assert!(
+            matches!(&pin.produces_type, PacketType::EncodedVideo(fmt) if fmt.codec == VideoCodec::Av1),
+            "expected EncodedVideo(Av1), got {:?}",
+            pin.produces_type
+        );
+    }
+
+    #[test]
+    fn test_codec_mismatch_detectable() {
+        let node = MoqPullNode::new(MoqPullConfig::default());
+        let out_pin = node.output_pins.iter().find(|p| p.name == "out").unwrap();
+        let pin_codec = match &out_pin.produces_type {
+            PacketType::EncodedAudio(fmt) => fmt.codec,
+            _ => panic!("expected EncodedAudio"),
+        };
+        assert_eq!(pin_codec, AudioCodec::Opus);
+        // Simulates what run_connection() checks: a discovered AAC codec
+        // would differ from the Opus pin, triggering the warning.
+        assert_ne!(pin_codec, AudioCodec::Aac);
     }
 
     /// Validate that every `transport::moq::subscriber` node in the sample

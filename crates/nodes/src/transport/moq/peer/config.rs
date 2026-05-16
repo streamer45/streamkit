@@ -152,8 +152,8 @@ pub(super) enum SendResult {
 /// [`super::MoqPeerNode::handle_broadcast_recv`] needs, replacing a 14-parameter
 /// function signature with a single context reference.
 pub(super) struct SubscriberSendCtx<'a> {
-    pub audio_track_producer: &'a mut Option<hang::container::OrderedProducer>,
-    pub video_track_producer: &'a mut Option<hang::container::OrderedProducer>,
+    pub audio_track_producer: &'a mut Option<crate::transport::moq::ordered_producer::OrderedProducer>,
+    pub video_track_producer: &'a mut Option<crate::transport::moq::ordered_producer::OrderedProducer>,
     pub packet_count: u64,
     pub frame_count: u64,
     /// Tracks whether the first audio frame has been sent so the initial
