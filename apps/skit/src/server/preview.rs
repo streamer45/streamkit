@@ -1021,3 +1021,445 @@ pub async fn stop_preview_handler(
 
     Ok(Json(serde_json::json!({ "preview_id": preview_id })))
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Panics ARE the assertions
+mod tests {
+    use super::*;
+    use streamkit_api::{Connection, Node, Pipeline};
+    use streamkit_core::registry::StaticPins;
+    use streamkit_core::types::{
+        AudioCodec, AudioFormat, EncodedAudioFormat, EncodedVideoFormat, PixelFormat,
+        RawVideoFormat, SampleFormat, VideoCodec,
+    };
+    use streamkit_core::{NodeRegistry, OutputPin, PinCardinality, ProcessorNode, StreamKitError};
+
+    /// Stub factory used only to satisfy `register_static`'s `Fn` bound.
+    /// `get_definition` reads `static_pins` directly and never invokes the
+    /// factory in these tests.
+    fn stub_factory(
+        _: Option<&serde_json::Value>,
+    ) -> Result<Box<dyn ProcessorNode>, StreamKitError> {
+        Err(StreamKitError::Configuration("test stub: factory not invokable".into()))
+    }
+
+    fn audio_format() -> AudioFormat {
+        AudioFormat { sample_rate: 48_000, channels: 2, sample_format: SampleFormat::F32 }
+    }
+
+    fn raw_video_format() -> RawVideoFormat {
+        RawVideoFormat { width: Some(1280), height: Some(720), pixel_format: PixelFormat::I420 }
+    }
+
+    fn opus_format() -> EncodedAudioFormat {
+        EncodedAudioFormat { codec: AudioCodec::Opus, codec_private: None }
+    }
+
+    fn vp9_format() -> EncodedVideoFormat {
+        EncodedVideoFormat {
+            codec: VideoCodec::Vp9,
+            bitstream_format: None,
+            codec_private: None,
+            profile: None,
+            level: None,
+        }
+    }
+
+    fn register_with_output(
+        registry: &mut NodeRegistry,
+        kind: &str,
+        out_pin: &str,
+        produces: PacketType,
+    ) {
+        registry.register_static(
+            kind,
+            stub_factory,
+            serde_json::json!({}),
+            StaticPins {
+                inputs: vec![],
+                outputs: vec![OutputPin {
+                    name: out_pin.into(),
+                    produces_type: produces,
+                    cardinality: PinCardinality::Broadcast,
+                }],
+            },
+            vec![],
+            false,
+        );
+    }
+
+    fn node(kind: &str) -> Node {
+        Node { kind: kind.to_string(), params: None, state: None }
+    }
+
+    fn connection(from_node: &str, from_pin: &str, to_node: &str, to_pin: &str) -> Connection {
+        Connection {
+            from_node: from_node.to_string(),
+            from_pin: from_pin.to_string(),
+            to_node: to_node.to_string(),
+            to_pin: to_pin.to_string(),
+            mode: streamkit_core::control::ConnectionMode::Reliable,
+        }
+    }
+
+    fn pipeline_with(nodes: &[(&str, &str)], connections: Vec<Connection>) -> Pipeline {
+        let mut p = Pipeline::default();
+        for (id, kind) in nodes {
+            p.nodes.insert((*id).to_string(), node(kind));
+        }
+        p.connections = connections;
+        p
+    }
+
+    #[test]
+    fn is_terminal_kind_returns_true_for_documented_sinks() {
+        assert!(is_terminal_kind("transport::moq::publisher"));
+        assert!(is_terminal_kind("transport::moq::peer"));
+        assert!(is_terminal_kind("core::sink"));
+        assert!(is_terminal_kind("io::file_writer"));
+    }
+
+    #[test]
+    fn is_terminal_kind_returns_false_for_sources_and_transforms() {
+        assert!(!is_terminal_kind("audio::opus::encoder"));
+        assert!(!is_terminal_kind("video::vp9::encoder"));
+        assert!(!is_terminal_kind("audio::gain"));
+        assert!(!is_terminal_kind("video::compositor"));
+        assert!(!is_terminal_kind(""));
+        assert!(!is_terminal_kind("transport::moq"));
+        assert!(!is_terminal_kind("transport::moq::subscriber"));
+    }
+
+    #[test]
+    fn classify_by_kind_table_driven() {
+        let cases: &[(&str, (bool, bool, bool))] = &[
+            ("audio::opus::encoder", (true, true, false)),
+            ("audio::aac::encoder", (true, true, false)),
+            ("video::vp9::encoder", (true, false, true)),
+            ("video::h264::encoder", (true, false, true)),
+            ("video::compositor", (false, false, true)),
+            ("video::pixel_convert", (false, false, true)),
+            ("audio::mixer", (false, true, false)),
+            ("audio::resampler", (false, true, false)),
+            ("audio::gain", (false, true, false)),
+            ("streamkit::widget", (false, false, false)),
+            ("custom::node", (false, false, false)),
+            ("", (false, false, false)),
+        ];
+
+        for (kind, expected) in cases {
+            assert_eq!(classify_by_kind(kind), *expected, "classify_by_kind({kind:?}) mismatch");
+        }
+    }
+
+    #[test]
+    fn classify_output_pin_uses_registry_when_kind_is_known() {
+        let mut registry = NodeRegistry::new();
+        register_with_output(
+            &mut registry,
+            "audio::opus::encoder",
+            "out",
+            PacketType::EncodedAudio(opus_format()),
+        );
+        register_with_output(
+            &mut registry,
+            "video::vp9::encoder",
+            "out",
+            PacketType::EncodedVideo(vp9_format()),
+        );
+        register_with_output(
+            &mut registry,
+            "audio::source",
+            "out",
+            PacketType::RawAudio(audio_format()),
+        );
+        register_with_output(
+            &mut registry,
+            "video::source",
+            "out",
+            PacketType::RawVideo(raw_video_format()),
+        );
+
+        assert_eq!(
+            classify_output_pin("audio::opus::encoder", "out", &registry),
+            (true, true, false),
+        );
+        assert_eq!(
+            classify_output_pin("video::vp9::encoder", "out", &registry),
+            (true, false, true),
+        );
+        assert_eq!(classify_output_pin("audio::source", "out", &registry), (false, true, false),);
+        assert_eq!(classify_output_pin("video::source", "out", &registry), (false, false, true),);
+    }
+
+    #[test]
+    fn classify_output_pin_falls_back_to_kind_when_kind_unknown() {
+        let registry = NodeRegistry::new();
+        assert_eq!(
+            classify_output_pin("audio::opus::encoder", "out", &registry),
+            (true, true, false),
+        );
+        assert_eq!(
+            classify_output_pin("video::vp9::encoder", "out", &registry),
+            (true, false, true),
+        );
+        assert_eq!(classify_output_pin("plugin::custom", "out", &registry), (false, false, false),);
+    }
+
+    #[test]
+    fn classify_output_pin_falls_back_when_pin_name_does_not_match() {
+        let mut registry = NodeRegistry::new();
+        register_with_output(
+            &mut registry,
+            "audio::opus::encoder",
+            "out",
+            PacketType::EncodedAudio(opus_format()),
+        );
+
+        // Kind is registered but pin name is missing — kind heuristic still
+        // recognises this as an audio encoder.
+        assert_eq!(
+            classify_output_pin("audio::opus::encoder", "nonexistent", &registry),
+            (true, true, false),
+        );
+    }
+
+    #[test]
+    fn classify_output_pin_passthrough_pin_uses_kind_heuristic() {
+        let mut registry = NodeRegistry::new();
+        registry.register_static(
+            "video::passthrough",
+            stub_factory,
+            serde_json::json!({}),
+            StaticPins {
+                inputs: vec![],
+                outputs: vec![OutputPin {
+                    name: "out".into(),
+                    produces_type: PacketType::Any,
+                    cardinality: PinCardinality::Broadcast,
+                }],
+            },
+            vec![],
+            false,
+        );
+
+        // `PacketType::Any` is not classifiable by the registry path, so the
+        // call falls through to the kind heuristic, which doesn't match
+        // "passthrough" → unclassified.
+        assert_eq!(
+            classify_output_pin("video::passthrough", "out", &registry),
+            (false, false, false),
+        );
+    }
+
+    #[test]
+    fn classify_output_pin_from_registry_returns_false_when_tap_node_missing() {
+        let registry = NodeRegistry::new();
+        let pipeline = pipeline_with(&[("enc", "audio::opus::encoder")], vec![]);
+
+        assert_eq!(
+            classify_output_pin_from_registry(&pipeline, "missing", "out", &registry),
+            (false, false, false),
+        );
+    }
+
+    #[test]
+    fn classify_output_pin_from_registry_matches_classify_output_pin_when_node_present() {
+        let mut registry = NodeRegistry::new();
+        register_with_output(
+            &mut registry,
+            "audio::opus::encoder",
+            "out",
+            PacketType::EncodedAudio(opus_format()),
+        );
+        let pipeline = pipeline_with(&[("enc", "audio::opus::encoder")], vec![]);
+
+        assert_eq!(
+            classify_output_pin_from_registry(&pipeline, "enc", "out", &registry),
+            classify_output_pin("audio::opus::encoder", "out", &registry),
+        );
+    }
+
+    #[test]
+    fn detect_tap_points_single_audio_encoder_to_moq_peer() {
+        let mut registry = NodeRegistry::new();
+        register_with_output(
+            &mut registry,
+            "audio::opus::encoder",
+            "out",
+            PacketType::EncodedAudio(opus_format()),
+        );
+
+        let pipeline = pipeline_with(
+            &[("enc", "audio::opus::encoder"), ("peer", "transport::moq::peer")],
+            vec![connection("enc", "out", "peer", "in")],
+        );
+
+        let taps = detect_tap_points(&pipeline, &registry).unwrap();
+        assert_eq!(taps.len(), 1);
+        assert_eq!(taps[0].node, "enc");
+        assert_eq!(taps[0].pin, "out");
+        assert!(taps[0].is_encoded);
+        assert!(taps[0].is_audio);
+        assert!(!taps[0].is_video);
+    }
+
+    #[test]
+    fn detect_tap_points_audio_and_video_encoders_to_same_peer() {
+        let mut registry = NodeRegistry::new();
+        register_with_output(
+            &mut registry,
+            "audio::opus::encoder",
+            "out",
+            PacketType::EncodedAudio(opus_format()),
+        );
+        register_with_output(
+            &mut registry,
+            "video::vp9::encoder",
+            "out",
+            PacketType::EncodedVideo(vp9_format()),
+        );
+
+        let pipeline = pipeline_with(
+            &[
+                ("aenc", "audio::opus::encoder"),
+                ("venc", "video::vp9::encoder"),
+                ("peer", "transport::moq::peer"),
+            ],
+            vec![
+                connection("aenc", "out", "peer", "in"),
+                connection("venc", "out", "peer", "in_1"),
+            ],
+        );
+
+        let taps = detect_tap_points(&pipeline, &registry).unwrap();
+        assert_eq!(taps.len(), 2);
+
+        let audio = taps.iter().find(|t| t.is_audio).expect("audio tap present");
+        let video = taps.iter().find(|t| t.is_video).expect("video tap present");
+        assert_eq!(audio.node, "aenc");
+        assert!(audio.is_encoded);
+        assert!(!audio.is_video);
+        assert_eq!(video.node, "venc");
+        assert!(video.is_encoded);
+        assert!(!video.is_audio);
+    }
+
+    #[test]
+    fn detect_tap_points_raw_video_source_to_moq_peer() {
+        let mut registry = NodeRegistry::new();
+        register_with_output(
+            &mut registry,
+            "video::source",
+            "out",
+            PacketType::RawVideo(raw_video_format()),
+        );
+
+        let pipeline = pipeline_with(
+            &[("src", "video::source"), ("peer", "transport::moq::peer")],
+            vec![connection("src", "out", "peer", "in")],
+        );
+
+        let taps = detect_tap_points(&pipeline, &registry).unwrap();
+        assert_eq!(taps.len(), 1);
+        assert_eq!(taps[0].node, "src");
+        assert!(!taps[0].is_encoded);
+        assert!(taps[0].is_video);
+        assert!(!taps[0].is_audio);
+    }
+
+    #[test]
+    fn detect_tap_points_prefers_encoded_when_both_raw_and_encoded_present() {
+        // Raw + encoded video both feed the same moq_peer; the encoded path
+        // wins so the preview avoids re-encoding.
+        let mut registry = NodeRegistry::new();
+        register_with_output(
+            &mut registry,
+            "video::vp9::encoder",
+            "out",
+            PacketType::EncodedVideo(vp9_format()),
+        );
+        register_with_output(
+            &mut registry,
+            "video::source",
+            "out",
+            PacketType::RawVideo(raw_video_format()),
+        );
+
+        let pipeline = pipeline_with(
+            &[
+                ("raw", "video::source"),
+                ("enc", "video::vp9::encoder"),
+                ("peer", "transport::moq::peer"),
+            ],
+            vec![connection("raw", "out", "peer", "in_1"), connection("enc", "out", "peer", "in")],
+        );
+
+        let taps = detect_tap_points(&pipeline, &registry).unwrap();
+        assert_eq!(taps.len(), 1);
+        assert_eq!(taps[0].node, "enc");
+        assert!(taps[0].is_encoded);
+    }
+
+    #[test]
+    fn detect_tap_points_fallback_picks_first_non_terminal_source_as_video() {
+        let mut registry = NodeRegistry::new();
+        register_with_output(
+            &mut registry,
+            "audio::opus::encoder",
+            "out",
+            PacketType::EncodedAudio(opus_format()),
+        );
+
+        // No terminal sink — pipeline ends at a non-terminal node.
+        let pipeline = pipeline_with(
+            &[("enc", "audio::opus::encoder"), ("transform", "audio::gain")],
+            vec![connection("enc", "out", "transform", "in")],
+        );
+
+        let taps = detect_tap_points(&pipeline, &registry).unwrap();
+        assert_eq!(taps.len(), 1);
+        assert_eq!(taps[0].node, "enc");
+        assert_eq!(taps[0].pin, "out");
+        assert!(!taps[0].is_encoded);
+        assert!(!taps[0].is_audio);
+        assert!(taps[0].is_video, "fallback path is documented to assume video");
+    }
+
+    #[test]
+    fn detect_tap_points_empty_pipeline_returns_err() {
+        let registry = NodeRegistry::new();
+        let pipeline = Pipeline::default();
+
+        let err = detect_tap_points(&pipeline, &registry).unwrap_err();
+        assert!(err.starts_with("Cannot auto-detect tap point"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn detect_tap_points_dedups_two_audio_encoders_into_one_audio_tap() {
+        let mut registry = NodeRegistry::new();
+        register_with_output(
+            &mut registry,
+            "audio::opus::encoder",
+            "out",
+            PacketType::EncodedAudio(opus_format()),
+        );
+
+        let pipeline = pipeline_with(
+            &[
+                ("enc_a", "audio::opus::encoder"),
+                ("enc_b", "audio::opus::encoder"),
+                ("peer", "transport::moq::peer"),
+            ],
+            vec![
+                connection("enc_a", "out", "peer", "in"),
+                connection("enc_b", "out", "peer", "in_1"),
+            ],
+        );
+
+        let taps = detect_tap_points(&pipeline, &registry).unwrap();
+        assert_eq!(taps.len(), 1, "duplicate audio encoders must collapse to one tap");
+        assert!(taps[0].is_audio);
+        assert!(!taps[0].is_video);
+    }
+}
