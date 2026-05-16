@@ -1,0 +1,80 @@
+name: Set up Skit CI environment
+description: >
+  Common prelude for Skit CI jobs on ubuntu-22.04: free disk space, install
+  Bun and optionally build the UI (streamkit-server embeds ./ui/dist via
+  RustEmbed), install the system packages needed by the Rust build (libvpx,
+  nasm), install the pinned Rust toolchain, and restore Swatinem/rust-cache.
+  The caller must run actions/checkout before invoking this action so the
+  action.yml file is resolvable on the runner. sccache is intentionally not
+  part of the prelude — it is per-job and Coverage opts out entirely.
+
+inputs:
+  rust-cache-key:
+    description: Swatinem/rust-cache shared-key. Jobs that share a target/ may share a key.
+    required: false
+    default: skit
+  rust-cache-workspaces:
+    description: >
+      Swatinem/rust-cache workspaces directive. Leave empty for the default
+      ("."); set to e.g. ". -> target/coverage" when redirecting Cargo's
+      target dir (cargo-llvm-cov).
+    required: false
+    default: ""
+  rust-components:
+    description: >
+      Comma-separated extra Rust toolchain components to install (e.g.
+      "rustfmt, clippy" or "llvm-tools-preview"). Empty means none beyond
+      the default profile.
+    required: false
+    default: ""
+  skip-ui-build:
+    description: >
+      If "true", skip building ./ui/dist. streamkit-server's RustEmbed
+      directive requires ./ui/dist to exist at compile time, so most Rust
+      jobs need this false.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Free disk space
+      uses: jlumbroso/free-disk-space@main
+      with:
+        tool-cache: false
+        android: true
+        dotnet: true
+        haskell: true
+        large-packages: false
+        docker-images: true
+        swap-storage: false
+
+    - name: Setup Bun
+      uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: "1.3.5"
+
+    - name: Build UI
+      if: inputs.skip-ui-build != 'true'
+      working-directory: ./ui
+      shell: bash
+      run: |
+        bun install --frozen-lockfile
+        bun run build
+
+    - name: Install system dependencies (libvpx for VP9, nasm for AV1 assembly)
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: "1.95.0"
+        components: ${{ inputs.rust-components }}
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: ${{ inputs.rust-cache-key }}
+        workspaces: ${{ inputs.rust-cache-workspaces }}
+        save-if: ${{ github.ref == 'refs/heads/main' }}
+        cache-on-failure: true

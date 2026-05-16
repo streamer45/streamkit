@@ -13,38 +13,11 @@ jobs:
     name: Lint (fmt + clippy)
     runs-on: ubuntu-22.04
     steps:
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          docker-images: true
-          swap-storage: false
-
       - uses: actions/checkout@v5
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - uses: ./.github/actions/setup-skit
         with:
-          bun-version: "1.3.5"
-
-      - name: Build UI
-        working-directory: ./ui
-        run: |
-          bun install --frozen-lockfile
-          bun run build
-
-      - name: Install system dependencies (libvpx for VP9, nasm for AV1 assembly)
-        run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.95.0"
-          components: rustfmt, clippy
+          rust-components: "rustfmt, clippy"
 
       - name: Restore sccache cache
         uses: actions/cache/restore@v4
@@ -55,12 +28,6 @@ jobs:
             sccache-skit-lint-${{ runner.os }}-
 
       - uses: mozilla-actions/sccache-action@v0.0.9
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: skit
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          cache-on-failure: true
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -91,37 +58,9 @@ jobs:
     name: Test
     runs-on: ubuntu-22.04
     steps:
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          docker-images: true
-          swap-storage: false
-
       - uses: actions/checkout@v5
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.3.5"
-
-      - name: Build UI
-        working-directory: ./ui
-        run: |
-          bun install --frozen-lockfile
-          bun run build
-
-      - name: Install system dependencies (libvpx for VP9, nasm for AV1 assembly)
-        run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.95.0"
+      - uses: ./.github/actions/setup-skit
 
       - name: Restore sccache cache
         uses: actions/cache/restore@v4
@@ -132,12 +71,6 @@ jobs:
             sccache-skit-test-${{ runner.os }}-
 
       - uses: mozilla-actions/sccache-action@v0.0.9
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: skit
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          cache-on-failure: true
 
       - name: Run tests (GPU tests run separately on self-hosted runner)
         run: |
@@ -167,49 +100,13 @@ jobs:
       # avoid the "sccache not installed" failure and unnecessary indirection.
       RUSTC_WRAPPER: ""
     steps:
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          docker-images: true
-          swap-storage: false
-
       - uses: actions/checkout@v5
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - uses: ./.github/actions/setup-skit
         with:
-          bun-version: "1.3.5"
-
-      - name: Build UI
-        working-directory: ./ui
-        run: |
-          bun install --frozen-lockfile
-          bun run build
-
-      - name: Install system dependencies (libvpx for VP9, nasm for AV1 assembly)
-        run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.95.0"
-          components: llvm-tools-preview
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: skit-coverage
-          # Point the cache at the same target dir we redirected Cargo to
-          # via CARGO_LLVM_COV_TARGET_DIR. Without this, rust-cache would
-          # cache the (empty) default target/ and skip the actual build
-          # artifacts under target/coverage.
-          workspaces: ". -> target/coverage"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          cache-on-failure: true
+          rust-cache-key: skit-coverage
+          rust-cache-workspaces: ". -> target/coverage"
+          rust-components: llvm-tools-preview
 
       - name: Install cargo-llvm-cov and cargo-nextest
         uses: taiki-e/install-action@v2
@@ -297,37 +194,9 @@ jobs:
     name: Build
     runs-on: ubuntu-22.04
     steps:
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          docker-images: true
-          swap-storage: false
-
       - uses: actions/checkout@v5
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.3.5"
-
-      - name: Build UI
-        working-directory: ./ui
-        run: |
-          bun install --frozen-lockfile
-          bun run build
-
-      - name: Install system dependencies (libvpx for VP9, nasm for AV1 assembly)
-        run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.95.0"
+      - uses: ./.github/actions/setup-skit
 
       - name: Restore sccache cache
         uses: actions/cache/restore@v4
@@ -338,12 +207,6 @@ jobs:
             sccache-skit-build-${{ runner.os }}-
 
       - uses: mozilla-actions/sccache-action@v0.0.9
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: skit
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          cache-on-failure: true
 
       - name: Build all crates
         run: |
