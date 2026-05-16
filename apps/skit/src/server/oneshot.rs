@@ -677,6 +677,8 @@ pub(super) async fn process_oneshot_pipeline_handler(
 }
 
 #[cfg(test)]
+// Tests use `expect` so setup failures fail loudly with a stable message; the
+// production-code `expect_used` lint stays on everywhere else.
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
@@ -736,8 +738,6 @@ mod tests {
         p
     }
 
-    // -- extract_multipart_boundary -----------------------------------------
-
     #[test]
     fn boundary_missing_content_type_is_bad_request() {
         let err = extract_multipart_boundary(&header_map(None)).expect_err("must fail");
@@ -790,8 +790,6 @@ mod tests {
         .expect("ok");
         assert_eq!(value, "xyz789");
     }
-
-    // -- determine_http_input_bindings --------------------------------------
 
     fn single_input_pipeline(params: Option<serde_json::Value>) -> Pipeline {
         pipeline_with(vec![("input", http_input(params)), ("sink", sink_node())], vec![])
