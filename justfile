@@ -233,11 +233,13 @@ test-skit-gpu:
 # Coverage runs use an isolated target dir (target/coverage) so they don't
 # invalidate the shared rust-cache key used by lint/test in CI.
 
-# Install host tooling required for coverage runs. Safe to re-run.
+# Install host tooling required for coverage runs. No-op on warm setups
+# (the `command -v` guards short-circuit `cargo install`'s slow version
+# resolution when the binaries are already on PATH).
 install-cov-tools:
     @echo "Installing coverage tooling..."
-    @cargo install --locked cargo-llvm-cov
-    @cargo install --locked cargo-nextest
+    @command -v cargo-llvm-cov >/dev/null || cargo install --locked cargo-llvm-cov
+    @command -v cargo-nextest >/dev/null || cargo install --locked cargo-nextest
     @rustup component add llvm-tools-preview
 
 # Backend coverage across the workspace + the non-default mcp feature
@@ -256,8 +258,9 @@ cov-skit: install-cov-tools
         cargo llvm-cov report --html --output-dir target/coverage/html
     @echo "Backend coverage report: target/coverage/html/index.html"
 
-# Open the latest backend HTML report (local dev only).
-cov-skit-open: cov-skit
+# Open the previously-generated backend HTML report. Run `just cov-skit
+# cov-skit-open` to regenerate and open.
+cov-skit-open:
     @xdg-open target/coverage/html/index.html
 
 # Frontend coverage via the configured v8 provider.

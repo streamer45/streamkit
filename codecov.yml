@@ -115,6 +115,9 @@ component_management:
 comment:
   layout: "header, diff, flags, components, files"
   behavior: default
+  # Comment on every PR during Phase 1 so the team sees the numbers
+  # land. Flip to `true` at Phase 2 (when gates become enforcing) so
+  # the bot only speaks up when coverage actually changed.
   require_changes: false
 
 ignore:

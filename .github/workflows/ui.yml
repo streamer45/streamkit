@@ -32,6 +32,10 @@ jobs:
       - name: Lint
         run: bun run lint
 
+      # Test and Coverage are deliberately separate so a v8-provider
+      # regression in the instrumented run can't taint the plain
+      # pass/fail signal. Issue #435 tracks collapsing them once
+      # Coverage is promoted out of continue-on-error.
       - name: Test
         run: bun run test:run
 
