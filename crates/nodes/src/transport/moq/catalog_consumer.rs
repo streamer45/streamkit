@@ -44,6 +44,7 @@ impl From<moq_lite::TrackConsumer> for CatalogConsumer {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

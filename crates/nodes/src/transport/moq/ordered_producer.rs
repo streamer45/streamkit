@@ -122,6 +122,7 @@ impl std::ops::Deref for OrderedProducer {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -170,7 +171,7 @@ mod tests {
     async fn deref_exposes_inner_track() {
         let tp = make_track_producer();
         let op = OrderedProducer::new(tp);
-        let _: &moq_lite::TrackProducer = &*op;
+        let _: &moq_lite::TrackProducer = &op;
     }
 
     #[tokio::test]
