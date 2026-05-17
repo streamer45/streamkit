@@ -369,3 +369,93 @@ async fn receive_from_any_input(
         }
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use streamkit_core::types::Packet;
+
+    #[test]
+    fn serialize_params_to_json_returns_none_for_none_input() {
+        let out = serialize_params_to_json(None).expect("must succeed");
+        assert!(out.is_none());
+    }
+
+    #[test]
+    fn serialize_params_to_json_normalizes_null_to_none() {
+        let null = serde_json::Value::Null;
+        let out = serialize_params_to_json(Some(&null)).expect("must succeed");
+        assert!(
+            out.is_none(),
+            "JSON null should normalize to None so plugins fall back to defaults"
+        );
+    }
+
+    #[test]
+    fn serialize_params_to_json_serializes_object_value() {
+        let value = serde_json::json!({"gain": 1.5, "muted": false});
+        let out = serialize_params_to_json(Some(&value))
+            .expect("must succeed")
+            .expect("non-null object yields Some");
+        let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+        assert_eq!(parsed, value);
+    }
+
+    #[test]
+    fn serialize_params_to_json_serializes_primitive_value() {
+        let value = serde_json::json!(42);
+        let out = serialize_params_to_json(Some(&value))
+            .expect("must succeed")
+            .expect("non-null primitive yields Some");
+        assert_eq!(out, "42");
+    }
+
+    #[tokio::test]
+    async fn receive_from_any_input_returns_none_when_no_inputs() {
+        let mut inputs: Vec<(String, tokio::sync::mpsc::Receiver<Packet>)> = Vec::new();
+        assert!(receive_from_any_input(&mut inputs).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn receive_from_any_input_yields_pending_packet_with_pin_name() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        tx.send(Packet::Text(Arc::from("hello"))).await.expect("send succeeds");
+        let mut inputs = vec![("in".to_string(), rx)];
+
+        let (pin, packet) =
+            receive_from_any_input(&mut inputs).await.expect("packet should be ready");
+        assert_eq!(pin, "in");
+        assert!(matches!(packet, Packet::Text(t) if t.as_ref() == "hello"));
+    }
+
+    #[tokio::test]
+    async fn receive_from_any_input_drops_closed_inputs_and_returns_none() {
+        // Two receivers, both immediately closed (senders dropped).
+        let (tx1, rx1) = tokio::sync::mpsc::channel::<Packet>(1);
+        let (tx2, rx2) = tokio::sync::mpsc::channel::<Packet>(1);
+        drop(tx1);
+        drop(tx2);
+        let mut inputs = vec![("a".to_string(), rx1), ("b".to_string(), rx2)];
+
+        assert!(receive_from_any_input(&mut inputs).await.is_none());
+        assert!(inputs.is_empty(), "closed receivers must be drained out of the input vector");
+    }
+
+    #[tokio::test]
+    async fn receive_from_any_input_skips_closed_input_and_returns_from_live_input() {
+        let (tx_closed, rx_closed) = tokio::sync::mpsc::channel::<Packet>(1);
+        drop(tx_closed);
+        let (tx_live, rx_live) = tokio::sync::mpsc::channel::<Packet>(1);
+        tx_live.send(Packet::Text(Arc::from("from-live"))).await.expect("send succeeds");
+
+        let mut inputs = vec![("closed".to_string(), rx_closed), ("live".to_string(), rx_live)];
+
+        let (pin, packet) =
+            receive_from_any_input(&mut inputs).await.expect("live input must yield packet");
+        assert_eq!(pin, "live");
+        assert!(matches!(packet, Packet::Text(t) if t.as_ref() == "from-live"));
+        assert_eq!(inputs.len(), 1, "closed input must be removed");
+        assert_eq!(inputs[0].0, "live");
+    }
+}
