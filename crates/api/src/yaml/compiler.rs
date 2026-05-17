@@ -571,6 +571,23 @@ mod tests {
     }
 
     #[test]
+    fn compile_dag_oneshot_audio_mixer_skips_inject_when_params_is_non_object() {
+        let mixer = UserNode {
+            kind: "audio::mixer".to_string(),
+            params: Some(serde_json::Value::String("scalar".into())),
+            needs: Needs::Multiple(vec![simple_dep("a"), simple_dep("b")]),
+        };
+        let nodes = dag_nodes(&[
+            ("a", user_node("core::source", Needs::None)),
+            ("b", user_node("core::source", Needs::None)),
+            ("mixer", mixer),
+        ]);
+        let compiled = compile(dag_pipeline(nodes, None, EngineMode::OneShot)).expect("compile");
+        let mixer = compiled.nodes.get("mixer").expect("mixer present");
+        assert_eq!(mixer.params.as_ref().and_then(serde_json::Value::as_str), Some("scalar"));
+    }
+
+    #[test]
     fn compile_dag_audio_mixer_preserves_explicit_num_inputs() {
         let mut params = serde_json::Map::new();
         params.insert("num_inputs".into(), serde_json::Value::Number(7.into()));
