@@ -157,7 +157,6 @@ describe('ensureSchemasLoaded', () => {
 
     await expect(ensureSchemasLoaded()).rejects.toThrow();
 
-    // Second attempt with successful responses should re-fetch.
     mockSchemaFetch(
       mockResponse({ ok: true, status: 200, json: [META] }),
       mockResponse({ ok: true, status: 200, json: [NODE] })
