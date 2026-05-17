@@ -28,6 +28,7 @@ bytes = { workspace = true }
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tempfile = "3.27"
 
 [lib]
 crate-type = ["rlib"]

@@ -503,3 +503,687 @@ pub fn auth_router() -> axum::Router<Arc<AppState>> {
 
     router.layer(DefaultBodyLimit::max(AUTH_MAX_BODY_BYTES))
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use crate::auth::ApiClaims;
+    use crate::config::{AuthMode, Config};
+    use axum::body::{to_bytes, Body};
+    use axum::http::header::AUTHORIZATION as REQ_AUTHORIZATION;
+    use axum::http::Request;
+    use serde_json::json;
+    use tempfile::TempDir;
+    use tower::ServiceExt;
+
+    fn make_state_auth_disabled() -> Arc<AppState> {
+        let temp = TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.auth.state_dir = temp.path().to_string_lossy().to_string();
+        let auth = Arc::new(crate::auth::AuthState::disabled());
+        // Holding `temp` would clean state_dir on drop; the disabled state
+        // doesn't read from it but it doesn't hurt to keep it alive.
+        let state = crate::server::create_app_state(config, Some(auth));
+        // Leak temp dir to keep state_dir paths valid for the whole test.
+        std::mem::forget(temp);
+        state
+    }
+
+    async fn make_state_auth_enabled() -> (Arc<AppState>, String, TempDir) {
+        let temp = TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.auth.mode = AuthMode::Enabled;
+        config.auth.state_dir = temp.path().to_string_lossy().to_string();
+        let auth_state =
+            crate::auth::AuthState::new(&config.auth, true).await.expect("init auth state");
+        let admin_token = tokio::fs::read_to_string(temp.path().join("admin.token")).await.unwrap();
+        let admin_token = admin_token.trim().to_string();
+
+        let state = crate::server::create_app_state(config, Some(Arc::new(auth_state)));
+        (state, admin_token, temp)
+    }
+
+    fn build_router(state: Arc<AppState>) -> axum::Router {
+        auth_router().with_state(state)
+    }
+
+    async fn body_to_string(body: Body) -> String {
+        let bytes = to_bytes(body, 64 * 1024).await.unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[test]
+    fn require_admin_accepts_admin_role() {
+        let ctx = AuthContext {
+            claims: ApiClaims::anonymous("admin"),
+            role: "admin".to_string(),
+            permissions: crate::permissions::Permissions::admin(),
+        };
+        require_admin(&ctx).expect("admin should be allowed");
+    }
+
+    #[test]
+    fn require_admin_rejects_non_admin_role() {
+        for role in ["viewer", "user", "guest", ""] {
+            let ctx = AuthContext {
+                claims: ApiClaims::anonymous(role),
+                role: role.to_string(),
+                permissions: crate::permissions::Permissions::viewer(),
+            };
+            let (status, msg) = require_admin(&ctx).expect_err("non-admin must be rejected");
+            assert_eq!(status, StatusCode::FORBIDDEN, "role {role}");
+            assert!(msg.contains("Admin"), "role {role}: {msg}");
+        }
+    }
+
+    #[test]
+    fn login_request_deserializes_token_field() {
+        let parsed: LoginRequest = serde_json::from_str(r#"{"token":"abc"}"#).unwrap();
+        assert_eq!(parsed.token, "abc");
+    }
+
+    #[test]
+    fn create_api_token_request_defaults_optional_fields() {
+        let parsed: CreateApiTokenRequest = serde_json::from_str(r#"{"role":"viewer"}"#).unwrap();
+        assert_eq!(parsed.role, "viewer");
+        assert!(parsed.label.is_none());
+        assert!(parsed.ttl_secs.is_none());
+
+        let full: CreateApiTokenRequest =
+            serde_json::from_str(r#"{"role":"admin","label":"ci-bot","ttl_secs":3600}"#).unwrap();
+        assert_eq!(full.role, "admin");
+        assert_eq!(full.label.as_deref(), Some("ci-bot"));
+        assert_eq!(full.ttl_secs, Some(3600));
+    }
+
+    #[cfg(feature = "moq")]
+    #[test]
+    fn create_moq_token_request_defaults_arrays_to_empty() {
+        let parsed: CreateMoqTokenRequest = serde_json::from_str(r#"{"root":"/demo"}"#).unwrap();
+        assert_eq!(parsed.root, "/demo");
+        assert!(parsed.subscribe.is_empty());
+        assert!(parsed.publish.is_empty());
+        assert!(parsed.label.is_none());
+        assert!(parsed.ttl_secs.is_none());
+    }
+
+    #[test]
+    fn create_token_response_round_trips_through_serde() {
+        let resp = CreateTokenResponse {
+            token: "jwt.body.sig".into(),
+            jti: "jti-1".into(),
+            exp: 1_700_000_000,
+            url_template: Some("/r?jwt=jwt.body.sig".into()),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let back: CreateTokenResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.token, "jwt.body.sig");
+        assert_eq!(back.exp, 1_700_000_000);
+        assert_eq!(back.url_template.as_deref(), Some("/r?jwt=jwt.body.sig"));
+    }
+
+    #[test]
+    fn create_token_response_omits_null_url_template() {
+        let resp =
+            CreateTokenResponse { token: "t".into(), jti: "j".into(), exp: 0, url_template: None };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(!json.contains("url_template"), "url_template suppressed when None: {json}");
+    }
+
+    #[tokio::test]
+    async fn me_returns_authenticated_when_auth_disabled() {
+        let state = make_state_auth_disabled();
+        let app = build_router(state);
+
+        let resp =
+            app.oneshot(Request::builder().uri("/me").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body: serde_json::Value =
+            serde_json::from_str(&body_to_string(resp.into_body()).await).unwrap();
+        assert_eq!(body["authenticated"], true);
+        assert_eq!(body["auth_enabled"], false);
+        assert!(body["jti"].is_null());
+        assert!(body["role"].is_string());
+    }
+
+    #[tokio::test]
+    async fn login_rejected_when_auth_disabled() {
+        let state = make_state_auth_disabled();
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"token":"anything"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = body_to_string(resp.into_body()).await;
+        assert!(body.contains("Authentication is disabled"), "got: {body}");
+    }
+
+    #[tokio::test]
+    async fn create_token_rejected_when_auth_disabled() {
+        let state = make_state_auth_disabled();
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/tokens")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"role":"admin"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn list_tokens_rejected_when_auth_disabled() {
+        let state = make_state_auth_disabled();
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(Request::builder().uri("/tokens").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn revoke_token_rejected_when_auth_disabled() {
+        let state = make_state_auth_disabled();
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/tokens/some-jti")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn reload_keys_rejected_when_auth_disabled() {
+        let state = make_state_auth_disabled();
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder().method("POST").uri("/reload-keys").body(Body::empty()).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn logout_returns_no_content_with_clearing_cookie() {
+        let state = make_state_auth_disabled();
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(Request::builder().method("POST").uri("/logout").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        let cookie = resp.headers().get(SET_COOKIE).expect("Set-Cookie present");
+        let cookie_str = cookie.to_str().unwrap();
+        // Logout cookies must clear the session — usually an empty value plus an
+        // immediate expiry.  Don't pin a specific spelling, just confirm both
+        // markers appear so an accidental "set live cookie" regression fails here.
+        assert!(
+            cookie_str.contains("Max-Age=0")
+                || cookie_str.contains("Expires=")
+                || cookie_str.to_lowercase().contains("expires"),
+            "logout cookie should expire: {cookie_str}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn me_with_valid_token_reports_role_and_jti() {
+        let (state, admin_token, _temp) = make_state_auth_enabled().await;
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/me")
+                    .header(REQ_AUTHORIZATION, format!("Bearer {admin_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body: serde_json::Value =
+            serde_json::from_str(&body_to_string(resp.into_body()).await).unwrap();
+        assert_eq!(body["authenticated"], true);
+        assert_eq!(body["auth_enabled"], true);
+        assert_eq!(body["role"], "admin");
+        assert!(body["jti"].as_str().is_some_and(|s| !s.is_empty()));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn me_without_token_when_auth_enabled_reports_unauthenticated() {
+        let (state, _admin_token, _temp) = make_state_auth_enabled().await;
+        let app = build_router(state);
+
+        let resp =
+            app.oneshot(Request::builder().uri("/me").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body: serde_json::Value =
+            serde_json::from_str(&body_to_string(resp.into_body()).await).unwrap();
+        assert_eq!(body["authenticated"], false);
+        assert_eq!(body["auth_enabled"], true);
+        assert!(body["role"].is_null());
+        assert!(body["jti"].is_null());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn login_with_valid_token_sets_session_cookie() {
+        let (state, admin_token, _temp) = make_state_auth_enabled().await;
+        let cookie_name = state.config.auth.cookie_name.clone();
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "token": admin_token }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        let cookie = resp.headers().get(SET_COOKIE).expect("login should set session cookie");
+        assert!(
+            cookie.to_str().unwrap().starts_with(&format!("{cookie_name}=")),
+            "cookie prefix matches configured name: {cookie:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn login_with_bearer_header_also_works() {
+        let (state, admin_token, _temp) = make_state_auth_enabled().await;
+        let app = build_router(state);
+
+        // No body — token must be picked up from Authorization header.
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/login")
+                    .header(REQ_AUTHORIZATION, format!("Bearer {admin_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert!(resp.headers().get(SET_COOKIE).is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn login_without_token_returns_bad_request() {
+        let (state, _admin_token, _temp) = make_state_auth_enabled().await;
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"token":""}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = body_to_string(resp.into_body()).await;
+        assert!(body.contains("Missing token"), "got: {body}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn login_with_invalid_token_returns_unauthorized() {
+        let (state, _admin_token, _temp) = make_state_auth_enabled().await;
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"token":"not.a.real.jwt"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn create_token_requires_admin_token() {
+        let (state, admin_token, _temp) = make_state_auth_enabled().await;
+        // Mint a viewer token first using the admin token.
+        let app = build_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/tokens")
+                    .header(REQ_AUTHORIZATION, format!("Bearer {admin_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"role":"viewer"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: CreateTokenResponse =
+            serde_json::from_str(&body_to_string(resp.into_body()).await).unwrap();
+        let viewer_token = body.token;
+
+        // Viewer token must be rejected with 403 when calling admin-only endpoint.
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/tokens")
+                    .header(REQ_AUTHORIZATION, format!("Bearer {viewer_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"role":"viewer"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn create_token_rejects_unknown_role() {
+        let (state, admin_token, _temp) = make_state_auth_enabled().await;
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/tokens")
+                    .header(REQ_AUTHORIZATION, format!("Bearer {admin_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"role":"definitely_not_a_role"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert!(body_to_string(resp.into_body()).await.contains("Unknown role"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn list_tokens_returns_minted_tokens() {
+        let (state, admin_token, _temp) = make_state_auth_enabled().await;
+
+        // Mint one viewer token via the API so list has at least two entries
+        // (bootstrap admin + viewer).
+        let app = build_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/tokens")
+                    .header(REQ_AUTHORIZATION, format!("Bearer {admin_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"role":"viewer","label":"ci"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/tokens")
+                    .header(REQ_AUTHORIZATION, format!("Bearer {admin_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        // TokenInfo is serialize-only on the wire — parse to a Value to inspect
+        // it without needing a parallel deserializable copy of the struct.
+        let body: serde_json::Value =
+            serde_json::from_str(&body_to_string(resp.into_body()).await).unwrap();
+        let tokens = body.as_array().expect("list response is a JSON array");
+        let found = tokens.iter().any(|t| {
+            t.get("label").and_then(|v| v.as_str()) == Some("ci")
+                && t.get("role").and_then(|v| v.as_str()) == Some("viewer")
+        });
+        assert!(found, "list contains freshly minted viewer token; got: {body}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn revoke_token_round_trip_then_revalidation_fails() {
+        let (state, admin_token, _temp) = make_state_auth_enabled().await;
+
+        // Mint a viewer token.
+        let app = build_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/tokens")
+                    .header(REQ_AUTHORIZATION, format!("Bearer {admin_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"role":"viewer"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let minted: CreateTokenResponse =
+            serde_json::from_str(&body_to_string(resp.into_body()).await).unwrap();
+
+        // Revoke it.
+        let app = build_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/tokens/{}", minted.jti))
+                    .header(REQ_AUTHORIZATION, format!("Bearer {admin_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Revoked /me must report unauthenticated.
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/me")
+                    .header(REQ_AUTHORIZATION, format!("Bearer {}", minted.token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_str(&body_to_string(resp.into_body()).await).unwrap();
+        assert_eq!(body["authenticated"], false);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn revoke_unknown_token_returns_not_found() {
+        let (state, admin_token, _temp) = make_state_auth_enabled().await;
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/tokens/definitely-not-a-real-jti")
+                    .header(REQ_AUTHORIZATION, format!("Bearer {admin_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Admins must not lock themselves out by revoking the token they're using.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn revoke_own_token_is_rejected() {
+        let (state, admin_token, _temp) = make_state_auth_enabled().await;
+
+        // Fetch the admin token's jti via /me.
+        let app = build_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/me")
+                    .header(REQ_AUTHORIZATION, format!("Bearer {admin_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let me: serde_json::Value =
+            serde_json::from_str(&body_to_string(resp.into_body()).await).unwrap();
+        let jti = me["jti"].as_str().unwrap().to_string();
+
+        // Try to revoke own token.
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/tokens/{jti}"))
+                    .header(REQ_AUTHORIZATION, format!("Bearer {admin_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = body_to_string(resp.into_body()).await;
+        assert!(body.contains("Cannot revoke your own token"), "got: {body}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reload_keys_returns_no_content_for_admin() {
+        let (state, admin_token, _temp) = make_state_auth_enabled().await;
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/reload-keys")
+                    .header(REQ_AUTHORIZATION, format!("Bearer {admin_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[cfg(feature = "moq")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn create_moq_token_round_trip() {
+        let (state, admin_token, _temp) = make_state_auth_enabled().await;
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/moq-tokens")
+                    .header(REQ_AUTHORIZATION, format!("Bearer {admin_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"root":"/demo","subscribe":["/demo/audio"],"publish":[]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: CreateTokenResponse =
+            serde_json::from_str(&body_to_string(resp.into_body()).await).unwrap();
+        assert!(!body.token.is_empty());
+        // Without a moq_gateway_url configured the handler falls back to a
+        // relative URL template containing the jwt.
+        let url = body.url_template.expect("url_template populated");
+        assert!(url.starts_with("/demo?jwt="), "got: {url}");
+        assert!(url.contains(&body.token));
+    }
+
+    #[cfg(feature = "moq")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn create_moq_token_requires_admin() {
+        let (state, admin_token, _temp) = make_state_auth_enabled().await;
+        let app = build_router(state.clone());
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/tokens")
+                    .header(REQ_AUTHORIZATION, format!("Bearer {admin_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"role":"viewer"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let viewer: CreateTokenResponse =
+            serde_json::from_str(&body_to_string(resp.into_body()).await).unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/moq-tokens")
+                    .header(REQ_AUTHORIZATION, format!("Bearer {}", viewer.token))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"root":"/demo"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+}
