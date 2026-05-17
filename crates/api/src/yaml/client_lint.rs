@@ -667,3 +667,430 @@ pub fn lint_client_against_nodes(
 
     warnings
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::yaml::{
+        ControlConfig, FieldHint, InputConfig, OutputConfig, OutputType, WatchConfig,
+    };
+    use indexmap::IndexMap;
+
+    fn dynamic_with_gateway() -> ClientSection {
+        ClientSection { gateway_path: Some("/gw".into()), ..ClientSection::default() }
+    }
+
+    fn audio_track(broadcast: Option<&str>) -> PublishTrackConfig {
+        PublishTrackConfig {
+            kind: TrackKind::Audio,
+            source: CaptureSource::Microphone,
+            broadcast: broadcast.map(str::to_string),
+            width: None,
+            height: None,
+            codec: None,
+            max_bitrate: None,
+        }
+    }
+
+    fn video_track(source: CaptureSource) -> PublishTrackConfig {
+        PublishTrackConfig {
+            kind: TrackKind::Video,
+            source,
+            broadcast: None,
+            width: None,
+            height: None,
+            codec: None,
+            max_bitrate: None,
+        }
+    }
+
+    fn publish_one_audio(broadcast: &str) -> PublishConfig {
+        PublishConfig { broadcast: broadcast.into(), tracks: vec![audio_track(None)] }
+    }
+
+    fn watch_audio_only() -> WatchConfig {
+        WatchConfig { broadcast: None, mse_path: None, audio: true, video: false }
+    }
+
+    fn ruled(client: &ClientSection, mode: EngineMode, rule: &str) -> bool {
+        lint_client_section(client, mode).iter().any(|w| w.rule == rule)
+    }
+
+    struct LintCase {
+        rule: &'static str,
+        mode: EngineMode,
+        build: fn() -> ClientSection,
+    }
+
+    fn case_mode_mismatch_dynamic() -> ClientSection {
+        ClientSection {
+            output: Some(OutputConfig { output_type: OutputType::Audio }),
+            ..dynamic_with_gateway()
+        }
+    }
+
+    fn case_mode_mismatch_oneshot() -> ClientSection {
+        ClientSection {
+            publish: Some(publish_one_audio("bcast")),
+            gateway_path: Some("/gw".into()),
+            ..ClientSection::default()
+        }
+    }
+
+    fn case_missing_gateway() -> ClientSection {
+        ClientSection { publish: Some(publish_one_audio("bcast")), ..ClientSection::default() }
+    }
+
+    fn case_watch_no_media() -> ClientSection {
+        ClientSection {
+            watch: Some(WatchConfig {
+                broadcast: None,
+                mse_path: None,
+                audio: false,
+                video: false,
+            }),
+            ..ClientSection::default()
+        }
+    }
+
+    fn case_input_none_with_accept() -> ClientSection {
+        ClientSection {
+            input: Some(InputConfig {
+                input_type: InputType::None,
+                accept: Some("audio/*".into()),
+                asset_tags: None,
+                placeholder: None,
+                field_hints: None,
+            }),
+            ..ClientSection::default()
+        }
+    }
+
+    fn case_input_trigger_with_accept() -> ClientSection {
+        ClientSection {
+            input: Some(InputConfig {
+                input_type: InputType::Trigger,
+                accept: Some("audio/*".into()),
+                asset_tags: None,
+                placeholder: None,
+                field_hints: None,
+            }),
+            ..ClientSection::default()
+        }
+    }
+
+    fn case_field_hints_no_input() -> ClientSection {
+        let mut hints = IndexMap::new();
+        hints.insert(
+            "media".to_string(),
+            FieldHint { field_type: None, accept: None, placeholder: None },
+        );
+        ClientSection {
+            input: Some(InputConfig {
+                input_type: InputType::None,
+                accept: None,
+                asset_tags: None,
+                placeholder: None,
+                field_hints: Some(hints),
+            }),
+            ..ClientSection::default()
+        }
+    }
+
+    fn case_asset_tags_no_input() -> ClientSection {
+        ClientSection {
+            input: Some(InputConfig {
+                input_type: InputType::None,
+                accept: None,
+                asset_tags: Some(vec!["speech".into()]),
+                placeholder: None,
+                field_hints: None,
+            }),
+            ..ClientSection::default()
+        }
+    }
+
+    fn case_text_no_placeholder() -> ClientSection {
+        ClientSection {
+            input: Some(InputConfig {
+                input_type: InputType::Text,
+                accept: None,
+                asset_tags: None,
+                placeholder: None,
+                field_hints: None,
+            }),
+            ..ClientSection::default()
+        }
+    }
+
+    fn case_empty_broadcast() -> ClientSection {
+        ClientSection {
+            publish: Some(publish_one_audio("")),
+            gateway_path: Some("/gw".into()),
+            ..ClientSection::default()
+        }
+    }
+
+    fn case_duplicate_broadcast() -> ClientSection {
+        ClientSection {
+            publish: Some(publish_one_audio("shared")),
+            watch: Some(WatchConfig {
+                broadcast: Some("shared".into()),
+                mse_path: None,
+                audio: true,
+                video: false,
+            }),
+            gateway_path: Some("/gw".into()),
+            ..ClientSection::default()
+        }
+    }
+
+    fn case_empty_tracks() -> ClientSection {
+        ClientSection {
+            publish: Some(PublishConfig { broadcast: "bcast".into(), tracks: vec![] }),
+            gateway_path: Some("/gw".into()),
+            ..ClientSection::default()
+        }
+    }
+
+    fn case_kind_source_mismatch() -> ClientSection {
+        ClientSection {
+            publish: Some(PublishConfig {
+                broadcast: "bcast".into(),
+                tracks: vec![PublishTrackConfig {
+                    kind: TrackKind::Audio,
+                    source: CaptureSource::Camera,
+                    broadcast: None,
+                    width: None,
+                    height: None,
+                    codec: None,
+                    max_bitrate: None,
+                }],
+            }),
+            gateway_path: Some("/gw".into()),
+            ..ClientSection::default()
+        }
+    }
+
+    fn case_duplicate_source() -> ClientSection {
+        ClientSection {
+            publish: Some(PublishConfig {
+                broadcast: "bcast".into(),
+                tracks: vec![
+                    video_track(CaptureSource::Camera),
+                    video_track(CaptureSource::Camera),
+                ],
+            }),
+            gateway_path: Some("/gw".into()),
+            ..ClientSection::default()
+        }
+    }
+
+    fn case_empty_track_broadcast() -> ClientSection {
+        ClientSection {
+            publish: Some(PublishConfig {
+                broadcast: "bcast".into(),
+                tracks: vec![audio_track(Some(""))],
+            }),
+            gateway_path: Some("/gw".into()),
+            ..ClientSection::default()
+        }
+    }
+
+    const RULE_CASES: &[LintCase] = &[
+        LintCase {
+            rule: "mode-mismatch-dynamic",
+            mode: EngineMode::Dynamic,
+            build: case_mode_mismatch_dynamic,
+        },
+        LintCase {
+            rule: "mode-mismatch-oneshot",
+            mode: EngineMode::OneShot,
+            build: case_mode_mismatch_oneshot,
+        },
+        LintCase {
+            rule: "missing-gateway",
+            mode: EngineMode::Dynamic,
+            build: case_missing_gateway,
+        },
+        LintCase { rule: "watch-no-media", mode: EngineMode::Dynamic, build: case_watch_no_media },
+        LintCase {
+            rule: "input-none-with-accept",
+            mode: EngineMode::OneShot,
+            build: case_input_none_with_accept,
+        },
+        LintCase {
+            rule: "input-trigger-with-accept",
+            mode: EngineMode::OneShot,
+            build: case_input_trigger_with_accept,
+        },
+        LintCase {
+            rule: "field-hints-no-input",
+            mode: EngineMode::OneShot,
+            build: case_field_hints_no_input,
+        },
+        LintCase {
+            rule: "asset-tags-no-input",
+            mode: EngineMode::OneShot,
+            build: case_asset_tags_no_input,
+        },
+        LintCase {
+            rule: "text-no-placeholder",
+            mode: EngineMode::OneShot,
+            build: case_text_no_placeholder,
+        },
+        LintCase {
+            rule: "empty-broadcast",
+            mode: EngineMode::Dynamic,
+            build: case_empty_broadcast,
+        },
+        LintCase {
+            rule: "duplicate-broadcast",
+            mode: EngineMode::Dynamic,
+            build: case_duplicate_broadcast,
+        },
+        LintCase { rule: "empty-tracks", mode: EngineMode::Dynamic, build: case_empty_tracks },
+        LintCase {
+            rule: "kind-source-mismatch",
+            mode: EngineMode::Dynamic,
+            build: case_kind_source_mismatch,
+        },
+        LintCase {
+            rule: "duplicate-source",
+            mode: EngineMode::Dynamic,
+            build: case_duplicate_source,
+        },
+        LintCase {
+            rule: "empty-track-broadcast",
+            mode: EngineMode::Dynamic,
+            build: case_empty_track_broadcast,
+        },
+    ];
+
+    #[test]
+    fn each_documented_rule_fires_for_its_documented_input() {
+        for case in RULE_CASES {
+            let client = (case.build)();
+            let warnings = lint_client_section(&client, case.mode);
+            assert!(
+                warnings.iter().any(|w| w.rule == case.rule),
+                "expected rule `{}` for mode {:?}, got: {:?}",
+                case.rule,
+                case.mode,
+                warnings.iter().map(|w| w.rule).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn clean_dynamic_input_fires_no_documented_rules() {
+        let clean = ClientSection {
+            gateway_path: Some("/gw".into()),
+            publish: Some(publish_one_audio("uplink")),
+            watch: Some(watch_audio_only()),
+            ..ClientSection::default()
+        };
+        let warnings = lint_client_section(&clean, EngineMode::Dynamic);
+        for case in RULE_CASES {
+            assert!(
+                !warnings.iter().any(|w| w.rule == case.rule),
+                "rule `{}` unexpectedly fired on clean dynamic input: {:?}",
+                case.rule,
+                warnings.iter().map(|w| w.rule).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn clean_oneshot_input_fires_no_documented_rules() {
+        let clean = ClientSection {
+            input: Some(InputConfig {
+                input_type: InputType::FileUpload,
+                accept: Some("audio/*".into()),
+                asset_tags: Some(vec!["speech".into()]),
+                placeholder: None,
+                field_hints: None,
+            }),
+            output: Some(OutputConfig { output_type: OutputType::Transcription }),
+            ..ClientSection::default()
+        };
+        let warnings = lint_client_section(&clean, EngineMode::OneShot);
+        for case in RULE_CASES {
+            assert!(
+                !warnings.iter().any(|w| w.rule == case.rule),
+                "rule `{}` unexpectedly fired on clean oneshot input: {:?}",
+                case.rule,
+                warnings.iter().map(|w| w.rule).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    // The `publish-no-media` rule documented at the top of this file is not
+    // implemented: `PublishConfig` has no `audio`/`video` boolean fields,
+    // only a `tracks` array.  Pin the current behaviour so the rustdoc/code
+    // drift surfaces if anyone tries to revive the rule without re-reading
+    // the model.  See PR description "Follow-ups / observations".
+    #[test]
+    fn publish_no_media_rule_is_not_emitted() {
+        let clean = ClientSection {
+            gateway_path: Some("/gw".into()),
+            publish: Some(publish_one_audio("bcast")),
+            ..ClientSection::default()
+        };
+        let warnings = lint_client_section(&clean, EngineMode::Dynamic);
+        assert!(
+            !warnings.iter().any(|w| w.rule == "publish-no-media"),
+            "unexpected `publish-no-media` warning: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn watch_with_empty_broadcast_emits_empty_broadcast_rule() {
+        let client = ClientSection {
+            watch: Some(WatchConfig {
+                broadcast: Some(String::new()),
+                mse_path: None,
+                audio: true,
+                video: true,
+            }),
+            ..ClientSection::default()
+        };
+        assert!(ruled(&client, EngineMode::Dynamic, "empty-broadcast"));
+    }
+
+    #[test]
+    fn asset_tags_with_text_input_emits_asset_tags_rule() {
+        let client = ClientSection {
+            input: Some(InputConfig {
+                input_type: InputType::Text,
+                accept: None,
+                asset_tags: Some(vec!["speech".into()]),
+                placeholder: Some("Say something".into()),
+                field_hints: None,
+            }),
+            ..ClientSection::default()
+        };
+        assert!(ruled(&client, EngineMode::OneShot, "asset-tags-no-input"));
+    }
+
+    #[test]
+    fn mode_mismatch_oneshot_includes_controls() {
+        let client = ClientSection {
+            controls: Some(vec![ControlConfig {
+                label: "Vol".into(),
+                control_type: ControlType::Toggle,
+                node: "gain".into(),
+                property: "gain".into(),
+                group: None,
+                default: None,
+                min: None,
+                max: None,
+                step: None,
+                value: None,
+                options: None,
+            }]),
+            ..ClientSection::default()
+        };
+        assert!(ruled(&client, EngineMode::OneShot, "mode-mismatch-oneshot"));
+    }
+}
