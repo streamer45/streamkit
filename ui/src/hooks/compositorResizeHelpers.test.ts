@@ -13,15 +13,13 @@
 
 import { describe, expect, it } from 'vitest';
 
+import type { LayerState, ResizeHandle } from './compositorLayerParsers';
 import {
   SNAP_GRID,
   SNAP_THRESHOLD,
   computeUpdatedLayer,
   detectSnapGuides,
 } from './compositorResizeHelpers';
-import type { LayerState, ResizeHandle } from './compositorLayerParsers';
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
 
 const CANVAS_W = 1280;
 const CANVAS_H = 720;
@@ -48,16 +46,12 @@ function makeLayer(overrides: Partial<LayerState> = {}): LayerState {
   };
 }
 
-// ── Constants ───────────────────────────────────────────────────────────────
-
 describe('snap constants', () => {
   it('exports a 10px grid and an 8px snap threshold', () => {
     expect(SNAP_GRID).toBe(10);
     expect(SNAP_THRESHOLD).toBe(8);
   });
 });
-
-// ── detectSnapGuides ────────────────────────────────────────────────────────
 
 describe('detectSnapGuides', () => {
   it('returns all-false when layer is in the interior', () => {
@@ -99,8 +93,6 @@ describe('detectSnapGuides', () => {
   });
 });
 
-// ── Drag ────────────────────────────────────────────────────────────────────
-
 describe('computeUpdatedLayer — drag', () => {
   it('returns the original layer untouched when the pointer did not move', () => {
     const layer = makeLayer({ x: 137, y: 213 });
@@ -133,8 +125,6 @@ describe('computeUpdatedLayer — drag', () => {
     expect(r.x).toBe((CANVAS_W - 200) / 2);
   });
 });
-
-// ── Resize: minimum size + handle direction ─────────────────────────────────
 
 describe('computeUpdatedLayer — resize basics', () => {
   it.each<['e' | 'w' | 's' | 'n', 'width' | 'height', number]>([
@@ -182,8 +172,6 @@ describe('computeUpdatedLayer — resize basics', () => {
   });
 });
 
-// ── Resize: aspect-ratio enforcement ────────────────────────────────────────
-
 describe('computeUpdatedLayer — aspect ratio (video / image layers)', () => {
   it('preserves AR when dragging a corner', () => {
     const layer = makeLayer({ x: 100, y: 100, width: 200, height: 100 }); // AR = 2
@@ -213,8 +201,6 @@ describe('computeUpdatedLayer — aspect ratio (video / image layers)', () => {
   });
 });
 
-// ── Resize: edge snapping ───────────────────────────────────────────────────
-
 describe('computeUpdatedLayer — edge snapping during resize', () => {
   it('snaps the east edge to the right canvas boundary when within threshold', () => {
     const layer = makeLayer({ x: 100, y: 100, width: 200, height: 100 }); // AR 2
@@ -238,8 +224,6 @@ describe('computeUpdatedLayer — edge snapping during resize', () => {
     expect(r.x).toBe(0);
   });
 });
-
-// ── Resize: clamp-to-bounds ─────────────────────────────────────────────────
 
 describe('computeUpdatedLayer — clamp to canvas bounds', () => {
   it('does not let the layer extend past the right edge', () => {
@@ -267,8 +251,6 @@ describe('computeUpdatedLayer — clamp to canvas bounds', () => {
   });
 });
 
-// ── Resize: rotation ────────────────────────────────────────────────────────
-
 describe('computeUpdatedLayer — rotated layers', () => {
   it('passes through (no extra deltas) when rotationDegrees=0', () => {
     const layer = makeLayer({ x: 100, y: 100, width: 200, height: 100, rotationDegrees: 0 });
@@ -283,8 +265,6 @@ describe('computeUpdatedLayer — rotated layers', () => {
     expect(r.width).not.toBe(layer.width + 50);
   });
 });
-
-// ── Resize: degenerate zero-dimension layers ────────────────────────────────
 
 describe('computeUpdatedLayer — degenerate sizes', () => {
   it('skips AR enforcement when original layer has zero width or height', () => {

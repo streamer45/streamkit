@@ -12,16 +12,14 @@
  * a renderer.
  */
 
-import type { Node as RFNode, ReactFlowInstance } from '@xyflow/react';
 import { act, renderHook } from '@testing-library/react';
+import type { Node as RFNode, ReactFlowInstance } from '@xyflow/react';
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Pipeline } from '@/types/types';
 
 import { useAutoLayout } from './useAutoLayout';
-
-// ── Fixtures ────────────────────────────────────────────────────────────────
 
 function makePipeline(): Pipeline {
   return {
@@ -66,8 +64,6 @@ function makeStubInstance(nodes: RFNode[] = []): {
   return { ref, instance };
 }
 
-// ── Setup ───────────────────────────────────────────────────────────────────
-
 beforeEach(() => {
   vi.useFakeTimers();
 });
@@ -75,8 +71,6 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
 });
-
-// ── applyAutoLayout — direct invocation ─────────────────────────────────────
 
 describe('useAutoLayout — applyAutoLayout', () => {
   it('computes positions, updates nodes, and persists to the position store', () => {
@@ -318,8 +312,6 @@ describe('useAutoLayout — applyAutoLayout', () => {
   });
 });
 
-// ── handleAutoLayout — pulls heights from the RF instance ───────────────────
-
 describe('useAutoLayout — handleAutoLayout', () => {
   it('collects heights from instance.getNodes() and delegates to applyAutoLayout', () => {
     const setNodes = vi.fn();
@@ -374,8 +366,6 @@ describe('useAutoLayout — handleAutoLayout', () => {
     expect(setNodes).not.toHaveBeenCalled();
   });
 });
-
-// ── needsAutoLayout / needsFit flags ────────────────────────────────────────
 
 describe('useAutoLayout — flag-driven effects', () => {
   it('runs auto-layout once when needsAutoLayout flips to true', () => {

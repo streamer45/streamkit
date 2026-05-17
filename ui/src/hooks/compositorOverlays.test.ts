@@ -17,11 +17,8 @@ import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { CommitAdapter } from './compositorCommit';
-import { useCompositorOverlays } from './compositorOverlays';
-import type { OverlayDeps } from './compositorOverlays';
 import type { ImageOverlayState, LayerState, TextOverlayState } from './compositorLayerParsers';
-
-// ── Fake state harness ──────────────────────────────────────────────────────
+import { useCompositorOverlays, type OverlayDeps } from './compositorOverlays';
 
 interface Harness {
   deps: OverlayDeps;
@@ -157,8 +154,6 @@ function makeImageOverlay(
   };
 }
 
-// ── selectLayer ─────────────────────────────────────────────────────────────
-
 describe('useCompositorOverlays — selectLayer', () => {
   it('writes the supplied ID to the selection setter', () => {
     const h = makeHarness();
@@ -171,8 +166,6 @@ describe('useCompositorOverlays — selectLayer', () => {
     expect(h.selectedRef.current).toBeNull();
   });
 });
-
-// ── updateLayerOpacity ──────────────────────────────────────────────────────
 
 describe('useCompositorOverlays — updateLayerOpacity', () => {
   it('clamps to [0, 1] and writes to the matching layer', () => {
@@ -211,8 +204,6 @@ describe('useCompositorOverlays — updateLayerOpacity', () => {
   });
 });
 
-// ── updateLayerRotation ─────────────────────────────────────────────────────
-
 describe('useCompositorOverlays — updateLayerRotation', () => {
   it('writes rotation in degrees verbatim (no clamp)', () => {
     const h = makeHarness({ initialLayers: [makeLayer('a')] });
@@ -231,8 +222,6 @@ describe('useCompositorOverlays — updateLayerRotation', () => {
     expect(h.layersRef.current).toBe(before);
   });
 });
-
-// ── updateLayerPositionSize ─────────────────────────────────────────────────
 
 describe('useCompositorOverlays — updateLayerPositionSize', () => {
   it('applies partial x/y updates without touching dimensions', () => {
@@ -294,8 +283,6 @@ describe('useCompositorOverlays — updateLayerPositionSize', () => {
   });
 });
 
-// ── updateLayerZIndex ───────────────────────────────────────────────────────
-
 describe('useCompositorOverlays — updateLayerZIndex', () => {
   it('re-sorts the array by zIndex after the update', () => {
     const h = makeHarness({
@@ -312,8 +299,6 @@ describe('useCompositorOverlays — updateLayerZIndex', () => {
     expect(h.layersRef.current.map((l) => l.id)).toEqual(['b', 'c', 'a']);
   });
 });
-
-// ── toggleLayerVisibility ───────────────────────────────────────────────────
 
 describe('useCompositorOverlays — toggleLayerVisibility', () => {
   it('flips visibility on a video layer', () => {
@@ -366,8 +351,6 @@ describe('useCompositorOverlays — toggleLayerVisibility', () => {
   });
 });
 
-// ── updateLayerMirror ───────────────────────────────────────────────────────
-
 describe('useCompositorOverlays — updateLayerMirror', () => {
   it('flips horizontal mirror on a video layer', () => {
     const h = makeHarness({ initialLayers: [makeLayer('a')] });
@@ -406,8 +389,6 @@ describe('useCompositorOverlays — updateLayerMirror', () => {
     expect(h.commit.commitOverlays).toHaveBeenCalledTimes(1);
   });
 });
-
-// ── updateLayerCropZoom ─────────────────────────────────────────────────────
 
 describe('useCompositorOverlays — updateLayerCropZoom', () => {
   it('clamps cropZoom to a minimum of 1.0', () => {
@@ -449,8 +430,6 @@ describe('useCompositorOverlays — updateLayerCropZoom', () => {
   });
 });
 
-// ── addTextOverlay ──────────────────────────────────────────────────────────
-
 describe('useCompositorOverlays — addTextOverlay', () => {
   it('appends a new overlay with stagger and selects it', () => {
     const h = makeHarness();
@@ -483,8 +462,6 @@ describe('useCompositorOverlays — addTextOverlay', () => {
     expect(added.zIndex).toBe(51);
   });
 });
-
-// ── updateTextOverlay ───────────────────────────────────────────────────────
 
 describe('useCompositorOverlays — updateTextOverlay', () => {
   it('applies partial updates and commits via throttledOverlayCommit', () => {
@@ -545,8 +522,6 @@ describe('useCompositorOverlays — updateTextOverlay', () => {
   });
 });
 
-// ── removeTextOverlay ───────────────────────────────────────────────────────
-
 describe('useCompositorOverlays — removeTextOverlay', () => {
   it('removes the overlay, clears selection, and commits via the immediate adapter', () => {
     const h = makeHarness({
@@ -562,8 +537,6 @@ describe('useCompositorOverlays — removeTextOverlay', () => {
     expect(h.commit.commitOverlays).toHaveBeenCalledTimes(1);
   });
 });
-
-// ── addImageOverlay ─────────────────────────────────────────────────────────
 
 describe('useCompositorOverlays — addImageOverlay', () => {
   it('appends a default 200×200 overlay when natural dimensions are missing', () => {
@@ -611,8 +584,6 @@ describe('useCompositorOverlays — addImageOverlay', () => {
   });
 });
 
-// ── updateImageOverlay / removeImageOverlay ─────────────────────────────────
-
 describe('useCompositorOverlays — image overlay update + remove', () => {
   it('updates fields and commits via throttledOverlayCommit', () => {
     const h = makeHarness({ initialImages: [makeImageOverlay('i1', { opacity: 1 })] });
@@ -635,8 +606,6 @@ describe('useCompositorOverlays — image overlay update + remove', () => {
     expect(h.selectedRef.current).toBeNull();
   });
 });
-
-// ── reorderLayers ───────────────────────────────────────────────────────────
 
 describe('useCompositorOverlays — reorderLayers', () => {
   it('only commits the bands that changed', () => {

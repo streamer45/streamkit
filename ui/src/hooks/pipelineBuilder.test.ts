@@ -20,8 +20,6 @@ import { nodeParamsAtom, sessionStore } from '@/stores/sessionAtoms';
 import { buildPipelineForYaml, orderNodeIdsTopDown } from './pipelineBuilder';
 import type { EditorNodeData } from './pipelineBuilder';
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
 type EditorNode = Node<EditorNodeData>;
 
 function makeNode(
@@ -74,8 +72,6 @@ afterEach(() => {
   }
   trackedNodeIds.length = 0;
 });
-
-// ── orderNodeIdsTopDown ─────────────────────────────────────────────────────
 
 describe('orderNodeIdsTopDown', () => {
   it('returns the only node for a single-node graph', () => {
@@ -155,8 +151,6 @@ describe('orderNodeIdsTopDown', () => {
   });
 });
 
-// ── buildPipelineForYaml — basics ───────────────────────────────────────────
-
 describe('buildPipelineForYaml — node kind / mode', () => {
   it('emits mode and per-node kind in topological order', () => {
     const nodes = [
@@ -177,8 +171,6 @@ describe('buildPipelineForYaml — node kind / mode', () => {
     expect(yaml.mode).toBe('dynamic');
   });
 });
-
-// ── buildPipelineForYaml — needs (dependencies) ─────────────────────────────
 
 describe('buildPipelineForYaml — needs assembly', () => {
   it('omits needs when a node has no inbound edges', () => {
@@ -275,8 +267,6 @@ describe('buildPipelineForYaml — needs assembly', () => {
   });
 });
 
-// ── buildPipelineForYaml — params & ui ──────────────────────────────────────
-
 describe('buildPipelineForYaml — params + ui blocks', () => {
   it('omits params when no params and no atom overrides exist', () => {
     const nodes = [makeNode(track('a'), { x: 0, y: 0 }, { label: 'n' })];
@@ -342,8 +332,6 @@ describe('buildPipelineForYaml — params + ui blocks', () => {
     expect(yaml.nodes['n']).toMatchObject({ ui: { position: { x: 12, y: 35 } } });
   });
 });
-
-// ── buildPipelineForYaml — integration smoke test ───────────────────────────
 
 describe('buildPipelineForYaml — integration', () => {
   it('produces a complete pipeline with kind, needs, and params', () => {

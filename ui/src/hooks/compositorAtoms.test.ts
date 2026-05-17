@@ -44,8 +44,6 @@ import {
 } from './compositorAtoms';
 import type { ImageOverlayState, LayerState, TextOverlayState } from './compositorLayerParsers';
 
-// ── Test data factories ─────────────────────────────────────────────────────
-
 let idCounter = 0;
 function freshId(prefix: string): string {
   idCounter += 1;
@@ -116,8 +114,6 @@ function makeImageOverlay(
   };
 }
 
-// ── Core atoms ──────────────────────────────────────────────────────────────
-
 describe('compositorAtoms — initial atom values', () => {
   it('exposes empty ID arrays and null selection by default', () => {
     const store = createStore();
@@ -153,8 +149,6 @@ describe('compositorAtoms — initial atom values', () => {
     expect(getLayersFromStore(b)).toHaveLength(0);
   });
 });
-
-// ── setLayersInStore ────────────────────────────────────────────────────────
 
 describe('setLayersInStore', () => {
   it('writes ID list and per-layer atoms', () => {
@@ -252,8 +246,6 @@ describe('setLayersInStore', () => {
   });
 });
 
-// ── setTextOverlaysInStore ──────────────────────────────────────────────────
-
 describe('setTextOverlaysInStore', () => {
   it('writes IDs and per-overlay atoms', () => {
     const store = createStore();
@@ -314,8 +306,6 @@ describe('setTextOverlaysInStore', () => {
   });
 });
 
-// ── setImageOverlaysInStore ─────────────────────────────────────────────────
-
 describe('setImageOverlaysInStore', () => {
   it('writes IDs and per-overlay atoms', () => {
     const store = createStore();
@@ -361,8 +351,6 @@ describe('setImageOverlaysInStore', () => {
   });
 });
 
-// ── Derived atoms ───────────────────────────────────────────────────────────
-
 describe('allLayersAtom / allTextOverlaysAtom / allImageOverlaysAtom', () => {
   it('returns layers in ID order, filtering nulled entries', () => {
     const store = createStore();
@@ -398,8 +386,6 @@ describe('allLayersAtom / allTextOverlaysAtom / allImageOverlaysAtom', () => {
   });
 });
 
-// ── layerOpacityAtom / layerRotationAtom ────────────────────────────────────
-
 describe('layerOpacityAtom / layerRotationAtom (derived families)', () => {
   it('tracks the parent layer atom', () => {
     const store = createStore();
@@ -421,8 +407,6 @@ describe('layerOpacityAtom / layerRotationAtom (derived families)', () => {
     expect(store.get(layerRotationAtom(id))).toBe(0);
   });
 });
-
-// ── selectedLayerKindAtom ───────────────────────────────────────────────────
 
 describe('selectedLayerKindAtom', () => {
   it('returns null when nothing is selected', () => {
