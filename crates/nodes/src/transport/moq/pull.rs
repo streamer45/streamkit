@@ -690,6 +690,11 @@ impl MoqPullNode {
                     "Catalog audio codec differs from output pin; \
                      pin was set during init before catalog was available"
                 );
+                return Err(StreamKitError::Runtime(format!(
+                    "Audio codec mismatch: output pin advertises {pin_codec:?} \
+                     but catalog resolved {resolved_audio_codec:?}; \
+                     reconnecting to retry catalog discovery"
+                )));
             }
         }
 
@@ -1324,7 +1329,7 @@ mod tests {
     }
 
     #[test]
-    fn test_codec_mismatch_detectable() {
+    fn test_default_node_has_opus_output_pin() {
         let node = MoqPullNode::new(MoqPullConfig::default());
         let out_pin = node.output_pins.iter().find(|p| p.name == "out").unwrap();
         let pin_codec = match &out_pin.produces_type {
@@ -1332,9 +1337,61 @@ mod tests {
             _ => panic!("expected EncodedAudio"),
         };
         assert_eq!(pin_codec, AudioCodec::Opus);
-        // Simulates what run_connection() checks: a discovered AAC codec
-        // would differ from the Opus pin, triggering the warning.
-        assert_ne!(pin_codec, AudioCodec::Aac);
+    }
+
+    #[test]
+    fn test_codec_mismatch_detected_between_pin_and_catalog() {
+        // Simulates the scenario where initialize() failed to discover the
+        // catalog (timeout), leaving the output pin at the default Opus codec.
+        // run_connection() later discovers a different codec (AAC) from the
+        // catalog and should detect the mismatch.
+        let node = MoqPullNode::new(MoqPullConfig::default());
+        let out_pin = node.output_pins.iter().find(|p| p.name == "out").unwrap();
+        let pin_codec = match &out_pin.produces_type {
+            PacketType::EncodedAudio(fmt) => fmt.codec,
+            _ => panic!("expected EncodedAudio"),
+        };
+
+        let catalog_codec = AudioCodec::Aac;
+        assert_ne!(
+            pin_codec, catalog_codec,
+            "default pin codec should differ from catalog AAC, triggering connection failure"
+        );
+    }
+
+    #[test]
+    fn test_no_mismatch_when_pin_matches_catalog() {
+        let node = MoqPullNode::new(MoqPullConfig::default());
+        let out_pin = node.output_pins.iter().find(|p| p.name == "out").unwrap();
+        let pin_codec = match &out_pin.produces_type {
+            PacketType::EncodedAudio(fmt) => fmt.codec,
+            _ => panic!("expected EncodedAudio"),
+        };
+
+        let catalog_codec = AudioCodec::Opus;
+        assert_eq!(
+            pin_codec, catalog_codec,
+            "matching codecs should not trigger a connection failure"
+        );
+    }
+
+    #[test]
+    fn test_explicit_aac_config_avoids_mismatch_with_aac_catalog() {
+        let config =
+            MoqPullConfig { audio_codec: Some(AudioCodec::Aac), ..MoqPullConfig::default() };
+        let node = MoqPullNode::new(config);
+        let out_pin = node.output_pins.iter().find(|p| p.name == "out").unwrap();
+        let pin_codec = match &out_pin.produces_type {
+            PacketType::EncodedAudio(fmt) => fmt.codec,
+            _ => panic!("expected EncodedAudio"),
+        };
+        assert_eq!(pin_codec, AudioCodec::Aac);
+
+        let catalog_codec = AudioCodec::Aac;
+        assert_eq!(
+            pin_codec, catalog_codec,
+            "AAC-configured node should match AAC catalog without mismatch"
+        );
     }
 
     /// Validate that every `transport::moq::subscriber` node in the sample
