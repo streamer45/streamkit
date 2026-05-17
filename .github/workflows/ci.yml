@@ -109,6 +109,9 @@ jobs:
       - uses: fsfe/reuse-action@v6
 
   # ---------- Gate ----------
+  # This is the ONLY job that should be a required status check in branch
+  # protection. It aggregates results from all conditional sub-workflows so
+  # that skipped jobs (due to path filtering) never block merge.
   all-checks:
     name: All Checks Passed
     if: always()
@@ -117,7 +120,8 @@ jobs:
     steps:
       - name: Verify results
         run: |
-          results=(
+          declare -a names=(changes skit ui plugins e2e reuse)
+          declare -a results=(
             "${{ needs.changes.result }}"
             "${{ needs.skit.result }}"
             "${{ needs.ui.result }}"
@@ -125,10 +129,17 @@ jobs:
             "${{ needs.e2e.result }}"
             "${{ needs.reuse.result }}"
           )
-          for r in "${results[@]}"; do
+
+          failed=0
+          for i in "${!names[@]}"; do
+            r="${results[$i]}"
+            printf '  %-10s %s\n' "${names[$i]}" "$r"
             if [[ "$r" == "failure" || "$r" == "cancelled" ]]; then
-              echo "::error::CI check failed or was cancelled ($r)"
-              exit 1
+              echo "::error::${names[$i]}: $r"
+              failed=1
             fi
           done
-          echo "All checks passed or were appropriately skipped."
+
+          if [[ "$failed" -ne 0 ]]; then
+            exit 1
+          fi
