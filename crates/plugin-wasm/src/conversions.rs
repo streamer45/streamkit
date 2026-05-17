@@ -122,6 +122,7 @@ impl From<&wit_types::PacketType> for CorePacketType {
 }
 
 #[cfg(test)]
+// Tests rely on expect/unwrap to fail fast with readable assertion context.
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;

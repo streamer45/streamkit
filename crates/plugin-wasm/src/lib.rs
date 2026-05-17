@@ -351,6 +351,7 @@ pub fn register_plugins(registry: &mut NodeRegistry, plugins: Vec<LoadedPlugin>)
 }
 
 #[cfg(test)]
+// Tests rely on expect/unwrap to fail fast with readable assertion context.
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
@@ -384,13 +385,12 @@ mod tests {
 
     #[test]
     fn plugin_runtime_new_rejects_disabled_simd_due_to_relaxed_simd_default() {
-        // BUG: PluginRuntimeConfig exposes `enable_simd: false`, but wasmtime enables the
-        // relaxed-simd proposal by default, which requires the base SIMD proposal. The
-        // resulting config error ("cannot disable the simd proposal but enable the relaxed
-        // simd proposal") means every `enable_simd: false` config — including the threads
-        // combination — fails initialization. Either the field should be honored end-to-end
-        // (also disabling relaxed_simd) or removed from the public config. Pin current
-        // (broken) behavior until fixed.
+        // BUG (tracked in #469): PluginRuntimeConfig exposes `enable_simd: false`, but
+        // wasmtime enables the relaxed-simd proposal by default, which requires the base
+        // SIMD proposal. The resulting config error ("cannot disable the simd proposal but
+        // enable the relaxed simd proposal") means every `enable_simd: false` config —
+        // including the threads combination — fails initialization. Pin current (broken)
+        // behavior until fixed.
         for enable_threads in [false, true] {
             let cfg = PluginRuntimeConfig {
                 max_memory_bytes: 16 * 1024 * 1024,
@@ -425,11 +425,10 @@ mod tests {
     #[test]
     fn namespaced_kind_rejects_reserved_core_prefix() {
         let err = namespaced_kind("core::audio").expect_err("must reject `core::` kinds");
-        // The `core::` check is unreachable today because any string containing `::` is
-        // already rejected by the namespace-separator guard. Pin that behavior: the error
-        // message references the namespace-separator rule, not the reserved-prefix rule.
-        // If `namespaced_kind` is ever refactored to check the reserved prefix first,
-        // this assertion will start failing and signal that the contract should be revisited.
+        // BUG (tracked in #470): the `core::` check is unreachable because any string
+        // containing `::` is already rejected by the namespace-separator guard. Pin the
+        // current behavior — the error message references the namespace-separator rule,
+        // not the reserved-prefix rule — so the test fails if the contract is revisited.
         assert!(
             err.contains("reserved for namespace prefixes"),
             "expected namespace-separator error, got: {err}"
@@ -446,7 +445,6 @@ mod tests {
         let runtime =
             PluginRuntime::new(PluginRuntimeConfig::default()).expect("runtime must initialize");
         let missing = std::env::temp_dir().join("streamkit-plugin-wasm-tests-missing-dir");
-        // Ensure it doesn't exist
         let _ = fs::remove_dir_all(&missing);
         let plugins = runtime.load_plugins_from_directory(&missing);
         assert!(plugins.is_empty());

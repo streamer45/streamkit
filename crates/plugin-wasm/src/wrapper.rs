@@ -371,6 +371,7 @@ async fn receive_from_any_input(
 }
 
 #[cfg(test)]
+// Tests rely on expect/unwrap to fail fast with readable assertion context.
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
