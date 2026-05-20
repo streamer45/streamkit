@@ -112,6 +112,7 @@ jobs:
   # This is the ONLY job that should be a required status check in branch
   # protection. It aggregates results from all conditional sub-workflows so
   # that skipped jobs (due to path filtering) never block merge.
+  # See CONTRIBUTING.md § "CI gate and branch protection" for details.
   all-checks:
     name: All Checks Passed
     if: always()
@@ -119,26 +120,20 @@ jobs:
     needs: [changes, skit, ui, plugins, e2e, reuse]
     steps:
       - name: Verify results
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
-          declare -a names=(changes skit ui plugins e2e reuse)
-          declare -a results=(
-            "${{ needs.changes.result }}"
-            "${{ needs.skit.result }}"
-            "${{ needs.ui.result }}"
-            "${{ needs.plugins.result }}"
-            "${{ needs.e2e.result }}"
-            "${{ needs.reuse.result }}"
-          )
-
           failed=0
-          for i in "${!names[@]}"; do
-            r="${results[$i]}"
-            printf '  %-10s %s\n' "${names[$i]}" "$r"
-            if [[ "$r" == "failure" || "$r" == "cancelled" ]]; then
-              echo "::error::${names[$i]}: $r"
+          echo "::group::Job results"
+          for job in $(echo "$NEEDS_JSON" | jq -r 'keys[]'); do
+            result=$(echo "$NEEDS_JSON" | jq -r --arg j "$job" '.[$j].result')
+            printf '  %-10s %s\n' "$job" "$result"
+            if [[ "$result" == "failure" || "$result" == "cancelled" ]]; then
+              echo "::error::$job: $result"
               failed=1
             fi
           done
+          echo "::endgroup::"
 
           if [[ "$failed" -ne 0 ]]; then
             exit 1
