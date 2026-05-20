@@ -667,3 +667,38 @@ pub fn lint_client_against_nodes(
 
     warnings
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The `publish-no-media` rule documented at the top of this file is not
+    // implemented: `PublishConfig` has no `audio`/`video` boolean fields,
+    // only a `tracks` array.  Pin the current behaviour so the rustdoc/code
+    // drift surfaces if anyone tries to revive the rule without re-reading
+    // the model.  See PR description "Follow-ups / observations".
+    #[test]
+    fn publish_no_media_rule_is_not_emitted() {
+        let client = ClientSection {
+            gateway_path: Some("/gw".into()),
+            publish: Some(PublishConfig {
+                broadcast: "bcast".into(),
+                tracks: vec![PublishTrackConfig {
+                    kind: TrackKind::Audio,
+                    source: CaptureSource::Microphone,
+                    broadcast: None,
+                    width: None,
+                    height: None,
+                    codec: None,
+                    max_bitrate: None,
+                }],
+            }),
+            ..ClientSection::default()
+        };
+        let warnings = lint_client_section(&client, EngineMode::Dynamic);
+        assert!(
+            !warnings.iter().any(|w| w.rule == "publish-no-media"),
+            "unexpected `publish-no-media` warning: {warnings:?}"
+        );
+    }
+}
