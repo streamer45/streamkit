@@ -522,11 +522,15 @@ mod tests {
     use tower::ServiceExt;
 
     fn make_state_auth_disabled() -> Arc<AppState> {
-        // AuthState::disabled() never touches state_dir and create_app_state
-        // only stores the config; the TempDir can drop at function return.
-        let temp = TempDir::new().unwrap();
+        // AuthState::disabled() does not read state_dir. Using an obvious
+        // sentinel (rather than a TempDir whose lifetime would have to be
+        // threaded through every caller) makes the "this field is unused
+        // on the disabled path" intent loud: if a future change starts
+        // reading state_dir under disabled auth, it will fail on this
+        // path immediately rather than appear to work against a stale
+        // tempdir.
         let mut config = Config::default();
-        config.auth.state_dir = temp.path().to_string_lossy().to_string();
+        config.auth.state_dir = "<unused-by-disabled-auth-tests>".to_string();
         let auth = Arc::new(crate::auth::AuthState::disabled());
         crate::server::create_app_state(config, Some(auth))
     }

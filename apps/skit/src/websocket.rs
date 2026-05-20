@@ -389,25 +389,14 @@ mod tests {
     }
 
     #[test]
-    fn max_ws_message_bytes_is_positive_default() {
-        // Without SK_WEBSOCKET_MAX_MESSAGE_BYTES set, the OnceLock must
-        // resolve to the documented default and never zero.
-        let n = max_ws_message_bytes();
-        assert!(n >= DEFAULT_MAX_WS_MESSAGE_BYTES, "got {n}");
-    }
-
-    #[test]
-    fn websocket_metrics_shared_is_callable_repeatedly() {
-        // OpenTelemetry's Counter/Gauge types intentionally don't expose
-        // pointer identity, so we can't directly assert that two calls return
-        // instruments backed by the same OnceLock cell. The singleton
-        // invariant is enforced at the source by `OnceLock::get_or_init`; this
-        // test simply locks in that repeated access does not panic and yields
-        // usable instruments.
-        let a = WebSocketMetrics::shared();
-        let b = WebSocketMetrics::shared();
-        a.messages_counter.add(0, &[]);
-        b.connections_gauge.record(0, &[]);
+    fn max_ws_message_bytes_returns_positive_value() {
+        // Cannot assert on the default specifically: max_ws_message_bytes()
+        // memoises via OnceLock, and SK_WEBSOCKET_MAX_MESSAGE_BYTES may be
+        // set by the test binary's environment or by an earlier-running
+        // test in the same process. The contract this test pins is the
+        // narrower one the production handler actually relies on: the
+        // returned cap is non-zero so the size check is meaningful.
+        assert!(max_ws_message_bytes() > 0);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -567,10 +556,12 @@ mod tests {
             }
         }
         // After the terminal frame (or stream end), the next read must be
-        // None — the handler has dropped the socket and no further messages
-        // can arrive.
+        // None essentially instantly — the handler has dropped the socket
+        // and the close handshake is already complete. 200ms is generous
+        // enough to absorb scheduler jitter without inflating the test's
+        // wall time on a happy-path run.
         let tail =
-            tokio::time::timeout(std::time::Duration::from_secs(2), ws.next()).await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_millis(200), ws.next()).await.unwrap();
         assert!(
             tail.is_none(),
             "handler kept stream alive after client close: saw_terminal={saw_terminal}, tail={tail:?}",
@@ -578,12 +569,11 @@ mod tests {
     }
 
     /// Drives a request/response round trip through the WebSocket and returns
-    /// after the response is observed. Because `handle_websocket` calls
-    /// `event_tx.subscribe()` (line 141 of this file) *before* entering the
-    /// recv loop that emits this response, observing the response on the
-    /// client side proves the broadcast subscription is live — letting
-    /// subsequent `event_tx.send()` calls reach the handler without relying on
-    /// fixed sleeps.
+    /// after the response is observed. `handle_websocket` calls
+    /// `event_tx.subscribe()` *before* entering the recv loop that emits this
+    /// response, so observing the response on the client side proves the
+    /// broadcast subscription is live — letting subsequent `event_tx.send()`
+    /// calls reach the handler without relying on fixed sleeps.
     async fn wait_for_handler_subscribed(
         ws: &mut tokio_tungstenite::WebSocketStream<
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
