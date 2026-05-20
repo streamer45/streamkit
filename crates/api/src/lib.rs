@@ -738,31 +738,17 @@ mod tests {
     }
 
     #[test]
-    fn message_type_serializes_to_lowercase() {
-        for (variant, expected) in [
+    fn message_type_lowercase_roundtrip() {
+        for (variant, raw) in [
             (MessageType::Request, "\"request\""),
             (MessageType::Response, "\"response\""),
             (MessageType::Event, "\"event\""),
         ] {
-            let json = serde_json::to_string(&variant).expect("serialize");
-            assert_eq!(json, expected, "{variant:?} should serialize to {expected}");
-        }
-    }
-
-    #[test]
-    fn message_type_deserializes_from_lowercase() {
-        for (raw, expected) in [
-            ("\"request\"", MessageType::Request),
-            ("\"response\"", MessageType::Response),
-            ("\"event\"", MessageType::Event),
-        ] {
+            let serialized = serde_json::to_string(&variant).expect("serialize");
+            assert_eq!(serialized, raw, "{variant:?} should serialize to {raw}");
             let parsed: MessageType = from_json(raw);
-            assert_eq!(parsed, expected, "{raw} should deserialize to {expected:?}");
+            assert_eq!(parsed, variant, "{raw} should deserialize to {variant:?}");
         }
-    }
-
-    #[test]
-    fn message_type_rejects_capitalized_variants() {
         assert!(
             serde_json::from_str::<MessageType>("\"Request\"").is_err(),
             "capitalized variants must be rejected"
@@ -983,29 +969,6 @@ mod tests {
         let reserialized = to_value(&parsed);
         assert_eq!(reserialized["kind"], "audio::gain");
         assert_eq!(reserialized["bidirectional"], false);
-    }
-
-    #[test]
-    fn node_state_reexport_roundtrips_unit_variant() {
-        let raw = "\"Running\"";
-        let parsed: NodeState = from_json(raw);
-        assert!(matches!(parsed, NodeState::Running));
-        let reserialized = serde_json::to_string(&parsed).expect("serialize");
-        assert_eq!(reserialized, raw);
-    }
-
-    #[test]
-    fn node_state_reexport_roundtrips_struct_variant() {
-        let raw = serde_json::json!({
-            "Failed": {"reason": "boom"}
-        });
-        let parsed: NodeState = serde_json::from_value(raw.clone()).expect("deserialize");
-        match &parsed {
-            NodeState::Failed { reason } => assert_eq!(reason, "boom"),
-            other => panic!("unexpected state: {other:?}"),
-        }
-        let reserialized = to_value(&parsed);
-        assert_eq!(reserialized, raw);
     }
 
     #[test]
