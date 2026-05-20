@@ -2,15 +2,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Unit tests for pipelineBuilder — the pure graph → pipeline YAML helpers
- * extracted from usePipeline.  Covers topological ordering with positional
- * tiebreakers and the assembly of `needs`, `params`, `kind`, and `ui` blocks
- * from React Flow nodes/edges.
- *
- * Tests use the real default sessionStore (mutated and cleaned up between
- * cases) since buildPipelineForYaml reads nodeParamsAtom overrides from it.
- */
+// Tests for pipelineBuilder.  Uses the default sessionStore (the only one
+// buildPipelineForYaml reads from) and cleans up per-test param overrides
+// in afterEach via the tracked-ID set below.
 
 import type { Edge, Node } from '@xyflow/react';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -27,6 +21,10 @@ function makeNode(
   pos: { x: number; y: number },
   data: Partial<EditorNodeData> = {}
 ): EditorNode {
+  // Cast skips React Flow runtime-only fields (measured, width, height,
+  // selected, dragging, parentId, etc.) that orderNodeIdsTopDown and
+  // buildPipelineForYaml don't read.  If the production code ever begins
+  // depending on those, this cast will hide it — drop the cast then.
   return {
     id,
     position: pos,
@@ -37,7 +35,6 @@ function makeNode(
       outputs: data.outputs,
       ...data,
     },
-    // React Flow runtime fields the test doesn't care about
     type: 'editor',
   } as EditorNode;
 }
@@ -137,17 +134,40 @@ describe('orderNodeIdsTopDown', () => {
     expect(orderNodeIdsTopDown(nodes, edges)).toEqual(['a']);
   });
 
-  it('appends cycle members after the resolved DAG (no infinite loop)', () => {
+  it('terminates on a pure cycle and returns the cycle members sorted by Y', () => {
     // a → b → c → a forms a cycle with no in-degree-zero nodes.  The
-    // function should still terminate and surface all node IDs.
+    // function should terminate (no infinite loop) and emit the unseen
+    // nodes sorted by the position-based comparator (Y → X → ID).
     const nodes = [
       makeNode('a', { x: 0, y: 0 }),
       makeNode('b', { x: 0, y: 100 }),
       makeNode('c', { x: 0, y: 200 }),
     ];
     const edges = [makeEdge('e0', 'a', 'b'), makeEdge('e1', 'b', 'c'), makeEdge('e2', 'c', 'a')];
+    expect(orderNodeIdsTopDown(nodes, edges)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('places DAG nodes before cycle members in a mixed graph', () => {
+    // Independent DAG: root → leaf.  Separate cycle: x → y → z → x.  Even
+    // though the cycle nodes are positioned above the DAG (lower Y), they
+    // belong to the unseen-tail and must come after the resolved DAG.
+    const nodes = [
+      makeNode('root', { x: 0, y: 500 }),
+      makeNode('leaf', { x: 0, y: 600 }),
+      makeNode('x', { x: 0, y: 0 }),
+      makeNode('y', { x: 0, y: 100 }),
+      makeNode('z', { x: 0, y: 200 }),
+    ];
+    const edges = [
+      makeEdge('e0', 'root', 'leaf'),
+      makeEdge('e1', 'x', 'y'),
+      makeEdge('e2', 'y', 'z'),
+      makeEdge('e3', 'z', 'x'),
+    ];
     const order = orderNodeIdsTopDown(nodes, edges);
-    expect(order.sort()).toEqual(['a', 'b', 'c']);
+    expect(order.indexOf('root')).toBeLessThan(order.indexOf('x'));
+    expect(order.indexOf('leaf')).toBeLessThan(order.indexOf('x'));
+    expect(order.slice(2)).toEqual(['x', 'y', 'z']);
   });
 });
 

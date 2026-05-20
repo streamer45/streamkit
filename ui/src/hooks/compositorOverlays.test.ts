@@ -2,15 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Unit tests for useCompositorOverlays.
- *
- * The hook exposes overlay CRUD, layer property updates (opacity, rotation,
- * z-index, visibility, mirror, crop/zoom), and batch reorder.  We test the
- * behaviour observable from the returned callbacks via a fake state harness:
- * the React.Dispatch setters mirror their effect into refs so we can assert
- * on the resulting state without rendering anything.
- */
+// Tests for useCompositorOverlays via a synchronous ref-based state harness.
 
 import { act, renderHook } from '@testing-library/react';
 import React from 'react';
@@ -35,6 +27,10 @@ interface Harness {
   throttledOverlayCommit: ReturnType<typeof vi.fn>;
 }
 
+// The harness applies setter callbacks synchronously into a ref.  This is
+// sufficient for the hook's callbacks, which all read fresh ref values, but
+// it does NOT exercise React's batching or transition machinery — bugs that
+// depend on stale-closure reads or concurrent updates won't surface here.
 function makeStateSetter<T>(ref: { current: T[] }): React.Dispatch<React.SetStateAction<T[]>> {
   return (next) => {
     ref.current = typeof next === 'function' ? (next as (prev: T[]) => T[])(ref.current) : next;
@@ -448,19 +444,26 @@ describe('useCompositorOverlays — addTextOverlay', () => {
     expect(h.commit.commitOverlays).toHaveBeenCalled();
   });
 
-  it('assigns a zIndex strictly greater than any existing overlay', () => {
-    const h = makeHarness({
-      initialLayers: [makeLayer('a', { zIndex: 5 })],
-      initialText: [makeTextOverlay('t1', { zIndex: 50 })],
-      initialImages: [makeImageOverlay('i1', { zIndex: 30 })],
-    });
-    const { result } = renderHook(() => useCompositorOverlays(h.deps));
+  it.each([
+    { name: 'layer holds the max', layer: 100, text: 50, image: 30, expected: 101 },
+    { name: 'image holds the max', layer: 5, text: 50, image: 200, expected: 201 },
+    { name: 'text holds the max', layer: 5, text: 75, image: 30, expected: 76 },
+  ])(
+    'assigns zIndex = max(layer, text, image) + 1 when $name',
+    ({ layer, text, image, expected }) => {
+      const h = makeHarness({
+        initialLayers: [makeLayer('a', { zIndex: layer })],
+        initialText: [makeTextOverlay('t1', { zIndex: text })],
+        initialImages: [makeImageOverlay('i1', { zIndex: image })],
+      });
+      const { result } = renderHook(() => useCompositorOverlays(h.deps));
 
-    act(() => result.current.addTextOverlay('top'));
+      act(() => result.current.addTextOverlay('top'));
 
-    const added = h.textRef.current[h.textRef.current.length - 1];
-    expect(added.zIndex).toBe(51);
-  });
+      const added = h.textRef.current[h.textRef.current.length - 1];
+      expect(added.zIndex).toBe(expected);
+    }
+  );
 });
 
 describe('useCompositorOverlays — updateTextOverlay', () => {

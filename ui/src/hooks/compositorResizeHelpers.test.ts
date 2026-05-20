@@ -2,14 +2,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Unit tests for compositorResizeHelpers — pure drag / resize math.
- *
- * Pure functions, no React.  The internal helpers (applyHandleDelta,
- * constrainAspectRatio, snapResizeToEdges, …) are exercised through the
- * single public entry point `computeUpdatedLayer`, plus the snap-guide
- * detector `detectSnapGuides`.
- */
+// Tests for the pure helpers in compositorResizeHelpers (snap math, drag/
+// resize transforms, AR enforcement, rotation, boundary clamping).
 
 import { describe, expect, it } from 'vitest';
 
@@ -258,11 +252,25 @@ describe('computeUpdatedLayer — rotated layers', () => {
     expect(r.width).toBe(230);
   });
 
-  it('transforms screen-space delta into local coords on rotated layers', () => {
-    // A 90° rotation means horizontal screen movement maps to local Y.
+  it('east-handle screen-X on a 90°-rotated layer does NOT change width', () => {
+    // rotateToLocalCoords with rotationDegrees=90 maps (rawDx=50, rawDy=0)
+    // → (dx=0, dy=-50).  East consumes only `dx`, so width and x do not
+    // move.  A sign flip in the rotation matrix would change width here.
     const layer = makeLayer({ x: 100, y: 100, width: 200, height: 100, rotationDegrees: 90 });
     const r = computeUpdatedLayer(layer, 'resize', 'e', 50, 0, CANVAS_W, CANVAS_H, 'text');
-    expect(r.width).not.toBe(layer.width + 50);
+    expect(r.width).toBe(layer.width);
+    expect(r.x).toBe(layer.x);
+  });
+
+  it('east-handle screen-Y on a 90°-rotated layer DOES grow width', () => {
+    // (rawDx=0, rawDy=50) at 90° → (dx=50, dy=0).  Perpendicular screen
+    // movement maps onto the local east-axis, so width grows by exactly 50.
+    // Pairs with the previous test: together they pin down both that the
+    // identity-transform path is gone and that the rotation is correct.
+    const layer = makeLayer({ x: 100, y: 100, width: 200, height: 100, rotationDegrees: 90 });
+    const r = computeUpdatedLayer(layer, 'resize', 'e', 0, 50, CANVAS_W, CANVAS_H, 'text');
+    expect(r.width).toBe(layer.width + 50);
+    expect(r.height).toBe(layer.height);
   });
 });
 

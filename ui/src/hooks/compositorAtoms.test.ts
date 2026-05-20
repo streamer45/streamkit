@@ -2,15 +2,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Unit tests for compositorAtoms — per-compositor Jotai stores, derived
- * selectors, and the bulk setLayers/setTextOverlays/setImageOverlays
- * helpers that diff at field level to avoid spurious atom writes.
- *
- * IDs are unique per test to keep the atomFamily caches isolated (the
- * family caches are global by design — see the note at the bottom of
- * compositorAtoms.ts).
- */
+// Tests for compositorAtoms.  IDs are unique per test because the atomFamily
+// caches are intentionally global — see the note at the bottom of
+// compositorAtoms.ts.
 
 import { createStore } from 'jotai';
 import { describe, expect, it } from 'vitest';
@@ -47,7 +41,7 @@ import type { ImageOverlayState, LayerState, TextOverlayState } from './composit
 let idCounter = 0;
 function freshId(prefix: string): string {
   idCounter += 1;
-  return `${prefix}-${process.pid}-${idCounter}`;
+  return `${prefix}-${idCounter}`;
 }
 
 function makeLayer(id: string, overrides: Partial<LayerState> = {}): LayerState {

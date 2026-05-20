@@ -2,15 +2,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Unit tests for useAutoLayout.
- *
- * The hook composes pure DAG helpers (topoLevelsFromPipeline, verticalLayout)
- * with React Flow side effects (setNodes, instance.fitView, instance.getNodes)
- * and persistence (updateNodePosition).  Tests use renderHook + a stub
- * ReactFlow instance so we exercise real layout math without spinning up
- * a renderer.
- */
+// Tests for useAutoLayout — exercises DAG layout, fitView scheduling, and
+// the position-store persistence path against a stub ReactFlowInstance.
 
 import { act, renderHook } from '@testing-library/react';
 import type { Node as RFNode, ReactFlowInstance } from '@xyflow/react';
@@ -150,17 +143,67 @@ describe('useAutoLayout — applyAutoLayout', () => {
   });
 
   it('returns the same node reference when its computed position matches the current one', () => {
+    // First call captures the positions verticalLayout produces, second call
+    // re-seeds `prev` with those positions so the map-updater hits the
+    // `if (n.position.x === newPos.x && n.position.y === newPos.y) return n`
+    // fast path and we can assert reference-equality.
     const setNodes = vi.fn();
     const { ref } = makeStubInstance();
     const pipeline = makePipeline();
 
+    let computedPositions: Map<string, { x: number; y: number }> | null = null;
+    let secondCallSeed: RFNode[] | null = null;
+    let secondCallNext: RFNode[] | null = null;
+
+    setNodes.mockImplementation((updater: (prev: RFNode[]) => RFNode[]) => {
+      if (computedPositions === null) {
+        const next = updater([makeNode('src'), makeNode('sink')]);
+        computedPositions = new Map(next.map((n) => [n.id, n.position]));
+        return next;
+      }
+      secondCallSeed = [
+        { ...makeNode('src'), position: computedPositions.get('src')! },
+        { ...makeNode('sink'), position: computedPositions.get('sink')! },
+      ];
+      secondCallNext = updater(secondCallSeed);
+      return secondCallNext;
+    });
+
+    const { result } = renderHook(() =>
+      useAutoLayout({
+        pipeline,
+        selectedSessionId: 'sess',
+        nodesLength: 2,
+        setNodes,
+        rf: ref,
+        updateNodePosition: vi.fn(),
+      })
+    );
+
+    act(() => {
+      result.current.applyAutoLayout({ src: 100, sink: 100 });
+      result.current.applyAutoLayout({ src: 100, sink: 100 });
+    });
+
+    expect(secondCallSeed).not.toBeNull();
+    expect(secondCallNext).not.toBeNull();
+    expect(secondCallNext![0]).toBe(secondCallSeed![0]);
+    expect(secondCallNext![1]).toBe(secondCallSeed![1]);
+  });
+
+  it('produces fresh node objects when the computed position differs from current', () => {
+    const setNodes = vi.fn();
+    const { ref } = makeStubInstance();
+    const pipeline = makePipeline();
+
+    let capturedSeed: RFNode[] | null = null;
     let capturedNext: RFNode[] | null = null;
     setNodes.mockImplementation((updater: (prev: RFNode[]) => RFNode[]) => {
-      const prev: RFNode[] = [
+      capturedSeed = [
         { ...makeNode('src'), position: { x: 1, y: 1 } },
         { ...makeNode('sink'), position: { x: 999, y: 999 } },
       ];
-      capturedNext = updater(prev);
+      capturedNext = updater(capturedSeed);
       return capturedNext;
     });
 
@@ -176,14 +219,12 @@ describe('useAutoLayout — applyAutoLayout', () => {
     );
 
     act(() => {
-      // Heights match; src will compute (0, 0) and sink will compute the
-      // next-level Y.  Neither matches the (1,1) / (999,999) seed, so
-      // both should be fresh objects.
       result.current.applyAutoLayout({ src: 100, sink: 100 });
     });
 
     expect(capturedNext).not.toBeNull();
-    expect(capturedNext![0]).not.toMatchObject({ position: { x: 1, y: 1 } });
+    expect(capturedNext![0]).not.toBe(capturedSeed![0]);
+    expect(capturedNext![1]).not.toBe(capturedSeed![1]);
   });
 
   it('skips persistence when selectedSessionId is null but still updates nodes', () => {
