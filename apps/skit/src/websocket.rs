@@ -486,13 +486,16 @@ mod tests {
             response.payload
         );
 
-        // Server must follow up with a close frame and then disconnect.
+        // Server must follow up with an explicit Close frame. A bare
+        // stream-end (None) would be a regression — the production handler
+        // sends `Message::Close(None)` after the error response (see
+        // handle_websocket() oversized-text branch).
         let close_or_end =
             tokio::time::timeout(std::time::Duration::from_secs(2), ws.next()).await.unwrap();
-        match close_or_end {
-            Some(Ok(WsMessage::Close(_))) | None => {},
-            other => panic!("expected close after oversized message, got {other:?}"),
-        }
+        assert!(
+            matches!(close_or_end, Some(Ok(WsMessage::Close(_)))),
+            "expected explicit Close frame after oversized text, got {close_or_end:?}",
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -504,13 +507,15 @@ mod tests {
         let oversized = vec![0u8; 2 * 1024 * 1024];
         ws.send(WsMessage::Binary(oversized.into())).await.unwrap();
 
-        // Binary overflow doesn't include a payload in the error response —
-        // the server logs + bumps the error counter and immediately closes.
+        // The binary branch in handle_websocket() does not emit an error
+        // payload — it logs, increments the counter, and sends an explicit
+        // Close frame. Pin that contract; a bare stream-end (None) would
+        // indicate the close-on-overflow path regressed.
         let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next()).await.unwrap();
-        match msg {
-            Some(Ok(WsMessage::Close(_))) | None => {},
-            other => panic!("expected close frame for oversized binary, got {other:?}"),
-        }
+        assert!(
+            matches!(msg, Some(Ok(WsMessage::Close(_)))),
+            "expected explicit Close frame after oversized binary, got {msg:?}",
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -545,15 +550,31 @@ mod tests {
         let mut ws = connect(addr).await;
 
         ws.close(None).await.unwrap();
-        // Drain any echo / close acknowledgement; the stream must end.
+        // Drain any echo / close acknowledgement, then explicitly verify the
+        // stream terminates. Without this assertion a hung-handler regression
+        // (server keeps the recv loop alive after client-initiated close)
+        // would still let this test pass.
+        let mut saw_terminal = false;
         while let Some(msg) =
             tokio::time::timeout(std::time::Duration::from_secs(2), ws.next()).await.unwrap()
         {
             match msg {
-                Ok(WsMessage::Close(_)) | Err(_) => break,
+                Ok(WsMessage::Close(_)) | Err(_) => {
+                    saw_terminal = true;
+                    break;
+                },
                 Ok(_) => {},
             }
         }
+        // After the terminal frame (or stream end), the next read must be
+        // None — the handler has dropped the socket and no further messages
+        // can arrive.
+        let tail =
+            tokio::time::timeout(std::time::Duration::from_secs(2), ws.next()).await.unwrap();
+        assert!(
+            tail.is_none(),
+            "handler kept stream alive after client close: saw_terminal={saw_terminal}, tail={tail:?}",
+        );
     }
 
     /// Drives a request/response round trip through the WebSocket and returns
@@ -727,7 +748,14 @@ mod tests {
             WsMessage::Text(t) => t,
             other => panic!("expected event text, got {other:?}"),
         };
-        assert!(text.contains("any-session"), "got: {text}");
-        assert!(text.contains("nodestatechanged") || text.contains("NodeStateChanged"));
+        // Parse and assert on the serde tag rather than a case-tolerant
+        // substring — EventPayload carries `#[serde(tag = "event")]` with
+        // `rename_all = "lowercase"`, so the variant tag is exactly
+        // "nodestatechanged". A mis-cased substring check would silently
+        // accept a renamed variant.
+        let value: serde_json::Value =
+            serde_json::from_str(&text).expect("event text must be valid JSON");
+        assert_eq!(value["payload"]["event"], "nodestatechanged", "got: {text}");
+        assert_eq!(value["payload"]["session_id"], "any-session", "got: {text}");
     }
 }
