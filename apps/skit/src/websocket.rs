@@ -326,6 +326,9 @@ async fn handle_api_request(
 
 #[cfg(test)]
 mod tests {
+    // Tests intentionally use unwrap/expect so any failure points directly at the
+    // failed precondition (router build, JSON encode, etc.) rather than a
+    // propagated `?` from deep inside the test body.
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
@@ -369,8 +372,6 @@ mod tests {
         tokio::spawn(async move {
             axum::serve(listener, app.into_make_service()).await.unwrap();
         });
-        // Yield so the listener is ready before we connect.
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         addr
     }
 
@@ -396,15 +397,15 @@ mod tests {
     }
 
     #[test]
-    fn websocket_metrics_shared_returns_singleton() {
-        // Two calls to `shared()` must yield instruments that share the same
-        // backing OnceLock cell — cloning a fresh meter on every call would
-        // double-register the instruments under a real meter provider.
+    fn websocket_metrics_shared_is_callable_repeatedly() {
+        // OpenTelemetry's Counter/Gauge types intentionally don't expose
+        // pointer identity, so we can't directly assert that two calls return
+        // instruments backed by the same OnceLock cell. The singleton
+        // invariant is enforced at the source by `OnceLock::get_or_init`; this
+        // test simply locks in that repeated access does not panic and yields
+        // usable instruments.
         let a = WebSocketMetrics::shared();
         let b = WebSocketMetrics::shared();
-        // The Gauge/Counter types don't expose identity, but cloning is cheap
-        // and the singleton invariant is enforced by the OnceLock — just
-        // ensure repeated access does not panic and yields usable instruments.
         a.messages_counter.add(0, &[]);
         b.connections_gauge.record(0, &[]);
     }
@@ -477,12 +478,13 @@ mod tests {
             other => panic!("expected text rejection response, got {other:?}"),
         };
         let response = parse_response(&text);
-        match response.payload {
-            ResponsePayload::Error { message } => {
-                assert!(message.contains("too large"), "got: {message}");
-            },
-            other => panic!("expected ResponsePayload::Error, got {other:?}"),
-        }
+        // Assert on response shape only; the production error message is free
+        // to evolve (i18n, rewording) without breaking this contract.
+        assert!(
+            matches!(response.payload, ResponsePayload::Error { .. }),
+            "expected ResponsePayload::Error, got {:?}",
+            response.payload
+        );
 
         // Server must follow up with a close frame and then disconnect.
         let close_or_end =
@@ -554,6 +556,37 @@ mod tests {
         }
     }
 
+    /// Drives a request/response round trip through the WebSocket and returns
+    /// after the response is observed. Because `handle_websocket` calls
+    /// `event_tx.subscribe()` (line 141 of this file) *before* entering the
+    /// recv loop that emits this response, observing the response on the
+    /// client side proves the broadcast subscription is live — letting
+    /// subsequent `event_tx.send()` calls reach the handler without relying on
+    /// fixed sleeps.
+    async fn wait_for_handler_subscribed(
+        ws: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    ) {
+        let req = ApiRequest {
+            message_type: MessageType::Request,
+            correlation_id: Some("__ready__".into()),
+            payload: RequestPayload::GetPermissions,
+        };
+        ws.send(WsMessage::Text(serde_json::to_string(&req).unwrap().into())).await.unwrap();
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let text = match msg {
+            WsMessage::Text(t) => t,
+            other => panic!("expected text readiness response, got {other:?}"),
+        };
+        let resp = parse_response(&text);
+        assert_eq!(resp.correlation_id.as_deref(), Some("__ready__"));
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn broadcast_events_are_filtered_for_clients_without_access_all_sessions() {
         // Build a state shared between the broadcaster and the WS handler so we
@@ -586,12 +619,9 @@ mod tests {
         tokio::spawn(async move {
             axum::serve(listener, app.into_make_service()).await.unwrap();
         });
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
         let mut ws = connect(addr).await;
-
-        // Yield so the handler reaches the recv loop before we publish.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        wait_for_handler_subscribed(&mut ws).await;
 
         // Publish a node-state event for a session the viewer cannot see.
         // Because `visible_session_ids` is empty and access_all_sessions is
@@ -608,11 +638,41 @@ mod tests {
         };
         let _ = state.event_tx.send(BroadcastEvent::to_all(event));
 
-        // Confirm the client does NOT receive the filtered event in a short
-        // window. (We can't *prove* a negative forever, but if the filter were
-        // broken the message would arrive within tens of ms locally.)
-        let res = tokio::time::timeout(std::time::Duration::from_millis(250), ws.next()).await;
-        assert!(res.is_err(), "viewer must not receive events for invisible sessions");
+        // Positive-proof companion: round-trip a request *after* publishing
+        // the filtered event. Reading the response back proves the handler is
+        // alive and has processed both branches of its select loop. If the
+        // filter were broken, the invisible-session event would be sitting in
+        // the stream alongside (or ahead of) the response — drain until we
+        // see the response and fail on any unrelated message in the way.
+        let req = ApiRequest {
+            message_type: MessageType::Request,
+            correlation_id: Some("__filter_check__".into()),
+            payload: RequestPayload::GetPermissions,
+        };
+        ws.send(WsMessage::Text(serde_json::to_string(&req).unwrap().into())).await.unwrap();
+
+        // If the handler picked the event branch first and forwarded it, the
+        // *first* message off the wire will be the event (not the response).
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+            .await
+            .expect("response must arrive within deadline")
+            .unwrap()
+            .unwrap();
+        let WsMessage::Text(text) = msg else {
+            panic!("expected text response, got {msg:?}");
+        };
+        let resp = parse_response(&text);
+        assert_eq!(
+            resp.correlation_id.as_deref(),
+            Some("__filter_check__"),
+            "filter leaked: received non-response message before round-trip: {text}",
+        );
+
+        // Otherwise the handler picked the WS branch first and the leaked event
+        // would still arrive *after* the response. A short additional read
+        // catches that ordering.
+        let extra = tokio::time::timeout(std::time::Duration::from_millis(100), ws.next()).await;
+        assert!(extra.is_err(), "filter leaked extra messages after response: {extra:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -642,10 +702,9 @@ mod tests {
         tokio::spawn(async move {
             axum::serve(listener, app.into_make_service()).await.unwrap();
         });
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
         let mut ws = connect(addr).await;
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        wait_for_handler_subscribed(&mut ws).await;
 
         let event = Message {
             message_type: MessageType::Event,

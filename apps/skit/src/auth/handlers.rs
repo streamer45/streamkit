@@ -506,6 +506,9 @@ pub fn auth_router() -> axum::Router<Arc<AppState>> {
 
 #[cfg(test)]
 mod tests {
+    // Tests intentionally use unwrap/expect so any failure points directly at
+    // the failed precondition (state setup, token decode, JSON parse) rather
+    // than a propagated `?` from deep inside the test body.
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
@@ -518,17 +521,13 @@ mod tests {
     use tempfile::TempDir;
     use tower::ServiceExt;
 
-    fn make_state_auth_disabled() -> Arc<AppState> {
+    fn make_state_auth_disabled() -> (Arc<AppState>, TempDir) {
         let temp = TempDir::new().unwrap();
         let mut config = Config::default();
         config.auth.state_dir = temp.path().to_string_lossy().to_string();
         let auth = Arc::new(crate::auth::AuthState::disabled());
-        // Holding `temp` would clean state_dir on drop; the disabled state
-        // doesn't read from it but it doesn't hurt to keep it alive.
         let state = crate::server::create_app_state(config, Some(auth));
-        // Leak temp dir to keep state_dir paths valid for the whole test.
-        std::mem::forget(temp);
-        state
+        (state, temp)
     }
 
     async fn make_state_auth_enabled() -> (Arc<AppState>, String, TempDir) {
@@ -634,7 +633,7 @@ mod tests {
 
     #[tokio::test]
     async fn me_returns_authenticated_when_auth_disabled() {
-        let state = make_state_auth_disabled();
+        let (state, _temp) = make_state_auth_disabled();
         let app = build_router(state);
 
         let resp =
@@ -651,7 +650,7 @@ mod tests {
 
     #[tokio::test]
     async fn login_rejected_when_auth_disabled() {
-        let state = make_state_auth_disabled();
+        let (state, _temp) = make_state_auth_disabled();
         let app = build_router(state);
 
         let resp = app
@@ -672,7 +671,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_token_rejected_when_auth_disabled() {
-        let state = make_state_auth_disabled();
+        let (state, _temp) = make_state_auth_disabled();
         let app = build_router(state);
 
         let resp = app
@@ -691,7 +690,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_tokens_rejected_when_auth_disabled() {
-        let state = make_state_auth_disabled();
+        let (state, _temp) = make_state_auth_disabled();
         let app = build_router(state);
 
         let resp = app
@@ -703,7 +702,7 @@ mod tests {
 
     #[tokio::test]
     async fn revoke_token_rejected_when_auth_disabled() {
-        let state = make_state_auth_disabled();
+        let (state, _temp) = make_state_auth_disabled();
         let app = build_router(state);
 
         let resp = app
@@ -721,7 +720,7 @@ mod tests {
 
     #[tokio::test]
     async fn reload_keys_rejected_when_auth_disabled() {
-        let state = make_state_auth_disabled();
+        let (state, _temp) = make_state_auth_disabled();
         let app = build_router(state);
 
         let resp = app
@@ -735,7 +734,7 @@ mod tests {
 
     #[tokio::test]
     async fn logout_returns_no_content_with_clearing_cookie() {
-        let state = make_state_auth_disabled();
+        let (state, _temp) = make_state_auth_disabled();
         let app = build_router(state);
 
         let resp = app

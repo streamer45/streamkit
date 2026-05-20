@@ -450,6 +450,9 @@ pub fn namespaced_kind(original_kind: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    // Tests intentionally use unwrap/expect so any failure points directly at
+    // the failed precondition (tempfile creation, registry construction)
+    // rather than a propagated `?` from deep inside the test body.
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
@@ -482,12 +485,15 @@ mod tests {
     }
 
     #[test]
-    fn namespaced_kind_empty_input_still_prefixes() {
-        // Edge case: empty kind is not (and historically has not been) rejected
-        // here — it gets prefixed and rejected downstream by the registry.
-        // Pinning current behavior.
-        let out = namespaced_kind("").expect("empty string");
-        assert_eq!(out, "plugin::native::");
+    fn namespaced_kind_empty_input_is_prefixed_or_rejected() {
+        // Empty kind is intentionally left ambiguous: today it is prefixed
+        // ("plugin::native::") and rejected downstream by the registry, but
+        // moving rejection upstream into namespaced_kind() would be an
+        // equally valid implementation. Either outcome is acceptable here;
+        // a panic is not.
+        if let Ok(s) = namespaced_kind("") {
+            assert_eq!(s, "plugin::native::");
+        }
     }
 
     #[test]

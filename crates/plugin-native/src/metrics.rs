@@ -186,7 +186,11 @@ mod tests {
     fn record_accepts_extreme_durations() {
         let metrics = PluginMetrics::new();
         let labels = PluginMetrics::build_labels("kind", "op");
-        // Bounds bracket the histogram (10μs to 60s per crates/core/src/metrics.rs).
+        // Inputs span far below the histogram floor (10μs), the floor itself,
+        // and well above the ceiling (60s) defined in
+        // crates/core/src/metrics.rs. record() must accept any positive
+        // finite duration without panicking regardless of where it falls
+        // relative to those bounds.
         metrics.record(&labels, f64::MIN_POSITIVE, CallOutcome::Success);
         metrics.record(&labels, 1e-6, CallOutcome::Success);
         metrics.record(&labels, 120.0, CallOutcome::Success);
