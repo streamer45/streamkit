@@ -212,17 +212,12 @@ describe('formatPacketType', () => {
     ).toBe('Raw Video (1920x1080, Rgba8)');
   });
 
-  it('renders null-valued RawVideo fields literally (template renderer ignores null wildcard_value)', () => {
-    // See PR follow-up note: `formatWithTemplate` short-circuits when the meta's
-    // `wildcard_value` is null, so null-valued fields render as the literal string "null"
-    // rather than "*". `canConnectPair` does NOT have this asymmetry — it correctly
-    // treats null as a valid wildcard. This test pins the current behavior; do not
-    // change the assertion without also auditing the renderer.
+  it('renders null-valued RawVideo wildcard fields as *', () => {
     expect(
       formatPacketType({
         RawVideo: { width: null, height: null, pixel_format: 'Rgba8' },
       })
-    ).toBe('Raw Video (nullxnull, Rgba8)');
+    ).toBe('Raw Video (*x*, Rgba8)');
   });
 
   it('renders the Custom template with the supplied type_id', () => {
