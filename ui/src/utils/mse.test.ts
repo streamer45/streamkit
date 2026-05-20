@@ -74,6 +74,9 @@ describe('canUseMseForMimeType', () => {
   });
 
   it('returns true when MediaSource exists but has no isTypeSupported function', () => {
+    // Pins the current contract: when MediaSource is present but feature-detection
+    // is unavailable, mse.ts optimistically returns true (any MIME type). If that
+    // policy is ever tightened to "unknown support => false", this test must update.
     vi.stubGlobal('MediaSource', {});
     expect(canUseMseForMimeType('audio/mp4')).toBe(true);
   });

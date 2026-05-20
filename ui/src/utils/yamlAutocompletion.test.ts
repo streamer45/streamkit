@@ -4,6 +4,7 @@
 
 import { CompletionContext, type CompletionResult } from '@codemirror/autocomplete';
 import { EditorState } from '@codemirror/state';
+import { load as yamlLoad } from 'js-yaml';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { NodeDefinition } from '@/types/generated/api-types';
@@ -11,6 +12,11 @@ import type { NodeDefinition } from '@/types/generated/api-types';
 import { createYamlAutocompletion } from './yamlAutocompletion';
 
 // `vi.mock` is hoisted, so use `vi.hoisted` for state shared with the factory.
+//
+// Invariant: `hoisted.source` is owned exclusively by `runSource()` below.
+// `beforeEach` resets it to null; no other code path may call
+// `createYamlAutocompletion` outside `runSource`, or captured sources will
+// leak across tests.
 const hoisted = vi.hoisted(() => ({
   source: null as ((ctx: CompletionContext) => CompletionResult | null) | null,
 }));
@@ -144,9 +150,15 @@ describe('needs: scalar completions', () => {
   });
 
   it('uses a regex fallback over top-level `name:` lines when YAML parsing fails', () => {
-    // js-yaml throws on `: : :`. The catch path scans for `^(\w+):\s*$` lines
-    // and excludes known structural keys (`nodes`, `needs`, ...).
-    const broken = ['alpha:', '  : invalid:', 'beta:', 'needs: '].join('\n');
+    // The leading `{[}` is an unambiguous flow-collection syntax error in YAML
+    // 1.1 and 1.2 (mismatched `{` and `[`), so js-yaml is guaranteed to throw
+    // and the implementation will fall back to the `/^(\w+):\s*$/gm` regex.
+    // The cross-check below fails loudly if a future js-yaml version ever
+    // becomes lenient enough to parse this — at which point the test would
+    // silently exercise the wrong codepath.
+    const broken = ['{[}', 'alpha:', 'beta:', 'needs: '].join('\n');
+    expect(() => yamlLoad(broken)).toThrow();
+
     const result = runSource(broken);
     expect(result).not.toBeNull();
     expect(new Set(result!.options.map((o) => o.label))).toEqual(new Set(['alpha', 'beta']));

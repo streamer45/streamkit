@@ -46,9 +46,9 @@ describe('formatIssueDetails', () => {
   });
 
   it('returns null when JSON.stringify yields the literal "null" string', () => {
-    // e.g. NaN/Infinity for non-finite numbers would not appear here in practice,
-    // but a value whose serialization is the string 'null' should be filtered.
-    expect(formatIssueDetails(null)).toBeNull();
+    // A `toJSON` returning `null` serializes to the string "null"; this exercises
+    // the post-stringify guard (not the early `details == null` short-circuit).
+    expect(formatIssueDetails({ toJSON: () => null })).toBeNull();
   });
 
   it('serializes simple objects to JSON', () => {

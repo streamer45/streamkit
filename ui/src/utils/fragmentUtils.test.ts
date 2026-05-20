@@ -14,6 +14,11 @@ import {
   type FragmentData,
 } from './fragmentUtils';
 
+// fragmentUtils.ts keeps a module-scoped counter for generateNodeId. Tests
+// here must NOT assert on specific id strings (e.g. `skitnode_1`) — they may
+// run in any order. Use the returned `idMapping` to resolve labels to ids,
+// or assert relative ordering as in the generateNodeId block.
+
 function idFor(idMapping: Map<string, string>, label: string): string {
   const id = idMapping.get(label);
   if (!id) throw new Error(`missing id for label "${label}"`);
