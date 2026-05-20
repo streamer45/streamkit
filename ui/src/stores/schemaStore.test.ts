@@ -45,8 +45,8 @@ const META: PacketTypeMeta = {
   label: 'Raw Audio',
   color: '#ff0000',
   display_template: null,
-  compatibility: 'Strict',
-} as unknown as PacketTypeMeta;
+  compatibility: { kind: 'any' },
+};
 
 const NODE: NodeDefinition = {
   kind: 'core::mic',
@@ -55,7 +55,7 @@ const NODE: NodeDefinition = {
   outputs: [],
   categories: ['audio'],
   bidirectional: false,
-} as unknown as NodeDefinition;
+};
 
 const fetchMock = () => global.fetch as ReturnType<typeof vi.fn>;
 
@@ -128,6 +128,8 @@ describe('ensureSchemasLoaded', () => {
 
     await Promise.all([ensureSchemasLoaded(), ensureSchemasLoaded(), ensureSchemasLoaded()]);
 
+    // Single-flight: one load fans out to /packets + /nodes (2 fetches), and the two
+    // re-entrant callers reuse the in-flight promise without firing new requests.
     expect(fetchMock()).toHaveBeenCalledTimes(2);
   });
 
@@ -228,6 +230,7 @@ describe('syncPluginSchemas', () => {
       syncPluginSchemas(['plugin::whisper']),
     ]);
 
+    // One in-flight reload fans out to /packets + /nodes; the second caller reuses it.
     expect(fetchMock()).toHaveBeenCalledTimes(2);
   });
 });

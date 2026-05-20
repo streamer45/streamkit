@@ -40,7 +40,7 @@ const PLUGIN_A: PluginSummary = {
   categories: ['audio'],
   loaded_at_ms: 1,
   plugin_type: 'native',
-} as unknown as PluginSummary;
+};
 
 const PLUGIN_B: PluginSummary = {
   kind: 'plugin::native::b',
@@ -49,7 +49,7 @@ const PLUGIN_B: PluginSummary = {
   categories: ['video'],
   loaded_at_ms: 2,
   plugin_type: 'native',
-} as unknown as PluginSummary;
+};
 
 const fetchMock = () => global.fetch as ReturnType<typeof vi.fn>;
 

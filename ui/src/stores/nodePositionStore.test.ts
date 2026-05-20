@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useNodePositionStore } from './nodePositionStore';
 
@@ -99,5 +99,43 @@ describe('clearSession', () => {
     expect(useNodePositionStore.getState().positions).toEqual({
       s1: { n1: { x: 1, y: 1 } },
     });
+  });
+});
+
+describe('throttledStorage error handling (SSR / private mode / quota)', () => {
+  it('keeps in-memory state when localStorage.setItem throws', async () => {
+    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('QuotaExceededError');
+    });
+
+    try {
+      useNodePositionStore.getState().updateNodePosition('s1', 'n1', { x: 7, y: 9 });
+
+      // Real wait: the storage wrapper uses lodash throttle (wait: 500ms, trailing only)
+      // and the lodash setTimeout reference is captured at module load, so fake timers
+      // can't flush it. The try/catch around localStorage.setItem must still swallow.
+      await new Promise((resolve) => setTimeout(resolve, 600));
+
+      expect(setItemSpy).toHaveBeenCalled();
+      expect(useNodePositionStore.getState().positions.s1.n1).toEqual({ x: 7, y: 9 });
+    } finally {
+      setItemSpy.mockRestore();
+    }
+  });
+
+  it('keeps in-memory state when localStorage.removeItem throws', () => {
+    const removeItemSpy = vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => {
+      throw new Error('SecurityError');
+    });
+
+    try {
+      useNodePositionStore.getState().updateNodePosition('s1', 'n1', { x: 1, y: 1 });
+
+      expect(() => useNodePositionStore.persist.clearStorage()).not.toThrow();
+
+      expect(useNodePositionStore.getState().positions.s1.n1).toEqual({ x: 1, y: 1 });
+    } finally {
+      removeItemSpy.mockRestore();
+    }
   });
 });

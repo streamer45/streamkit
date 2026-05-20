@@ -129,6 +129,17 @@ describe('listAllSamples', () => {
 
     expect(result.map((s) => s.id)).toEqual(['a', 'b']);
   });
+
+  it('rejects when either underlying request fails (Promise.all semantics)', async () => {
+    fetchMock().mockImplementation((url: string) => {
+      if (url.includes('/oneshot')) {
+        return Promise.resolve(mockResponse({ ok: true, status: 200, json: [SAMPLE] }));
+      }
+      return Promise.resolve(mockResponse({ ok: false, status: 500, statusText: 'Server Error' }));
+    });
+
+    await expect(listAllSamples()).rejects.toThrow(/Server Error/);
+  });
 });
 
 describe('saveSample', () => {

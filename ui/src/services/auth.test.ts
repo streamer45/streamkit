@@ -127,7 +127,18 @@ describe('logout', () => {
 
 describe('listTokens', () => {
   it('GETs /api/v1/auth/tokens and returns parsed array', async () => {
-    const tokens = [{ jti: 'a', token_type: 'api', role: 'admin' }];
+    const tokens = [
+      {
+        jti: 'a',
+        token_type: 'api',
+        role: 'admin',
+        label: null,
+        created_at: 1700000000,
+        exp: 1800000000,
+        revoked: false,
+        created_by: 'system',
+      },
+    ];
     fetchMock().mockResolvedValue(mockResponse({ ok: true, status: 200, json: tokens }));
 
     const result = await listTokens();

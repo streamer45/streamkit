@@ -90,7 +90,9 @@ describe('listPluginAssets', () => {
       mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: '' })
     );
 
-    await expect(listPluginAssets('slint')).rejects.toThrow(/slint assets.*Server Error/);
+    await expect(listPluginAssets('slint')).rejects.toThrow(
+      'Failed to fetch slint assets: Server Error'
+    );
   });
 });
 

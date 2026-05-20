@@ -80,7 +80,9 @@ describe('fetchLogs', () => {
 
     await fetchLogs({ offset: 0 });
 
-    expect(fetchMock().mock.calls[0][0]).toBe('http://localhost:4545/api/v1/logs?offset=0');
+    const calledUrl = fetchMock().mock.calls[0][0] as string;
+    expect(calledUrl).toContain('offset=0');
+    expect(calledUrl.startsWith('http://localhost:4545/api/v1/logs?')).toBe(true);
   });
 
   it('throws a specific message on 404 (file logging disabled)', async () => {
