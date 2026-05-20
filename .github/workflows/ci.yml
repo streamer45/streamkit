@@ -109,6 +109,10 @@ jobs:
       - uses: fsfe/reuse-action@v6
 
   # ---------- Gate ----------
+  # This is the ONLY job that should be a required status check in branch
+  # protection. It aggregates results from all conditional sub-workflows so
+  # that skipped jobs (due to path filtering) never block merge.
+  # See CONTRIBUTING.md § "CI gate and branch protection" for details.
   all-checks:
     name: All Checks Passed
     if: always()
@@ -116,19 +120,21 @@ jobs:
     needs: [changes, skit, ui, plugins, e2e, reuse]
     steps:
       - name: Verify results
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
-          results=(
-            "${{ needs.changes.result }}"
-            "${{ needs.skit.result }}"
-            "${{ needs.ui.result }}"
-            "${{ needs.plugins.result }}"
-            "${{ needs.e2e.result }}"
-            "${{ needs.reuse.result }}"
-          )
-          for r in "${results[@]}"; do
-            if [[ "$r" == "failure" || "$r" == "cancelled" ]]; then
-              echo "::error::CI check failed or was cancelled ($r)"
-              exit 1
+          failed=0
+          echo "::group::Job results"
+          for job in $(echo "$NEEDS_JSON" | jq -r 'keys[]'); do
+            result=$(echo "$NEEDS_JSON" | jq -r --arg j "$job" '.[$j].result')
+            printf '  %-10s %s\n' "$job" "$result"
+            if [[ "$result" == "failure" || "$result" == "cancelled" ]]; then
+              echo "::error::$job: $result"
+              failed=1
             fi
           done
-          echo "All checks passed or were appropriately skipped."
+          echo "::endgroup::"
+
+          if [[ "$failed" -ne 0 ]]; then
+            exit 1
+          fi

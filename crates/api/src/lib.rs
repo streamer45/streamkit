@@ -724,3 +724,332 @@ pub struct ImageAsset {
     /// Whether this is a system asset (true) or user asset (false)
     pub is_system: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn from_json<T: for<'de> Deserialize<'de>>(s: &str) -> T {
+        serde_json::from_str(s).expect("valid json fixture")
+    }
+
+    fn to_value<T: Serialize>(value: &T) -> serde_json::Value {
+        serde_json::to_value(value).expect("serializable")
+    }
+
+    #[test]
+    fn message_type_lowercase_roundtrip() {
+        for (variant, raw) in [
+            (MessageType::Request, "\"request\""),
+            (MessageType::Response, "\"response\""),
+            (MessageType::Event, "\"event\""),
+        ] {
+            let serialized = serde_json::to_string(&variant).expect("serialize");
+            assert_eq!(serialized, raw, "{variant:?} should serialize to {raw}");
+            let parsed: MessageType = from_json(raw);
+            assert_eq!(parsed, variant, "{raw} should deserialize to {variant:?}");
+        }
+        assert!(
+            serde_json::from_str::<MessageType>("\"Request\"").is_err(),
+            "capitalized variants must be rejected"
+        );
+    }
+
+    #[test]
+    fn request_envelope_roundtrips_with_correlation_id() {
+        let req = Request {
+            message_type: MessageType::Request,
+            correlation_id: Some("abc123".into()),
+            payload: RequestPayload::CreateSession { name: Some("demo".into()) },
+        };
+        let json = to_value(&req);
+        assert_eq!(json["type"], "request");
+        assert_eq!(json["correlation_id"], "abc123");
+        assert_eq!(json["payload"]["action"], "createsession");
+        assert_eq!(json["payload"]["name"], "demo");
+
+        let parsed: Request = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(parsed.correlation_id.as_deref(), Some("abc123"));
+        assert!(matches!(parsed.message_type, MessageType::Request));
+        match parsed.payload {
+            RequestPayload::CreateSession { name } => assert_eq!(name.as_deref(), Some("demo")),
+            other => panic!("unexpected payload: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn response_envelope_roundtrips_with_correlation_id() {
+        let resp = Response {
+            message_type: MessageType::Response,
+            correlation_id: Some("abc123".into()),
+            payload: ResponsePayload::SessionCreated {
+                session_id: "sess".into(),
+                name: Some("demo".into()),
+                created_at: "2026-01-01T00:00:00Z".into(),
+            },
+        };
+        let json = to_value(&resp);
+        assert_eq!(json["type"], "response");
+        assert_eq!(json["correlation_id"], "abc123");
+        assert_eq!(json["payload"]["action"], "sessioncreated");
+        assert_eq!(json["payload"]["session_id"], "sess");
+
+        let parsed: Response = serde_json::from_value(json).expect("deserialize");
+        match parsed.payload {
+            ResponsePayload::SessionCreated { session_id, name, .. } => {
+                assert_eq!(session_id, "sess");
+                assert_eq!(name.as_deref(), Some("demo"));
+            },
+            other => panic!("unexpected payload: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn event_envelope_omits_correlation_id_when_none() {
+        let event = Event {
+            message_type: MessageType::Event,
+            correlation_id: None,
+            payload: EventPayload::SessionDestroyed { session_id: "sess".into() },
+        };
+        let json = to_value(&event);
+        assert_eq!(json["type"], "event");
+        assert!(
+            json.get("correlation_id").is_none(),
+            "correlation_id must be omitted for events, got: {json}"
+        );
+        assert_eq!(json["payload"]["event"], "sessiondestroyed");
+        assert_eq!(json["payload"]["session_id"], "sess");
+
+        let parsed: Event = serde_json::from_value(json).expect("deserialize");
+        assert!(parsed.correlation_id.is_none());
+    }
+
+    #[test]
+    fn request_payload_action_tag_is_lowercase() {
+        let req = RequestPayload::AddNode {
+            session_id: "sess".into(),
+            node_id: "n1".into(),
+            kind: "audio::gain".into(),
+            params: Some(serde_json::json!({"gain_db": 0.5})),
+        };
+        let json = to_value(&req);
+        assert_eq!(json["action"], "addnode");
+        assert_eq!(json["params"]["gain_db"], 0.5);
+    }
+
+    #[test]
+    fn response_payload_error_tag_is_lowercase() {
+        let resp = ResponsePayload::Error { message: "boom".into() };
+        let json = to_value(&resp);
+        assert_eq!(json["action"], "error");
+        assert_eq!(json["message"], "boom");
+    }
+
+    #[test]
+    fn event_payload_tag_is_lowercase() {
+        let event = EventPayload::NodeAdded {
+            session_id: "sess".into(),
+            node_id: "n1".into(),
+            kind: "audio::gain".into(),
+            params: None,
+        };
+        let json = to_value(&event);
+        assert_eq!(json["event"], "nodeadded");
+    }
+
+    #[test]
+    fn batch_operation_action_tag_roundtrips() {
+        let ops = vec![
+            BatchOperation::AddNode {
+                node_id: "n1".into(),
+                kind: "audio::gain".into(),
+                params: None,
+            },
+            BatchOperation::Connect {
+                from_node: "n1".into(),
+                from_pin: "out".into(),
+                to_node: "n2".into(),
+                to_pin: "in".into(),
+                mode: ConnectionMode::default(),
+            },
+        ];
+        let json = to_value(&ops);
+        assert_eq!(json[0]["action"], "addnode");
+        assert_eq!(json[1]["action"], "connect");
+
+        let parsed: Vec<BatchOperation> = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(parsed.len(), 2);
+    }
+
+    #[test]
+    fn validation_error_type_serializes_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&ValidationErrorType::Error).expect("serialize"),
+            "\"error\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ValidationErrorType::Warning).expect("serialize"),
+            "\"warning\""
+        );
+    }
+
+    #[test]
+    fn engine_mode_serializes_with_lowercase_and_oneshot_alias() {
+        assert_eq!(serde_json::to_string(&EngineMode::Dynamic).expect("serialize"), "\"dynamic\"");
+        assert_eq!(serde_json::to_string(&EngineMode::OneShot).expect("serialize"), "\"oneshot\"");
+        let parsed: EngineMode = from_json("\"oneshot\"");
+        assert!(matches!(parsed, EngineMode::OneShot));
+    }
+
+    #[test]
+    fn engine_mode_default_is_dynamic() {
+        assert!(matches!(EngineMode::default(), EngineMode::Dynamic));
+    }
+
+    #[test]
+    fn connection_skips_default_mode_on_serialize() {
+        let conn = Connection {
+            from_node: "a".into(),
+            from_pin: "out".into(),
+            to_node: "b".into(),
+            to_pin: "in".into(),
+            mode: ConnectionMode::Reliable,
+        };
+        let json = to_value(&conn);
+        assert!(json.get("mode").is_none(), "default mode should be skipped: {json}");
+    }
+
+    #[test]
+    fn connection_emits_non_default_mode() {
+        let conn = Connection {
+            from_node: "a".into(),
+            from_pin: "out".into(),
+            to_node: "b".into(),
+            to_pin: "in".into(),
+            mode: ConnectionMode::BestEffort,
+        };
+        let json = to_value(&conn);
+        assert_eq!(json["mode"], "best_effort");
+    }
+
+    #[test]
+    fn pipeline_default_roundtrips() {
+        let pipeline = Pipeline::default();
+        let json = to_value(&pipeline);
+        assert_eq!(json["mode"], "dynamic");
+        assert!(json["nodes"].is_object());
+        assert!(json["connections"].is_array());
+
+        let parsed: Pipeline = serde_json::from_value(json).expect("deserialize");
+        assert!(matches!(parsed.mode, EngineMode::Dynamic));
+        assert!(parsed.nodes.is_empty());
+        assert!(parsed.connections.is_empty());
+    }
+
+    // Confirms the `pub use` re-export from streamkit-core works and that
+    // the type round-trips through serde at this crate boundary — clients
+    // consume `streamkit_api::NodeDefinition` directly.
+    #[test]
+    fn node_definition_reexport_roundtrips_via_serde() {
+        let raw = serde_json::json!({
+            "kind": "audio::gain",
+            "description": "Adjust gain",
+            "param_schema": {"type": "object"},
+            "inputs": [],
+            "outputs": [],
+            "categories": ["audio"],
+            "bidirectional": false,
+        });
+        let parsed: NodeDefinition = serde_json::from_value(raw.clone()).expect("deserialize");
+        assert_eq!(parsed.kind, "audio::gain");
+        assert_eq!(parsed.description.as_deref(), Some("Adjust gain"));
+        assert_eq!(parsed.categories, vec!["audio"]);
+        assert!(!parsed.bidirectional);
+
+        let reserialized = to_value(&parsed);
+        assert_eq!(reserialized["kind"], "audio::gain");
+        assert_eq!(reserialized["bidirectional"], false);
+    }
+
+    #[test]
+    fn pipeline_roundtrips_with_nodes_and_connections() {
+        use indexmap::IndexMap;
+        let mut nodes = IndexMap::new();
+        nodes.insert(
+            "src".to_string(),
+            Node {
+                kind: "core::file_reader".into(),
+                params: Some(serde_json::json!({"path": "x"})),
+                state: None,
+            },
+        );
+        nodes.insert(
+            "sink".to_string(),
+            Node { kind: "core::sink".into(), params: None, state: None },
+        );
+        let pipeline = Pipeline {
+            name: Some("demo".into()),
+            description: None,
+            mode: EngineMode::OneShot,
+            client: None,
+            nodes,
+            connections: vec![Connection {
+                from_node: "src".into(),
+                from_pin: "out".into(),
+                to_node: "sink".into(),
+                to_pin: "in".into(),
+                mode: ConnectionMode::Reliable,
+            }],
+            view_data: None,
+            runtime_schemas: None,
+        };
+
+        let json = to_value(&pipeline);
+        assert_eq!(json["mode"], "oneshot");
+        assert_eq!(json["nodes"]["src"]["kind"], "core::file_reader");
+        assert!(json["nodes"]["src"].get("state").is_none(), "absent state must be omitted");
+
+        let parsed: Pipeline = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(parsed.nodes.len(), 2);
+        assert_eq!(parsed.connections.len(), 1);
+        assert!(matches!(parsed.mode, EngineMode::OneShot));
+    }
+
+    #[test]
+    fn message_with_unknown_correlation_id_is_optional() {
+        let raw = serde_json::json!({
+            "type": "event",
+            "payload": { "event": "sessiondestroyed", "session_id": "s" }
+        });
+        let parsed: Event = serde_json::from_value(raw).expect("deserialize");
+        assert!(parsed.correlation_id.is_none());
+    }
+
+    #[test]
+    fn permissions_info_roundtrips() {
+        let perms = PermissionsInfo {
+            create_sessions: true,
+            destroy_sessions: false,
+            list_sessions: true,
+            modify_sessions: true,
+            tune_nodes: false,
+            load_plugins: false,
+            delete_plugins: false,
+            list_nodes: true,
+            list_samples: true,
+            read_samples: true,
+            write_samples: false,
+            delete_samples: false,
+            access_all_sessions: false,
+            upload_assets: true,
+            delete_assets: false,
+        };
+        let json = to_value(&perms);
+        assert_eq!(json["create_sessions"], true);
+        assert_eq!(json["tune_nodes"], false);
+
+        let parsed: PermissionsInfo = serde_json::from_value(json).expect("deserialize");
+        assert!(parsed.create_sessions);
+        assert!(!parsed.tune_nodes);
+    }
+}

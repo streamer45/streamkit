@@ -152,6 +152,23 @@ There's a warning-only commit hook - it won't block you, just nudges you toward 
 // SPDX-License-Identifier: MPL-2.0
 ```
 
+## CI gate and branch protection
+
+The `CI` workflow uses path filtering to skip sub-workflows that aren't
+relevant to a given PR (e.g. a docs-only change won't run Rust tests).
+A single **All Checks Passed** gate job aggregates every sub-workflow's
+result: it passes when all eligible jobs succeed and skipped jobs are
+ignored, and fails if any job fails or is cancelled.
+
+**`All Checks Passed` must be the only required status check** in the
+branch protection rules for `main`. Adding individual sub-workflow job
+names (e.g. `Skit / Lint`) as required checks would cause path-filtered
+PRs to hang forever, because skipped reusable workflows never report
+those check names.
+
+The gate logic lives in `.github/workflows/ci.yml` under the
+`all-checks` job.
+
 ## Pull Requests
 
 - Keep PRs focused (one feature/fix per PR)
