@@ -447,3 +447,121 @@ pub fn namespaced_kind(original_kind: &str) -> Result<String> {
 
     Ok(format!("{PLUGIN_KIND_PREFIX}{original_kind}"))
 }
+
+#[cfg(test)]
+mod tests {
+    // Tests intentionally use unwrap/expect so any failure points directly at
+    // the failed precondition (tempfile creation, registry construction)
+    // rather than a propagated `?` from deep inside the test body.
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use streamkit_core::types::PacketType;
+
+    #[test]
+    fn namespaced_kind_prepends_plugin_namespace() {
+        let out = namespaced_kind("gain").expect("simple name accepted");
+        assert_eq!(out, "plugin::native::gain");
+    }
+
+    #[test]
+    fn namespaced_kind_returns_already_prefixed_unchanged() {
+        let out = namespaced_kind("plugin::native::whisper").expect("idempotent");
+        assert_eq!(out, "plugin::native::whisper");
+    }
+
+    #[test]
+    fn namespaced_kind_rejects_unprefixed_namespace_separator() {
+        let err = namespaced_kind("vendor::gain").expect_err("contains '::'");
+        let msg = err.to_string();
+        assert!(msg.contains("'::'"), "error mentions reserved separator: {msg}");
+    }
+
+    #[test]
+    fn namespaced_kind_rejects_reserved_core_prefix() {
+        let err = namespaced_kind("core::gain").expect_err("core:: is reserved");
+        let msg = err.to_string();
+        assert!(msg.contains("core::"), "error mentions reserved prefix: {msg}");
+    }
+
+    #[test]
+    fn namespaced_kind_empty_input_is_prefixed_or_rejected() {
+        // Empty kind is intentionally left ambiguous: today it is prefixed
+        // ("plugin::native::") and rejected downstream by the registry, but
+        // moving rejection upstream into namespaced_kind() would be an
+        // equally valid implementation. Either outcome is acceptable here;
+        // a panic is not.
+        if let Ok(s) = namespaced_kind("") {
+            assert_eq!(s, "plugin::native::");
+        }
+    }
+
+    #[test]
+    fn register_plugins_returns_zero_for_empty_input() {
+        let mut registry = NodeRegistry::new();
+        let count = register_plugins(&mut registry, Vec::new()).expect("registers nothing");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn plugin_metadata_is_debug_and_clone() {
+        let meta = PluginMetadata {
+            kind: "gain".into(),
+            description: Some("A gain node".into()),
+            inputs: vec![streamkit_core::InputPin {
+                name: "in".into(),
+                accepts_types: vec![PacketType::Text],
+                cardinality: PinCardinality::One,
+            }],
+            outputs: vec![streamkit_core::OutputPin {
+                name: "out".into(),
+                produces_type: PacketType::Text,
+                cardinality: PinCardinality::Broadcast,
+            }],
+            param_schema: serde_json::json!({"type": "object"}),
+            categories: vec!["audio".into()],
+            is_source: false,
+            tick_interval_us: 0,
+            max_ticks: 0,
+        };
+
+        let cloned = meta.clone();
+        assert_eq!(cloned.kind, "gain");
+        assert_eq!(cloned.description.as_deref(), Some("A gain node"));
+        assert_eq!(cloned.inputs.len(), 1);
+        assert_eq!(cloned.outputs.len(), 1);
+        assert_eq!(cloned.categories, vec!["audio".to_string()]);
+
+        let dbg = format!("{meta:?}");
+        assert!(dbg.contains("gain"));
+        assert!(dbg.contains("PluginMetadata"));
+    }
+
+    /// Confirms that `load()` surfaces a wrapped libloading error (not a panic
+    /// or silent fallback) when given a path that cannot be opened.  Keeps the
+    /// expected error-message shape stable without requiring a real .so.
+    #[test]
+    fn load_returns_error_for_missing_library() {
+        let result = LoadedNativePlugin::load("/this/path/definitely/does/not/exist.so");
+        let Err(err) = result else { panic!("expected error for missing path") };
+        let msg = err.to_string();
+        assert!(msg.starts_with("Failed to load library"), "wrapped libloading error: {msg}");
+        assert!(msg.contains("/this/path/definitely/does/not/exist.so"));
+    }
+
+    /// load() must error on a path that points at a non-library file rather than
+    /// proceeding into symbol lookup with garbage memory.  Uses a tempfile so the
+    /// failure source is "not a dynamic library" rather than "file not found".
+    #[test]
+    fn load_returns_error_for_non_library_file() {
+        let mut tmp = tempfile::Builder::new().suffix(".so").tempfile().expect("create tempfile");
+        std::io::Write::write_all(&mut tmp, b"not a real shared object").expect("write tempfile");
+        let path = tmp.path().to_path_buf();
+
+        let Err(err) = LoadedNativePlugin::load(&path) else {
+            panic!("expected error for non-library file");
+        };
+        let msg = err.to_string();
+        assert!(msg.starts_with("Failed to load library"), "wrapped libloading error: {msg}");
+    }
+}

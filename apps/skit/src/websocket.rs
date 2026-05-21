@@ -323,3 +323,429 @@ async fn handle_api_request(
 
     Some(ApiResponse { message_type: MessageType::Response, correlation_id, payload })
 }
+
+#[cfg(test)]
+mod tests {
+    // Tests intentionally use unwrap/expect so any failure points directly at the
+    // failed precondition (router build, JSON encode, etc.) rather than a
+    // propagated `?` from deep inside the test body.
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use crate::config::{AuthMode, Config};
+    use crate::state::BroadcastEvent;
+    use axum::extract::WebSocketUpgrade;
+    use axum::response::Response;
+    use axum::routing::get;
+    use axum::Router;
+    use futures_util::{SinkExt, StreamExt};
+    use std::net::SocketAddr;
+    use streamkit_api::{EventPayload, Message, RequestPayload};
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    fn make_test_app_state() -> Arc<AppState> {
+        let mut config = Config::default();
+        // Disable auth so the WS handler can attach without credentials.
+        config.auth.mode = AuthMode::Disabled;
+        crate::server::create_app_state(config, None)
+    }
+
+    async fn spawn_ws_server(perms: Permissions, role: &'static str) -> SocketAddr {
+        let state = make_test_app_state();
+        let app = Router::new().route(
+            "/ws",
+            get(move |ws: WebSocketUpgrade| {
+                let state = state.clone();
+                let perms = perms.clone();
+                async move {
+                    let response: Response = ws.on_upgrade(move |socket| async move {
+                        handle_websocket(socket, state, perms, role.to_string()).await;
+                    });
+                    response
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service()).await.unwrap();
+        });
+        addr
+    }
+
+    async fn connect(
+        addr: SocketAddr,
+    ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>
+    {
+        let (ws, _resp) =
+            tokio_tungstenite::connect_async(format!("ws://{addr}/ws")).await.unwrap();
+        ws
+    }
+
+    fn parse_response(json_str: &str) -> ApiResponse {
+        serde_json::from_str(json_str).expect("response is a valid ApiResponse")
+    }
+
+    #[test]
+    fn max_ws_message_bytes_returns_positive_value() {
+        // Cannot assert on the default specifically: max_ws_message_bytes()
+        // memoises via OnceLock, and SK_WEBSOCKET_MAX_MESSAGE_BYTES may be
+        // set by the test binary's environment or by an earlier-running
+        // test in the same process. The contract this test pins is the
+        // narrower one the production handler actually relies on: the
+        // returned cap is non-zero so the size check is meaningful.
+        assert!(max_ws_message_bytes() > 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn invalid_json_yields_error_response_and_keeps_connection_open() {
+        let addr = spawn_ws_server(Permissions::admin(), "admin").await;
+        let mut ws = connect(addr).await;
+
+        ws.send(WsMessage::Text("this is not json {".into())).await.unwrap();
+
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let text = match msg {
+            WsMessage::Text(t) => t,
+            other => panic!("expected text response, got {other:?}"),
+        };
+
+        let response = parse_response(&text);
+        assert!(response.correlation_id.is_none());
+        match response.payload {
+            ResponsePayload::Error { message } => {
+                assert!(message.contains("Invalid JSON"), "got: {message}");
+            },
+            other => panic!("expected ResponsePayload::Error, got {other:?}"),
+        }
+
+        // Connection must remain open after a parse failure — send a follow-up
+        // valid request and confirm we still get a response.
+        let req = ApiRequest {
+            message_type: MessageType::Request,
+            correlation_id: Some("c1".into()),
+            payload: RequestPayload::GetPermissions,
+        };
+        ws.send(WsMessage::Text(serde_json::to_string(&req).unwrap().into())).await.unwrap();
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        match msg {
+            WsMessage::Text(t) => {
+                let resp = parse_response(&t);
+                assert_eq!(resp.correlation_id.as_deref(), Some("c1"));
+                assert!(matches!(resp.payload, ResponsePayload::Permissions { .. }));
+            },
+            other => panic!("expected text response, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oversized_text_message_is_rejected_and_connection_is_closed() {
+        let addr = spawn_ws_server(Permissions::admin(), "admin").await;
+        let mut ws = connect(addr).await;
+
+        // 2 MiB > 1 MiB default cap.
+        let oversized = "x".repeat(2 * 1024 * 1024);
+        ws.send(WsMessage::Text(oversized.into())).await.unwrap();
+
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let text = match msg {
+            WsMessage::Text(t) => t,
+            other => panic!("expected text rejection response, got {other:?}"),
+        };
+        let response = parse_response(&text);
+        // Assert on response shape only; the production error message is free
+        // to evolve (i18n, rewording) without breaking this contract.
+        assert!(
+            matches!(response.payload, ResponsePayload::Error { .. }),
+            "expected ResponsePayload::Error, got {:?}",
+            response.payload
+        );
+
+        // Server must follow up with an explicit Close frame. A bare
+        // stream-end (None) would be a regression — the production handler
+        // sends `Message::Close(None)` after the error response (see
+        // handle_websocket() oversized-text branch).
+        let close_or_end =
+            tokio::time::timeout(std::time::Duration::from_secs(2), ws.next()).await.unwrap();
+        assert!(
+            matches!(close_or_end, Some(Ok(WsMessage::Close(_)))),
+            "expected explicit Close frame after oversized text, got {close_or_end:?}",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oversized_binary_message_closes_connection_without_response() {
+        let addr = spawn_ws_server(Permissions::admin(), "admin").await;
+        let mut ws = connect(addr).await;
+
+        // 2 MiB > 1 MiB default cap.
+        let oversized = vec![0u8; 2 * 1024 * 1024];
+        ws.send(WsMessage::Binary(oversized.into())).await.unwrap();
+
+        // The binary branch in handle_websocket() does not emit an error
+        // payload — it logs, increments the counter, and sends an explicit
+        // Close frame. Pin that contract; a bare stream-end (None) would
+        // indicate the close-on-overflow path regressed.
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next()).await.unwrap();
+        assert!(
+            matches!(msg, Some(Ok(WsMessage::Close(_)))),
+            "expected explicit Close frame after oversized binary, got {msg:?}",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn valid_request_round_trips_response_with_matching_correlation_id() {
+        let addr = spawn_ws_server(Permissions::admin(), "admin").await;
+        let mut ws = connect(addr).await;
+
+        let req = ApiRequest {
+            message_type: MessageType::Request,
+            correlation_id: Some("xyz".into()),
+            payload: RequestPayload::ListSessions,
+        };
+        ws.send(WsMessage::Text(serde_json::to_string(&req).unwrap().into())).await.unwrap();
+
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let text = match msg {
+            WsMessage::Text(t) => t,
+            other => panic!("expected text response, got {other:?}"),
+        };
+        let response = parse_response(&text);
+        assert_eq!(response.correlation_id.as_deref(), Some("xyz"));
+        assert!(matches!(response.payload, ResponsePayload::SessionsListed { .. }));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn client_close_terminates_handler_cleanly() {
+        let addr = spawn_ws_server(Permissions::admin(), "admin").await;
+        let mut ws = connect(addr).await;
+
+        ws.close(None).await.unwrap();
+        // Drain any echo / close acknowledgement, then explicitly verify the
+        // stream terminates. Without this assertion a hung-handler regression
+        // (server keeps the recv loop alive after client-initiated close)
+        // would still let this test pass.
+        let mut saw_terminal = false;
+        while let Some(msg) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), ws.next()).await.unwrap()
+        {
+            match msg {
+                Ok(WsMessage::Close(_)) | Err(_) => {
+                    saw_terminal = true;
+                    break;
+                },
+                Ok(_) => {},
+            }
+        }
+        // After the terminal frame (or stream end), the next read must be
+        // None essentially instantly — the handler has dropped the socket
+        // and the close handshake is already complete. 200ms is generous
+        // enough to absorb scheduler jitter without inflating the test's
+        // wall time on a happy-path run.
+        let tail =
+            tokio::time::timeout(std::time::Duration::from_millis(200), ws.next()).await.unwrap();
+        assert!(
+            tail.is_none(),
+            "handler kept stream alive after client close: saw_terminal={saw_terminal}, tail={tail:?}",
+        );
+    }
+
+    /// Drives a request/response round trip through the WebSocket and returns
+    /// after the response is observed. `handle_websocket` calls
+    /// `event_tx.subscribe()` *before* entering the recv loop that emits this
+    /// response, so observing the response on the client side proves the
+    /// broadcast subscription is live — letting subsequent `event_tx.send()`
+    /// calls reach the handler without relying on fixed sleeps.
+    async fn wait_for_handler_subscribed(
+        ws: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    ) {
+        let req = ApiRequest {
+            message_type: MessageType::Request,
+            correlation_id: Some("__ready__".into()),
+            payload: RequestPayload::GetPermissions,
+        };
+        ws.send(WsMessage::Text(serde_json::to_string(&req).unwrap().into())).await.unwrap();
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let text = match msg {
+            WsMessage::Text(t) => t,
+            other => panic!("expected text readiness response, got {other:?}"),
+        };
+        let resp = parse_response(&text);
+        assert_eq!(resp.correlation_id.as_deref(), Some("__ready__"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn broadcast_events_are_filtered_for_clients_without_access_all_sessions() {
+        // Build a state shared between the broadcaster and the WS handler so we
+        // can push events through `event_tx` and observe the gate.
+        let mut config = Config::default();
+        config.auth.mode = AuthMode::Disabled;
+        let state = crate::server::create_app_state(config, None);
+        // viewer() grants list_sessions but NOT access_all_sessions — exactly
+        // the role that should be filtered out of cross-session events.
+        let perms = Permissions::viewer();
+        assert!(!perms.access_all_sessions, "viewer must not see all sessions");
+
+        let state_clone = state.clone();
+        let perms_clone = perms.clone();
+        let app = Router::new().route(
+            "/ws",
+            get(move |ws: WebSocketUpgrade| {
+                let state = state_clone.clone();
+                let perms = perms_clone.clone();
+                async move {
+                    ws.on_upgrade(move |socket| async move {
+                        handle_websocket(socket, state, perms, "viewer".to_string()).await;
+                    })
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service()).await.unwrap();
+        });
+
+        let mut ws = connect(addr).await;
+        wait_for_handler_subscribed(&mut ws).await;
+
+        // Publish a node-state event for a session the viewer cannot see.
+        // Because `visible_session_ids` is empty and access_all_sessions is
+        // false, this must be filtered out.
+        let event = Message {
+            message_type: MessageType::Event,
+            correlation_id: None,
+            payload: EventPayload::NodeStateChanged {
+                session_id: "invisible-session".into(),
+                node_id: "n1".into(),
+                state: streamkit_core::NodeState::Running,
+                timestamp: "1970-01-01T00:00:00Z".into(),
+            },
+        };
+        let _ = state.event_tx.send(BroadcastEvent::to_all(event));
+
+        // Positive-proof companion: round-trip a request *after* publishing
+        // the filtered event. Reading the response back proves the handler is
+        // alive and has processed both branches of its select loop. If the
+        // filter were broken, the invisible-session event would be sitting in
+        // the stream alongside (or ahead of) the response — drain until we
+        // see the response and fail on any unrelated message in the way.
+        let req = ApiRequest {
+            message_type: MessageType::Request,
+            correlation_id: Some("__filter_check__".into()),
+            payload: RequestPayload::GetPermissions,
+        };
+        ws.send(WsMessage::Text(serde_json::to_string(&req).unwrap().into())).await.unwrap();
+
+        // If the handler picked the event branch first and forwarded it, the
+        // *first* message off the wire will be the event (not the response).
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+            .await
+            .expect("response must arrive within deadline")
+            .unwrap()
+            .unwrap();
+        let WsMessage::Text(text) = msg else {
+            panic!("expected text response, got {msg:?}");
+        };
+        let resp = parse_response(&text);
+        assert_eq!(
+            resp.correlation_id.as_deref(),
+            Some("__filter_check__"),
+            "filter leaked: received non-response message before round-trip: {text}",
+        );
+
+        // Otherwise the handler picked the WS branch first and the leaked event
+        // would still arrive *after* the response. A short additional read
+        // catches that ordering.
+        let extra = tokio::time::timeout(std::time::Duration::from_millis(100), ws.next()).await;
+        assert!(extra.is_err(), "filter leaked extra messages after response: {extra:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn broadcast_events_reach_clients_with_access_all_sessions() {
+        let mut config = Config::default();
+        config.auth.mode = AuthMode::Disabled;
+        let state = crate::server::create_app_state(config, None);
+        let perms = Permissions::admin();
+
+        let state_clone = state.clone();
+        let perms_clone = perms.clone();
+        let app = Router::new().route(
+            "/ws",
+            get(move |ws: WebSocketUpgrade| {
+                let state = state_clone.clone();
+                let perms = perms_clone.clone();
+                async move {
+                    ws.on_upgrade(move |socket| async move {
+                        handle_websocket(socket, state, perms, "admin".to_string()).await;
+                    })
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service()).await.unwrap();
+        });
+
+        let mut ws = connect(addr).await;
+        wait_for_handler_subscribed(&mut ws).await;
+
+        let event = Message {
+            message_type: MessageType::Event,
+            correlation_id: None,
+            payload: EventPayload::NodeStateChanged {
+                session_id: "any-session".into(),
+                node_id: "n1".into(),
+                state: streamkit_core::NodeState::Running,
+                timestamp: "1970-01-01T00:00:00Z".into(),
+            },
+        };
+        let _ = state.event_tx.send(BroadcastEvent::to_all(event));
+
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let text = match msg {
+            WsMessage::Text(t) => t,
+            other => panic!("expected event text, got {other:?}"),
+        };
+        // Parse and assert on the serde tag rather than a case-tolerant
+        // substring — EventPayload carries `#[serde(tag = "event")]` with
+        // `rename_all = "lowercase"`, so the variant tag is exactly
+        // "nodestatechanged". A mis-cased substring check would silently
+        // accept a renamed variant.
+        let value: serde_json::Value =
+            serde_json::from_str(&text).expect("event text must be valid JSON");
+        assert_eq!(value["payload"]["event"], "nodestatechanged", "got: {text}");
+        assert_eq!(value["payload"]["session_id"], "any-session", "got: {text}");
+    }
+}
