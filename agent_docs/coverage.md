@@ -39,9 +39,14 @@ For StreamKit specifically:
 | Generated code, examples, vendored / thin wrappers | excluded from coverage (see `codecov.yml`'s `ignore` block) |
 
 The `codecov.yml` ratchet plan lives in that file's header comment.
-Phase 2 (project flag drop > 1% blocks the PR) and Phase 3 (patch
-coverage < 80% blocks the PR) are now enforcing — those are the gates
-reviewers actually see on every PR. Component-level statuses remain
+The project flags (`backend`, `ui`) now report red on any drop > 1% and
+`patch.default` reports red when new / changed code is below 80% —
+those are real signals reviewers see on every PR. They are **not yet
+required for merge**, however: the coverage jobs in CI are
+`continue-on-error: true` and the required `All Checks Passed` gate
+only watches GitHub Actions job results, not Codecov commit statuses.
+Wiring the Codecov statuses into the merge gate is a separate change
+tracked as a follow-up issue. Component-level statuses remain
 informational while individual subsystems settle near the 80% target.
 
 ## What to do — and not do — when adding tests

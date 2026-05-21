@@ -2,20 +2,31 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-# Codecov configuration. After Phase 4 of the coverage sprint the project
-# and patch gates are now enforcing; component-level gates remain
-# informational while individual subsystems settle near the 80% target.
+# Codecov configuration. The project and patch statuses below report
+# red on threshold violations (a real signal for reviewers), but they
+# do not block merges yet — the coverage jobs in .github/workflows/{skit,ui}.yml
+# are still `continue-on-error: true` and the required `All Checks Passed`
+# gate only watches GitHub Actions job results, not Codecov commit
+# statuses. Removing the informational override here is step 1 of two;
+# step 2 (wiring the Codecov statuses into the merge gate) is tracked
+# in issue #487.
 #
-# Ratchet history / plan:
-#   Phase 1:         informational: true,  threshold: 100% (no gating)
-#   Phase 2 (now):   project flags enforcing, threshold: 1%
-#                      (any coverage drop >1% blocks the PR)
-#   Phase 3 (now):   patch.default enforcing, target: 80%
-#                      (new / changed code must hit 80%)
-#   Phase 4 (later): tighten component_management default_rules from
-#                      informational to enforcing once `engine`, `nodes`,
-#                      and `server` are consistently above 80%.
-# Phase transitions are intentionally manual — edit this file and remove
+# Status-stringency ratchet (separate from the coverage-sprint phases
+# tracked in agent_docs/coverage.md):
+#   Stage 1:           informational: true,  threshold: 100% (silent)
+#   Stage 2 (current): project flags surface red, threshold: 1%
+#                        (any coverage drop >1% reports red)
+#   Stage 3 (current): patch.default surfaces red, target: 80%
+#                        (new / changed code below 80% reports red)
+#   Stage 4 (future):  tighten component_management default_rules from
+#                        informational to red-surfacing once `engine`,
+#                        `nodes`, and `server` are consistently above
+#                        80%.
+#   Merge-gate wiring: separate change to either include Codecov
+#                        statuses in branch protection or fail the
+#                        coverage jobs on threshold violations —
+#                        tracked in issue #487.
+# Stage transitions are intentionally manual — edit this file and remove
 # `informational: true` / tighten `threshold` / `target` as the baseline
 # settles. The `backend` and `ui` flag totals on the Codecov dashboard are
 # the headline numbers to watch when deciding when to advance.
@@ -117,9 +128,9 @@ component_management:
 comment:
   layout: "header, diff, flags, components, files"
   behavior: default
-  # Now that Phase 2 gates are enforcing, only comment when coverage
-  # actually changed — otherwise PRs with no covered files get noisy
-  # "no change" comments on every push.
+  # Now that the Codecov statuses report red on threshold violations,
+  # the bot only needs to comment when coverage actually changed —
+  # otherwise PRs with no covered files get noisy "no change" comments.
   require_changes: true
 
 ignore:
