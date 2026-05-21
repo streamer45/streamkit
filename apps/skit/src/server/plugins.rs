@@ -974,8 +974,6 @@ mod handler_tests {
             .unwrap()
     }
 
-    // ── list_plugins_handler ────────────────────────────────────────────
-
     #[tokio::test]
     async fn list_plugins_returns_empty_when_no_plugins_loaded() {
         let (state, _tmp) = admin_state();
@@ -1011,8 +1009,6 @@ mod handler_tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, "[]");
     }
-
-    // ── upload_plugin_handler ───────────────────────────────────────────
 
     #[tokio::test]
     async fn upload_rejected_when_http_management_disabled() {
@@ -1170,8 +1166,6 @@ mod handler_tests {
         );
     }
 
-    // ── install_plugin_handler ──────────────────────────────────────────
-
     #[tokio::test]
     async fn install_rejected_when_marketplace_disabled() {
         let (state, _tmp) = locked_down_state();
@@ -1231,8 +1225,6 @@ mod handler_tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(body.contains("is not configured"), "body: {body}");
     }
-
-    // ── list_marketplace_registries_handler ─────────────────────────────
 
     #[tokio::test]
     async fn list_registries_rejected_when_marketplace_disabled() {
@@ -1294,8 +1286,6 @@ mod handler_tests {
         assert_eq!(parsed[0]["url"], "https://example.com/index.json");
     }
 
-    // ── list_marketplace_plugins_handler ───────────────────────────────
-
     #[tokio::test]
     async fn list_marketplace_plugins_rejected_when_marketplace_disabled() {
         let (state, _tmp) = locked_down_state();
@@ -1350,8 +1340,6 @@ mod handler_tests {
         assert!(body.contains("is not configured"), "body: {body}");
     }
 
-    // ── get_marketplace_plugin_handler ─────────────────────────────────
-
     #[tokio::test]
     async fn get_marketplace_plugin_rejected_when_marketplace_disabled() {
         let (state, _tmp) = locked_down_state();
@@ -1404,8 +1392,6 @@ mod handler_tests {
         assert!(body.contains("is not configured"), "body: {body}");
     }
 
-    // ── delete_plugin_handler ───────────────────────────────────────────
-
     #[tokio::test]
     async fn delete_rejected_when_http_management_disabled() {
         let (state, _tmp) = locked_down_state();
@@ -1451,8 +1437,6 @@ mod handler_tests {
         // this via `PluginHttpError::Manager` → 422 UNPROCESSABLE_ENTITY.
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
-
-    // ── get_job_handler / cancel_job_handler ───────────────────────────
 
     #[tokio::test]
     async fn get_job_rejected_when_load_plugins_missing() {
@@ -1510,8 +1494,6 @@ mod handler_tests {
         assert!(body.contains("missing-id"), "body: {body}");
     }
 
-    // ── marketplace_plugin_matches table ────────────────────────────────
-
     #[tokio::test]
     async fn marketplace_plugin_matches_searches_id_name_description() {
         let plugin = crate::marketplace::RegistryPlugin {
@@ -1541,8 +1523,6 @@ mod handler_tests {
         assert!(marketplace_plugin_matches(&plugin, "lone"));
         assert!(!marketplace_plugin_matches(&plugin, "absent"));
     }
-
-    // ── PluginHttpError → IntoResponse mapping ─────────────────────────
 
     #[tokio::test]
     async fn plugin_http_error_bad_request_maps_to_400() {

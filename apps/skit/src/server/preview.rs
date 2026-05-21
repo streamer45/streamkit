@@ -1638,6 +1638,11 @@ mod inject_teardown_tests {
 
         let kinds: Vec<&str> = nodes.iter().map(|(_, k)| k.as_str()).collect();
         assert!(kinds.contains(&"video::pixel_convert"));
+        // BUG (tracked in #480): bookkeeping records the unqualified kind
+        // `vp9::encoder` while `add_vp9_encoder_node` actually asks the
+        // engine for `video::vp9::encoder`.  The raw-audio path is
+        // internally consistent (`audio::opus::encoder` on both sides) —
+        // only VP9 is wrong.  This assertion pins the current behavior.
         assert!(kinds.contains(&"vp9::encoder"));
         assert!(kinds.contains(&"transport::moq::peer"));
 
