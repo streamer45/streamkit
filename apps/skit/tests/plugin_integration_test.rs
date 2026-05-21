@@ -334,6 +334,8 @@ async fn test_native_plugin_in_pipeline() {
 
     println!("✅ Added plugin node to pipeline");
 
+    wait_for_node_added(&mut read, &session_id, "gain_plugin").await;
+
     // Get pipeline to verify node was added
     let get_pipeline_request = Request {
         message_type: MessageType::Request,
@@ -494,6 +496,53 @@ async fn test_load_invalid_plugin() {
 
     println!("✅ Correctly rejected invalid plugin");
     server.shutdown().await;
+}
+
+/// Drain WebSocket messages until a `NodeAdded` event for the given
+/// session and node arrives.  The WS `addnode` handler returns Success
+/// as soon as the request is accepted; `pipeline.nodes` is only updated
+/// when the engine confirms creation via the session's node-added
+/// forwarder.
+async fn wait_for_node_added(
+    read: &mut futures_util::stream::SplitStream<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    >,
+    expected_session_id: &str,
+    expected_node_id: &str,
+) {
+    use futures_util::StreamExt;
+
+    let mut skipped: Vec<String> = Vec::new();
+    loop {
+        let message = timeout(Duration::from_secs(15), read.next())
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "Timeout waiting for NodeAdded(session={expected_session_id}, \
+                     node={expected_node_id}); skipped {} message(s): {skipped:?}",
+                    skipped.len(),
+                )
+            })
+            .expect("No message received")
+            .expect("Failed to read message");
+        let text = message.to_text().expect("Expected text message");
+        let value: serde_json::Value = serde_json::from_str(text).expect("Failed to parse message");
+        let is_event = value.get("type").and_then(|v| v.as_str()) == Some("event");
+        let payload = value.get("payload");
+        let payload_event = payload.and_then(|p| p.get("event")).and_then(|e| e.as_str());
+        let payload_session = payload.and_then(|p| p.get("session_id")).and_then(|s| s.as_str());
+        let payload_node_id = payload.and_then(|p| p.get("node_id")).and_then(|n| n.as_str());
+        if is_event
+            && payload_event == Some("nodeadded")
+            && payload_session == Some(expected_session_id)
+            && payload_node_id == Some(expected_node_id)
+        {
+            return;
+        }
+        skipped.push(text.to_string());
+    }
 }
 
 /// Helper to read WebSocket messages, skipping events until we get a response with matching correlation_id
