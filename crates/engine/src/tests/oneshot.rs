@@ -636,3 +636,103 @@ async fn run_oneshot_pipeline_drives_metrics_recorder() {
         "expected emitted payload in oneshot output"
     );
 }
+
+#[tokio::test]
+async fn run_oneshot_pipeline_missing_http_output_node_errors() {
+    use streamkit_api::{EngineMode, Node, Pipeline};
+    use streamkit_core::registry::NodeRegistry;
+
+    let mut registry = NodeRegistry::new();
+    registry.register_dynamic(
+        "test::binary_generator",
+        |_p| Ok(Box::new(BinaryGeneratorNode { count: 1 })),
+        serde_json::json!({}),
+        vec!["test".to_string()],
+        false,
+    );
+    let engine = engine_with_registry(registry);
+
+    let mut nodes = indexmap::IndexMap::new();
+    nodes.insert(
+        "gen".to_string(),
+        Node { kind: "test::binary_generator".to_string(), params: None, state: None },
+    );
+    let definition = Pipeline {
+        name: None,
+        description: None,
+        mode: EngineMode::OneShot,
+        client: None,
+        nodes,
+        connections: Vec::new(),
+        view_data: None,
+        runtime_schemas: None,
+    };
+    let inputs: Vec<OneshotInput<DummyStream>> = Vec::new();
+    let result = engine
+        .run_oneshot_pipeline(
+            definition,
+            inputs,
+            Some(OneshotEngineConfig::default()),
+            Some(tokio_util::sync::CancellationToken::new()),
+        )
+        .await;
+    let err = result.err().expect("expected missing http_output to fail");
+    assert!(
+        matches!(&err, StreamKitError::Configuration(msg) if msg.contains("http_output")),
+        "expected Configuration error mentioning http_output; got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn run_oneshot_pipeline_unconnected_http_output_errors() {
+    use streamkit_api::{EngineMode, Node, Pipeline};
+    use streamkit_core::registry::NodeRegistry;
+
+    let mut registry = NodeRegistry::new();
+    registry.register_dynamic(
+        "test::binary_generator",
+        |_p| Ok(Box::new(BinaryGeneratorNode { count: 1 })),
+        serde_json::json!({}),
+        vec!["test".to_string()],
+        false,
+    );
+    let engine = engine_with_registry(registry);
+
+    let mut nodes = indexmap::IndexMap::new();
+    nodes.insert(
+        "gen".to_string(),
+        Node { kind: "test::binary_generator".to_string(), params: None, state: None },
+    );
+    nodes.insert(
+        "sink".to_string(),
+        Node {
+            kind: "streamkit::http_output".to_string(),
+            params: Some(serde_json::json!({ "content_type": "application/octet-stream" })),
+            state: None,
+        },
+    );
+    let definition = Pipeline {
+        name: None,
+        description: None,
+        mode: EngineMode::OneShot,
+        client: None,
+        nodes,
+        connections: Vec::new(),
+        view_data: None,
+        runtime_schemas: None,
+    };
+    let inputs: Vec<OneshotInput<DummyStream>> = Vec::new();
+    let result = engine
+        .run_oneshot_pipeline(
+            definition,
+            inputs,
+            Some(OneshotEngineConfig::default()),
+            Some(tokio_util::sync::CancellationToken::new()),
+        )
+        .await;
+    let err = result.err().expect("expected unconnected http_output to fail");
+    assert!(
+        matches!(&err, StreamKitError::Configuration(msg) if msg.contains("not connected")),
+        "expected 'not connected' Configuration error; got {err:?}"
+    );
+}
