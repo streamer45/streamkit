@@ -6326,6 +6326,7 @@ dependencies = [
  "serde_json",
  "streamkit-core",
  "streamkit-plugin-sdk-native",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

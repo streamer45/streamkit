@@ -269,3 +269,93 @@ fn compile_dag(
         runtime_schemas: None,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::yaml::{Needs, NeedsDependency, UserNode, UserPipeline};
+    use crate::EngineMode;
+    use indexmap::IndexMap;
+
+    fn dag_nodes(entries: Vec<(&str, UserNode)>) -> IndexMap<String, UserNode> {
+        entries.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
+    }
+
+    fn dag_pipeline(nodes: IndexMap<String, UserNode>, mode: EngineMode) -> UserPipeline {
+        UserPipeline::Dag { name: None, description: None, mode, nodes, client: None }
+    }
+
+    fn user_node(kind: &str, needs: Needs) -> UserNode {
+        UserNode { kind: kind.to_string(), params: None, needs }
+    }
+
+    fn simple_dep(node: &str) -> NeedsDependency {
+        NeedsDependency::Simple(node.to_string())
+    }
+
+    fn mixer_needs() -> Needs {
+        Needs::Multiple(vec![simple_dep("a"), simple_dep("b")])
+    }
+
+    #[test]
+    fn compile_dag_rejects_node_key_in_needs_map() {
+        let mut map: IndexMap<String, NeedsDependency> = IndexMap::new();
+        map.insert("node".into(), simple_dep("a"));
+        let nodes = dag_nodes(vec![
+            ("a", user_node("core::source", Needs::None)),
+            ("b", user_node("core::sink", Needs::Map(map))),
+        ]);
+        let err = compile(dag_pipeline(nodes, EngineMode::Dynamic))
+            .expect_err("`node` pin key should be rejected");
+        assert!(err.contains("'node'"), "error mentions the reserved key: {err}");
+    }
+
+    #[test]
+    fn compile_dag_dynamic_audio_mixer_does_not_inject_num_inputs() {
+        let nodes = dag_nodes(vec![
+            ("a", user_node("core::source", Needs::None)),
+            ("b", user_node("core::source", Needs::None)),
+            ("mixer", user_node("audio::mixer", mixer_needs())),
+        ]);
+        let compiled = compile(dag_pipeline(nodes, EngineMode::Dynamic)).expect("compile");
+        let mixer = compiled.nodes.get("mixer").expect("mixer present");
+        assert!(mixer.params.is_none(), "dynamic mode skips auto-injection: {:?}", mixer.params);
+    }
+
+    #[test]
+    fn compile_dag_audio_mixer_preserves_explicit_num_inputs() {
+        let mut params = serde_json::Map::new();
+        params.insert("num_inputs".into(), serde_json::Value::Number(7.into()));
+        let mixer = UserNode {
+            kind: "audio::mixer".to_string(),
+            params: Some(serde_json::Value::Object(params)),
+            needs: mixer_needs(),
+        };
+        let nodes = dag_nodes(vec![
+            ("a", user_node("core::source", Needs::None)),
+            ("b", user_node("core::source", Needs::None)),
+            ("mixer", mixer),
+        ]);
+        let compiled = compile(dag_pipeline(nodes, EngineMode::OneShot)).expect("compile");
+        let mixer = compiled.nodes.get("mixer").expect("mixer present");
+        let n = mixer.params.as_ref().and_then(|p| p.get("num_inputs")).and_then(|v| v.as_u64());
+        assert_eq!(n, Some(7), "user-provided num_inputs should win");
+    }
+
+    #[test]
+    fn compile_dag_oneshot_audio_mixer_skips_inject_when_params_is_non_object() {
+        let mixer = UserNode {
+            kind: "audio::mixer".to_string(),
+            params: Some(serde_json::Value::String("scalar".into())),
+            needs: mixer_needs(),
+        };
+        let nodes = dag_nodes(vec![
+            ("a", user_node("core::source", Needs::None)),
+            ("b", user_node("core::source", Needs::None)),
+            ("mixer", mixer),
+        ]);
+        let compiled = compile(dag_pipeline(nodes, EngineMode::OneShot)).expect("compile");
+        let mixer = compiled.nodes.get("mixer").expect("mixer present");
+        assert_eq!(mixer.params.as_ref().and_then(serde_json::Value::as_str), Some("scalar"));
+    }
+}
