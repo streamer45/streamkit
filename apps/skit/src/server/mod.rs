@@ -475,6 +475,632 @@ mod cors_tests {
             .route("/", axum::routing::get(|| async { "ok" }))
             .layer(layer);
     }
+
+    #[test]
+    fn origin_matches_pattern_wildcard_accepts_anything() {
+        assert!(origin_matches_pattern("http://anything", "*"));
+        assert!(origin_matches_pattern("https://example.com", "*"));
+        assert!(origin_matches_pattern("", "*"));
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn cors_layer_rejects_wildcard_with_auth_enabled() {
+        let cors = crate::config::CorsConfig { allowed_origins: vec!["*".to_string()] };
+        let err = create_cors_layer(&cors, true).unwrap_err();
+        assert!(err.contains("incompatible with auth"), "got: {err}");
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn cors_layer_wildcard_without_auth_succeeds() {
+        let cors = crate::config::CorsConfig { allowed_origins: vec!["*".to_string()] };
+        let layer = create_cors_layer(&cors, false).unwrap();
+        let _app = axum::Router::<()>::new()
+            .route("/", axum::routing::get(|| async { "ok" }))
+            .layer(layer);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn cors_layer_empty_origins_yields_restrictive_layer() {
+        let cors = crate::config::CorsConfig { allowed_origins: vec![] };
+        let layer = create_cors_layer(&cors, true).unwrap();
+        let _app = axum::Router::<()>::new()
+            .route("/", axum::routing::get(|| async { "ok" }))
+            .layer(layer);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn cors_layer_specific_origins_with_auth_succeeds() {
+        let cors = crate::config::CorsConfig {
+            allowed_origins: vec![
+                "http://localhost:5173".to_string(),
+                "http://localhost:*".to_string(),
+            ],
+        };
+        let layer = create_cors_layer(&cors, true).unwrap();
+        let _app = axum::Router::<()>::new()
+            .route("/", axum::routing::get(|| async { "ok" }))
+            .layer(layer);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod helper_tests {
+    use super::{
+        build_hash, cors_allowed_origins_are_loopback_only, escape_html_attr, normalize_base_path,
+        strip_base_path_prefix,
+    };
+
+    #[test]
+    fn escape_html_attr_replaces_dangerous_chars() {
+        let cases = [
+            ("", ""),
+            ("plain", "plain"),
+            ("&", "&amp;"),
+            ("<", "&lt;"),
+            (">", "&gt;"),
+            ("\"", "&quot;"),
+            ("'", "&#39;"),
+            ("a<b>&'\"c", "a&lt;b&gt;&amp;&#39;&quot;c"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(escape_html_attr(input), expected, "input: {input:?}");
+        }
+    }
+
+    #[test]
+    fn normalize_base_path_handles_edge_cases() {
+        assert_eq!(normalize_base_path(None), None);
+        assert_eq!(normalize_base_path(Some("")), None);
+        assert_eq!(normalize_base_path(Some("   ")), None);
+
+        // Note: "/" survives as Some("/") because trim_end_matches('/') strips the leading
+        // slash too, leaving an empty string that is re-prefixed by the final format! call.
+        // The result is still a no-op base_path, so this is acceptable.
+        assert_eq!(normalize_base_path(Some("/")).as_deref(), Some("/"));
+
+        assert_eq!(normalize_base_path(Some("/foo")).as_deref(), Some("/foo"));
+        assert_eq!(normalize_base_path(Some("foo")).as_deref(), Some("/foo"));
+        assert_eq!(normalize_base_path(Some("/foo/")).as_deref(), Some("/foo"));
+        assert_eq!(normalize_base_path(Some("  /foo/bar/  ")).as_deref(), Some("/foo/bar"));
+    }
+
+    #[test]
+    fn strip_base_path_prefix_passthrough_when_no_base() {
+        assert_eq!(strip_base_path_prefix("/api/x", None), "/api/x");
+        assert_eq!(strip_base_path_prefix("/api/x", Some("")), "/api/x");
+        assert_eq!(strip_base_path_prefix("/api/x", Some("/")), "/api/x");
+    }
+
+    #[test]
+    fn strip_base_path_prefix_strips_exact_match_to_root() {
+        assert_eq!(strip_base_path_prefix("/admin", Some("/admin")), "/");
+        assert_eq!(strip_base_path_prefix("/admin/", Some("/admin")), "/");
+        assert_eq!(strip_base_path_prefix("/admin/api/x", Some("/admin")), "/api/x");
+    }
+
+    #[test]
+    fn strip_base_path_prefix_only_strips_on_boundary() {
+        assert_eq!(strip_base_path_prefix("/administrator", Some("/admin")), "/administrator");
+        assert_eq!(strip_base_path_prefix("/other/path", Some("/admin")), "/other/path");
+    }
+
+    #[test]
+    fn strip_base_path_prefix_handles_base_without_leading_slash() {
+        assert_eq!(strip_base_path_prefix("/admin/api", Some("admin")), "/api");
+        assert_eq!(strip_base_path_prefix("/admin", Some("admin")), "/");
+        assert_eq!(strip_base_path_prefix("/administrator", Some("admin")), "/administrator");
+        assert_eq!(strip_base_path_prefix("no-leading-slash", Some("admin")), "no-leading-slash");
+    }
+
+    #[test]
+    fn cors_allowed_origins_are_loopback_only_basic_cases() {
+        assert!(!cors_allowed_origins_are_loopback_only(&[]));
+        assert!(cors_allowed_origins_are_loopback_only(&["http://localhost:80".to_string()]));
+        assert!(cors_allowed_origins_are_loopback_only(&[
+            "http://localhost:*".to_string(),
+            "http://127.0.0.1:*".to_string(),
+        ]));
+        // A wildcard pattern matches every test origin (including loopbacks) — still considered loopback-only.
+        assert!(cors_allowed_origins_are_loopback_only(&["*".to_string()]));
+        // Mixed list: anything non-loopback flips the result.
+        assert!(!cors_allowed_origins_are_loopback_only(&[
+            "http://localhost:*".to_string(),
+            "https://example.com".to_string(),
+        ]));
+    }
+
+    #[test]
+    fn build_hash_returns_non_empty_string() {
+        let h = build_hash();
+        assert!(!h.is_empty());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod app_integration_tests {
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::{header, Method, Request, StatusCode};
+    use tower::ServiceExt;
+
+    fn default_config() -> Config {
+        let mut config = Config::default();
+        // Loopback origins so origin_guard accepts requests from "http://localhost:5173".
+        config.server.cors.allowed_origins = vec!["http://localhost:5173".to_string()];
+        config
+    }
+
+    async fn read_body(body: Body) -> Vec<u8> {
+        to_bytes(body, 1024 * 1024).await.unwrap().to_vec()
+    }
+
+    async fn read_json(body: Body) -> serde_json::Value {
+        let bytes = read_body(body).await;
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn health_handler_returns_ok_json() {
+        let (app, _state) = create_app(default_config(), None);
+        let resp = app
+            .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        // Security headers from the response-header layers.
+        assert_eq!(resp.headers().get("x-content-type-options").unwrap(), "nosniff");
+        assert_eq!(resp.headers().get("referrer-policy").unwrap(), "no-referrer");
+        assert_eq!(resp.headers().get("x-frame-options").unwrap(), "SAMEORIGIN");
+        let json = read_json(resp.into_body()).await;
+        assert_eq!(json["status"], "ok");
+        assert!(json["version"].is_string());
+        assert!(json["build_hash"].is_string());
+    }
+
+    #[tokio::test]
+    async fn jwks_returns_404_when_auth_disabled() {
+        let (app, _state) = create_app(default_config(), None);
+        let resp = app
+            .oneshot(Request::builder().uri("/.well-known/jwks.json").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn jwks_returns_keys_when_auth_enabled() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let mut config = default_config();
+        config.auth.mode = crate::config::AuthMode::Enabled;
+        config.auth.state_dir = temp.path().to_string_lossy().to_string();
+        let auth = Arc::new(
+            crate::auth::AuthState::new(&config.auth, true).await.expect("init auth state"),
+        );
+
+        let (app, _state) = create_app(config, Some(auth.clone()));
+
+        // Read the admin token so we can pass auth_guard for protected endpoints below.
+        let admin_token = tokio::fs::read_to_string(temp.path().join("admin.token")).await.unwrap();
+        let _admin_token = admin_token.trim().to_string();
+
+        let resp = app
+            .oneshot(Request::builder().uri("/.well-known/jwks.json").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = read_json(resp.into_body()).await;
+        assert!(json["keys"].is_array(), "expected JWKS shape, got: {json}");
+    }
+
+    #[tokio::test]
+    async fn permissions_handler_returns_default_role() {
+        let (app, _state) = create_app(default_config(), None);
+        let resp = app
+            .oneshot(Request::builder().uri("/api/v1/permissions").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = read_json(resp.into_body()).await;
+        assert!(json["role"].is_string(), "got: {json}");
+        assert!(json["permissions"].is_object(), "got: {json}");
+    }
+
+    #[tokio::test]
+    async fn config_handler_allowed_for_default_role() {
+        let (app, _state) = create_app(default_config(), None);
+        let resp = app
+            .oneshot(Request::builder().uri("/api/v1/config").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn config_handler_forbidden_for_viewer_role() {
+        let mut config = default_config();
+        // Use a trusted role header so the test is deterministic regardless of $SK_ROLE.
+        config.permissions.role_header = Some("x-test-role".to_string());
+        let viewer_perms = crate::permissions::Permissions::viewer();
+        config.permissions.roles.insert("viewer".to_string(), viewer_perms);
+
+        let (app, _state) = create_app(config, None);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/config")
+                    .header("x-test-role", "viewer")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn list_node_definitions_returns_array_including_synthetics() {
+        let (app, _state) = create_app(default_config(), None);
+        let resp = app
+            .oneshot(Request::builder().uri("/api/v1/schema/nodes").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = read_json(resp.into_body()).await;
+        let arr = json.as_array().expect("expected array");
+        // At minimum the two synthetic nodes appear.
+        let kinds: Vec<&str> = arr.iter().filter_map(|n| n["kind"].as_str()).collect();
+        assert!(kinds.contains(&"streamkit::http_input"), "got: {kinds:?}");
+        assert!(kinds.contains(&"streamkit::http_output"), "got: {kinds:?}");
+    }
+
+    #[tokio::test]
+    async fn list_packet_types_returns_array() {
+        let (app, _state) = create_app(default_config(), None);
+        let resp = app
+            .oneshot(Request::builder().uri("/api/v1/schema/packets").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = read_json(resp.into_body()).await;
+        assert!(!json.as_array().expect("expected array").is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_pipeline_handler_returns_404_for_unknown_session() {
+        let (app, _state) = create_app(default_config(), None);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/sessions/does-not-exist/pipeline")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_pipeline_handler_returns_403_when_caller_lacks_list_sessions() {
+        let mut config = default_config();
+        config.permissions.role_header = Some("x-test-role".to_string());
+        let mut limited = crate::permissions::Permissions::viewer();
+        limited.list_sessions = false;
+        config.permissions.roles.insert("limited".to_string(), limited);
+
+        let (app, _state) = create_app(config, None);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/sessions/anything/pipeline")
+                    .header("x-test-role", "limited")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn mse_stream_handler_returns_404_for_unregistered_path() {
+        let (app, _state) = create_app(default_config(), None);
+        let resp = app
+            .oneshot(Request::builder().uri("/mse/does-not-exist").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn static_handler_serves_index_html_at_root() {
+        let (app, _state) = create_app(default_config(), None);
+        let resp =
+            app.oneshot(Request::builder().uri("/").body(Body::empty()).unwrap()).await.unwrap();
+        // If `ui/dist/index.html` was not built before tests, the handler returns 500.
+        // In a normal test run (and CI) the asset is embedded.
+        if resp.status() == StatusCode::OK {
+            let body = read_body(resp.into_body()).await;
+            let html = String::from_utf8(body).unwrap();
+            assert!(html.contains("<base href=\"/\">"), "expected base injection in: {html}");
+        } else {
+            assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    #[tokio::test]
+    async fn static_handler_falls_back_to_index_for_unknown_spa_route() {
+        let (app, _state) = create_app(default_config(), None);
+        let resp = app
+            .oneshot(Request::builder().uri("/some/unknown/spa/route").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        // OK (index.html fallback) or 500 if assets aren't embedded.
+        assert!(matches!(resp.status(), StatusCode::OK | StatusCode::INTERNAL_SERVER_ERROR));
+    }
+
+    #[tokio::test]
+    async fn static_handler_returns_404_for_unknown_asset_with_extension() {
+        let (app, _state) = create_app(default_config(), None);
+        let resp = app
+            .oneshot(Request::builder().uri("/missing-asset.js").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn static_handler_returns_404_for_api_route_in_fallback() {
+        // When an /api/* route isn't matched by an explicit handler, static_handler returns 404
+        // (not the SPA fallback) so callers get a clear error instead of HTML.
+        let (app, _state) = create_app(default_config(), None);
+        let resp = app
+            .oneshot(
+                Request::builder().uri("/api/v1/this/does/not/exist").body(Body::empty()).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn base_path_nesting_serves_health_under_prefix() {
+        let mut config = default_config();
+        config.server.base_path = Some("/admin".to_string());
+        let (app, _state) = create_app(config, None);
+
+        let resp = app
+            .clone()
+            .oneshot(Request::builder().uri("/admin/healthz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // The root path also still works (router is nested *and* served at /).
+        let resp = app
+            .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn auth_guard_allows_protected_route_when_auth_disabled() {
+        let (app, _state) = create_app(default_config(), None);
+        // Default Config has auth disabled, so /api/v1/permissions is reachable without a token.
+        let resp = app
+            .oneshot(Request::builder().uri("/api/v1/permissions").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn auth_guard_rejects_protected_route_without_token_when_enabled() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let mut config = default_config();
+        config.auth.mode = crate::config::AuthMode::Enabled;
+        config.auth.state_dir = temp.path().to_string_lossy().to_string();
+        let auth = Arc::new(
+            crate::auth::AuthState::new(&config.auth, true).await.expect("init auth state"),
+        );
+        let (app, _state) = create_app(config, Some(auth));
+
+        let resp = app
+            .oneshot(Request::builder().uri("/api/v1/permissions").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn auth_guard_permits_protected_route_with_admin_token() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let mut config = default_config();
+        config.auth.mode = crate::config::AuthMode::Enabled;
+        config.auth.state_dir = temp.path().to_string_lossy().to_string();
+        let auth = Arc::new(
+            crate::auth::AuthState::new(&config.auth, true).await.expect("init auth state"),
+        );
+        let (app, _state) = create_app(config, Some(auth));
+
+        let token = tokio::fs::read_to_string(temp.path().join("admin.token")).await.unwrap();
+        let token = token.trim().to_string();
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/permissions")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn auth_guard_skips_auth_subrouter_when_enabled() {
+        // /api/v1/auth/* paths must be reachable without a token so login can happen.
+        let temp = tempfile::TempDir::new().unwrap();
+        let mut config = default_config();
+        config.auth.mode = crate::config::AuthMode::Enabled;
+        config.auth.state_dir = temp.path().to_string_lossy().to_string();
+        let auth = Arc::new(
+            crate::auth::AuthState::new(&config.auth, true).await.expect("init auth state"),
+        );
+        let (app, _state) = create_app(config, Some(auth));
+
+        // The auth subrouter exists; we don't care about the specific response code,
+        // only that it isn't the 401 the auth_guard would emit.
+        let resp = app
+            .oneshot(Request::builder().uri("/api/v1/auth/me").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_ne!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "auth subrouter must not be gated by auth_guard_middleware"
+        );
+    }
+
+    #[tokio::test]
+    async fn origin_guard_allows_get_with_disallowed_origin() {
+        // GETs are not gated by origin_guard, regardless of Origin header value.
+        let (app, _state) = create_app(default_config(), None);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/permissions")
+                    .header(header::ORIGIN, "https://evil.example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn origin_guard_blocks_mutating_request_from_disallowed_origin() {
+        let (app, _state) = create_app(default_config(), None);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/validate")
+                    .header("content-type", "application/json")
+                    .header(header::ORIGIN, "https://evil.example.com")
+                    .body(Body::from("{\"yaml\":\"nodes: {}\"}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn origin_guard_allows_mutating_request_from_allowed_origin() {
+        let (app, _state) = create_app(default_config(), None);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/validate")
+                    .header("content-type", "application/json")
+                    .header(header::ORIGIN, "http://localhost:5173")
+                    .body(Body::from("{\"yaml\":\"nodes: {}\"}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn origin_guard_allows_mutating_request_without_origin_header() {
+        // Non-browser clients (curl, server-to-server) may omit Origin entirely.
+        let (app, _state) = create_app(default_config(), None);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/validate")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{\"yaml\":\"nodes: {}\"}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn read_registry_returns_guard() {
+        let state = create_app_state(default_config(), None);
+        let count = {
+            let guard = super::read_registry(&state).expect("registry read");
+            guard.definitions().len()
+        };
+        assert!(count > 0);
+    }
+
+    #[tokio::test]
+    async fn normalized_base_path_for_html_default_is_empty() {
+        let state = create_app_state(default_config(), None);
+        assert_eq!(super::normalized_base_path_for_html(&state), "");
+    }
+
+    #[tokio::test]
+    async fn normalized_base_path_for_html_uses_normalized_value() {
+        let mut config = default_config();
+        config.server.base_path = Some("/admin/".to_string());
+        let state = create_app_state(config, None);
+        assert_eq!(super::normalized_base_path_for_html(&state), "/admin");
+    }
+
+    #[tokio::test]
+    async fn app_error_into_response_maps_each_variant() {
+        use axum::response::IntoResponse;
+
+        let bad = super::AppError::BadRequest("nope".to_string()).into_response();
+        assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+
+        let forb = super::AppError::Forbidden("denied".to_string()).into_response();
+        assert_eq!(forb.status(), StatusCode::FORBIDDEN);
+
+        let compile = super::AppError::PipelineCompilation("oops".to_string()).into_response();
+        assert_eq!(compile.status(), StatusCode::BAD_REQUEST);
+
+        // Force a real serde_saphyr error to exercise the Serde -> 400 mapping.
+        let serde_err: serde_saphyr::Error =
+            serde_saphyr::from_str::<serde_json::Value>("::: not yaml :::").unwrap_err();
+        let resp = super::AppError::Serde(serde_err).into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn static_handler_serves_assets_under_base_path() {
+        let mut config = default_config();
+        config.server.base_path = Some("/admin".to_string());
+        let (app, _state) = create_app(config, None);
+        let resp = app
+            .oneshot(Request::builder().uri("/admin/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = read_body(resp.into_body()).await;
+        let html = String::from_utf8(body).unwrap();
+        // index.html was rewritten with the configured base path.
+        assert!(html.contains("<base href=\"/admin/\">"), "missing base tag in: {html}");
+    }
 }
 
 // File path validation lives in `crate::file_security` so it can be reused by both

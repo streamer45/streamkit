@@ -1217,3 +1217,556 @@ nodes:
         assert!(errors.is_empty(), "no mode should accept synthetics, got: {errors:?}");
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod helper_tests {
+    use super::*;
+    use streamkit_api::yaml::parse_yaml;
+    use streamkit_core::types::PacketType;
+    use streamkit_core::{InputPin, OutputPin, PinCardinality};
+
+    fn pipeline_from(yaml: &str) -> Pipeline {
+        compile(parse_yaml(yaml).expect("yaml parse")).expect("compile")
+    }
+
+    fn dummy_security_config() -> crate::config::SecurityConfig {
+        crate::config::SecurityConfig::default()
+    }
+
+    #[test]
+    fn is_synthetic_kind_matches_known_synthetics() {
+        assert!(is_synthetic_kind("streamkit::http_input"));
+        assert!(is_synthetic_kind("streamkit::http_output"));
+        assert!(!is_synthetic_kind("audio::opus::encoder"));
+        assert!(!is_synthetic_kind(""));
+        assert!(!is_synthetic_kind("streamkit::widget"));
+    }
+
+    #[test]
+    fn synthetic_node_definitions_have_pins() {
+        let defs = synthetic_node_definitions();
+        assert_eq!(defs.len(), 2);
+
+        let input = defs.iter().find(|d| d.kind == "streamkit::http_input").unwrap();
+        assert!(input.inputs.is_empty());
+        assert_eq!(input.outputs.len(), 1);
+
+        let output = defs.iter().find(|d| d.kind == "streamkit::http_output").unwrap();
+        assert!(output.outputs.is_empty());
+        assert_eq!(output.inputs.len(), 1);
+    }
+
+    #[test]
+    fn validate_pipeline_nodes_requires_http_output() {
+        let pipe = pipeline_from("nodes:\n  src:\n    kind: streamkit::http_input\n");
+        let err = validate_pipeline_nodes(&pipe).unwrap_err();
+        match err {
+            AppError::BadRequest(msg) => {
+                assert!(msg.contains("streamkit::http_output"), "got: {msg}");
+            },
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_pipeline_nodes_generator_with_only_output_is_rejected() {
+        let pipe = pipeline_from("nodes:\n  sink:\n    kind: streamkit::http_output\n");
+        let err = validate_pipeline_nodes(&pipe).unwrap_err();
+        match err {
+            AppError::BadRequest(msg) => {
+                assert!(msg.contains("Generator-mode"), "got: {msg}");
+            },
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_pipeline_nodes_accepts_http_input_plus_output() {
+        let pipe = pipeline_from(
+            "nodes:\n  input:\n    kind: streamkit::http_input\n  \
+             output:\n    kind: streamkit::http_output\n    needs: input\n",
+        );
+        let (has_http_input, has_file_read, has_http_output) =
+            validate_pipeline_nodes(&pipe).unwrap();
+        assert!(has_http_input);
+        assert!(!has_file_read);
+        assert!(has_http_output);
+    }
+
+    #[test]
+    fn validate_pipeline_nodes_accepts_file_reader_plus_output() {
+        let pipe = pipeline_from(
+            "nodes:\n  reader:\n    kind: core::file_reader\n    params:\n      path: samples/x.mp4\n  \
+             output:\n    kind: streamkit::http_output\n    needs: reader\n",
+        );
+        let (has_http_input, has_file_read, has_http_output) =
+            validate_pipeline_nodes(&pipe).unwrap();
+        assert!(!has_http_input);
+        assert!(has_file_read);
+        assert!(has_http_output);
+    }
+
+    #[test]
+    fn validate_pipeline_nodes_accepts_generator_with_extra_node() {
+        let pipe = pipeline_from(
+            "nodes:\n  gen:\n    kind: video::colorbars\n  \
+             output:\n    kind: streamkit::http_output\n    needs: gen\n",
+        );
+        let (has_http_input, has_file_read, has_http_output) =
+            validate_pipeline_nodes(&pipe).unwrap();
+        assert!(!has_http_input);
+        assert!(!has_file_read);
+        assert!(has_http_output);
+    }
+
+    #[test]
+    fn validate_file_reader_paths_ignores_non_file_reader_nodes() {
+        let pipe = pipeline_from("nodes:\n  output:\n    kind: streamkit::http_output\n");
+        validate_file_reader_paths(&pipe, &dummy_security_config()).unwrap();
+    }
+
+    #[test]
+    fn validate_file_reader_paths_rejects_invalid_path() {
+        let pipe = pipeline_from(
+            "nodes:\n  reader:\n    kind: core::file_reader\n    params:\n      path: /etc/passwd\n",
+        );
+        let err = validate_file_reader_paths(&pipe, &dummy_security_config()).unwrap_err();
+        match err {
+            AppError::BadRequest(msg) => assert!(msg.contains("reader"), "got: {msg}"),
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_file_reader_paths_ignores_missing_params() {
+        let pipe = pipeline_from("nodes:\n  reader:\n    kind: core::file_reader\n");
+        validate_file_reader_paths(&pipe, &dummy_security_config()).unwrap();
+    }
+
+    #[test]
+    fn validate_file_writer_paths_rejects_missing_params() {
+        let pipe = pipeline_from("nodes:\n  writer:\n    kind: core::file_writer\n");
+        let err = validate_file_writer_paths(&pipe, &dummy_security_config()).unwrap_err();
+        match err {
+            AppError::BadRequest(msg) => {
+                assert!(msg.contains("file_writer params"), "got: {msg}");
+                assert!(msg.contains("writer"), "got: {msg}");
+            },
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_file_writer_paths_rejects_non_string_path() {
+        let pipe = pipeline_from(
+            "nodes:\n  writer:\n    kind: core::file_writer\n    params:\n      path: 42\n",
+        );
+        let err = validate_file_writer_paths(&pipe, &dummy_security_config()).unwrap_err();
+        match err {
+            AppError::BadRequest(msg) => assert!(msg.contains("path to be a string"), "got: {msg}"),
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_file_writer_paths_rejects_disabled_writes() {
+        let pipe = pipeline_from(
+            "nodes:\n  writer:\n    kind: core::file_writer\n    params:\n      path: /tmp/out.mp4\n",
+        );
+        let err = validate_file_writer_paths(&pipe, &dummy_security_config()).unwrap_err();
+        match err {
+            AppError::BadRequest(msg) => {
+                assert!(msg.contains("Invalid write path"), "got: {msg}");
+                assert!(msg.contains("writer"), "got: {msg}");
+            },
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "script")]
+    #[test]
+    fn validate_script_paths_ignores_empty_script_path() {
+        let pipe = pipeline_from(
+            "nodes:\n  s:\n    kind: core::script\n    params:\n      script_path: \"   \"\n",
+        );
+        validate_script_paths(&pipe, &dummy_security_config()).unwrap();
+    }
+
+    #[cfg(feature = "script")]
+    #[test]
+    fn validate_script_paths_rejects_invalid_path() {
+        let pipe = pipeline_from(
+            "nodes:\n  s:\n    kind: core::script\n    params:\n      script_path: /etc/passwd\n",
+        );
+        let err = validate_script_paths(&pipe, &dummy_security_config()).unwrap_err();
+        match err {
+            AppError::BadRequest(msg) => {
+                assert!(msg.contains("Invalid script_path"), "got: {msg}");
+                assert!(msg.contains("'s'"), "got: {msg}");
+            },
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "script")]
+    #[test]
+    fn validate_script_paths_ignores_non_script_nodes() {
+        let pipe = pipeline_from("nodes:\n  output:\n    kind: streamkit::http_output\n");
+        validate_script_paths(&pipe, &dummy_security_config()).unwrap();
+    }
+
+    #[test]
+    fn check_file_path_security_ok_for_clean_pipeline() {
+        let pipe = pipeline_from("nodes:\n  output:\n    kind: streamkit::http_output\n");
+        check_file_path_security(&pipe, &dummy_security_config()).unwrap();
+    }
+
+    #[test]
+    fn check_file_path_security_returns_combined_errors() {
+        let pipe = pipeline_from(
+            "nodes:\n  reader:\n    kind: core::file_reader\n    params:\n      path: /etc/passwd\n  \
+             writer:\n    kind: core::file_writer\n    params:\n      path: /tmp/out.mp4\n",
+        );
+        let msg = check_file_path_security(&pipe, &dummy_security_config()).unwrap_err();
+        // The combined error contains both nodes' diagnostics separated by '; '.
+        assert!(msg.contains("reader"), "got: {msg}");
+        assert!(msg.contains("writer"), "got: {msg}");
+        assert!(msg.contains(';'), "expected combined message, got: {msg}");
+    }
+
+    #[test]
+    fn validate_pin_types_skips_passthrough_source() {
+        let src = OutputPin {
+            name: "out".into(),
+            produces_type: PacketType::Passthrough,
+            cardinality: PinCardinality::Broadcast,
+        };
+        let dst = InputPin {
+            name: "in".into(),
+            accepts_types: vec![PacketType::Binary],
+            cardinality: PinCardinality::One,
+        };
+        let conn = streamkit_api::Connection {
+            from_node: "a".into(),
+            from_pin: "out".into(),
+            to_node: "b".into(),
+            to_pin: "in".into(),
+            mode: streamkit_api::ConnectionMode::default(),
+        };
+        let pt_registry = streamkit_core::packet_meta::packet_type_registry();
+        let mut errors = Vec::new();
+        validate_pin_types(&src, &dst, &conn, "a->b", pt_registry, &mut errors);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn validate_pin_types_skips_passthrough_destination() {
+        let src = OutputPin {
+            name: "out".into(),
+            produces_type: PacketType::Text,
+            cardinality: PinCardinality::Broadcast,
+        };
+        let dst = InputPin {
+            name: "in".into(),
+            accepts_types: vec![PacketType::Passthrough],
+            cardinality: PinCardinality::One,
+        };
+        let conn = streamkit_api::Connection {
+            from_node: "a".into(),
+            from_pin: "out".into(),
+            to_node: "b".into(),
+            to_pin: "in".into(),
+            mode: streamkit_api::ConnectionMode::default(),
+        };
+        let pt_registry = streamkit_core::packet_meta::packet_type_registry();
+        let mut errors = Vec::new();
+        validate_pin_types(&src, &dst, &conn, "a->b", pt_registry, &mut errors);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn validate_pin_types_accepts_compatible_types() {
+        let src = OutputPin {
+            name: "out".into(),
+            produces_type: PacketType::Binary,
+            cardinality: PinCardinality::Broadcast,
+        };
+        let dst = InputPin {
+            name: "in".into(),
+            accepts_types: vec![PacketType::Binary],
+            cardinality: PinCardinality::One,
+        };
+        let conn = streamkit_api::Connection {
+            from_node: "a".into(),
+            from_pin: "out".into(),
+            to_node: "b".into(),
+            to_pin: "in".into(),
+            mode: streamkit_api::ConnectionMode::default(),
+        };
+        let pt_registry = streamkit_core::packet_meta::packet_type_registry();
+        let mut errors = Vec::new();
+        validate_pin_types(&src, &dst, &conn, "a->b", pt_registry, &mut errors);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn validate_pin_types_reports_incompatible_types() {
+        let src = OutputPin {
+            name: "out".into(),
+            produces_type: PacketType::Text,
+            cardinality: PinCardinality::Broadcast,
+        };
+        let dst = InputPin {
+            name: "in".into(),
+            accepts_types: vec![PacketType::Binary],
+            cardinality: PinCardinality::One,
+        };
+        let conn = streamkit_api::Connection {
+            from_node: "a".into(),
+            from_pin: "out".into(),
+            to_node: "b".into(),
+            to_pin: "in".into(),
+            mode: streamkit_api::ConnectionMode::default(),
+        };
+        let pt_registry = streamkit_core::packet_meta::packet_type_registry();
+        let mut errors = Vec::new();
+        validate_pin_types(&src, &dst, &conn, "a->b", pt_registry, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].message.contains("Type mismatch"));
+    }
+
+    #[test]
+    fn app_error_message_extracts_strings_for_each_variant() {
+        assert_eq!(app_error_message(AppError::BadRequest("bad".into())), "bad");
+        assert_eq!(
+            app_error_message(AppError::PipelineCompilation("compile-fail".into())),
+            "compile-fail"
+        );
+        assert_eq!(app_error_message(AppError::Forbidden("nope".into())), "nope");
+    }
+
+    #[test]
+    fn pipeline_mode_deserializes_lowercase() {
+        let dyn_mode: PipelineMode = serde_json::from_str("\"dynamic\"").unwrap();
+        assert!(matches!(dyn_mode, PipelineMode::Dynamic));
+        let one_mode: PipelineMode = serde_json::from_str("\"oneshot\"").unwrap();
+        assert!(matches!(one_mode, PipelineMode::Oneshot));
+        assert!(serde_json::from_str::<PipelineMode>("\"unknown\"").is_err());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod yaml_entrypoint_tests {
+    use super::*;
+
+    fn make_state() -> Arc<AppState> {
+        crate::server::create_app_state(crate::config::Config::default(), None)
+    }
+
+    #[tokio::test]
+    async fn validate_pipeline_yaml_reports_parse_error() {
+        let state = make_state();
+        let perms = crate::permissions::Permissions::admin();
+
+        let response = validate_pipeline_yaml(&state, &perms, "::: not yaml :::", None).unwrap();
+        assert!(!response.valid);
+        assert!(!response.errors.is_empty());
+        assert!(matches!(response.errors[0].kind, DiagnosticKind::Parse));
+        assert!(response.graph.is_none());
+    }
+
+    #[tokio::test]
+    async fn validate_pipeline_yaml_reports_empty_pipeline() {
+        let state = make_state();
+        let perms = crate::permissions::Permissions::admin();
+
+        let response = validate_pipeline_yaml(&state, &perms, "nodes: {}", None).unwrap();
+        assert!(!response.valid);
+        assert!(response.errors.iter().any(|e| e.message.contains("Pipeline is empty")));
+        assert!(response.graph.is_none());
+    }
+
+    #[tokio::test]
+    async fn validate_pipeline_yaml_returns_graph_for_valid_synthetic_pipeline() {
+        let state = make_state();
+        let perms = crate::permissions::Permissions::admin();
+
+        let yaml = "\
+nodes:
+  input:
+    kind: streamkit::http_input
+  output:
+    kind: streamkit::http_output
+    needs: input
+";
+        let response = validate_pipeline_yaml(&state, &perms, yaml, None).unwrap();
+        assert!(response.valid, "expected valid, errors={:?}", response.errors);
+        let graph = response.graph.expect("graph populated for valid pipeline");
+        assert_eq!(graph.nodes.len(), 2);
+        assert_eq!(graph.connections.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn validate_pipeline_yaml_rejects_synthetic_nodes_in_dynamic_mode() {
+        let state = make_state();
+        let perms = crate::permissions::Permissions::admin();
+
+        let yaml = "\
+nodes:
+  input:
+    kind: streamkit::http_input
+  output:
+    kind: streamkit::http_output
+    needs: input
+";
+        let response =
+            validate_pipeline_yaml(&state, &perms, yaml, Some(PipelineMode::Dynamic)).unwrap();
+        assert!(!response.valid);
+        assert!(response.errors.iter().any(|e| e.message.contains("only valid in oneshot")));
+    }
+
+    #[tokio::test]
+    async fn validate_pipeline_yaml_accepts_synthetic_nodes_in_oneshot_mode() {
+        let state = make_state();
+        let perms = crate::permissions::Permissions::admin();
+
+        let yaml = "\
+nodes:
+  input:
+    kind: streamkit::http_input
+  output:
+    kind: streamkit::http_output
+    needs: input
+";
+        let response =
+            validate_pipeline_yaml(&state, &perms, yaml, Some(PipelineMode::Oneshot)).unwrap();
+        assert!(response.valid, "expected valid: {:?}", response.errors);
+    }
+
+    #[tokio::test]
+    async fn validate_pipeline_yaml_surfaces_file_security_errors() {
+        let state = make_state();
+        let perms = crate::permissions::Permissions::admin();
+
+        let yaml = "\
+nodes:
+  reader:
+    kind: core::file_reader
+    params:
+      path: /etc/passwd
+  output:
+    kind: streamkit::http_output
+    needs: reader
+";
+        let response = validate_pipeline_yaml(&state, &perms, yaml, None).unwrap();
+        assert!(!response.valid);
+        assert!(
+            response.errors.iter().any(|e| matches!(e.kind, DiagnosticKind::Security)),
+            "expected at least one security diagnostic, got: {:?}",
+            response.errors
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod handler_tests {
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    fn router(state: Arc<AppState>) -> axum::Router {
+        axum::Router::new()
+            .route("/api/v1/validate", axum::routing::post(validate_pipeline_handler))
+            .with_state(state)
+    }
+
+    async fn read_json(body: Body) -> serde_json::Value {
+        let bytes = to_bytes(body, 1024 * 1024).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn validate_handler_returns_diagnostics_for_invalid_yaml() {
+        let state = crate::server::create_app_state(crate::config::Config::default(), None);
+        let app = router(state);
+
+        let body = serde_json::json!({ "yaml": "::: not yaml :::" }).to_string();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/validate")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = read_json(resp.into_body()).await;
+        assert_eq!(json["valid"], false);
+        assert!(json["errors"].as_array().unwrap().iter().any(|e| e["kind"] == "parse"));
+    }
+
+    #[tokio::test]
+    async fn validate_handler_returns_200_for_valid_pipeline() {
+        let state = crate::server::create_app_state(crate::config::Config::default(), None);
+        let app = router(state);
+
+        let yaml = "\
+nodes:
+  input:
+    kind: streamkit::http_input
+  output:
+    kind: streamkit::http_output
+    needs: input
+";
+        let body = serde_json::json!({ "yaml": yaml, "mode": "oneshot" }).to_string();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/validate")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = read_json(resp.into_body()).await;
+        assert_eq!(json["valid"], true, "got: {json}");
+    }
+
+    #[tokio::test]
+    async fn validate_handler_rejects_callers_without_create_sessions() {
+        // Use a trusted role header so the test is deterministic regardless of $SK_ROLE.
+        let mut config = crate::config::Config::default();
+        config.permissions.role_header = Some("x-test-role".to_string());
+        let mut limited = crate::permissions::Permissions::viewer();
+        limited.create_sessions = false;
+        config.permissions.roles.insert("limited".to_string(), limited);
+
+        let state = crate::server::create_app_state(config, None);
+        let app = router(state);
+
+        let body = serde_json::json!({ "yaml": "nodes: {}" }).to_string();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/validate")
+                    .header("content-type", "application/json")
+                    .header("x-test-role", "limited")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+}
