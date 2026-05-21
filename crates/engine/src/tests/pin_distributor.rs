@@ -2,6 +2,11 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+// Reason: tests use `.expect(...)` on infallible-in-test operations (serde
+// round-trips, channel sends to a guaranteed-alive consumer) where a panic
+// with context is the clearest failure mode.
+#![allow(clippy::expect_used)]
+
 use crate::dynamic_messages::{ConnectionId, PinConfigMsg};
 use crate::dynamic_pin_distributor::PinDistributorActor;
 use std::sync::{Arc, Mutex};
@@ -418,7 +423,6 @@ async fn shutdown_message_stops_actor() {
 }
 
 #[tokio::test]
-#[allow(clippy::expect_used)]
 async fn single_reliable_blocks_on_full_until_consumer_drains() {
     let (data_tx, data_rx) = mpsc::channel(8);
     let (config_tx, config_rx) = mpsc::channel(8);
@@ -474,7 +478,6 @@ async fn single_reliable_blocks_on_full_until_consumer_drains() {
 }
 
 #[tokio::test]
-#[allow(clippy::expect_used)]
 async fn single_best_effort_collapses_to_latest_when_consumer_idle() {
     let (data_tx, data_rx) = mpsc::channel(16);
     let (config_tx, config_rx) = mpsc::channel(8);
@@ -531,7 +534,6 @@ async fn single_best_effort_collapses_to_latest_when_consumer_idle() {
 }
 
 #[tokio::test]
-#[allow(clippy::expect_used)]
 async fn remove_unknown_connection_is_silent_noop() {
     let (data_tx, data_rx) = mpsc::channel(8);
     let (config_tx, config_rx) = mpsc::channel(8);
@@ -583,7 +585,6 @@ async fn remove_unknown_connection_is_silent_noop() {
 }
 
 #[tokio::test]
-#[allow(clippy::expect_used)]
 async fn packet_with_no_outputs_is_dropped_without_panic() {
     let (data_tx, data_rx) = mpsc::channel(8);
     let (config_tx, config_rx) = mpsc::channel(8);
@@ -605,7 +606,6 @@ async fn packet_with_no_outputs_is_dropped_without_panic() {
 }
 
 #[test]
-#[allow(clippy::expect_used)]
 fn json_byte_len_matches_serialized_length() {
     use crate::dynamic_pin_distributor::json_byte_len;
     use serde_json::json;

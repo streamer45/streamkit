@@ -7,11 +7,11 @@
 //! These exercise each subscribe / getter / shutdown path with an
 //! observable effect to keep function coverage above 80%.
 
-// Test code intentionally uses `expect`/`unwrap` and similar-name bindings
-// (`states` / `stats`) where the production API differs only by a letter.
-#![allow(clippy::expect_used)]
-#![allow(clippy::unwrap_used)]
-#![allow(clippy::similar_names)]
+// Reason: tests use `.expect(...)` to surface helpful panic messages on
+// setup failures; the production API distinguishes `get_node_states` vs.
+// `get_node_stats` by one letter, so `similar_names` triggers spuriously
+// when both are bound in the same test.
+#![allow(clippy::expect_used, clippy::similar_names)]
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;

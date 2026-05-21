@@ -2,6 +2,11 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+// Reason: tests use `.expect(...)` to surface helpful panic messages on
+// pipeline-build and runtime errors that the rest of the assertion would
+// otherwise have to recover from manually.
+#![allow(clippy::expect_used)]
+
 use super::super::*;
 use crate::constants::{
     DEFAULT_BATCH_SIZE, DEFAULT_ONESHOT_IO_CAPACITY, DEFAULT_ONESHOT_MEDIA_CAPACITY,
@@ -271,7 +276,6 @@ fn dummy_input(node_id: &str) -> OneshotInput<DummyStream> {
 }
 
 #[test]
-#[allow(clippy::expect_used)]
 fn validate_input_mode_http_with_no_inputs_errors() {
     let http_nodes = vec!["http_in".to_string()];
     let no_inputs: Vec<OneshotInput<DummyStream>> = Vec::new();
@@ -288,7 +292,6 @@ fn validate_input_mode_http_with_no_inputs_errors() {
 }
 
 #[test]
-#[allow(clippy::expect_used)]
 fn validate_input_mode_http_with_inputs_ok() {
     let http_nodes = vec!["http_in".to_string()];
     let inputs = vec![dummy_input("http_in")];
@@ -299,7 +302,6 @@ fn validate_input_mode_http_with_inputs_ok() {
 }
 
 #[test]
-#[allow(clippy::expect_used)]
 fn validate_input_mode_file_based_ok() {
     let source_ids = vec!["file_reader".to_string()];
     let no_inputs: Vec<OneshotInput<DummyStream>> = Vec::new();
@@ -310,7 +312,6 @@ fn validate_input_mode_file_based_ok() {
 }
 
 #[test]
-#[allow(clippy::expect_used)]
 fn validate_input_mode_file_based_with_streams_errors() {
     let source_ids = vec!["file_reader".to_string()];
     let inputs = vec![dummy_input("file_reader")];
@@ -326,7 +327,6 @@ fn validate_input_mode_file_based_with_streams_errors() {
 }
 
 #[test]
-#[allow(clippy::expect_used)]
 fn validate_input_mode_generator_ok() {
     let no_inputs: Vec<OneshotInput<DummyStream>> = Vec::new();
 
@@ -336,7 +336,6 @@ fn validate_input_mode_generator_ok() {
 }
 
 #[test]
-#[allow(clippy::expect_used)]
 fn validate_input_mode_generator_with_streams_errors() {
     let inputs = vec![dummy_input("generator")];
 
@@ -394,7 +393,6 @@ fn engine_with_registry(registry: streamkit_core::registry::NodeRegistry) -> Eng
 }
 
 #[tokio::test]
-#[allow(clippy::expect_used)]
 async fn run_oneshot_pipeline_generator_round_trip() {
     use streamkit_api::{Connection, EngineMode, Node, Pipeline};
     use streamkit_core::registry::NodeRegistry;
@@ -469,7 +467,6 @@ async fn run_oneshot_pipeline_generator_round_trip() {
 }
 
 #[tokio::test]
-#[allow(clippy::expect_used)]
 async fn run_oneshot_pipeline_propagates_validation_error() {
     use streamkit_api::{EngineMode, Node, Pipeline};
     use streamkit_core::registry::NodeRegistry;

@@ -10,8 +10,9 @@
 //!   `shutdown_node` path, not just RemoveNode-while-Creating).
 //! - Engine-level Shutdown drains live nodes, distributors, and state.
 
+// Reason: tests use `.expect(...)` to surface helpful panic messages on
+// setup failures (channel sends, control-plane queries). No production code.
 #![allow(clippy::expect_used)]
-#![allow(clippy::unwrap_used)]
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;

@@ -4,8 +4,9 @@
 
 //! Tests for `Engine` construction and run-mode entry points in `lib.rs`.
 
+// Reason: tests use `.expect(...)` to surface helpful panic messages on
+// setup failures (lock poisoning, registry lookups). No production behavior.
 #![allow(clippy::expect_used)]
-#![allow(clippy::unwrap_used)]
 
 use crate::oneshot::{OneshotEngineConfig, OneshotInput};
 use crate::Engine;
