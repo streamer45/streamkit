@@ -454,21 +454,17 @@ mod tests {
     fn load_plugins_from_directory_skips_non_wasm_files_and_invalid_wasm() {
         let runtime =
             PluginRuntime::new(PluginRuntimeConfig::default()).expect("runtime must initialize");
-        let dir = std::env::temp_dir()
-            .join(format!("streamkit-plugin-wasm-tests-mixed-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("temp dir creates");
+        let dir = tempfile::TempDir::new().expect("temp dir creates");
 
-        fs::write(dir.join("README.txt"), b"not a wasm file").expect("write txt");
-        fs::write(dir.join("bogus.wasm"), b"not really wasm bytes").expect("write bogus wasm");
+        fs::write(dir.path().join("README.txt"), b"not a wasm file").expect("write txt");
+        fs::write(dir.path().join("bogus.wasm"), b"not really wasm bytes")
+            .expect("write bogus wasm");
 
-        let plugins = runtime.load_plugins_from_directory(&dir);
+        let plugins = runtime.load_plugins_from_directory(dir.path());
         assert!(
             plugins.is_empty(),
             "non-wasm files and malformed .wasm files must be skipped, got {} plugins",
             plugins.len()
         );
-
-        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -31,5 +31,8 @@ futures = { workspace = true }
 [build-dependencies]
 wasmtime = { version = "44.0.1", features = ["component-model"] }
 
+[dev-dependencies]
+tempfile = "3.27"
+
 [lints]
 workspace = true

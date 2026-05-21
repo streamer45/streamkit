@@ -166,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn try_from_wit_binary_packet_drops_metadata() {
+    fn try_from_wit_binary_packet_produces_packet_with_no_metadata() {
         let core = Packet::try_from(wit_types::Packet::Binary(vec![0xDE, 0xAD, 0xBE, 0xEF]))
             .expect("binary converts");
         let Packet::Binary { data, content_type, metadata } = core else {
@@ -225,10 +225,10 @@ mod tests {
     #[test]
     fn into_wit_text_packet_renders_string() {
         let wit = wit_types::Packet::from(Packet::Text(Arc::from("hi there")));
-        match wit {
-            wit_types::Packet::Text(s) => assert_eq!(s, "hi there"),
-            other => panic!("expected wit_types::Packet::Text, got {other:?}"),
-        }
+        let wit_types::Packet::Text(s) = wit else {
+            panic!("expected wit_types::Packet::Text, got {wit:?}");
+        };
+        assert_eq!(s, "hi there");
     }
 
     #[test]
@@ -239,10 +239,10 @@ mod tests {
             metadata: None,
         };
         let wit = wit_types::Packet::from(core);
-        match wit {
-            wit_types::Packet::Binary(data) => assert_eq!(data, vec![1, 2, 3]),
-            other => panic!("expected wit_types::Packet::Binary, got {other:?}"),
-        }
+        let wit_types::Packet::Binary(data) = wit else {
+            panic!("expected wit_types::Packet::Binary, got {wit:?}");
+        };
+        assert_eq!(data, vec![1, 2, 3]);
     }
 
     #[test]
@@ -284,17 +284,17 @@ mod tests {
 
     #[test]
     fn into_wit_video_packet_flattens_to_binary_dropping_metadata() {
+        // NOTE: this conversion triggers a process-wide once-gated `tracing::warn!`
+        // (see conversions.rs `From<core::Packet> for wit_types::Packet`); any test
+        // that asserts the warning fires must order itself before this one.
         use streamkit_core::types::{PixelFormat, VideoFrame};
-        // Smallest valid Rgba8 frame: 1x1 = 4 bytes
         let frame = VideoFrame::new(1, 1, PixelFormat::Rgba8, vec![0x11, 0x22, 0x33, 0x44])
             .expect("valid frame");
         let wit = wit_types::Packet::from(Packet::Video(frame));
-        match wit {
-            wit_types::Packet::Binary(bytes) => {
-                assert_eq!(bytes, vec![0x11, 0x22, 0x33, 0x44]);
-            },
-            other => panic!("expected video to flatten to Binary, got {other:?}"),
-        }
+        let wit_types::Packet::Binary(bytes) = wit else {
+            panic!("expected video to flatten to Binary, got {wit:?}");
+        };
+        assert_eq!(bytes, vec![0x11, 0x22, 0x33, 0x44]);
     }
 
     #[test]
@@ -337,12 +337,20 @@ mod tests {
     }
 
     #[test]
-    fn packet_type_text_binary_any_map_directly() {
+    fn packet_type_text_maps_directly() {
         assert!(matches!(CorePacketType::from(&wit_types::PacketType::Text), CorePacketType::Text));
+    }
+
+    #[test]
+    fn packet_type_binary_maps_directly() {
         assert!(matches!(
             CorePacketType::from(&wit_types::PacketType::Binary),
             CorePacketType::Binary
         ));
+    }
+
+    #[test]
+    fn packet_type_any_maps_directly() {
         assert!(matches!(CorePacketType::from(&wit_types::PacketType::Any), CorePacketType::Any));
     }
 
@@ -350,9 +358,9 @@ mod tests {
     fn packet_type_custom_preserves_type_id() {
         let core =
             CorePacketType::from(&wit_types::PacketType::Custom("plugin::native::x@1".into()));
-        match core {
-            CorePacketType::Custom { type_id } => assert_eq!(type_id, "plugin::native::x@1"),
-            other => panic!("expected Custom variant, got {other:?}"),
-        }
+        let CorePacketType::Custom { type_id } = core else {
+            panic!("expected Custom variant, got {core:?}");
+        };
+        assert_eq!(type_id, "plugin::native::x@1");
     }
 }
