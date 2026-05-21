@@ -1171,6 +1171,8 @@ mod tests {
 }
 
 #[cfg(test)]
+// reason: dispatcher tests intentionally use unwrap/expect in setup helpers so
+// failed preconditions panic at the call site instead of obscuring assertions.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod dispatcher_tests {
     //! Dispatcher-level tests for [`handle_request_payload`].
@@ -1249,8 +1251,6 @@ mod dispatcher_tests {
         session
     }
 
-    // --- can_access_session --------------------------------------------------
-
     fn fake_session_with_creator(role: Option<&str>) -> Session {
         // Build the minimal Session value the helper inspects. We bypass
         // Session::create because the dispatcher's can_access_session helper
@@ -1303,8 +1303,6 @@ mod dispatcher_tests {
         perms.access_all_sessions = false;
         assert!(can_access_session(&session, "stranger", &perms));
     }
-
-    // --- validate_update_params_security ------------------------------------
 
     fn read_only_security() -> SecurityConfig {
         SecurityConfig {
@@ -1363,8 +1361,6 @@ mod dispatcher_tests {
         ));
     }
 
-    // --- ListSessions / GetPermissions --------------------------------------
-
     #[tokio::test]
     async fn list_sessions_denied_for_viewer_without_list_perm() {
         let state = make_app_state();
@@ -1422,8 +1418,6 @@ mod dispatcher_tests {
         }
     }
 
-    // --- ListNodes ----------------------------------------------------------
-
     #[tokio::test]
     async fn list_nodes_denied_when_perm_disabled() {
         let state = make_app_state();
@@ -1471,8 +1465,6 @@ mod dispatcher_tests {
             other => panic!("expected NodesListed, got {other:?}"),
         }
     }
-
-    // --- CreateSession / DestroySession -------------------------------------
 
     #[tokio::test]
     async fn create_session_denied_for_viewer() {
@@ -1637,8 +1629,6 @@ mod dispatcher_tests {
         }
         assert!(saw_destroyed, "expected SessionDestroyed broadcast event");
     }
-
-    // --- AddNode / RemoveNode ----------------------------------------------
 
     #[tokio::test]
     async fn add_node_denied_for_viewer() {
@@ -1811,8 +1801,6 @@ mod dispatcher_tests {
         assert!(!has_alpha);
     }
 
-    // --- Connect / Disconnect ----------------------------------------------
-
     fn connect_payload(session_id: &str) -> RequestPayload {
         RequestPayload::Connect {
             session_id: session_id.to_string(),
@@ -1892,8 +1880,6 @@ mod dispatcher_tests {
         };
         assert!(connections_empty, "expected connection removed");
     }
-
-    // --- TuneNode (sync) and TuneNodeAsync (fire-and-forget) ----------------
 
     fn tune_payload(session_id: &str, async_variant: bool) -> RequestPayload {
         let msg = NodeControlMessage::UpdateParams(json!({ "gain": 0.5 }));
@@ -1989,8 +1975,6 @@ mod dispatcher_tests {
         assert!(saw_params_changed, "expected NodeParamsChanged broadcast event");
     }
 
-    // --- GetPipeline --------------------------------------------------------
-
     #[tokio::test]
     async fn get_pipeline_denied_for_role_without_list_sessions() {
         let state = make_app_state();
@@ -2049,8 +2033,6 @@ mod dispatcher_tests {
             other => panic!("expected Pipeline, got {other:?}"),
         }
     }
-
-    // --- ValidateBatch / ApplyBatch -----------------------------------------
 
     #[tokio::test]
     async fn validate_batch_denied_for_viewer() {

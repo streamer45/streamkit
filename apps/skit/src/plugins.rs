@@ -1365,8 +1365,6 @@ mod tests {
         None
     }
 
-    // --- list_plugins / is_plugin_loaded ------------------------------------
-
     #[test]
     fn list_plugins_returns_empty_on_a_fresh_manager() {
         let tmp = TempDir::new().unwrap();
@@ -1385,8 +1383,6 @@ mod tests {
         assert!(tmp.path().join("wasm").is_dir());
         assert!(tmp.path().join("native").is_dir());
     }
-
-    // --- unload_plugin / load_from_path error path --------------------------
 
     #[test]
     fn unload_plugin_returns_not_loaded_error_for_unknown_kind() {
@@ -1428,8 +1424,6 @@ mod tests {
             "unexpected WASM error: {err}"
         );
     }
-
-    // --- load_from_bytes / load_from_temp_file: validation paths ------------
 
     #[test]
     fn load_from_bytes_rejects_empty_file_name() {
@@ -1505,16 +1499,12 @@ mod tests {
         );
     }
 
-    // --- collect_plugin_asset_specs -----------------------------------------
-
     #[test]
     fn collect_plugin_asset_specs_returns_empty_with_no_loaded_plugins() {
         let tmp = TempDir::new().unwrap();
         let mgr = make_manager(&tmp);
         assert!(mgr.collect_plugin_asset_specs().is_empty());
     }
-
-    // --- load_existing / load_all_native_plugins ----------------------------
 
     #[test]
     fn load_existing_returns_empty_when_no_plugins_present() {
@@ -1538,8 +1528,6 @@ mod tests {
         assert!(summaries.is_empty(), "bare .so must not register, got {summaries:?}");
         assert!(mgr.list_plugins().is_empty());
     }
-
-    // --- load_active_plugin_record: validation paths ------------------------
 
     fn write_active_record(plugin_dir: &Path, record_file: &str, record_json: &str) -> PathBuf {
         let active = plugin_dir.join("active");
@@ -1595,8 +1583,6 @@ mod tests {
         let summaries = mgr.load_existing().expect("malformed record is logged, not propagated");
         assert!(summaries.is_empty());
     }
-
-    // --- load_native_plugin: real fixture happy path + dedup ----------------
 
     #[test]
     fn load_native_plugin_happy_path_registers_then_dedups_then_unloads() {

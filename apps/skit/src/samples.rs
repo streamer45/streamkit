@@ -911,6 +911,8 @@ nodes:
 }
 
 #[cfg(test)]
+// reason: handler tests intentionally use unwrap/expect so setup failures and
+// response decoding failures produce direct assertion panics.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod handler_tests {
     use super::*;
@@ -932,7 +934,7 @@ mod handler_tests {
         crate::server::create_app_state(config, None)
     }
 
-    /// Build a fixture samples tree.  Returns `(temp_dir, populated_paths)`.
+    /// Build a fixture samples tree.
     fn make_samples_tree() -> TempDir {
         let tmp = TempDir::new().unwrap();
         let base = tmp.path();
