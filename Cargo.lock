@@ -6363,6 +6363,7 @@ dependencies = [
  "serde-saphyr",
  "serde_json",
  "streamkit-core",
+ "tempfile",
  "tokio",
  "tracing",
  "wasmtime",

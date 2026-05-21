@@ -349,3 +349,122 @@ pub fn register_plugins(registry: &mut NodeRegistry, plugins: Vec<LoadedPlugin>)
         );
     }
 }
+
+#[cfg(test)]
+// Tests rely on expect/unwrap to fail fast with readable assertion context.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn plugin_runtime_config_default_values() {
+        let cfg = PluginRuntimeConfig::default();
+        assert_eq!(cfg.max_memory_bytes, 64 * 1024 * 1024);
+        assert!(cfg.enable_simd);
+        assert!(!cfg.enable_threads);
+    }
+
+    #[test]
+    fn plugin_runtime_new_builds_with_default_config() {
+        // Smoke test: the wasmtime engine + linker should set up cleanly with default config.
+        let _runtime = PluginRuntime::new(PluginRuntimeConfig::default())
+            .expect("runtime must initialize with default config");
+    }
+
+    #[test]
+    fn plugin_runtime_new_honors_custom_memory_limit() {
+        let cfg = PluginRuntimeConfig {
+            max_memory_bytes: 16 * 1024 * 1024,
+            enable_simd: true,
+            enable_threads: false,
+        };
+        let _runtime =
+            PluginRuntime::new(cfg).expect("runtime must initialize with custom memory limit");
+    }
+
+    #[test]
+    fn plugin_runtime_new_rejects_disabled_simd_due_to_relaxed_simd_default() {
+        // BUG (tracked in #469): PluginRuntimeConfig exposes `enable_simd: false`, but
+        // wasmtime enables the relaxed-simd proposal by default, which requires the base
+        // SIMD proposal. The resulting config error ("cannot disable the simd proposal but
+        // enable the relaxed simd proposal") means every `enable_simd: false` config —
+        // including the threads combination — fails initialization. Pin current (broken)
+        // behavior until fixed.
+        for enable_threads in [false, true] {
+            let cfg = PluginRuntimeConfig {
+                max_memory_bytes: 16 * 1024 * 1024,
+                enable_simd: false,
+                enable_threads,
+            };
+            assert!(
+                PluginRuntime::new(cfg).is_err(),
+                "expected init to fail when enable_simd=false (enable_threads={enable_threads})"
+            );
+        }
+    }
+
+    #[test]
+    fn namespaced_kind_adds_prefix_to_simple_name() {
+        assert_eq!(namespaced_kind("gain").as_deref(), Ok("plugin::wasm::gain"));
+        assert_eq!(namespaced_kind("reverb").as_deref(), Ok("plugin::wasm::reverb"));
+    }
+
+    #[test]
+    fn namespaced_kind_is_idempotent_for_already_prefixed_kinds() {
+        let already = format!("{PLUGIN_KIND_PREFIX}gain");
+        assert_eq!(namespaced_kind(&already), Ok(already.clone()));
+    }
+
+    #[test]
+    fn namespaced_kind_rejects_kinds_containing_namespace_separator() {
+        let err = namespaced_kind("foo::bar").expect_err("must reject `::` in kind");
+        assert!(err.contains("reserved for namespace prefixes"));
+    }
+
+    #[test]
+    fn namespaced_kind_rejects_reserved_core_prefix() {
+        let err = namespaced_kind("core::audio").expect_err("must reject `core::` kinds");
+        // BUG (tracked in #470): the `core::` check is unreachable because any string
+        // containing `::` is already rejected by the namespace-separator guard. Pin the
+        // current behavior — the error message references the namespace-separator rule,
+        // not the reserved-prefix rule — so the test fails if the contract is revisited.
+        assert!(
+            err.contains("reserved for namespace prefixes"),
+            "expected namespace-separator error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn plugin_kind_prefix_constant_is_stable() {
+        assert_eq!(PLUGIN_KIND_PREFIX, "plugin::wasm::");
+    }
+
+    #[test]
+    fn load_plugins_from_directory_returns_empty_for_missing_dir() {
+        let runtime =
+            PluginRuntime::new(PluginRuntimeConfig::default()).expect("runtime must initialize");
+        let missing = std::env::temp_dir().join("streamkit-plugin-wasm-tests-missing-dir");
+        let _ = fs::remove_dir_all(&missing);
+        let plugins = runtime.load_plugins_from_directory(&missing);
+        assert!(plugins.is_empty());
+    }
+
+    #[test]
+    fn load_plugins_from_directory_skips_non_wasm_files_and_invalid_wasm() {
+        let runtime =
+            PluginRuntime::new(PluginRuntimeConfig::default()).expect("runtime must initialize");
+        let dir = tempfile::TempDir::new().expect("temp dir creates");
+
+        fs::write(dir.path().join("README.txt"), b"not a wasm file").expect("write txt");
+        fs::write(dir.path().join("bogus.wasm"), b"not really wasm bytes")
+            .expect("write bogus wasm");
+
+        let plugins = runtime.load_plugins_from_directory(dir.path());
+        assert!(
+            plugins.is_empty(),
+            "non-wasm files and malformed .wasm files must be skipped, got {} plugins",
+            plugins.len()
+        );
+    }
+}
