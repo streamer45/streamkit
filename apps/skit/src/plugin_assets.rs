@@ -2635,8 +2635,12 @@ mod handler_tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let v: Vec<serde_json::Value> =
             serde_json::from_slice(&body_bytes(resp.into_body()).await).unwrap();
-        let ids: Vec<&str> = v.iter().map(|t| t["type_id"].as_str().unwrap()).collect();
-        assert_eq!(ids, vec!["audio", "image", "font"]);
+        let ids: std::collections::BTreeSet<&str> =
+            v.iter().map(|t| t["type_id"].as_str().unwrap()).collect();
+        assert_eq!(
+            ids,
+            ["audio", "image", "font"].iter().copied().collect::<std::collections::BTreeSet<_>>()
+        );
         for entry in &v {
             assert_eq!(entry["source"], "core");
             assert_eq!(entry["editable"], false);

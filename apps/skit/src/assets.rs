@@ -1614,12 +1614,15 @@ mod tests {
     }
 
     /// 4-byte TTF magic + zero padding to clear the 4-byte minimum length check.
+    /// Exercises the header sniff in `process_font_entry`, not full font parsing.
     fn fake_ttf() -> Vec<u8> {
         let mut v = vec![0x00, 0x01, 0x00, 0x00];
         v.extend_from_slice(&[0u8; 16]);
         v
     }
 
+    /// 4-byte OTF magic + zero padding to clear the 4-byte minimum length check.
+    /// Exercises the header sniff in `process_font_entry`, not full font parsing.
     fn fake_otf() -> Vec<u8> {
         let mut v = b"OTTO".to_vec();
         v.extend_from_slice(&[0u8; 16]);
@@ -1642,10 +1645,24 @@ mod tests {
     }
 
     #[test]
-    fn validate_audio_rejects_empty_and_oversized() {
+    fn validate_audio_rejects_empty() {
         assert!(matches!(validate_audio_filename(""), Err(AssetsError::InvalidFilename(_))));
-        let too_long = format!("{}.opus", "a".repeat(MAX_FILENAME_LENGTH));
-        assert!(matches!(validate_audio_filename(&too_long), Err(AssetsError::InvalidFilename(_))));
+    }
+
+    #[test]
+    fn validate_audio_filename_length_boundary() {
+        let suffix = ".opus";
+        let at_limit = format!("{}{}", "a".repeat(MAX_FILENAME_LENGTH - suffix.len()), suffix);
+        assert_eq!(at_limit.len(), MAX_FILENAME_LENGTH);
+        assert_eq!(validate_audio_filename(&at_limit).unwrap(), "opus");
+
+        let over_limit =
+            format!("{}{}", "a".repeat(MAX_FILENAME_LENGTH - suffix.len() + 1), suffix);
+        assert_eq!(over_limit.len(), MAX_FILENAME_LENGTH + 1);
+        assert!(matches!(
+            validate_audio_filename(&over_limit),
+            Err(AssetsError::InvalidFilename(_))
+        ));
     }
 
     #[test]
@@ -2032,7 +2049,7 @@ mod tests {
 
     #[tokio::test]
     async fn assets_error_maps_to_expected_status_codes() {
-        let cases: [(AssetsError, StatusCode); 7] = [
+        let cases: [(AssetsError, StatusCode); 8] = [
             (AssetsError::IoError("x".into()), StatusCode::INTERNAL_SERVER_ERROR),
             (AssetsError::InvalidFilename("x".into()), StatusCode::BAD_REQUEST),
             (AssetsError::InvalidFormat("x".into()), StatusCode::BAD_REQUEST),
@@ -2040,13 +2057,12 @@ mod tests {
             (AssetsError::FileTooLarge(123), StatusCode::PAYLOAD_TOO_LARGE),
             (AssetsError::FileExists("a".into()), StatusCode::CONFLICT),
             (AssetsError::NotFound("a".into()), StatusCode::NOT_FOUND),
+            (AssetsError::Forbidden, StatusCode::FORBIDDEN),
         ];
         for (err, expected) in cases {
             let resp = err.into_response();
             assert_eq!(resp.status(), expected);
         }
-        let resp = AssetsError::Forbidden.into_response();
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
     #[test]
