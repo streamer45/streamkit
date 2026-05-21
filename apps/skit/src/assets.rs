@@ -1553,10 +1553,7 @@ mod tests {
         Request::builder()
             .method(method)
             .uri(uri)
-            .header(
-                header::CONTENT_TYPE,
-                format!("multipart/form-data; boundary={boundary}"),
-            )
+            .header(header::CONTENT_TYPE, format!("multipart/form-data; boundary={boundary}"))
             .body(Body::from(body))
             .unwrap()
     }
@@ -1632,8 +1629,7 @@ mod tests {
     fn validate_audio_accepts_each_allowed_extension() {
         for ext in ALLOWED_AUDIO_FORMATS {
             let name = format!("clip.{ext}");
-            let parsed =
-                validate_audio_filename(&name).unwrap_or_else(|e| panic!("{ext}: {e}"));
+            let parsed = validate_audio_filename(&name).unwrap_or_else(|e| panic!("{ext}: {e}"));
             assert_eq!(parsed, *ext);
         }
     }
@@ -1646,25 +1642,16 @@ mod tests {
 
     #[test]
     fn validate_audio_rejects_empty_and_oversized() {
-        assert!(matches!(
-            validate_audio_filename(""),
-            Err(AssetsError::InvalidFilename(_))
-        ));
+        assert!(matches!(validate_audio_filename(""), Err(AssetsError::InvalidFilename(_))));
         let too_long = format!("{}.opus", "a".repeat(MAX_FILENAME_LENGTH));
-        assert!(matches!(
-            validate_audio_filename(&too_long),
-            Err(AssetsError::InvalidFilename(_))
-        ));
+        assert!(matches!(validate_audio_filename(&too_long), Err(AssetsError::InvalidFilename(_))));
     }
 
     #[test]
     fn validate_audio_rejects_path_traversal_and_separators() {
         for bad in ["../etc/passwd", "a/b.opus", "a\\b.opus", "..opus"] {
             assert!(
-                matches!(
-                    validate_audio_filename(bad),
-                    Err(AssetsError::InvalidFilename(_))
-                ),
+                matches!(validate_audio_filename(bad), Err(AssetsError::InvalidFilename(_))),
                 "expected reject for {bad}"
             );
         }
@@ -1672,10 +1659,7 @@ mod tests {
 
     #[test]
     fn validate_audio_rejects_disallowed_extension() {
-        assert!(matches!(
-            validate_audio_filename("clip.exe"),
-            Err(AssetsError::InvalidFormat(_))
-        ));
+        assert!(matches!(validate_audio_filename("clip.exe"), Err(AssetsError::InvalidFormat(_))));
     }
 
     // ── Pure helpers: validate_image_filename ──────────────────────────────
@@ -1684,8 +1668,7 @@ mod tests {
     fn validate_image_accepts_each_allowed_extension() {
         for ext in ALLOWED_IMAGE_FORMATS {
             let name = format!("pic.{ext}");
-            let parsed =
-                validate_image_filename(&name).unwrap_or_else(|e| panic!("{ext}: {e}"));
+            let parsed = validate_image_filename(&name).unwrap_or_else(|e| panic!("{ext}: {e}"));
             assert_eq!(parsed, *ext);
         }
     }
@@ -1694,28 +1677,19 @@ mod tests {
     fn validate_image_rejects_extensionless() {
         // "noext" has no '.' at all — must be rejected even though rsplit
         // would otherwise return the whole string.
-        assert!(matches!(
-            validate_image_filename("noext"),
-            Err(AssetsError::InvalidFilename(_))
-        ));
+        assert!(matches!(validate_image_filename("noext"), Err(AssetsError::InvalidFilename(_))));
     }
 
     #[test]
     fn validate_image_rejects_path_traversal() {
         for bad in ["../a.png", "sub/a.png", "sub\\a.png"] {
-            assert!(matches!(
-                validate_image_filename(bad),
-                Err(AssetsError::InvalidFilename(_))
-            ));
+            assert!(matches!(validate_image_filename(bad), Err(AssetsError::InvalidFilename(_))));
         }
     }
 
     #[test]
     fn validate_image_rejects_wrong_extension() {
-        assert!(matches!(
-            validate_image_filename("clip.opus"),
-            Err(AssetsError::InvalidFormat(_))
-        ));
+        assert!(matches!(validate_image_filename("clip.opus"), Err(AssetsError::InvalidFormat(_))));
     }
 
     // ── Pure helpers: validate_font_filename ───────────────────────────────
@@ -1731,10 +1705,7 @@ mod tests {
 
     #[test]
     fn validate_font_rejects_no_extension_and_traversal() {
-        assert!(matches!(
-            validate_font_filename("noext"),
-            Err(AssetsError::InvalidFilename(_))
-        ));
+        assert!(matches!(validate_font_filename("noext"), Err(AssetsError::InvalidFilename(_))));
         assert!(matches!(
             validate_font_filename("../font.ttf"),
             Err(AssetsError::InvalidFilename(_))
@@ -1743,10 +1714,7 @@ mod tests {
 
     #[test]
     fn validate_font_rejects_wrong_extension() {
-        assert!(matches!(
-            validate_font_filename("face.exe"),
-            Err(AssetsError::InvalidFormat(_))
-        ));
+        assert!(matches!(validate_font_filename("face.exe"), Err(AssetsError::InvalidFormat(_))));
     }
 
     // ── Pure helpers: sanitize_filename ────────────────────────────────────
@@ -1883,8 +1851,7 @@ mod tests {
         let lic_text = "SPDX-License-Identifier: CC0-1.0\nSPDX-FileCopyrightText: © 2025 A\n";
         // REUSE-IgnoreEnd
         tokio::fs::write(tmp.path().join("clip.opus.license"), lic_text).await.unwrap();
-        let asset =
-            process_audio_entry(p, false, &RolePermissions::admin()).await.unwrap();
+        let asset = process_audio_entry(p, false, &RolePermissions::admin()).await.unwrap();
         assert!(asset.license.as_deref().unwrap().contains("CC0-1.0"));
     }
 
@@ -1947,8 +1914,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let p = tmp.path().join("My-Face.ttf");
         tokio::fs::write(&p, fake_ttf()).await.unwrap();
-        let asset =
-            process_font_entry(p, true, &RolePermissions::admin()).await.unwrap();
+        let asset = process_font_entry(p, true, &RolePermissions::admin()).await.unwrap();
         assert_eq!(asset.id, "My-Face.ttf");
         assert_eq!(asset.format, "ttf");
         assert_eq!(asset.name, "My Face");
@@ -1988,8 +1954,7 @@ mod tests {
         for name in ["a.opus", "b.flac", "junk.txt"] {
             tokio::fs::write(dir.join(name), b"x").await.unwrap();
         }
-        let assets =
-            scan_audio_directory(&dir, false, &RolePermissions::admin()).await.unwrap();
+        let assets = scan_audio_directory(&dir, false, &RolePermissions::admin()).await.unwrap();
         // The handler-level list_assets sorts; scan_*_directory itself
         // does not. Verify both audio files surfaced and the .txt was dropped.
         let mut ids: Vec<_> = assets.iter().map(|a| a.id.clone()).collect();
@@ -2003,8 +1968,7 @@ mod tests {
         let dir = tmp.path().to_path_buf();
         tokio::fs::write(dir.join("pic.png"), tiny_png()).await.unwrap();
         tokio::fs::write(dir.join("doc.txt"), b"text").await.unwrap();
-        let assets =
-            scan_image_directory(&dir, false, &RolePermissions::admin()).await.unwrap();
+        let assets = scan_image_directory(&dir, false, &RolePermissions::admin()).await.unwrap();
         assert_eq!(assets.len(), 1);
         assert_eq!(assets[0].format, "png");
     }
@@ -2015,8 +1979,7 @@ mod tests {
         let dir = tmp.path().to_path_buf();
         tokio::fs::write(dir.join("face.ttf"), fake_ttf()).await.unwrap();
         tokio::fs::write(dir.join("notes.txt"), b"x").await.unwrap();
-        let assets =
-            scan_font_directory(&dir, false, &RolePermissions::admin()).await.unwrap();
+        let assets = scan_font_directory(&dir, false, &RolePermissions::admin()).await.unwrap();
         assert_eq!(assets.len(), 1);
         assert_eq!(assets[0].format, "ttf");
     }
@@ -2029,9 +1992,7 @@ mod tests {
         let file = tmp.path().join("clip.opus");
         tokio::fs::write(&file, b"x").await.unwrap();
         create_license_sidecar(&file, "opus").await;
-        let written = tokio::fs::read_to_string(file.with_extension("opus.license"))
-            .await
-            .unwrap();
+        let written = tokio::fs::read_to_string(file.with_extension("opus.license")).await.unwrap();
         assert!(written.contains("SPDX-License-Identifier: CC0-1.0"));
         assert!(written.contains("SPDX-FileCopyrightText:"));
     }
@@ -2177,9 +2138,7 @@ mod tests {
             serde_json::from_slice(&body_bytes(resp.into_body()).await).unwrap();
         assert_eq!(asset.id, "fresh.opus");
         assert!(tokio::fs::try_exists("samples/audio/user/fresh.opus").await.unwrap());
-        assert!(
-            tokio::fs::try_exists("samples/audio/user/fresh.opus.license").await.unwrap()
-        );
+        assert!(tokio::fs::try_exists("samples/audio/user/fresh.opus.license").await.unwrap());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2439,13 +2398,8 @@ mod tests {
                 .unwrap();
             let resp = app.oneshot(req).await.unwrap();
             assert_eq!(resp.status(), StatusCode::OK, "{name}");
-            let ct = resp
-                .headers()
-                .get(header::CONTENT_TYPE)
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .to_string();
+            let ct =
+                resp.headers().get(header::CONTENT_TYPE).unwrap().to_str().unwrap().to_string();
             assert_eq!(ct, expected, "{name}");
         }
     }
@@ -2553,8 +2507,7 @@ mod tests {
         let req = multipart_request(Method::POST, "/api/v1/assets/fonts", boundary, body);
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let asset: FontAsset =
-            serde_json::from_slice(&body_bytes(resp.into_body()).await).unwrap();
+        let asset: FontAsset = serde_json::from_slice(&body_bytes(resp.into_body()).await).unwrap();
         assert_eq!(asset.id, "myface.ttf");
         assert_eq!(asset.format, "ttf");
         assert!(tokio::fs::try_exists("samples/fonts/user/myface.ttf").await.unwrap());
@@ -2579,12 +2532,7 @@ mod tests {
         let state = make_state();
         let app = font_assets_router().with_state(state);
         let boundary = "fb";
-        let body = build_multipart_body(
-            boundary,
-            "file",
-            "fake.ttf",
-            b"NOTAFONTHEADERAAAAAAAAAA",
-        );
+        let body = build_multipart_body(boundary, "file", "fake.ttf", b"NOTAFONTHEADERAAAAAAAAAA");
         let req = multipart_request(Method::POST, "/api/v1/assets/fonts", boundary, body);
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -2667,10 +2615,8 @@ mod tests {
     async fn serve_font_returns_correct_content_types() {
         let _g = enter_tempdir();
         tokio::fs::create_dir_all("samples/fonts/user").await.unwrap();
-        let cases: [(&str, Vec<u8>, &str); 2] = [
-            ("face.ttf", fake_ttf(), "font/ttf"),
-            ("face.otf", fake_otf(), "font/otf"),
-        ];
+        let cases: [(&str, Vec<u8>, &str); 2] =
+            [("face.ttf", fake_ttf(), "font/ttf"), ("face.otf", fake_otf(), "font/otf")];
         for (name, bytes, expected) in cases {
             tokio::fs::write(format!("samples/fonts/user/{name}"), &bytes).await.unwrap();
             let state = make_state();
