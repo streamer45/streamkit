@@ -1501,7 +1501,7 @@ mod tests {
     /// `#[tokio::test(flavor = "current_thread")]`) because the lock guard
     /// is `!Send`.
     fn enter_tempdir() -> CwdGuard {
-        let lock = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let lock = CWD_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let tmp = TempDir::new().expect("create tempdir");
         let original = std::env::current_dir().expect("read cwd");
         std::env::set_current_dir(tmp.path()).expect("chdir into tempdir");
