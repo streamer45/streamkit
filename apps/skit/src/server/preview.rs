@@ -1463,3 +1463,701 @@ mod tests {
         assert!(!taps[0].is_video);
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Panics ARE the assertions
+mod inject_teardown_tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::session::{PreviewState, Session, TapPoint};
+    use crate::state::BroadcastEvent;
+    use std::time::SystemTime;
+    use streamkit_engine::Engine;
+    use tokio::sync::broadcast;
+
+    async fn fresh_session() -> (Session, broadcast::Receiver<BroadcastEvent>) {
+        let engine = Engine::without_plugins();
+        let config = Config::default();
+        let (tx, rx) = broadcast::channel(16);
+        let session = Session::create(
+            &engine,
+            &config,
+            Some("preview-inject-test".to_string()),
+            tx,
+            Some("test-role".to_string()),
+        )
+        .await
+        .expect("Session::create on a fresh engine should succeed");
+        (session, rx)
+    }
+
+    fn tap(node: &str, pin: &str, is_encoded: bool, is_audio: bool, is_video: bool) -> TapPoint {
+        TapPoint { node: node.to_string(), pin: pin.to_string(), is_encoded, is_audio, is_video }
+    }
+
+    async fn seed_pipeline_node(session: &Session, node_id: &str, kind: &str) {
+        let mut pipeline = session.pipeline.lock().await;
+        pipeline.nodes.insert(
+            node_id.to_string(),
+            streamkit_api::Node { kind: kind.to_string(), params: None, state: None },
+        );
+    }
+
+    fn empty_pipeline() -> streamkit_api::Pipeline {
+        streamkit_api::Pipeline::default()
+    }
+
+    #[tokio::test]
+    async fn inject_returns_err_when_tap_node_missing_in_pipeline() {
+        let (session, _rx) = fresh_session().await;
+        let taps = vec![tap("ghost", "out", true, false, true)];
+
+        let err = inject_preview_subgraph(&session, "pv1", &taps, "/gw/path", &empty_pipeline())
+            .await
+            .unwrap_err();
+        assert!(err.contains("Tap node 'ghost' not found"), "unexpected error: {err}");
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn inject_returns_err_when_tap_points_have_no_media() {
+        let (session, _rx) = fresh_session().await;
+        let mut pipeline = empty_pipeline();
+        pipeline.nodes.insert(
+            "src".to_string(),
+            streamkit_api::Node { kind: "custom".to_string(), params: None, state: None },
+        );
+        let taps = vec![tap("src", "out", false, false, false)];
+
+        let err = inject_preview_subgraph(&session, "pv1", &taps, "/gw/path", &pipeline)
+            .await
+            .unwrap_err();
+        assert!(err.contains("do not produce audio or video"), "unexpected error: {err}");
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn inject_encoded_audio_only_creates_peer_and_single_connection() {
+        let (session, _rx) = fresh_session().await;
+        let mut pipeline = empty_pipeline();
+        pipeline.nodes.insert(
+            "aenc".to_string(),
+            streamkit_api::Node {
+                kind: "audio::opus::encoder".to_string(),
+                params: None,
+                state: None,
+            },
+        );
+        let taps = vec![tap("aenc", "out", true, true, false)];
+
+        let (nodes, conns, has_audio, has_video) =
+            inject_preview_subgraph(&session, "pv1", &taps, "/gw/pv1", &pipeline)
+                .await
+                .expect("inject should succeed for encoded audio");
+
+        assert!(has_audio);
+        assert!(!has_video);
+
+        assert_eq!(nodes.len(), 1, "only the moq peer should be injected for encoded audio");
+        assert_eq!(nodes[0].0, "_preview_pv1_peer");
+        assert_eq!(nodes[0].1, "transport::moq::peer");
+
+        assert_eq!(conns.len(), 1);
+        let (from_node, from_pin, to_node, to_pin, mode) = &conns[0];
+        assert_eq!(from_node, "aenc");
+        assert_eq!(from_pin, "out");
+        assert_eq!(to_node, "_preview_pv1_peer");
+        assert_eq!(to_pin, "in");
+        assert!(matches!(*mode, streamkit_core::control::ConnectionMode::BestEffort));
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn inject_encoded_audio_and_video_routes_video_to_in_1() {
+        let (session, _rx) = fresh_session().await;
+        let mut pipeline = empty_pipeline();
+        pipeline.nodes.insert(
+            "aenc".to_string(),
+            streamkit_api::Node {
+                kind: "audio::opus::encoder".to_string(),
+                params: None,
+                state: None,
+            },
+        );
+        pipeline.nodes.insert(
+            "venc".to_string(),
+            streamkit_api::Node {
+                kind: "video::vp9::encoder".to_string(),
+                params: None,
+                state: None,
+            },
+        );
+        let taps =
+            vec![tap("aenc", "out", true, true, false), tap("venc", "out", true, false, true)];
+
+        let (nodes, conns, has_audio, has_video) =
+            inject_preview_subgraph(&session, "pv1", &taps, "/gw/pv1", &pipeline)
+                .await
+                .expect("inject should succeed");
+
+        assert!(has_audio && has_video);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].1, "transport::moq::peer");
+
+        let audio_conn =
+            conns.iter().find(|(f, _, _, _, _)| f == "aenc").expect("audio connection present");
+        assert_eq!(audio_conn.3, "in");
+
+        let video_conn =
+            conns.iter().find(|(f, _, _, _, _)| f == "venc").expect("video connection present");
+        assert_eq!(video_conn.3, "in_1");
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn inject_raw_video_creates_pixconv_and_vp9_encoder() {
+        let (session, _rx) = fresh_session().await;
+        let mut pipeline = empty_pipeline();
+        pipeline.nodes.insert(
+            "src".to_string(),
+            streamkit_api::Node { kind: "video::source".to_string(), params: None, state: None },
+        );
+        let taps = vec![tap("src", "out", false, false, true)];
+
+        let (nodes, conns, has_audio, has_video) =
+            inject_preview_subgraph(&session, "pv2", &taps, "/gw/pv2", &pipeline)
+                .await
+                .expect("inject should succeed for raw video");
+
+        assert!(!has_audio && has_video);
+        assert_eq!(nodes.len(), 3);
+
+        let kinds: Vec<&str> = nodes.iter().map(|(_, k)| k.as_str()).collect();
+        assert!(kinds.contains(&"video::pixel_convert"));
+        assert!(kinds.contains(&"vp9::encoder"));
+        assert!(kinds.contains(&"transport::moq::peer"));
+
+        let ids: Vec<&str> = nodes.iter().map(|(i, _)| i.as_str()).collect();
+        assert!(ids.contains(&"_preview_pv2_pixconv"));
+        assert!(ids.contains(&"_preview_pv2_vp9enc"));
+        assert!(ids.contains(&"_preview_pv2_peer"));
+
+        // tap → pixconv (best-effort) → vp9enc (reliable) → peer (reliable)
+        assert_eq!(conns.len(), 3);
+
+        let tap_to_pixconv = conns
+            .iter()
+            .find(|(f, _, t, _, _)| f == "src" && t == "_preview_pv2_pixconv")
+            .expect("tap→pixconv connection present");
+        assert!(matches!(tap_to_pixconv.4, streamkit_core::control::ConnectionMode::BestEffort));
+
+        let pixconv_to_vp9 = conns
+            .iter()
+            .find(|(f, _, t, _, _)| f == "_preview_pv2_pixconv" && t == "_preview_pv2_vp9enc")
+            .expect("pixconv→vp9 connection present");
+        assert!(matches!(pixconv_to_vp9.4, streamkit_core::control::ConnectionMode::Reliable));
+
+        let vp9_to_peer = conns
+            .iter()
+            .find(|(f, _, t, _, _)| f == "_preview_pv2_vp9enc" && t == "_preview_pv2_peer")
+            .expect("vp9→peer connection present");
+        assert!(matches!(vp9_to_peer.4, streamkit_core::control::ConnectionMode::Reliable));
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn inject_raw_audio_creates_opus_encoder_chain() {
+        let (session, _rx) = fresh_session().await;
+        let mut pipeline = empty_pipeline();
+        pipeline.nodes.insert(
+            "src".to_string(),
+            streamkit_api::Node { kind: "audio::source".to_string(), params: None, state: None },
+        );
+        let taps = vec![tap("src", "out", false, true, false)];
+
+        let (nodes, conns, has_audio, has_video) =
+            inject_preview_subgraph(&session, "pv3", &taps, "/gw/pv3", &pipeline)
+                .await
+                .expect("inject should succeed for raw audio");
+
+        assert!(has_audio && !has_video);
+        assert_eq!(nodes.len(), 2);
+
+        let kinds: Vec<&str> = nodes.iter().map(|(_, k)| k.as_str()).collect();
+        assert!(kinds.contains(&"audio::opus::encoder"));
+        assert!(kinds.contains(&"transport::moq::peer"));
+
+        assert_eq!(conns.len(), 2);
+        let tap_to_opus = conns
+            .iter()
+            .find(|(f, _, t, _, _)| f == "src" && t == "_preview_pv3_opusenc")
+            .expect("tap→opusenc connection present");
+        assert!(matches!(tap_to_opus.4, streamkit_core::control::ConnectionMode::BestEffort));
+
+        let opus_to_peer = conns
+            .iter()
+            .find(|(f, _, t, _, _)| f == "_preview_pv3_opusenc" && t == "_preview_pv3_peer")
+            .expect("opusenc→peer connection present");
+        assert!(matches!(opus_to_peer.4, streamkit_core::control::ConnectionMode::Reliable));
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn teardown_preview_removes_nodes_and_connections_from_pipeline_model() {
+        let (session, _rx) = fresh_session().await;
+        seed_pipeline_node(&session, "src", "audio::source").await;
+
+        let taps = vec![tap("src", "out", false, true, false)];
+        let (nodes, conns, has_audio, has_video) = {
+            let pipeline = session.pipeline.lock().await.clone();
+            inject_preview_subgraph(&session, "pv4", &taps, "/gw/pv4", &pipeline).await.unwrap()
+        };
+
+        {
+            let mut pipeline = session.pipeline.lock().await;
+            for (id, kind) in &nodes {
+                pipeline.nodes.insert(
+                    id.clone(),
+                    streamkit_api::Node { kind: kind.clone(), params: None, state: None },
+                );
+            }
+            for (f, fp, t, tp, mode) in &conns {
+                pipeline.connections.push(streamkit_api::Connection {
+                    from_node: f.clone(),
+                    from_pin: fp.clone(),
+                    to_node: t.clone(),
+                    to_pin: tp.clone(),
+                    mode: *mode,
+                });
+            }
+        }
+
+        let state = PreviewState {
+            preview_id: "pv4".to_string(),
+            tap_points: taps,
+            injected_nodes: nodes.clone(),
+            injected_connections: conns.clone(),
+            gateway_path: "/gw/pv4".to_string(),
+            has_audio,
+            has_video,
+            created_at: SystemTime::now(),
+        };
+
+        teardown_preview(&session, &state).await.expect("teardown should succeed");
+
+        let pipeline = session.pipeline.lock().await;
+        for (id, _) in &nodes {
+            assert!(!pipeline.nodes.contains_key(id), "node {id} should be removed");
+        }
+        assert!(
+            pipeline.connections.is_empty(),
+            "all preview connections should be removed, got: {:?}",
+            pipeline.connections
+        );
+        drop(pipeline);
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn teardown_all_previews_drains_session_preview_map() {
+        let (session, _rx) = fresh_session().await;
+        seed_pipeline_node(&session, "src", "audio::source").await;
+
+        for i in 0..MAX_PREVIEWS_PER_SESSION {
+            let preview_id = format!("p{i}");
+            let taps = vec![tap("src", "out", true, true, false)];
+            let pipeline = session.pipeline.lock().await.clone();
+            let (nodes, conns, ha, hv) =
+                inject_preview_subgraph(&session, &preview_id, &taps, "/gw", &pipeline)
+                    .await
+                    .unwrap();
+            session
+                .add_preview(PreviewState {
+                    preview_id: preview_id.clone(),
+                    tap_points: taps,
+                    injected_nodes: nodes,
+                    injected_connections: conns,
+                    gateway_path: format!("/gw/{preview_id}"),
+                    has_audio: ha,
+                    has_video: hv,
+                    created_at: SystemTime::now(),
+                })
+                .await
+                .unwrap();
+        }
+        assert_eq!(session.preview_count().await, MAX_PREVIEWS_PER_SESSION);
+
+        teardown_all_previews(&session).await;
+
+        // teardown_all_previews tears down subgraphs but does NOT remove
+        // entries from `session.previews`.  Document that contract here so
+        // future refactors can't quietly change it.
+        assert_eq!(
+            session.preview_count().await,
+            MAX_PREVIEWS_PER_SESSION,
+            "teardown_all_previews leaves the preview map intact by design"
+        );
+
+        let pipeline = session.pipeline.lock().await;
+        assert!(
+            pipeline.connections.is_empty(),
+            "all preview connections should be removed, got: {:?}",
+            pipeline.connections
+        );
+        drop(pipeline);
+
+        let _ = session.shutdown_and_wait().await;
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Panics ARE the assertions
+mod handler_tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::permissions::Permissions;
+    use crate::session::{PreviewState, Session, TapPoint};
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Method, Request, StatusCode};
+    use axum::routing::{delete, post};
+    use axum::Router;
+    use serde_json::json;
+    use std::time::SystemTime;
+    use tower::ServiceExt;
+
+    fn admin_permissions() -> Permissions {
+        let mut p = Permissions::admin();
+        p.list_sessions = true;
+        p.modify_sessions = true;
+        p.access_all_sessions = true;
+        p
+    }
+
+    fn make_admin_state() -> Arc<AppState> {
+        let mut cfg = Config::default();
+        cfg.permissions.default_role = "preview-admin".to_string();
+        cfg.permissions.roles.insert("preview-admin".to_string(), admin_permissions());
+        crate::server::create_app_state(cfg, None)
+    }
+
+    async fn install_session(state: &Arc<AppState>, name: &str) -> Session {
+        let event_tx = state.event_tx.clone();
+        let session =
+            Session::create(&state.engine, &state.config, Some(name.to_string()), event_tx, None)
+                .await
+                .expect("Session::create succeeds");
+        state.session_manager.lock().await.add_session(session.clone()).expect("insert session");
+        session
+    }
+
+    fn build_router(state: Arc<AppState>) -> Router {
+        Router::new()
+            .route(
+                "/api/v1/sessions/{session_id}/preview",
+                post(start_preview_handler).get(list_previews_handler),
+            )
+            .route(
+                "/api/v1/sessions/{session_id}/preview/{preview_id}",
+                delete(stop_preview_handler),
+            )
+            .with_state(state)
+    }
+
+    async fn read_body(resp: axum::response::Response) -> (StatusCode, String) {
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    fn post_json(uri: &str, body: &serde_json::Value) -> Request<Body> {
+        Request::builder()
+            .method(Method::POST)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn start_preview_returns_404_for_unknown_session() {
+        let state = make_admin_state();
+        let router = build_router(state);
+
+        let req = post_json("/api/v1/sessions/missing/preview", &json!({}));
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body.contains("missing"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn start_preview_returns_400_when_tap_node_not_in_pipeline() {
+        let state = make_admin_state();
+        let session = install_session(&state, "alpha").await;
+        let router = build_router(Arc::clone(&state));
+
+        let req = post_json(
+            "/api/v1/sessions/alpha/preview",
+            &json!({ "tap_node": "ghost", "tap_pin": "out" }),
+        );
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("Tap node 'ghost' not found"), "body: {body}");
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn start_preview_returns_400_when_tap_pin_provided_without_tap_node() {
+        let state = make_admin_state();
+        let session = install_session(&state, "alpha").await;
+        let router = build_router(Arc::clone(&state));
+
+        let req = post_json("/api/v1/sessions/alpha/preview", &json!({ "tap_pin": "out" }));
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("tap_pin requires tap_node"), "body: {body}");
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn start_preview_returns_409_when_preview_limit_reached() {
+        let state = make_admin_state();
+        let session = install_session(&state, "alpha").await;
+
+        for i in 0..MAX_PREVIEWS_PER_SESSION {
+            let preview_id = format!("seed{i}");
+            session
+                .add_preview(PreviewState {
+                    preview_id: preview_id.clone(),
+                    tap_points: vec![TapPoint {
+                        node: "src".into(),
+                        pin: "out".into(),
+                        is_encoded: true,
+                        is_audio: true,
+                        is_video: false,
+                    }],
+                    injected_nodes: vec![],
+                    injected_connections: vec![],
+                    gateway_path: format!("/gw/{preview_id}"),
+                    has_audio: true,
+                    has_video: false,
+                    created_at: SystemTime::now(),
+                })
+                .await
+                .unwrap();
+        }
+
+        let router = build_router(Arc::clone(&state));
+        let req = post_json("/api/v1/sessions/alpha/preview", &json!({}));
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(body.contains("Maximum"), "body: {body}");
+        assert!(body.contains(&MAX_PREVIEWS_PER_SESSION.to_string()), "body: {body}");
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn list_previews_returns_404_for_unknown_session() {
+        let state = make_admin_state();
+        let router = build_router(state);
+
+        let req =
+            Request::builder().uri("/api/v1/sessions/missing/preview").body(Body::empty()).unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, _) = read_body(resp).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn list_previews_returns_seeded_previews_in_order() {
+        let state = make_admin_state();
+        let session = install_session(&state, "alpha").await;
+
+        let earlier = SystemTime::now();
+        let later = earlier + std::time::Duration::from_secs(10);
+
+        session
+            .add_preview(PreviewState {
+                preview_id: "old".into(),
+                tap_points: vec![TapPoint {
+                    node: "src".into(),
+                    pin: "out".into(),
+                    is_encoded: true,
+                    is_audio: true,
+                    is_video: false,
+                }],
+                injected_nodes: vec![],
+                injected_connections: vec![],
+                gateway_path: "/gw/old".into(),
+                has_audio: true,
+                has_video: false,
+                created_at: earlier,
+            })
+            .await
+            .unwrap();
+        session
+            .add_preview(PreviewState {
+                preview_id: "new".into(),
+                tap_points: vec![TapPoint {
+                    node: "src".into(),
+                    pin: "out".into(),
+                    is_encoded: true,
+                    is_audio: false,
+                    is_video: true,
+                }],
+                injected_nodes: vec![],
+                injected_connections: vec![],
+                gateway_path: "/gw/new".into(),
+                has_audio: false,
+                has_video: true,
+                created_at: later,
+            })
+            .await
+            .unwrap();
+
+        let router = build_router(Arc::clone(&state));
+        let req =
+            Request::builder().uri("/api/v1/sessions/alpha/preview").body(Body::empty()).unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let items = parsed.as_array().expect("array");
+        assert_eq!(items.len(), 2);
+        let ids: Vec<&str> = items.iter().map(|p| p["preview_id"].as_str().unwrap()).collect();
+        assert!(ids.contains(&"old") && ids.contains(&"new"));
+
+        // Each entry exposes the documented per-tap media classification.
+        for item in items {
+            let taps = item["tap_points"].as_array().expect("tap_points array");
+            for t in taps {
+                let media = t["media"].as_str().unwrap();
+                assert!(matches!(media, "audio" | "video" | "audio+video"));
+            }
+        }
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn stop_preview_returns_404_for_unknown_session() {
+        let state = make_admin_state();
+        let router = build_router(state);
+
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .uri("/api/v1/sessions/missing/preview/anything")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, _) = read_body(resp).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn stop_preview_returns_404_for_unknown_preview_id() {
+        let state = make_admin_state();
+        let session = install_session(&state, "alpha").await;
+        let router = build_router(Arc::clone(&state));
+
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .uri("/api/v1/sessions/alpha/preview/ghost")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body.contains("ghost"), "body: {body}");
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn stop_preview_removes_preview_and_clears_pipeline_model() {
+        let state = make_admin_state();
+        let session = install_session(&state, "alpha").await;
+
+        // Seed an injected node + connection so teardown has something
+        // observable to remove from the pipeline model.
+        {
+            let mut pipeline = session.pipeline.lock().await;
+            pipeline.nodes.insert(
+                "_preview_pv_peer".into(),
+                streamkit_api::Node {
+                    kind: "transport::moq::peer".into(),
+                    params: None,
+                    state: None,
+                },
+            );
+            pipeline.connections.push(streamkit_api::Connection {
+                from_node: "src".into(),
+                from_pin: "out".into(),
+                to_node: "_preview_pv_peer".into(),
+                to_pin: "in".into(),
+                mode: streamkit_core::control::ConnectionMode::BestEffort,
+            });
+        }
+
+        session
+            .add_preview(PreviewState {
+                preview_id: "pv".into(),
+                tap_points: vec![TapPoint {
+                    node: "src".into(),
+                    pin: "out".into(),
+                    is_encoded: true,
+                    is_audio: true,
+                    is_video: false,
+                }],
+                injected_nodes: vec![("_preview_pv_peer".into(), "transport::moq::peer".into())],
+                injected_connections: vec![(
+                    "src".into(),
+                    "out".into(),
+                    "_preview_pv_peer".into(),
+                    "in".into(),
+                    streamkit_core::control::ConnectionMode::BestEffort,
+                )],
+                gateway_path: "/gw/pv".into(),
+                has_audio: true,
+                has_video: false,
+                created_at: SystemTime::now(),
+            })
+            .await
+            .unwrap();
+
+        let router = build_router(Arc::clone(&state));
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .uri("/api/v1/sessions/alpha/preview/pv")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::OK);
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["preview_id"], "pv");
+
+        assert!(session.remove_preview("pv").await.is_none());
+
+        let pipeline = session.pipeline.lock().await;
+        assert!(!pipeline.nodes.contains_key("_preview_pv_peer"));
+        assert!(pipeline.connections.is_empty());
+        drop(pipeline);
+
+        let _ = session.shutdown_and_wait().await;
+    }
+}
