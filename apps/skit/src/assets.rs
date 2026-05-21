@@ -1459,3 +1459,1269 @@ impl std::fmt::Display for AssetsError {
 }
 
 impl std::error::Error for AssetsError {}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::config::{AuthMode, Config};
+    use axum::body::{to_bytes, Body};
+    use axum::http::{header, Method, Request, StatusCode};
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+    use tower::ServiceExt;
+
+    // ── Test fixtures ──────────────────────────────────────────────────────
+
+    /// Serialises any test that mutates `std::env::current_dir`.
+    ///
+    /// The asset handlers hardcode `samples/{audio,images,fonts}` relative
+    /// to the process CWD, so we must `set_current_dir` into a tempdir to
+    /// exercise them without polluting the workspace. CWD is process-wide,
+    /// so this lock prevents two tests from racing the chdir.
+    static CWD_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Restores the original CWD on drop so a panicking test doesn't strand
+    /// the process in a tempdir that gets deleted.
+    struct CwdGuard {
+        original: PathBuf,
+        _tmp: TempDir,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.original);
+        }
+    }
+
+    /// Acquire the CWD lock, create a tempdir, and chdir into it.
+    ///
+    /// Must be called from a single-threaded tokio runtime (use
+    /// `#[tokio::test(flavor = "current_thread")]`) because the lock guard
+    /// is `!Send`.
+    fn enter_tempdir() -> CwdGuard {
+        let lock = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = TempDir::new().expect("create tempdir");
+        let original = std::env::current_dir().expect("read cwd");
+        std::env::set_current_dir(tmp.path()).expect("chdir into tempdir");
+        CwdGuard { original, _tmp: tmp, _lock: lock }
+    }
+
+    fn make_state() -> Arc<AppState> {
+        let mut config = Config::default();
+        config.auth.mode = AuthMode::Disabled;
+        crate::server::create_app_state(config, None)
+    }
+
+    /// AppState wired so the default role is `viewer` (cannot upload/delete).
+    fn make_viewer_state() -> Arc<AppState> {
+        let mut config = Config::default();
+        config.auth.mode = AuthMode::Disabled;
+        config.permissions.default_role = "viewer".to_string();
+        crate::server::create_app_state(config, None)
+    }
+
+    /// Build a multipart/form-data body with a single named file part.
+    fn build_multipart_body(
+        boundary: &str,
+        field_name: &str,
+        filename: &str,
+        bytes: &[u8],
+    ) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!(
+                "Content-Disposition: form-data; name=\"{field_name}\"; \
+                 filename=\"{filename}\"\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        body
+    }
+
+    fn multipart_request(
+        method: Method,
+        uri: &str,
+        boundary: &str,
+        body: Vec<u8>,
+    ) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(
+                header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    async fn body_bytes(body: Body) -> Vec<u8> {
+        to_bytes(body, 32 * 1024 * 1024).await.unwrap().to_vec()
+    }
+
+    async fn body_string(body: Body) -> String {
+        String::from_utf8(body_bytes(body).await).unwrap()
+    }
+
+    /// Bytes for a tiny 1×1 transparent PNG (header + IHDR + IDAT + IEND).
+    fn tiny_png() -> Vec<u8> {
+        use image::ImageEncoder;
+        let mut bytes: Vec<u8> = Vec::new();
+        let pixel = [0u8, 0, 0, 0];
+        image::codecs::png::PngEncoder::new(&mut bytes)
+            .write_image(&pixel, 1, 1, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        bytes
+    }
+
+    fn tiny_jpeg() -> Vec<u8> {
+        use image::ImageEncoder;
+        let mut bytes: Vec<u8> = Vec::new();
+        let pixel = [0u8, 0, 0];
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 80)
+            .write_image(&pixel, 1, 1, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        bytes
+    }
+
+    fn tiny_gif() -> Vec<u8> {
+        let mut bytes: Vec<u8> = Vec::new();
+        let pixel = [0u8, 0, 0, 0];
+        image::codecs::gif::GifEncoder::new(&mut bytes)
+            .encode(&pixel, 1, 1, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        bytes
+    }
+
+    fn tiny_webp() -> Vec<u8> {
+        use image::ImageEncoder;
+        let mut bytes: Vec<u8> = Vec::new();
+        let pixel = [0u8, 0, 0, 0];
+        image::codecs::webp::WebPEncoder::new_lossless(&mut bytes)
+            .write_image(&pixel, 1, 1, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        bytes
+    }
+
+    fn tiny_svg() -> Vec<u8> {
+        b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"/>".to_vec()
+    }
+
+    /// 4-byte TTF magic + zero padding to clear the 4-byte minimum length check.
+    fn fake_ttf() -> Vec<u8> {
+        let mut v = vec![0x00, 0x01, 0x00, 0x00];
+        v.extend_from_slice(&[0u8; 16]);
+        v
+    }
+
+    fn fake_otf() -> Vec<u8> {
+        let mut v = b"OTTO".to_vec();
+        v.extend_from_slice(&[0u8; 16]);
+        v
+    }
+
+    // ── Pure helpers: validate_audio_filename ──────────────────────────────
+
+    #[test]
+    fn validate_audio_accepts_each_allowed_extension() {
+        for ext in ALLOWED_AUDIO_FORMATS {
+            let name = format!("clip.{ext}");
+            let parsed =
+                validate_audio_filename(&name).unwrap_or_else(|e| panic!("{ext}: {e}"));
+            assert_eq!(parsed, *ext);
+        }
+    }
+
+    #[test]
+    fn validate_audio_is_case_insensitive_on_extension() {
+        assert_eq!(validate_audio_filename("clip.OPUS").unwrap(), "opus");
+        assert_eq!(validate_audio_filename("clip.Mp3").unwrap(), "mp3");
+    }
+
+    #[test]
+    fn validate_audio_rejects_empty_and_oversized() {
+        assert!(matches!(
+            validate_audio_filename(""),
+            Err(AssetsError::InvalidFilename(_))
+        ));
+        let too_long = format!("{}.opus", "a".repeat(MAX_FILENAME_LENGTH));
+        assert!(matches!(
+            validate_audio_filename(&too_long),
+            Err(AssetsError::InvalidFilename(_))
+        ));
+    }
+
+    #[test]
+    fn validate_audio_rejects_path_traversal_and_separators() {
+        for bad in ["../etc/passwd", "a/b.opus", "a\\b.opus", "..opus"] {
+            assert!(
+                matches!(
+                    validate_audio_filename(bad),
+                    Err(AssetsError::InvalidFilename(_))
+                ),
+                "expected reject for {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_audio_rejects_disallowed_extension() {
+        assert!(matches!(
+            validate_audio_filename("clip.exe"),
+            Err(AssetsError::InvalidFormat(_))
+        ));
+    }
+
+    // ── Pure helpers: validate_image_filename ──────────────────────────────
+
+    #[test]
+    fn validate_image_accepts_each_allowed_extension() {
+        for ext in ALLOWED_IMAGE_FORMATS {
+            let name = format!("pic.{ext}");
+            let parsed =
+                validate_image_filename(&name).unwrap_or_else(|e| panic!("{ext}: {e}"));
+            assert_eq!(parsed, *ext);
+        }
+    }
+
+    #[test]
+    fn validate_image_rejects_extensionless() {
+        // "noext" has no '.' at all — must be rejected even though rsplit
+        // would otherwise return the whole string.
+        assert!(matches!(
+            validate_image_filename("noext"),
+            Err(AssetsError::InvalidFilename(_))
+        ));
+    }
+
+    #[test]
+    fn validate_image_rejects_path_traversal() {
+        for bad in ["../a.png", "sub/a.png", "sub\\a.png"] {
+            assert!(matches!(
+                validate_image_filename(bad),
+                Err(AssetsError::InvalidFilename(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn validate_image_rejects_wrong_extension() {
+        assert!(matches!(
+            validate_image_filename("clip.opus"),
+            Err(AssetsError::InvalidFormat(_))
+        ));
+    }
+
+    // ── Pure helpers: validate_font_filename ───────────────────────────────
+
+    #[test]
+    fn validate_font_accepts_each_allowed_extension() {
+        for ext in ALLOWED_FONT_FORMATS {
+            let name = format!("face.{ext}");
+            let parsed = validate_font_filename(&name).unwrap_or_else(|e| panic!("{ext}: {e}"));
+            assert_eq!(parsed, *ext);
+        }
+    }
+
+    #[test]
+    fn validate_font_rejects_no_extension_and_traversal() {
+        assert!(matches!(
+            validate_font_filename("noext"),
+            Err(AssetsError::InvalidFilename(_))
+        ));
+        assert!(matches!(
+            validate_font_filename("../font.ttf"),
+            Err(AssetsError::InvalidFilename(_))
+        ));
+    }
+
+    #[test]
+    fn validate_font_rejects_wrong_extension() {
+        assert!(matches!(
+            validate_font_filename("face.exe"),
+            Err(AssetsError::InvalidFormat(_))
+        ));
+    }
+
+    // ── Pure helpers: sanitize_filename ────────────────────────────────────
+
+    #[test]
+    fn sanitize_keeps_alphanumeric_and_safe_punct() {
+        assert_eq!(sanitize_filename("Hello-World_1.opus"), "Hello-World_1.opus");
+    }
+
+    #[test]
+    fn sanitize_replaces_disallowed_chars_with_underscore() {
+        assert_eq!(sanitize_filename("../etc/passwd"), ".._etc_passwd");
+        assert_eq!(sanitize_filename("my file (1).mp3"), "my_file__1_.mp3");
+        assert_eq!(sanitize_filename("café.png"), "caf_.png");
+    }
+
+    #[test]
+    fn sanitize_replaces_null_byte_with_underscore() {
+        assert_eq!(sanitize_filename("a\0b.opus"), "a_b.opus");
+    }
+
+    // ── Pure helpers: build_upload_response ────────────────────────────────
+
+    #[test]
+    fn build_upload_response_shapes_the_audio_asset() {
+        let asset =
+            build_upload_response("My_Sample-1.opus", "opus", std::path::Path::new("ignored"), 42);
+        assert_eq!(asset.id, "My_Sample-1.opus");
+        assert_eq!(asset.name, "My Sample 1");
+        assert_eq!(asset.format, "opus");
+        assert_eq!(asset.path, "samples/audio/user/My_Sample-1.opus");
+        assert_eq!(asset.size_bytes, 42);
+        assert!(!asset.is_system);
+        assert!(asset.license.unwrap().contains("CC0-1.0"));
+    }
+
+    // ── Filesystem helpers: read_license_file ──────────────────────────────
+
+    #[tokio::test]
+    async fn read_license_returns_none_for_missing_file() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("missing.license");
+        assert!(read_license_file(&p).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn read_license_extracts_spdx_fields() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("clip.opus.license");
+        // REUSE-IgnoreStart
+        let body = "SPDX-License-Identifier: MIT\nSPDX-FileCopyrightText: © 2025 Test\n";
+        // REUSE-IgnoreEnd
+        tokio::fs::write(&p, body).await.unwrap();
+
+        let parsed = read_license_file(&p).await.unwrap();
+        assert!(parsed.contains("License: MIT"), "got: {parsed}");
+        assert!(parsed.contains("Copyright: © 2025 Test"), "got: {parsed}");
+    }
+
+    #[tokio::test]
+    async fn read_license_returns_none_when_no_spdx_lines() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("plain.license");
+        tokio::fs::write(&p, "just some text\n").await.unwrap();
+        assert!(read_license_file(&p).await.is_none());
+    }
+
+    // ── Filesystem helpers: process_audio_entry ────────────────────────────
+
+    #[tokio::test]
+    async fn process_audio_entry_skips_dirs_and_license_files() {
+        let tmp = TempDir::new().unwrap();
+        let perms = RolePermissions::admin();
+        let dir_path = tmp.path().join("inner");
+        tokio::fs::create_dir(&dir_path).await.unwrap();
+        assert!(process_audio_entry(dir_path, false, &perms).await.is_none());
+
+        let lic = tmp.path().join("clip.opus.license");
+        tokio::fs::write(&lic, "").await.unwrap();
+        assert!(process_audio_entry(lic, false, &perms).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn process_audio_entry_skips_disallowed_extension() {
+        let tmp = TempDir::new().unwrap();
+        let perms = RolePermissions::admin();
+        let p = tmp.path().join("clip.exe");
+        tokio::fs::write(&p, b"data").await.unwrap();
+        assert!(process_audio_entry(p, false, &perms).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn process_audio_entry_builds_user_asset_with_metadata() {
+        let tmp = TempDir::new().unwrap();
+        let perms = RolePermissions::admin();
+        let p = tmp.path().join("My_Cool-Clip.opus");
+        tokio::fs::write(&p, b"raw audio bytes").await.unwrap();
+
+        let asset = process_audio_entry(p.clone(), false, &perms).await.unwrap();
+        assert_eq!(asset.id, "My_Cool-Clip.opus");
+        assert_eq!(asset.name, "My Cool Clip");
+        assert_eq!(asset.format, "opus");
+        assert_eq!(asset.path, "samples/audio/user/My_Cool-Clip.opus");
+        assert_eq!(asset.size_bytes, b"raw audio bytes".len() as u64);
+        assert!(!asset.is_system);
+    }
+
+    #[tokio::test]
+    async fn process_audio_entry_marks_system_assets() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("sys.flac");
+        tokio::fs::write(&p, b"x").await.unwrap();
+        let asset = process_audio_entry(p, true, &RolePermissions::admin()).await.unwrap();
+        assert!(asset.is_system);
+        assert_eq!(asset.path, "samples/audio/system/sys.flac");
+    }
+
+    #[tokio::test]
+    async fn process_audio_entry_filters_by_permissions() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("denied.opus");
+        tokio::fs::write(&p, b"x").await.unwrap();
+        let mut perms = RolePermissions::admin();
+        perms.allowed_assets.clear(); // deny everything
+        assert!(process_audio_entry(p, false, &perms).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn process_audio_entry_attaches_license_when_sidecar_present() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("clip.opus");
+        tokio::fs::write(&p, b"x").await.unwrap();
+        // REUSE-IgnoreStart
+        let lic_text = "SPDX-License-Identifier: CC0-1.0\nSPDX-FileCopyrightText: © 2025 A\n";
+        // REUSE-IgnoreEnd
+        tokio::fs::write(tmp.path().join("clip.opus.license"), lic_text).await.unwrap();
+        let asset =
+            process_audio_entry(p, false, &RolePermissions::admin()).await.unwrap();
+        assert!(asset.license.as_deref().unwrap().contains("CC0-1.0"));
+    }
+
+    // ── Filesystem helpers: process_image_entry ────────────────────────────
+
+    #[tokio::test]
+    async fn process_image_entry_returns_dimensions_for_png() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("pic.png");
+        tokio::fs::write(&p, tiny_png()).await.unwrap();
+        let asset = process_image_entry(p, false, &RolePermissions::admin()).await.unwrap();
+        assert_eq!(asset.format, "png");
+        assert_eq!(asset.width, 1);
+        assert_eq!(asset.height, 1);
+        assert_eq!(asset.path, "samples/images/user/pic.png");
+        assert!(!asset.is_system);
+    }
+
+    #[tokio::test]
+    async fn process_image_entry_returns_dimensions_for_svg() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("vec.svg");
+        tokio::fs::write(&p, tiny_svg()).await.unwrap();
+        let asset = process_image_entry(p, false, &RolePermissions::admin()).await.unwrap();
+        assert_eq!(asset.format, "svg");
+        assert_eq!(asset.width, 10);
+        assert_eq!(asset.height, 10);
+    }
+
+    #[tokio::test]
+    async fn process_image_entry_skips_dirs_license_and_wrong_ext() {
+        let tmp = TempDir::new().unwrap();
+        let perms = RolePermissions::admin();
+
+        let sub = tmp.path().join("dir");
+        tokio::fs::create_dir(&sub).await.unwrap();
+        assert!(process_image_entry(sub, false, &perms).await.is_none());
+
+        let lic = tmp.path().join("a.png.license");
+        tokio::fs::write(&lic, "").await.unwrap();
+        assert!(process_image_entry(lic, false, &perms).await.is_none());
+
+        let other = tmp.path().join("doc.txt");
+        tokio::fs::write(&other, "").await.unwrap();
+        assert!(process_image_entry(other, false, &perms).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn process_image_entry_returns_none_for_corrupt_image() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("bad.png");
+        tokio::fs::write(&p, b"not a png").await.unwrap();
+        assert!(process_image_entry(p, false, &RolePermissions::admin()).await.is_none());
+    }
+
+    // ── Filesystem helpers: process_font_entry ─────────────────────────────
+
+    #[tokio::test]
+    async fn process_font_entry_builds_asset_and_respects_system_flag() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("My-Face.ttf");
+        tokio::fs::write(&p, fake_ttf()).await.unwrap();
+        let asset =
+            process_font_entry(p, true, &RolePermissions::admin()).await.unwrap();
+        assert_eq!(asset.id, "My-Face.ttf");
+        assert_eq!(asset.format, "ttf");
+        assert_eq!(asset.name, "My Face");
+        assert!(asset.is_system);
+        assert_eq!(asset.path, "samples/fonts/system/My-Face.ttf");
+    }
+
+    #[tokio::test]
+    async fn process_font_entry_skips_dirs_and_wrong_extension() {
+        let tmp = TempDir::new().unwrap();
+        let perms = RolePermissions::admin();
+        let sub = tmp.path().join("dir");
+        tokio::fs::create_dir(&sub).await.unwrap();
+        assert!(process_font_entry(sub, false, &perms).await.is_none());
+
+        let bad = tmp.path().join("script.exe");
+        tokio::fs::write(&bad, b"").await.unwrap();
+        assert!(process_font_entry(bad, false, &perms).await.is_none());
+    }
+
+    // ── Filesystem helpers: scan_*_directory ───────────────────────────────
+
+    #[tokio::test]
+    async fn scan_audio_directory_returns_empty_for_missing_dir() {
+        let tmp = TempDir::new().unwrap();
+        let assets =
+            scan_audio_directory(&tmp.path().join("nope"), false, &RolePermissions::admin())
+                .await
+                .unwrap();
+        assert!(assets.is_empty());
+    }
+
+    #[tokio::test]
+    async fn scan_audio_directory_collects_and_filters() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().to_path_buf();
+        for name in ["a.opus", "b.flac", "junk.txt"] {
+            tokio::fs::write(dir.join(name), b"x").await.unwrap();
+        }
+        let assets =
+            scan_audio_directory(&dir, false, &RolePermissions::admin()).await.unwrap();
+        // The handler-level list_assets sorts; scan_*_directory itself
+        // does not. Verify both audio files surfaced and the .txt was dropped.
+        let mut ids: Vec<_> = assets.iter().map(|a| a.id.clone()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["a.opus".to_string(), "b.flac".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn scan_image_directory_filters_to_allowed_formats() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().to_path_buf();
+        tokio::fs::write(dir.join("pic.png"), tiny_png()).await.unwrap();
+        tokio::fs::write(dir.join("doc.txt"), b"text").await.unwrap();
+        let assets =
+            scan_image_directory(&dir, false, &RolePermissions::admin()).await.unwrap();
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].format, "png");
+    }
+
+    #[tokio::test]
+    async fn scan_font_directory_filters_to_allowed_formats() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().to_path_buf();
+        tokio::fs::write(dir.join("face.ttf"), fake_ttf()).await.unwrap();
+        tokio::fs::write(dir.join("notes.txt"), b"x").await.unwrap();
+        let assets =
+            scan_font_directory(&dir, false, &RolePermissions::admin()).await.unwrap();
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].format, "ttf");
+    }
+
+    // ── Filesystem helpers: create_license_sidecar ────────────────────────
+
+    #[tokio::test]
+    async fn create_license_sidecar_writes_default_spdx_text() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("clip.opus");
+        tokio::fs::write(&file, b"x").await.unwrap();
+        create_license_sidecar(&file, "opus").await;
+        let written = tokio::fs::read_to_string(file.with_extension("opus.license"))
+            .await
+            .unwrap();
+        assert!(written.contains("SPDX-License-Identifier: CC0-1.0"));
+        assert!(written.contains("SPDX-FileCopyrightText:"));
+    }
+
+    // ── Filesystem helpers: validate_file_in_user_directory ────────────────
+
+    #[tokio::test]
+    async fn validate_file_in_user_directory_accepts_child() {
+        let tmp = TempDir::new().unwrap();
+        let user_dir = tmp.path().join("user");
+        tokio::fs::create_dir_all(&user_dir).await.unwrap();
+        let child = user_dir.join("file.opus");
+        tokio::fs::write(&child, b"x").await.unwrap();
+        assert!(validate_file_in_user_directory(&child, &user_dir).is_ok());
+    }
+
+    #[tokio::test]
+    async fn validate_file_in_user_directory_rejects_outside() {
+        let tmp = TempDir::new().unwrap();
+        let user_dir = tmp.path().join("user");
+        tokio::fs::create_dir_all(&user_dir).await.unwrap();
+        let outside = tmp.path().join("escape.opus");
+        tokio::fs::write(&outside, b"x").await.unwrap();
+        let err = validate_file_in_user_directory(&outside, &user_dir).unwrap_err();
+        assert!(matches!(err, AssetsError::Forbidden));
+    }
+
+    // ── Filesystem helpers: delete_audio_files ─────────────────────────────
+
+    #[tokio::test]
+    async fn delete_audio_files_removes_asset_and_license() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("clip.opus");
+        let lic = tmp.path().join("clip.opus.license");
+        tokio::fs::write(&file, b"x").await.unwrap();
+        tokio::fs::write(&lic, b"x").await.unwrap();
+        delete_audio_files(&file, "opus").await.unwrap();
+        assert!(!file.exists());
+        assert!(!lic.exists());
+    }
+
+    #[tokio::test]
+    async fn delete_audio_files_succeeds_without_license_sidecar() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("clip.mp3");
+        tokio::fs::write(&file, b"x").await.unwrap();
+        delete_audio_files(&file, "mp3").await.unwrap();
+        assert!(!file.exists());
+    }
+
+    #[tokio::test]
+    async fn delete_audio_files_reports_io_error_for_missing_file() {
+        let tmp = TempDir::new().unwrap();
+        let nope = tmp.path().join("ghost.opus");
+        let err = delete_audio_files(&nope, "opus").await.unwrap_err();
+        assert!(matches!(err, AssetsError::IoError(_)));
+    }
+
+    // ── Error → response mapping ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn assets_error_maps_to_expected_status_codes() {
+        let cases: [(AssetsError, StatusCode); 7] = [
+            (AssetsError::IoError("x".into()), StatusCode::INTERNAL_SERVER_ERROR),
+            (AssetsError::InvalidFilename("x".into()), StatusCode::BAD_REQUEST),
+            (AssetsError::InvalidFormat("x".into()), StatusCode::BAD_REQUEST),
+            (AssetsError::InvalidRequest("x".into()), StatusCode::BAD_REQUEST),
+            (AssetsError::FileTooLarge(123), StatusCode::PAYLOAD_TOO_LARGE),
+            (AssetsError::FileExists("a".into()), StatusCode::CONFLICT),
+            (AssetsError::NotFound("a".into()), StatusCode::NOT_FOUND),
+        ];
+        for (err, expected) in cases {
+            let resp = err.into_response();
+            assert_eq!(resp.status(), expected);
+        }
+        let resp = AssetsError::Forbidden.into_response();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn assets_error_display_includes_payload() {
+        let msg = AssetsError::FileTooLarge(42).to_string();
+        assert!(msg.contains("42"));
+        let msg = AssetsError::NotFound("x.opus".into()).to_string();
+        assert!(msg.contains("x.opus"));
+    }
+
+    // ── HTTP handler tests: audio router ──────────────────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_audio_assets_returns_empty_when_no_dirs() {
+        let _g = enter_tempdir();
+        let state = make_state();
+        let app = assets_router().with_state(state);
+        let resp = app
+            .oneshot(Request::builder().uri("/api/v1/assets/audio").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp.into_body()).await;
+        assert_eq!(body, "[]");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_audio_assets_returns_sorted_user_and_system() {
+        let _g = enter_tempdir();
+        // Populate both system and user dirs in the temp CWD.
+        tokio::fs::create_dir_all("samples/audio/system").await.unwrap();
+        tokio::fs::create_dir_all("samples/audio/user").await.unwrap();
+        tokio::fs::write("samples/audio/system/zulu.opus", b"x").await.unwrap();
+        tokio::fs::write("samples/audio/user/alpha.flac", b"x").await.unwrap();
+
+        let state = make_state();
+        let app = assets_router().with_state(state);
+        let resp = app
+            .oneshot(Request::builder().uri("/api/v1/assets/audio").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: Vec<AudioAsset> =
+            serde_json::from_slice(&body_bytes(resp.into_body()).await).unwrap();
+        // Sorted by display name: "alpha", "zulu".
+        assert_eq!(body.len(), 2);
+        assert_eq!(body[0].name, "alpha");
+        assert_eq!(body[1].name, "zulu");
+        assert!(!body[0].is_system);
+        assert!(body[1].is_system);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn upload_audio_happy_path_writes_file_and_sidecar() {
+        let _g = enter_tempdir();
+        let state = make_state();
+        let app = assets_router().with_state(state);
+
+        let boundary = "boundXYZ";
+        let body = build_multipart_body(boundary, "file", "fresh.opus", b"some audio bytes");
+        let req = multipart_request(Method::POST, "/api/v1/assets/audio", boundary, body);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let asset: AudioAsset =
+            serde_json::from_slice(&body_bytes(resp.into_body()).await).unwrap();
+        assert_eq!(asset.id, "fresh.opus");
+        assert!(tokio::fs::try_exists("samples/audio/user/fresh.opus").await.unwrap());
+        assert!(
+            tokio::fs::try_exists("samples/audio/user/fresh.opus.license").await.unwrap()
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn upload_audio_returns_409_on_duplicate() {
+        let _g = enter_tempdir();
+        tokio::fs::create_dir_all("samples/audio/user").await.unwrap();
+        tokio::fs::write("samples/audio/user/dup.mp3", b"existing").await.unwrap();
+
+        let state = make_state();
+        let app = assets_router().with_state(state);
+        let boundary = "b1";
+        let body = build_multipart_body(boundary, "file", "dup.mp3", b"newer");
+        let req = multipart_request(Method::POST, "/api/v1/assets/audio", boundary, body);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn upload_audio_rejects_disallowed_extension() {
+        let _g = enter_tempdir();
+        let state = make_state();
+        let app = assets_router().with_state(state);
+        let boundary = "b1";
+        let body = build_multipart_body(boundary, "file", "evil.exe", b"x");
+        let req = multipart_request(Method::POST, "/api/v1/assets/audio", boundary, body);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn upload_audio_forbidden_when_role_lacks_permission() {
+        let _g = enter_tempdir();
+        let state = make_viewer_state();
+        let app = assets_router().with_state(state);
+        let boundary = "b1";
+        let body = build_multipart_body(boundary, "file", "x.opus", b"x");
+        let req = multipart_request(Method::POST, "/api/v1/assets/audio", boundary, body);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn delete_audio_404_when_missing() {
+        let _g = enter_tempdir();
+        // Ensure the user dir exists so canonicalize() inside doesn't matter
+        // (handler returns NotFound before validate_file_in_user_directory).
+        tokio::fs::create_dir_all("samples/audio/user").await.unwrap();
+        let state = make_state();
+        let app = assets_router().with_state(state);
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .uri("/api/v1/assets/audio/ghost.opus")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn delete_audio_removes_file_returns_204() {
+        let _g = enter_tempdir();
+        tokio::fs::create_dir_all("samples/audio/user").await.unwrap();
+        tokio::fs::write("samples/audio/user/bye.opus", b"x").await.unwrap();
+        tokio::fs::write("samples/audio/user/bye.opus.license", b"x").await.unwrap();
+
+        let state = make_state();
+        let app = assets_router().with_state(state);
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .uri("/api/v1/assets/audio/bye.opus")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert!(!std::path::Path::new("samples/audio/user/bye.opus").exists());
+        assert!(!std::path::Path::new("samples/audio/user/bye.opus.license").exists());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn delete_audio_forbidden_for_viewer() {
+        let _g = enter_tempdir();
+        let state = make_viewer_state();
+        let app = assets_router().with_state(state);
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .uri("/api/v1/assets/audio/anything.opus")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ── HTTP handler tests: image router ──────────────────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_image_assets_returns_empty_when_no_dirs() {
+        let _g = enter_tempdir();
+        let state = make_state();
+        let app = image_assets_router().with_state(state);
+        let resp = app
+            .oneshot(Request::builder().uri("/api/v1/assets/images").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp.into_body()).await;
+        assert_eq!(body, "[]");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_image_assets_returns_sorted_with_dimensions() {
+        let _g = enter_tempdir();
+        tokio::fs::create_dir_all("samples/images/user").await.unwrap();
+        tokio::fs::write("samples/images/user/banner.png", tiny_png()).await.unwrap();
+        tokio::fs::write("samples/images/user/aero.svg", tiny_svg()).await.unwrap();
+
+        let state = make_state();
+        let app = image_assets_router().with_state(state);
+        let resp = app
+            .oneshot(Request::builder().uri("/api/v1/assets/images").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: Vec<ImageAsset> =
+            serde_json::from_slice(&body_bytes(resp.into_body()).await).unwrap();
+        assert_eq!(body.len(), 2);
+        // "aero" then "banner" by display name.
+        assert_eq!(body[0].name, "aero");
+        assert_eq!(body[0].width, 10);
+        assert_eq!(body[1].name, "banner");
+        assert_eq!(body[1].width, 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn upload_image_happy_path_for_each_raster_format() {
+        let cases: [(&str, Vec<u8>); 4] = [
+            ("a.png", tiny_png()),
+            ("a.jpg", tiny_jpeg()),
+            ("a.gif", tiny_gif()),
+            ("a.webp", tiny_webp()),
+        ];
+        for (filename, bytes) in cases {
+            let _g = enter_tempdir();
+            let state = make_state();
+            let app = image_assets_router().with_state(state);
+            let boundary = "imgBoundary";
+            let body = build_multipart_body(boundary, "file", filename, &bytes);
+            let req = multipart_request(Method::POST, "/api/v1/assets/images", boundary, body);
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "{filename}");
+            let asset: ImageAsset =
+                serde_json::from_slice(&body_bytes(resp.into_body()).await).unwrap();
+            assert_eq!(asset.id, filename);
+            assert!(asset.width >= 1);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn upload_image_rejects_corrupt_png_and_deletes_partial() {
+        let _g = enter_tempdir();
+        let state = make_state();
+        let app = image_assets_router().with_state(state);
+        let boundary = "imgB";
+        let body = build_multipart_body(boundary, "file", "bad.png", b"not an image");
+        let req = multipart_request(Method::POST, "/api/v1/assets/images", boundary, body);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert!(!std::path::Path::new("samples/images/user/bad.png").exists());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn upload_image_rejects_invalid_svg() {
+        let _g = enter_tempdir();
+        let state = make_state();
+        let app = image_assets_router().with_state(state);
+        let boundary = "imgB";
+        let body = build_multipart_body(boundary, "file", "bad.svg", b"not svg");
+        let req = multipart_request(Method::POST, "/api/v1/assets/images", boundary, body);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert!(!std::path::Path::new("samples/images/user/bad.svg").exists());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn upload_image_forbidden_for_viewer() {
+        let _g = enter_tempdir();
+        let state = make_viewer_state();
+        let app = image_assets_router().with_state(state);
+        let boundary = "b";
+        let body = build_multipart_body(boundary, "file", "x.png", &tiny_png());
+        let req = multipart_request(Method::POST, "/api/v1/assets/images", boundary, body);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn delete_image_404_when_missing() {
+        let _g = enter_tempdir();
+        let state = make_state();
+        let app = image_assets_router().with_state(state);
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .uri("/api/v1/assets/images/ghost.png")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn delete_image_returns_204_and_removes_file() {
+        let _g = enter_tempdir();
+        tokio::fs::create_dir_all("samples/images/user").await.unwrap();
+        tokio::fs::write("samples/images/user/bye.png", tiny_png()).await.unwrap();
+        let state = make_state();
+        let app = image_assets_router().with_state(state);
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .uri("/api/v1/assets/images/bye.png")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert!(!std::path::Path::new("samples/images/user/bye.png").exists());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn delete_image_forbidden_for_viewer() {
+        let _g = enter_tempdir();
+        let state = make_viewer_state();
+        let app = image_assets_router().with_state(state);
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .uri("/api/v1/assets/images/anything.png")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn serve_image_returns_correct_content_types() {
+        let _g = enter_tempdir();
+        tokio::fs::create_dir_all("samples/images/user").await.unwrap();
+        let cases: [(&str, Vec<u8>, &str); 4] = [
+            ("pic.png", tiny_png(), "image/png"),
+            ("pic.jpg", tiny_jpeg(), "image/jpeg"),
+            ("pic.gif", tiny_gif(), "image/gif"),
+            ("pic.webp", tiny_webp(), "image/webp"),
+        ];
+        for (name, bytes, expected) in cases {
+            tokio::fs::write(format!("samples/images/user/{name}"), &bytes).await.unwrap();
+            let state = make_state();
+            let app = image_assets_router().with_state(state);
+            let req = Request::builder()
+                .uri(format!("/api/v1/assets/images/file/user/{name}"))
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "{name}");
+            let ct = resp
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
+            assert_eq!(ct, expected, "{name}");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn serve_image_svg_emits_security_headers() {
+        let _g = enter_tempdir();
+        tokio::fs::create_dir_all("samples/images/user").await.unwrap();
+        tokio::fs::write("samples/images/user/safe.svg", tiny_svg()).await.unwrap();
+        let state = make_state();
+        let app = image_assets_router().with_state(state);
+        let req = Request::builder()
+            .uri("/api/v1/assets/images/file/user/safe.svg")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let h = resp.headers();
+        assert_eq!(h.get(header::CONTENT_TYPE).unwrap(), "image/svg+xml");
+        assert_eq!(h.get(header::X_CONTENT_TYPE_OPTIONS).unwrap(), "nosniff");
+        assert!(h.get(header::CONTENT_SECURITY_POLICY).is_some());
+        assert!(h.get(header::CONTENT_ENCODING).is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn serve_image_svgz_emits_gzip_content_encoding() {
+        let _g = enter_tempdir();
+        tokio::fs::create_dir_all("samples/images/user").await.unwrap();
+        // Pretend an svgz exists; content not actually parsed here, only
+        // headers are asserted.
+        tokio::fs::write("samples/images/user/safe.svgz", &[0u8; 32]).await.unwrap();
+        let state = make_state();
+        let app = image_assets_router().with_state(state);
+        let req = Request::builder()
+            .uri("/api/v1/assets/images/file/user/safe.svgz")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get(header::CONTENT_ENCODING).unwrap(), "gzip");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn serve_image_404_for_missing_file() {
+        let _g = enter_tempdir();
+        let state = make_state();
+        let app = image_assets_router().with_state(state);
+        let req = Request::builder()
+            .uri("/api/v1/assets/images/file/user/missing.png")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn serve_image_rejects_invalid_scope() {
+        let _g = enter_tempdir();
+        let state = make_state();
+        let app = image_assets_router().with_state(state);
+        let req = Request::builder()
+            .uri("/api/v1/assets/images/file/admin/foo.png")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn serve_image_rejects_disallowed_format() {
+        let _g = enter_tempdir();
+        let state = make_state();
+        let app = image_assets_router().with_state(state);
+        let req = Request::builder()
+            .uri("/api/v1/assets/images/file/user/foo.exe")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ── HTTP handler tests: font router ───────────────────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_font_assets_returns_empty_when_no_dirs() {
+        let _g = enter_tempdir();
+        let state = make_state();
+        let app = font_assets_router().with_state(state);
+        let resp = app
+            .oneshot(Request::builder().uri("/api/v1/assets/fonts").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp.into_body()).await;
+        assert_eq!(body, "[]");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn upload_font_happy_path_ttf() {
+        let _g = enter_tempdir();
+        let state = make_state();
+        let app = font_assets_router().with_state(state);
+        let boundary = "fb";
+        let body = build_multipart_body(boundary, "file", "myface.ttf", &fake_ttf());
+        let req = multipart_request(Method::POST, "/api/v1/assets/fonts", boundary, body);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let asset: FontAsset =
+            serde_json::from_slice(&body_bytes(resp.into_body()).await).unwrap();
+        assert_eq!(asset.id, "myface.ttf");
+        assert_eq!(asset.format, "ttf");
+        assert!(tokio::fs::try_exists("samples/fonts/user/myface.ttf").await.unwrap());
+        assert!(tokio::fs::try_exists("samples/fonts/user/myface.ttf.license").await.unwrap());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn upload_font_happy_path_otf() {
+        let _g = enter_tempdir();
+        let state = make_state();
+        let app = font_assets_router().with_state(state);
+        let boundary = "fb";
+        let body = build_multipart_body(boundary, "file", "myface.otf", &fake_otf());
+        let req = multipart_request(Method::POST, "/api/v1/assets/fonts", boundary, body);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn upload_font_rejects_invalid_magic_bytes_and_cleans_up() {
+        let _g = enter_tempdir();
+        let state = make_state();
+        let app = font_assets_router().with_state(state);
+        let boundary = "fb";
+        let body = build_multipart_body(
+            boundary,
+            "file",
+            "fake.ttf",
+            b"NOTAFONTHEADERAAAAAAAAAA",
+        );
+        let req = multipart_request(Method::POST, "/api/v1/assets/fonts", boundary, body);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert!(!std::path::Path::new("samples/fonts/user/fake.ttf").exists());
+        assert!(!std::path::Path::new("samples/fonts/user/fake.ttf.license").exists());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn upload_font_rejects_too_small_file() {
+        let _g = enter_tempdir();
+        let state = make_state();
+        let app = font_assets_router().with_state(state);
+        let boundary = "fb";
+        let body = build_multipart_body(boundary, "file", "tiny.ttf", b"ab");
+        let req = multipart_request(Method::POST, "/api/v1/assets/fonts", boundary, body);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn upload_font_forbidden_for_viewer() {
+        let _g = enter_tempdir();
+        let state = make_viewer_state();
+        let app = font_assets_router().with_state(state);
+        let boundary = "fb";
+        let body = build_multipart_body(boundary, "file", "x.ttf", &fake_ttf());
+        let req = multipart_request(Method::POST, "/api/v1/assets/fonts", boundary, body);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn delete_font_returns_204_and_removes_files() {
+        let _g = enter_tempdir();
+        tokio::fs::create_dir_all("samples/fonts/user").await.unwrap();
+        tokio::fs::write("samples/fonts/user/bye.ttf", fake_ttf()).await.unwrap();
+        tokio::fs::write("samples/fonts/user/bye.ttf.license", b"x").await.unwrap();
+        let state = make_state();
+        let app = font_assets_router().with_state(state);
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .uri("/api/v1/assets/fonts/bye.ttf")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert!(!std::path::Path::new("samples/fonts/user/bye.ttf").exists());
+        assert!(!std::path::Path::new("samples/fonts/user/bye.ttf.license").exists());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn delete_font_404_when_missing() {
+        let _g = enter_tempdir();
+        let state = make_state();
+        let app = font_assets_router().with_state(state);
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .uri("/api/v1/assets/fonts/ghost.ttf")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn delete_font_forbidden_for_viewer() {
+        let _g = enter_tempdir();
+        let state = make_viewer_state();
+        let app = font_assets_router().with_state(state);
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .uri("/api/v1/assets/fonts/anything.ttf")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn serve_font_returns_correct_content_types() {
+        let _g = enter_tempdir();
+        tokio::fs::create_dir_all("samples/fonts/user").await.unwrap();
+        let cases: [(&str, Vec<u8>, &str); 2] = [
+            ("face.ttf", fake_ttf(), "font/ttf"),
+            ("face.otf", fake_otf(), "font/otf"),
+        ];
+        for (name, bytes, expected) in cases {
+            tokio::fs::write(format!("samples/fonts/user/{name}"), &bytes).await.unwrap();
+            let state = make_state();
+            let app = font_assets_router().with_state(state);
+            let req = Request::builder()
+                .uri(format!("/api/v1/assets/fonts/file/user/{name}"))
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "{name}");
+            let ct = resp.headers().get(header::CONTENT_TYPE).unwrap();
+            assert_eq!(ct, expected, "{name}");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn serve_font_404_for_missing_file() {
+        let _g = enter_tempdir();
+        let state = make_state();
+        let app = font_assets_router().with_state(state);
+        let req = Request::builder()
+            .uri("/api/v1/assets/fonts/file/user/missing.ttf")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn serve_font_rejects_invalid_scope() {
+        let _g = enter_tempdir();
+        let state = make_state();
+        let app = font_assets_router().with_state(state);
+        let req = Request::builder()
+            .uri("/api/v1/assets/fonts/file/system_admin/x.ttf")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn serve_font_rejects_disallowed_format() {
+        let _g = enter_tempdir();
+        let state = make_state();
+        let app = font_assets_router().with_state(state);
+        let req = Request::builder()
+            .uri("/api/v1/assets/fonts/file/user/x.exe")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+}
