@@ -384,6 +384,69 @@ impl ProcessorNode for BinaryGeneratorNode {
     }
 }
 
+/// Like `BinaryGeneratorNode` but additionally sends two `NodeStatsUpdate`s
+/// with strictly increasing counters to exercise the per-node delta path in
+/// `spawn_oneshot_metrics_recorder`.
+struct StatsEmittingGeneratorNode;
+
+#[streamkit_core::async_trait]
+impl ProcessorNode for StatsEmittingGeneratorNode {
+    fn input_pins(&self) -> Vec<InputPin> {
+        Vec::new()
+    }
+    fn output_pins(&self) -> Vec<OutputPin> {
+        vec![OutputPin {
+            name: "out".to_string(),
+            produces_type: PacketType::Binary,
+            cardinality: PinCardinality::One,
+        }]
+    }
+    async fn run(self: Box<Self>, mut ctx: NodeContext) -> Result<(), StreamKitError> {
+        while let Some(msg) = ctx.control_rx.recv().await {
+            if matches!(msg, NodeControlMessage::Start) {
+                break;
+            }
+        }
+
+        let pkt = Packet::Binary {
+            data: bytes::Bytes::from_static(b"g0"),
+            content_type: Some(std::borrow::Cow::Borrowed("application/octet-stream")),
+            metadata: None,
+        };
+        let _ = ctx.output_sender.send("out", pkt).await;
+
+        if let Some(tx) = ctx.stats_tx.as_ref() {
+            let _ = tx
+                .send(streamkit_core::stats::NodeStatsUpdate {
+                    node_id: "gen".to_string(),
+                    stats: streamkit_core::stats::NodeStats {
+                        received: 0,
+                        sent: 1,
+                        discarded: 0,
+                        errored: 0,
+                        duration_secs: 0.1,
+                    },
+                    timestamp: std::time::SystemTime::now(),
+                })
+                .await;
+            let _ = tx
+                .send(streamkit_core::stats::NodeStatsUpdate {
+                    node_id: "gen".to_string(),
+                    stats: streamkit_core::stats::NodeStats {
+                        received: 0,
+                        sent: 3,
+                        discarded: 1,
+                        errored: 1,
+                        duration_secs: 0.2,
+                    },
+                    timestamp: std::time::SystemTime::now(),
+                })
+                .await;
+        }
+        Ok(())
+    }
+}
+
 fn engine_with_registry(registry: streamkit_core::registry::NodeRegistry) -> Engine {
     Engine {
         registry: std::sync::Arc::new(std::sync::RwLock::new(registry)),
@@ -503,5 +566,73 @@ async fn run_oneshot_pipeline_propagates_validation_error() {
         matches!(result, Err(StreamKitError::Configuration(_))),
         "expected Configuration error when streams provided without http_input; got error: {:?}",
         result.err()
+    );
+}
+
+#[tokio::test]
+async fn run_oneshot_pipeline_drives_metrics_recorder() {
+    use streamkit_api::{Connection, EngineMode, Node, Pipeline};
+    use streamkit_core::registry::NodeRegistry;
+
+    let mut registry = NodeRegistry::new();
+    registry.register_dynamic(
+        "test::stats_emitting_generator",
+        |_p| Ok(Box::new(StatsEmittingGeneratorNode)),
+        serde_json::json!({}),
+        vec!["test".to_string()],
+        false,
+    );
+    let engine = engine_with_registry(registry);
+
+    let mut nodes = indexmap::IndexMap::new();
+    nodes.insert(
+        "gen".to_string(),
+        Node { kind: "test::stats_emitting_generator".to_string(), params: None, state: None },
+    );
+    nodes.insert(
+        "sink".to_string(),
+        Node {
+            kind: "streamkit::http_output".to_string(),
+            params: Some(serde_json::json!({ "content_type": "application/octet-stream" })),
+            state: None,
+        },
+    );
+    let definition = Pipeline {
+        name: None,
+        description: None,
+        mode: EngineMode::OneShot,
+        client: None,
+        nodes,
+        connections: vec![Connection {
+            from_node: "gen".to_string(),
+            from_pin: "out".to_string(),
+            to_node: "sink".to_string(),
+            to_pin: "in".to_string(),
+            mode: streamkit_api::ConnectionMode::Reliable,
+        }],
+        view_data: None,
+        runtime_schemas: None,
+    };
+
+    let inputs: Vec<OneshotInput<DummyStream>> = Vec::new();
+    let mut result = engine
+        .run_oneshot_pipeline(
+            definition,
+            inputs,
+            Some(OneshotEngineConfig::default()),
+            Some(tokio_util::sync::CancellationToken::new()),
+        )
+        .await
+        .expect("pipeline should run");
+
+    let mut received = Vec::new();
+    while let Ok(Some(chunk)) =
+        tokio::time::timeout(std::time::Duration::from_secs(3), result.data_stream.recv()).await
+    {
+        received.extend_from_slice(&chunk);
+    }
+    assert!(
+        std::str::from_utf8(&received).is_ok_and(|s| s.contains("g0")),
+        "expected emitted payload in oneshot output"
     );
 }

@@ -605,6 +605,147 @@ async fn packet_with_no_outputs_is_dropped_without_panic() {
     let _ = tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle).await;
 }
 
+/// Exercises `packet_stats` for every `Packet` variant by pumping one of each
+/// through the actor with a single live consumer. The actor's
+/// `distribute_packet` runs `packet_stats` on every packet; without these
+/// variants, the Audio/Video/Binary/Transcription/Custom branches stay
+/// uncovered.
+#[tokio::test]
+async fn distribute_packet_handles_all_packet_variants() {
+    use streamkit_core::types::{
+        AudioFrame, CustomEncoding, CustomPacketData, PacketMetadata, PixelFormat,
+        TranscriptionData, VideoFrame,
+    };
+
+    let (data_tx, data_rx) = mpsc::channel(16);
+    let (config_tx, config_rx) = mpsc::channel(8);
+    let actor =
+        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor_handle = tokio::spawn(actor.run());
+
+    let (out_tx, mut out_rx) = mpsc::channel(16);
+    config_tx
+        .send(PinConfigMsg::AddConnection {
+            id: ConnectionId::new(
+                "node_a".to_string(),
+                "out".to_string(),
+                "node_b".to_string(),
+                "in".to_string(),
+            ),
+            tx: out_tx,
+            mode: crate::dynamic_messages::ConnectionMode::Reliable,
+        })
+        .await
+        .expect("add connection");
+
+    let meta = Some(PacketMetadata {
+        timestamp_us: Some(0),
+        duration_us: Some(20_000),
+        sequence: Some(1),
+        keyframe: Some(true),
+    });
+
+    let mut audio = AudioFrame::new(48_000, 1, vec![0.0; 64]);
+    audio.metadata = meta.clone();
+    let packets = vec![
+        Packet::Audio(audio),
+        Packet::Video(
+            VideoFrame::with_metadata(4, 4, PixelFormat::Rgba8, vec![0u8; 4 * 4 * 4], meta.clone())
+                .expect("video frame"),
+        ),
+        Packet::Binary {
+            data: bytes::Bytes::from_static(b"hello"),
+            content_type: Some(std::borrow::Cow::Borrowed("application/octet-stream")),
+            metadata: meta.clone(),
+        },
+        Packet::Text("a-text-packet".into()),
+        Packet::Transcription(Arc::new(TranscriptionData {
+            text: "hi".to_string(),
+            segments: vec![],
+            language: Some("en".to_string()),
+            metadata: meta.clone(),
+        })),
+        Packet::Custom(Arc::new(CustomPacketData {
+            type_id: "test::custom@1".to_string(),
+            encoding: CustomEncoding::Json,
+            data: serde_json::json!({"v": 1}),
+            metadata: meta,
+        })),
+    ];
+
+    let expected = packets.len();
+    for pkt in packets {
+        data_tx.send(pkt).await.expect("send packet");
+    }
+
+    let mut got = 0usize;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while got < expected && std::time::Instant::now() < deadline {
+        match tokio::time::timeout(std::time::Duration::from_millis(100), out_rx.recv()).await {
+            Ok(Some(_)) => got += 1,
+            Ok(None) => break,
+            Err(_) => {},
+        }
+    }
+    assert_eq!(got, expected, "expected {expected} packets, got {got}");
+
+    drop(data_tx);
+    drop(config_tx);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle).await;
+}
+
+/// Drops one consumer in a multi-output (>1) fan-out before sending. The
+/// `Reliable` path on a closed channel must hit the `TrySendError::Closed`
+/// branch and remove that connection while the alive ones still receive
+/// the packet.
+#[tokio::test]
+async fn multi_output_reliable_drops_closed_consumer() {
+    let (data_tx, data_rx) = mpsc::channel(8);
+    let (config_tx, config_rx) = mpsc::channel(8);
+    let actor =
+        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor_handle = tokio::spawn(actor.run());
+
+    let (alive_tx, mut alive_rx) = mpsc::channel(8);
+    let (dead_tx, dead_rx) = mpsc::channel::<Packet>(1);
+
+    for (id_tag, tx) in [("alive", alive_tx), ("dead", dead_tx)] {
+        config_tx
+            .send(PinConfigMsg::AddConnection {
+                id: ConnectionId::new(
+                    "node_a".to_string(),
+                    "out".to_string(),
+                    id_tag.to_string(),
+                    "in".to_string(),
+                ),
+                tx,
+                mode: crate::dynamic_messages::ConnectionMode::Reliable,
+            })
+            .await
+            .expect("add connection");
+    }
+
+    drop(dead_rx);
+
+    data_tx.send(Packet::Text("first".into())).await.expect("send first");
+
+    match tokio::time::timeout(std::time::Duration::from_secs(1), alive_rx.recv()).await {
+        Ok(Some(Packet::Text(s))) => assert_eq!(s.as_ref(), "first"),
+        other => panic!("alive consumer should receive 'first'; got {other:?}"),
+    }
+
+    // Subsequent send: dead connection has been pruned, alive still receives.
+    data_tx.send(Packet::Text("second".into())).await.expect("send second");
+    match tokio::time::timeout(std::time::Duration::from_secs(1), alive_rx.recv()).await {
+        Ok(Some(Packet::Text(s))) => assert_eq!(s.as_ref(), "second"),
+        other => panic!("alive consumer should receive 'second'; got {other:?}"),
+    }
+
+    drop(data_tx);
+    drop(config_tx);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle).await;
+}
+
 #[test]
 fn json_byte_len_matches_serialized_length() {
     use crate::dynamic_pin_distributor::json_byte_len;

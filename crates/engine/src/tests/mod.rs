@@ -11,6 +11,8 @@ mod connection_types;
 #[cfg(feature = "dynamic")]
 mod dynamic_actor_edges;
 #[cfg(feature = "dynamic")]
+mod dynamic_actor_handlers;
+#[cfg(feature = "dynamic")]
 mod dynamic_handle;
 #[cfg(feature = "dynamic")]
 mod dynamic_initialize;
