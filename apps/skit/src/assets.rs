@@ -1461,6 +1461,7 @@ impl std::fmt::Display for AssetsError {
 impl std::error::Error for AssetsError {}
 
 #[cfg(test)]
+// `unwrap`/`expect` in tests fail fast on setup mistakes; production policy enforced elsewhere.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
@@ -1471,14 +1472,16 @@ mod tests {
     use tempfile::TempDir;
     use tower::ServiceExt;
 
-    // ── Test fixtures ──────────────────────────────────────────────────────
-
     /// Serialises any test that mutates `std::env::current_dir`.
     ///
     /// The asset handlers hardcode `samples/{audio,images,fonts}` relative
     /// to the process CWD, so we must `set_current_dir` into a tempdir to
     /// exercise them without polluting the workspace. CWD is process-wide,
     /// so this lock prevents two tests from racing the chdir.
+    ///
+    /// NOTE: this lock only serialises tests *within this module*. The
+    /// proper fix is to refactor the asset handlers to take a configurable
+    /// asset root; tracked as a follow-up in the PR description.
     static CWD_LOCK: Mutex<()> = Mutex::new(());
 
     /// Restores the original CWD on drop so a panicking test doesn't strand
@@ -1623,8 +1626,6 @@ mod tests {
         v
     }
 
-    // ── Pure helpers: validate_audio_filename ──────────────────────────────
-
     #[test]
     fn validate_audio_accepts_each_allowed_extension() {
         for ext in ALLOWED_AUDIO_FORMATS {
@@ -1662,8 +1663,6 @@ mod tests {
         assert!(matches!(validate_audio_filename("clip.exe"), Err(AssetsError::InvalidFormat(_))));
     }
 
-    // ── Pure helpers: validate_image_filename ──────────────────────────────
-
     #[test]
     fn validate_image_accepts_each_allowed_extension() {
         for ext in ALLOWED_IMAGE_FORMATS {
@@ -1692,8 +1691,6 @@ mod tests {
         assert!(matches!(validate_image_filename("clip.opus"), Err(AssetsError::InvalidFormat(_))));
     }
 
-    // ── Pure helpers: validate_font_filename ───────────────────────────────
-
     #[test]
     fn validate_font_accepts_each_allowed_extension() {
         for ext in ALLOWED_FONT_FORMATS {
@@ -1717,8 +1714,6 @@ mod tests {
         assert!(matches!(validate_font_filename("face.exe"), Err(AssetsError::InvalidFormat(_))));
     }
 
-    // ── Pure helpers: sanitize_filename ────────────────────────────────────
-
     #[test]
     fn sanitize_keeps_alphanumeric_and_safe_punct() {
         assert_eq!(sanitize_filename("Hello-World_1.opus"), "Hello-World_1.opus");
@@ -1736,8 +1731,6 @@ mod tests {
         assert_eq!(sanitize_filename("a\0b.opus"), "a_b.opus");
     }
 
-    // ── Pure helpers: build_upload_response ────────────────────────────────
-
     #[test]
     fn build_upload_response_shapes_the_audio_asset() {
         let asset =
@@ -1750,8 +1743,6 @@ mod tests {
         assert!(!asset.is_system);
         assert!(asset.license.unwrap().contains("CC0-1.0"));
     }
-
-    // ── Filesystem helpers: read_license_file ──────────────────────────────
 
     #[tokio::test]
     async fn read_license_returns_none_for_missing_file() {
@@ -1781,8 +1772,6 @@ mod tests {
         tokio::fs::write(&p, "just some text\n").await.unwrap();
         assert!(read_license_file(&p).await.is_none());
     }
-
-    // ── Filesystem helpers: process_audio_entry ────────────────────────────
 
     #[tokio::test]
     async fn process_audio_entry_skips_dirs_and_license_files() {
@@ -1855,8 +1844,6 @@ mod tests {
         assert!(asset.license.as_deref().unwrap().contains("CC0-1.0"));
     }
 
-    // ── Filesystem helpers: process_image_entry ────────────────────────────
-
     #[tokio::test]
     async fn process_image_entry_returns_dimensions_for_png() {
         let tmp = TempDir::new().unwrap();
@@ -1907,8 +1894,6 @@ mod tests {
         assert!(process_image_entry(p, false, &RolePermissions::admin()).await.is_none());
     }
 
-    // ── Filesystem helpers: process_font_entry ─────────────────────────────
-
     #[tokio::test]
     async fn process_font_entry_builds_asset_and_respects_system_flag() {
         let tmp = TempDir::new().unwrap();
@@ -1934,8 +1919,6 @@ mod tests {
         tokio::fs::write(&bad, b"").await.unwrap();
         assert!(process_font_entry(bad, false, &perms).await.is_none());
     }
-
-    // ── Filesystem helpers: scan_*_directory ───────────────────────────────
 
     #[tokio::test]
     async fn scan_audio_directory_returns_empty_for_missing_dir() {
@@ -1984,8 +1967,6 @@ mod tests {
         assert_eq!(assets[0].format, "ttf");
     }
 
-    // ── Filesystem helpers: create_license_sidecar ────────────────────────
-
     #[tokio::test]
     async fn create_license_sidecar_writes_default_spdx_text() {
         let tmp = TempDir::new().unwrap();
@@ -1993,11 +1974,11 @@ mod tests {
         tokio::fs::write(&file, b"x").await.unwrap();
         create_license_sidecar(&file, "opus").await;
         let written = tokio::fs::read_to_string(file.with_extension("opus.license")).await.unwrap();
+        // REUSE-IgnoreStart
         assert!(written.contains("SPDX-License-Identifier: CC0-1.0"));
         assert!(written.contains("SPDX-FileCopyrightText:"));
+        // REUSE-IgnoreEnd
     }
-
-    // ── Filesystem helpers: validate_file_in_user_directory ────────────────
 
     #[tokio::test]
     async fn validate_file_in_user_directory_accepts_child() {
@@ -2019,8 +2000,6 @@ mod tests {
         let err = validate_file_in_user_directory(&outside, &user_dir).unwrap_err();
         assert!(matches!(err, AssetsError::Forbidden));
     }
-
-    // ── Filesystem helpers: delete_audio_files ─────────────────────────────
 
     #[tokio::test]
     async fn delete_audio_files_removes_asset_and_license() {
@@ -2051,8 +2030,6 @@ mod tests {
         assert!(matches!(err, AssetsError::IoError(_)));
     }
 
-    // ── Error → response mapping ───────────────────────────────────────────
-
     #[tokio::test]
     async fn assets_error_maps_to_expected_status_codes() {
         let cases: [(AssetsError, StatusCode); 7] = [
@@ -2079,8 +2056,6 @@ mod tests {
         let msg = AssetsError::NotFound("x.opus".into()).to_string();
         assert!(msg.contains("x.opus"));
     }
-
-    // ── HTTP handler tests: audio router ──────────────────────────────────
 
     #[tokio::test(flavor = "current_thread")]
     async fn list_audio_assets_returns_empty_when_no_dirs() {
@@ -2230,8 +2205,6 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
-
-    // ── HTTP handler tests: image router ──────────────────────────────────
 
     #[tokio::test(flavor = "current_thread")]
     async fn list_image_assets_returns_empty_when_no_dirs() {
@@ -2480,8 +2453,6 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
-
-    // ── HTTP handler tests: font router ───────────────────────────────────
 
     #[tokio::test(flavor = "current_thread")]
     async fn list_font_assets_returns_empty_when_no_dirs() {

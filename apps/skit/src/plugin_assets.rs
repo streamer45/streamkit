@@ -1476,8 +1476,6 @@ mod tests {
         assert_eq!(patterns[0].1, "samples/quirky/user/*");
     }
 
-    // ── Error type ───────────────────────────────────────────────────────
-
     #[test]
     fn plugin_asset_error_display_messages() {
         assert_eq!(PluginAssetError::IoError("boom".to_string()).to_string(), "IO error: boom");
@@ -1526,6 +1524,7 @@ mod tests {
 }
 
 #[cfg(test)]
+// `unwrap`/`expect` in tests fail fast on setup mistakes; production policy enforced elsewhere.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod handler_tests {
     //! Integration-style tests that exercise the public Axum router built
@@ -1660,8 +1659,6 @@ mod handler_tests {
         }
     }
 
-    // ── process_entry ────────────────────────────────────────────────────
-
     #[tokio::test]
     async fn process_entry_returns_none_for_directories() {
         let tmp = TempDir::new().unwrap();
@@ -1712,8 +1709,6 @@ mod handler_tests {
         assert!(asset.path.ends_with("samples/test/user/my_cool-file.txt"), "{}", asset.path);
     }
 
-    // ── scan_directory ───────────────────────────────────────────────────
-
     #[tokio::test]
     async fn scan_directory_returns_empty_for_missing_dir() {
         let tmp = TempDir::new().unwrap();
@@ -1739,8 +1734,6 @@ mod handler_tests {
         assert_eq!(assets[0].id, "a.txt");
         assert_eq!(assets[1].id, "b.txt");
     }
-
-    // ── list_handler ─────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn list_returns_404_for_unknown_type() {
@@ -1815,8 +1808,6 @@ mod handler_tests {
             serde_json::from_slice(&body_bytes(resp.into_body()).await).unwrap();
         assert!(body.as_array().unwrap().is_empty());
     }
-
-    // ── upload_handler ───────────────────────────────────────────────────
 
     #[tokio::test]
     async fn upload_forbidden_for_viewer() {
@@ -2033,8 +2024,6 @@ mod handler_tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
-    // ── delete_handler ───────────────────────────────────────────────────
-
     #[tokio::test]
     async fn delete_forbidden_for_viewer() {
         let tmp = TempDir::new().unwrap();
@@ -2173,8 +2162,6 @@ mod handler_tests {
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
         assert!(!path.exists());
     }
-
-    // ── serve_handler ────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn serve_rejects_path_traversal_in_id() {
@@ -2374,8 +2361,6 @@ mod handler_tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
-
-    // ── update_handler ───────────────────────────────────────────────────
 
     #[tokio::test]
     async fn update_forbidden_for_viewer() {
@@ -2639,8 +2624,6 @@ mod handler_tests {
         assert_eq!(std::fs::read(&target).unwrap(), b"// updated");
     }
 
-    // ── list_asset_types_handler ─────────────────────────────────────────
-
     #[tokio::test]
     async fn asset_types_lists_core_when_no_plugins_registered() {
         let state = make_state();
@@ -2691,8 +2674,6 @@ mod handler_tests {
         assert_eq!(slint["editable"], true);
         assert_eq!(slint["icon_hint"], "file"); // default when None
     }
-
-    // ── read_local_plugin_manifest ───────────────────────────────────────
 
     fn minimal_manifest_yaml(id: &str) -> String {
         format!(
