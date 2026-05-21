@@ -2,14 +2,19 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-# Codecov configuration. Initial rollout is informational only — gates are
-# disabled below and will be ratcheted up once a baseline has been collected.
+# Codecov configuration. After Phase 4 of the coverage sprint the project
+# and patch gates are now enforcing; component-level gates remain
+# informational while individual subsystems settle near the 80% target.
 #
-# Ratchet plan (concrete meaning of "ratcheted up"):
-#   Phase 1 (now):     informational: true,  threshold: 100% (no gating)
-#   Phase 2 (~2 wks):  informational: false, project.threshold: 1%
-#                        (any coverage drop >1% blocks the PR)
-#   Phase 3 (~4 wks):  add patch.target: 80% (new code must hit 80%)
+# Ratchet history / plan:
+#   Phase 1:         informational: true,  threshold: 100% (no gating)
+#   Phase 2 (now):   project flags enforcing, threshold: 1%
+#                      (any coverage drop >1% blocks the PR)
+#   Phase 3 (now):   patch.default enforcing, target: 80%
+#                      (new / changed code must hit 80%)
+#   Phase 4 (later): tighten component_management default_rules from
+#                      informational to enforcing once `engine`, `nodes`,
+#                      and `server` are consistently above 80%.
 # Phase transitions are intentionally manual — edit this file and remove
 # `informational: true` / tighten `threshold` / `target` as the baseline
 # settles. The `backend` and `ui` flag totals on the Codecov dashboard are
@@ -27,19 +32,16 @@ coverage:
         flags:
           - backend
         target: auto
-        threshold: 100%
-        informational: true
+        threshold: 1%
       ui:
         flags:
           - ui
         target: auto
-        threshold: 100%
-        informational: true
+        threshold: 1%
     patch:
       default:
-        target: auto
-        threshold: 100%
-        informational: true
+        target: 80%
+        threshold: 0%
 
 # Flags are project-level rollups uploaded from CI (one per workflow).
 # Their `paths` are intentionally broader than the named components below:
@@ -115,10 +117,10 @@ component_management:
 comment:
   layout: "header, diff, flags, components, files"
   behavior: default
-  # Comment on every PR during Phase 1 so the team sees the numbers
-  # land. Flip to `true` at Phase 2 (when gates become enforcing) so
-  # the bot only speaks up when coverage actually changed.
-  require_changes: false
+  # Now that Phase 2 gates are enforcing, only comment when coverage
+  # actually changed — otherwise PRs with no covered files get noisy
+  # "no change" comments on every push.
+  require_changes: true
 
 ignore:
   - "**/generated/**"
@@ -130,3 +132,13 @@ ignore:
   - "apps/skit-cli/**"
   - "sdks/**"
   - "docs/**"
+  # Boilerplate / infrastructure that cannot be meaningfully unit-tested
+  # without standing up real subsystems (jemalloc, tracing-subscriber,
+  # OTel SDK, pprof, MoQ/QUIC, wgpu adapter). Excluded after Phase 4 to
+  # keep the headline `backend` flag focused on testable hot paths.
+  - "apps/skit/src/main.rs"
+  - "apps/skit/src/logging.rs"
+  - "apps/skit/src/telemetry.rs"
+  - "apps/skit/src/profiling.rs"
+  - "apps/skit/src/server/moq.rs"
+  - "crates/nodes/src/video/compositor/gpu.rs"

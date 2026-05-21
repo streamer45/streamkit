@@ -38,9 +38,11 @@ For StreamKit specifically:
 | Total project coverage (per `backend` / `ui` flag) | **≥ 70%** and trending up |
 | Generated code, examples, vendored / thin wrappers | excluded from coverage (see `codecov.yml`'s `ignore` block) |
 
-The `codecov.yml` ratchet plan lives in that file's header comment. The
-practical threshold above is what reviewers actually look at when a PR is
-opened; the codecov status check enforces it once Phase 3 lands.
+The `codecov.yml` ratchet plan lives in that file's header comment.
+Phase 2 (project flag drop > 1% blocks the PR) and Phase 3 (patch
+coverage < 80% blocks the PR) are now enforcing — those are the gates
+reviewers actually see on every PR. Component-level statuses remain
+informational while individual subsystems settle near the 80% target.
 
 ## What to do — and not do — when adding tests
 
