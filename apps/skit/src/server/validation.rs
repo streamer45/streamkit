@@ -1219,6 +1219,7 @@ nodes:
 }
 
 #[cfg(test)]
+// test fixtures use unwrap/expect for explicit setup failures
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod helper_tests {
     use super::*;
@@ -1557,6 +1558,7 @@ mod helper_tests {
 }
 
 #[cfg(test)]
+// test fixtures use unwrap/expect for explicit setup failures
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod yaml_entrypoint_tests {
     use super::*;
@@ -1671,6 +1673,7 @@ nodes:
 }
 
 #[cfg(test)]
+// test fixtures use unwrap/expect for explicit setup failures
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod handler_tests {
     use super::*;

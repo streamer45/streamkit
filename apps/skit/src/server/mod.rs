@@ -443,6 +443,8 @@ fn cors_allowed_origins_are_loopback_only(origins: &[String]) -> bool {
 }
 
 #[cfg(test)]
+// test fixtures use unwrap/unwrap_err for explicit setup failures
+#[allow(clippy::unwrap_used)]
 mod cors_tests {
     use super::{create_cors_layer, origin_matches_pattern};
 
@@ -465,7 +467,6 @@ mod cors_tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn cors_layer_does_not_panic_when_credentials_enabled() {
         let cors_config = crate::config::CorsConfig::default();
         let layer = create_cors_layer(&cors_config, false).unwrap();
@@ -484,7 +485,6 @@ mod cors_tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn cors_layer_rejects_wildcard_with_auth_enabled() {
         let cors = crate::config::CorsConfig { allowed_origins: vec!["*".to_string()] };
         let err = create_cors_layer(&cors, true).unwrap_err();
@@ -492,7 +492,6 @@ mod cors_tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn cors_layer_wildcard_without_auth_succeeds() {
         let cors = crate::config::CorsConfig { allowed_origins: vec!["*".to_string()] };
         let layer = create_cors_layer(&cors, false).unwrap();
@@ -502,7 +501,6 @@ mod cors_tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn cors_layer_empty_origins_yields_restrictive_layer() {
         let cors = crate::config::CorsConfig { allowed_origins: vec![] };
         let layer = create_cors_layer(&cors, true).unwrap();
@@ -512,7 +510,6 @@ mod cors_tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn cors_layer_specific_origins_with_auth_succeeds() {
         let cors = crate::config::CorsConfig {
             allowed_origins: vec![
@@ -528,6 +525,7 @@ mod cors_tests {
 }
 
 #[cfg(test)]
+// test fixtures use unwrap/expect for explicit setup failures
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod helper_tests {
     use super::{
@@ -622,6 +620,7 @@ mod helper_tests {
 }
 
 #[cfg(test)]
+// test fixtures use unwrap/expect for explicit setup failures
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod app_integration_tests {
     use super::*;
