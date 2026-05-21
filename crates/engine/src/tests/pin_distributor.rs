@@ -416,3 +416,216 @@ async fn shutdown_message_stops_actor() {
 
     drop(data_tx);
 }
+
+#[tokio::test]
+#[allow(clippy::expect_used)]
+async fn single_reliable_blocks_on_full_until_consumer_drains() {
+    let (data_tx, data_rx) = mpsc::channel(8);
+    let (config_tx, config_rx) = mpsc::channel(8);
+
+    let actor =
+        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor_handle = tokio::spawn(actor.run());
+
+    let (slow_tx, mut slow_rx) = mpsc::channel(1);
+    let id = ConnectionId::new(
+        "node_a".to_string(),
+        "out".to_string(),
+        "slow".to_string(),
+        "in".to_string(),
+    );
+    if let Err(e) = config_tx
+        .send(PinConfigMsg::AddConnection {
+            id,
+            tx: slow_tx,
+            mode: crate::dynamic_messages::ConnectionMode::Reliable,
+        })
+        .await
+    {
+        panic!("failed to add reliable connection: {e}");
+    }
+
+    for i in 0..3 {
+        if let Err(e) = data_tx.send(Packet::Text(format!("r-{i}").into())).await {
+            panic!("failed to send packet {i}: {e}");
+        }
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut received = Vec::new();
+    while let Ok(Some(pkt)) =
+        tokio::time::timeout(std::time::Duration::from_millis(200), slow_rx.recv()).await
+    {
+        if let Packet::Text(s) = pkt {
+            received.push(s.to_string());
+        }
+    }
+
+    assert_eq!(
+        received,
+        vec!["r-0".to_string(), "r-1".to_string(), "r-2".to_string()],
+        "Reliable mode must not drop packets; backpressure should serialize delivery"
+    );
+
+    drop(data_tx);
+    drop(config_tx);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle).await;
+}
+
+#[tokio::test]
+#[allow(clippy::expect_used)]
+async fn single_best_effort_collapses_to_latest_when_consumer_idle() {
+    let (data_tx, data_rx) = mpsc::channel(16);
+    let (config_tx, config_rx) = mpsc::channel(8);
+
+    let actor =
+        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor_handle = tokio::spawn(actor.run());
+
+    let (slow_tx, mut slow_rx) = mpsc::channel(1);
+    let id = ConnectionId::new(
+        "node_a".to_string(),
+        "out".to_string(),
+        "be".to_string(),
+        "in".to_string(),
+    );
+    if let Err(e) = config_tx
+        .send(PinConfigMsg::AddConnection {
+            id,
+            tx: slow_tx,
+            mode: crate::dynamic_messages::ConnectionMode::BestEffort,
+        })
+        .await
+    {
+        panic!("failed to add best-effort connection: {e}");
+    }
+
+    for i in 0..5 {
+        if let Err(e) = data_tx.send(Packet::Text(format!("be-{i}").into())).await {
+            panic!("failed to send packet {i}: {e}");
+        }
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut received = Vec::new();
+    while let Ok(Some(pkt)) =
+        tokio::time::timeout(std::time::Duration::from_millis(200), slow_rx.recv()).await
+    {
+        if let Packet::Text(s) = pkt {
+            received.push(s.to_string());
+        }
+    }
+
+    assert!(!received.is_empty(), "best-effort must still deliver at least one packet");
+    assert!(
+        received.len() < 5,
+        "single-output best-effort should drop packets under backpressure, got all {}/5",
+        received.len()
+    );
+
+    drop(data_tx);
+    drop(config_tx);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle).await;
+}
+
+#[tokio::test]
+#[allow(clippy::expect_used)]
+async fn remove_unknown_connection_is_silent_noop() {
+    let (data_tx, data_rx) = mpsc::channel(8);
+    let (config_tx, config_rx) = mpsc::channel(8);
+
+    let actor =
+        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor_handle = tokio::spawn(actor.run());
+
+    let unknown = ConnectionId::new(
+        "node_a".to_string(),
+        "out".to_string(),
+        "ghost".to_string(),
+        "in".to_string(),
+    );
+    if let Err(e) = config_tx.send(PinConfigMsg::RemoveConnection { id: unknown }).await {
+        panic!("failed to send remove for unknown id: {e}");
+    }
+
+    let (tx, mut rx) = mpsc::channel(8);
+    let known = ConnectionId::new(
+        "node_a".to_string(),
+        "out".to_string(),
+        "real".to_string(),
+        "in".to_string(),
+    );
+    if let Err(e) = config_tx
+        .send(PinConfigMsg::AddConnection {
+            id: known,
+            tx,
+            mode: crate::dynamic_messages::ConnectionMode::Reliable,
+        })
+        .await
+    {
+        panic!("failed to add known connection: {e}");
+    }
+    if let Err(e) = data_tx.send(Packet::Text("after-noop".into())).await {
+        panic!("failed to send packet: {e}");
+    }
+    let Some(Packet::Text(s)) =
+        tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await.ok().flatten()
+    else {
+        panic!("expected to receive packet after no-op removal");
+    };
+    assert_eq!(s.as_ref(), "after-noop");
+
+    drop(data_tx);
+    drop(config_tx);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle).await;
+}
+
+#[tokio::test]
+#[allow(clippy::expect_used)]
+async fn packet_with_no_outputs_is_dropped_without_panic() {
+    let (data_tx, data_rx) = mpsc::channel(8);
+    let (config_tx, config_rx) = mpsc::channel(8);
+
+    let actor =
+        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor_handle = tokio::spawn(actor.run());
+
+    if let Err(e) = data_tx.send(Packet::Text("orphan".into())).await {
+        panic!("failed to send orphan packet: {e}");
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    assert!(!actor_handle.is_finished(), "actor should still be running after dropping a packet");
+
+    drop(data_tx);
+    drop(config_tx);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle).await;
+}
+
+#[test]
+#[allow(clippy::expect_used)]
+fn json_byte_len_matches_serialized_length() {
+    use crate::dynamic_pin_distributor::json_byte_len;
+    use serde_json::json;
+
+    let cases = vec![
+        json!(42),
+        json!("ascii"),
+        json!("héllo 世界"),
+        json!(null),
+        json!([1, 2, 3, [4, 5]]),
+        json!({"name": "n", "nested": {"k": [true, false, null]}}),
+        json!(true),
+        json!(1.5),
+    ];
+    for value in cases {
+        let serialized = serde_json::to_string(&value).expect("serialize");
+        assert_eq!(
+            json_byte_len(&value),
+            serialized.len(),
+            "json_byte_len mismatch for value: {value:?}"
+        );
+    }
+}

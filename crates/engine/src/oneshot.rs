@@ -38,7 +38,8 @@ use streamkit_core::error::StreamKitError;
 use streamkit_core::node::ProcessorNode;
 
 /// The detected input mode for a oneshot pipeline.
-enum OneshotInputMode {
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+pub(crate) enum OneshotInputMode {
     /// HTTP streaming: pipeline has `streamkit::http_input` nodes.
     HttpStreaming,
     /// File-based: pipeline has `core::file_reader` nodes (no http_input).
@@ -51,7 +52,7 @@ enum OneshotInputMode {
 ///
 /// Checks that the combination of pipeline nodes and provided input streams
 /// is consistent.
-fn validate_input_mode<S>(
+pub(crate) fn validate_input_mode<S>(
     has_http_input: bool,
     source_node_ids: &[String],
     http_input_nodes: &[String],

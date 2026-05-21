@@ -62,7 +62,7 @@ pub struct PinDistributorActor {
 
 /// Estimate the serialized JSON byte length of a `serde_json::Value` without
 /// allocating a temporary `String`.
-fn json_byte_len(value: &serde_json::Value) -> usize {
+pub fn json_byte_len(value: &serde_json::Value) -> usize {
     struct CountWriter(usize);
     impl std::io::Write for CountWriter {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {

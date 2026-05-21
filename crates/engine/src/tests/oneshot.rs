@@ -6,7 +6,8 @@ use super::super::*;
 use crate::constants::{
     DEFAULT_BATCH_SIZE, DEFAULT_ONESHOT_IO_CAPACITY, DEFAULT_ONESHOT_MEDIA_CAPACITY,
 };
-use crate::oneshot::OneshotEngineConfig;
+use crate::oneshot::{validate_input_mode, OneshotEngineConfig, OneshotInput, OneshotInputMode};
+use bytes::Bytes;
 use streamkit_core::control::NodeControlMessage;
 use streamkit_core::types::{Packet, PacketType};
 use streamkit_core::{
@@ -253,4 +254,257 @@ async fn failing_node_propagates_error() {
         },
         other => panic!("expected Runtime error, got: {other:?}"),
     }
+}
+
+type DummyStream = futures::stream::Empty<Result<Bytes, std::io::Error>>;
+
+fn dummy_input(node_id: &str) -> OneshotInput<DummyStream> {
+    OneshotInput {
+        node_id: node_id.to_string(),
+        output_pin: "out".to_string(),
+        stream: futures::stream::empty(),
+        content_type: None,
+        field_name: "file".to_string(),
+        required: true,
+        cancellation_token: None,
+    }
+}
+
+#[test]
+#[allow(clippy::expect_used)]
+fn validate_input_mode_http_with_no_inputs_errors() {
+    let http_nodes = vec!["http_in".to_string()];
+    let no_inputs: Vec<OneshotInput<DummyStream>> = Vec::new();
+    let output = "sink".to_string();
+
+    let result = validate_input_mode(true, &[], &http_nodes, &no_inputs, Some(&output));
+    let Err(StreamKitError::Configuration(msg)) = result else {
+        panic!("expected Configuration error for http_input without streams; got {result:?}");
+    };
+    assert!(
+        msg.contains("Input streams are required"),
+        "error message should mention required input streams: {msg}"
+    );
+}
+
+#[test]
+#[allow(clippy::expect_used)]
+fn validate_input_mode_http_with_inputs_ok() {
+    let http_nodes = vec!["http_in".to_string()];
+    let inputs = vec![dummy_input("http_in")];
+
+    let mode = validate_input_mode(true, &[], &http_nodes, &inputs, None)
+        .expect("http_input with provided streams should be Ok");
+    assert_eq!(mode, OneshotInputMode::HttpStreaming);
+}
+
+#[test]
+#[allow(clippy::expect_used)]
+fn validate_input_mode_file_based_ok() {
+    let source_ids = vec!["file_reader".to_string()];
+    let no_inputs: Vec<OneshotInput<DummyStream>> = Vec::new();
+
+    let mode = validate_input_mode(false, &source_ids, &[], &no_inputs, None)
+        .expect("file readers with no streams should be Ok");
+    assert_eq!(mode, OneshotInputMode::FileBased);
+}
+
+#[test]
+#[allow(clippy::expect_used)]
+fn validate_input_mode_file_based_with_streams_errors() {
+    let source_ids = vec!["file_reader".to_string()];
+    let inputs = vec![dummy_input("file_reader")];
+
+    let result = validate_input_mode(false, &source_ids, &[], &inputs, None);
+    let Err(StreamKitError::Configuration(msg)) = result else {
+        panic!("expected Configuration error for file_reader + streams; got {result:?}");
+    };
+    assert!(
+        msg.contains("Multipart streams were provided"),
+        "error message should mention multipart streams: {msg}"
+    );
+}
+
+#[test]
+#[allow(clippy::expect_used)]
+fn validate_input_mode_generator_ok() {
+    let no_inputs: Vec<OneshotInput<DummyStream>> = Vec::new();
+
+    let mode = validate_input_mode(false, &[], &[], &no_inputs, None)
+        .expect("no sources + no streams should be Generator");
+    assert_eq!(mode, OneshotInputMode::Generator);
+}
+
+#[test]
+#[allow(clippy::expect_used)]
+fn validate_input_mode_generator_with_streams_errors() {
+    let inputs = vec![dummy_input("generator")];
+
+    let result = validate_input_mode(false, &[], &[], &inputs, None);
+    let Err(StreamKitError::Configuration(msg)) = result else {
+        panic!("expected Configuration error for generator + streams; got {result:?}");
+    };
+    assert!(
+        msg.contains("Multipart streams were provided"),
+        "error message should mention multipart streams: {msg}"
+    );
+}
+
+struct BinaryGeneratorNode {
+    count: usize,
+}
+
+#[streamkit_core::async_trait]
+impl ProcessorNode for BinaryGeneratorNode {
+    fn input_pins(&self) -> Vec<InputPin> {
+        Vec::new()
+    }
+    fn output_pins(&self) -> Vec<OutputPin> {
+        vec![OutputPin {
+            name: "out".to_string(),
+            produces_type: PacketType::Binary,
+            cardinality: PinCardinality::One,
+        }]
+    }
+    async fn run(self: Box<Self>, mut ctx: NodeContext) -> Result<(), StreamKitError> {
+        while let Some(msg) = ctx.control_rx.recv().await {
+            if matches!(msg, NodeControlMessage::Start) {
+                break;
+            }
+        }
+        for i in 0..self.count {
+            let payload = format!("g{i}").into_bytes();
+            let pkt = Packet::Binary {
+                data: bytes::Bytes::from(payload),
+                content_type: Some(std::borrow::Cow::Borrowed("application/octet-stream")),
+                metadata: None,
+            };
+            let _ = ctx.output_sender.send("out", pkt).await;
+        }
+        Ok(())
+    }
+}
+
+fn engine_with_registry(registry: streamkit_core::registry::NodeRegistry) -> Engine {
+    Engine {
+        registry: std::sync::Arc::new(std::sync::RwLock::new(registry)),
+        audio_pool: std::sync::Arc::new(streamkit_core::AudioFramePool::audio_default()),
+        video_pool: std::sync::Arc::new(streamkit_core::VideoFramePool::video_default()),
+    }
+}
+
+#[tokio::test]
+#[allow(clippy::expect_used)]
+async fn run_oneshot_pipeline_generator_round_trip() {
+    use streamkit_api::{Connection, EngineMode, Node, Pipeline};
+    use streamkit_core::registry::NodeRegistry;
+
+    let mut registry = NodeRegistry::new();
+    registry.register_dynamic(
+        "test::binary_generator",
+        |_p| Ok(Box::new(BinaryGeneratorNode { count: 3 })),
+        serde_json::json!({}),
+        vec!["test".to_string()],
+        false,
+    );
+
+    let engine = engine_with_registry(registry);
+
+    let mut nodes = indexmap::IndexMap::new();
+    nodes.insert(
+        "gen".to_string(),
+        Node { kind: "test::binary_generator".to_string(), params: None, state: None },
+    );
+    nodes.insert(
+        "sink".to_string(),
+        Node {
+            kind: "streamkit::http_output".to_string(),
+            params: Some(serde_json::json!({ "content_type": "application/octet-stream" })),
+            state: None,
+        },
+    );
+
+    let definition = Pipeline {
+        name: Some("gen-roundtrip".to_string()),
+        description: None,
+        mode: EngineMode::OneShot,
+        client: None,
+        nodes,
+        connections: vec![Connection {
+            from_node: "gen".to_string(),
+            from_pin: "out".to_string(),
+            to_node: "sink".to_string(),
+            to_pin: "in".to_string(),
+            mode: streamkit_api::ConnectionMode::Reliable,
+        }],
+        view_data: None,
+        runtime_schemas: None,
+    };
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let inputs: Vec<OneshotInput<DummyStream>> = Vec::new();
+    let mut result = engine
+        .run_oneshot_pipeline(
+            definition,
+            inputs,
+            Some(OneshotEngineConfig::default()),
+            Some(cancel),
+        )
+        .await
+        .expect("generator pipeline should run end-to-end");
+
+    assert_eq!(result.content_type, "application/octet-stream");
+
+    let mut received = Vec::new();
+    while let Ok(Some(chunk)) =
+        tokio::time::timeout(std::time::Duration::from_secs(3), result.data_stream.recv()).await
+    {
+        received.extend_from_slice(&chunk);
+    }
+    let text = String::from_utf8(received).expect("output should be utf-8");
+    assert!(
+        text.contains("g0") && text.contains("g1") && text.contains("g2"),
+        "expected all generator outputs in stream, got: {text:?}"
+    );
+}
+
+#[tokio::test]
+#[allow(clippy::expect_used)]
+async fn run_oneshot_pipeline_propagates_validation_error() {
+    use streamkit_api::{EngineMode, Node, Pipeline};
+    use streamkit_core::registry::NodeRegistry;
+
+    let registry = NodeRegistry::new();
+    let engine = engine_with_registry(registry);
+
+    let mut nodes = indexmap::IndexMap::new();
+    nodes.insert(
+        "sink".to_string(),
+        Node { kind: "streamkit::http_output".to_string(), params: None, state: None },
+    );
+    let definition = Pipeline {
+        name: None,
+        description: None,
+        mode: EngineMode::OneShot,
+        client: None,
+        nodes,
+        connections: Vec::new(),
+        view_data: None,
+        runtime_schemas: None,
+    };
+
+    let inputs = vec![dummy_input("nonexistent")];
+    let result = engine
+        .run_oneshot_pipeline(
+            definition,
+            inputs,
+            Some(OneshotEngineConfig::default()),
+            Some(tokio_util::sync::CancellationToken::new()),
+        )
+        .await;
+    assert!(
+        matches!(result, Err(StreamKitError::Configuration(_))),
+        "expected Configuration error when streams provided without http_input; got error: {:?}",
+        result.err()
+    );
 }
