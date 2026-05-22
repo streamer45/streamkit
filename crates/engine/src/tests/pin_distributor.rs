@@ -495,13 +495,13 @@ async fn single_reliable_blocks_on_full_until_consumer_drains() {
         .expect("actor task panicked");
 }
 
-// NOTE: renamed from `single_best_effort_collapses_to_latest_when_consumer_idle`
-// to reflect what the implementation actually does today. The intended
-// contract (collapse-to-latest) is tracked at
-// https://github.com/streamer45/streamkit/issues/488; once fixed, rename
-// back and flip the assertion.
+// Verifies the module-level "BestEffort keeps the newest packet when
+// downstream is congested" contract: with an idle slow consumer the actor
+// must drop intermediate packets but, once the consumer reads, it must
+// observe the LATEST packet (be-4), not just the first one or some stale
+// middle packet. Regression against https://github.com/streamer45/streamkit/issues/488.
 #[tokio::test]
-async fn single_best_effort_keeps_first_packet_when_consumer_idle() {
+async fn single_best_effort_collapses_to_latest_when_consumer_idle() {
     let (data_tx, data_rx) = mpsc::channel(16);
     let (config_tx, config_rx) = mpsc::channel(8);
 
@@ -544,33 +544,16 @@ async fn single_best_effort_keeps_first_packet_when_consumer_idle() {
         }
     }
 
-    // BUG: pinning current (questionable) behavior. The module-level
-    // docstring of dynamic_pin_distributor.rs states that BestEffort
-    // "keeps the newest packet when downstream is congested", but
-    // distribute_packet only stores the newest in `pending_best_effort`
-    // and never flushes it: there is no `select!` arm using
-    // `mpsc::Sender::reserve()` to drain pending_best_effort once the
-    // downstream channel has capacity again. As a result, with an idle
-    // consumer of capacity 1, the consumer observes ONLY the FIRST packet
-    // (be-0) — every subsequent packet ends up in pending_best_effort,
-    // overwriting the previous, and is silently lost when the actor
-    // shuts down.
-    //
-    // Tracking issue: https://github.com/streamer45/streamkit/issues/488
-    //
-    // When the bug is fixed, the assertion below should flip to
-    // `received.last() == Some(\"be-4\")` and the comment + issue link
-    // should be removed.
     assert!(!received.is_empty(), "best-effort must still deliver at least one packet");
     assert!(
         received.len() < 5,
-        "single-output best-effort should drop packets under backpressure, got all {}/5",
+        "single-output best-effort should drop intermediate packets under backpressure, got all {}/5",
         received.len()
     );
     assert_eq!(
-        received.first().map(String::as_str),
-        Some("be-0"),
-        "pinning current best-effort behavior: only the first packet reaches an idle consumer; received = {received:?}"
+        received.last().map(String::as_str),
+        Some("be-4"),
+        "best-effort must converge on the LATEST packet once the consumer drains; received = {received:?}"
     );
 
     drop(data_tx);
@@ -797,6 +780,238 @@ async fn multi_output_reliable_drops_closed_consumer() {
         Ok(Some(Packet::Text(s))) => assert_eq!(s.as_ref(), "second"),
         other => panic!("alive consumer should receive 'second'; got {other:?}"),
     }
+
+    drop(data_tx);
+    drop(config_tx);
+    tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle)
+        .await
+        .expect("actor must exit within 1s after both senders drop")
+        .expect("actor task panicked");
+}
+
+// Multi-output fan-out variant of the #488 contract: a slow best-effort
+// consumer must still observe the LATEST packet once it drains, while a
+// reliable peer receives every packet. Verifies the flush arm in the
+// multi-output path (distribute_packet's fan-out loop).
+#[tokio::test]
+async fn multi_output_best_effort_collapses_to_latest_when_slow() {
+    let (data_tx, data_rx) = mpsc::channel(16);
+    let (config_tx, config_rx) = mpsc::channel(8);
+    let actor =
+        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor_handle = tokio::spawn(actor.run());
+
+    let (slow_tx, mut slow_rx) = mpsc::channel(1);
+    let (fast_tx, mut fast_rx) = mpsc::channel(16);
+
+    config_tx
+        .send(PinConfigMsg::AddConnection {
+            id: ConnectionId::new(
+                "node_a".to_string(),
+                "out".to_string(),
+                "slow".to_string(),
+                "in".to_string(),
+            ),
+            tx: slow_tx,
+            mode: crate::dynamic_messages::ConnectionMode::BestEffort,
+        })
+        .await
+        .expect("add slow");
+    config_tx
+        .send(PinConfigMsg::AddConnection {
+            id: ConnectionId::new(
+                "node_a".to_string(),
+                "out".to_string(),
+                "fast".to_string(),
+                "in".to_string(),
+            ),
+            tx: fast_tx,
+            mode: crate::dynamic_messages::ConnectionMode::BestEffort,
+        })
+        .await
+        .expect("add fast");
+
+    for i in 0..5 {
+        data_tx.send(Packet::Text(format!("mo-{i}").into())).await.expect("send");
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut fast_received = Vec::new();
+    while let Ok(Some(Packet::Text(s))) =
+        tokio::time::timeout(std::time::Duration::from_millis(50), fast_rx.recv()).await
+    {
+        fast_received.push(s.to_string());
+    }
+    assert_eq!(
+        fast_received,
+        vec!["mo-0", "mo-1", "mo-2", "mo-3", "mo-4"],
+        "fast peer with ample capacity should receive every packet in order"
+    );
+
+    let mut slow_received = Vec::new();
+    while let Ok(Some(Packet::Text(s))) =
+        tokio::time::timeout(std::time::Duration::from_millis(200), slow_rx.recv()).await
+    {
+        slow_received.push(s.to_string());
+    }
+    assert!(
+        !slow_received.is_empty(),
+        "slow best-effort peer must still receive at least one packet"
+    );
+    assert!(
+        slow_received.len() < 5,
+        "slow best-effort peer should drop intermediate packets, got all {}/5",
+        slow_received.len()
+    );
+    assert_eq!(
+        slow_received.last().map(String::as_str),
+        Some("mo-4"),
+        "slow best-effort peer must converge on the LATEST packet; received = {slow_received:?}"
+    );
+
+    drop(data_tx);
+    drop(config_tx);
+    tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle)
+        .await
+        .expect("actor must exit within 1s after both senders drop")
+        .expect("actor task panicked");
+}
+
+// Once a best-effort flush has delivered the parked packet, subsequent
+// packets sent while the consumer is keeping up must flow through
+// directly (no stale pending state, no stuck flush). Guards against a
+// regression where flush_in_flight is never reset.
+#[tokio::test]
+async fn best_effort_flush_then_steady_state_delivers_new_packets() {
+    let (data_tx, data_rx) = mpsc::channel(16);
+    let (config_tx, config_rx) = mpsc::channel(8);
+    let actor =
+        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor_handle = tokio::spawn(actor.run());
+
+    let (tx, mut rx) = mpsc::channel(1);
+    config_tx
+        .send(PinConfigMsg::AddConnection {
+            id: ConnectionId::new(
+                "node_a".to_string(),
+                "out".to_string(),
+                "be".to_string(),
+                "in".to_string(),
+            ),
+            tx,
+            mode: crate::dynamic_messages::ConnectionMode::BestEffort,
+        })
+        .await
+        .expect("add connection");
+
+    // Phase 1: drive the actor into "flush in flight" state by bursting
+    // packets while the consumer is idle.
+    for i in 0..3 {
+        data_tx.send(Packet::Text(format!("burst-{i}").into())).await.expect("send burst");
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+
+    // Drain the burst (first packet + flushed latest).
+    let mut drained = Vec::new();
+    while let Ok(Some(Packet::Text(s))) =
+        tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await
+    {
+        drained.push(s.to_string());
+    }
+    assert_eq!(
+        drained.last().map(String::as_str),
+        Some("burst-2"),
+        "phase 1 must converge on the latest burst packet; drained = {drained:?}"
+    );
+
+    // Phase 2: with the channel quiet, send a single fresh packet. It must
+    // be delivered through the direct try_send path — not blocked behind
+    // any leftover flush state.
+    data_tx.send(Packet::Text("steady".into())).await.expect("send steady");
+    match tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await {
+        Ok(Some(Packet::Text(s))) => assert_eq!(
+            s.as_ref(),
+            "steady",
+            "steady-state packet should be delivered cleanly after a prior flush"
+        ),
+        other => panic!("expected 'steady' packet, got {other:?}"),
+    }
+
+    drop(data_tx);
+    drop(config_tx);
+    tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle)
+        .await
+        .expect("actor must exit within 1s after both senders drop")
+        .expect("actor task panicked");
+}
+
+// If the downstream receiver is dropped while a flush reservation is
+// pending, the actor must remove the connection cleanly (the
+// reserve_owned() future resolves with an error, not a permit) and
+// continue serving any other connection.
+#[tokio::test]
+async fn best_effort_flush_removes_connection_when_receiver_dropped() {
+    let (data_tx, data_rx) = mpsc::channel(16);
+    let (config_tx, config_rx) = mpsc::channel(8);
+    let actor =
+        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor_handle = tokio::spawn(actor.run());
+
+    let (slow_tx, slow_rx) = mpsc::channel(1);
+    let (alive_tx, mut alive_rx) = mpsc::channel(16);
+
+    config_tx
+        .send(PinConfigMsg::AddConnection {
+            id: ConnectionId::new(
+                "node_a".to_string(),
+                "out".to_string(),
+                "slow".to_string(),
+                "in".to_string(),
+            ),
+            tx: slow_tx,
+            mode: crate::dynamic_messages::ConnectionMode::BestEffort,
+        })
+        .await
+        .expect("add slow");
+    config_tx
+        .send(PinConfigMsg::AddConnection {
+            id: ConnectionId::new(
+                "node_a".to_string(),
+                "out".to_string(),
+                "alive".to_string(),
+                "in".to_string(),
+            ),
+            tx: alive_tx,
+            mode: crate::dynamic_messages::ConnectionMode::BestEffort,
+        })
+        .await
+        .expect("add alive");
+
+    // Burst packets — slow receiver fills, flush reservation goes in flight.
+    for i in 0..3 {
+        data_tx.send(Packet::Text(format!("p-{i}").into())).await.expect("send");
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+
+    // Drop the slow receiver — its pending reservation must resolve with
+    // an error, and the actor must remove the connection.
+    drop(slow_rx);
+
+    // Send another packet so the actor's loop runs and observes the flush
+    // failure; the alive peer must still receive it.
+    data_tx.send(Packet::Text("after-drop".into())).await.expect("send");
+
+    let mut alive_received = Vec::new();
+    while let Ok(Some(Packet::Text(s))) =
+        tokio::time::timeout(std::time::Duration::from_millis(200), alive_rx.recv()).await
+    {
+        alive_received.push(s.to_string());
+    }
+    assert!(
+        alive_received.contains(&"after-drop".to_string()),
+        "alive peer must keep receiving after the slow peer is dropped; received = {alive_received:?}"
+    );
 
     drop(data_tx);
     drop(config_tx);
