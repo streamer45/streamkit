@@ -879,7 +879,22 @@ mod handler_tests {
 
     const MULTIPART_BOUNDARY: &str = "------------------------test-boundary";
 
-    fn empty_role_perms() -> Permissions {
+    // role_extractor consults SK_ROLE before default_role.  A developer
+    // (or CI runner) with SK_ROLE=admin in the environment would silently
+    // upgrade no_perm_state() callers to admin perms and break the
+    // FORBIDDEN assertions.  Clear it once at module entry.
+    static ENV_SETUP: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    fn ensure_clean_env() {
+        ENV_SETUP.get_or_init(|| std::env::remove_var("SK_ROLE"));
+    }
+
+    /// Returns a `Permissions` value with every plugin-related capability
+    /// explicitly denied: no upload, no delete, no install, empty
+    /// allow-list.  Starts from `Permissions::viewer()`, so unrelated
+    /// read-only flags (`list_nodes`, `list_samples`, `read_samples`,
+    /// etc.) remain enabled — do not reuse this helper for tests that
+    /// rely on those being false.
+    fn denied_plugin_perms() -> Permissions {
         let mut p = Permissions::viewer();
         p.list_sessions = false;
         p.load_plugins = false;
@@ -889,6 +904,7 @@ mod handler_tests {
     }
 
     fn make_state_with(config: Config) -> (Arc<AppState>, TempDir) {
+        ensure_clean_env();
         let tmp = TempDir::new().unwrap();
         let mut cfg = config;
         cfg.plugins.directory = tmp.path().to_string_lossy().into_owned();
@@ -913,7 +929,7 @@ mod handler_tests {
         cfg.plugins.http_management.allow_http_management = true;
         cfg.plugins.marketplace.marketplace_enabled = true;
         cfg.permissions.default_role = "no-perms".to_string();
-        cfg.permissions.roles.insert("no-perms".to_string(), empty_role_perms());
+        cfg.permissions.roles.insert("no-perms".to_string(), denied_plugin_perms());
         make_state_with(cfg)
     }
 
@@ -989,15 +1005,16 @@ mod handler_tests {
     }
 
     #[tokio::test]
-    async fn list_plugins_filters_response_to_allowed_plugins_only() {
-        // The handler retains entries via `perms.is_plugin_allowed`.
-        // With an empty manager every retain decision is moot, but we
-        // still exercise the role lookup + retain pass — and confirm
-        // that a role with an empty allow-list never panics on the
-        // empty manager.
+    async fn list_plugins_returns_empty_when_manager_is_empty_and_allowlist_is_empty() {
+        // With no plugins loaded the `.retain()` at `list_plugins_handler`
+        // is a no-op — this test only proves the empty-manager path
+        // produces `[]` and that an empty allow-list does not panic.
+        // It does NOT exercise the `is_plugin_allowed` filtering
+        // decision; a future test that loads plugins into the manager
+        // is required to cover that branch.
         let mut cfg = Config::default();
         cfg.permissions.default_role = "empty".to_string();
-        cfg.permissions.roles.insert("empty".to_string(), empty_role_perms());
+        cfg.permissions.roles.insert("empty".to_string(), denied_plugin_perms());
         let (state, _tmp) = make_state_with(cfg);
 
         let router = build_plugin_router(state);
@@ -1058,10 +1075,25 @@ mod handler_tests {
     }
 
     #[tokio::test]
-    async fn upload_rejects_empty_kind() {
+    async fn upload_rejects_whitespace_only_kind() {
+        // Pins that the trim() at upload_plugin_handler treats
+        // whitespace-only values as empty.
         let (state, _tmp) = admin_state();
         let router = build_plugin_router(state);
         let body = multipart_body(&[("kind", None, None, b"   ")]);
+        let resp = router.oneshot(post_multipart("/api/v1/plugins", body)).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("Plugin kind must not be empty"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_literal_empty_kind() {
+        // Pins that a literal-empty kind value is rejected by the same
+        // branch as the whitespace case.
+        let (state, _tmp) = admin_state();
+        let router = build_plugin_router(state);
+        let body = multipart_body(&[("kind", None, None, b"")]);
         let resp = router.oneshot(post_multipart("/api/v1/plugins", body)).await.unwrap();
         let (status, body) = read_body(resp).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -1144,9 +1176,17 @@ mod handler_tests {
 
     #[tokio::test]
     async fn upload_invalid_native_artifact_reports_manager_error() {
-        // Bytes are clearly not a valid .so, but the validations leading up
-        // to load_from_temp_file pass.  The manager fails to load, which
-        // surfaces as a `PluginHttpError::Manager` (HTTP 422).
+        // Bytes are clearly not a valid .so, but the validations leading
+        // up to load_from_temp_file all pass.  The plugin manager fails
+        // to load the artifact, which surfaces as a
+        // `PluginHttpError::Manager` (HTTP 422 UNPROCESSABLE_ENTITY).
+        //
+        // Pinning UNPROCESSABLE_ENTITY exactly (rather than accepting
+        // 400 || 422) ensures the manager path is what failed:
+        // BAD_REQUEST only occurs when `spawn_blocking` itself panics,
+        // i.e. the manager was never reached.  Allowing both statuses
+        // would silently mask a future change that short-circuits the
+        // request before the load call.
         let (state, _tmp) = admin_state();
         let router = build_plugin_router(state);
         let body = multipart_body(&[(
@@ -1156,14 +1196,16 @@ mod handler_tests {
             b"not an ELF",
         )]);
         let resp = router.oneshot(post_multipart("/api/v1/plugins", body)).await.unwrap();
-        let status = resp.status();
-        // Either UNPROCESSABLE_ENTITY (manager error) or BAD_REQUEST (load task
-        // surface).  Both are documented PluginHttpError variants and either
-        // proves we reached the manager.
-        assert!(
-            status == StatusCode::UNPROCESSABLE_ENTITY || status == StatusCode::BAD_REQUEST,
-            "expected manager-style failure, got {status}"
+        let (status, body) = read_body(resp).await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "expected manager-side load failure, got {status}: {body}"
         );
+        // Body comes from anyhow::Error::to_string() on the manager
+        // failure — confirm it is non-empty so a future change that
+        // silently swallows the underlying error message is caught.
+        assert!(!body.is_empty(), "manager error body should not be empty");
     }
 
     #[tokio::test]
@@ -1551,27 +1593,39 @@ mod handler_tests {
     #[tokio::test]
     async fn plugin_http_error_multipart_maps_to_400_via_handler() {
         // The Multipart variant is only constructable from an axum
-        // MultipartError, which we cannot fabricate directly.  Drive an
-        // actual multipart parse failure through the handler instead:
-        // sending a malformed body with a valid content-type header
-        // triggers the underlying multer parser to return a MultipartError,
-        // which the `From<MultipartError>` conversion wraps.
+        // MultipartError, which we cannot fabricate directly.  Drive
+        // a real multipart parse failure through the handler by sending
+        // a body whose declared boundary does not match the body bytes
+        // at all — multer raises `IncompleteFieldData` / similar before
+        // any field is yielded, which `From<MultipartError>` wraps into
+        // `PluginHttpError::Multipart`.
+        //
+        // Asserting on the literal "Invalid multipart payload" prefix
+        // (formatted by the `Multipart` arm of `IntoResponse`) pins the
+        // From<MultipartError> conversion specifically; the OR-fallback
+        // to "Missing 'plugin' file field" would silently let a future
+        // removal of that conversion pass.
         let (state, _tmp) = admin_state();
         let router = build_plugin_router(state);
+        // Body containing the boundary marker but a truncated part with
+        // no terminating `--BOUNDARY--`, no `\r\n\r\n` separating
+        // headers from body, and no Content-Disposition.  multer
+        // rejects this with a parse error.
+        let bad_body = format!(
+            "--{MULTIPART_BOUNDARY}\r\nbroken header without colon\r\n\r\nsome bytes but no closing boundary"
+        );
         let req = Request::builder()
             .method(Method::POST)
             .uri("/api/v1/plugins")
             .header(CONTENT_TYPE, multipart_content_type())
-            .body(Body::from(b"not a real multipart body".to_vec()))
+            .body(Body::from(bad_body.into_bytes()))
             .unwrap();
         let resp = router.oneshot(req).await.unwrap();
-        let status = resp.status();
-        let (_, body) = read_body(resp).await;
+        let (status, body) = read_body(resp).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(
-            body.contains("Invalid multipart payload")
-                || body.contains("Missing 'plugin' file field"),
-            "body: {body}"
+            body.starts_with("Invalid multipart payload"),
+            "expected `From<MultipartError>` mapping, got: {body}"
         );
     }
 }

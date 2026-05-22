@@ -1771,10 +1771,23 @@ mod inject_teardown_tests {
     }
 
     #[tokio::test]
-    async fn teardown_all_previews_drains_session_preview_map() {
+    async fn teardown_all_previews_clears_pipeline_connections_but_keeps_preview_map() {
+        // Pins TWO surprising contracts of teardown_all_previews:
+        //   1. it leaves `session.previews` intact (the map is NOT drained),
+        //   2. it DOES remove preview connections from `session.pipeline`.
+        //
+        // To make assertion (2) meaningful we must populate
+        // `session.pipeline.connections` first — `inject_preview_subgraph`
+        // only fills the returned bookkeeping vector, not the pipeline
+        // model (the handler at start_preview_handler is what normally
+        // mirrors them back).  Without this seeding the connections list
+        // is empty before AND after teardown, and assertion (2) would
+        // pass even if teardown_preview's pipeline cleanup branch were
+        // deleted entirely.
         let (session, _rx) = fresh_session().await;
         seed_pipeline_node(&session, "src", "audio::source").await;
 
+        let mut seeded = Vec::new();
         for i in 0..MAX_PREVIEWS_PER_SESSION {
             let preview_id = format!("p{i}");
             let taps = vec![tap("src", "out", true, true, false)];
@@ -1783,6 +1796,28 @@ mod inject_teardown_tests {
                 inject_preview_subgraph(&session, &preview_id, &taps, "/gw", &pipeline)
                     .await
                     .unwrap();
+
+            {
+                let mut pip = session.pipeline.lock().await;
+                for (node_id, kind) in &nodes {
+                    pip.nodes.insert(
+                        node_id.clone(),
+                        streamkit_api::Node { kind: kind.clone(), params: None, state: None },
+                    );
+                }
+                for (fn_, fp, tn, tp, mode) in &conns {
+                    pip.connections.push(streamkit_api::Connection {
+                        from_node: fn_.clone(),
+                        from_pin: fp.clone(),
+                        to_node: tn.clone(),
+                        to_pin: tp.clone(),
+                        mode: *mode,
+                    });
+                }
+            }
+
+            seeded.push((nodes.clone(), conns.clone()));
+
             session
                 .add_preview(PreviewState {
                     preview_id: preview_id.clone(),
@@ -1799,11 +1834,19 @@ mod inject_teardown_tests {
         }
         assert_eq!(session.preview_count().await, MAX_PREVIEWS_PER_SESSION);
 
+        let pip = session.pipeline.lock().await;
+        assert!(
+            !pip.connections.is_empty(),
+            "precondition: pipeline.connections must be populated before teardown_all_previews so the cleanup assertion is meaningful"
+        );
+        assert!(
+            seeded.iter().any(|(nodes, _)| nodes.iter().any(|(id, _)| pip.nodes.contains_key(id))),
+            "precondition: at least one preview node must be present in the pipeline model"
+        );
+        drop(pip);
+
         teardown_all_previews(&session).await;
 
-        // teardown_all_previews tears down subgraphs but does NOT remove
-        // entries from `session.previews`.  Document that contract here so
-        // future refactors can't quietly change it.
         assert_eq!(
             session.preview_count().await,
             MAX_PREVIEWS_PER_SESSION,
@@ -1813,10 +1856,127 @@ mod inject_teardown_tests {
         let pipeline = session.pipeline.lock().await;
         assert!(
             pipeline.connections.is_empty(),
-            "all preview connections should be removed, got: {:?}",
+            "teardown_all_previews must remove every preview connection from the pipeline model, got: {:?}",
             pipeline.connections
         );
+        for (nodes, _) in &seeded {
+            for (id, _) in nodes {
+                assert!(
+                    !pipeline.nodes.contains_key(id),
+                    "preview node {id} should have been removed from pipeline.nodes"
+                );
+            }
+        }
         drop(pipeline);
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    /// Drain `rx` for up to `max_wait` and return every NodeAdded `kind`
+    /// the engine actually emitted.  The engine emits NodeAdded only
+    /// after successfully constructing the node, so this lets us
+    /// distinguish between bookkeeping-only assertions and what was
+    /// actually built end-to-end — catching the class of bug pinned by
+    /// issue #480 (bookkeeping kind diverging from the kind asked of
+    /// the engine).
+    async fn drain_node_added_kinds(
+        rx: &mut broadcast::Receiver<BroadcastEvent>,
+        max_wait: std::time::Duration,
+    ) -> Vec<String> {
+        let mut out = Vec::new();
+        let deadline = tokio::time::Instant::now() + max_wait;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match tokio::time::timeout(remaining, rx.recv()).await {
+                Ok(Ok(evt)) => {
+                    if let streamkit_api::EventPayload::NodeAdded { kind, .. } = &evt.event.payload
+                    {
+                        out.push(kind.clone());
+                    }
+                },
+                Ok(Err(broadcast::error::RecvError::Lagged(_))) => {},
+                Ok(Err(broadcast::error::RecvError::Closed)) | Err(_) => break,
+            }
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn inject_raw_video_engine_receives_video_qualified_vp9_kind() {
+        // Pins what the ENGINE actually received — not just the
+        // bookkeeping vector.  add_vp9_encoder_node sends
+        // `video::vp9::encoder` to the engine; if a future change starts
+        // sending an unqualified `vp9::encoder` (mirroring the
+        // bookkeeping bug pinned by #480), the engine would fail to
+        // construct the node and NodeAdded for that kind would never
+        // arrive.  Same idea for opus and the moq peer.
+        //
+        // This complements `inject_raw_video_creates_pixconv_and_vp9_encoder`
+        // (which only inspects bookkeeping) by asserting on the
+        // engine-confirmed event stream.
+        let (session, mut rx) = fresh_session().await;
+        let mut pipeline = empty_pipeline();
+        pipeline.nodes.insert(
+            "src".to_string(),
+            streamkit_api::Node { kind: "video::source".to_string(), params: None, state: None },
+        );
+        let taps = vec![tap("src", "out", false, false, true)];
+
+        inject_preview_subgraph(&session, "engcheck", &taps, "/gw/engcheck", &pipeline)
+            .await
+            .expect("inject should succeed for raw video");
+
+        let kinds = drain_node_added_kinds(&mut rx, std::time::Duration::from_secs(5)).await;
+
+        assert!(
+            kinds.contains(&"video::pixel_convert".to_string()),
+            "engine never confirmed video::pixel_convert; got kinds: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&"video::vp9::encoder".to_string()),
+            "engine never confirmed video::vp9::encoder — sibling of #480? got kinds: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&"transport::moq::peer".to_string()),
+            "engine never confirmed transport::moq::peer; got kinds: {kinds:?}"
+        );
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn inject_raw_audio_engine_receives_audio_qualified_opus_kind() {
+        // Companion to the VP9 test above: asserts the OPUS path's
+        // engine-side kind matches what add_opus_encoder_node sends
+        // (`audio::opus::encoder`).  If add_opus_encoder_node ever
+        // diverges from its bookkeeping (the failure mode #480 fixes
+        // would have prevented in the first place), the engine never
+        // confirms construction and the assertion fires.
+        let (session, mut rx) = fresh_session().await;
+        let mut pipeline = empty_pipeline();
+        pipeline.nodes.insert(
+            "src".to_string(),
+            streamkit_api::Node { kind: "audio::source".to_string(), params: None, state: None },
+        );
+        let taps = vec![tap("src", "out", false, true, false)];
+
+        inject_preview_subgraph(&session, "opuscheck", &taps, "/gw/opuscheck", &pipeline)
+            .await
+            .expect("inject should succeed for raw audio");
+
+        let kinds = drain_node_added_kinds(&mut rx, std::time::Duration::from_secs(5)).await;
+
+        assert!(
+            kinds.contains(&"audio::opus::encoder".to_string()),
+            "engine never confirmed audio::opus::encoder; got kinds: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&"transport::moq::peer".to_string()),
+            "engine never confirmed transport::moq::peer; got kinds: {kinds:?}"
+        );
 
         let _ = session.shutdown_and_wait().await;
     }
@@ -1845,11 +2005,27 @@ mod handler_tests {
         p
     }
 
-    fn make_admin_state() -> Arc<AppState> {
+    // Same env-leak guard as the plugins handler_tests module —
+    // see comment there.
+    static ENV_SETUP: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    fn ensure_clean_env() {
+        ENV_SETUP.get_or_init(|| std::env::remove_var("SK_ROLE"));
+    }
+
+    /// `(state, _tmp)` — the caller must keep the TempDir alive for the
+    /// lifetime of the test so the temp `.plugins/` directory survives
+    /// every request.  Without this override the plugin manager init in
+    /// `create_app_state` calls `create_dir_all(".plugins/...")` against
+    /// the test process's CWD, leaving a `.plugins/` directory at the
+    /// workspace root and racing with parallel tests that share CWD.
+    fn make_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
+        ensure_clean_env();
+        let tmp = tempfile::TempDir::new().unwrap();
         let mut cfg = Config::default();
+        cfg.plugins.directory = tmp.path().to_string_lossy().into_owned();
         cfg.permissions.default_role = "preview-admin".to_string();
         cfg.permissions.roles.insert("preview-admin".to_string(), admin_permissions());
-        crate::server::create_app_state(cfg, None)
+        (crate::server::create_app_state(cfg, None), tmp)
     }
 
     async fn install_session(state: &Arc<AppState>, name: &str) -> Session {
@@ -1892,7 +2068,14 @@ mod handler_tests {
 
     #[tokio::test]
     async fn start_preview_returns_404_for_unknown_session() {
-        let state = make_admin_state();
+        // Precondition: this module is gated on `feature = "moq"`
+        // (server/mod.rs), and `create_app_state` under that feature
+        // always sets `app_state.moq_gateway = Some(...)`.  The handler's
+        // earlier `moq_gateway.is_none()` 503 branch is therefore
+        // unreachable here — we always hit the session-lookup 404.
+        // If the gateway ever becomes opt-in, this assertion will need a
+        // setup step that explicitly enables it.
+        let (state, _tmp) = make_admin_state();
         let router = build_router(state);
 
         let req = post_json("/api/v1/sessions/missing/preview", &json!({}));
@@ -1904,7 +2087,7 @@ mod handler_tests {
 
     #[tokio::test]
     async fn start_preview_returns_400_when_tap_node_not_in_pipeline() {
-        let state = make_admin_state();
+        let (state, _tmp) = make_admin_state();
         let session = install_session(&state, "alpha").await;
         let router = build_router(Arc::clone(&state));
 
@@ -1917,12 +2100,69 @@ mod handler_tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(body.contains("Tap node 'ghost' not found"), "body: {body}");
 
+        // The error message is shared between the handler's pre-check
+        // (preview.rs:751-756) and inject_preview_subgraph's own check.
+        // A failure-mode-distinguishing assertion: after a pre-check
+        // rejection, NO preview nodes can have been added to the
+        // session pipeline.  If a future refactor accidentally lets
+        // inject_preview_subgraph run before the handler short-circuits,
+        // it would push partial state through the engine and that
+        // state would be observable on session.pipeline.
+        let pip = session.pipeline.lock().await;
+        assert!(
+            !pip.nodes.keys().any(|k| k.starts_with("_preview_")),
+            "pre-check failure must not leak any _preview_ nodes into the pipeline, got: {:?}",
+            pip.nodes.keys().collect::<Vec<_>>()
+        );
+        drop(pip);
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn start_preview_returns_400_when_tap_pin_not_on_node() {
+        // Pins the pin-validation pre-check at preview.rs:761-765,
+        // which produces a UNIQUE error message that distinguishes it
+        // from the tap_node and inject_preview_subgraph checks.
+        let (state, _tmp) = make_admin_state();
+        let session = install_session(&state, "alpha").await;
+
+        // Seed a real node whose kind is registered with the engine, so
+        // the registry lookup finds a definition and the pin check
+        // actually runs (instead of warning + skipping).
+        // `video::colorbars` is registered by streamkit-nodes and has
+        // a single `out` output pin (crates/nodes/src/video/colorbars.rs).
+        {
+            let mut pip = session.pipeline.lock().await;
+            pip.nodes.insert(
+                "src".to_string(),
+                streamkit_api::Node {
+                    kind: "video::colorbars".to_string(),
+                    params: None,
+                    state: None,
+                },
+            );
+        }
+
+        let router = build_router(Arc::clone(&state));
+        let req = post_json(
+            "/api/v1/sessions/alpha/preview",
+            &json!({ "tap_node": "src", "tap_pin": "this-pin-does-not-exist" }),
+        );
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.contains("Pin 'this-pin-does-not-exist' not found on node 'src'"),
+            "body: {body}"
+        );
+
         let _ = session.shutdown_and_wait().await;
     }
 
     #[tokio::test]
     async fn start_preview_returns_400_when_tap_pin_provided_without_tap_node() {
-        let state = make_admin_state();
+        let (state, _tmp) = make_admin_state();
         let session = install_session(&state, "alpha").await;
         let router = build_router(Arc::clone(&state));
 
@@ -1937,7 +2177,7 @@ mod handler_tests {
 
     #[tokio::test]
     async fn start_preview_returns_409_when_preview_limit_reached() {
-        let state = make_admin_state();
+        let (state, _tmp) = make_admin_state();
         let session = install_session(&state, "alpha").await;
 
         for i in 0..MAX_PREVIEWS_PER_SESSION {
@@ -1976,7 +2216,7 @@ mod handler_tests {
 
     #[tokio::test]
     async fn list_previews_returns_404_for_unknown_session() {
-        let state = make_admin_state();
+        let (state, _tmp) = make_admin_state();
         let router = build_router(state);
 
         let req =
@@ -1988,7 +2228,7 @@ mod handler_tests {
 
     #[tokio::test]
     async fn list_previews_returns_seeded_previews_in_order() {
-        let state = make_admin_state();
+        let (state, _tmp) = make_admin_state();
         let session = install_session(&state, "alpha").await;
 
         let earlier = SystemTime::now();
@@ -2060,7 +2300,7 @@ mod handler_tests {
 
     #[tokio::test]
     async fn stop_preview_returns_404_for_unknown_session() {
-        let state = make_admin_state();
+        let (state, _tmp) = make_admin_state();
         let router = build_router(state);
 
         let req = Request::builder()
@@ -2069,13 +2309,18 @@ mod handler_tests {
             .body(Body::empty())
             .unwrap();
         let resp = router.oneshot(req).await.unwrap();
-        let (status, _) = read_body(resp).await;
+        let (status, body) = read_body(resp).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+        // Pin the source of the 404 to the session-lookup branch in
+        // stop_preview_handler; an unrelated 404 (route fall-through,
+        // future ownership check that short-circuits to NOT_FOUND) would
+        // pass a status-only assertion but fail this one.
+        assert!(body.contains("missing"), "body: {body}");
     }
 
     #[tokio::test]
     async fn stop_preview_returns_404_for_unknown_preview_id() {
-        let state = make_admin_state();
+        let (state, _tmp) = make_admin_state();
         let session = install_session(&state, "alpha").await;
         let router = build_router(Arc::clone(&state));
 
@@ -2094,7 +2339,7 @@ mod handler_tests {
 
     #[tokio::test]
     async fn stop_preview_removes_preview_and_clears_pipeline_model() {
-        let state = make_admin_state();
+        let (state, _tmp) = make_admin_state();
         let session = install_session(&state, "alpha").await;
 
         // Seed an injected node + connection so teardown has something
