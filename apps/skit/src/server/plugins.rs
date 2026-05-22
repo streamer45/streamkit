@@ -862,3 +862,783 @@ mod marketplace_url_tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Panics ARE the assertions
+mod handler_tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::permissions::Permissions;
+    use axum::body::{to_bytes, Body};
+    use axum::extract::Request as AxumRequest;
+    use axum::http::{header::CONTENT_TYPE, HeaderName, HeaderValue, Method, Request, StatusCode};
+    use axum::middleware::{from_fn, Next};
+    use axum::response::Response as AxumResponse;
+    use axum::routing::{delete, get, post};
+    use axum::Router;
+    use serde_json::{json, Value};
+    use tempfile::TempDir;
+    use tower::ServiceExt;
+
+    const MULTIPART_BOUNDARY: &str = "------------------------test-boundary";
+
+    // The role_extractor resolution order is: trusted role header ->
+    // `SK_ROLE` env var -> `default_role`.  These tests configure a
+    // trusted role header (`TEST_ROLE_HEADER`) and inject it via a tower
+    // layer on every request, so the env-var branch is never reached.
+    // This avoids both (a) env leakage from the caller's shell and (b)
+    // racing `std::env::{set,remove}_var` across parallel tests, which
+    // is the unsafe-on-glibc pattern Rust 2024 has promoted to `unsafe`.
+    const TEST_ROLE_HEADER: &str = "x-test-sk-role";
+    const TEST_ROLE_VALUE: &str = "test-role";
+
+    /// Returns a `Permissions` value with every plugin-related capability
+    /// explicitly denied: no upload, no delete, no install, empty
+    /// allow-list.  Starts from `Permissions::viewer()`, so unrelated
+    /// read-only flags (`list_nodes`, `list_samples`, `read_samples`,
+    /// etc.) remain enabled — do not reuse this helper for tests that
+    /// rely on those being false.
+    fn denied_plugin_perms() -> Permissions {
+        let mut p = Permissions::viewer();
+        p.list_sessions = false;
+        p.load_plugins = false;
+        p.delete_plugins = false;
+        p.allowed_plugins = vec![];
+        p
+    }
+
+    fn make_state_with(config: Config) -> (Arc<AppState>, TempDir) {
+        let tmp = TempDir::new().unwrap();
+        let mut cfg = config;
+        cfg.plugins.directory = tmp.path().to_string_lossy().into_owned();
+        cfg.permissions.role_header = Some(TEST_ROLE_HEADER.to_string());
+        let state = crate::server::create_app_state(cfg, None);
+        (state, tmp)
+    }
+
+    async fn inject_test_role(mut req: AxumRequest, next: Next) -> AxumResponse {
+        req.headers_mut().insert(
+            HeaderName::from_static(TEST_ROLE_HEADER),
+            HeaderValue::from_static(TEST_ROLE_VALUE),
+        );
+        next.run(req).await
+    }
+
+    fn admin_state() -> (Arc<AppState>, TempDir) {
+        let mut cfg = Config::default();
+        cfg.plugins.http_management.allow_http_management = true;
+        cfg.plugins.marketplace.marketplace_enabled = true;
+        make_state_with(cfg)
+    }
+
+    fn locked_down_state() -> (Arc<AppState>, TempDir) {
+        let cfg = Config::default();
+        make_state_with(cfg)
+    }
+
+    fn no_perm_state() -> (Arc<AppState>, TempDir) {
+        let mut cfg = Config::default();
+        cfg.plugins.http_management.allow_http_management = true;
+        cfg.plugins.marketplace.marketplace_enabled = true;
+        cfg.permissions.default_role = "no-perms".to_string();
+        cfg.permissions.roles.insert("no-perms".to_string(), denied_plugin_perms());
+        make_state_with(cfg)
+    }
+
+    fn build_plugin_router(state: Arc<AppState>) -> Router {
+        Router::new()
+            .route("/api/v1/plugins", get(list_plugins_handler).post(upload_plugin_handler))
+            .route("/api/v1/plugins/{kind}", delete(delete_plugin_handler))
+            .route("/api/v1/plugins/install", post(install_plugin_handler))
+            .route("/api/v1/marketplace/registries", get(list_marketplace_registries_handler))
+            .route("/api/v1/marketplace/plugins", get(list_marketplace_plugins_handler))
+            .route("/api/v1/marketplace/plugins/{plugin_id}", get(get_marketplace_plugin_handler))
+            .route("/api/v1/jobs/{job_id}", get(get_job_handler))
+            .route("/api/v1/jobs/{job_id}/cancel", post(cancel_job_handler))
+            .layer(from_fn(inject_test_role))
+            .with_state(state)
+    }
+
+    async fn read_body(resp: axum::response::Response) -> (StatusCode, String) {
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    fn multipart_content_type() -> String {
+        format!("multipart/form-data; boundary={MULTIPART_BOUNDARY}")
+    }
+
+    #[allow(clippy::type_complexity)] // test-only helper; explicit tuple shape aids readability
+    fn multipart_body(parts: &[(&str, Option<&str>, Option<&str>, &[u8])]) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        for (name, filename, content_type, body) in parts {
+            out.extend_from_slice(format!("--{MULTIPART_BOUNDARY}\r\n").as_bytes());
+            let disp = filename.as_ref().map_or_else(
+                || format!("Content-Disposition: form-data; name=\"{name}\"\r\n"),
+                |fname| {
+                    format!(
+                        "Content-Disposition: form-data; name=\"{name}\"; filename=\"{fname}\"\r\n"
+                    )
+                },
+            );
+            out.extend_from_slice(disp.as_bytes());
+            if let Some(ct) = content_type {
+                out.extend_from_slice(format!("Content-Type: {ct}\r\n").as_bytes());
+            }
+            out.extend_from_slice(b"\r\n");
+            out.extend_from_slice(body);
+            out.extend_from_slice(b"\r\n");
+        }
+        out.extend_from_slice(format!("--{MULTIPART_BOUNDARY}--\r\n").as_bytes());
+        out
+    }
+
+    fn post_multipart(uri: &str, body: Vec<u8>) -> Request<Body> {
+        Request::builder()
+            .method(Method::POST)
+            .uri(uri)
+            .header(CONTENT_TYPE, multipart_content_type())
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn list_plugins_returns_empty_when_no_plugins_loaded() {
+        let (state, _tmp) = admin_state();
+        let router = build_plugin_router(state);
+        let resp = router
+            .oneshot(Request::builder().uri("/api/v1/plugins").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::OK);
+        let parsed: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed, json!([]));
+    }
+
+    #[tokio::test]
+    async fn list_plugins_returns_empty_when_manager_is_empty_and_allowlist_is_empty() {
+        // With no plugins loaded the `.retain()` at `list_plugins_handler`
+        // is a no-op — this test only proves the empty-manager path
+        // produces `[]` and that an empty allow-list does not panic.
+        // It does NOT exercise the `is_plugin_allowed` filtering
+        // decision; a future test that loads plugins into the manager
+        // is required to cover that branch.
+        let mut cfg = Config::default();
+        cfg.permissions.default_role = "empty".to_string();
+        cfg.permissions.roles.insert("empty".to_string(), denied_plugin_perms());
+        let (state, _tmp) = make_state_with(cfg);
+
+        let router = build_plugin_router(state);
+        let resp = router
+            .oneshot(Request::builder().uri("/api/v1/plugins").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "[]");
+    }
+
+    #[tokio::test]
+    async fn upload_rejected_when_http_management_disabled() {
+        let (state, _tmp) = locked_down_state();
+        let router = build_plugin_router(state);
+        let body = multipart_body(&[(
+            "plugin",
+            Some("test.so"),
+            Some("application/octet-stream"),
+            b"\x7fELF",
+        )]);
+        let resp = router.oneshot(post_multipart("/api/v1/plugins", body)).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body.contains("disabled by configuration"), "body: {body}");
+        assert!(body.contains("allow_http_management"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn upload_rejected_when_load_plugins_permission_missing() {
+        let (state, _tmp) = no_perm_state();
+        let router = build_plugin_router(state);
+        let body = multipart_body(&[(
+            "plugin",
+            Some("test.so"),
+            Some("application/octet-stream"),
+            b"\x7fELF",
+        )]);
+        let resp = router.oneshot(post_multipart("/api/v1/plugins", body)).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body.contains("cannot load plugins"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_two_kind_fields() {
+        let (state, _tmp) = admin_state();
+        let router = build_plugin_router(state);
+        let body = multipart_body(&[
+            ("kind", None, None, b"plugin::native::a"),
+            ("kind", None, None, b"plugin::native::b"),
+        ]);
+        let resp = router.oneshot(post_multipart("/api/v1/plugins", body)).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("Multiple 'kind' fields provided"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_whitespace_only_kind() {
+        // Pins that the trim() at upload_plugin_handler treats
+        // whitespace-only values as empty.
+        let (state, _tmp) = admin_state();
+        let router = build_plugin_router(state);
+        let body = multipart_body(&[("kind", None, None, b"   ")]);
+        let resp = router.oneshot(post_multipart("/api/v1/plugins", body)).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("Plugin kind must not be empty"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_literal_empty_kind() {
+        // Pins that a literal-empty kind value is rejected by the same
+        // branch as the whitespace case.
+        let (state, _tmp) = admin_state();
+        let router = build_plugin_router(state);
+        let body = multipart_body(&[("kind", None, None, b"")]);
+        let resp = router.oneshot(post_multipart("/api/v1/plugins", body)).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("Plugin kind must not be empty"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_missing_plugin_field() {
+        let (state, _tmp) = admin_state();
+        let router = build_plugin_router(state);
+        let body = multipart_body(&[("kind", None, None, b"plugin::native::foo")]);
+        let resp = router.oneshot(post_multipart("/api/v1/plugins", body)).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("Missing 'plugin' file field"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_plugin_field_without_filename() {
+        let (state, _tmp) = admin_state();
+        let router = build_plugin_router(state);
+        let body = multipart_body(&[("plugin", None, Some("application/octet-stream"), b"raw")]);
+        let resp = router.oneshot(post_multipart("/api/v1/plugins", body)).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("must include a filename"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_duplicate_plugin_field() {
+        let (state, _tmp) = admin_state();
+        let router = build_plugin_router(state);
+        let body = multipart_body(&[
+            ("plugin", Some("a.so"), Some("application/octet-stream"), b"\x7fELF"),
+            ("plugin", Some("b.so"), Some("application/octet-stream"), b"\x7fELF"),
+        ]);
+        let resp = router.oneshot(post_multipart("/api/v1/plugins", body)).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("Multiple 'plugin' fields provided"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_declared_kind_mismatching_file_extension() {
+        let (state, _tmp) = admin_state();
+        let router = build_plugin_router(state);
+        // .so file but declared as wasm kind → mismatch
+        let body = multipart_body(&[
+            ("kind", None, None, b"plugin::wasm::foo"),
+            ("plugin", Some("foo.so"), Some("application/octet-stream"), b"\x7fELF"),
+        ]);
+        let resp = router.oneshot(post_multipart("/api/v1/plugins", body)).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("does not match uploaded file type"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_declared_kind_outside_allowed_plugins() {
+        // Configure a role that can load plugins generally but restricts
+        // allowed_plugins to a narrow prefix that excludes our declared kind.
+        let mut cfg = Config::default();
+        cfg.plugins.http_management.allow_http_management = true;
+        let mut perms = Permissions::admin();
+        perms.allowed_plugins = vec!["plugin::wasm::allowed".to_string()];
+        cfg.permissions.default_role = "strict".to_string();
+        cfg.permissions.roles.insert("strict".to_string(), perms);
+        let (state, _tmp) = make_state_with(cfg);
+
+        let router = build_plugin_router(state);
+        let body = multipart_body(&[
+            ("kind", None, None, b"plugin::wasm::denied"),
+            ("plugin", Some("foo.wasm"), Some("application/wasm"), b"\0asm"),
+        ]);
+        let resp = router.oneshot(post_multipart("/api/v1/plugins", body)).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body.contains("not allowed"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn upload_invalid_native_artifact_reports_manager_error() {
+        // Bytes are clearly not a valid .so, but the validations leading
+        // up to load_from_temp_file all pass.  The plugin manager fails
+        // to load the artifact, which surfaces as a
+        // `PluginHttpError::Manager` (HTTP 422 UNPROCESSABLE_ENTITY).
+        //
+        // Pinning UNPROCESSABLE_ENTITY exactly (rather than accepting
+        // 400 || 422) ensures the manager path is what failed:
+        // BAD_REQUEST only occurs when `spawn_blocking` itself panics,
+        // i.e. the manager was never reached.  Allowing both statuses
+        // would silently mask a future change that short-circuits the
+        // request before the load call.
+        let (state, _tmp) = admin_state();
+        let router = build_plugin_router(state);
+        let body = multipart_body(&[(
+            "plugin",
+            Some("not-really-a-plugin.so"),
+            Some("application/octet-stream"),
+            b"not an ELF",
+        )]);
+        let resp = router.oneshot(post_multipart("/api/v1/plugins", body)).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "expected manager-side load failure, got {status}: {body}"
+        );
+        // Body comes from anyhow::Error::to_string() on the manager
+        // failure — confirm it is non-empty so a future change that
+        // silently swallows the underlying error message is caught.
+        assert!(!body.is_empty(), "manager error body should not be empty");
+    }
+
+    #[tokio::test]
+    async fn install_rejected_when_marketplace_disabled() {
+        let (state, _tmp) = locked_down_state();
+        let router = build_plugin_router(state);
+        let body = json!({
+            "registry": "https://example.com/index.json",
+            "plugin_id": "foo",
+        });
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/plugins/install")
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body.contains("Marketplace installs are disabled"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn install_rejected_when_load_plugins_permission_missing() {
+        let (state, _tmp) = no_perm_state();
+        let router = build_plugin_router(state);
+        let body = json!({
+            "registry": "https://example.com/index.json",
+            "plugin_id": "foo",
+        });
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/plugins/install")
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body.contains("cannot install plugins"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn install_rejects_unconfigured_registry() {
+        let (state, _tmp) = admin_state();
+        let router = build_plugin_router(state);
+        let body = json!({
+            "registry": "https://not-configured.example.com/index.json",
+            "plugin_id": "foo",
+        });
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/plugins/install")
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("is not configured"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn list_registries_rejected_when_marketplace_disabled() {
+        let (state, _tmp) = locked_down_state();
+        let router = build_plugin_router(state);
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/marketplace/registries")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body.contains("Marketplace browsing is disabled"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn list_registries_rejected_when_load_plugins_missing() {
+        let (state, _tmp) = no_perm_state();
+        let router = build_plugin_router(state);
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/marketplace/registries")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body.contains("cannot view marketplace"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn list_registries_returns_configured_entries() {
+        let mut cfg = Config::default();
+        cfg.plugins.marketplace.marketplace_enabled = true;
+        cfg.plugins.registries = vec!["https://example.com/index.json".to_string()];
+        let (state, _tmp) = make_state_with(cfg);
+
+        let router = build_plugin_router(state);
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/marketplace/registries")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::OK);
+        let parsed: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed[0]["id"], "https://example.com/index.json");
+        assert_eq!(parsed[0]["url"], "https://example.com/index.json");
+    }
+
+    #[tokio::test]
+    async fn list_marketplace_plugins_rejected_when_marketplace_disabled() {
+        let (state, _tmp) = locked_down_state();
+        let router = build_plugin_router(state);
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/marketplace/plugins?registry=https%3A%2F%2Fexample.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn list_marketplace_plugins_requires_non_empty_registry() {
+        let (state, _tmp) = admin_state();
+        let router = build_plugin_router(state);
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/marketplace/plugins?registry=%20")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("Registry is required"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn list_marketplace_plugins_rejects_unconfigured_registry() {
+        let (state, _tmp) = admin_state();
+        let router = build_plugin_router(state);
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri(
+                        "/api/v1/marketplace/plugins?registry=https%3A%2F%2Funconfigured.example.com",
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("is not configured"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn get_marketplace_plugin_rejected_when_marketplace_disabled() {
+        let (state, _tmp) = locked_down_state();
+        let router = build_plugin_router(state);
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/marketplace/plugins/foo?registry=https%3A%2F%2Fexample.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn get_marketplace_plugin_requires_registry() {
+        let (state, _tmp) = admin_state();
+        let router = build_plugin_router(state);
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/marketplace/plugins/foo?registry=")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("Registry is required"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn get_marketplace_plugin_rejects_unconfigured_registry() {
+        let (state, _tmp) = admin_state();
+        let router = build_plugin_router(state);
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/marketplace/plugins/foo?registry=https%3A%2F%2Fnope.example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("is not configured"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn delete_rejected_when_http_management_disabled() {
+        let (state, _tmp) = locked_down_state();
+        let router = build_plugin_router(state);
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .uri("/api/v1/plugins/plugin::native::foo")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body.contains("disabled by configuration"), "body: {body}");
+        assert!(body.contains("allow_http_management"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn delete_rejected_when_delete_plugins_permission_missing() {
+        let (state, _tmp) = no_perm_state();
+        let router = build_plugin_router(state);
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .uri("/api/v1/plugins/plugin::native::foo")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body.contains("cannot delete plugins"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn delete_unknown_plugin_surfaces_manager_error_as_422() {
+        let (state, _tmp) = admin_state();
+        let router = build_plugin_router(state);
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .uri("/api/v1/plugins/plugin::native::ghost")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        // The manager returns an Err for unknown plugins; the handler maps
+        // this via `PluginHttpError::Manager` → 422 UNPROCESSABLE_ENTITY.
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn get_job_rejected_when_load_plugins_missing() {
+        let (state, _tmp) = no_perm_state();
+        let router = build_plugin_router(state);
+        let resp = router
+            .oneshot(Request::builder().uri("/api/v1/jobs/anything").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body.contains("cannot view jobs"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn get_job_unknown_returns_404() {
+        let (state, _tmp) = admin_state();
+        let router = build_plugin_router(state);
+        let resp = router
+            .oneshot(Request::builder().uri("/api/v1/jobs/missing-id").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body.contains("missing-id"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn cancel_job_rejected_when_load_plugins_missing() {
+        let (state, _tmp) = no_perm_state();
+        let router = build_plugin_router(state);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/jobs/anything/cancel")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body.contains("cannot cancel jobs"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn cancel_job_unknown_returns_404() {
+        let (state, _tmp) = admin_state();
+        let router = build_plugin_router(state);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/jobs/missing-id/cancel")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body.contains("missing-id"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn marketplace_plugin_matches_searches_id_name_description() {
+        let plugin = crate::marketplace::RegistryPlugin {
+            id: "alpha-id".to_string(),
+            name: Some("Beta Display".to_string()),
+            description: Some("Gamma summary".to_string()),
+            latest: None,
+            versions: vec![],
+        };
+
+        assert!(marketplace_plugin_matches(&plugin, "alpha"));
+        assert!(marketplace_plugin_matches(&plugin, "beta"));
+        assert!(marketplace_plugin_matches(&plugin, "gamma"));
+        assert!(marketplace_plugin_matches(&plugin, "summary"));
+        assert!(!marketplace_plugin_matches(&plugin, "zzz"));
+    }
+
+    #[tokio::test]
+    async fn marketplace_plugin_matches_handles_missing_optional_fields() {
+        let plugin = crate::marketplace::RegistryPlugin {
+            id: "lone-id".to_string(),
+            name: None,
+            description: None,
+            latest: None,
+            versions: vec![],
+        };
+        assert!(marketplace_plugin_matches(&plugin, "lone"));
+        assert!(!marketplace_plugin_matches(&plugin, "absent"));
+    }
+
+    #[tokio::test]
+    async fn plugin_http_error_bad_request_maps_to_400() {
+        let resp = PluginHttpError::BadRequest("oops".into()).into_response();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body, "oops");
+    }
+
+    #[tokio::test]
+    async fn plugin_http_error_forbidden_maps_to_403() {
+        let resp = PluginHttpError::Forbidden("nope".into()).into_response();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body, "nope");
+    }
+
+    #[tokio::test]
+    async fn plugin_http_error_manager_maps_to_422() {
+        let resp = PluginHttpError::Manager(anyhow::anyhow!("downstream boom")).into_response();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(body.contains("downstream boom"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn plugin_http_error_multipart_maps_to_400_via_handler() {
+        // The Multipart variant is only constructable from an axum
+        // MultipartError, which we cannot fabricate directly.  Drive
+        // a real multipart parse failure through the handler by sending
+        // a body whose declared boundary does not match the body bytes
+        // at all — multer raises `IncompleteFieldData` / similar before
+        // any field is yielded, which `From<MultipartError>` wraps into
+        // `PluginHttpError::Multipart`.
+        //
+        // Asserting on the literal "Invalid multipart payload" prefix
+        // (formatted by the `Multipart` arm of `IntoResponse`) pins the
+        // From<MultipartError> conversion specifically; the OR-fallback
+        // to "Missing 'plugin' file field" would silently let a future
+        // removal of that conversion pass.
+        let (state, _tmp) = admin_state();
+        let router = build_plugin_router(state);
+        // Body containing the boundary marker but a truncated part with
+        // no terminating `--BOUNDARY--`, no `\r\n\r\n` separating
+        // headers from body, and no Content-Disposition.  multer
+        // rejects this with a parse error.
+        let bad_body = format!(
+            "--{MULTIPART_BOUNDARY}\r\nbroken header without colon\r\n\r\nsome bytes but no closing boundary"
+        );
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/plugins")
+            .header(CONTENT_TYPE, multipart_content_type())
+            .body(Body::from(bad_body.into_bytes()))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.starts_with("Invalid multipart payload"),
+            "expected `From<MultipartError>` mapping, got: {body}"
+        );
+    }
+}
