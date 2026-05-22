@@ -1478,7 +1478,14 @@ mod inject_teardown_tests {
     async fn fresh_session() -> (Session, broadcast::Receiver<BroadcastEvent>) {
         let engine = Engine::without_plugins();
         let config = Config::default();
-        let (tx, rx) = broadcast::channel(16);
+        // 1024 absorbs telemetry/state bursts from the engine actor's
+        // forwarders without lagging the test receiver.  The previous
+        // buffer of 16 was small enough that an unrelated state/stats
+        // event burst between `inject_preview_subgraph` and
+        // `drain_node_added_kinds` could push earlier `NodeAdded`
+        // payloads off the back of the queue, producing false-negative
+        // assertions like "engine never confirmed video::vp9::encoder".
+        let (tx, rx) = broadcast::channel(1024);
         let session = Session::create(
             &engine,
             &config,
@@ -1872,36 +1879,52 @@ mod inject_teardown_tests {
         let _ = session.shutdown_and_wait().await;
     }
 
-    /// Drain `rx` for up to `max_wait` and return every NodeAdded `kind`
-    /// the engine actually emitted.  The engine emits NodeAdded only
-    /// after successfully constructing the node, so this lets us
-    /// distinguish between bookkeeping-only assertions and what was
-    /// actually built end-to-end — catching the class of bug pinned by
-    /// issue #480 (bookkeeping kind diverging from the kind asked of
-    /// the engine).
+    /// Wait until every kind in `expected_kinds` has been observed in a
+    /// `NodeAdded` event from `rx`, returning the ordered list of
+    /// observed kinds.  Exits as soon as the expectation is satisfied,
+    /// so a tight inner loop on success runs in milliseconds; the
+    /// `max_wait` budget is intentionally generous to absorb CI
+    /// scheduling jitter.
+    ///
+    /// Panics on `RecvError::Lagged` with a diagnostic message: the
+    /// engine emits NodeAdded only after successfully constructing the
+    /// node, so silently dropping lagged events would turn a real
+    /// regression into a confusing "engine never confirmed kind X"
+    /// assertion failure.  Lagging means the channel buffer in
+    /// `fresh_session` is too small — fix that, don't paper over it.
     async fn drain_node_added_kinds(
         rx: &mut broadcast::Receiver<BroadcastEvent>,
+        expected_kinds: &[&str],
         max_wait: std::time::Duration,
     ) -> Vec<String> {
         let mut out = Vec::new();
+        let mut still_expected: std::collections::HashSet<String> =
+            expected_kinds.iter().map(|s| (*s).to_string()).collect();
         let deadline = tokio::time::Instant::now() + max_wait;
         loop {
+            if still_expected.is_empty() {
+                return out;
+            }
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
-                break;
+                return out;
             }
             match tokio::time::timeout(remaining, rx.recv()).await {
                 Ok(Ok(evt)) => {
                     if let streamkit_api::EventPayload::NodeAdded { kind, .. } = &evt.event.payload
                     {
+                        still_expected.remove(kind);
                         out.push(kind.clone());
                     }
                 },
-                Ok(Err(broadcast::error::RecvError::Lagged(_))) => {},
-                Ok(Err(broadcast::error::RecvError::Closed)) | Err(_) => break,
+                Ok(Err(broadcast::error::RecvError::Lagged(n))) => {
+                    panic!(
+                        "NodeAdded receiver lagged by {n} events; broadcast buffer in fresh_session is too small. Observed so far: {out:?}"
+                    );
+                },
+                Ok(Err(broadcast::error::RecvError::Closed)) | Err(_) => return out,
             }
         }
-        out
     }
 
     #[tokio::test]
@@ -1929,20 +1952,16 @@ mod inject_teardown_tests {
             .await
             .expect("inject should succeed for raw video");
 
-        let kinds = drain_node_added_kinds(&mut rx, std::time::Duration::from_secs(5)).await;
+        let expected = ["video::pixel_convert", "video::vp9::encoder", "transport::moq::peer"];
+        let kinds =
+            drain_node_added_kinds(&mut rx, &expected, std::time::Duration::from_secs(30)).await;
 
-        assert!(
-            kinds.contains(&"video::pixel_convert".to_string()),
-            "engine never confirmed video::pixel_convert; got kinds: {kinds:?}"
-        );
-        assert!(
-            kinds.contains(&"video::vp9::encoder".to_string()),
-            "engine never confirmed video::vp9::encoder — sibling of #480? got kinds: {kinds:?}"
-        );
-        assert!(
-            kinds.contains(&"transport::moq::peer".to_string()),
-            "engine never confirmed transport::moq::peer; got kinds: {kinds:?}"
-        );
+        for want in expected {
+            assert!(
+                kinds.iter().any(|k| k == want),
+                "engine never confirmed {want} (sibling of #480?); got kinds: {kinds:?}"
+            );
+        }
 
         let _ = session.shutdown_and_wait().await;
     }
@@ -1967,16 +1986,16 @@ mod inject_teardown_tests {
             .await
             .expect("inject should succeed for raw audio");
 
-        let kinds = drain_node_added_kinds(&mut rx, std::time::Duration::from_secs(5)).await;
+        let expected = ["audio::opus::encoder", "transport::moq::peer"];
+        let kinds =
+            drain_node_added_kinds(&mut rx, &expected, std::time::Duration::from_secs(30)).await;
 
-        assert!(
-            kinds.contains(&"audio::opus::encoder".to_string()),
-            "engine never confirmed audio::opus::encoder; got kinds: {kinds:?}"
-        );
-        assert!(
-            kinds.contains(&"transport::moq::peer".to_string()),
-            "engine never confirmed transport::moq::peer; got kinds: {kinds:?}"
-        );
+        for want in expected {
+            assert!(
+                kinds.iter().any(|k| k == want),
+                "engine never confirmed {want}; got kinds: {kinds:?}"
+            );
+        }
 
         let _ = session.shutdown_and_wait().await;
     }
@@ -1990,12 +2009,28 @@ mod handler_tests {
     use crate::permissions::Permissions;
     use crate::session::{PreviewState, Session, TapPoint};
     use axum::body::{to_bytes, Body};
+    use axum::extract::Request as AxumRequest;
+    use axum::http::{HeaderName, HeaderValue};
     use axum::http::{Method, Request, StatusCode};
+    use axum::middleware::{from_fn, Next};
+    use axum::response::Response as AxumResponse;
     use axum::routing::{delete, post};
     use axum::Router;
     use serde_json::json;
     use std::time::SystemTime;
     use tower::ServiceExt;
+
+    // See the matching block in plugins.rs::handler_tests for rationale.
+    const TEST_ROLE_HEADER: &str = "x-test-sk-role";
+    const TEST_ROLE_VALUE: &str = "test-role";
+
+    async fn inject_test_role(mut req: AxumRequest, next: Next) -> AxumResponse {
+        req.headers_mut().insert(
+            HeaderName::from_static(TEST_ROLE_HEADER),
+            HeaderValue::from_static(TEST_ROLE_VALUE),
+        );
+        next.run(req).await
+    }
 
     fn admin_permissions() -> Permissions {
         let mut p = Permissions::admin();
@@ -2005,13 +2040,6 @@ mod handler_tests {
         p
     }
 
-    // Same env-leak guard as the plugins handler_tests module —
-    // see comment there.
-    static ENV_SETUP: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    fn ensure_clean_env() {
-        ENV_SETUP.get_or_init(|| std::env::remove_var("SK_ROLE"));
-    }
-
     /// `(state, _tmp)` — the caller must keep the TempDir alive for the
     /// lifetime of the test so the temp `.plugins/` directory survives
     /// every request.  Without this override the plugin manager init in
@@ -2019,11 +2047,11 @@ mod handler_tests {
     /// the test process's CWD, leaving a `.plugins/` directory at the
     /// workspace root and racing with parallel tests that share CWD.
     fn make_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
-        ensure_clean_env();
         let tmp = tempfile::TempDir::new().unwrap();
         let mut cfg = Config::default();
         cfg.plugins.directory = tmp.path().to_string_lossy().into_owned();
         cfg.permissions.default_role = "preview-admin".to_string();
+        cfg.permissions.role_header = Some(TEST_ROLE_HEADER.to_string());
         cfg.permissions.roles.insert("preview-admin".to_string(), admin_permissions());
         (crate::server::create_app_state(cfg, None), tmp)
     }
@@ -2048,6 +2076,7 @@ mod handler_tests {
                 "/api/v1/sessions/{session_id}/preview/{preview_id}",
                 delete(stop_preview_handler),
             )
+            .layer(from_fn(inject_test_role))
             .with_state(state)
     }
 
@@ -2312,10 +2341,13 @@ mod handler_tests {
         let (status, body) = read_body(resp).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         // Pin the source of the 404 to the session-lookup branch in
-        // stop_preview_handler; an unrelated 404 (route fall-through,
-        // future ownership check that short-circuits to NOT_FOUND) would
-        // pass a status-only assertion but fail this one.
-        assert!(body.contains("missing"), "body: {body}");
+        // stop_preview_handler.  The literal phrase comes from the
+        // `format!("Session '{session_id}' not found")` site in
+        // preview.rs; matching the full prefix — not just the word
+        // "missing" which is common English — ensures an unrelated 404
+        // (route fall-through, a future generic 404 page, a different
+        // ownership branch) cannot satisfy this assertion.
+        assert!(body.contains("Session 'missing' not found"), "body: {body}");
     }
 
     #[tokio::test]

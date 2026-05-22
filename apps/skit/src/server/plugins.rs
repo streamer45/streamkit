@@ -870,7 +870,10 @@ mod handler_tests {
     use crate::config::Config;
     use crate::permissions::Permissions;
     use axum::body::{to_bytes, Body};
-    use axum::http::{header::CONTENT_TYPE, Method, Request, StatusCode};
+    use axum::extract::Request as AxumRequest;
+    use axum::http::{header::CONTENT_TYPE, HeaderName, HeaderValue, Method, Request, StatusCode};
+    use axum::middleware::{from_fn, Next};
+    use axum::response::Response as AxumResponse;
     use axum::routing::{delete, get, post};
     use axum::Router;
     use serde_json::{json, Value};
@@ -879,14 +882,15 @@ mod handler_tests {
 
     const MULTIPART_BOUNDARY: &str = "------------------------test-boundary";
 
-    // role_extractor consults SK_ROLE before default_role.  A developer
-    // (or CI runner) with SK_ROLE=admin in the environment would silently
-    // upgrade no_perm_state() callers to admin perms and break the
-    // FORBIDDEN assertions.  Clear it once at module entry.
-    static ENV_SETUP: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    fn ensure_clean_env() {
-        ENV_SETUP.get_or_init(|| std::env::remove_var("SK_ROLE"));
-    }
+    // The role_extractor resolution order is: trusted role header ->
+    // `SK_ROLE` env var -> `default_role`.  These tests configure a
+    // trusted role header (`TEST_ROLE_HEADER`) and inject it via a tower
+    // layer on every request, so the env-var branch is never reached.
+    // This avoids both (a) env leakage from the caller's shell and (b)
+    // racing `std::env::{set,remove}_var` across parallel tests, which
+    // is the unsafe-on-glibc pattern Rust 2024 has promoted to `unsafe`.
+    const TEST_ROLE_HEADER: &str = "x-test-sk-role";
+    const TEST_ROLE_VALUE: &str = "test-role";
 
     /// Returns a `Permissions` value with every plugin-related capability
     /// explicitly denied: no upload, no delete, no install, empty
@@ -904,12 +908,20 @@ mod handler_tests {
     }
 
     fn make_state_with(config: Config) -> (Arc<AppState>, TempDir) {
-        ensure_clean_env();
         let tmp = TempDir::new().unwrap();
         let mut cfg = config;
         cfg.plugins.directory = tmp.path().to_string_lossy().into_owned();
+        cfg.permissions.role_header = Some(TEST_ROLE_HEADER.to_string());
         let state = crate::server::create_app_state(cfg, None);
         (state, tmp)
+    }
+
+    async fn inject_test_role(mut req: AxumRequest, next: Next) -> AxumResponse {
+        req.headers_mut().insert(
+            HeaderName::from_static(TEST_ROLE_HEADER),
+            HeaderValue::from_static(TEST_ROLE_VALUE),
+        );
+        next.run(req).await
     }
 
     fn admin_state() -> (Arc<AppState>, TempDir) {
@@ -943,6 +955,7 @@ mod handler_tests {
             .route("/api/v1/marketplace/plugins/{plugin_id}", get(get_marketplace_plugin_handler))
             .route("/api/v1/jobs/{job_id}", get(get_job_handler))
             .route("/api/v1/jobs/{job_id}/cancel", post(cancel_job_handler))
+            .layer(from_fn(inject_test_role))
             .with_state(state)
     }
 
