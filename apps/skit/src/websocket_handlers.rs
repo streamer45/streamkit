@@ -1175,16 +1175,6 @@ mod tests {
 // failed preconditions panic at the call site instead of obscuring assertions.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod dispatcher_tests {
-    //! Dispatcher-level tests for [`handle_request_payload`].
-    //!
-    //! Each test exercises one or both of:
-    //!
-    //! - the permission-gate path (no session needed; returns early), and
-    //! - the "session not found" path (admin perms + empty session manager),
-    //!   to keep the test set lightweight while covering every dispatcher arm.
-    //!
-    //! Happy paths that need a real session use [`fresh_session`] and insert
-    //! the session into the manager via [`add_session_to_state`].
     use super::*;
     use crate::config::{AuthMode, Config, SecurityConfig};
     use crate::permissions::Permissions;
@@ -1251,54 +1241,43 @@ mod dispatcher_tests {
         session
     }
 
-    fn fake_session_with_creator(role: Option<&str>) -> Session {
-        // Build the minimal Session value the helper inspects. We bypass
-        // Session::create because the dispatcher's can_access_session helper
-        // only reads `created_by`; it never touches the engine actor.
+    async fn session_with_creator(role: Option<&str>) -> Session {
+        // can_access_session only reads `created_by`, but Session::create is
+        // async (it spawns the dynamic engine actor). Stay async-native so
+        // the spawned actor's runtime outlives the Session we hand back.
         let (tx, _rx) = broadcast::channel::<BroadcastEvent>(1);
         let engine = Engine::without_plugins();
         let config = Config::default();
-        // We still need *a* real engine handle so the Session can construct.
-        // Use the existing async constructor in a blocking-friendly way via
-        // a tiny tokio runtime; this is cheap (no IO) and keeps the test
-        // helper synchronous, which matches how can_access_session is called.
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("test runtime");
-        rt.block_on(async {
-            Session::create(&engine, &config, Some("owned".into()), tx, role.map(str::to_owned))
-                .await
-                .expect("create test session")
-        })
+        Session::create(&engine, &config, Some("owned".into()), tx, role.map(str::to_owned))
+            .await
+            .expect("create test session")
     }
 
-    #[test]
-    fn can_access_session_grants_admin_with_access_all_sessions() {
-        let session = fake_session_with_creator(Some("alice"));
-        let admin = Permissions::admin();
-        assert!(can_access_session(&session, "bob", &admin));
+    #[tokio::test]
+    async fn can_access_session_grants_admin_with_access_all_sessions() {
+        let session = session_with_creator(Some("alice")).await;
+        assert!(can_access_session(&session, "bob", &Permissions::admin()));
     }
 
-    #[test]
-    fn can_access_session_grants_owner_without_access_all_sessions() {
-        let session = fake_session_with_creator(Some("alice"));
+    #[tokio::test]
+    async fn can_access_session_grants_owner_without_access_all_sessions() {
+        let session = session_with_creator(Some("alice")).await;
         let mut viewer = Permissions::viewer();
         viewer.access_all_sessions = false;
         assert!(can_access_session(&session, "alice", &viewer));
     }
 
-    #[test]
-    fn can_access_session_denies_other_role_without_access_all_sessions() {
-        let session = fake_session_with_creator(Some("alice"));
+    #[tokio::test]
+    async fn can_access_session_denies_other_role_without_access_all_sessions() {
+        let session = session_with_creator(Some("alice")).await;
         let mut perms = Permissions::user();
         perms.access_all_sessions = false;
         assert!(!can_access_session(&session, "bob", &perms));
     }
 
-    #[test]
-    fn can_access_session_grants_anyone_when_creator_unset() {
-        let session = fake_session_with_creator(None);
+    #[tokio::test]
+    async fn can_access_session_grants_anyone_when_creator_unset() {
+        let session = session_with_creator(None).await;
         let mut perms = Permissions::user();
         perms.access_all_sessions = false;
         assert!(can_access_session(&session, "stranger", &perms));
@@ -1522,12 +1501,7 @@ mod dispatcher_tests {
 
     #[tokio::test]
     async fn create_session_rejected_when_global_limit_reached() {
-        let state = make_app_state();
-        // Saturate the limit (configured to 8 in make_app_state, but reuse 1
-        // session and tighten the cap dynamically via PermissionsConfig).
-        let _existing = fresh_session(&state, "admin").await;
-        // Mutate config in-place via Arc::get_mut would require unique ownership;
-        // instead, build a fresh state with the cap pinned to 1.
+        // Build a state with the per-tenant cap pinned to 1, then saturate it.
         let mut tight = Config::default();
         tight.auth.mode = AuthMode::Disabled;
         tight.permissions.max_concurrent_sessions = Some(1);
@@ -1866,7 +1840,6 @@ mod dispatcher_tests {
     async fn disconnect_happy_path_removes_matching_connection() {
         let state = make_app_state();
         let session = fresh_session(&state, "admin").await;
-        // First connect, then disconnect; both must succeed.
         let _ =
             dispatch(&state, &Permissions::admin(), "admin", connect_payload(&session.id)).await;
         let resp =
@@ -1955,7 +1928,10 @@ mod dispatcher_tests {
             dispatch(&state, &Permissions::admin(), "admin", tune_payload(&session.id, true)).await;
         assert!(resp.is_none(), "fire-and-forget must not produce a ResponsePayload, got {resp:?}");
 
-        // The TuneNode flow broadcasts NodeParamsChanged on the success path.
+        // tune_session_node_inner broadcasts NodeParamsChanged from the
+        // durable-model path (apps/skit/src/server/sessions.rs:718) before
+        // the engine round-trip, so the broadcast is observable even when
+        // the engine actor has no matching node registered.
         let mut saw_params_changed = false;
         for _ in 0..5 {
             match tokio::time::timeout(std::time::Duration::from_millis(300), events.recv()).await {

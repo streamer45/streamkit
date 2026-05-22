@@ -1278,11 +1278,29 @@ mod tests {
             .expect("manager builds from a fresh tmpdir")
     }
 
+    /// Returns the cached `.so` path, panicking in CI when the fixture
+    /// is unavailable so silent skips can't inflate reported coverage.
+    /// Outside CI a missing fixture only logs a `tracing::warn!`.
+    fn panicking_plugin_so_or_skip() -> Option<PathBuf> {
+        let so = panicking_plugin_so_raw();
+        if so.is_none() {
+            let test_name = std::thread::current().name().unwrap_or("<unknown>").to_string();
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "panicking-plugin fixture missing in CI; test `{test_name}` would silently \
+                 skip. The streamkit-plugin-native build script normally produces it in \
+                 target/debug/build/streamkit-plugin-native-*/out/.",
+            );
+            tracing::warn!("skipping `{test_name}`: panicking-plugin .so not found");
+        }
+        so
+    }
+
     /// Locates (or builds, once per process) the panicking-plugin `.so`
     /// that streamkit-plugin-native's build script produces in its OUT_DIR.
     /// We can't read that OUT_DIR from outside the crate, so we either
     /// reuse an existing build artefact or invoke `cargo build` on demand.
-    fn panicking_plugin_so() -> Option<PathBuf> {
+    fn panicking_plugin_so_raw() -> Option<PathBuf> {
         static CACHED: OnceLock<Option<PathBuf>> = OnceLock::new();
         CACHED
             .get_or_init(|| {
@@ -1592,10 +1610,7 @@ mod tests {
         // available (e.g. minimal build, sandbox without cargo, etc.) we
         // skip rather than fail -- the validation-path tests above still
         // cover everything else.
-        let Some(so) = panicking_plugin_so() else {
-            tracing::warn!("skipping: panicking-plugin .so not found in target/");
-            return;
-        };
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
 
         let tmp = TempDir::new().unwrap();
         let mut mgr = make_manager(&tmp);
@@ -1645,10 +1660,7 @@ mod tests {
         // Drop the fixture .so into a subdirectory of native_directory so
         // load_native_dir_plugins picks it up via the directory-bundle path
         // (phase 2 of load_all_native_plugins).
-        let Some(so) = panicking_plugin_so() else {
-            tracing::warn!("skipping: panicking-plugin .so not found in target/");
-            return;
-        };
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
         let tmp = TempDir::new().unwrap();
         let mut mgr = make_manager(&tmp);
         let bundle_dir = tmp.path().join("native").join("panicking");
@@ -1667,10 +1679,7 @@ mod tests {
         // Two bundles providing the same plugin kind: the first wins; the
         // second must be skipped via the ERR_ALREADY_LOADED sentinel branch
         // in load_native_dir_plugins.
-        let Some(so) = panicking_plugin_so() else {
-            tracing::warn!("skipping: panicking-plugin .so not found in target/");
-            return;
-        };
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
         let tmp = TempDir::new().unwrap();
         let mut mgr = make_manager(&tmp);
         // bundle-a is alphabetically earlier and wins.
@@ -1689,10 +1698,7 @@ mod tests {
         // Exercise the move-probe-rename path in load_from_temp_file for a
         // real native plugin: temp file disappears, target file appears,
         // plugin is registered.
-        let Some(so) = panicking_plugin_so() else {
-            tracing::warn!("skipping: panicking-plugin .so not found in target/");
-            return;
-        };
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
         let tmp = TempDir::new().unwrap();
         let mut mgr = make_manager(&tmp);
 
@@ -1717,10 +1723,7 @@ mod tests {
         // After a successful load via temp file, a second upload of the
         // *same* plugin must be rejected without clobbering the existing
         // file (check_native_upload_conflict path).
-        let Some(so) = panicking_plugin_so() else {
-            tracing::warn!("skipping: panicking-plugin .so not found in target/");
-            return;
-        };
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
         let tmp = TempDir::new().unwrap();
         let mut mgr = make_manager(&tmp);
 
@@ -1749,10 +1752,7 @@ mod tests {
     fn load_from_bytes_native_happy_path_writes_and_loads() {
         // load_from_bytes for a native plugin should write the bytes,
         // probe for conflicts, then register the plugin.
-        let Some(so) = panicking_plugin_so() else {
-            tracing::warn!("skipping: panicking-plugin .so not found in target/");
-            return;
-        };
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
         let tmp = TempDir::new().unwrap();
         let mut mgr = make_manager(&tmp);
         let bytes = std::fs::read(&so).unwrap();
@@ -1770,10 +1770,7 @@ mod tests {
         // After a successful load_from_bytes, a second call with the same
         // payload must be rejected and must not leave the .tmp probe file
         // behind.
-        let Some(so) = panicking_plugin_so() else {
-            tracing::warn!("skipping: panicking-plugin .so not found in target/");
-            return;
-        };
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
         let tmp = TempDir::new().unwrap();
         let mut mgr = make_manager(&tmp);
         let bytes = std::fs::read(&so).unwrap();
@@ -1795,10 +1792,7 @@ mod tests {
         // unload_plugin(_, remove_file=true) must delete the .so file and,
         // if the parent is now an empty subdir of native_directory, remove
         // it too (try_remove_empty_plugin_dir path).
-        let Some(so) = panicking_plugin_so() else {
-            tracing::warn!("skipping: panicking-plugin .so not found in target/");
-            return;
-        };
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
         let tmp = TempDir::new().unwrap();
         let mut mgr = make_manager(&tmp);
         let bundle_dir = tmp.path().join("native").join("panicking-bundle");
@@ -1820,10 +1814,7 @@ mod tests {
         // Use the real fixture under /tmp so canonicalize() succeeds. The
         // active record points outside the plugin_base_dir and must be
         // rejected with a warning rather than registered.
-        let Some(so) = panicking_plugin_so() else {
-            tracing::warn!("skipping: panicking-plugin .so not found in target/");
-            return;
-        };
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
         let tmp = TempDir::new().unwrap();
         let mut mgr = make_manager(&tmp);
         // Place the .so outside plugin_base_dir.
@@ -1853,10 +1844,7 @@ mod tests {
         // Full active-record path: entrypoint exists under plugin_base_dir
         // and the record's node_kind matches what the .so reports. Plugin
         // is registered with the version from the record.
-        let Some(so) = panicking_plugin_so() else {
-            tracing::warn!("skipping: panicking-plugin .so not found in target/");
-            return;
-        };
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
         let tmp = TempDir::new().unwrap();
         let mut mgr = make_manager(&tmp);
         let bundle_dir = tmp.path().join("bundles/panicking-0.1.0");
@@ -1909,10 +1897,7 @@ mod tests {
         // fixture intentionally panics on `process()` (which is what
         // create_node calls indirectly), so prewarm will fail — we want
         // to verify the background task still completes cleanly.
-        let Some(so) = panicking_plugin_so() else {
-            tracing::warn!("skipping: panicking-plugin .so not found in target/");
-            return;
-        };
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
         let tmp = TempDir::new().unwrap();
         let mgr = {
             let m = make_manager(&tmp);
@@ -1980,10 +1965,7 @@ mod tests {
         // The fixture reports node_kind `panicking`, but we declare the
         // record's node_kind as something else. After load_from_path
         // succeeds, the kind mismatch must trigger an unload + skip.
-        let Some(so) = panicking_plugin_so() else {
-            tracing::warn!("skipping: panicking-plugin .so not found in target/");
-            return;
-        };
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
         let tmp = TempDir::new().unwrap();
         let mut mgr = make_manager(&tmp);
         let bundle_dir = tmp.path().join("bundles/mismatched-0.1.0");
@@ -2012,10 +1994,7 @@ mod tests {
         // directory bundle also providing the same kind is encountered
         // in phase 2 — this exercises the ERR_ALREADY_LOADED log branch
         // which also reads the bundle's plugin.yml for version reporting.
-        let Some(so) = panicking_plugin_so() else {
-            tracing::warn!("skipping: panicking-plugin .so not found in target/");
-            return;
-        };
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
         let tmp = TempDir::new().unwrap();
         let mut mgr = make_manager(&tmp);
 
@@ -2079,10 +2058,7 @@ mod tests {
     fn collect_plugin_asset_specs_includes_assets_from_loaded_plugin_manifest() {
         // After loading a native plugin, drop a plugin.yml next to the .so
         // declaring an asset spec. collect_plugin_asset_specs must include it.
-        let Some(so) = panicking_plugin_so() else {
-            tracing::warn!("skipping: panicking-plugin .so not found in target/");
-            return;
-        };
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
         let tmp = TempDir::new().unwrap();
         let mut mgr = make_manager(&tmp);
         let bundle_dir = tmp.path().join("native").join("panicking");
