@@ -1021,6 +1021,149 @@ async fn best_effort_flush_removes_connection_when_receiver_dropped() {
         .expect("actor task panicked");
 }
 
+// Regression for Devin Review on PR #489: the new flush select-arm
+// stays enabled while `pending_flushes` is non-empty. If both input
+// receivers close while a flush reservation is still in flight against
+// a slow-but-alive downstream (channel full, consumer idle), the actor
+// must still exit promptly — the BestEffort contract allows dropping
+// the parked packet on shutdown.
+#[tokio::test]
+async fn best_effort_actor_exits_with_pending_flush_when_inputs_close() {
+    let (data_tx, data_rx) = mpsc::channel(16);
+    let (config_tx, config_rx) = mpsc::channel(8);
+    let actor =
+        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor_handle = tokio::spawn(actor.run());
+
+    // Keep slow_rx alive so the reservation never resolves; the only way
+    // the actor can exit is by giving up on the pending flush.
+    let (slow_tx, _slow_rx_alive) = mpsc::channel(1);
+    config_tx
+        .send(PinConfigMsg::AddConnection {
+            id: ConnectionId::new(
+                "node_a".to_string(),
+                "out".to_string(),
+                "be".to_string(),
+                "in".to_string(),
+            ),
+            tx: slow_tx,
+            mode: crate::dynamic_messages::ConnectionMode::BestEffort,
+        })
+        .await
+        .expect("add connection");
+
+    // First packet occupies the single slot; second parks + schedules
+    // a reserve_owned() future that will remain pending forever (rx idle).
+    data_tx.send(Packet::Text("p-0".into())).await.expect("send p-0");
+    data_tx.send(Packet::Text("p-1".into())).await.expect("send p-1");
+
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+
+    drop(data_tx);
+    drop(config_tx);
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle)
+        .await
+        .expect("actor must exit within 1s even when a flush reservation is still pending against an idle downstream")
+        .expect("actor task panicked");
+}
+
+// Regression for Devin Review on PR #489: a best-effort connection
+// removed and re-added with the same ConnectionId must not have its new
+// pending_best_effort packet hijacked by the OLD connection's
+// reservation resolving against the OLD channel. Each scheduled flush
+// is fenced by an OutputConnection generation token.
+#[tokio::test]
+async fn best_effort_flush_does_not_misroute_after_remove_then_readd() {
+    let (data_tx, data_rx) = mpsc::channel(16);
+    let (config_tx, config_rx) = mpsc::channel(8);
+    let actor =
+        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor_handle = tokio::spawn(actor.run());
+
+    let id = ConnectionId::new(
+        "node_a".to_string(),
+        "out".to_string(),
+        "be".to_string(),
+        "in".to_string(),
+    );
+
+    // --- v1: park a packet, leave the reservation pending against
+    // slow_rx_v1 (kept alive so reserve_owned() can later resolve OK).
+    let (tx_v1, mut slow_rx_v1) = mpsc::channel(1);
+    config_tx
+        .send(PinConfigMsg::AddConnection {
+            id: id.clone(),
+            tx: tx_v1,
+            mode: crate::dynamic_messages::ConnectionMode::BestEffort,
+        })
+        .await
+        .expect("add v1");
+    data_tx.send(Packet::Text("v1-a".into())).await.expect("send v1-a");
+    data_tx.send(Packet::Text("v1-b".into())).await.expect("send v1-b");
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    // Remove and re-add with the same id but a fresh channel.
+    config_tx.send(PinConfigMsg::RemoveConnection { id: id.clone() }).await.expect("remove v1");
+    let (tx_v2, mut slow_rx_v2) = mpsc::channel(1);
+    config_tx
+        .send(PinConfigMsg::AddConnection {
+            id: id.clone(),
+            tx: tx_v2,
+            mode: crate::dynamic_messages::ConnectionMode::BestEffort,
+        })
+        .await
+        .expect("add v2");
+
+    // --- v2: park a packet, scheduling a NEW reservation against tx_v2.
+    data_tx.send(Packet::Text("v2-a".into())).await.expect("send v2-a");
+    data_tx.send(Packet::Text("v2-b".into())).await.expect("send v2-b");
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    // Drain v1's channel — the OLD reservation now resolves with
+    // Ok(permit_for_v1). Without generation fencing the actor would
+    // take v2's "v2-b" out of its pending slot and send it through the
+    // v1 permit, delivering it to slow_rx_v1.
+    let first_v1 = slow_rx_v1.recv().await.expect("v1 should have v1-a");
+    if let Packet::Text(s) = first_v1 {
+        assert_eq!(s.as_ref(), "v1-a", "v1 channel should hold its original packet");
+    } else {
+        panic!("expected text packet on v1");
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+
+    // v1's channel must NOT receive any packet from the v2 incarnation.
+    // Either state (empty-but-alive, or disconnected because the stale
+    // permit was dropped releasing the last Sender clone) is acceptable;
+    // both indicate no misroute. A misroute would show up as Ok(...).
+    match slow_rx_v1.try_recv() {
+        Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {},
+        Ok(pkt) => panic!("v1 channel was misrouted a packet from v2: {pkt:?}"),
+    }
+
+    // v2 should now have v2-a; drain it to let v2's reservation resolve
+    // and deliver the parked v2-b.
+    let mut v2_received = Vec::new();
+    while let Ok(Some(Packet::Text(s))) =
+        tokio::time::timeout(std::time::Duration::from_millis(200), slow_rx_v2.recv()).await
+    {
+        v2_received.push(s.to_string());
+    }
+    assert_eq!(
+        v2_received,
+        vec!["v2-a".to_string(), "v2-b".to_string()],
+        "v2 must receive both its packets in order"
+    );
+
+    drop(data_tx);
+    drop(config_tx);
+    tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle)
+        .await
+        .expect("actor must exit within 1s after both senders drop")
+        .expect("actor task panicked");
+}
+
 #[test]
 fn json_byte_len_matches_serialized_length() {
     use crate::dynamic_pin_distributor::json_byte_len;

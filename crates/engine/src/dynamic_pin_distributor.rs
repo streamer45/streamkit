@@ -29,8 +29,10 @@ use tokio::sync::mpsc::OwnedPermit;
 const EWMA_ALPHA: f64 = 0.1;
 
 /// Result yielded by an in-flight best-effort reservation: which connection
-/// it belongs to, and either the reserved permit or a closed-channel error.
-type FlushResult = (ConnectionId, Result<OwnedPermit<Packet>, SendError<()>>);
+/// it belongs to, which incarnation (`generation`) of that connection
+/// scheduled the reservation, and either the reserved permit or a
+/// closed-channel error.
+type FlushResult = (ConnectionId, u64, Result<OwnedPermit<Packet>, SendError<()>>);
 
 /// Information about a downstream connection.
 struct OutputConnection {
@@ -46,6 +48,12 @@ struct OutputConnection {
     /// reservation per output is enough because the actor is single-task:
     /// when the flush wakes, it always delivers the latest pending packet.
     flush_in_flight: bool,
+    /// Monotonically increasing token assigned at `AddConnection` time.
+    /// Each scheduled flush captures the generation of the connection that
+    /// scheduled it, so a stale permit from a previous incarnation of the
+    /// same `ConnectionId` (removed and later re-added) can be detected and
+    /// dropped instead of misrouting a fresh packet onto the old channel.
+    generation: u64,
 }
 
 /// Actor responsible for distributing packets from a single output pin (Data Plane).
@@ -62,6 +70,10 @@ pub struct PinDistributorActor {
     /// then drains the connection's `pending_best_effort` slot through the
     /// reserved permit.
     pending_flushes: FuturesUnordered<BoxFuture<'static, FlushResult>>,
+    /// Next `OutputConnection::generation` to assign on `AddConnection`.
+    /// Used to fence stale flushes from prior incarnations of the same
+    /// `ConnectionId`.
+    next_generation: u64,
     /// Metadata for logging
     node_id: String,
     pin_name: String,
@@ -178,6 +190,7 @@ impl PinDistributorActor {
             config_rx,
             outputs: HashMap::new(),
             pending_flushes: FuturesUnordered::new(),
+            next_generation: 0,
             node_id,
             pin_name,
             packets_distributed_counter,
@@ -198,37 +211,59 @@ impl PinDistributorActor {
     pub(super) async fn run(mut self) {
         tracing::debug!("PinDistributorActor started for {}.{}", self.node_id, self.pin_name);
 
+        // Per-input liveness flags so closed receivers do not keep the loop
+        // spinning on `Ready(None)` (which would never satisfy `Some(_) = ...`
+        // and could deadlock when `pending_flushes` still has a long-lived
+        // reservation against a downstream that never frees capacity).
+        let mut config_open = true;
+        let mut data_open = true;
+
         loop {
             tokio::select! {
                 biased;
 
-                Some(msg) = self.config_rx.recv() => {
-                    if !self.handle_config(msg) {
-                        tracing::debug!(
-                            "{}.{}: PinDistributor received Shutdown. Draining.",
-                            self.node_id,
-                            self.pin_name
-                        );
-                        break;
+                msg = self.config_rx.recv(), if config_open => {
+                    if let Some(m) = msg {
+                        if !self.handle_config(m) {
+                            tracing::debug!(
+                                "{}.{}: PinDistributor received Shutdown. Draining.",
+                                self.node_id,
+                                self.pin_name
+                            );
+                            break;
+                        }
+                    } else {
+                        config_open = false;
+                        if !data_open {
+                            tracing::debug!(
+                                "{}.{}: PinDistributor inputs closed. Shutting down.",
+                                self.node_id,
+                                self.pin_name
+                            );
+                            break;
+                        }
                     }
                 },
 
-                Some(packet) = self.data_rx.recv() => {
-                    self.distribute_packet(packet).await;
+                packet = self.data_rx.recv(), if data_open => {
+                    if let Some(p) = packet {
+                        self.distribute_packet(p).await;
+                    } else {
+                        data_open = false;
+                        if !config_open {
+                            tracing::debug!(
+                                "{}.{}: PinDistributor inputs closed. Shutting down.",
+                                self.node_id,
+                                self.pin_name
+                            );
+                            break;
+                        }
+                    }
                 },
 
-                Some((id, permit_result)) = self.pending_flushes.next(),
+                Some((id, generation, permit_result)) = self.pending_flushes.next(),
                     if !self.pending_flushes.is_empty() => {
-                    self.handle_flush_completion(&id, permit_result);
-                },
-
-                else => {
-                    tracing::debug!(
-                        "{}.{}: PinDistributor inputs closed. Shutting down.",
-                        self.node_id,
-                        self.pin_name
-                    );
-                    return;
+                    self.handle_flush_completion(&id, generation, permit_result);
                 },
             }
         }
@@ -248,6 +283,8 @@ impl PinDistributorActor {
     fn handle_config(&mut self, msg: PinConfigMsg) -> bool {
         match msg {
             PinConfigMsg::AddConnection { id, tx, mode } => {
+                let generation = self.next_generation;
+                self.next_generation = self.next_generation.wrapping_add(1);
                 self.outputs.insert(
                     id,
                     OutputConnection {
@@ -255,6 +292,7 @@ impl PinDistributorActor {
                         mode,
                         pending_best_effort: None,
                         flush_in_flight: false,
+                        generation,
                     },
                 );
             },
@@ -346,9 +384,10 @@ impl PinDistributorActor {
                             conn.flush_in_flight = true;
                             let tx = conn.tx.clone();
                             let id_owned = id.clone();
+                            let generation = conn.generation;
                             self.pending_flushes.push(Box::pin(async move {
                                 let result = tx.reserve_owned().await;
-                                (id_owned, result)
+                                (id_owned, generation, result)
                             }));
                         }
                     },
@@ -422,7 +461,7 @@ impl PinDistributorActor {
         let mut successes = 0u64;
         let mut best_effort_drops = 0u64;
         let mut to_remove: Vec<ConnectionId> = Vec::new();
-        let mut to_schedule_flush: Vec<(ConnectionId, mpsc::Sender<Packet>)> = Vec::new();
+        let mut to_schedule_flush: Vec<(ConnectionId, u64, mpsc::Sender<Packet>)> = Vec::new();
         let mut pending = FuturesUnordered::new();
 
         for (id, conn) in &mut self.outputs {
@@ -439,7 +478,7 @@ impl PinDistributorActor {
                         conn.pending_best_effort = Some(packet_clone);
                         if !conn.flush_in_flight {
                             conn.flush_in_flight = true;
-                            to_schedule_flush.push((id.clone(), conn.tx.clone()));
+                            to_schedule_flush.push((id.clone(), conn.generation, conn.tx.clone()));
                         }
                     },
                     Err(TrySendError::Closed(_packet_clone)) => {
@@ -499,10 +538,10 @@ impl PinDistributorActor {
             self.best_effort_drops_counter.add(best_effort_drops, &self.metric_labels);
         }
 
-        for (id, tx) in to_schedule_flush {
+        for (id, generation, tx) in to_schedule_flush {
             self.pending_flushes.push(Box::pin(async move {
                 let result = tx.reserve_owned().await;
-                (id, result)
+                (id, generation, result)
             }));
         }
     }
@@ -514,14 +553,25 @@ impl PinDistributorActor {
     fn handle_flush_completion(
         &mut self,
         id: &ConnectionId,
+        generation: u64,
         permit_result: Result<OwnedPermit<Packet>, SendError<()>>,
     ) {
         let Some(conn) = self.outputs.get_mut(id) else {
             // Connection was removed (RemoveConnection / Closed) while the
             // reservation was in flight. Dropping `permit_result` releases
-            // any reserved slot back to the channel.
+            // any reserved slot back to the channel (the permit is bound to
+            // the now-defunct Sender clone).
             return;
         };
+        if conn.generation != generation {
+            // Stale: this reservation belongs to a previous incarnation of
+            // the same ConnectionId that was removed and re-added. The
+            // permit is bound to the OLD channel; touching `conn` here
+            // (delivering its pending packet through the old permit, or
+            // resetting its flush_in_flight which guards the NEW reservation)
+            // would misroute data. Drop the permit silently.
+            return;
+        }
         conn.flush_in_flight = false;
         if let Ok(permit) = permit_result {
             if let Some(packet) = conn.pending_best_effort.take() {
