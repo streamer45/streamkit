@@ -93,13 +93,17 @@ async fn add_and_wait(handle: &DynamicEngineHandle, name: &str) {
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
         if let Ok(states) = handle.get_node_states().await {
-            if states.get(name).is_some_and(|s| !matches!(s, NodeState::Creating)) {
-                return;
+            match states.get(name) {
+                Some(NodeState::Initializing | NodeState::Ready | NodeState::Running) => return,
+                Some(NodeState::Failed { reason }) => {
+                    panic!("node '{name}' transitioned to Failed: {reason}");
+                },
+                _ => {},
             }
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    panic!("node '{name}' did not leave Creating in time");
+    panic!("node '{name}' did not reach a live state in time");
 }
 
 #[tokio::test]
@@ -138,10 +142,30 @@ async fn disconnect_with_unknown_endpoints_is_silent_noop() {
             to_pin: "in".to_string(),
         })
         .await
-        .expect("send Disconnect");
+        .expect("send Disconnect (live source, ghost dest)");
 
-    // Real node must still be in node_states after attempting to disconnect
-    // a non-existent endpoint - the actor must not collapse on this.
+    handle
+        .send_control(EngineControlMessage::Disconnect {
+            from_node: "ghost_src".to_string(),
+            from_pin: "out".to_string(),
+            to_node: "real".to_string(),
+            to_pin: "in".to_string(),
+        })
+        .await
+        .expect("send Disconnect (ghost source, live dest)");
+
+    handle
+        .send_control(EngineControlMessage::Disconnect {
+            from_node: "ghost_src".to_string(),
+            from_pin: "out".to_string(),
+            to_node: "ghost_dst".to_string(),
+            to_pin: "in".to_string(),
+        })
+        .await
+        .expect("send Disconnect (both ghost)");
+
+    // Real node must still be in node_states after three Disconnect attempts
+    // against various combinations of unknown endpoints.
     let states = handle.get_node_states().await.expect("get_node_states");
     assert!(states.contains_key("real"), "live node should still be present");
 
@@ -195,15 +219,29 @@ async fn remove_node_after_ready_cleans_up_state() {
     handle.shutdown_and_wait().await.expect("shutdown");
 }
 
+// Observing the *actor-internal* `node_states` HashMap directly isn't
+// possible through the public `DynamicEngineHandle` API once the actor has
+// shut down (the query channel is dropped). The next-best behavioral
+// signal that Shutdown's drain path ran is: the actor task itself exited
+// (subsequent queries fail) AND any pending queries enqueued just before
+// shutdown either resolve or surface a closed-channel error rather than
+// hanging forever. This test pins the latter.
 #[tokio::test]
-async fn engine_shutdown_clears_all_node_states() {
+async fn engine_shutdown_stops_actor_and_closes_query_channel() {
     let (_counter, handle) = build_handle();
     add_and_wait(&handle, "a").await;
     add_and_wait(&handle, "b").await;
 
+    let pre = handle.get_node_states().await.expect("pre-shutdown states");
+    assert!(pre.contains_key("a") && pre.contains_key("b"));
+
     handle.shutdown_and_wait().await.expect("shutdown");
 
-    let post = handle.get_node_states().await;
+    // Subsequent queries must surface a closed-channel error within a
+    // reasonable bound; they must NOT hang.
+    let post = tokio::time::timeout(Duration::from_secs(2), handle.get_node_states())
+        .await
+        .expect("post-shutdown query must not hang");
     assert!(
         post.is_err(),
         "after Shutdown completes the actor must be gone, so queries should fail"
@@ -225,8 +263,10 @@ async fn duplicate_add_node_does_not_overwrite_state() {
         .await
         .expect("send duplicate AddNode");
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
+    // The actor processes control messages serially, so a query enqueued
+    // AFTER the duplicate AddNode is only answered AFTER the duplicate has
+    // been fully handled. We don't need a sleep: the round-trip itself is
+    // the barrier.
     let states = handle.get_node_states().await.expect("get_node_states");
     let state = states.get("dup").cloned().expect("dup must still exist");
     assert!(

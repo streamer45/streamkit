@@ -27,7 +27,15 @@ fn engine_with_registry(registry: NodeRegistry) -> Engine {
 
 #[test]
 fn engine_new_registers_builtin_nodes() {
-    let engine = Engine::default();
+    // Point at an explicit, non-existent plugin directory to keep the test
+    // hermetic. `Engine::default()` would scan `./plugins` relative to the
+    // process CWD, coupling this unit test to workspace filesystem state
+    // (and incurring real WASM I/O). Plugin loading is exercised by the
+    // server's integration tests; here we only assert that the built-in
+    // node registration path runs.
+    let engine = Engine::with_plugin_dir(Some(std::path::PathBuf::from(
+        "/this/path/intentionally/does/not/exist/engine_construction_test",
+    )));
     let registered = {
         let registry =
             engine.registry.read().expect("registry lock should not be poisoned in a fresh Engine");
@@ -81,10 +89,15 @@ async fn run_oneshot_with_empty_registry_fails_to_build_pipeline() {
     let result = engine
         .run_oneshot_pipeline(definition, inputs, Some(OneshotEngineConfig::default()), None)
         .await;
+    // Pin to the specific variant + message substring that the registry
+    // surfaces when a referenced node kind is missing. A regression that
+    // re-routes this to `Configuration(_)` or to a different message would
+    // otherwise pass the previous OR-matcher silently.
+    let err = result.err().expect("expected unknown-node-kind failure");
     assert!(
-        matches!(result, Err(StreamKitError::Configuration(_) | StreamKitError::Runtime(_))),
-        "running a pipeline that references an unknown node kind should fail; got {:?}",
-        result.err()
+        matches!(&err, StreamKitError::Runtime(msg) if msg.contains("nonexistent::ghost")
+            && msg.contains("not found in registry")),
+        "expected Runtime error mentioning the missing node kind; got {err:?}"
     );
 }
 

@@ -22,6 +22,7 @@ use streamkit_core::node::ProcessorNode;
 use streamkit_core::registry::NodeRegistry;
 use streamkit_core::state::NodeState;
 use streamkit_core::types::PacketType;
+use tokio::sync::mpsc::error::TryRecvError;
 
 use crate::{DynamicEngineConfig, DynamicEngineHandle, Engine};
 
@@ -89,13 +90,17 @@ async fn add_node_and_wait_ready(handle: &DynamicEngineHandle, name: &str) {
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
     while std::time::Instant::now() < deadline {
         if let Ok(states) = handle.get_node_states().await {
-            if states.get(name).is_some_and(|s| !matches!(s, NodeState::Creating)) {
-                return;
+            match states.get(name) {
+                Some(NodeState::Initializing | NodeState::Ready | NodeState::Running) => return,
+                Some(NodeState::Failed { reason }) => {
+                    panic!("node '{name}' transitioned to Failed: {reason}");
+                },
+                _ => {},
             }
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    panic!("node '{name}' did not leave Creating in time");
+    panic!("node '{name}' did not reach a live state in time");
 }
 
 #[tokio::test]
@@ -108,10 +113,13 @@ async fn handle_get_node_states_and_stats_reflect_added_node() {
     let states = handle.get_node_states().await.expect("get_node_states");
     assert!(states.contains_key("echo1"), "states should include the new node");
 
+    // The actor registers every live node in `node_stats` (with zeroed
+    // counters) when it transitions to Ready. Assert presence; counter
+    // values are exercised by the metrics-recorder test in `oneshot.rs`.
     let stats = handle.get_node_stats().await.expect("get_node_stats");
-    // Stats map is always returned, even if the node has not produced any
-    // packets yet. We only assert that the call returns and doesn't panic.
-    let _ = stats.get("echo1");
+    let echo_stats = stats.get("echo1").expect("stats map must contain the added node");
+    assert_eq!(echo_stats.sent, 0, "new node should report zero sent packets");
+    assert_eq!(echo_stats.received, 0, "new node should report zero received packets");
 
     assert_eq!(counter.load(Ordering::SeqCst), 1, "factory should have run once");
 
@@ -151,36 +159,54 @@ async fn handle_subscribe_state_yields_updates() {
     handle.shutdown_and_wait().await.expect("shutdown");
 }
 
+// For the three subscription channels that the test EchoNode does NOT
+// itself emit on (stats / telemetry / view_data), we cannot easily force
+// an update without spinning up a richer node. Instead, assert the
+// returned receiver is *wired up*: `try_recv` returns `Empty` (channel
+// open, no message) rather than `Disconnected` (channel never connected
+// to a live sender). This catches a regression where `subscribe_*` returns
+// a stub receiver disconnected from the actor's fan-out.
 #[tokio::test]
-async fn handle_subscribe_stats_returns_open_receiver() {
+async fn handle_subscribe_stats_returns_live_receiver() {
     let counter = Arc::new(AtomicU32::new(0));
     let handle = make_handle(counter);
 
-    let _stats_rx = handle.subscribe_stats().await.expect("subscribe_stats");
+    let mut stats_rx = handle.subscribe_stats().await.expect("subscribe_stats");
 
-    // We can't easily force a stats update from a no-op node, so just verify
-    // the channel is open by polling briefly.
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        matches!(stats_rx.try_recv(), Err(TryRecvError::Empty)),
+        "stats receiver must be open (Empty), not disconnected"
+    );
 
     handle.shutdown_and_wait().await.expect("shutdown");
 }
 
 #[tokio::test]
-async fn handle_subscribe_telemetry_returns_open_receiver() {
+async fn handle_subscribe_telemetry_returns_live_receiver() {
     let counter = Arc::new(AtomicU32::new(0));
     let handle = make_handle(counter);
 
-    let _telemetry_rx = handle.subscribe_telemetry().await.expect("subscribe_telemetry");
+    let mut telemetry_rx = handle.subscribe_telemetry().await.expect("subscribe_telemetry");
+
+    assert!(
+        matches!(telemetry_rx.try_recv(), Err(TryRecvError::Empty)),
+        "telemetry receiver must be open (Empty), not disconnected"
+    );
 
     handle.shutdown_and_wait().await.expect("shutdown");
 }
 
 #[tokio::test]
-async fn handle_subscribe_view_data_returns_open_receiver() {
+async fn handle_subscribe_view_data_returns_live_receiver() {
     let counter = Arc::new(AtomicU32::new(0));
     let handle = make_handle(counter);
 
-    let _view_rx = handle.subscribe_view_data().await.expect("subscribe_view_data");
+    let mut view_rx = handle.subscribe_view_data().await.expect("subscribe_view_data");
+
+    assert!(
+        matches!(view_rx.try_recv(), Err(TryRecvError::Empty)),
+        "view-data receiver must be open (Empty), not disconnected"
+    );
 
     handle.shutdown_and_wait().await.expect("shutdown");
 }
@@ -208,11 +234,17 @@ async fn handle_get_runtime_schemas_returns_map() {
 }
 
 #[tokio::test]
-async fn handle_subscribe_runtime_schemas_returns_open_receiver() {
+async fn handle_subscribe_runtime_schemas_returns_live_receiver() {
     let counter = Arc::new(AtomicU32::new(0));
     let handle = make_handle(counter);
 
-    let _schema_rx = handle.subscribe_runtime_schemas().await.expect("subscribe_runtime_schemas");
+    let mut schema_rx =
+        handle.subscribe_runtime_schemas().await.expect("subscribe_runtime_schemas");
+
+    assert!(
+        matches!(schema_rx.try_recv(), Err(TryRecvError::Empty)),
+        "runtime-schemas receiver must be open (Empty), not disconnected"
+    );
 
     handle.shutdown_and_wait().await.expect("shutdown");
 }
@@ -273,15 +305,25 @@ async fn handle_send_control_after_shutdown_returns_error() {
     );
 }
 
+// A second `shutdown_and_wait` after the first one consumed the join
+// handle today returns Err from the inner `send_control(Shutdown).await?`
+// because the actor's control channel is already closed. The function's
+// `else` branch (which would return Ok(())) is therefore unreachable from
+// here. We pin the *actual* observable behavior: the second call must
+// return cleanly with an Err (no panic, no hang), so a future refactor
+// that hangs the second call is caught.
 #[tokio::test]
-async fn handle_shutdown_and_wait_is_idempotent_at_handle_level() {
+async fn handle_shutdown_and_wait_second_call_returns_clean_err() {
     let counter = Arc::new(AtomicU32::new(0));
     let handle = make_handle(counter);
 
     handle.shutdown_and_wait().await.expect("first shutdown");
 
-    // A second call cannot succeed because the engine has already exited, but
-    // it must not panic - it should surface a clean Err.
-    let second = handle.shutdown_and_wait().await;
-    assert!(second.is_err(), "second shutdown_and_wait should return Err, got {second:?}");
+    let second = tokio::time::timeout(Duration::from_secs(2), handle.shutdown_and_wait())
+        .await
+        .expect("second shutdown_and_wait must not hang");
+    assert!(
+        second.is_err(),
+        "second shutdown_and_wait must surface a clean Err (control channel closed), got {second:?}"
+    );
 }

@@ -110,7 +110,10 @@ async fn pin_distributor_fanout_delivers_to_all_outputs() {
     drop(data_tx);
     drop(config_tx);
 
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle)
+        .await
+        .expect("actor must exit within 1s after both senders drop")
+        .expect("actor task panicked");
 }
 
 #[tokio::test]
@@ -212,7 +215,10 @@ async fn pin_distributor_removes_closed_outputs() {
     drop(data_tx);
     drop(config_tx);
 
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle)
+        .await
+        .expect("actor must exit within 1s after both senders drop")
+        .expect("actor task panicked");
 }
 
 #[tokio::test]
@@ -262,7 +268,10 @@ async fn broadcast_distributes_to_three_outputs() {
 
     drop(data_tx);
     drop(config_tx);
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle)
+        .await
+        .expect("actor must exit within 1s after both senders drop")
+        .expect("actor task panicked");
 }
 
 #[tokio::test]
@@ -343,7 +352,10 @@ async fn dynamic_pin_add_and_remove() {
 
     drop(data_tx);
     drop(config_tx);
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle)
+        .await
+        .expect("actor must exit within 1s after both senders drop")
+        .expect("actor task panicked");
 }
 
 #[tokio::test]
@@ -400,7 +412,10 @@ async fn best_effort_drops_when_full() {
 
     drop(data_tx);
     drop(config_tx);
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle)
+        .await
+        .expect("actor must exit within 1s after both senders drop")
+        .expect("actor task panicked");
 }
 
 #[tokio::test]
@@ -474,11 +489,19 @@ async fn single_reliable_blocks_on_full_until_consumer_drains() {
 
     drop(data_tx);
     drop(config_tx);
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle)
+        .await
+        .expect("actor must exit within 1s after both senders drop")
+        .expect("actor task panicked");
 }
 
+// NOTE: renamed from `single_best_effort_collapses_to_latest_when_consumer_idle`
+// to reflect what the implementation actually does today. The intended
+// contract (collapse-to-latest) is tracked at
+// https://github.com/streamer45/streamkit/issues/488; once fixed, rename
+// back and flip the assertion.
 #[tokio::test]
-async fn single_best_effort_collapses_to_latest_when_consumer_idle() {
+async fn single_best_effort_keeps_first_packet_when_consumer_idle() {
     let (data_tx, data_rx) = mpsc::channel(16);
     let (config_tx, config_rx) = mpsc::channel(8);
 
@@ -521,16 +544,41 @@ async fn single_best_effort_collapses_to_latest_when_consumer_idle() {
         }
     }
 
+    // BUG: pinning current (questionable) behavior. The module-level
+    // docstring of dynamic_pin_distributor.rs states that BestEffort
+    // "keeps the newest packet when downstream is congested", but
+    // distribute_packet only stores the newest in `pending_best_effort`
+    // and never flushes it: there is no `select!` arm using
+    // `mpsc::Sender::reserve()` to drain pending_best_effort once the
+    // downstream channel has capacity again. As a result, with an idle
+    // consumer of capacity 1, the consumer observes ONLY the FIRST packet
+    // (be-0) — every subsequent packet ends up in pending_best_effort,
+    // overwriting the previous, and is silently lost when the actor
+    // shuts down.
+    //
+    // Tracking issue: https://github.com/streamer45/streamkit/issues/488
+    //
+    // When the bug is fixed, the assertion below should flip to
+    // `received.last() == Some(\"be-4\")` and the comment + issue link
+    // should be removed.
     assert!(!received.is_empty(), "best-effort must still deliver at least one packet");
     assert!(
         received.len() < 5,
         "single-output best-effort should drop packets under backpressure, got all {}/5",
         received.len()
     );
+    assert_eq!(
+        received.first().map(String::as_str),
+        Some("be-0"),
+        "pinning current best-effort behavior: only the first packet reaches an idle consumer; received = {received:?}"
+    );
 
     drop(data_tx);
     drop(config_tx);
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle)
+        .await
+        .expect("actor must exit within 1s after both senders drop")
+        .expect("actor task panicked");
 }
 
 #[tokio::test]
@@ -581,7 +629,10 @@ async fn remove_unknown_connection_is_silent_noop() {
 
     drop(data_tx);
     drop(config_tx);
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle)
+        .await
+        .expect("actor must exit within 1s after both senders drop")
+        .expect("actor task panicked");
 }
 
 #[tokio::test]
@@ -602,7 +653,10 @@ async fn packet_with_no_outputs_is_dropped_without_panic() {
 
     drop(data_tx);
     drop(config_tx);
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle)
+        .await
+        .expect("actor must exit within 1s after both senders drop")
+        .expect("actor task panicked");
 }
 
 /// Exercises `packet_stats` for every `Packet` variant by pumping one of each
@@ -691,7 +745,10 @@ async fn distribute_packet_handles_all_packet_variants() {
 
     drop(data_tx);
     drop(config_tx);
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle)
+        .await
+        .expect("actor must exit within 1s after both senders drop")
+        .expect("actor task panicked");
 }
 
 /// Drops one consumer in a multi-output (>1) fan-out before sending. The
@@ -743,7 +800,10 @@ async fn multi_output_reliable_drops_closed_consumer() {
 
     drop(data_tx);
     drop(config_tx);
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), actor_handle)
+        .await
+        .expect("actor must exit within 1s after both senders drop")
+        .expect("actor task panicked");
 }
 
 #[test]

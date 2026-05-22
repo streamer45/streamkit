@@ -38,7 +38,7 @@ use streamkit_core::error::StreamKitError;
 use streamkit_core::node::ProcessorNode;
 
 /// The detected input mode for a oneshot pipeline.
-#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum OneshotInputMode {
     /// HTTP streaming: pipeline has `streamkit::http_input` nodes.
     HttpStreaming,

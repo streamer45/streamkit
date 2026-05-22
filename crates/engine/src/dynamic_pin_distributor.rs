@@ -62,7 +62,13 @@ pub struct PinDistributorActor {
 
 /// Estimate the serialized JSON byte length of a `serde_json::Value` without
 /// allocating a temporary `String`.
-pub fn json_byte_len(value: &serde_json::Value) -> usize {
+//
+// `pub(crate)` is technically redundant because the containing module is
+// private, but stating the intended visibility documents that this helper
+// is deliberately consumed from the sibling `tests/` module rather than
+// from outside the crate.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn json_byte_len(value: &serde_json::Value) -> usize {
     struct CountWriter(usize);
     impl std::io::Write for CountWriter {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {

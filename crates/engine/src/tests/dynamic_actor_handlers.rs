@@ -154,13 +154,17 @@ async fn add_emitter_and_wait_ready(handle: &DynamicEngineHandle) {
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
         if let Ok(states) = handle.get_node_states().await {
-            if states.get("emitter").is_some_and(|s| !matches!(s, NodeState::Creating)) {
-                return;
+            match states.get("emitter") {
+                Some(NodeState::Ready | NodeState::Running) => return,
+                Some(NodeState::Failed { reason }) => {
+                    panic!("emitter transitioned to Failed: {reason}");
+                },
+                _ => {},
             }
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    panic!("emitter did not leave Creating in time");
+    panic!("emitter did not reach Ready/Running in time");
 }
 
 #[tokio::test]
@@ -169,16 +173,24 @@ async fn state_update_from_node_reaches_subscriber() {
     let mut sub = handle.subscribe_state().await.expect("subscribe_state");
     add_emitter_and_wait_ready(&handle).await;
 
-    // We expect at least one state update message; the EmittingNode pushes a
-    // `Running` update after its first Start (the engine also pushes
-    // lifecycle updates on its own, so a single recv with timeout is enough).
-    let got = tokio::time::timeout(Duration::from_secs(3), sub.recv())
-        .await
-        .expect("state update should arrive")
-        .expect("subscriber channel still open");
-
-    // Cheap correctness assertion: id is non-empty and is one of ours.
-    assert!(!got.node_id.is_empty());
+    // Consume updates until we observe the EmittingNode's `Running` state,
+    // which the node itself pushes after receiving Start. Engine-emitted
+    // lifecycle states (Creating/Ready) for the same node id arrive first;
+    // ignore them so a regression where node-emitted updates are dropped
+    // is actually detectable.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut saw_running = false;
+    while Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(200), sub.recv()).await {
+            Ok(Some(u)) if u.node_id == "emitter" && matches!(u.state, NodeState::Running) => {
+                saw_running = true;
+                break;
+            },
+            Ok(Some(_)) | Err(_) => {},
+            Ok(None) => break,
+        }
+    }
+    assert!(saw_running, "node-emitted Running state update should reach subscriber");
 
     handle.shutdown_and_wait().await.expect("shutdown");
 }

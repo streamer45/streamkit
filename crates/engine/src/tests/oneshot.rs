@@ -562,10 +562,17 @@ async fn run_oneshot_pipeline_propagates_validation_error() {
             Some(tokio_util::sync::CancellationToken::new()),
         )
         .await;
+    // `oneshot.rs` emits several distinct `Configuration(_)` errors during
+    // pipeline build (missing http_output, unconnected http_output,
+    // multipart-vs-mode mismatch, etc.). To prove that the *validation*
+    // path is what propagates here we pin the specific message substring
+    // produced by `validate_input_mode` when streams are supplied without
+    // any input-bound nodes. A reordering that swaps in a different
+    // Configuration error would otherwise pass the previous bare matcher.
+    let err = result.err().expect("expected validation error");
     assert!(
-        matches!(result, Err(StreamKitError::Configuration(_))),
-        "expected Configuration error when streams provided without http_input; got error: {:?}",
-        result.err()
+        matches!(&err, StreamKitError::Configuration(msg) if msg.contains("Multipart streams were provided")),
+        "expected Configuration error from validate_input_mode; got {err:?}"
     );
 }
 
