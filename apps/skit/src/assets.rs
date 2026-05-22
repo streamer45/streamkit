@@ -2028,7 +2028,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_audio_files_reports_io_error_for_missing_file() {
+    async fn delete_audio_files_reports_io_error_for_missing_target() {
         let tmp = TempDir::new().unwrap();
         let nope = tmp.path().join("ghost.opus");
         let err = delete_audio_files(&nope, "opus").await.unwrap_err();
@@ -2140,6 +2140,9 @@ mod tests {
             let req = multipart_request(Method::POST, "/api/v1/assets/audio", boundary, body);
             let resp = app.oneshot(req).await.unwrap();
             assert_eq!(resp.status(), StatusCode::CONFLICT);
+            // The pre-existing file must not be overwritten by the rejected upload.
+            let on_disk = tokio::fs::read("samples/audio/user/dup.mp3").await.unwrap();
+            assert_eq!(on_disk, b"existing");
         });
     }
 
@@ -2153,6 +2156,8 @@ mod tests {
             let req = multipart_request(Method::POST, "/api/v1/assets/audio", boundary, body);
             let resp = app.oneshot(req).await.unwrap();
             assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            // No file should be created when the extension is rejected.
+            assert!(!std::path::Path::new("samples/audio/user/evil.exe").exists());
         });
     }
 
@@ -2166,6 +2171,8 @@ mod tests {
             let req = multipart_request(Method::POST, "/api/v1/assets/audio", boundary, body);
             let resp = app.oneshot(req).await.unwrap();
             assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+            // Permission denial must short-circuit before any write to disk.
+            assert!(!std::path::Path::new("samples/audio/user/x.opus").exists());
         });
     }
 

@@ -1705,8 +1705,9 @@ mod handler_tests {
         assert!(!asset.is_system);
         assert_eq!(asset.type_id, "test");
         assert_eq!(asset.plugin_id, "test-plugin");
-        // Path uses the parent of `system_dir` as the base.
-        assert!(asset.path.ends_with("samples/test/user/my_cool-file.txt"), "{}", asset.path);
+        // Path uses the parent of `system_dir` as the base; pinned exactly to
+        // catch silent prefix drift in `process_entry`.
+        assert_eq!(asset.path, "samples/test/user/my_cool-file.txt");
     }
 
     #[tokio::test]
