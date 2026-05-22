@@ -78,6 +78,13 @@ ignore = [
   # of rav1e and rav1d — no security vulnerability, just an unmaintained notice.
   # Will be resolved when rav1e/rav1d migrate to a fork (e.g. pastey).
   { id = "RUSTSEC-2024-0436", reason = "transitive dep from rav1e/rav1d, no security issue" },
+
+  # audiopus_sys is unmaintained (last commit 5 years ago). Transitive dep
+  # of opus, which streamkit-nodes uses for Opus audio encoding. No safe
+  # upgrade is available per the advisory. No security vulnerability, just
+  # an unmaintained notice; CMake 4.0 build-error risk is mitigated since
+  # CI pins an earlier CMake.
+  { id = "RUSTSEC-2026-0150", reason = "transitive dep via opus crate; no safe upgrade available" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
