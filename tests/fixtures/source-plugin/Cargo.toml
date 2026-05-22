@@ -16,4 +16,6 @@ crate-type = ["cdylib"]
 [dependencies]
 streamkit-plugin-sdk-native = { path = "../../../sdks/plugin-sdk/native" }
 serde_json = "1.0"
+# Required transitively: the `native_source_plugin_entry!` macro
+# expands to code that references `tracing::` directly.
 tracing = "0.1"

@@ -463,9 +463,13 @@ mod tests {
     use crate::{PluginRuntime, PluginRuntimeConfig};
     use streamkit_core::{types::PacketType as CorePacketType, ProcessorNode};
 
-    fn empty_component() -> wasmtime::component::Component {
-        let engine = wasmtime::Engine::default();
-        wasmtime::component::Component::new(&engine, b"(component)")
+    // Compile the trivial component against the SAME engine the wrapper
+    // is constructed with. wasmtime rejects cross-engine Component +
+    // Engine pairs at instantiation time with an opaque error, so reusing
+    // one engine throughout keeps these helpers safe to extend with
+    // happy-path lifecycle tests later.
+    fn empty_component(engine: &wasmtime::Engine) -> wasmtime::component::Component {
+        wasmtime::component::Component::new(engine, b"(component)")
             .expect("trivial WAT component must compile")
     }
 
@@ -516,8 +520,9 @@ mod tests {
             }],
         );
 
+        let component = empty_component(&engine);
         let wrapper = WasmNodeWrapper::new(
-            empty_component(),
+            component,
             metadata,
             Some(serde_json::json!({"gain": 0.5})),
             engine,
@@ -547,8 +552,9 @@ mod tests {
     #[test]
     fn pins_methods_return_empty_vectors_for_metadata_without_pins() {
         let (engine, linker) = runtime_parts();
+        let component = empty_component(&engine);
         let wrapper = WasmNodeWrapper::new(
-            empty_component(),
+            component,
             metadata_with_pins(Vec::new(), Vec::new()),
             None,
             engine,
@@ -574,8 +580,9 @@ mod tests {
                 wit_types::PacketType::Custom("plugin::custom/x@1".to_string()),
             ],
         };
+        let component = empty_component(&engine);
         let wrapper = WasmNodeWrapper::new(
-            empty_component(),
+            component,
             metadata_with_pins(vec![pin], Vec::new()),
             None,
             engine,

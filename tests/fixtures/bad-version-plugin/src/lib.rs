@@ -59,6 +59,16 @@ static API: CNativePluginAPI = CNativePluginAPI {
     on_upstream_hint: None,
 };
 
+// SAFETY: `no_mangle` is used so the dlopen'd host can resolve the
+// stable plugin-API symbol against this cdylib. The returned pointer
+// references a `static` (`'static` lifetime, `Sync` via Rust's normal
+// rules), so the host may deref it for the lifetime of the dlopen
+// handle. The vtable intentionally publishes a deliberately bogus
+// `version: 5` (below `MIN_SUPPORTED_API_VERSION`) so a correctly
+// behaving host MUST reject the plugin before invoking any of the
+// stubbed function pointers; if it ever does invoke one, that is itself
+// a host bug, and the stubs return well-formed `CResult::error` (or
+// null handles) rather than UB.
 #[unsafe(no_mangle)]
 pub extern "C" fn streamkit_native_plugin_api() -> *const CNativePluginAPI {
     &raw const API

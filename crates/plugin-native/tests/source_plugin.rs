@@ -79,14 +79,20 @@ async fn await_state_matching<F: Fn(&NodeState) -> bool>(
     matcher: F,
     label: &str,
 ) {
-    while let Ok(Some(update)) =
-        tokio::time::timeout(std::time::Duration::from_secs(10), state_rx.recv()).await
-    {
-        if matcher(&update.state) {
-            return;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match tokio::time::timeout_at(deadline, state_rx.recv()).await {
+            Ok(Some(update)) => {
+                if matcher(&update.state) {
+                    return;
+                }
+            },
+            Ok(None) => panic!("State channel closed before '{label}' was observed"),
+            Err(elapsed) => {
+                panic!("Source node never reached state '{label}' within deadline: {elapsed}")
+            },
         }
     }
-    panic!("Source node never reached state '{label}'");
 }
 
 /// Briefly yield to let the detached worker thread drain its channel and
@@ -197,15 +203,20 @@ async fn source_plugin_tick_error_marks_node_failed_with_plugin_message() {
     await_state_matching(&mut state_rx, |s| matches!(s, NodeState::Ready), "Ready").await;
     control_tx.send(NodeControlMessage::Start).await.expect("control open");
 
-    let mut failure_reason = String::new();
-    while let Ok(Some(update)) =
-        tokio::time::timeout(std::time::Duration::from_secs(10), state_rx.recv()).await
-    {
-        if let NodeState::Failed { reason } = &update.state {
-            failure_reason = reason.clone();
-            break;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let failure_reason = loop {
+        match tokio::time::timeout_at(deadline, state_rx.recv()).await {
+            Ok(Some(update)) => {
+                if let NodeState::Failed { reason } = &update.state {
+                    break reason.clone();
+                }
+            },
+            Ok(None) => panic!("State channel closed before Failed was observed"),
+            Err(elapsed) => {
+                panic!("Source node never reached Failed state within deadline: {elapsed}")
+            },
         }
-    }
+    };
     assert!(
         failure_reason.contains("intentional error in tick"),
         "Failure reason must come from the plugin's tick error, got: {failure_reason}"
@@ -310,11 +321,22 @@ async fn source_plugin_control_channel_close_before_start_exits_cleanly() {
     drain_detached_worker().await;
 }
 
+/// Pins the host contract that an `UpdateParams` arriving in the
+/// Ready→Start window is accepted by the wrapper (routed through
+/// `apply_params_update` and the worker thread) without failing the
+/// node, even when the fixture's `update_params` is a no-op.
+///
+/// This intentionally does NOT assert that the new param values changed
+/// observable behaviour — the TickingSource fixture inherits the SDK's
+/// default `update_params` (an `Ok(())` no-op), so `max_ticks` cannot
+/// change post-construction.  The branch under coverage is the host's
+/// pre-Start `UpdateParams` plumbing, not the fixture's own params
+/// handling.
 #[tokio::test]
-async fn source_plugin_update_params_before_start_takes_effect() {
+async fn source_plugin_update_params_before_start_is_accepted_without_failing_the_node() {
     let plugin = load_source_plugin();
     let node = plugin
-        .create_node(Some(&serde_json::json!({ "mode": "emit_n", "max_ticks": 5 })))
+        .create_node(Some(&serde_json::json!({ "mode": "emit_n", "max_ticks": 1_000_000 })))
         .expect("create_node succeeds");
 
     let (ctx, mut state_rx, control_tx, mut routed_rx) = source_node_context();
@@ -322,9 +344,6 @@ async fn source_plugin_update_params_before_start_takes_effect() {
 
     await_state_matching(&mut state_rx, |s| matches!(s, NodeState::Ready), "Ready").await;
 
-    // Apply an UpdateParams BEFORE Start. This exercises the
-    // pre-Start UpdateParams branch (~line 1757-1767) which routes through
-    // apply_params_update with the worker thread.
     control_tx
         .send(NodeControlMessage::UpdateParams(serde_json::json!({
             "mode": "emit_n",
@@ -335,19 +354,20 @@ async fn source_plugin_update_params_before_start_takes_effect() {
 
     control_tx.send(NodeControlMessage::Start).await.expect("control open");
 
-    // Drain at least one packet to confirm ticks flow.
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), routed_rx.recv())
         .await
         .expect("at least one tick must arrive")
         .expect("router channel open");
 
-    // Trigger shutdown so the test completes deterministically.
     control_tx.send(NodeControlMessage::Shutdown).await.expect("control open");
 
     let run_result = tokio::time::timeout(std::time::Duration::from_secs(10), node_handle)
         .await
         .expect("source node should shut down within timeout")
         .expect("source node task should not panic");
+    // A pre-Start UpdateParams that flips the node to Failed would also
+    // make run() return Err, so this single assertion subsumes a separate
+    // state-stream scan for Failed transitions.
     assert!(
         run_result.is_ok(),
         "UpdateParams before Start must not fail the node, got: {run_result:?}"

@@ -36,6 +36,13 @@ fn build_fixture(
 
     let target_dir = out_dir.join(format!("{fixture_subdir}-target"));
 
+    // The child cargo build below is invoked with no `--profile`, so it
+    // always lands in `target/debug/`. If a future change passes
+    // `--release` or a custom profile, derive `profile_subdir` from that
+    // explicitly instead of leaving the assert below to surface as an
+    // opaque "Expected .so at …" panic.
+    let profile_subdir = "debug";
+
     let status = Command::new("cargo")
         .args(["build", "--manifest-path"])
         .arg(fixture_dir.join("Cargo.toml"))
@@ -46,7 +53,7 @@ fn build_fixture(
 
     assert!(status.success(), "{fixture_subdir} fixture build failed");
 
-    let so_path = target_dir.join("debug").join(format!("lib{lib_basename}.so"));
+    let so_path = target_dir.join(profile_subdir).join(format!("lib{lib_basename}.so"));
 
     assert!(so_path.exists(), "Expected .so at {}", so_path.display());
 
@@ -59,8 +66,9 @@ fn main() {
         PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR not set"));
 
-    let sdk_dir = manifest_dir.join("../../sdks/plugin-sdk/native/src");
-    println!("cargo::rerun-if-changed={}", sdk_dir.display());
+    let sdk_dir = manifest_dir.join("../../sdks/plugin-sdk/native");
+    println!("cargo::rerun-if-changed={}", sdk_dir.join("src").display());
+    println!("cargo::rerun-if-changed={}", sdk_dir.join("Cargo.toml").display());
 
     build_fixture(
         &manifest_dir,

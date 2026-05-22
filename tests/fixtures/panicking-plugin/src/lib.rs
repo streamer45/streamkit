@@ -17,12 +17,8 @@
 //! - `"passthrough"`: returns Ok from every method, forwards the packet
 //!   to the output pin.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-
 use streamkit_plugin_sdk_native::prelude::*;
 use streamkit_plugin_sdk_native::{native_plugin_entry, NativeProcessorNode};
-
-static PROCESS_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
@@ -82,7 +78,6 @@ impl NativeProcessorNode for PanickingPlugin {
         packet: Packet,
         output: &OutputSender,
     ) -> Result<(), String> {
-        PROCESS_CALLS.fetch_add(1, Ordering::SeqCst);
         match self.mode {
             Mode::PanicProcess => {
                 panic!("panicking-plugin: intentional panic in process_packet");

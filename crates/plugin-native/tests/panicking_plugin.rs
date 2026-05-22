@@ -77,29 +77,32 @@ fn test_node_context_with_output_observer(
 }
 
 async fn await_running(state_rx: &mut mpsc::Receiver<NodeStateUpdate>) {
-    while let Ok(update) =
-        tokio::time::timeout(std::time::Duration::from_secs(5), state_rx.recv()).await
-    {
-        if let Some(update) = update {
-            if matches!(update.state, streamkit_core::NodeState::Running) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match tokio::time::timeout_at(deadline, state_rx.recv()).await {
+            Ok(Some(update)) if matches!(update.state, streamkit_core::NodeState::Running) => {
                 return;
-            }
+            },
+            Ok(Some(_)) => {},
+            Ok(None) => panic!("State channel closed before Running was observed"),
+            Err(elapsed) => panic!("Node never reached Running state within deadline: {elapsed}"),
         }
     }
-    panic!("Node never reached Running state");
 }
 
 async fn await_failed(state_rx: &mut mpsc::Receiver<NodeStateUpdate>) -> String {
-    while let Ok(update) =
-        tokio::time::timeout(std::time::Duration::from_secs(5), state_rx.recv()).await
-    {
-        if let Some(update) = update {
-            if let streamkit_core::NodeState::Failed { reason } = &update.state {
-                return reason.clone();
-            }
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match tokio::time::timeout_at(deadline, state_rx.recv()).await {
+            Ok(Some(update)) => {
+                if let streamkit_core::NodeState::Failed { reason } = &update.state {
+                    return reason.clone();
+                }
+            },
+            Ok(None) => panic!("State channel closed before Failed was observed"),
+            Err(elapsed) => panic!("Node never reached Failed state within deadline: {elapsed}"),
         }
     }
-    panic!("Node never reached Failed state");
 }
 
 fn load_plugin_fixture() -> LoadedNativePlugin {
@@ -332,11 +335,12 @@ async fn update_params_error_is_silently_absorbed_today_and_node_keeps_running()
         .await
         .expect("control channel open");
 
-    // Confirm no Failed state arrives in a reasonable window. We do not
-    // wait too long — the absence of a Failed transition is what we are
-    // asserting.
-    let next = tokio::time::timeout(std::time::Duration::from_millis(500), state_rx.recv()).await;
-    if let Ok(Some(update)) = next {
+    // Confirm no Failed state arrives anywhere in a 500 ms window. The
+    // absence of a Failed transition is what we are asserting, so we must
+    // drain every update the worker emits — a single recv would miss a
+    // Failed that lands after an unrelated heartbeat.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(500);
+    while let Ok(Some(update)) = tokio::time::timeout_at(deadline, state_rx.recv()).await {
         if let streamkit_core::NodeState::Failed { reason } = &update.state {
             panic!("Plugin update_params error must NOT mark node Failed today, got: {reason}");
         }

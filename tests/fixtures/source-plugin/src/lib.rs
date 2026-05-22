@@ -104,10 +104,14 @@ impl NativeSourceNode for TickingSource {
                 Err("source-plugin: intentional error in tick".to_string())
             },
             Mode::EmitN => {
-                let n = self.ticks_done.fetch_add(1, Ordering::SeqCst) + 1;
-                let payload = format!("tick-{n}");
-                output.send("output", &Packet::Text(payload.into()))?;
-                // Signal completion after max_ticks emissions.
+                // Compute the would-be tick number without mutating the
+                // counter, send the packet, and only on success commit the
+                // increment.  This keeps `ticks_done` consistent with what
+                // was actually emitted if a future host gains retry
+                // semantics for tick send failures.
+                let n = self.ticks_done.load(Ordering::SeqCst) + 1;
+                output.send("output", &Packet::Text(format!("tick-{n}").into()))?;
+                self.ticks_done.store(n, Ordering::SeqCst);
                 Ok(n as u64 >= self.max_ticks)
             },
         }
