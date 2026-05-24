@@ -40,14 +40,16 @@ For StreamKit specifically:
 
 The `codecov.yml` ratchet plan lives in that file's header comment.
 The project flags (`backend`, `ui`) now report red on any drop > 1% and
-`patch.default` reports red when new / changed code is below 80% —
-those are real signals reviewers see on every PR. They are **not yet
-required for merge**, however: the coverage jobs in CI are
-`continue-on-error: true` and the required `All Checks Passed` gate
-only watches GitHub Actions job results, not Codecov commit statuses.
-Wiring the Codecov statuses into the merge gate is a separate change
-tracked as a follow-up issue. Component-level statuses remain
-informational while individual subsystems settle near the 80% target.
+`patch.default` reports red when new / changed code is below 80%.
+These thresholds are **enforced by the merge gate**: the `all-checks`
+job in `ci.yml` polls Codecov commit statuses and fails the required
+check when any threshold is violated. The coverage jobs themselves keep
+`continue-on-error: true` so a flaky coverage toolchain doesn't
+independently block merges — only Codecov's own threshold verdict
+matters. If Codecov statuses don't appear within the polling window
+(~5 min), the gate degrades gracefully with a warning rather than
+blocking. Component-level statuses remain informational while individual
+subsystems settle near the 80% target.
 
 ## What to do — and not do — when adding tests
 

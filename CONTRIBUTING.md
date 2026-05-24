@@ -177,7 +177,10 @@ level and patch-level thresholds (configured in `codecov.yml`). The gate
 polls for these statuses and fails if any report a threshold violation.
 This ensures PRs cannot merge with sub-threshold coverage even though
 the coverage jobs themselves use `continue-on-error: true` (so a flaky
-coverage toolchain doesn't block unrelated work).
+coverage toolchain doesn't block unrelated work). If Codecov statuses
+do not appear within the polling window (~5 min), the gate degrades
+gracefully with a warning rather than blocking — this prevents a
+Codecov outage from stalling all merges.
 
 ## Pull Requests
 
