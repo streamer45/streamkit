@@ -21,10 +21,6 @@ use streamkit_api::Pipeline;
 
 use super::{read_registry, AppError};
 
-// ---------------------------------------------------------------------------
-// POST /api/v1/validate — stateless pipeline dry-run
-// ---------------------------------------------------------------------------
-
 /// A single node in the validated graph.
 #[derive(Serialize)]
 pub struct ValidateGraphNode {
@@ -316,7 +312,6 @@ pub(super) fn validate_connections(
     for conn in &pipeline.connections {
         let conn_id = format!("{}->{}", conn.from_node, conn.to_node);
 
-        // Check that referenced nodes exist in the pipeline definition.
         if !pipeline.nodes.contains_key(&conn.from_node) {
             errors.push(ValidateDiagnostic {
                 kind: DiagnosticKind::Connection,
@@ -704,18 +699,13 @@ pub(super) fn load_script_secrets(
     secrets
 }
 
-// ---------------------------------------------------------------------------
-// Shared helpers — used by both HTTP handlers and crate::mcp
-// ---------------------------------------------------------------------------
-
 /// Validate a pipeline YAML string with optional mode.
 ///
-/// Shared implementation behind `POST /api/v1/validate` and the MCP
-/// `validate_pipeline` tool.
+/// Shared by `POST /api/v1/validate` and the MCP `validate_pipeline` tool.
 ///
 /// # Errors
 ///
-/// Returns an error string only if the node registry lock is poisoned.
+/// Returns an error string if the node registry lock is poisoned.
 pub fn validate_pipeline_yaml(
     app_state: &Arc<AppState>,
     perms: &crate::permissions::Permissions,

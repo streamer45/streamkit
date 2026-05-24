@@ -43,7 +43,6 @@ pub struct MoqGateway {
 }
 
 impl MoqGateway {
-    /// Create a new MoQ gateway
     pub fn new() -> Self {
         Self {
             routes: Arc::new(RwLock::new(HashMap::new())),
@@ -129,7 +128,6 @@ impl MoqGateway {
             let conn =
                 MoqConnection { path: path.clone(), session: session_boxed, response_tx, auth };
 
-            // Send connection to the node
             if connection_tx.send(conn).is_err() {
                 error!(path = %path, "Failed to send connection to node (channel closed)");
                 return Err("Node disconnected".to_string());
@@ -191,7 +189,6 @@ impl MoqGatewayTrait for MoqGateway {
         {
             let mut routes = self.routes.write().await;
 
-            // Check if this path is already registered
             if routes.contains_key(&path_pattern) {
                 return Err(format!("Path pattern '{path_pattern}' is already registered"));
             }

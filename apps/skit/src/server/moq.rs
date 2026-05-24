@@ -94,7 +94,6 @@ pub(super) fn start_moq_webtransport_acceptor(
     tokio::spawn(async move {
         match moq_config.init() {
             Ok(mut server) => {
-                // Store fingerprints in gateway for HTTP endpoint
                 let fingerprints = server
                     .tls_info()
                     .read()

@@ -2,15 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! Authentication context and token extraction utilities.
-//!
-//! This module provides utilities for extracting and validating JWT tokens
-//! from HTTP requests. The main types are:
-//!
-//! - `AuthContext`: Represents an authenticated request with validated claims
-//! - `MaybeAuth`: Optional authentication that never fails
-//!
-//! These can be used by handlers to check authentication status.
+//! Authentication context and token extraction.
 
 use super::{ApiClaims, AuthState};
 use crate::config::Config;
@@ -19,53 +11,42 @@ use axum::http::header::{AUTHORIZATION, COOKIE};
 use axum::http::{HeaderMap, StatusCode};
 
 /// Authenticated request context.
-///
-/// Contains the validated JWT claims, role name, and resolved permissions.
 #[derive(Debug, Clone)]
 pub struct AuthContext {
-    /// The validated JWT claims
     pub claims: ApiClaims,
-    /// The role name from the token
     pub role: String,
-    /// The permissions associated with this role
     #[allow(dead_code)]
     pub permissions: Permissions,
 }
 
 #[allow(dead_code)]
 impl AuthContext {
-    /// Get the JWT ID (for revocation tracking)
+    /// JWT ID (used for revocation tracking).
     pub fn jti(&self) -> &str {
         &self.claims.jti
     }
 
-    /// Get the subject (token holder identifier)
+    /// Subject (token holder identifier).
     pub fn sub(&self) -> &str {
         &self.claims.sub
     }
 }
 
-/// Optional authenticated request context.
-///
-/// This type never fails - when authentication is not provided or fails,
-/// it contains `None`.
+/// Optional auth context — never fails; contains `None` when unauthenticated.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct MaybeAuth(pub Option<AuthContext>);
 
 #[allow(dead_code)]
 impl MaybeAuth {
-    /// Get the auth context if present
     pub const fn context(&self) -> Option<&AuthContext> {
         self.0.as_ref()
     }
 
-    /// Check if the request is authenticated
     pub const fn is_authenticated(&self) -> bool {
         self.0.is_some()
     }
 
-    /// Get a reference to the inner Option
     #[allow(clippy::ref_option)]
     pub const fn as_option(&self) -> &Option<AuthContext> {
         &self.0
@@ -109,14 +90,7 @@ pub fn extract_token(headers: &HeaderMap, config: &Config) -> Option<String> {
     None
 }
 
-/// Validate a token and return the AuthContext.
-///
-/// This function performs:
-/// 1. Token extraction from headers
-/// 2. JWT signature verification
-/// 3. Revocation check
-/// 4. "Tokens we mint" enforcement
-/// 5. Permission resolution
+/// Extract a token from headers, verify it, and return an [`AuthContext`].
 ///
 /// # Errors
 ///

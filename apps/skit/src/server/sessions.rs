@@ -37,8 +37,7 @@ pub(super) struct CreateSessionResponse {
     created_at: String,
 }
 
-/// Helper function to populate the session's in-memory pipeline representation
-/// from the compiled engine pipeline definition.
+/// Populate the session's in-memory pipeline from the compiled engine definition.
 pub async fn populate_session_pipeline(
     session: &crate::session::Session,
     engine_pipeline: &Pipeline,
@@ -73,7 +72,7 @@ pub async fn populate_session_pipeline(
     }));
 }
 
-/// Helper function to send all node and connection control messages to the engine actor.
+/// Send all node and connection control messages to the engine actor.
 pub async fn send_pipeline_to_engine(
     session: &crate::session::Session,
     engine_pipeline: &Pipeline,

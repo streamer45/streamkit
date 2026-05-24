@@ -288,7 +288,6 @@ async fn auth_guard_middleware(
         return (StatusCode::INTERNAL_SERVER_ERROR, "Invalid role in token".to_string())
             .into_response();
     };
-    // Header name is static and guaranteed to be valid.
     #[allow(clippy::expect_used)]
     let header_name = header::HeaderName::from_static(BUILTIN_AUTH_ROLE_HEADER);
     req.headers_mut().insert(header_name, role_value);
@@ -1441,10 +1440,6 @@ async fn get_pipeline_handler(
     Ok(Json(api_pipeline))
 }
 
-// ---------------------------------------------------------------------------
-// Preview API — engine-native pipeline tap
-// ---------------------------------------------------------------------------
-
 #[cfg(feature = "moq")]
 pub mod preview;
 
@@ -2289,7 +2284,6 @@ pub async fn start_mcp_stdio(config: &Config) -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
-// --- A simple error type for the Axum handler ---
 #[derive(Debug)]
 enum AppError {
     Engine(StreamKitError),

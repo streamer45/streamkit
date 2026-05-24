@@ -20,8 +20,6 @@ use streamkit_core::types::PacketType;
 
 use super::read_registry;
 
-// ── Request / response types ─────────────────────────────────────────
-
 #[derive(Deserialize)]
 pub struct StartPreviewRequest {
     pub tap_node: Option<String>,
@@ -57,16 +55,12 @@ pub struct TapPointInfo {
     pub media: String,
 }
 
-// ── Terminal node kinds (sinks that don't produce useful output) ─────
-
 const TERMINAL_KINDS: &[&str] =
     &["transport::moq::publisher", "transport::moq::peer", "core::sink", "io::file_writer"];
 
 fn is_terminal_kind(kind: &str) -> bool {
     TERMINAL_KINDS.contains(&kind)
 }
-
-// ── Output pin classification ────────────────────────────────────────
 
 /// Classify a node output pin as `(is_encoded, is_audio, is_video)`.
 ///
@@ -109,8 +103,6 @@ fn classify_by_kind(kind: &str) -> (bool, bool, bool) {
         },
     }
 }
-
-// ── Auto-detect tap points ───────────────────────────────────────────
 
 /// Find the best tap points by tracing connections into terminal nodes.
 ///
@@ -211,8 +203,6 @@ pub fn detect_tap_points(
     Ok(result)
 }
 
-// ── Subgraph injection ───────────────────────────────────────────────
-
 /// Pre-compute the output pin classification while we still hold the
 /// registry read-guard (which is `!Send` and must be dropped before the
 /// next `.await`).
@@ -292,8 +282,6 @@ pub async fn inject_preview_subgraph(
     let peer_audio_input = "in";
     let peer_video_input = if has_audio && has_video { "in_1" } else { "in" };
 
-    // Helper: on any engine error, tear down what we've built so far
-    // and propagate the error.
     let result = inject_subgraph_inner(
         session,
         tap_points,
@@ -454,8 +442,6 @@ async fn inject_subgraph_inner(
     Ok(())
 }
 
-// ── Node creation helpers ────────────────────────────────────────────
-
 async fn add_moq_peer_node(
     session: &crate::session::Session,
     node_id: &str,
@@ -529,8 +515,6 @@ async fn add_pixel_convert_node(
         .await
 }
 
-// ── Connection helpers ───────────────────────────────────────────────
-
 async fn connect_best_effort(
     session: &crate::session::Session,
     from_node: &str,
@@ -598,8 +582,6 @@ async fn connect_reliable(
     ));
     Ok(())
 }
-
-// ── Teardown ─────────────────────────────────────────────────────────
 
 /// Tear down the preview subgraph (disconnect, then remove nodes in reverse).
 /// Also removes the preview nodes and connections from `session.pipeline`
@@ -683,8 +665,6 @@ pub async fn teardown_all_previews(session: &crate::session::Session) {
     }
 }
 
-// ── Route handlers ───────────────────────────────────────────────────
-
 /// POST /api/v1/sessions/{id}/preview
 ///
 /// # Errors
@@ -722,7 +702,6 @@ pub async fn start_preview_handler(
         return Err((StatusCode::NOT_FOUND, format!("Session '{session_id}' not found")));
     };
 
-    // Check ownership
     if !perms.access_all_sessions && session.created_by.as_ref().is_some_and(|c| c != &role_name) {
         return Err((
             StatusCode::FORBIDDEN,

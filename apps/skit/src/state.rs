@@ -145,7 +145,6 @@ mod tests {
     #[test]
     fn broadcast_event_to_all_wraps_event() {
         let be = BroadcastEvent::to_all(make_test_event());
-        // Ensure the event is accessible after wrapping.
         assert_eq!(be.event.message_type, streamkit_api::MessageType::Event);
     }
 

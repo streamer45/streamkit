@@ -20,11 +20,7 @@ use super::{AuthError, MoqClaims};
 use moq_lite::{Path, PathOwned};
 use streamkit_core::moq_gateway::MoqAuthChecker;
 
-/// Verified MoQ auth context after path reduction.
-///
-/// This struct represents the reduced permissions for a specific connection,
-/// after validating the JWT and reducing permissions based on the connection
-/// path depth (similar to moq-relay's `AuthToken`).
+/// Verified MoQ auth context with permissions reduced by connection path depth.
 #[derive(Debug, Clone)]
 pub struct MoqAuthContext {
     /// The actual connection path (after root validation)
@@ -44,22 +40,16 @@ impl MoqAuthContext {
 
         let broadcast_path = Path::new(broadcast);
 
-        // Check if any allowed path is a prefix of (or matches) the broadcast
         allowed.iter().any(|allowed_path| {
             if allowed_path.is_empty() {
-                // [""] = root allowed = any broadcast
                 true
             } else {
-                // Segment-based prefix check: allowed_path must be a prefix of broadcast_path
-                // This means broadcast_path should be able to strip allowed_path as prefix
                 broadcast_path.strip_prefix(allowed_path).is_some()
             }
         })
     }
 }
 
-/// Implement the core trait for permission checking.
-/// This allows nodes to check permissions without knowing the full MoqAuthContext type.
 impl MoqAuthChecker for MoqAuthContext {
     fn can_subscribe(&self, broadcast: &str) -> bool {
         Self::check_permission(broadcast, &self.subscribe)
@@ -72,44 +62,20 @@ impl MoqAuthChecker for MoqAuthContext {
 
 /// Verify MoQ JWT and reduce permissions based on connection path.
 ///
-/// This function implements moq-relay style path reduction:
-/// 1. Verify the connection URL path starts with the token's `root` (segment-based)
-/// 2. Compute the suffix (connection path minus root)
-/// 3. Reduce subscribe/publish permissions based on suffix depth
-///
-/// # Arguments
-/// * `claims` - The validated MoQ JWT claims
-/// * `connection_path` - The URL path from the WebTransport connection (e.g., "/moq/session1")
-///
-/// # Returns
-/// * `Ok(MoqAuthContext)` - Reduced permissions for this connection
-/// * `Err(AuthError)` - If root doesn't match connection path
+/// Implements moq-relay style path reduction: verifies the connection URL
+/// starts with the token's `root` (segment-based), then strips matching
+/// prefix segments from subscribe/publish permissions.
 ///
 /// # Errors
 ///
 /// Returns `AuthError::Moq` if the connection path doesn't match the token's root.
-///
-/// # Example
-/// ```ignore
-/// // Token claims:
-/// //   root: "/moq"
-/// //   subscribe: ["session1/output", ""]
-/// //   publish: ["session1/input"]
-///
-/// // Connection to "/moq/session1":
-/// //   suffix = "session1"
-/// //   subscribe reduced to: ["output", ""] (empty string = allow all)
-/// //   publish reduced to: ["input"]
-/// ```
 pub fn verify_moq_token(
     claims: &MoqClaims,
     connection_path: &str,
 ) -> Result<MoqAuthContext, AuthError> {
-    // Parse paths using moq_lite::Path for segment-based matching
     let root = Path::new(&claims.root);
     let url_path = Path::new(connection_path);
 
-    // URL path must start with root (segment-based, not string starts_with)
     let suffix = url_path.strip_prefix(root).ok_or_else(|| {
         AuthError::Moq(format!(
             "Connection path '{}' does not match token root '{}'",
@@ -117,10 +83,7 @@ pub fn verify_moq_token(
         ))
     })?;
 
-    // Reduce subscribe permissions based on connection depth
     let subscribe = claims.subscribe.iter().filter_map(|p| reduce_permission(p, &suffix)).collect();
-
-    // Reduce publish permissions the same way
     let publish = claims.publish.iter().filter_map(|p| reduce_permission(p, &suffix)).collect();
 
     Ok(MoqAuthContext { root: url_path.to_owned(), subscribe, publish })

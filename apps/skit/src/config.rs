@@ -653,8 +653,6 @@ impl Default for ScriptConfig {
     }
 }
 
-// ── Compositor server config ─────────────────────────────────────────────
-
 const fn default_compositor_max_canvas_dimension() -> u32 {
     7680
 }

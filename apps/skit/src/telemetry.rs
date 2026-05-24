@@ -140,7 +140,6 @@ fn start_system_metrics_collection() {
         let mut interval = tokio::time::interval(Duration::from_secs(10));
         let meter = global::meter("skit_system");
 
-        // Create gauges for system metrics
         let cpu_usage_gauge = meter
             .f64_gauge("system_cpu_utilization")
             .with_description("System-wide CPU utilization as a percentage")

@@ -124,7 +124,6 @@ pub fn init_logging(
         );
     }
 
-    // Helper to set up file appender
     let setup_file_appender = |log_config: &config::LogConfig| -> Result<
         (tracing_appender::non_blocking::NonBlocking, tracing_appender::non_blocking::WorkerGuard),
         Box<dyn std::error::Error>,

@@ -30,11 +30,8 @@ fn normalize_cookie_path(base_path: Option<&str>) -> String {
 
 /// Build a session cookie header value for login.
 ///
-/// The cookie is configured with:
-/// - HttpOnly: Prevents JavaScript access (XSS protection)
-/// - SameSite=Strict: Prevents CSRF attacks
-/// - Secure: Only sent over HTTPS (if TLS is enabled)
-/// - Path: Set to base_path for subpath deployment safety
+/// HttpOnly + SameSite=Strict + Secure (when TLS is on).
+/// Path is set to `base_path` for subpath deployment safety.
 pub fn build_session_cookie(
     token: &str,
     config: &Config,
@@ -43,7 +40,6 @@ pub fn build_session_cookie(
     let cookie_name = &config.auth.cookie_name;
     let secure = config.server.tls;
 
-    // Path = base_path for subpath safety (or "/" if not set)
     let path = normalize_cookie_path(config.server.base_path.as_deref());
 
     let cookie = format!(
@@ -54,9 +50,7 @@ pub fn build_session_cookie(
     HeaderValue::from_str(&cookie).ok()
 }
 
-/// Build a logout cookie header value that clears the session.
-///
-/// Sets Max-Age=0 to immediately expire the cookie.
+/// Build a logout cookie that expires the session immediately (Max-Age=0).
 pub fn build_logout_cookie(config: &Config) -> Option<HeaderValue> {
     let cookie_name = &config.auth.cookie_name;
     let path = normalize_cookie_path(config.server.base_path.as_deref());

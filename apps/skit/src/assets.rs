@@ -491,8 +491,6 @@ pub fn assets_router() -> Router<Arc<AppState>> {
         .route("/api/v1/assets/audio/{id}", delete(delete_asset_handler))
 }
 
-// ── Image Assets ────────────────────────────────────────────────────────────
-
 // Security limits for image assets
 const MAX_IMAGE_FILE_SIZE: usize = 10 * 1024 * 1024; // 10MB
 const MAX_IMAGE_PIXELS: u64 = 40_000_000; // ~40 MP — bounds decoded RGBA to ~160 MB
@@ -1023,8 +1021,6 @@ pub fn image_assets_router() -> Router<Arc<AppState>> {
         .route("/api/v1/assets/images/file/{scope}/{id}", get(serve_image_asset_handler))
         .route("/api/v1/assets/images/{id}", delete(delete_image_asset_handler))
 }
-
-// ── Font Assets ─────────────────────────────────────────────────────────────
 
 // Security limits for font assets
 const MAX_FONT_FILE_SIZE: usize = 10 * 1024 * 1024; // 10MB

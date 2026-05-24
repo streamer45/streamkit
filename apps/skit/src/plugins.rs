@@ -722,7 +722,6 @@ impl UnifiedPluginManager {
             .with_context(|| format!("Plugin '{kind}' provided invalid param_schema JSON"))?;
         let categories = metadata.categories;
 
-        // Ensure we don't override an existing node definition
         {
             let registry =
                 self.engine.registry.read().map_err(|e| anyhow!("Registry lock poisoned: {e}"))?;
@@ -889,7 +888,6 @@ impl UnifiedPluginManager {
         self.plugins.contains_key(kind)
     }
 
-    /// Helper method to update the loaded plugins gauge by counting each type
     fn update_loaded_gauge(&self) {
         let wasm_count =
             self.plugins.values().filter(|p| p.plugin_type == PluginType::Wasm).count() as u64;
