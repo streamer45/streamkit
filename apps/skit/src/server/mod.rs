@@ -192,7 +192,7 @@ fn normalize_base_path(base_path: Option<&str>) -> Option<String> {
         .map(str::trim)
         .and_then(|p| if p.is_empty() { None } else { Some(p) })
         .map(|p| p.trim_end_matches('/'))
-        .and_then(|p| if p == "/" { None } else { Some(p) })
+        .and_then(|p| if p.is_empty() { None } else { Some(p) })
         .map(|p| if p.starts_with('/') { p.to_string() } else { format!("/{p}") })
 }
 
@@ -321,7 +321,16 @@ async fn origin_guard_middleware(
     let is_mutating = matches!(method, Method::POST | Method::PUT | Method::PATCH | Method::DELETE);
 
     if is_api && is_mutating {
-        if let Some(origin) = req.headers().get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+        if let Some(origin_val) = req.headers().get(header::ORIGIN) {
+            let Ok(origin) = origin_val.to_str() else {
+                warn!(
+                    method = %method,
+                    path = %path,
+                    "Rejected request: Origin header is not valid UTF-8"
+                );
+                return (StatusCode::FORBIDDEN, "Invalid Origin header").into_response();
+            };
+
             let allowed = app_state
                 .config
                 .server
@@ -556,9 +565,8 @@ mod helper_tests {
         assert_eq!(normalize_base_path(Some("")), None);
         assert_eq!(normalize_base_path(Some("   ")), None);
 
-        // BUG(#485): "/" should normalise to None but instead returns Some("/").
-        // When #485 is fixed this assertion should change to `None`.
-        assert_eq!(normalize_base_path(Some("/")).as_deref(), Some("/"));
+        assert_eq!(normalize_base_path(Some("/")), None);
+        assert_eq!(normalize_base_path(Some("///")), None);
 
         assert_eq!(normalize_base_path(Some("/foo")).as_deref(), Some("/foo"));
         assert_eq!(normalize_base_path(Some("foo")).as_deref(), Some("/foo"));
@@ -1058,10 +1066,8 @@ mod app_integration_tests {
     }
 
     #[tokio::test]
-    async fn origin_guard_allows_mutating_request_with_non_utf8_origin() {
-        // BUG(#494): non-UTF-8 Origin bytes bypass origin_guard entirely because
-        // `to_str().ok()` returns None and the request falls through as if no
-        // Origin were present. This test documents the current (buggy) behavior.
+    async fn origin_guard_rejects_mutating_request_with_non_utf8_origin() {
+        // Invalid Origin bytes should be rejected rather than treated like an absent header.
         let (app, _state) = create_app(default_config(), None);
         let resp = app
             .oneshot(
@@ -1080,8 +1086,7 @@ mod app_integration_tests {
             )
             .await
             .unwrap();
-        // Should be FORBIDDEN but currently passes through (see #494).
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
@@ -1908,16 +1913,7 @@ pub fn create_app(
 
     // If server.base_path is set (e.g. "/s/session_xxx"), serve the entire app under that
     // prefix too. This makes subpath deployments work even without a reverse-proxy rewrite.
-    let base_path = app_state
-        .config
-        .server
-        .base_path
-        .as_deref()
-        .map(str::trim)
-        .and_then(|p| if p.is_empty() { None } else { Some(p) })
-        .map(|p| p.trim_end_matches('/'))
-        .and_then(|p| if p == "/" { None } else { Some(p) })
-        .map(|p| if p.starts_with('/') { p.to_string() } else { format!("/{p}") });
+    let base_path = normalize_base_path(app_state.config.server.base_path.as_deref());
 
     let router = if let Some(base_path) = base_path {
         let cloned = router.clone();
