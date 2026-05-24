@@ -70,10 +70,7 @@ use cros_codecs::{Fourcc as CrosFourcc, FrameLayout, PlaneLayout, Resolution as 
 use super::encoder_trait::{self, EncodedPacket, EncoderNodeRunner, StandardVideoEncoder};
 use super::{HwAccelMode, AV1_CONTENT_TYPE, EAGAIN_YIELD_THRESHOLD, MAX_EAGAIN_EMPTY_RETRIES};
 
-// ---------------------------------------------------------------------------
 // Constants
-// ---------------------------------------------------------------------------
-
 /// Default VA-API render device path.
 const DEFAULT_RENDER_DEVICE: &str = "/dev/dri/renderD128";
 
@@ -86,10 +83,7 @@ const DEFAULT_QUALITY: u32 = 128;
 /// Default framerate for rate-control hints.
 const DEFAULT_FRAMERATE: u32 = 30;
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
-
 /// NV12 fourcc code for GBM/VA-API surfaces.
 pub(super) fn nv12_fourcc() -> CrosFourcc {
     CrosFourcc::from(b"NV12")
@@ -486,10 +480,7 @@ pub(super) fn write_nv12_to_mapping(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
 // Decoder
-// ---------------------------------------------------------------------------
-
 /// Configuration for the VA-API AV1 hardware decoder node.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -632,10 +623,7 @@ impl ProcessorNode for VaapiAv1DecoderNode {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Decoder — blocking decode loop
-// ---------------------------------------------------------------------------
-
 /// Blocking decode loop running inside `spawn_blocking`.
 ///
 /// Opens the VA-API display and GBM device, creates the AV1
@@ -678,10 +666,7 @@ fn vaapi_av1_decode_loop(
     );
 }
 
-// ---------------------------------------------------------------------------
 // Generic VA-API decode helpers (shared by AV1 + H.264)
-// ---------------------------------------------------------------------------
-
 /// Codec-agnostic VA-API blocking decode loop body.
 ///
 /// Processes input packets from `decode_rx` through the provided
@@ -894,10 +879,7 @@ where
     (false, had_events)
 }
 
-// ---------------------------------------------------------------------------
 // Encoder
-// ---------------------------------------------------------------------------
-
 /// Configuration for the VA-API AV1 hardware encoder node.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -1022,10 +1004,7 @@ impl EncoderNodeRunner for VaapiAv1EncoderNode {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Encoder — internal codec wrapper
-// ---------------------------------------------------------------------------
-
 /// Type alias for the VA-API AV1 encoder using GBM-backed surfaces.
 ///
 /// Uses the standard cros-codecs path with `GbmVideoFrame` and
@@ -1201,10 +1180,7 @@ impl StandardVideoEncoder for VaapiAv1Encoder {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Keyframe detection
-// ---------------------------------------------------------------------------
-
 /// Detect whether an AV1 bitstream produced by the encoder contains a
 /// keyframe by scanning for a Frame OBU with `frame_type == KEY_FRAME`.
 ///
@@ -1309,10 +1285,7 @@ fn merge_av1_keyframe_metadata(
     })
 }
 
-// ---------------------------------------------------------------------------
 // Registration
-// ---------------------------------------------------------------------------
-
 use streamkit_core::registry::StaticPins;
 
 #[allow(clippy::expect_used, clippy::missing_panics_doc)] // Default config and schema serialization should never fail
@@ -1352,20 +1325,14 @@ pub fn register_vaapi_av1_nodes(registry: &mut NodeRegistry) {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_macros)]
 mod tests {
     use super::*;
     use std::cell::RefCell;
 
-    // -----------------------------------------------------------------------
     // Mock mapping types for unit-testing read/write helpers without a GPU.
-    // -----------------------------------------------------------------------
-
     struct MockReadMapping<'a> {
         planes: Vec<&'a [u8]>,
     }
@@ -1410,10 +1377,7 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
     // align_up_u32
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_align_up_u32_already_aligned() {
         assert_eq!(align_up_u32(64, 64), 64);
@@ -1432,10 +1396,7 @@ mod tests {
         assert_eq!(align_up_u32(42, 1), 42);
     }
 
-    // -----------------------------------------------------------------------
     // read_nv12_from_mapping — buffer size and content
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_read_nv12_even_dimensions() {
         let w: u32 = 64;
@@ -1552,10 +1513,7 @@ mod tests {
         assert!(data[y_size..].iter().all(|&b| b == 0x80));
     }
 
-    // -----------------------------------------------------------------------
     // read → VideoFrame::with_metadata roundtrip
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_read_nv12_produces_valid_video_frame() {
         // The key invariant: read_nv12_from_mapping output must be accepted by
@@ -1581,10 +1539,7 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
     // write_nv12_to_mapping — NV12 source
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_write_nv12_even_dimensions() {
         let w: u32 = 64;
@@ -1632,10 +1587,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
     // write_nv12_to_mapping — I420 → NV12 conversion
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_write_i420_to_nv12_conversion() {
         let w: u32 = 64;
@@ -1702,10 +1654,7 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
     // write_nv12_to_mapping — unsupported pixel format
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_write_unsupported_format_returns_error() {
         let w: u32 = 64;
@@ -1726,10 +1675,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
     // NV12 read→write roundtrip
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_nv12_read_write_roundtrip() {
         // Verify that data read from a mapping can be written back and
@@ -1763,10 +1709,7 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
     // resolve_render_device
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_resolve_render_device_with_configured() {
         let configured = "/dev/dri/renderD129".to_string();
@@ -1782,13 +1725,10 @@ mod tests {
         assert!(!result.is_empty(), "should return a non-empty device path");
     }
 
-    // -----------------------------------------------------------------------
     // GPU integration tests — encode/decode roundtrip
     //
     // These require a VA-API capable GPU. They are compiled with the `vaapi`
     // feature but skip at runtime if no VA-API device is available.
-    // -----------------------------------------------------------------------
-
     /// Check whether a usable VA-API display can be opened.
     fn vaapi_available() -> bool {
         let path = resolve_render_device(None);
@@ -2197,10 +2137,7 @@ mod tests {
         assert!(result.is_err(), "ForceCpu should be rejected for VA-API encoder");
     }
 
-    // -----------------------------------------------------------------------
     // deny_unknown_fields
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_deny_unknown_fields_decoder() {
         let json = r#"{"render_device":null,"hw_accel":"auto","bogus":1}"#;
@@ -2214,8 +2151,6 @@ mod tests {
         let result: Result<VaapiAv1EncoderConfig, _> = serde_json::from_str(json);
         assert!(result.is_err(), "Unknown fields should be rejected");
     }
-
-    // ── Registration test ────────────────────────────────────────────────
 
     #[test]
     fn test_node_registration() {
@@ -2231,8 +2166,6 @@ mod tests {
             "VA-API AV1 encoder should be registered"
         );
     }
-
-    // ── Keyframe detection unit tests ────────────────────────────────
 
     #[test]
     fn test_av1_keyframe_detection_key_frame() {

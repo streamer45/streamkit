@@ -30,18 +30,12 @@ use tokio::sync::mpsc;
 use super::encoder_trait::{self, EncodedPacket, EncoderNodeRunner, StandardVideoEncoder};
 use super::H264_CONTENT_TYPE;
 
-// ---------------------------------------------------------------------------
 // Default encoder parameters
-// ---------------------------------------------------------------------------
-
 const H264_DEFAULT_BITRATE_KBPS: u32 = 2000;
 const H264_DEFAULT_MAX_FRAME_RATE: f32 = 30.0;
 const H264_DEFAULT_GOP_SIZE: u32 = 60;
 
-// ---------------------------------------------------------------------------
 // Configuration
-// ---------------------------------------------------------------------------
-
 /// Configuration for the OpenH264 encoder node.
 ///
 /// OpenH264 only supports Constrained Baseline profile (no B-frames, no
@@ -75,10 +69,7 @@ impl Default for OpenH264EncoderConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Encoder node
-// ---------------------------------------------------------------------------
-
 pub struct OpenH264EncoderNode {
     config: OpenH264EncoderConfig,
 }
@@ -199,10 +190,7 @@ impl StandardVideoEncoder for OpenH264Encoder {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Internal codec wrapper
-// ---------------------------------------------------------------------------
-
 struct OpenH264Encoder {
     encoder: openh264::encoder::Encoder,
     /// Reusable I420 buffer to avoid per-frame heap allocation.
@@ -376,10 +364,7 @@ impl OpenH264Encoder {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Registration
-// ---------------------------------------------------------------------------
-
 use streamkit_core::registry::StaticPins;
 
 #[allow(clippy::expect_used, clippy::missing_panics_doc)] // Default config and schema serialization should never fail

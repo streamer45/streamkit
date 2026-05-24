@@ -45,10 +45,7 @@ use super::{EAGAIN_YIELD_THRESHOLD, MAX_EAGAIN_EMPTY_RETRIES};
 /// number of logical cores.
 const DAV1D_DEFAULT_THREADS: u32 = 0;
 
-// ---------------------------------------------------------------------------
 // Configuration
-// ---------------------------------------------------------------------------
-
 #[derive(Deserialize, Debug, JsonSchema, Clone)]
 #[serde(default, deny_unknown_fields)]
 pub struct Dav1dDecoderConfig {
@@ -63,10 +60,7 @@ impl Default for Dav1dDecoderConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Decoder node
-// ---------------------------------------------------------------------------
-
 pub struct Dav1dDecoderNode {
     config: Dav1dDecoderConfig,
 }
@@ -226,10 +220,7 @@ impl ProcessorNode for Dav1dDecoderNode {
     }
 }
 
-// ---------------------------------------------------------------------------
 // C dav1d decoder wrapper
-// ---------------------------------------------------------------------------
-
 struct Dav1dDecoder {
     /// Opaque dav1d context handle.  Owned; closed in [`Drop`].
     ctx: *mut c_void,
@@ -414,10 +405,7 @@ impl Drop for Dav1dDecoder {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Dav1dData RAII guard
-// ---------------------------------------------------------------------------
-
 /// RAII guard for a `Dav1dData` buffer.  Calls `dav1d_data_unref` on drop
 /// unless explicitly defused (e.g. after `dav1d_send_data` consumes the data).
 ///
@@ -451,10 +439,7 @@ impl Drop for Dav1dDataGuard {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Picture copy (dav1d opaque → NV12 VideoFrame)
-// ---------------------------------------------------------------------------
-
 /// Copy a decoded `Dav1dPicture` (I420) into an NV12 [`VideoFrame`].
 ///
 /// dav1d always decodes AV1 to I420 (three separate Y, U, V planes).
@@ -528,10 +513,7 @@ fn copy_dav1d_picture(
     )
 }
 
-// ---------------------------------------------------------------------------
 // Registration
-// ---------------------------------------------------------------------------
-
 use streamkit_core::registry::StaticPins;
 
 #[allow(clippy::expect_used, clippy::missing_panics_doc)] // Default config and schema serialization should never fail
@@ -554,10 +536,7 @@ pub fn register_dav1d_nodes(registry: &mut NodeRegistry) {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_macros)]
 mod tests {

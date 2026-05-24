@@ -46,10 +46,7 @@ use tokio::sync::mpsc;
 use super::HwAccelMode;
 use super::H264_CONTENT_TYPE;
 
-// ---------------------------------------------------------------------------
 // Decoder
-// ---------------------------------------------------------------------------
-
 /// Configuration for the Vulkan Video H.264 decoder node.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -132,7 +129,6 @@ impl ProcessorNode for VulkanVideoH264DecoderNode {
         let mut input_rx = context.take_input("in")?;
         let video_pool = context.video_pool.clone();
 
-        // ── Metrics ──────────────────────────────────────────────────────
         let meter = global::meter("skit_nodes");
         let packets_processed_counter =
             meter.u64_counter("vulkan_video_h264_decoder_packets_processed").build();
@@ -141,13 +137,11 @@ impl ProcessorNode for VulkanVideoH264DecoderNode {
             .with_boundaries(streamkit_core::metrics::HISTOGRAM_BOUNDARIES_CODEC_PACKET.to_vec())
             .build();
 
-        // ── Channels ─────────────────────────────────────────────────────
         let (decode_tx, mut decode_rx) =
             mpsc::channel::<(Bytes, Option<PacketMetadata>)>(get_codec_channel_capacity());
         let (result_tx, mut result_rx) =
             mpsc::channel::<Result<VideoFrame, String>>(get_codec_channel_capacity());
 
-        // ── Blocking decode task ─────────────────────────────────────────
         let decode_task = tokio::task::spawn_blocking(move || {
             let instance = match vk_video::VulkanInstance::new() {
                 Ok(inst) => inst,
@@ -264,12 +258,10 @@ impl ProcessorNode for VulkanVideoH264DecoderNode {
             }
         });
 
-        // ── State transition ─────────────────────────────────────────────
         state_helpers::emit_running(&context.state_tx, &node_name);
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
         let batch_size = context.batch_size;
 
-        // ── Input task ───────────────────────────────────────────────────
         let decode_tx_clone = decode_tx.clone();
         let mut input_task = tokio::spawn(async move {
             loop {
@@ -294,7 +286,6 @@ impl ProcessorNode for VulkanVideoH264DecoderNode {
             tracing::info!("VulkanVideoH264DecoderNode input stream closed");
         });
 
-        // ── Forward loop ─────────────────────────────────────────────────
         crate::codec_utils::codec_forward_loop(
             &mut context,
             &mut result_rx,
@@ -359,10 +350,7 @@ fn raw_frame_to_video_frame(
     })
 }
 
-// ---------------------------------------------------------------------------
 // Encoder
-// ---------------------------------------------------------------------------
-
 /// Configuration for the Vulkan Video H.264 encoder node.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -476,7 +464,6 @@ impl ProcessorNode for VulkanVideoH264EncoderNode {
         );
         let mut input_rx = context.take_input("in")?;
 
-        // ── Metrics ──────────────────────────────────────────────────────
         let meter = global::meter("skit_nodes");
         let packets_processed_counter =
             meter.u64_counter("vulkan_video_h264_encoder_packets_processed").build();
@@ -485,13 +472,11 @@ impl ProcessorNode for VulkanVideoH264EncoderNode {
             .with_boundaries(streamkit_core::metrics::HISTOGRAM_BOUNDARIES_CODEC_PACKET.to_vec())
             .build();
 
-        // ── Channels ─────────────────────────────────────────────────────
         let (encode_tx, mut encode_rx) =
             mpsc::channel::<(VideoFrame, Option<PacketMetadata>)>(get_codec_channel_capacity());
         let (result_tx, mut result_rx) =
             mpsc::channel::<Result<EncoderOutput, String>>(get_codec_channel_capacity());
 
-        // ── Pre-initialise Vulkan device ─────────────────────────────────
         // Eagerly create the Vulkan device so the blocking encode task can
         // start processing frames immediately.  Without this, device
         // creation (~500 ms on some GPUs) blocks the encode loop and
@@ -503,7 +488,6 @@ impl ProcessorNode for VulkanVideoH264EncoderNode {
             .map_err(|e| StreamKitError::Runtime(format!("Vulkan device init task panicked: {e}")))?
             .map_err(StreamKitError::Runtime)?;
 
-        // ── Blocking encode task ─────────────────────────────────────────
         // NOTE: This encoder does NOT use StandardVideoEncoder /
         // spawn_standard_encode_task() because:
         //  1. vk-video's BytesEncoder has no flush() method, which
@@ -670,12 +654,10 @@ impl ProcessorNode for VulkanVideoH264EncoderNode {
             );
         });
 
-        // ── State transition ─────────────────────────────────────────────
         state_helpers::emit_running(&context.state_tx, &node_name);
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
         let batch_size = context.batch_size;
 
-        // ── Input task ───────────────────────────────────────────────────
         let encode_tx_clone = encode_tx.clone();
         let node_label = "VulkanVideoH264EncoderNode";
         let mut input_task = tokio::spawn(async move {
@@ -700,7 +682,6 @@ impl ProcessorNode for VulkanVideoH264EncoderNode {
             tracing::info!("{node_label} input stream closed");
         });
 
-        // ── Forward loop ─────────────────────────────────────────────────
         crate::codec_utils::codec_forward_loop(
             &mut context,
             &mut result_rx,
@@ -724,10 +705,7 @@ impl ProcessorNode for VulkanVideoH264EncoderNode {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Encoder helpers
-// ---------------------------------------------------------------------------
-
 /// Internal encoded output type for the encoder channel.
 struct EncoderOutput {
     data: Bytes,
@@ -763,10 +741,7 @@ fn init_vulkan_encode_device(
 
 // I420→NV12 conversion is now in super::i420_frame_to_nv12_buffer().
 
-// ---------------------------------------------------------------------------
 // Registration
-// ---------------------------------------------------------------------------
-
 use streamkit_core::registry::StaticPins;
 
 #[allow(clippy::expect_used, clippy::missing_panics_doc)] // Default config and schema serialization should never fail
@@ -808,10 +783,7 @@ pub fn register_vulkan_video_nodes(registry: &mut NodeRegistry) {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_macros)]
 mod tests {
@@ -824,7 +796,6 @@ mod tests {
     use streamkit_core::types::Packet;
     use tokio::sync::mpsc;
 
-    // ── Vulkan Video availability helper ────────────────────────────────
     //
     // Integration tests that require a Vulkan Video capable GPU use this
     // helper.  On machines without the right hardware/drivers the tests
@@ -912,8 +883,6 @@ mod tests {
         };
     }
 
-    // ── Config validation tests (no GPU needed) ─────────────────────────
-
     #[test]
     fn test_decoder_rejects_force_cpu() {
         let result = VulkanVideoH264DecoderNode::new(VulkanVideoH264DecoderConfig {
@@ -987,8 +956,6 @@ mod tests {
         assert!(result.is_ok(), "custom max_bitrate config should be accepted");
     }
 
-    // ── deny_unknown_fields tests ─────────────────────────────────────
-
     #[test]
     fn test_deny_unknown_fields_decoder() {
         let json = r#"{"hw_accel":"auto","bogus_field":42}"#;
@@ -1002,8 +969,6 @@ mod tests {
         let result: Result<VulkanVideoH264EncoderConfig, _> = serde_json::from_str(json);
         assert!(result.is_err(), "Unknown fields should be rejected");
     }
-
-    // ── Pin configuration tests ─────────────────────────────────────────
 
     #[test]
     fn test_decoder_pin_config() {
@@ -1058,8 +1023,6 @@ mod tests {
             "Encoder should report video/h264 content type"
         );
     }
-
-    // ── Integration tests (require Vulkan Video GPU) ────────────────────
 
     #[tokio::test]
     async fn test_vulkan_video_encode_nv12() {
@@ -1206,7 +1169,6 @@ mod tests {
     async fn test_vulkan_video_roundtrip_encode_decode() {
         skip_without_vulkan_video!();
 
-        // ── Step 1: Encode NV12 frames to H.264 ─────────────────────────
         let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
         let mut enc_inputs = HashMap::new();
         enc_inputs.insert("in".to_string(), enc_input_rx);
@@ -1242,7 +1204,6 @@ mod tests {
         let encoded_packets = enc_sender.get_packets_for_pin("out").await;
         assert!(!encoded_packets.is_empty(), "Encoder should produce packets");
 
-        // ── Step 2: Decode the H.264 packets back to NV12 ───────────────
         let (dec_input_tx, dec_input_rx) = mpsc::channel(10);
         let mut dec_inputs = HashMap::new();
         dec_inputs.insert("in".to_string(), dec_input_rx);
@@ -1288,8 +1249,6 @@ mod tests {
             }
         }
     }
-
-    // ── I420→NV12 conversion unit test ──────────────────────────────────
 
     #[test]
     fn test_i420_to_nv12_conversion() {
@@ -1347,8 +1306,6 @@ mod tests {
             }
         }
     }
-
-    // ── Standalone decode test (requires encode+decode to produce input) ─
 
     #[tokio::test]
     async fn test_vulkan_video_decode_produces_frames() {
@@ -1428,8 +1385,6 @@ mod tests {
             }
         }
     }
-
-    // ── Registration test ───────────────────────────────────────────────
 
     #[test]
     fn test_node_registration() {

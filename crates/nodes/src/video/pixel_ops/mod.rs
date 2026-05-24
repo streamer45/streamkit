@@ -30,8 +30,6 @@ mod simd_x86_64;
 #[cfg(target_arch = "x86_64")]
 use simd_x86_64 as simd;
 
-// ── Shared constants and helpers ────────────────────────────────────────────
-
 /// Minimum number of output rows before we dispatch to rayon.  Below this
 /// threshold the per-row work is small enough that the rayon scheduling
 /// overhead (work-stealing queue push/pop, thread wake-up) dominates.
@@ -99,8 +97,6 @@ pub fn all_alpha_opaque(rgba: &[u8]) -> bool {
         rgba.chunks_exact(4).all(|px| px[3] == 255)
     }
 }
-
-// ── Public API re-exports ───────────────────────────────────────────────────
 
 pub use blit::{scale_blit_rgba, scale_blit_rgba_rotated, BlitRect};
 pub use convert::{i420_to_rgba8_buf, nv12_to_rgba8_buf, rgba8_to_i420_buf, rgba8_to_nv12_buf};

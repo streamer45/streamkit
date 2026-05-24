@@ -19,7 +19,6 @@ use streamkit_core::{NodeRegistry, StreamKitError};
 /// Shared across WebM muxing and MoQ transport.
 pub const DEFAULT_VIDEO_FRAME_DURATION_US: u64 = 33_333;
 
-// ── Default VP9 codec parameters ─────────────────────────────────────────────
 //
 // Shared across MoQ catalog creation and WebM muxer codec-private data.
 
@@ -32,7 +31,6 @@ pub const VP9_BIT_DEPTH: u8 = 8;
 /// 4:2:0 chroma subsampling (value 1 per VPCodecConfigurationRecord).
 pub const VP9_CHROMA_SUBSAMPLING: u8 = 1;
 
-// ── Default AV1 codec parameters ─────────────────────────────────────────────
 //
 // Shared across MoQ catalog creation for AV1 tracks.
 
@@ -45,7 +43,6 @@ pub const AV1_BIT_DEPTH: u8 = 8;
 /// AV1 Main tier.
 pub const AV1_TIER: char = 'M';
 
-// ── Default H.264 codec parameters ───────────────────────────────────────────
 //
 // OpenH264 produces Constrained Baseline profile. These are shared across
 // MoQ catalog creation for H.264 tracks.
@@ -57,7 +54,6 @@ pub const H264_CONSTRAINTS: u8 = 0xC0;
 /// H.264 level 3.1 (0x1F) — suitable for up to 720p30 (1280×720).
 pub const H264_LEVEL: u8 = 0x1F;
 
-// ── Codec content-type strings ───────────────────────────────────────────────
 //
 // Shared across encoder nodes, MoQ transport, and container muxers.
 
@@ -80,7 +76,6 @@ pub const MAX_EAGAIN_EMPTY_RETRIES: u32 = 1000;
 /// immediately.
 pub const EAGAIN_YIELD_THRESHOLD: u32 = 10;
 
-// ── Hardware acceleration mode ───────────────────────────────────────────────
 //
 // Shared across all HW-accelerated codec modules (Vulkan Video, VA-API, NVENC).
 
@@ -148,8 +143,6 @@ pub mod pixel_convert;
 ))]
 pub(crate) mod encoder_trait;
 
-// ── HW-accelerated codec modules ─────────────────────────────────────────────
-
 #[cfg(feature = "vulkan_video")]
 pub mod vulkan_video;
 
@@ -164,8 +157,6 @@ mod vaapi_h264_enc;
 
 #[cfg(feature = "nvcodec")]
 pub mod nv_av1;
-
-// ── Shared I420→NV12 conversion helpers ──────────────────────────────────────
 
 /// Convert an I420 [`VideoFrame`] into a contiguous NV12 byte buffer.
 ///
@@ -373,8 +364,6 @@ pub mod dav1d_ffi;
 #[cfg(any(feature = "colorbars", feature = "compositor"))]
 pub(crate) mod fonts;
 
-// ── Shared font-rendering helpers ────────────────────────────────────────────
-
 /// Measure the pixel dimensions a single-line text string would occupy when
 /// rendered at `font_size`.  Returns `(width, height)`.
 ///
@@ -508,8 +497,6 @@ pub fn blit_text_rgba(
         }
     }
 }
-
-// ── Multi-line / word-wrap helpers ────────────────────────────────────────
 
 /// Split `text` into wrapped lines that fit within `max_width` pixels.
 ///

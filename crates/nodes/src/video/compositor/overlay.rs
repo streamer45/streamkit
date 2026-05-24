@@ -9,8 +9,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 use streamkit_core::StreamKitError;
 
-// ── Overlay source kind ─────────────────────────────────────────────────────
-
 /// Tracks the source format of a decoded overlay for cache invalidation.
 ///
 /// Raster overlays are pre-scaled once and reused even when dimensions change.
@@ -23,8 +21,6 @@ pub enum OverlaySourceKind {
     /// Decoded from an SVG.  Carries the parsed tree for re-rasterization.
     Vector { tree: Arc<resvg::usvg::Tree> },
 }
-
-// ── Decoded overlay bitmap ──────────────────────────────────────────────────
 
 /// A pre-decoded RGBA8 bitmap overlay ready for per-frame blitting.
 ///
@@ -197,8 +193,6 @@ fn prescale_rgba(src: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> {
     resized.into_raw()
 }
 
-// ── SVG helpers ──────────────────────────────────────────────────────────────
-
 /// Build `usvg::Options` with the image href resolver disabled so that
 /// `<image href="file:///etc/shadow"/>` (or any other local/remote reference)
 /// inside an uploaded SVG cannot trigger server-side file reads.
@@ -340,11 +334,7 @@ pub fn is_svg_for_test(bytes: &[u8], path: &str) -> bool {
     is_svg(bytes, path)
 }
 
-// ── Font helpers ─────────────────────────────────────────────────────────────
-
 use crate::video::fonts;
-
-// ── Parsed-font cache ───────────────────────────────────────────────────────
 
 /// Cache key identifying a font source by its asset path.
 ///
@@ -576,7 +566,6 @@ pub fn rasterize_text_overlay(
     let mut rgba_data = vec![0u8; total_bytes];
 
     if let Some(font) = font {
-        // ── Real font rendering via shared utility (multi-line aware) ────
         crate::video::blit_text_wrapped(
             &mut rgba_data,
             w,
@@ -590,7 +579,6 @@ pub fn rasterize_text_overlay(
             wrap_width,
         );
     } else {
-        // ── Fallback: filled rectangle per glyph (placeholder) ──────────
         let [cr, cg, cb, ca] = config.color;
         let stride = w as usize * 4;
         let glyph_w = (config.font_size.max(1) * 3 / 5) as usize;

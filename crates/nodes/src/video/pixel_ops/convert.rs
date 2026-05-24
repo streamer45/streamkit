@@ -13,8 +13,6 @@ use super::{rayon_chunk_rows, RAYON_ROW_THRESHOLD};
 #[cfg(target_arch = "x86_64")]
 use super::simd;
 
-// ── Cached SIMD feature detection ───────────────────────────────────────────
-
 /// Return `(avx2, sse4.1, sse2)` capability flags, cached after the first call.
 /// The underlying `is_x86_feature_detected!` already uses an internal atomic
 /// cache, so this is purely a readability win — it replaces the 6-line
@@ -30,8 +28,6 @@ fn simd_caps() -> (bool, bool, bool) {
     });
     *CAPS
 }
-
-// ── Shared rayon parallelization helper ─────────────────────────────────────
 
 /// Process `total_rows` of a buffer in parallel (or sequentially for small
 /// images), invoking `process_row(row_index, row_slice)` for each row.
@@ -65,8 +61,6 @@ fn parallel_rows(
         }
     }
 }
-
-// ── Shared Y-row conversion helper ──────────────────────────────────────────
 
 /// Convert a single luma (Y) row from packed RGBA8 source data using BT.601
 /// coefficients, with a SIMD dispatch cascade (AVX2 → SSE4.1 → SSE2 → scalar).
@@ -124,8 +118,6 @@ fn convert_y_row(
         *y_out = y.clamp(0, 255) as u8;
     }
 }
-
-// ── I420 → RGBA8 ────────────────────────────────────────────────────────────
 
 /// Convert an I420 (YUV 4:2:0 planar) buffer to RGBA8, writing into `out`.
 ///
@@ -228,8 +220,6 @@ pub fn i420_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     parallel_rows(&mut out[..w * h * 4], rgba_row_stride, h, convert_row);
 }
 
-// ── NV12 → RGBA8 ────────────────────────────────────────────────────────────
-
 /// Convert an NV12 (Y + interleaved UV) buffer to RGBA8, writing into `out`.
 ///
 /// Same BT.601 math as [`i420_to_rgba8_buf`], but reads U and V from a single
@@ -322,8 +312,6 @@ pub fn nv12_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
 
     parallel_rows(&mut out[..w * h * 4], rgba_row_stride, h, convert_row);
 }
-
-// ── RGBA8 → I420 ────────────────────────────────────────────────────────────
 
 /// Convert an RGBA8 buffer to I420 (YUV 4:2:0 planar), writing into `out`.
 ///
@@ -515,8 +503,6 @@ pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
         }
     }
 }
-
-// ── RGBA8 → NV12 ────────────────────────────────────────────────────────────
 
 /// Convert an RGBA8 buffer to NV12 (Y + interleaved UV), writing into `out`.
 ///

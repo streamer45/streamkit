@@ -13,19 +13,13 @@
 
 use std::ffi::{c_char, c_void};
 
-// ---------------------------------------------------------------------------
 // Constants
-// ---------------------------------------------------------------------------
-
 pub const EB_BUFFERFLAG_EOS: u32 = 0x0000_0001;
 
 /// AV1 key picture type (used in `EbBufferHeaderType::pic_type`).
 pub const EB_AV1_KEY_PICTURE: u32 = 3;
 
-// ---------------------------------------------------------------------------
 // Error type
-// ---------------------------------------------------------------------------
-
 /// SVT-AV1 error codes.  `EB_ErrorNone` (0) indicates success.
 pub type EbErrorType = i32;
 
@@ -33,10 +27,7 @@ pub const EB_ERROR_NONE: EbErrorType = 0;
 // `svt_av1_enc_get_packet` returns this when no packet is available yet.
 pub const EB_NO_ERROR_EMPTY_QUEUE: EbErrorType = 0x8000_2033_u32.cast_signed();
 
-// ---------------------------------------------------------------------------
 // Opaque / repr(C) types used by the API
-// ---------------------------------------------------------------------------
-
 /// Encoder component handle.
 #[repr(C)]
 pub struct EbComponentType {
@@ -118,10 +109,7 @@ impl EbSvtAv1EncConfiguration {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Extern functions
-// ---------------------------------------------------------------------------
-
 extern "C" {
     /// Step 1: Construct an encoder handle and fill `config_ptr` with defaults.
     ///

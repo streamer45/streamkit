@@ -367,8 +367,6 @@ impl ProcessorNode for ColorBarsNode {
     }
 }
 
-// ── SMPTE color bar generation ──────────────────────────────────────────────
-
 /// SMPTE EIA 75% color bars (ITU-R BT.601 Y'CbCr, studio range).
 ///
 /// Seven equal-width vertical bars, left to right:
@@ -498,8 +496,6 @@ fn generate_smpte_colorbars_i420(
     }
 }
 
-// ── Animation (horizontal scroll) ───────────────────────────────────────────
-
 /// Pixels scrolled per frame when `animate` is enabled.
 const ANIMATE_SCROLL_PX: usize = 4;
 
@@ -614,8 +610,6 @@ fn scroll_frame(
         _ => {},
     }
 }
-
-// ── draw_time stamping ──────────────────────────────────────────────────────
 
 /// Font size (px) used for the wall-clock timestamp overlay.
 const DRAW_TIME_FONT_SIZE: f32 = 24.0;
@@ -767,8 +761,6 @@ fn stamp_time(
         _ => {},
     }
 }
-
-// ── Registration ────────────────────────────────────────────────────────────
 
 pub fn register_colorbars_nodes(registry: &mut NodeRegistry) {
     let default_node =

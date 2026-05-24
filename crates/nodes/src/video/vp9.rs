@@ -867,7 +867,6 @@ fn copy_vpx_image(
     let y_plane = nv12_planes[0];
     let uv_plane = nv12_planes[1];
 
-    // ── Copy Y plane (plane 0) — identical for I420 and NV12 ──
     let y_src_ptr = image.planes[0];
     if y_src_ptr.is_null() {
         return Err("VP9 decoder returned null Y plane".to_string());
@@ -881,7 +880,6 @@ fn copy_vpx_image(
         height as usize,
     )?;
 
-    // ── Interleave U + V into NV12's single UV plane ──
     let u_src_ptr = image.planes[1];
     let v_src_ptr = image.planes[2];
     if u_src_ptr.is_null() || v_src_ptr.is_null() {

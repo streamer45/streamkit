@@ -30,8 +30,6 @@ use super::simd::{
     blend_8px_alpha_avx2, blend_8px_opaque_avx2, read_rgba_u32,
 };
 
-// ── Scalar blend helper ─────────────────────────────────────────────────────
-
 /// Composite one source pixel onto a destination row at `dst_idx` using the
 /// "over" operator.  `a_eff` is the pre-computed effective alpha (0..=255).
 ///
@@ -82,8 +80,6 @@ fn blend_pixel_scalar(
         blend_over_scalar(row_slice, dst_off, ir, ig, ib, u16::from(ia));
     }
 }
-
-// ── Axis-aligned blit ───────────────────────────────────────────────────────
 
 /// Scale and blit a source RGBA8 buffer onto a destination RGBA8 buffer at the
 /// given destination rectangle. Uses nearest-neighbor sampling and clips to
@@ -166,7 +162,6 @@ pub fn scale_blit_rgba(
     let first_row_byte = ry * row_stride;
     let dst_rows = &mut dst[first_row_byte..];
 
-    // ── Identity-scale fast path ───────────────────────────────────────
     // When source dimensions exactly match the destination rect and opacity
     // is fully opaque, we can avoid per-pixel scaling entirely and use
     // direct row copies (memcpy) for fully-opaque source rows.
@@ -261,7 +256,6 @@ pub fn scale_blit_rgba(
         }
     }
 
-    // ── Scaled blit path ───────────────────────────────────────────────
     // Precompute the source-X lookup table once.  This replaces the per-pixel
     // `(dx + src_col_skip) * sw / rw` integer division with a single table
     // lookup in the inner blit loops.
@@ -279,7 +273,6 @@ pub fn scale_blit_rgba(
         .collect();
 
     if crop_circle {
-        // ── Circle-masked blit path ───────────────────────────────────
         // Per-pixel circle test with anti-aliased edges.  Uses a
         // dedicated scalar loop — the SIMD fast paths are bypassed since
         // the per-pixel circle alpha multiplier makes vectorisation
@@ -495,7 +488,6 @@ fn blit_row_opaque(
 ) {
     let src_row_base = sy * sw * 4;
 
-    // ── SIMD fast path: AVX2 (8px) → SSE2 (4px) → scalar tail ─────────
     #[cfg(target_arch = "x86_64")]
     {
         // Pre-validate bounds so the inner SIMD loop is branch-free.
@@ -545,7 +537,6 @@ fn blit_row_opaque(
         }
     }
 
-    // ── Scalar fallback (bounds-checked per pixel) ─────────────────────
     for dx in 0..effective_rw {
         let sx = x_map[dx];
         let src_idx = src_row_base + sx * 4;
@@ -637,7 +628,6 @@ fn blit_row_alpha(
     let opacity_u16 = (opacity * 255.0 + 0.5) as u16;
     let src_row_base = sy * sw * 4;
 
-    // ── SIMD fast path: AVX2 (8px) → SSE2 (4px) → scalar tail ─────────
     #[cfg(target_arch = "x86_64")]
     {
         let src_row_end = src_row_base + sw * 4;
@@ -699,7 +689,6 @@ fn blit_row_alpha(
         }
     }
 
-    // ── Scalar fallback ────────────────────────────────────────────────
     for dx in 0..effective_rw {
         let sx = x_map[dx];
         let src_idx = src_row_base + sx * 4;
@@ -723,8 +712,6 @@ fn blit_row_alpha(
         );
     }
 }
-
-// ── Rotated blitting ────────────────────────────────────────────────────────
 
 /// Scale and blit a source RGBA8 buffer onto a destination RGBA8 buffer at the
 /// given destination rectangle with clockwise rotation around the rect centre.
@@ -870,9 +857,7 @@ pub fn scale_blit_rgba_rotated(
     let rw = dst_rect.width as f32;
     let rh = dst_rect.height as f32;
 
-    // ── Near-zero rotation fast path ──────────────────────────────────
-    // Delegate to the optimised non-rotated blit which stretches the
-    // source to fill the destination rect (no aspect-ratio fitting).
+    // Delegate to the optimised non-rotated blit for near-zero angles.
     if rotation_deg.abs() < 0.01 {
         scale_blit_rgba(
             dst,
@@ -909,10 +894,7 @@ pub fn scale_blit_rgba_rotated(
     let cos_a = angle_rad.cos();
     let sin_a = angle_rad.sin();
 
-    // ── Stretch-to-fill scaling ──────────────────────────────────────
-    // The source is stretched to fill the destination rect (no
-    // aspect-ratio-preserving fit).  Aspect ratio handling is the
-    // responsibility of the client / presentation layer.
+    // Stretch-to-fill: aspect ratio is the caller's responsibility.
     let half_cw = rw * 0.5;
     let half_ch = rh * 0.5;
     let inv_scale_x = crop_sw / rw;
@@ -983,9 +965,7 @@ pub fn scale_blit_rgba_rotated(
 
         let mut px = bb_x0;
         while px < bb_x1 {
-            // ── Edge anti-aliasing via signed distance ──────────────
-            // Distances are relative to the content boundary, not the
-            // full destination rect.
+            // Edge anti-aliasing: distances relative to content boundary.
             let d_left = local_x + half_cw;
             let d_right = half_cw - local_x;
             let d_top = local_y + half_ch;
@@ -1000,10 +980,7 @@ pub fn scale_blit_rgba_rotated(
                 continue;
             }
 
-            // ── Circle crop mask ───────────────────────────────────
-            // When crop_circle is enabled, test the pixel against a
-            // true circle (not ellipse) inscribed in the shorter
-            // dimension of the destination rect, centred on the rect.
+            // Circle crop: true circle inscribed in shorter dimension.
             let circle_coverage = if crop_circle {
                 let circle_radius = half_cw.min(half_ch);
                 let dist = local_x.hypot(local_y);
@@ -1113,7 +1090,6 @@ pub fn scale_blit_rgba_rotated(
                 if skip > 0 {
                     let skip_u = skip as usize;
 
-                    // ── SIMD batched path: AVX2 (8px) → SSE2 (4px) → scalar ──
                     #[cfg(target_arch = "x86_64")]
                     {
                         let mut done = 0usize;
@@ -1253,7 +1229,6 @@ pub fn scale_blit_rgba_rotated(
                         }
                     }
 
-                    // ── Non-x86_64 fallback: scalar loop ──
                     #[cfg(not(target_arch = "x86_64"))]
                     {
                         for _ in 0..skip_u {

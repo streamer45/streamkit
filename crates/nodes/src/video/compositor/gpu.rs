@@ -19,8 +19,6 @@ use super::config::{CropShape, Rect};
 use super::kernel::LayerSnapshot;
 use super::overlay::DecodedOverlay;
 
-// ── Uniform types ───────────────────────────────────────────────────────────
-
 /// Per-layer uniform data uploaded to the GPU each frame.
 ///
 /// Layout matches `LayerUniforms` in `composite.wgsl` (std140).
@@ -76,8 +74,6 @@ struct RgbaToYuvParams {
     _pad: u32,
 }
 
-// ── Canvas texture cache ────────────────────────────────────────────────────
-
 /// Output canvas texture + view, cached across frames.
 struct CanvasTexture {
     texture: wgpu::Texture,
@@ -95,8 +91,6 @@ struct YuvStagingCache {
     height: u32,
     format: PixelFormat,
 }
-
-// ── Resource pools ──────────────────────────────────────────────────────────
 
 /// Key for texture pool lookup — textures with identical keys are
 /// interchangeable and can be reused across frames.
@@ -244,8 +238,6 @@ impl BufferPool {
     }
 }
 
-// ── Per-frame draw types ────────────────────────────────────────────────────
-
 /// A single item in the z-sorted draw list built each frame.
 struct DrawItem {
     /// Index into `texture_pool.in_use` (valid this frame only).
@@ -260,8 +252,6 @@ struct PreparedDraw {
     texture_bg: wgpu::BindGroup,
 }
 
-// ── GPU context ─────────────────────────────────────────────────────────────
-
 /// GPU compositing context — owns the wgpu device, queue, and
 /// pre-compiled pipelines.  Created once when the compositing thread
 /// starts; lives for the node's lifetime.
@@ -269,16 +259,13 @@ pub struct GpuContext {
     device: wgpu::Device,
     queue: wgpu::Queue,
 
-    // ── YUV → RGBA pipeline ──
     yuv_to_rgba_pipeline: wgpu::ComputePipeline,
     yuv_to_rgba_bgl: wgpu::BindGroupLayout,
 
-    // ── Layer compositing pipeline ──
     composite_pipeline: wgpu::RenderPipeline,
     layer_uniforms_bgl: wgpu::BindGroupLayout,
     layer_texture_bgl: wgpu::BindGroupLayout,
 
-    // ── RGBA → YUV pipeline ──
     rgba_to_yuv_pipeline: wgpu::ComputePipeline,
     rgba_to_yuv_bgl: wgpu::BindGroupLayout,
 
@@ -335,7 +322,6 @@ impl GpuContext {
         }))
         .ok()?;
 
-        // ── YUV → RGBA compute pipeline ─────────────────────────────
         let yuv_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("yuv_to_rgba"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/yuv_to_rgba.wgsl").into()),
@@ -377,7 +363,6 @@ impl GpuContext {
                 cache: None,
             });
 
-        // ── Layer compositing render pipeline ────────────────────────
         let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("composite"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/composite.wgsl").into()),
@@ -453,7 +438,6 @@ impl GpuContext {
             cache: None,
         });
 
-        // ── RGBA → YUV compute pipeline ─────────────────────────────
         let rgba_to_yuv_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("rgba_to_yuv"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/rgba_to_yuv.wgsl").into()),
@@ -509,7 +493,6 @@ impl GpuContext {
                 cache: None,
             });
 
-        // ── Sampler ─────────────────────────────────────────────────
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("layer_sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -822,7 +805,6 @@ impl GpuContext {
 
         self.ensure_canvas(canvas_w, canvas_h);
 
-        // ── Build z-sorted draw list ────────────────────────────────
         // A single encoder collects all YUV→RGBA compute dispatches so
         // they are submitted in one batch before the render pass.
 
@@ -913,7 +895,6 @@ impl GpuContext {
             self.queue.submit(std::iter::once(yuv_encoder.finish()));
         }
 
-        // ── Render pass: composite all layers onto the canvas ────────
         let canvas = self.canvas.as_ref().expect("canvas was just ensured");
 
         // Pre-create per-layer uniform buffers and bind groups so the
@@ -991,7 +972,6 @@ impl GpuContext {
             }
         }
 
-        // ── Output conversion or readback ───────────────────────────
         let (output_data, pix_fmt) =
             if let Some(fmt @ (PixelFormat::Nv12 | PixelFormat::I420)) = output_format {
                 // Convert RGBA→YUV on GPU, then read back the YUV planes.
@@ -1295,8 +1275,6 @@ impl GpuContext {
         data
     }
 
-    // ── Texture creation helpers ────────────────────────────────────
-
     fn create_and_write_r8_texture(
         &mut self,
         label: &str,
@@ -1361,8 +1339,6 @@ impl GpuContext {
         idx
     }
 }
-
-// ── Transform builder ───────────────────────────────────────────────────────
 
 /// Build the 4×4 transform matrix and UV region for a layer.
 ///
@@ -1463,8 +1439,6 @@ fn build_layer_uniforms(
     }
 }
 
-// ── Bind group layout helpers ───────────────────────────────────────────────
-
 const fn bgl_texture_entry(
     binding: u32,
     sample_type: wgpu::TextureSampleType,
@@ -1514,8 +1488,6 @@ const fn bgl_uniform_entry(
     }
 }
 
-// ── Row-padding helpers ─────────────────────────────────────────────────────
-
 /// Compute the padded bytes-per-row for a texture with `bytes_per_pixel` bytes per texel.
 ///
 /// wgpu requires rows to be aligned to [`wgpu::COPY_BYTES_PER_ROW_ALIGNMENT`].
@@ -1530,8 +1502,6 @@ const fn padded_bytes_per_row(width: u32, bytes_per_pixel: u32) -> usize {
 const fn align_up(value: usize, alignment: usize) -> usize {
     (value + alignment - 1) & !(alignment - 1)
 }
-
-// ── GPU mode configuration ──────────────────────────────────────────────────
 
 /// GPU compositing preference parsed from config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1602,8 +1572,6 @@ pub fn should_use_gpu(
     total_items >= 2 || total_pixels >= 1920 * 1080 || has_effects || needs_yuv_output
 }
 
-// ── GPU/CPU path hysteresis ─────────────────────────────────────────────────
-
 /// Number of consecutive frames that must vote for the opposite path
 /// before the compositor actually switches.  Prevents thrashing when
 /// scene complexity oscillates near the GPU/CPU threshold.
@@ -1664,8 +1632,6 @@ pub fn should_use_gpu_with_state(
 
     state.last_used_gpu
 }
-
-// ── Pool unit tests ─────────────────────────────────────────────────────────
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::disallowed_macros, clippy::significant_drop_tightening)]

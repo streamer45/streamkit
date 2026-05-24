@@ -16,7 +16,6 @@
 //! and `impl_rgba_to_y` macros generate both variants from a single body,
 //! parameterised on the multiply strategy.
 
-// ── SSE2 alpha-blend helpers ────────────────────────────────────────────────
 //
 // Process 4 RGBA pixels at a time using SSE2 integer arithmetic.
 // Source pixels are gathered (non-contiguous via x_map), destination pixels
@@ -197,7 +196,6 @@ pub(super) unsafe fn blend_4px_alpha_sse2(dst_ptr: *mut u8, src_pixels: [u32; 4]
     _mm_storeu_si128(dst_ptr.cast::<__m128i>(), _mm_packus_epi16(result_lo, result_hi));
 }
 
-// ── AVX2 alpha-blend helpers ─────────────────────────────────────────────────
 //
 // Process 8 RGBA pixels at a time using AVX2 integer arithmetic.
 // Same algorithm as the SSE2 helpers above, widened to 256-bit registers.
@@ -375,8 +373,6 @@ pub(super) unsafe fn blend_8px_alpha_avx2(dst_ptr: *mut u8, src_pixels: [u32; 8]
     _mm256_storeu_si256(dst_ptr.cast::<__m256i>(), packed);
 }
 
-// ── SIMD alpha-opaqueness check ─────────────────────────────────────────────
-
 /// Check if all alpha bytes in an RGBA8 row are 0xFF using SSE2.
 ///
 /// Processes 4 pixels (16 bytes) per iteration.  Returns `true` if every
@@ -465,8 +461,6 @@ pub(super) unsafe fn all_alpha_opaque_avx2(row: &[u8]) -> bool {
     true
 }
 
-// ── SSE2-compatible i32 multiply helper ─────────────────────────────────────
-
 /// SSE2-compatible signed 32-bit multiply (low 32 bits of each lane).
 ///
 /// SSE2 only has `_mm_mul_epu32` which multiplies lanes 0 and 2 as
@@ -494,8 +488,6 @@ pub(super) unsafe fn mul32_sse2(
     // Interleave low halves → [p0, p1, p2, p3].
     _mm_unpacklo_epi32(even_lo, odd_lo)
 }
-
-// ── I420 → RGBA8 SSE2/SSE4.1 (macro-generated) ─────────────────────────────
 
 /// Generate an I420 → RGBA8 row conversion function for a given SIMD tier.
 ///
@@ -618,8 +610,6 @@ impl_i420_to_rgba8_row!(i420_to_rgba8_row_sse41, "sse4.1", |a, b| {
     std::arch::x86_64::_mm_mullo_epi32(a, b)
 });
 
-// ── NV12 → RGBA8 SSE2/SSE4.1 (macro-generated) ─────────────────────────────
-
 /// Generate an NV12 → RGBA8 row conversion function for a given SIMD tier.
 macro_rules! impl_nv12_to_rgba8_row {
     ($name:ident, $feature:literal, $mul32:expr) => {
@@ -732,8 +722,6 @@ impl_nv12_to_rgba8_row!(nv12_to_rgba8_row_sse41, "sse4.1", |a, b| {
     std::arch::x86_64::_mm_mullo_epi32(a, b)
 });
 
-// ── NV12 → RGBA8 AVX2 (8 pixels / iter) ────────────────────────────────────
-
 /// Convert up to `width` NV12 pixels from one row to RGBA8 using AVX2.
 ///
 /// Processes 8 pixels per iteration (256-bit registers) — double the
@@ -827,7 +815,6 @@ pub(super) unsafe fn nv12_to_rgba8_row_avx2(
             8,
         );
 
-        // ── Pack + interleave: split into two 4-pixel halves ──────
         let r_lo = _mm256_castsi256_si128(r32);
         let r_hi = _mm256_extracti128_si256(r32, 1);
         let g_lo = _mm256_castsi256_si128(g32);
@@ -868,8 +855,6 @@ pub(super) unsafe fn nv12_to_rgba8_row_avx2(
     }
     simd_width
 }
-
-// ── I420 → RGBA8 AVX2 (8 pixels / iter) ─────────────────────────────────────
 
 /// Convert up to `width` I420 pixels from one row to RGBA8 using AVX2.
 ///
@@ -971,7 +956,6 @@ pub(super) unsafe fn i420_to_rgba8_row_avx2(
             8,
         );
 
-        // ── Pack + interleave: split into two 4-pixel halves ──────
         let r_lo = _mm256_castsi256_si128(r32);
         let r_hi = _mm256_extracti128_si256(r32, 1);
         let g_lo = _mm256_castsi256_si128(g32);
@@ -1012,8 +996,6 @@ pub(super) unsafe fn i420_to_rgba8_row_avx2(
     }
     simd_width
 }
-
-// ── RGBA8 → Y-plane SSE2/SSE4.1 (macro-generated) ──────────────────────────
 
 /// Generate an RGBA8 → Y-plane row conversion function for a given SIMD tier.
 macro_rules! impl_rgba8_to_y_row {
@@ -1083,8 +1065,6 @@ impl_rgba8_to_y_row!(rgba8_to_y_row_sse41, "sse4.1", |a, b| {
     std::arch::x86_64::_mm_mullo_epi32(a, b)
 });
 
-// ── RGBA8 → Y-plane AVX2 (8 pixels / iter) ─────────────────────────────────
-
 /// Convert one row of RGBA8 pixels to Y values using AVX2.
 ///
 /// Processes 8 pixels per iteration (256-bit registers) — double the
@@ -1151,8 +1131,6 @@ pub(super) unsafe fn rgba8_to_y_row_avx2(rgba_row: &[u8], y_out: &mut [u8], widt
     }
     simd_width
 }
-
-// ── RGBA8 → I420 chroma row (SSE2: 4 chroma samples / iter) ────────────────
 
 /// Convert one pair of RGBA8 rows to U and V chroma samples using SSE2.
 ///
@@ -1291,8 +1269,6 @@ pub(super) unsafe fn rgba8_to_chroma_row_sse2(
     ccol
 }
 
-// ── RGBA8 → NV12 chroma row (SSE2: 4 interleaved UV pairs / iter) ──────────
-
 /// Convert one pair of RGBA8 rows to interleaved `[U, V, U, V, …]`
 /// chroma samples for NV12 output, using SSE2.
 ///
@@ -1430,8 +1406,6 @@ pub(super) unsafe fn rgba8_to_chroma_row_nv12_sse2(
     }
     ccol
 }
-
-// ── RGBA8 → NV12 chroma row (AVX2: 8 interleaved UV pairs / iter) ──────────
 
 /// Convert one pair of RGBA8 rows to interleaved `[U, V, U, V, …]`
 /// chroma samples for NV12 output, using AVX2.
@@ -1586,8 +1560,6 @@ pub(super) unsafe fn rgba8_to_chroma_row_nv12_avx2(
     }
     ccol
 }
-
-// ── RGBA8 → I420 chroma row (AVX2: 8 chroma samples / iter) ────────────────
 
 /// Convert one pair of RGBA8 rows to U and V chroma samples using AVX2.
 ///

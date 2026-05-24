@@ -27,8 +27,6 @@ use super::kernel::LayerSnapshot;
 use super::overlay::DecodedOverlay;
 use super::overlay::OverlaySourceKind;
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
 /// Create a solid-colour RGBA8 buffer.
 fn solid_rgba(width: u32, height: u32, r: u8, g: u8, b: u8, a: u8) -> Vec<u8> {
     let pixel = [r, g, b, a];
@@ -155,8 +153,6 @@ fn avg_centre_pixel(data: &[u8], width: u32, height: u32) -> (f32, f32, f32, f32
         (sum[3] / count_f) as f32,
     )
 }
-
-// ── Tests ───────────────────────────────────────────────────────────────────
 
 #[test]
 fn gpu_context_init() {
@@ -880,8 +876,6 @@ fn gpu_should_use_gpu_heuristic() {
         "RGBA8 output should prefer CPU for single small layer"
     );
 }
-
-// ── Phase 2 tests ───────────────────────────────────────────────────────────
 
 #[test]
 fn gpu_multi_frame_pooling() {

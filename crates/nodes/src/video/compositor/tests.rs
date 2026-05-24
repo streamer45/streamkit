@@ -26,8 +26,6 @@ fn make_rgba_frame(width: u32, height: u32, r: u8, g: u8, b: u8, a: u8) -> Video
     VideoFrame::new(width, height, PixelFormat::Rgba8, data).unwrap()
 }
 
-// ── Unit tests for compositing helpers ───────────────────────────────
-
 #[test]
 fn test_scale_blit_identity() {
     // 2x2 red source blitted onto a 4x4 canvas at (1,1) 2x2 rect.
@@ -391,8 +389,6 @@ fn test_config_validate_bad_opacity() {
     assert!(cfg.validate(&GlobalCompositorConfig::default()).is_err());
 }
 
-// ── Integration test: node run() with mock context ──────────────────
-
 #[tokio::test]
 async fn test_compositor_node_run_main_only() {
     let (input_tx, input_rx) = mpsc::channel(10);
@@ -520,9 +516,7 @@ fn test_compositor_pool_usage() {
     assert_eq!(pool.stats().buckets[0].available, 2);
 }
 
-// ── SIMD vs scalar equivalence tests ────────────────────────────────
-
-/// Helper: scalar I420→RGBA8 conversion for a single pixel (reference).
+/// Scalar I420→RGBA8 conversion for a single pixel (reference).
 #[allow(clippy::many_single_char_names)]
 fn scalar_i420_to_rgba8(y: u8, u: u8, v: u8) -> [u8; 4] {
     let c = i32::from(y) - 16;
@@ -534,7 +528,7 @@ fn scalar_i420_to_rgba8(y: u8, u: u8, v: u8) -> [u8; 4] {
     [r, g, b, 255]
 }
 
-/// Helper: scalar RGBA8→Y for a single pixel (reference).
+/// Scalar RGBA8→Y for a single pixel (reference).
 fn scalar_rgba8_to_y(r: u8, g: u8, b: u8) -> u8 {
     let y = ((66 * i32::from(r) + 129 * i32::from(g) + 25 * i32::from(b) + 128) >> 8) + 16;
     y.clamp(0, 255) as u8
@@ -1126,8 +1120,6 @@ fn test_rgba8_to_nv12_avx2_chroma_matches_scalar() {
     }
 }
 
-// ── Crop / zoom unit tests ──────────────────────────────────────────
-
 /// Create a 4×4 RGBA8 frame with four distinct colour quadrants:
 ///   TL = red, TR = green, BL = blue, BR = white.
 fn make_quadrant_frame() -> VideoFrame {
@@ -1449,8 +1441,6 @@ fn test_crop_with_mirror_v_rotated() {
     assert_eq!(dst[idx + 2], 255, "Centre B should be 255 (blue quad)");
 }
 
-// ── Chroma subsampling alignment tests ──────────────────────────────
-
 /// Create a solid-colour I420 `VideoFrame`.
 ///
 /// Converts a solid RGBA colour to I420 via `rgba8_to_i420_buf` so the
@@ -1590,8 +1580,6 @@ fn test_crop_aligns_odd_origin_for_i420_rotated() {
     assert!(buf[idx + 1] < 30, "Centre G={}, expected <30", buf[idx + 1]);
     assert!(buf[idx + 2] < 30, "Centre B={}, expected <30", buf[idx + 2]);
 }
-
-// ── Oneshot / batch mode regression tests ───────────────────────────
 
 /// Regression test: in oneshot mode, sending N frames in a burst (the way
 /// batch colorbars do) must produce exactly N output frames.
@@ -1994,9 +1982,7 @@ fn test_composite_frame_crop_shape_circle_skip_clear() {
     assert!(buf[idx + 3] > 200, "Centre A");
 }
 
-// ── resolve_scene / view-data layout tests ─────────────────────────────
-
-/// Helper: build an `InputSlot` with the given name and optional latest frame.
+/// Build an `InputSlot` with the given name and optional latest frame.
 fn make_slot(name: &str, frame: Option<VideoFrame>) -> InputSlot {
     let (_tx, rx) = mpsc::channel::<Packet>(1);
     InputSlot {
@@ -2129,9 +2115,7 @@ fn test_resolve_scene_overlay_geometry() {
     assert_eq!(ro.measured_text_height, Some(38));
 }
 
-// ── Image overlay decode tests ──────────────────────────────────────────────
-
-/// Helper: create a minimal valid PNG in memory (1×1 red pixel).
+/// Create a minimal valid PNG in memory (1×1 red pixel).
 fn make_test_png() -> Vec<u8> {
     let img = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]));
     let mut buf = std::io::Cursor::new(Vec::new());
@@ -2139,7 +2123,7 @@ fn make_test_png() -> Vec<u8> {
     buf.into_inner()
 }
 
-/// Helper: write a test PNG to a temp file under `samples/images/` and
+/// Write a test PNG to a temp file under `samples/images/` and
 /// return the relative path.  The directory is created if it doesn't exist.
 fn write_test_asset(subdir: &str, filename: &str) -> String {
     let dir = std::path::PathBuf::from("samples/images").join(subdir);
@@ -2580,8 +2564,6 @@ async fn test_compositor_output_format_runtime_change() {
     }
 }
 
-// ── Upstream resize hint tests ──────────────────────────────────────
-
 #[test]
 fn send_resize_hints_fires_on_rect_change() {
     let (hint_tx, mut hint_rx) = mpsc::channel::<UpstreamHint>(4);
@@ -2688,8 +2670,6 @@ fn send_resize_hints_skips_slot_without_hint_tx() {
     // Should not panic even with hint_tx: None
     CompositorNode::send_resize_hints(&old_config, &new_config, &[slot]);
 }
-
-// ── SVG overlay tests ───────────────────────────────────────────────
 
 /// Minimal valid SVG for testing.
 const TEST_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="red"/></svg>"#;
@@ -2889,8 +2869,6 @@ fn test_rebuild_svg_reuses_bitmap_when_unchanged() {
     assert_eq!(rebuilt[0].width, initial_arc.width);
     assert_eq!(rebuilt[0].height, initial_arc.height);
 }
-
-// ── Regression: transient sync metadata must not break deserialization ────
 
 /// `_sender` and `_rev` are injected by the UI for causal-consistency
 /// tracking.  `CompositorConfig` uses `deny_unknown_fields`, so

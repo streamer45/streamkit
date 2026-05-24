@@ -53,10 +53,7 @@ const AV1_DEFAULT_SPEED: u32 = 10;
 /// first").  Matches libc `EAGAIN` on Linux.
 const DAV1D_EAGAIN: i32 = -11;
 
-// ---------------------------------------------------------------------------
 // AV1 OBU validation
-// ---------------------------------------------------------------------------
-
 /// Read a LEB128-encoded unsigned integer from `data`.
 /// Returns `(value, bytes_consumed)` or an error if the data is truncated
 /// or the encoding exceeds the 8-byte AV1-spec limit.
@@ -134,10 +131,7 @@ fn validate_av1_obus(data: &[u8]) -> Result<(), &'static str> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
 // Configuration structs
-// ---------------------------------------------------------------------------
-
 #[derive(Deserialize, Debug, JsonSchema, Clone)]
 #[serde(default, deny_unknown_fields)]
 pub struct Av1DecoderConfig {
@@ -185,10 +179,7 @@ impl Default for Av1EncoderConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Decoder node
-// ---------------------------------------------------------------------------
-
 pub struct Av1DecoderNode {
     config: Av1DecoderConfig,
 }
@@ -350,10 +341,7 @@ impl ProcessorNode for Av1DecoderNode {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Encoder node
-// ---------------------------------------------------------------------------
-
 pub struct Av1EncoderNode {
     config: Av1EncoderConfig,
 }
@@ -457,10 +445,7 @@ impl StandardVideoEncoder for Av1Encoder {
 
 use super::encoder_trait::{self, EncodedPacket, EncoderNodeRunner, StandardVideoEncoder};
 
-// ---------------------------------------------------------------------------
 // rav1d-based AV1 decoder
-// ---------------------------------------------------------------------------
-
 struct Av1Decoder {
     /// Opaque rav1d context handle.  Owned; closed in [`Drop`].
     ctx: rav1d::include::dav1d::dav1d::Dav1dContext,
@@ -793,10 +778,7 @@ fn copy_dav1d_picture(
     )
 }
 
-// ---------------------------------------------------------------------------
 // rav1e-based AV1 encoder
-// ---------------------------------------------------------------------------
-
 struct Av1Encoder {
     ctx: Context<u8>,
     next_pts: i64,
@@ -1081,10 +1063,7 @@ const fn merge_keyframe_metadata(
     }
 }
 
-// ---------------------------------------------------------------------------
 // Registration
-// ---------------------------------------------------------------------------
-
 use streamkit_core::registry::StaticPins;
 
 #[allow(clippy::expect_used, clippy::missing_panics_doc)] // Default config and schema serialization should never fail
@@ -1414,10 +1393,7 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
     // OBU validation unit tests
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_validate_av1_obus_valid_sequence_header() {
         // Minimal sequence header OBU: type=1, has_size=1, size=1, one payload byte.
