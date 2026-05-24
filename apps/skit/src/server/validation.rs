@@ -1719,6 +1719,7 @@ mod handler_tests {
                     .method("POST")
                     .uri("/api/v1/validate")
                     .header("content-type", "application/json")
+                    .header("x-test-role", "admin")
                     .body(Body::from(body))
                     .unwrap(),
             )
@@ -1750,6 +1751,7 @@ nodes:
                     .method("POST")
                     .uri("/api/v1/validate")
                     .header("content-type", "application/json")
+                    .header("x-test-role", "admin")
                     .body(Body::from(body))
                     .unwrap(),
             )
