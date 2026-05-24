@@ -70,3 +70,79 @@ pub fn register(registry: &mut streamkit_core::NodeRegistry) {
          (e.g., telemetry taps) without affecting the main pipeline.",
     );
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::test_utils::{
+        assert_state_running, assert_state_stopped, create_test_binary_packet, create_test_context,
+    };
+    use std::collections::HashMap;
+    use streamkit_core::types::Packet;
+    use tokio::sync::mpsc;
+
+    #[test]
+    fn new_default_config() {
+        let node = SinkNode::new(None).unwrap();
+        assert_eq!(format!("{node:?}"), "SinkNode");
+    }
+
+    #[test]
+    fn new_ignores_unknown_fields() {
+        let node = SinkNode::new(Some(&serde_json::json!({"unknown": true}))).unwrap();
+        assert_eq!(format!("{node:?}"), "SinkNode");
+    }
+
+    #[test]
+    fn input_pins_shape() {
+        let pins = SinkNode::input_pins();
+        assert_eq!(pins.len(), 1);
+        assert_eq!(pins[0].name, "in");
+        assert_eq!(pins[0].accepts_types, vec![PacketType::Any]);
+        assert_eq!(pins[0].cardinality, PinCardinality::One);
+    }
+
+    #[test]
+    fn output_pins_empty() {
+        let node = SinkNode::new(None).unwrap();
+        assert!(node.output_pins().is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_consumes_packets_and_stops() {
+        let (input_tx, input_rx) = mpsc::channel(10);
+        let mut inputs = HashMap::new();
+        inputs.insert("in".to_string(), input_rx);
+        let (context, _mock_sender, mut state_rx) = create_test_context(inputs, 10);
+
+        let node = SinkNode::new(None).unwrap();
+        let handle = tokio::spawn(async move { Box::new(node).run(context).await });
+
+        assert_state_running(&mut state_rx).await;
+
+        input_tx.send(Packet::Text("a".into())).await.unwrap();
+        input_tx.send(create_test_binary_packet(vec![1, 2])).await.unwrap();
+
+        drop(input_tx);
+        assert_state_stopped(&mut state_rx).await;
+        handle.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_stops_immediately_on_closed_input() {
+        let (input_tx, input_rx) = mpsc::channel::<Packet>(10);
+        let mut inputs = HashMap::new();
+        inputs.insert("in".to_string(), input_rx);
+        let (context, _mock_sender, mut state_rx) = create_test_context(inputs, 10);
+
+        drop(input_tx);
+
+        let node = SinkNode::new(None).unwrap();
+        let handle = tokio::spawn(async move { Box::new(node).run(context).await });
+
+        assert_state_running(&mut state_rx).await;
+        assert_state_stopped(&mut state_rx).await;
+        handle.await.unwrap().unwrap();
+    }
+}
