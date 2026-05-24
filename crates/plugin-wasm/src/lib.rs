@@ -164,6 +164,16 @@ impl PluginRuntime {
         plugins
     }
 
+    #[cfg(test)]
+    pub(crate) fn engine_for_test(&self) -> Engine {
+        self.engine.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn linker_for_test(&self) -> Arc<Linker<HostState>> {
+        Arc::clone(&self.linker)
+    }
+
     /// Helper to load a plugin from a file path if it's a WASM file
     ///
     /// Returns `None` if the file is not a WASM file or fails to load.
@@ -466,5 +476,219 @@ mod tests {
             "non-wasm files and malformed .wasm files must be skipped, got {} plugins",
             plugins.len()
         );
+    }
+
+    #[test]
+    fn load_plugins_from_directory_returns_empty_for_empty_dir() {
+        let runtime =
+            PluginRuntime::new(PluginRuntimeConfig::default()).expect("runtime must initialize");
+        let dir = tempfile::TempDir::new().expect("temp dir creates");
+        assert!(runtime.load_plugins_from_directory(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn load_plugin_returns_error_for_non_existent_path() {
+        let runtime =
+            PluginRuntime::new(PluginRuntimeConfig::default()).expect("runtime must initialize");
+        let missing = std::env::temp_dir().join("streamkit-wasm-no-such-file.wasm");
+        let _ = fs::remove_file(&missing);
+        let Err(err) = runtime.load_plugin(&missing) else {
+            panic!("missing .wasm file must yield an error")
+        };
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("Failed to load component"),
+            "expected wrapped load error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_plugin_returns_error_for_malformed_wasm_bytes() {
+        let runtime =
+            PluginRuntime::new(PluginRuntimeConfig::default()).expect("runtime must initialize");
+        let dir = tempfile::TempDir::new().expect("temp dir creates");
+        let path = dir.path().join("bad.wasm");
+        // Random non-wasm bytes — wasmtime should refuse to parse this.
+        fs::write(&path, b"definitely not a wasm component").expect("write bytes");
+        let Err(err) = runtime.load_plugin(&path) else {
+            panic!("malformed wasm must yield an error")
+        };
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("Failed to load component"),
+            "expected wrapped load error message, got: {msg}"
+        );
+    }
+
+    fn empty_component_loaded_plugin(runtime: &PluginRuntime, kind: &str) -> LoadedPlugin {
+        // Construct a LoadedPlugin by hand for tests that only exercise the
+        // metadata accessors and `create_node`. The component bytes are valid
+        // wasm (parsed via WAT), so `Component::new` accepts them; no plugin
+        // execution is required by the assertions below.
+        let engine = runtime.engine_for_test();
+        let component = Component::new(&engine, b"(component)")
+            .expect("trivial WAT component must compile for tests");
+        LoadedPlugin {
+            component,
+            metadata: wit_types::NodeMetadata {
+                kind: kind.to_string(),
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                param_schema: String::new(),
+                categories: Vec::new(),
+            },
+            engine,
+            linker: runtime.linker_for_test(),
+            max_memory_bytes: PluginRuntimeConfig::default().max_memory_bytes,
+        }
+    }
+
+    #[test]
+    fn loaded_plugin_metadata_accessor_returns_stored_metadata() {
+        let runtime =
+            PluginRuntime::new(PluginRuntimeConfig::default()).expect("runtime must initialize");
+        let plugin = empty_component_loaded_plugin(&runtime, "demo");
+        let metadata = plugin.metadata();
+        assert_eq!(metadata.kind, "demo");
+        assert!(metadata.inputs.is_empty());
+        assert!(metadata.outputs.is_empty());
+    }
+
+    #[test]
+    fn loaded_plugin_create_node_returns_processor_node_with_pin_shape_from_metadata() {
+        let runtime =
+            PluginRuntime::new(PluginRuntimeConfig::default()).expect("runtime must initialize");
+        let mut plugin = empty_component_loaded_plugin(&runtime, "demo-create");
+        plugin.metadata.inputs.push(wit_types::InputPin {
+            name: "in".into(),
+            accepts_types: vec![wit_types::PacketType::Text],
+        });
+        plugin.metadata.outputs.push(wit_types::OutputPin {
+            name: "out".into(),
+            produces_type: wit_types::PacketType::Text,
+        });
+        let node = plugin
+            .create_node(Some(&serde_json::json!({"k": "v"})))
+            .expect("create_node must succeed for valid metadata");
+        let inputs = node.input_pins();
+        let outputs = node.output_pins();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].name, "in");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].name, "out");
+    }
+
+    #[test]
+    fn loaded_plugin_create_node_accepts_none_params() {
+        let runtime =
+            PluginRuntime::new(PluginRuntimeConfig::default()).expect("runtime must initialize");
+        let plugin = empty_component_loaded_plugin(&runtime, "demo-none");
+        let node = plugin.create_node(None).expect("create_node accepts None params");
+        // Empty metadata means no pins exposed on the constructed node.
+        assert!(node.input_pins().is_empty());
+        assert!(node.output_pins().is_empty());
+    }
+
+    #[test]
+    fn register_plugins_skips_plugins_with_kinds_containing_reserved_separator() {
+        let runtime =
+            PluginRuntime::new(PluginRuntimeConfig::default()).expect("runtime must initialize");
+        let bad = empty_component_loaded_plugin(&runtime, "foo::bar");
+        let mut registry = NodeRegistry::new();
+        register_plugins(&mut registry, vec![bad]);
+        assert!(
+            registry.get_definition("plugin::wasm::foo::bar").is_none(),
+            "invalid kind must NOT be registered"
+        );
+        assert!(
+            registry.get_definition("foo::bar").is_none(),
+            "raw invalid kind must NOT be registered either"
+        );
+    }
+
+    #[test]
+    fn register_plugins_namespaces_valid_kinds_and_registers_factory() {
+        let runtime =
+            PluginRuntime::new(PluginRuntimeConfig::default()).expect("runtime must initialize");
+        let plugin = empty_component_loaded_plugin(&runtime, "gain");
+        let mut registry = NodeRegistry::new();
+        register_plugins(&mut registry, vec![plugin]);
+        let def = registry
+            .get_definition("plugin::wasm::gain")
+            .expect("valid plugin kind must be registered under namespaced name");
+        assert_eq!(def.kind, "plugin::wasm::gain");
+    }
+
+    #[test]
+    fn register_plugins_uses_empty_object_when_param_schema_is_not_valid_json() {
+        let runtime =
+            PluginRuntime::new(PluginRuntimeConfig::default()).expect("runtime must initialize");
+        let mut plugin = empty_component_loaded_plugin(&runtime, "noisy");
+        // Force the schema string to non-JSON so the unwrap_or_else fallback is hit.
+        plugin.metadata.param_schema = "not json {{ at all".to_string();
+        let mut registry = NodeRegistry::new();
+        register_plugins(&mut registry, vec![plugin]);
+        let def = registry
+            .get_definition("plugin::wasm::noisy")
+            .expect("plugin with non-JSON schema must still register");
+        assert_eq!(def.param_schema, serde_json::json!({}));
+    }
+
+    #[test]
+    fn register_plugins_preserves_param_schema_when_well_formed_json() {
+        let runtime =
+            PluginRuntime::new(PluginRuntimeConfig::default()).expect("runtime must initialize");
+        let mut plugin = empty_component_loaded_plugin(&runtime, "configured");
+        plugin.metadata.param_schema =
+            r#"{"type":"object","properties":{"gain":{"type":"number"}}}"#.to_string();
+        let mut registry = NodeRegistry::new();
+        register_plugins(&mut registry, vec![plugin]);
+        let def = registry
+            .get_definition("plugin::wasm::configured")
+            .expect("plugin with well-formed schema must register");
+        assert_eq!(
+            def.param_schema,
+            serde_json::json!({"type":"object","properties":{"gain":{"type":"number"}}})
+        );
+    }
+
+    #[tokio::test]
+    async fn host_state_send_output_returns_error_when_no_sender_is_attached() {
+        // Direct exercise of the Host trait impl: without an output_sender set,
+        // any send_output call must surface a clear error rather than panicking.
+        let mut state = HostState {
+            wasi: wasmtime_wasi::WasiCtx::builder().build(),
+            resource_table: wasmtime::component::ResourceTable::new(),
+            output_sender: None,
+            limits: wasmtime::StoreLimitsBuilder::new().memory_size(1 << 20).build(),
+        };
+        let packet = wit_types::Packet::Text("hi".to_string());
+        let err = <HostState as Host>::send_output(&mut state, "out".to_string(), packet)
+            .await
+            .expect_err("send_output without sender must error");
+        assert!(
+            err.contains("Output sender not initialized"),
+            "error message must mention missing sender, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn host_state_log_does_not_panic_for_each_log_level() {
+        // The log implementation just forwards to `tracing`; exercise every branch
+        // so any future regression that panics in a single arm is caught.
+        let mut state = HostState {
+            wasi: wasmtime_wasi::WasiCtx::builder().build(),
+            resource_table: wasmtime::component::ResourceTable::new(),
+            output_sender: None,
+            limits: wasmtime::StoreLimitsBuilder::new().memory_size(1 << 20).build(),
+        };
+        for (level, label) in [
+            (LogLevel::Debug, "dbg"),
+            (LogLevel::Info, "info"),
+            (LogLevel::Warn, "warn"),
+            (LogLevel::Error, "err"),
+        ] {
+            <HostState as Host>::log(&mut state, level, label.to_string()).await;
+        }
     }
 }
