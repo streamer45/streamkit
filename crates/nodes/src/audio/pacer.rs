@@ -367,12 +367,10 @@ impl ProcessorNode for AudioPacerNode {
     clippy::expect_used,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss
-)]
+)] // Tests use unwrap/expect for concise assertions; fixed-size numeric casts are safe in test constants.
 mod tests {
     use super::*;
     use streamkit_core::types::AudioFrame;
-
-    // --- calculate_audio_duration ---
 
     #[test]
     fn audio_duration_mono() {
@@ -404,8 +402,6 @@ mod tests {
         assert!((actual_ms - expected_ms).abs() < 0.1);
     }
 
-    // --- create_silence_frame ---
-
     #[test]
     fn silence_frame_20ms_mono() {
         let frame = AudioPacerNode::create_silence_frame(48000, 1);
@@ -428,8 +424,6 @@ mod tests {
         let frame = AudioPacerNode::create_silence_frame(16000, 1);
         assert_eq!(frame.samples.len(), 320); // 16000 * 0.020
     }
-
-    // --- get_cached_silence ---
 
     #[test]
     fn cached_silence_miss_creates_and_caches() {
@@ -459,8 +453,6 @@ mod tests {
         let cached_frame = cached.unwrap();
         assert_eq!(cached_frame.sample_rate, 16000);
     }
-
-    // --- adjust_for_speed ---
 
     #[test]
     fn speed_2x_halves_duration() {
@@ -502,8 +494,6 @@ mod tests {
         let diff = adjusted.abs_diff(target);
         assert!(diff < Duration::from_micros(100), "expected ~40ms, got {adjusted:?}");
     }
-
-    // --- factory validation ---
 
     #[test]
     fn factory_default_config_succeeds() {

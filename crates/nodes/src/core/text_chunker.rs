@@ -252,7 +252,7 @@ impl ProcessorNode for TextChunkerNode {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Tests use unwrap/expect for concise assertions.
 mod tests {
     use super::*;
     use crate::test_utils::{
@@ -267,8 +267,6 @@ mod tests {
             buffer: String::new(),
         }
     }
-
-    // --- factory / new ---
 
     #[test]
     fn new_default_config() {
@@ -296,8 +294,6 @@ mod tests {
         let factory = TextChunkerNode::factory();
         assert!(factory(None).is_ok());
     }
-
-    // --- extract_sentence ---
 
     #[test]
     fn sentence_below_min_length_returns_none() {
@@ -359,8 +355,6 @@ mod tests {
         assert!(node.extract_sentence().is_none());
         assert_eq!(node.buffer, "Third");
     }
-
-    // --- extract_clause ---
 
     #[test]
     fn clause_below_min_length_returns_none() {
@@ -426,8 +420,6 @@ mod tests {
         assert_eq!(node.extract_clause().unwrap(), "Hello world.");
     }
 
-    // --- extract_word_chunk ---
-
     #[test]
     fn word_chunk_below_threshold_returns_none() {
         let mut node = make_node(SplitMode::Words, 1, 5);
@@ -462,8 +454,6 @@ mod tests {
         assert_eq!(node.buffer, "e");
     }
 
-    // --- extract_chunk dispatching ---
-
     #[test]
     fn extract_chunk_dispatches_to_sentence_mode() {
         let mut node = make_node(SplitMode::Sentences, 1, 5);
@@ -484,8 +474,6 @@ mod tests {
         node.buffer = "alpha beta gamma".to_string();
         assert_eq!(node.extract_chunk().unwrap(), "alpha beta");
     }
-
-    // --- run() integration ---
 
     #[tokio::test]
     async fn run_chunks_text_and_flushes_remainder() {

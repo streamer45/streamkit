@@ -248,13 +248,11 @@ pub fn register(registry: &mut streamkit_core::NodeRegistry) {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Tests use unwrap/expect for concise assertions.
 mod tests {
     use super::*;
     use std::sync::Arc;
     use streamkit_core::types::{CustomEncoding, TranscriptionSegment};
-
-    // --- new / create_telemetry_out ---
 
     #[test]
     fn new_default_config() {
@@ -287,8 +285,6 @@ mod tests {
     fn create_telemetry_out_no_params() {
         assert!(create_telemetry_out(None).is_ok());
     }
-
-    // --- should_tap_packet_type ---
 
     #[test]
     fn tap_default_transcription() {
@@ -339,8 +335,6 @@ mod tests {
         assert!(node.should_tap_packet_type(&pkt));
     }
 
-    // --- matches_event_type_filter ---
-
     #[test]
     fn filter_empty_matches_all() {
         let node = TelemetryOutNode::new(None).unwrap();
@@ -383,8 +377,6 @@ mod tests {
         assert!(!node.matches_event_type_filter("other.event"));
     }
 
-    // --- truncate_preview ---
-
     #[test]
     fn truncate_short_string_unchanged() {
         assert_eq!(TelemetryOutNode::truncate_preview("hello", 10), "hello");
@@ -404,8 +396,6 @@ mod tests {
     fn truncate_exact_length_no_ellipsis() {
         assert_eq!(TelemetryOutNode::truncate_preview("abcde", 5), "abcde");
     }
-
-    // --- transcription_to_telemetry ---
 
     #[test]
     fn transcription_telemetry_structure() {
@@ -448,8 +438,6 @@ mod tests {
         assert!(json["language"].is_null());
         assert_eq!(json["segment_count"], 0);
     }
-
-    // --- custom_to_event_type ---
 
     #[test]
     fn custom_event_type_telemetry_passthrough() {

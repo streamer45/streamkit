@@ -535,7 +535,7 @@ impl CompositorConfig {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Tests use unwrap/expect for concise assertions.
 mod tests {
     use super::*;
 
@@ -570,8 +570,6 @@ mod tests {
             },
         }
     }
-
-    // --- Default impls ---
 
     #[test]
     fn compositor_config_defaults() {
@@ -621,14 +619,10 @@ mod tests {
         assert_eq!(g.max_text_length, 10_000);
     }
 
-    // --- validate: valid config ---
-
     #[test]
     fn valid_default_config_passes() {
         assert!(valid_config().validate(&default_limits()).is_ok());
     }
-
-    // --- validate: canvas dimensions ---
 
     #[test]
     fn zero_width_rejected() {
@@ -661,16 +655,12 @@ mod tests {
         assert!(cfg.validate(&limits).is_ok());
     }
 
-    // --- validate: fps ---
-
     #[test]
     fn zero_fps_rejected() {
         let mut cfg = valid_config();
         cfg.fps = 0;
         assert!(cfg.validate(&default_limits()).is_err());
     }
-
-    // --- validate_opacity ---
 
     #[test]
     fn opacity_valid_boundaries() {
@@ -694,8 +684,6 @@ mod tests {
         assert!(validate_opacity(1.1, "test").is_err());
     }
 
-    // --- validate_rotation ---
-
     #[test]
     fn rotation_valid_values() {
         assert!(validate_rotation(0.0, "test").is_ok());
@@ -712,8 +700,6 @@ mod tests {
     fn rotation_inf_rejected() {
         assert!(validate_rotation(f32::INFINITY, "test").is_err());
     }
-
-    // --- validate_crop ---
 
     #[test]
     fn crop_valid_values() {
@@ -739,8 +725,6 @@ mod tests {
         assert!(validate_crop(1.0, 0.5, 1.1, "test").is_err());
     }
 
-    // --- validate: layer opacity/rotation/crop ---
-
     #[test]
     fn layer_invalid_opacity_rejected() {
         let mut cfg = valid_config();
@@ -765,8 +749,6 @@ mod tests {
         assert!(cfg.validate(&default_limits()).is_err());
     }
 
-    // --- validate: overlay opacity/rotation ---
-
     #[test]
     fn image_overlay_invalid_opacity_rejected() {
         let mut cfg = valid_config();
@@ -787,8 +769,6 @@ mod tests {
         cfg.text_overlays.push(make_text_overlay("hello", 24, f32::NAN));
         assert!(cfg.validate(&default_limits()).is_err());
     }
-
-    // --- validate: font_size / text length ---
 
     #[test]
     fn font_size_exceeding_max_rejected() {
@@ -813,8 +793,6 @@ mod tests {
         cfg.text_overlays.push(make_text_overlay("this text is longer than ten bytes", 24, 1.0));
         assert!(cfg.validate(&limits).is_err());
     }
-
-    // --- validate: output_format ---
 
     #[test]
     fn valid_output_format_passes() {
