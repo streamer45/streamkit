@@ -44,9 +44,9 @@ pub struct NodePinMetadata {
 #[derive(Clone)]
 pub struct NodeMetricLabels {
     /// `[node_id, node_kind]` — used by stats counters.
-    stats: [KeyValue; 2],
+    pub(crate) stats: [KeyValue; 2],
     /// Standalone `node_id` label — combined with a varying `state` label.
-    node_id_kv: KeyValue,
+    pub(crate) node_id_kv: KeyValue,
 }
 
 /// Bundle of broadcast channel senders shared by the engine actor loop.
@@ -413,7 +413,7 @@ impl DynamicEngine {
         }
     }
 
-    fn handle_state_update(&mut self, update: &NodeStateUpdate) {
+    pub(crate) fn handle_state_update(&mut self, update: &NodeStateUpdate) {
         if !self.live_nodes.contains_key(&update.node_id) {
             tracing::trace!(
                 node = %update.node_id,
@@ -468,7 +468,7 @@ impl DynamicEngine {
         });
     }
 
-    fn handle_telemetry_event(&mut self, event: &TelemetryEvent) {
+    pub(crate) fn handle_telemetry_event(&mut self, event: &TelemetryEvent) {
         self.telemetry_subscribers.retain(|subscriber| match subscriber.try_send(event.clone()) {
             Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => true,
             Err(mpsc::error::TrySendError::Closed(_)) => false,
@@ -476,7 +476,7 @@ impl DynamicEngine {
     }
 
     /// View data is best-effort: dropped updates are acceptable.
-    fn handle_view_data_update(&mut self, update: &NodeViewDataUpdate) {
+    pub(crate) fn handle_view_data_update(&mut self, update: &NodeViewDataUpdate) {
         if !self.live_nodes.contains_key(&update.node_id) {
             tracing::trace!(
                 node = %update.node_id,
@@ -503,7 +503,7 @@ impl DynamicEngine {
     ///
     /// Not async because all operations are synchronous (no .await calls)
     /// Takes by reference to avoid unnecessary clones when broadcasting to subscribers
-    fn handle_stats_update(&mut self, update: &NodeStatsUpdate) {
+    pub(crate) fn handle_stats_update(&mut self, update: &NodeStatsUpdate) {
         // Ignore stats updates for nodes that have been removed
         if !self.live_nodes.contains_key(&update.node_id) {
             tracing::trace!(

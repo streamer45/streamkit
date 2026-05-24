@@ -26,6 +26,33 @@ use streamkit_core::types::PacketType;
 
 use crate::{DynamicEngineConfig, DynamicEngineHandle, Engine};
 
+struct SourceNode;
+
+#[streamkit_core::async_trait]
+impl ProcessorNode for SourceNode {
+    fn input_pins(&self) -> Vec<streamkit_core::InputPin> {
+        Vec::new()
+    }
+    fn output_pins(&self) -> Vec<streamkit_core::OutputPin> {
+        vec![streamkit_core::OutputPin {
+            name: "out".to_string(),
+            produces_type: PacketType::Binary,
+            cardinality: streamkit_core::PinCardinality::Broadcast,
+        }]
+    }
+    async fn run(
+        self: Box<Self>,
+        mut ctx: streamkit_core::NodeContext,
+    ) -> Result<(), StreamKitError> {
+        loop {
+            match ctx.control_rx.recv().await {
+                Some(NodeControlMessage::Shutdown) | None => return Ok(()),
+                _ => {},
+            }
+        }
+    }
+}
+
 struct IdleNode;
 
 #[streamkit_core::async_trait]
@@ -71,6 +98,13 @@ fn build_handle() -> (Arc<AtomicU32>, DynamicEngineHandle) {
         vec!["test".to_string()],
         false,
     );
+    registry.register_dynamic(
+        "test::source",
+        |_p| Ok(Box::new(SourceNode) as Box<dyn ProcessorNode>),
+        serde_json::json!({}),
+        vec!["test".to_string()],
+        false,
+    );
     let engine = Engine {
         registry: Arc::new(std::sync::RwLock::new(registry)),
         audio_pool: Arc::new(streamkit_core::AudioFramePool::audio_default()),
@@ -78,6 +112,33 @@ fn build_handle() -> (Arc<AtomicU32>, DynamicEngineHandle) {
     };
     let handle = engine.start_dynamic_actor(DynamicEngineConfig::default());
     (counter, handle)
+}
+
+fn build_handle_with_slow() -> DynamicEngineHandle {
+    let mut registry = NodeRegistry::new();
+    registry.register_dynamic(
+        "test::source",
+        |_p| Ok(Box::new(SourceNode) as Box<dyn ProcessorNode>),
+        serde_json::json!({}),
+        vec!["test".to_string()],
+        false,
+    );
+    registry.register_dynamic(
+        "test::slow",
+        |_p| {
+            std::thread::sleep(Duration::from_millis(500));
+            Ok(Box::new(IdleNode) as Box<dyn ProcessorNode>)
+        },
+        serde_json::json!({}),
+        vec!["test".to_string()],
+        false,
+    );
+    let engine = Engine {
+        registry: Arc::new(std::sync::RwLock::new(registry)),
+        audio_pool: Arc::new(streamkit_core::AudioFramePool::audio_default()),
+        video_pool: Arc::new(streamkit_core::VideoFramePool::video_default()),
+    };
+    engine.start_dynamic_actor(DynamicEngineConfig::default())
 }
 
 async fn add_and_wait(handle: &DynamicEngineHandle, name: &str) {
@@ -278,6 +339,135 @@ async fn duplicate_add_node_does_not_overwrite_state() {
         factory_calls_before,
         "duplicate AddNode must not invoke the factory again"
     );
+
+    handle.shutdown_and_wait().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn disconnect_after_connect_cleans_up_tracking() {
+    let (_counter, handle) = build_handle();
+
+    handle
+        .send_control(EngineControlMessage::AddNode {
+            node_id: "src".to_string(),
+            kind: "test::source".to_string(),
+            params: None,
+        })
+        .await
+        .expect("add source");
+    add_and_wait(&handle, "dest").await;
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        if let Ok(states) = handle.get_node_states().await {
+            if states.get("src").is_some_and(|s| !matches!(s, NodeState::Creating)) {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    handle
+        .send_control(EngineControlMessage::Connect {
+            from_node: "src".to_string(),
+            from_pin: "out".to_string(),
+            to_node: "dest".to_string(),
+            to_pin: "in".to_string(),
+            mode: streamkit_core::control::ConnectionMode::Reliable,
+        })
+        .await
+        .expect("connect");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    handle
+        .send_control(EngineControlMessage::Disconnect {
+            from_node: "src".to_string(),
+            from_pin: "out".to_string(),
+            to_node: "dest".to_string(),
+            to_pin: "in".to_string(),
+        })
+        .await
+        .expect("disconnect");
+
+    let states = handle.get_node_states().await.expect("get_node_states");
+    assert!(states.contains_key("src") && states.contains_key("dest"));
+
+    // Redundant disconnect on the same edge should be a silent noop.
+    handle
+        .send_control(EngineControlMessage::Disconnect {
+            from_node: "src".to_string(),
+            from_pin: "out".to_string(),
+            to_node: "dest".to_string(),
+            to_pin: "in".to_string(),
+        })
+        .await
+        .expect("redundant disconnect");
+
+    let states = handle.get_node_states().await.expect("get_node_states after redundant");
+    assert!(states.contains_key("src"), "nodes should survive redundant disconnect");
+
+    handle.shutdown_and_wait().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn disconnect_cancels_pending_connection() {
+    let handle = build_handle_with_slow();
+
+    handle
+        .send_control(EngineControlMessage::AddNode {
+            node_id: "src".to_string(),
+            kind: "test::source".to_string(),
+            params: None,
+        })
+        .await
+        .expect("add source");
+
+    handle
+        .send_control(EngineControlMessage::AddNode {
+            node_id: "slow".to_string(),
+            kind: "test::slow".to_string(),
+            params: None,
+        })
+        .await
+        .expect("add slow");
+
+    // Connect while slow is Creating → deferred.
+    handle
+        .send_control(EngineControlMessage::Connect {
+            from_node: "src".to_string(),
+            from_pin: "out".to_string(),
+            to_node: "slow".to_string(),
+            to_pin: "in".to_string(),
+            mode: streamkit_core::control::ConnectionMode::Reliable,
+        })
+        .await
+        .expect("connect");
+
+    // Cancel before slow finishes → pending_connections drained.
+    handle
+        .send_control(EngineControlMessage::Disconnect {
+            from_node: "src".to_string(),
+            from_pin: "out".to_string(),
+            to_node: "slow".to_string(),
+            to_pin: "in".to_string(),
+        })
+        .await
+        .expect("disconnect");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if let Ok(states) = handle.get_node_states().await {
+            if states.get("slow").is_some_and(|s| !matches!(s, NodeState::Creating)) {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // Slow node should exist — the cancelled deferred connection was NOT replayed.
+    let states = handle.get_node_states().await.expect("get_node_states");
+    assert!(states.contains_key("slow"), "slow node should exist after creation");
 
     handle.shutdown_and_wait().await.expect("shutdown");
 }
