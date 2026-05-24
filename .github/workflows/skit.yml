@@ -155,8 +155,9 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-22.04
-    # Coverage is informational during the initial rollout; do not block
-    # `all-checks` if it fails. See codecov.yml for the ratcheting plan.
+    # Threshold violations are caught by the all-checks gate (ci.yml
+    # "Verify Codecov thresholds"); keep this job non-blocking so a
+    # flaky coverage toolchain doesn't independently gate merges.
     continue-on-error: true
     env:
       # Isolate from the lint/test shared rust-cache; instrumented builds

@@ -3,13 +3,10 @@
 # SPDX-License-Identifier: MPL-2.0
 
 # Codecov configuration. The project and patch statuses below report
-# red on threshold violations (a real signal for reviewers), but they
-# do not block merges yet — the coverage jobs in .github/workflows/{skit,ui}.yml
-# are still `continue-on-error: true` and the required `All Checks Passed`
-# gate only watches GitHub Actions job results, not Codecov commit
-# statuses. Removing the informational override here is step 1 of two;
-# step 2 (wiring the Codecov statuses into the merge gate) is tracked
-# in issue #487.
+# red on threshold violations. The `All Checks Passed` gate in
+# `.github/workflows/ci.yml` polls these commit statuses and fails the
+# required check when any threshold is violated, so coverage regressions
+# block merge even though the coverage jobs use `continue-on-error: true`.
 #
 # Status-stringency ratchet (separate from the coverage-sprint phases
 # tracked in agent_docs/coverage.md):
@@ -22,10 +19,8 @@
 #                        informational to red-surfacing once `engine`,
 #                        `nodes`, and `server` are consistently above
 #                        80%.
-#   Merge-gate wiring: separate change to either include Codecov
-#                        statuses in branch protection or fail the
-#                        coverage jobs on threshold violations —
-#                        tracked in issue #487.
+#   Merge-gate wiring: the `all-checks` job now polls Codecov commit
+#                        statuses and fails on violations (PR #487).
 # Stage transitions are intentionally manual — edit this file and remove
 # `informational: true` / tighten `threshold` / `target` as the baseline
 # settles. The `backend` and `ui` flag totals on the Codecov dashboard are
