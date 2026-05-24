@@ -323,6 +323,11 @@ async fn origin_guard_middleware(
     if is_api && is_mutating {
         if let Some(origin_val) = req.headers().get(header::ORIGIN) {
             let Ok(origin) = origin_val.to_str() else {
+                warn!(
+                    method = %method,
+                    path = %path,
+                    "Rejected request: Origin header is not valid UTF-8"
+                );
                 return (StatusCode::FORBIDDEN, "Invalid Origin header").into_response();
             };
 
