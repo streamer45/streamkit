@@ -376,7 +376,7 @@ async fn inject_subgraph_inner(
             node_ids.push((pixconv_id.clone(), "video::pixel_convert".to_string()));
 
             add_vp9_encoder_node(session, &vp9enc_id).await?;
-            node_ids.push((vp9enc_id.clone(), "vp9::encoder".to_string()));
+            node_ids.push((vp9enc_id.clone(), "video::vp9::encoder".to_string()));
 
             // tap → pixconv
             connect_best_effort(session, &tp.node, &tp.pin, &pixconv_id, "in", connections).await?;
@@ -1645,12 +1645,7 @@ mod inject_teardown_tests {
 
         let kinds: Vec<&str> = nodes.iter().map(|(_, k)| k.as_str()).collect();
         assert!(kinds.contains(&"video::pixel_convert"));
-        // BUG (tracked in #480): bookkeeping records the unqualified kind
-        // `vp9::encoder` while `add_vp9_encoder_node` actually asks the
-        // engine for `video::vp9::encoder`.  The raw-audio path is
-        // internally consistent (`audio::opus::encoder` on both sides) —
-        // only VP9 is wrong.  This assertion pins the current behavior.
-        assert!(kinds.contains(&"vp9::encoder"));
+        assert!(kinds.contains(&"video::vp9::encoder"));
         assert!(kinds.contains(&"transport::moq::peer"));
 
         let ids: Vec<&str> = nodes.iter().map(|(i, _)| i.as_str()).collect();
@@ -1929,17 +1924,7 @@ mod inject_teardown_tests {
 
     #[tokio::test]
     async fn inject_raw_video_engine_receives_video_qualified_vp9_kind() {
-        // Pins what the ENGINE actually received — not just the
-        // bookkeeping vector.  add_vp9_encoder_node sends
-        // `video::vp9::encoder` to the engine; if a future change starts
-        // sending an unqualified `vp9::encoder` (mirroring the
-        // bookkeeping bug pinned by #480), the engine would fail to
-        // construct the node and NodeAdded for that kind would never
-        // arrive.  Same idea for opus and the moq peer.
-        //
-        // This complements `inject_raw_video_creates_pixconv_and_vp9_encoder`
-        // (which only inspects bookkeeping) by asserting on the
-        // engine-confirmed event stream.
+        // Asserts on the engine-confirmed event stream (not just bookkeeping).
         let (session, mut rx) = fresh_session().await;
         let mut pipeline = empty_pipeline();
         pipeline.nodes.insert(
@@ -1959,7 +1944,7 @@ mod inject_teardown_tests {
         for want in expected {
             assert!(
                 kinds.iter().any(|k| k == want),
-                "engine never confirmed {want} (sibling of #480?); got kinds: {kinds:?}"
+                "engine never confirmed {want}; got kinds: {kinds:?}"
             );
         }
 
