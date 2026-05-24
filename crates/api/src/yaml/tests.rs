@@ -19,7 +19,6 @@ nodes:
     let user_pipeline = parse_yaml(yaml).unwrap();
     let result = compile(user_pipeline);
 
-    // Should fail with a cycle error
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(err.contains("Circular dependency"), "Error should mention circular dependency: {err}");
@@ -43,7 +42,6 @@ nodes:
     let user_pipeline = parse_yaml(yaml).unwrap();
     let result = compile(user_pipeline);
 
-    // Should fail with a cycle error
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(err.contains("Circular dependency"), "Error should mention circular dependency: {err}");
@@ -63,7 +61,6 @@ nodes:
     let user_pipeline = parse_yaml(yaml).unwrap();
     let result = compile(user_pipeline);
 
-    // Should fail with an error message
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(err.contains("node_a"));
@@ -74,10 +71,6 @@ nodes:
 #[test]
 #[allow(clippy::unwrap_used)]
 fn test_bidirectional_transport_not_flagged_as_cycle() {
-    // This test verifies that pipelines with bidirectional transport nodes
-    // (like MoQ peer) don't get incorrectly flagged as cycles.
-    // The bidirectionality is handled at runtime through pub/sub,
-    // not through explicit `needs` dependencies.
     let yaml = r"
 mode: dynamic
 nodes:
@@ -116,7 +109,6 @@ nodes:
     let user_pipeline = parse_yaml(yaml).unwrap();
     let result = compile(user_pipeline);
 
-    // Should compile successfully - no cycle in needs graph
     assert!(
         result.is_ok(),
         "Bidirectional transport pattern should not be flagged as a cycle: {:?}",
@@ -127,10 +119,6 @@ nodes:
 #[test]
 #[allow(clippy::unwrap_used)]
 fn test_bidirectional_cycle_allowed() {
-    // This test verifies that cycles involving bidirectional nodes (like MoQ peer)
-    // are allowed. This is the pattern used by moq_transcoder pipelines where:
-    // peer -> decoder -> gain -> mixer -> encoder -> peer (cycle!)
-    // The cycle is intentional because the peer has separate input/output data paths.
     let yaml = r"
 mode: dynamic
 nodes:
@@ -159,7 +147,6 @@ nodes:
     let user_pipeline = parse_yaml(yaml).unwrap();
     let result = compile(user_pipeline);
 
-    // Should compile successfully - cycles with bidirectional nodes are allowed
     assert!(result.is_ok(), "Cycle with bidirectional node should be allowed: {:?}", result.err());
 }
 
@@ -172,12 +159,6 @@ fn test_sample_moq_mixing_compiles() {
     assert!(result.is_ok(), "Sample pipeline moq_mixing.yml should compile: {:?}", result.err());
 }
 
-/// Regression test: `moq_aac_mixing.yml` must compile without errors.
-///
-/// Previously the mixer's `needs` used bracket syntax (`mic_gain[in_0]`)
-/// which the parser does not support, causing a "references non-existent
-/// node" error.  The fix switched to simple array syntax so that
-/// `Needs::Multiple` auto-generates `in_0`, `in_1` by index.
 #[test]
 fn test_sample_moq_aac_mixing_compiles() {
     let yaml = include_str!("../../../../samples/pipelines/dynamic/moq_aac_mixing.yml");
@@ -566,10 +547,6 @@ nodes:
     assert_eq!(conn.to_pin, "my_input");
 }
 
-// -----------------------------------------------------------------------
-// Client section tests
-// -----------------------------------------------------------------------
-
 #[test]
 #[allow(clippy::unwrap_used)]
 fn test_client_section_parsed_in_steps() {
@@ -740,11 +717,6 @@ client:
     assert_eq!(tags, vec!["speech", "voice"]);
 }
 
-// -----------------------------------------------------------------------
-// Client section lint tests
-// -----------------------------------------------------------------------
-
-/// Helper to build a minimal valid dynamic client section.
 fn dynamic_client() -> ClientSection {
     ClientSection {
         relay_url: None,
@@ -773,7 +745,6 @@ fn dynamic_client() -> ClientSection {
     }
 }
 
-/// Helper to build a minimal valid oneshot client section.
 fn oneshot_client() -> ClientSection {
     ClientSection {
         relay_url: None,
@@ -1086,11 +1057,6 @@ fn test_lint_text_no_placeholder() {
     assert!(warnings.iter().any(|w| w.rule == "text-no-placeholder"));
 }
 
-// -----------------------------------------------------------------------
-// Client-vs-nodes cross-validation tests (rules 13–20)
-// -----------------------------------------------------------------------
-
-/// Helper: a `streamkit::http_input` node with no params.
 fn http_input_node() -> serde_json::Value {
     serde_json::Value::Null // represents "no params object"
 }
@@ -1507,10 +1473,6 @@ fn test_lint_broadcast_match_clean() {
     );
 }
 
-// -----------------------------------------------------------------------
-// Client-vs-nodes cross-validation tests (rules 21–22: controls)
-// -----------------------------------------------------------------------
-
 // Rule 21 — control-unknown-node
 #[test]
 fn test_lint_control_unknown_node() {
@@ -1678,10 +1640,6 @@ fn test_lint_control_select_with_options_clean() {
         "Should not warn when select control has options: {warnings:?}"
     );
 }
-
-// -----------------------------------------------------------------------
-// Tracks-based publish config tests
-// -----------------------------------------------------------------------
 
 #[test]
 #[allow(clippy::unwrap_used)]
@@ -1980,10 +1938,6 @@ fn test_lint_duplicate_source_different_kind_same_source_no_false_positive() {
         "Should warn about kind-source mismatch for (video, microphone): {warnings:?}"
     );
 }
-
-// -----------------------------------------------------------------------
-// Per-track media hint fields
-// -----------------------------------------------------------------------
 
 #[test]
 #[allow(clippy::unwrap_used)]

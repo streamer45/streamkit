@@ -19,8 +19,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use ts_rs::TS;
 
-/// Type alias for async resource factories used by the NodeRegistry.
-/// Returns a Future that resolves to a Resource that will be shared across node instances.
 pub type AsyncResourceFactory = Arc<
     dyn Fn(
             Option<serde_json::Value>,
@@ -82,23 +80,18 @@ pub struct NodeRegistry {
 }
 
 impl NodeRegistry {
-    /// Creates a new, empty registry.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Creates a new registry with resource management support.
     pub fn with_resource_manager(resource_manager: Arc<ResourceManager>) -> Self {
         Self { info: HashMap::new(), resource_manager: Some(resource_manager) }
     }
 
-    /// Sets or updates the resource manager for this registry.
     pub fn set_resource_manager(&mut self, resource_manager: Arc<ResourceManager>) {
         self.resource_manager = Some(resource_manager);
     }
 
-    /// Registers a node with statically defined pins.
-    /// This is the preferred method for nodes whose input/output pins do not change based on configuration.
     pub fn register_static<F>(
         &mut self,
         name: &str,
@@ -128,7 +121,6 @@ impl NodeRegistry {
         );
     }
 
-    /// Registers a node with statically defined pins and a description.
     #[allow(clippy::too_many_arguments)]
     pub fn register_static_with_description<F>(
         &mut self,
@@ -160,9 +152,7 @@ impl NodeRegistry {
         );
     }
 
-    /// Registers a node with dynamically defined pins.
-    /// The pin layout for these nodes is determined at instantiation time from their configuration.
-    /// The factory for such a node MUST be able to produce a default instance when `params` is `None`.
+    /// Factory MUST produce a default instance when `params` is `None`.
     pub fn register_dynamic<F>(
         &mut self,
         name: &str,
@@ -191,7 +181,6 @@ impl NodeRegistry {
         );
     }
 
-    /// Registers a node with dynamically defined pins and a description.
     pub fn register_dynamic_with_description<F>(
         &mut self,
         name: &str,
@@ -221,19 +210,6 @@ impl NodeRegistry {
         );
     }
 
-    /// Registers a node with resource management support.
-    /// This is for nodes that need shared resources like ML models.
-    ///
-    /// # Arguments
-    ///
-    /// * `name` - The unique name for this node type
-    /// * `factory` - Factory function that creates node instances (receives params)
-    /// * `resource_factory` - Async factory that creates/loads the shared resource
-    /// * `resource_key_hasher` - Function that hashes params into a cache key
-    /// * `param_schema` - JSON schema for parameter validation
-    /// * `pins` - Static pin configuration
-    /// * `categories` - UI categories for this node
-    /// * `bidirectional` - Whether this node is bidirectional
     #[allow(clippy::too_many_arguments)]
     pub fn register_static_with_resource<F>(
         &mut self,
@@ -432,13 +408,10 @@ impl NodeRegistry {
         })
     }
 
-    /// Removes a node definition from the registry.
-    /// Returns true if a definition with the provided name was present.
     pub fn unregister(&mut self, name: &str) -> bool {
         self.info.remove(name).is_some()
     }
 
-    /// Checks whether a node definition exists in the registry.
     pub fn contains(&self, name: &str) -> bool {
         self.info.contains_key(name)
     }

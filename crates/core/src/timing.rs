@@ -25,20 +25,16 @@
 
 use crate::types::PacketMetadata;
 
-/// Microseconds per second constant.
 pub const MICROS_PER_SECOND: u64 = 1_000_000;
-/// Milliseconds per second constant.
 pub const MILLIS_PER_SECOND: u64 = 1_000;
 
-/// Convert microseconds to milliseconds, rounding up (never under-reports duration).
+/// Microseconds → milliseconds, rounding up.
 #[must_use]
 pub const fn duration_us_to_ms_ceil(duration_us: u64) -> u64 {
     duration_us.saturating_add(999) / 1000
 }
 
-/// Convert frames-per-channel to duration in microseconds.
-///
-/// Returns `None` if `sample_rate` is 0 to avoid divide-by-zero.
+/// Returns `None` if `sample_rate` is 0.
 #[must_use]
 pub fn frames_to_duration_us(frames_per_channel: u64, sample_rate: u32) -> Option<u64> {
     if sample_rate == 0 {
@@ -47,8 +43,6 @@ pub fn frames_to_duration_us(frames_per_channel: u64, sample_rate: u32) -> Optio
     Some(frames_per_channel.saturating_mul(MICROS_PER_SECOND) / u64::from(sample_rate))
 }
 
-/// Convert an interleaved sample count to duration in microseconds.
-///
 /// Returns `None` if `channels` or `sample_rate` is 0.
 #[must_use]
 pub fn samples_to_duration_us(samples: usize, channels: u16, sample_rate: u32) -> Option<u64> {
@@ -59,11 +53,7 @@ pub fn samples_to_duration_us(samples: usize, channels: u16, sample_rate: u32) -
     frames_to_duration_us(frames_per_channel, sample_rate)
 }
 
-/// Advance a timestamp by a duration, if both are present.
-///
-/// - If `timestamp_us` is `Some` and `duration_us` is `Some`, returns
-///   `timestamp_us + duration_us` (saturating).
-/// - Otherwise, returns `timestamp_us` unchanged.
+/// `timestamp_us + duration_us` (saturating) when both are present.
 #[must_use]
 pub fn advance_timestamp(timestamp_us: Option<u64>, duration_us: Option<u64>) -> Option<u64> {
     match (timestamp_us, duration_us) {
@@ -72,9 +62,7 @@ pub fn advance_timestamp(timestamp_us: Option<u64>, duration_us: Option<u64>) ->
     }
 }
 
-/// Returns true if `next` is monotonic (non-decreasing) with respect to `prev`.
-///
-/// When either side is `None`, the check is treated as passing.
+/// `true` if `next >= prev`; `None` on either side passes.
 #[must_use]
 pub fn is_monotonic(prev: Option<u64>, next: Option<u64>) -> bool {
     match (prev, next) {
@@ -83,20 +71,18 @@ pub fn is_monotonic(prev: Option<u64>, next: Option<u64>) -> bool {
     }
 }
 
-/// Extract the starting timestamp from metadata, or 0 if not present.
-/// Useful when computing cumulative media time.
 #[must_use]
 pub fn starting_timestamp_or_zero(metadata: &Option<PacketMetadata>) -> u64 {
     metadata.as_ref().and_then(|m| m.timestamp_us).unwrap_or(0)
 }
 
-/// Infer a duration from consecutive timestamps; fall back to `default` when missing or non-positive.
+/// Falls back to `default` when missing or non-positive.
 #[must_use]
 pub fn infer_duration_us(current_ts: u64, previous_ts: Option<u64>, default: u64) -> u64 {
     previous_ts.and_then(|prev| current_ts.checked_sub(prev)).filter(|d| *d > 0).unwrap_or(default)
 }
 
-/// Merge metadata from multiple inputs: min timestamp, max duration, max sequence.
+/// Min timestamp, max duration, max sequence across inputs.
 #[must_use]
 pub fn merge_metadata<'a, I: Iterator<Item = &'a PacketMetadata>>(
     iter: I,
@@ -136,7 +122,6 @@ pub fn merge_metadata<'a, I: Iterator<Item = &'a PacketMetadata>>(
     }
 }
 
-/// A simple media clock that tracks media time in microseconds with an optional initial delay.
 #[derive(Debug, Clone)]
 pub struct MediaClock {
     initial_delay_us: u64,
@@ -145,12 +130,11 @@ pub struct MediaClock {
 }
 
 impl MediaClock {
-    /// Create a new clock with an initial delay (microseconds).
     pub const fn new(initial_delay_ms: u64) -> Self {
         Self { initial_delay_us: initial_delay_ms * 1000, media_time_us: 0, seeded: false }
     }
 
-    /// Seed the clock from an absolute media timestamp. Idempotent (first seed wins).
+    /// Idempotent (first seed wins).
     pub fn seed_from_timestamp_us(&mut self, timestamp_us: u64) {
         if !self.seeded {
             self.media_time_us = timestamp_us;
@@ -158,26 +142,22 @@ impl MediaClock {
         }
     }
 
-    /// Advance by a duration (or default) and return the duration used (ms rounded up).
     pub fn advance_by_duration_us(&mut self, duration_us: Option<u64>, default: u64) -> u64 {
         let dur = duration_us.unwrap_or(default);
         self.media_time_us = self.media_time_us.saturating_add(dur);
         duration_us_to_ms_ceil(dur)
     }
 
-    /// Current media timestamp in microseconds (includes initial delay).
     #[must_use]
     pub const fn timestamp_us(&self) -> u64 {
         self.initial_delay_us.saturating_add(self.media_time_us)
     }
 
-    /// Current media timestamp in milliseconds (rounded up).
     #[must_use]
     pub const fn timestamp_ms(&self) -> u64 {
         duration_us_to_ms_ceil(self.timestamp_us())
     }
 
-    /// Returns true if at a group boundary (e.g., for MoQ keyframes).
     #[must_use]
     pub fn is_group_boundary_ms(&self, group_duration_ms: u64) -> bool {
         let t = self.timestamp_ms();

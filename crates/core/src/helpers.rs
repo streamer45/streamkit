@@ -11,7 +11,6 @@
 use crate::error::StreamKitError;
 use crate::types::Packet;
 
-/// Helper functions for parsing node configuration from JSON values.
 pub mod config_helpers {
     use super::StreamKitError;
     use serde::Deserialize;
@@ -72,33 +71,17 @@ pub mod config_helpers {
     }
 }
 
-/// Helper functions for common packet processing patterns.
 pub mod packet_helpers {
     use super::Packet;
     use smallvec::SmallVec;
     use tokio::sync::mpsc;
 
-    /// Default batch size for stack-allocated SmallVec.
-    ///
-    /// 32 packets fits typical batch processing while avoiding heap allocation.
-    /// Each Packet is ~40 bytes (enum discriminant + largest variant), so 32 packets = ~1.3KB on stack.
+    /// 32 packets ≈ 1.3 KB on stack; avoids heap in the common case.
     pub const DEFAULT_BATCH_CAPACITY: usize = 32;
 
-    /// A batch of packets that uses stack allocation for small batches.
-    /// Falls back to heap allocation only if more than DEFAULT_BATCH_CAPACITY packets are collected.
     pub type PacketBatch = SmallVec<[Packet; DEFAULT_BATCH_CAPACITY]>;
 
-    /// Greedily collects a batch of packets from a receiver.
-    /// Starts with the given first packet, then attempts to drain up to `batch_size - 1`
-    /// additional packets without blocking.
-    ///
-    /// This is useful for processing packets in batches to amortize processing overhead.
-    ///
-    /// # Performance
-    ///
-    /// Uses SmallVec to avoid heap allocation for batches up to 32 packets.
-    /// For most real-time audio processing, batches are small (1-8 packets), so this
-    /// avoids allocation in the common case.
+    /// Non-blocking drain: takes `first_packet` plus up to `batch_size - 1` more.
     pub fn batch_packets_greedy(
         first_packet: Packet,
         rx: &mut mpsc::Receiver<Packet>,

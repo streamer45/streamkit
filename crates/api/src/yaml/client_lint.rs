@@ -8,55 +8,13 @@ use super::{
 };
 use crate::EngineMode;
 
-/// A single lint warning produced by [`lint_client_section`].
 #[derive(Debug, Clone)]
 pub struct ClientLintWarning {
-    /// Machine-readable rule identifier (e.g. `"mode-mismatch"`).
     pub rule: &'static str,
-    /// Human-readable description of the problem.
     pub message: String,
 }
 
-/// Validates the `client` section against the compiled pipeline, returning
-/// any semantic warnings.
-///
-/// This is a *lint* pass — it never prevents compilation, but surfaces
-/// likely authoring mistakes so tooling (CLI, editor integrations) can
-/// flag them.
-///
-/// # Rules
-///
-///  1. **`mode-mismatch-dynamic`** — Dynamic pipeline declares oneshot-only
-///     fields (`input` / `output`).
-///  2. **`mode-mismatch-oneshot`** — Oneshot pipeline declares dynamic-only
-///     fields (`publish` / `watch` / `gateway_path` / `relay_url` / `controls`).
-///  3. **`missing-gateway`** — Dynamic pipeline has `publish` or `watch`
-///     but no `gateway_path` or `relay_url`.
-///  4. **`publish-no-media`** — `publish` block sets both `audio` and
-///     `video` to false.
-///  5. **`watch-no-media`** — `watch` block sets both `audio` and `video`
-///     to false.
-///  6. **`input-none-with-accept`** — `input.type` is `none` but `accept`
-///     is set (accept is meaningless without a file picker).
-///  7. **`input-trigger-with-accept`** — `input.type` is `trigger` but
-///     `accept` is set.
-///  8. **`field-hints-no-input`** — `field_hints` is present but
-///     `input.type` is `none`.
-///  9. **`asset-tags-no-input`** — `asset_tags` is present but
-///     `input.type` is `none` or `text`.
-/// 10. **`text-no-placeholder`** — `input.type` is `text` but no
-///     `placeholder` is provided (best-practice hint).
-/// 11. **`empty-broadcast`** — `publish.broadcast` or `watch.broadcast`
-///     is an empty string.
-/// 12. **`duplicate-broadcast`** — `publish.broadcast` equals
-///     `watch.broadcast` (would cause a loop).
-/// 13. **`empty-tracks`** — `publish.tracks` is an empty array.
-/// 14. **`kind-source-mismatch`** — Track kind and source are incompatible
-///     (e.g. `kind: audio` with `source: camera`).
-/// 15. **`duplicate-source`** — Multiple tracks use the same kind and capture
-///     source combination.
-/// 16. **`empty-track-broadcast`** — A track-level `broadcast` override is
-///     an empty string.
+/// Lint pass — never prevents compilation, surfaces likely authoring mistakes.
 pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<ClientLintWarning> {
     let mut warnings = Vec::new();
 
@@ -357,50 +315,13 @@ fn lint_publish_track(warnings: &mut Vec<ClientLintWarning>, track: &PublishTrac
     }
 }
 
-/// A lightweight view of a pipeline's nodes used by
-/// [`lint_client_against_nodes`] for cross-validation.
-///
-/// Callers construct this from either `UserPipeline::Dag` nodes or
-/// `UserPipeline::Steps` steps.
 pub struct NodeInfo<'a> {
-    /// The user-facing node ID (the key in the `nodes:` map).
     pub name: &'a str,
     pub kind: &'a str,
     pub params: Option<&'a serde_json::Value>,
 }
 
-/// Cross-validates the `client` section against the pipeline's node graph.
-///
-/// This is a second lint layer that complements [`lint_client_section`]
-/// (which checks `client` in isolation).  The rules here require knowledge
-/// of which nodes exist and their params.
-///
-/// # Rules
-///
-/// 13. **`input-requires-http-input`** — `input.type` is `file_upload`,
-///     `text`, or `trigger` but no `streamkit::http_input` node exists.
-/// 14. **`input-none-has-http-input`** — `input.type` is `none` but an
-///     `streamkit::http_input` node exists (should be `trigger`).
-/// 15. **`field-hint-unknown-field`** — `field_hints` references a field
-///     name not found in any `streamkit::http_input` node's `fields` param.
-/// 16. **`publish-no-transport`** — `publish` is declared but no MoQ
-///     transport node (`transport::moq::peer` or
-///     `transport::moq::subscriber`) exists.
-/// 17. **`watch-no-transport`** — `watch` is declared but no MoQ transport
-///     node (`transport::moq::peer` or `transport::moq::publisher`) exists.
-/// 18. **`gateway-path-mismatch`** — `client.gateway_path` does not match
-///     the `gateway_path` param on a `transport::moq::peer` node.
-/// 19. **`relay-url-mismatch`** — `client.relay_url` does not match the
-///     `url` param on a `transport::moq::publisher` or
-///     `transport::moq::subscriber` node.
-/// 20. **`broadcast-mismatch`** — `publish.broadcast` or `watch.broadcast`
-///     does not match any broadcast name configured on MoQ transport nodes.
-/// 21. **`control-unknown-node`** — a `controls` entry targets a `node` that
-///     does not exist in the pipeline's `nodes` map.
-/// 22. **`control-number-no-bounds`** — a `number` control is missing `min`
-///     and/or `max`, so the slider will lack proper bounds.
-/// 23. **`control-select-no-options`** — a `select` control has no `options`
-///     array, so the dropdown will be empty.
+/// Cross-validates `client` against the node graph (complements `lint_client_section`).
 pub fn lint_client_against_nodes(
     client: &ClientSection,
     _mode: EngineMode,

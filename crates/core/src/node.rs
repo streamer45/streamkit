@@ -57,10 +57,8 @@ pub enum OutputRouting {
 /// A handle given to a node to send its output packets.
 #[derive(Clone)]
 pub struct OutputSender {
-    /// Node name as Arc<str> to avoid cloning allocations
     node_name: Arc<str>,
     routing: OutputRouting,
-    /// Cached pin names as Arc<str> to avoid repeated allocations
     pin_name_cache: HashMap<String, Arc<str>>,
 }
 
@@ -81,19 +79,15 @@ pub enum OutputSendError {
 }
 
 impl OutputSender {
-    /// Creates a new OutputSender.
-    /// Note: The node_name String is converted to Arc<str> for efficient cloning on the hot path.
     pub fn new(node_name: String, routing: OutputRouting) -> Self {
         Self { node_name: Arc::from(node_name), routing, pin_name_cache: HashMap::new() }
     }
 
-    /// Returns the node's name.
     #[must_use]
     pub fn node_name(&self) -> &str {
         &self.node_name
     }
 
-    /// Get or cache the pin name as Arc<str> to avoid repeated allocations.
     fn get_cached_pin_name(&mut self, pin_name: &str) -> Arc<str> {
         if let Some(cached) = self.pin_name_cache.get(pin_name) {
             cached.clone() // O(1) Arc clone
@@ -116,8 +110,7 @@ impl OutputSender {
     pub fn try_send(&mut self, pin_name: &str, packet: Packet) -> Result<(), OutputSendError> {
         use tokio::sync::mpsc::error::TrySendError;
 
-        // Cache the pin name up front so the mutable borrow is released
-        // before we immutably borrow `self.routing` in the match below.
+        // Mutable borrow released before immutable borrow of `self.routing`.
         let cached_pin = self.get_cached_pin_name(pin_name);
 
         match &self.routing {
@@ -183,12 +176,10 @@ impl OutputSender {
         match &self.routing {
             OutputRouting::Direct(senders) => {
                 if let Some(sender) = senders.get(pin_name) {
-                    // Fast path: avoid allocating/awaiting a future if the channel has capacity.
                     match sender.try_send(packet) {
                         Ok(()) => {},
                         Err(TrySendError::Full(packet)) => {
                             if sender.send(packet).await.is_err() {
-                                // This is expected during cancellation/shutdown, so use debug level
                                 tracing::debug!(
                                     "Directly connected channel for pin '{}' is closed.",
                                     pin_name
@@ -200,7 +191,6 @@ impl OutputSender {
                             }
                         },
                         Err(TrySendError::Closed(_packet)) => {
-                            // This is expected during cancellation/shutdown, so use debug level
                             tracing::debug!(
                                 "Directly connected channel for pin '{}' is closed.",
                                 pin_name
@@ -212,7 +202,6 @@ impl OutputSender {
                         },
                     }
                 } else {
-                    // Pin not found - this is a programming error, log warning and return error
                     tracing::warn!(
                         "OutputSender::send() called with unknown pin '{}' on node '{}'. \
                          Available pins: {:?}. Packet dropped.",
@@ -227,11 +216,8 @@ impl OutputSender {
                 }
             },
             OutputRouting::Routed(engine_tx) => {
-                // Clone engine_tx first to release the immutable borrow on self,
-                // allowing us to call get_cached_pin_name() which needs &mut self
+                // Clone to release immutable borrow before &mut self in get_cached_pin_name.
                 let engine_tx = engine_tx.clone();
-
-                // Use cached Arc<str> for node and pin names to avoid heap allocations
                 let cached_pin = self.get_cached_pin_name(pin_name);
                 let message = (self.node_name.clone(), cached_pin, packet);
                 match engine_tx.try_send(message) {
@@ -259,18 +245,12 @@ impl OutputSender {
     }
 }
 
-/// Context provided to nodes during initialization.
-///
-/// This allows nodes to perform async operations (like probing external resources)
-/// before the pipeline starts executing.
+/// Context for async initialization before pipeline execution.
 pub struct InitContext {
-    /// The node's unique identifier in the pipeline
     pub node_id: String,
-    /// Channel to report state changes during initialization
     pub state_tx: tokio::sync::mpsc::Sender<NodeStateUpdate>,
 }
 
-/// The context provided by the engine to a node when it is run.
 pub struct NodeContext {
     pub inputs: HashMap<String, mpsc::Receiver<Packet>>,
     /// The [`PacketType`] that each connected input pin will receive, keyed by
@@ -285,53 +265,16 @@ pub struct NodeContext {
     pub control_rx: mpsc::Receiver<NodeControlMessage>,
     pub output_sender: OutputSender,
     pub batch_size: usize,
-    /// Channel for the node to report state changes.
-    /// Nodes should send updates when transitioning between states to enable
-    /// monitoring and debugging. It's acceptable if sends fail (e.g., in stateless
-    /// pipelines where state tracking may not be enabled).
     pub state_tx: mpsc::Sender<NodeStateUpdate>,
-    /// Channel for the node to report statistics updates.
-    /// Nodes should throttle these updates (e.g., every 10s or 1000 packets)
-    /// to prevent overloading the monitoring system. Like state_tx, it's
-    /// acceptable if sends fail.
     pub stats_tx: Option<mpsc::Sender<NodeStatsUpdate>>,
-    /// Channel for the node to emit telemetry events.
-    /// Telemetry is best-effort and should never block audio processing.
-    /// Nodes should use `try_send()` or the `TelemetryEmitter` helper which
-    /// handles rate limiting and drop accounting automatically.
     pub telemetry_tx: Option<mpsc::Sender<TelemetryEvent>>,
-    /// Session ID for gateway registration and routing (if applicable)
     pub session_id: Option<String>,
-    /// Cancellation token for coordinated shutdown of pipeline tasks.
-    /// When this token is cancelled, nodes should stop processing and exit gracefully.
-    /// This is primarily used in stateless pipelines to abort processing when the
-    /// client disconnects or the request is interrupted.
     pub cancellation_token: Option<tokio_util::sync::CancellationToken>,
-    /// Channel for runtime pin management messages (Tier 2).
-    /// Always provided in dynamic pipelines so the engine can deliver
-    /// [`PinManagementMessage::InputTypeResolved`] to every node.
-    /// Dynamic-pin nodes additionally receive `AddedInputPin`,
-    /// `RemoveInputPin`, etc. through this channel.
-    /// `None` in oneshot/static pipelines (type info is delivered via
-    /// [`NodeContext::input_types`] at build time).
+    /// `None` in oneshot pipelines (type info delivered via `input_types`).
     pub pin_management_rx: Option<mpsc::Receiver<PinManagementMessage>>,
-    /// Optional per-pipeline audio buffer pool for hot-path allocations.
-    ///
-    /// Nodes that produce audio frames (decoders, resamplers, mixers) may use this to
-    /// amortize `Vec<f32>` allocations. If `None`, nodes should fall back to allocating.
     pub audio_pool: Option<Arc<AudioFramePool>>,
-    /// Optional per-pipeline video buffer pool for hot-path allocations.
-    ///
-    /// Nodes that produce video frames (decoders, scalers, compositors) may use this to
-    /// amortize `Vec<u8>` allocations. If `None`, nodes should fall back to allocating.
     pub video_pool: Option<Arc<VideoFramePool>>,
-    /// The execution mode of the pipeline this node is running in.
-    ///
-    /// Nodes can use this to adjust behaviour — e.g. skip real-time
-    /// pacing in [`PipelineMode::Oneshot`] for maximum throughput.
     pub pipeline_mode: PipelineMode,
-    /// Channel for the node to emit structured view data for frontend consumption.
-    /// Like stats_tx, this is optional and best-effort.
     pub view_data_tx: Option<mpsc::Sender<NodeViewDataUpdate>>,
     /// Optional sender for engine-level control messages.
     ///
@@ -345,9 +288,6 @@ pub struct NodeContext {
 }
 
 impl NodeContext {
-    /// Retrieves an input pin receiver by name, returning an error if not found.
-    /// This is a convenience method to avoid repeated error handling boilerplate.
-    ///
     /// # Errors
     ///
     /// Returns `StreamKitError::Runtime` if the requested input pin doesn't exist.
@@ -421,16 +361,13 @@ impl NodeContext {
 /// The fundamental trait for any processing node, designed as an actor.
 #[async_trait]
 pub trait ProcessorNode: Send + Sync {
-    /// Returns the input pins for this specific node instance.
     fn input_pins(&self) -> Vec<InputPin>;
 
-    /// Returns the output pins for this specific node instance.
     fn output_pins(&self) -> Vec<OutputPin>;
 
-    /// For nodes that produce a final, self-contained file format, this method
-    /// should return the appropriate MIME type string.
+    /// MIME type for nodes that produce a self-contained file format.
     fn content_type(&self) -> Option<String> {
-        None // Default implementation for nodes that don't produce a final format.
+        None
     }
 
     /// Tier 1: Initialization-time discovery.
@@ -481,22 +418,13 @@ pub trait ProcessorNode: Send + Sync {
         None
     }
 
-    /// Tier 2: Runtime pin management capability.
-    ///
-    /// Returns true if this node supports adding/removing pins while running.
-    /// Nodes that return true must handle PinManagementMessage messages.
-    ///
-    /// Default implementation returns false (static pins after init).
     fn supports_dynamic_pins(&self) -> bool {
         false
     }
 
-    /// The main actor loop for the node. The engine will spawn this method as a task.
     async fn run(self: Box<Self>, context: NodeContext) -> Result<(), StreamKitError>;
 }
 
-/// A factory function that creates a new instance of a node, accepting optional configuration.
-/// Wrapped in an Arc to make it cloneable.
 pub type NodeFactory = Arc<
     dyn Fn(Option<&serde_json::Value>) -> Result<Box<dyn ProcessorNode>, StreamKitError>
         + Send

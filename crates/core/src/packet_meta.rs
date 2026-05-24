@@ -8,8 +8,7 @@ use ts_rs::TS;
 
 use crate::types::PacketType;
 
-/// Declarative field rule used by compatibility checks.
-/// If `wildcard_value` is present, a field that equals it is treated as "matches anything".
+/// If `wildcard_value` is present, a field equalling it is treated as "matches anything".
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct FieldRule {
@@ -18,8 +17,6 @@ pub struct FieldRule {
     pub wildcard_value: Option<serde_json::Value>,
 }
 
-/// Simple compatibility strategies supported in v1.
-/// This enum is intentionally extensible for future variants (e.g., expressions, ranges).
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -32,29 +29,19 @@ pub enum Compatibility {
     StructFieldWildcard { fields: Vec<FieldRule> },
 }
 
-/// Server-driven metadata for packet types.
-/// Lives next to the PacketType definition (in core) and can be exposed to the UI.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct PacketTypeMeta {
-    /// Variant identifier (e.g., "RawAudio", "EncodedAudio", "Binary", "Any").
     pub id: String,
-    /// Human-friendly default label.
     pub label: String,
-    /// Hex color to use in UIs.
     pub color: String,
-    /// Optional display template for struct payloads. Placeholders are field names,
-    /// optionally with "|*" to indicate wildcard-display (handled on the client).
-    /// Example: "Raw Audio ({sample_rate|*}Hz, {channels|*}ch, {sample_format})"
+    /// Placeholders are field names; "|*" means wildcard-display (client-side).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_template: Option<String>,
-    /// Compatibility strategy for this type.
     pub compatibility: Compatibility,
 }
 
-/// Returns the built-in registry of packet type metadata.
-/// This returns a shared, lazily-initialized slice to avoid allocations in hot paths
-/// (e.g., runtime validation in the dynamic engine).
+/// Lazily-initialized; shared to avoid allocations in hot paths.
 pub fn packet_type_registry() -> &'static [PacketTypeMeta] {
     static REGISTRY: OnceLock<Vec<PacketTypeMeta>> = OnceLock::new();
     REGISTRY.get_or_init(|| {
@@ -182,7 +169,6 @@ pub fn packet_type_registry() -> &'static [PacketTypeMeta] {
     })
 }
 
-/// Extracts the PacketType variant id and an optional JSON payload for struct variants.
 fn to_variant_and_payload(packet_type: &PacketType) -> (String, Option<serde_json::Value>) {
     let json = serde_json::to_value(packet_type).unwrap_or(serde_json::Value::Null);
     match json {
@@ -203,17 +189,10 @@ fn to_variant_and_payload(packet_type: &PacketType) -> (String, Option<serde_jso
     }
 }
 
-/// Finds metadata by id.
 fn find_meta<'a>(registry: &'a [PacketTypeMeta], id: &str) -> Option<&'a PacketTypeMeta> {
     registry.iter().find(|m| m.id == id)
 }
 
-/// Generic, server-side compatibility check used by both stateless and dynamic engines.
-/// v1 rules:
-/// - Any matches anything
-/// - Kinds must match (unless Any)
-/// - Exact: always true when kinds match
-/// - StructFieldWildcard: all fields must be equal unless either side equals wildcard_value
 pub fn can_connect(output: &PacketType, input: &PacketType, registry: &[PacketTypeMeta]) -> bool {
     let (out_id, out_payload) = to_variant_and_payload(output);
     let (in_id, in_payload) = to_variant_and_payload(input);
@@ -260,21 +239,18 @@ pub fn can_connect(output: &PacketType, input: &PacketType, registry: &[PacketTy
                     },
                 };
 
-                // If either equals the wildcard, it matches
                 if let Some(wild) = wildcard {
                     if av == wild || bv == wild {
                         return true;
                     }
                 }
 
-                // Otherwise, values must be equal
                 av == bv
             })
         },
     }
 }
 
-/// Convenience helper to test an output type against multiple input types.
 pub fn can_connect_any(
     output: &PacketType,
     inputs: &[PacketType],

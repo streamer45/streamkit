@@ -69,17 +69,14 @@ pub trait MoqGatewayTrait: Send + Sync {
     async fn unregister_route(&self, path_pattern: &str);
 }
 
-/// Global gateway registry - nodes call this to get the gateway
 static GATEWAY: std::sync::OnceLock<Arc<dyn MoqGatewayTrait>> = std::sync::OnceLock::new();
 
-/// Initialize the global MoQ gateway (called by server)
 pub fn init_moq_gateway(gateway: Arc<dyn MoqGatewayTrait>) {
     if GATEWAY.set(gateway).is_err() {
         tracing::warn!("MoQ gateway already initialized");
     }
 }
 
-/// Get the global MoQ gateway (called by nodes)
 pub fn get_moq_gateway() -> Option<Arc<dyn MoqGatewayTrait>> {
     GATEWAY.get().cloned()
 }

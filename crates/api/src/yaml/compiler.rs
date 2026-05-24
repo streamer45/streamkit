@@ -6,11 +6,6 @@ use super::{ClientSection, Needs, NeedsDependency, Step, UserNode, UserPipeline}
 use crate::{Connection, ConnectionMode, EngineMode, Node, Pipeline};
 use indexmap::IndexMap;
 
-/// "Compiles" the user-facing pipeline format into the explicit format the engine requires.
-///
-/// # Errors
-///
-/// Returns an error if a node references a non-existent dependency in its `needs` field.
 pub fn compile(pipeline: UserPipeline) -> Result<Pipeline, String> {
     match pipeline {
         UserPipeline::Steps { name, description, mode, steps, client } => {
@@ -66,10 +61,7 @@ fn is_bidirectional_kind(kind: &str) -> bool {
     BIDIRECTIONAL_NODE_KINDS.contains(&kind)
 }
 
-/// Detect cycles in the dependency graph using DFS.
-///
-/// Cycles that involve bidirectional nodes (like `transport::moq::peer`) are allowed,
-/// as these nodes have separate input/output data paths.
+/// Cycles involving bidirectional nodes (e.g. `transport::moq::peer`) are allowed.
 fn detect_cycles(user_nodes: &IndexMap<String, UserNode>) -> Result<(), String> {
     use std::collections::HashSet;
 

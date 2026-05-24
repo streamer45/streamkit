@@ -45,10 +45,8 @@
 //! registry.register_static(/* ... */);
 //! ```
 
-// Re-export async_trait for use in node implementations
 pub use async_trait::async_trait;
 
-// Module declarations
 pub mod constraints;
 pub mod control;
 pub mod error;
@@ -71,57 +69,29 @@ pub mod timing;
 pub mod types;
 pub mod view_data;
 
-// Convenience re-exports for commonly used types
-// These are the most frequently used types in node implementations
-
-// Error handling
+pub use constraints::{GlobalNodeConstraints, NodeConstraint};
 pub use error::StreamKitError;
-
-// Core node abstractions
+pub use frame_pool::{
+    AudioFramePool, FramePool, PooledFrameData, PooledSamples, PooledVideoData, VideoFramePool,
+};
+pub use helpers::{config_helpers, packet_helpers};
+pub use hints::UpstreamHint;
 pub use node::{
     InitContext, NodeContext, OutputSendError, OutputSender, PipelineMode, ProcessorNode,
     RoutedPacketMessage,
 };
-
-// Registry and factory
-pub use constraints::{GlobalNodeConstraints, NodeConstraint};
-pub use registry::{NodeDefinition, NodeRegistry};
-
-// Resource management
-pub use resource_manager::{Resource, ResourceError, ResourceKey, ResourceManager, ResourcePolicy};
-
-// State tracking
-pub use state::{NodeState, NodeStateUpdate, StopReason};
-
-// Statistics
-pub use stats::{NodeStats, NodeStatsUpdate};
-
-// Telemetry
-pub use telemetry::{TelemetryConfig, TelemetryEmitter, TelemetryEvent};
-
-// View data
-pub use view_data::NodeViewDataUpdate;
-
-// Timing helpers
-pub use timing::*;
-
-// Pin definitions
-pub use hints::UpstreamHint;
-pub use pins::{InputPin, OutputPin, PinCardinality};
-
-// Helper modules (for convenience, maintaining backward compatibility)
-pub use helpers::{config_helpers, packet_helpers};
-pub use state::state_helpers;
-pub use telemetry::telemetry_helpers;
-pub use view_data::view_data_helpers;
-
-// Frame pooling (optional hot-path optimization)
-pub use frame_pool::{
-    AudioFramePool, FramePool, PooledFrameData, PooledSamples, PooledVideoData, VideoFramePool,
-};
-
-// Node buffer configuration
 pub use node_config::{
     get_codec_channel_capacity, get_demuxer_buffer_size, get_moq_peer_channel_capacity,
     get_stream_channel_capacity, set_node_buffer_config, NodeBufferConfig,
 };
+pub use pins::{InputPin, OutputPin, PinCardinality};
+pub use registry::{NodeDefinition, NodeRegistry};
+pub use resource_manager::{Resource, ResourceError, ResourceKey, ResourceManager, ResourcePolicy};
+pub use state::state_helpers;
+pub use state::{NodeState, NodeStateUpdate, StopReason};
+pub use stats::{NodeStats, NodeStatsUpdate};
+pub use telemetry::telemetry_helpers;
+pub use telemetry::{TelemetryConfig, TelemetryEmitter, TelemetryEvent};
+pub use timing::*;
+pub use view_data::view_data_helpers;
+pub use view_data::NodeViewDataUpdate;

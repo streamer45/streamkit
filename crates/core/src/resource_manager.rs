@@ -139,7 +139,6 @@ pub struct ResourceManager {
 }
 
 impl ResourceManager {
-    /// Create a new ResourceManager with the specified policy.
     pub fn new(policy: ResourcePolicy) -> Self {
         Self { resources: Arc::new(Mutex::new(HashMap::new())), policy }
     }
@@ -194,7 +193,6 @@ impl ResourceManager {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<Arc<dyn Resource>, ResourceError>>,
     {
-        // Fast path: resource already exists
         {
             let mut cache = self.resources.lock().await;
             if let Some(entry) = cache.get_mut(&key) {
@@ -203,20 +201,17 @@ impl ResourceManager {
             }
         }
 
-        // Slow path: create new resource
         let resource = factory().await?;
 
-        // Check if we need to evict resources due to memory limit
         if !self.policy.keep_loaded {
             if let Some(max_mb) = self.policy.max_memory_mb {
                 self.evict_if_needed(max_mb, resource.size_bytes()).await;
             }
         }
 
-        // Insert into cache
         let mut cache = self.resources.lock().await;
 
-        // Double-check: another task might have created it while we were waiting
+        // Re-check: another task may have created it while we awaited the factory.
         if let Some(entry) = cache.get_mut(&key) {
             entry.last_accessed = std::time::Instant::now();
             return Ok(entry.resource.clone());
@@ -230,16 +225,11 @@ impl ResourceManager {
         Ok(resource)
     }
 
-    /// Evict least-recently-used resources until memory usage is below the limit.
-    ///
-    /// This method minimizes lock contention by:
-    /// 1. Taking a short lock to collect metadata and calculate eviction candidates
-    /// 2. Sorting candidates outside the lock (O(n log n) operation)
-    /// 3. Re-acquiring the lock only to perform the actual removals
+    /// LRU eviction split into phases to minimise lock contention.
     async fn evict_if_needed(&self, max_mb: usize, new_resource_bytes: usize) {
         let max_bytes = max_mb * 1024 * 1024;
 
-        // Phase 1: Collect metadata under lock (fast)
+        // Phase 1: collect metadata under lock.
         let (current_bytes, entries) = {
             let cache = self.resources.lock().await;
             let current_bytes: usize = cache.values().map(|e| e.resource.size_bytes()).sum();
@@ -260,11 +250,11 @@ impl ResourceManager {
             (current_bytes, entries)
         };
 
-        // Phase 2: Sort outside the lock (potentially expensive for large caches)
+        // Phase 2: sort outside the lock.
         let mut entries = entries;
         entries.sort_by_key(|(_, accessed, _)| *accessed);
 
-        // Phase 3: Determine which keys to evict (no lock needed)
+        // Phase 3: pick eviction candidates (no lock).
         let target_freed = (current_bytes + new_resource_bytes).saturating_sub(max_bytes);
         let mut bytes_to_free = 0;
         let keys_to_evict: Vec<_> = entries
@@ -283,7 +273,7 @@ impl ResourceManager {
             return;
         }
 
-        // Phase 4: Perform evictions under lock (fast - just HashMap removals)
+        // Phase 4: perform evictions under lock.
         {
             let mut cache = self.resources.lock().await;
             for (key, size) in keys_to_evict {
@@ -318,7 +308,6 @@ impl ResourceManager {
         }
     }
 
-    /// Get statistics about currently loaded resources.
     pub async fn stats(&self) -> ResourceStats {
         let cache = self.resources.lock().await;
 
@@ -345,20 +334,13 @@ impl ResourceManager {
     }
 }
 
-/// Statistics about currently loaded resources.
 #[derive(Debug, Clone)]
 pub struct ResourceStats {
-    /// Total number of cached resources
     pub total_resources: usize,
-
-    /// Total memory footprint in bytes
     pub total_size_bytes: usize,
-
-    /// Count of resources by type
     pub resource_types: HashMap<String, usize>,
 }
 
-/// Errors that can occur during resource management.
 #[derive(Debug, thiserror::Error)]
 pub enum ResourceError {
     #[error("Resource not found: {0}")]
@@ -371,7 +353,6 @@ pub enum ResourceError {
     Other(String),
 }
 
-/// Type alias for boxed async resource factories.
 pub type ResourceFactory = Arc<
     dyn Fn() -> Pin<Box<dyn Future<Output = Result<Arc<dyn Resource>, ResourceError>> + Send>>
         + Send
