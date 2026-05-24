@@ -8,8 +8,6 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-// ── Defaults ────────────────────────────────────────────────────────────────
-
 /// Maximum allowed dimension (width or height) — 8K.
 /// Guards against config typos that would attempt multi-GB buffer allocations.
 pub const MAX_DIMENSION: u32 = 7680;
@@ -37,8 +35,6 @@ const fn default_keyframe_interval() -> u32 {
 const fn default_static_ui() -> bool {
     false
 }
-
-// ── Configuration ───────────────────────────────────────────────────────────
 
 /// Configuration for the Slint UI video source plugin.
 ///

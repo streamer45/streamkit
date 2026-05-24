@@ -1212,8 +1212,6 @@ mod tests {
         assert_eq!(repr.packet.len, payload.len());
     }
 
-    // ── EncodedVideo codec roundtrip tests ─────────────────────────────
-
     /// `packet_type_to_c` → `packet_type_from_c` must roundtrip all video
     /// codecs through the `custom_type_id` string pointer.
     #[test]
@@ -1291,8 +1289,6 @@ mod tests {
             }
         }
     }
-
-    // ── Zero-copy binary handle tests ──────────────────────────────────
 
     /// Valid `buffer_handle` with invalid `content_type` UTF-8: the handle
     /// must be reclaimed (no leak) even though content_type parsing fails.

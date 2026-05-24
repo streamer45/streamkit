@@ -149,8 +149,6 @@ impl PluginMetadataStorage {
             input_custom_type_ids.push(custom_type_ids);
             input_video_formats.push(video_formats);
         }
-
-        // ── Convert outputs ─────────────────────────────────────────
         let mut c_outputs = Vec::with_capacity(meta.outputs.len());
         let mut output_names = Vec::with_capacity(meta.outputs.len());
         let mut output_audio_formats: Vec<Option<CAudioFormat>> =
@@ -223,8 +221,6 @@ impl PluginMetadataStorage {
 
             c_outputs.push(COutputPin { name, produces_type: type_info });
         }
-
-        // ── Convert categories ──────────────────────────────────────
         let mut category_strings = Vec::new();
         let mut category_ptrs = Vec::new();
 
@@ -233,8 +229,6 @@ impl PluginMetadataStorage {
             category_ptrs.push(c_str.as_ptr());
             category_strings.push(c_str);
         }
-
-        // ── Scalar fields ───────────────────────────────────────────
         let kind = ffi_guard::cstring_lossy(meta.kind.as_str(), "node kind");
         let description =
             meta.description.as_ref().map(|d| ffi_guard::cstring_lossy(d.as_str(), "description"));

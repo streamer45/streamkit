@@ -87,14 +87,12 @@ impl NativeProcessorNode for GainPlugin {
     fn process(&mut self, _pin: &str, packet: Packet, output: &OutputSender) -> Result<(), String> {
         match packet {
             Packet::Audio(mut frame) => {
-                // Apply gain to all samples using copy-on-write
                 for sample in frame.make_samples_mut() {
                     *sample *= self.gain;
                 }
                 output.send("out", &Packet::Audio(frame))?;
                 Ok(())
             }
-            // We only accept audio packets (enforced by type system)
             _ => Err("Gain plugin only accepts audio packets".to_string()),
         }
     }
@@ -114,5 +112,4 @@ fn db_to_linear(db: f32) -> f32 {
     10.0_f32.powf(db / 20.0)
 }
 
-// Export the plugin entry point
 native_plugin_entry!(GainPlugin);

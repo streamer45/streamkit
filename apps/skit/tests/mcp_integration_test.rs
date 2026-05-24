@@ -196,10 +196,6 @@ fn extract_sse_json(body_text: &str) -> serde_json::Value {
     serde_json::from_str(json_str).expect("invalid JSON in SSE data")
 }
 
-// -----------------------------------------------------------------------
-// Tests
-// -----------------------------------------------------------------------
-
 #[tokio::test]
 async fn mcp_unauthenticated_request_is_rejected() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -394,10 +390,6 @@ async fn mcp_config_endpoint_validation() {
     assert!(mcp_config.validate().is_ok());
 }
 
-// -----------------------------------------------------------------------
-// Positive-path tests
-// -----------------------------------------------------------------------
-
 /// Minimal valid pipeline YAML for dynamic sessions.
 const PASSTHROUGH_YAML: &str = "nodes:\n  pass:\n    kind: core::passthrough";
 
@@ -452,7 +444,6 @@ async fn mcp_create_list_get_destroy_session_round_trip() {
     let client = reqwest::Client::new();
     let session_id = init_mcp_session(&client, addr, &token).await;
 
-    // 1. Create a session
     let create = json!({
         "jsonrpc": "2.0",
         "id": 2,
@@ -479,7 +470,6 @@ async fn mcp_create_list_get_destroy_session_round_trip() {
     assert_eq!(created["name"].as_str(), Some("mcp-roundtrip-test"));
     assert!(created["created_at"].as_str().is_some());
 
-    // 2. List sessions — our session should appear
     let list = json!({
         "jsonrpc": "2.0",
         "id": 3,
@@ -501,7 +491,6 @@ async fn mcp_create_list_get_destroy_session_round_trip() {
         "created session not found in list_sessions"
     );
 
-    // 3. Get pipeline — should return the passthrough node
     let get = json!({
         "jsonrpc": "2.0",
         "id": 4,
@@ -522,7 +511,6 @@ async fn mcp_create_list_get_destroy_session_round_trip() {
     let pipeline: serde_json::Value = serde_json::from_str(text).expect("expected JSON");
     assert!(pipeline["nodes"]["pass"].is_object(), "expected 'pass' node in pipeline");
 
-    // 4. Destroy the session
     let destroy = json!({
         "jsonrpc": "2.0",
         "id": 5,
@@ -545,7 +533,6 @@ async fn mcp_create_list_get_destroy_session_round_trip() {
     let destroyed: serde_json::Value = serde_json::from_str(text).expect("expected JSON");
     assert_eq!(destroyed["session_id"].as_str(), Some(skit_session_id));
 
-    // 5. Verify session is gone
     let res = mcp_post_with_session(&client, addr, &list, &token, &session_id).await;
     assert_eq!(res.status(), StatusCode::OK);
 
@@ -558,10 +545,6 @@ async fn mcp_create_list_get_destroy_session_round_trip() {
         "destroyed session should not appear in list_sessions"
     );
 }
-
-// -----------------------------------------------------------------------
-// generate_oneshot_command tests
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn mcp_generate_oneshot_command_curl() {
@@ -715,10 +698,6 @@ async fn mcp_generate_oneshot_command_permission_denied() {
     );
 }
 
-// -----------------------------------------------------------------------
-// Prompt tests
-// -----------------------------------------------------------------------
-
 #[tokio::test]
 async fn mcp_list_prompts_returns_both_prompts() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -843,7 +822,6 @@ async fn mcp_get_prompt_debug_pipeline_with_session() {
     let client = reqwest::Client::new();
     let session_id = init_mcp_session(&client, addr, &token).await;
 
-    // 1. Create a session to debug
     let create = json!({
         "jsonrpc": "2.0",
         "id": 2,
@@ -867,7 +845,6 @@ async fn mcp_get_prompt_debug_pipeline_with_session() {
     let created: serde_json::Value = serde_json::from_str(text).expect("expected JSON");
     let skit_session_id = created["session_id"].as_str().expect("missing session_id");
 
-    // 2. Call debug_pipeline prompt with the session ID
     let get = json!({
         "jsonrpc": "2.0",
         "id": 3,
@@ -897,7 +874,6 @@ async fn mcp_get_prompt_debug_pipeline_with_session() {
     assert!(text.contains("Diagnostic Checklist"), "missing diagnostic checklist");
     assert!(text.contains("core::passthrough"), "missing passthrough node reference");
 
-    // 3. Clean up — destroy the session
     let destroy = json!({
         "jsonrpc": "2.0",
         "id": 4,
@@ -967,11 +943,7 @@ async fn mcp_get_prompt_unknown_returns_error() {
     assert!(!error.is_null(), "expected error for unknown prompt, got: {body}");
 }
 
-// -----------------------------------------------------------------------
-// Batch & Tune tests
-// -----------------------------------------------------------------------
-
-/// Helper: create a StreamKit session via MCP and return its session_id.
+/// Create a StreamKit session via MCP and return its session_id.
 async fn create_skit_session(
     client: &reqwest::Client,
     addr: SocketAddr,
@@ -1301,10 +1273,6 @@ async fn mcp_modify_sessions_permission_denied() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Extended batch mutation tests (connect, disconnect, removenode, multi-op)
-// ---------------------------------------------------------------------------
-
 /// Two-node pipeline for connection tests.
 const TWO_NODE_YAML: &str =
     "nodes:\n  src:\n    kind: core::passthrough\n  dst:\n    kind: core::passthrough";
@@ -1319,7 +1287,6 @@ async fn mcp_apply_batch_connect_and_disconnect() {
     let skit_session =
         create_skit_session(&client, addr, &token, &mcp_session, TWO_NODE_YAML).await;
 
-    // 1. Connect src → dst
     let connect = json!({
         "jsonrpc": "2.0",
         "id": 2,
@@ -1365,7 +1332,6 @@ async fn mcp_apply_batch_connect_and_disconnect() {
     assert_eq!(conns[0]["from_node"], "src");
     assert_eq!(conns[0]["to_node"], "dst");
 
-    // 2. Disconnect src → dst
     let disconnect = json!({
         "jsonrpc": "2.0",
         "id": 4,
@@ -1420,7 +1386,6 @@ async fn mcp_apply_batch_remove_node() {
     let skit_session =
         create_skit_session(&client, addr, &token, &mcp_session, TWO_NODE_YAML).await;
 
-    // Remove "dst" node
     let remove = json!({
         "jsonrpc": "2.0",
         "id": 2,
@@ -1536,10 +1501,6 @@ async fn mcp_apply_batch_multi_operation() {
     });
     let _ = mcp_post_with_session(&client, addr, &destroy, &token, &mcp_session).await;
 }
-
-// ---------------------------------------------------------------------------
-// update_pipeline tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn mcp_update_pipeline_add_node() {
@@ -1966,10 +1927,6 @@ async fn mcp_update_pipeline_permission_denied() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// update_pipeline: mode-only and params-only changes
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn mcp_update_pipeline_mode_change() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -1980,7 +1937,6 @@ async fn mcp_update_pipeline_mode_change() {
     let skit_session =
         create_skit_session(&client, addr, &token, &mcp_session, TWO_NODE_YAML).await;
 
-    // Connect src→dst with default (reliable) mode.
     let connect = json!({
         "jsonrpc": "2.0",
         "id": 2,
@@ -2210,7 +2166,6 @@ async fn mcp_update_pipeline_both_endpoints_replaced() {
     let skit_session =
         create_skit_session(&client, addr, &token, &mcp_session, TWO_NODE_YAML).await;
 
-    // Connect src→dst.
     let connect = json!({
         "jsonrpc": "2.0",
         "id": 2,
@@ -2291,10 +2246,6 @@ async fn mcp_update_pipeline_both_endpoints_replaced() {
     });
     let _ = mcp_post_with_session(&client, addr, &destroy, &token, &mcp_session).await;
 }
-
-// ---------------------------------------------------------------------------
-// Plugin & node-definition tools
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn mcp_list_plugins_returns_results() {
@@ -2394,10 +2345,6 @@ async fn mcp_get_node_definition_not_found() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// STDIO transport tests
-// ---------------------------------------------------------------------------
-
 /// Spawn the `skit mcp` binary as a child process and verify it responds to
 /// a JSON-RPC `initialize` request over STDIO.
 #[tokio::test]
@@ -2421,7 +2368,6 @@ async fn test_mcp_stdio_initialize() {
     let stdout = child.stdout.take().expect("Failed to open stdout");
     let mut reader = BufReader::new(stdout);
 
-    // Send a JSON-RPC initialize request (MCP protocol).
     let init_request = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -2440,7 +2386,6 @@ async fn test_mcp_stdio_initialize() {
     stdin.write_all(b"\n").await.unwrap();
     stdin.flush().await.unwrap();
 
-    // Read the response line (with a timeout).
     let mut response_line = String::new();
     let read_result =
         tokio::time::timeout(Duration::from_secs(30), reader.read_line(&mut response_line)).await;
@@ -2502,7 +2447,6 @@ async fn test_mcp_stdio_tool_call() {
     let stdout = child.stdout.take().expect("Failed to open stdout");
     let mut reader = BufReader::new(stdout);
 
-    // 1. Initialize
     let init_request = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -2525,7 +2469,7 @@ async fn test_mcp_stdio_tool_call() {
         .expect("Failed to read initialize response");
     assert!(read_result > 0, "Empty initialize response");
 
-    // 2. Send initialized notification (required by MCP protocol)
+    // Required by MCP protocol before issuing tool calls.
     let initialized = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "notifications/initialized"
@@ -2535,7 +2479,6 @@ async fn test_mcp_stdio_tool_call() {
     stdin.write_all(b"\n").await.unwrap();
     stdin.flush().await.unwrap();
 
-    // 3. Call list_nodes tool
     let tool_call = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 2,
@@ -2577,10 +2520,6 @@ async fn test_mcp_stdio_tool_call() {
 
     child.kill().await.ok();
 }
-
-// -----------------------------------------------------------------------
-// get_logs tests
-// -----------------------------------------------------------------------
 
 /// Start a test server with MCP enabled, built-in auth, and file logging
 /// enabled pointing at a temp file.
@@ -2787,10 +2726,6 @@ async fn mcp_get_logs_file_logging_disabled() {
     );
 }
 
-// -----------------------------------------------------------------------
-// Resource tests
-// -----------------------------------------------------------------------
-
 const SAMPLE_ONESHOT_YAML: &str = "\
 name: Test Oneshot Pipeline\n\
 description: A sample oneshot pipeline for testing\n\
@@ -2815,7 +2750,6 @@ async fn start_mcp_server_with_samples(
     let addr = listener.local_addr().unwrap();
     let temp_dir = TempDir::new().unwrap();
 
-    // Create sample pipeline files in the temp dir
     let samples_dir = temp_dir.path().join("samples");
     let oneshot_dir = samples_dir.join("oneshot");
     let dynamic_dir = samples_dir.join("dynamic");
@@ -3045,10 +2979,6 @@ async fn mcp_read_resource_rejects_path_traversal() {
         );
     }
 }
-
-// -----------------------------------------------------------------------
-// list_samples / get_server_info tests
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn mcp_list_samples_returns_pipelines() {

@@ -186,15 +186,11 @@ test.describe('Convert - Transcode to S3 Pipeline', () => {
         headers: authHeaders,
       }
     );
-
-    // --- Verify HTTP response ---
     expect(result.status, `Pipeline request failed with status ${result.status}`).toBe(200);
     expect(result.contentType, `Expected audio content type, got: ${result.contentType}`).toContain(
       'audio/'
     );
     expect(result.bodySize, 'Response body should contain audio data').toBeGreaterThan(0);
-
-    // --- Verify S3 upload ---
     // The passthrough node writes data to S3 as it flows through.  The S3
     // multipart upload may still be finalizing (close()) shortly after the
     // HTTP response completes, so allow a brief retry window.

@@ -333,8 +333,6 @@ impl OutputSender {
         unsafe { result_from_c(result) }
     }
 
-    // ── Frame pool allocation ─────────────────────────────────────────────
-
     /// Allocate a video buffer from the host's frame pool.
     ///
     /// Returns `None` if the host has no video pool or allocation fails.
@@ -1131,8 +1129,6 @@ macro_rules! native_source_plugin_entry {
             })
         }
 
-        // ── Instance lifecycle ──────────────────────────────────────────
-
         extern "C" fn __plugin_create_instance(
             params: *const std::os::raw::c_char,
             log_callback: $crate::types::CLogCallback,
@@ -1172,8 +1168,6 @@ macro_rules! native_source_plugin_entry {
                 }
             })
         }
-
-        // ── Source-specific entry points ─────────────────────────────────
 
         extern "C" fn __plugin_get_source_config(
             handle: $crate::types::CPluginHandle,
@@ -1225,8 +1219,6 @@ macro_rules! native_source_plugin_entry {
             })
         }
 
-        // ── No-op processor stubs (required by CNativePluginAPI) ────────
-
         extern "C" fn __plugin_process_packet_noop(
             _handle: $crate::types::CPluginHandle,
             _input_pin: *const std::os::raw::c_char,
@@ -1247,8 +1239,6 @@ macro_rules! native_source_plugin_entry {
         ) -> $crate::types::CResult {
             $crate::ffi_guard::guard_result(|| $crate::types::CResult::success())
         }
-
-        // ── Upstream hint delivery (v5) ─────────────────────────────────
 
         extern "C" fn __plugin_on_upstream_hint(
             handle: $crate::types::CPluginHandle,
@@ -1282,8 +1272,6 @@ macro_rules! native_source_plugin_entry {
                 $crate::types::CResult::success()
             })
         }
-
-        // ── Shared ──────────────────────────────────────────────────────
 
         extern "C" fn __plugin_update_params(
             handle: $crate::types::CPluginHandle,

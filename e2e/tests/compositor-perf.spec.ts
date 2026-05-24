@@ -36,10 +36,6 @@ import {
 } from './perf-helpers';
 import { WEBCAM_PIP_YAML } from './compositor-fixtures';
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 /**
  * Simulate dragging a Radix slider thumb horizontally by `deltaX` pixels.
  * The thumb is located via its `role="slider"` within the given container.
@@ -71,10 +67,6 @@ async function dragSliderThumb(
   await page.mouse.up();
 }
 
-// ---------------------------------------------------------------------------
-// Test
-// ---------------------------------------------------------------------------
-
 test.describe('Compositor Slider Perf — Cascade Re-render Budget', () => {
   let collector: ConsoleErrorCollector;
   let sessionId: string | null = null;
@@ -90,8 +82,6 @@ test.describe('Compositor Slider Perf — Cascade Re-render Budget', () => {
   }) => {
     // This test involves API session creation + multiple slider interactions.
     test.setTimeout(120_000);
-
-    // ── 1. Create Webcam PiP session via API ────────────────────────────
     //
     // Using the API avoids the stream view flow and MoQ WebTransport
     // connection, which is unreliable in headless CI environments.
@@ -117,8 +107,6 @@ test.describe('Compositor Slider Perf — Cascade Re-render Budget', () => {
     expect(sessionId).toBeTruthy();
     await apiContext.dispose();
 
-    // ── 2. Navigate to monitor view ─────────────────────────────────────
-
     await page.goto('/monitor');
     await ensureLoggedIn(page);
     if (!page.url().includes('/monitor')) {
@@ -142,8 +130,6 @@ test.describe('Compositor Slider Perf — Cascade Re-render Budget', () => {
       timeout: 15_000,
     });
 
-    // ── 3. Verify dev-mode profiler is available ────────────────────────
-
     const hasPerfData = await page.evaluate(() => {
       const w = window as Window & {
         __PERF_DATA__?: unknown;
@@ -158,8 +144,6 @@ test.describe('Compositor Slider Perf — Cascade Re-render Budget', () => {
         'window.__PERF_DATA__ not found — test requires the Vite dev server (just ui)'
       );
     }
-
-    // ── 4. Locate compositor node and its layer list ────────────────────
 
     // The compositor node is the React Flow node containing "Compositor".
     // Wait for graph to settle before measuring perf data.
@@ -193,8 +177,6 @@ test.describe('Compositor Slider Perf — Cascade Re-render Budget', () => {
 
     console.log(`Found ${availableLayers.length} layer(s): ${availableLayers.join(', ')}`);
 
-    // ── 5. Measure slider interactions per layer ────────────────────────
-
     // Reset perf data before our measurement window.
     await resetPerfData(page);
 
@@ -204,8 +186,6 @@ test.describe('Compositor Slider Perf — Cascade Re-render Budget', () => {
       await layerDiv.first().click();
       // Wait for the inspector panel (with sliders) to become visible.
       await expect(compositorNode.getByRole('slider').first()).toBeVisible({ timeout: 3_000 });
-
-      // --- Opacity slider ---
       // The inspector shows an "Opacity" label followed by a Radix slider
       // (role="slider").  We locate the innermost div containing "Opacity"
       // that also holds a slider thumb.
@@ -228,8 +208,6 @@ test.describe('Compositor Slider Perf — Cascade Re-render Budget', () => {
         await dragSliderThumb(page, opacitySection, -40);
         await page.waitForTimeout(100);
       }
-
-      // --- Rotation slider ---
       // Similar approach: find the section labelled "Rotation" that
       // contains a slider.  (Rotation also has preset buttons like
       // 0°/90°/180°/270° but we specifically target the slider.)
@@ -252,8 +230,6 @@ test.describe('Compositor Slider Perf — Cascade Re-render Budget', () => {
         await page.waitForTimeout(100);
       }
     }
-
-    // ── 6. Capture and assert render budgets ────────────────────────────
 
     const snapshot = await capturePerfData(page);
     console.log('\n' + formatPerfSummary(snapshot));
@@ -297,8 +273,6 @@ test.describe('Compositor Slider Perf — Cascade Re-render Budget', () => {
       }
     }
 
-    // ── 7. Console error check ──────────────────────────────────────────
-
     const unexpected = collector.getUnexpected(MOQ_BENIGN_PATTERNS);
     // Log but don't fail — monitor view may have transient warnings during
     // session state transitions that aren't perf-related.
@@ -306,8 +280,6 @@ test.describe('Compositor Slider Perf — Cascade Re-render Budget', () => {
       console.warn('Unexpected console errors (non-fatal):', unexpected);
     }
   });
-
-  // ── Cleanup ─────────────────────────────────────────────────────────────
 
   test.afterEach(async ({ baseURL }) => {
     if (sessionId) {

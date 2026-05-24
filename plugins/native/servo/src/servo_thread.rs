@@ -332,8 +332,6 @@ fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
             },
         }
     }
-
-    // ── Graceful shutdown ───────────────────────────────────────────────
     //
     // When all senders are dropped the recv() loop exits.  We must drop
     // every WebView *before* dropping the Servo instance so that each
@@ -405,7 +403,6 @@ fn handle_register(
     config: ServoConfig,
     result_tx: std::sync::mpsc::SyncSender<ServoThreadResult>,
 ) {
-    // Create the process-global Servo instance on first use.
     let servo_ref = servo.get_or_insert_with(|| {
         let prefs = servo::Preferences {
             network_http_proxy_uri: String::new(),

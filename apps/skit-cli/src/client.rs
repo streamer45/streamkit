@@ -81,17 +81,12 @@ async fn recv_response_ignoring_events(
                         if cid == expected_correlation_id {
                             return Ok(response);
                         }
-                        // Ignore responses for other requests - continue to next iteration
                     } else {
-                        // No correlation id - accept it
                         return Ok(response);
                     }
                 }
-                // Ignore events and unknown message types - continue to next iteration
             },
-            Some(Ok(_)) => {
-                // Non-text message; ignore and continue
-            },
+            Some(Ok(_)) => {},
             Some(Err(e)) => return Err(e.into()),
             None => return Err("WebSocket closed before receiving response".into()),
         }
@@ -225,7 +220,6 @@ pub async fn process_oneshot_with_client(
         }
     }
 
-    // Read pipeline configuration
     debug!("Reading pipeline configuration from {pipeline_path}");
     let pipeline_content = fs::read_to_string(pipeline_path).await?;
 
@@ -270,7 +264,6 @@ pub async fn process_oneshot_with_client(
 
     info!("Received response with content-type: {content_type}");
 
-    // Stream response to output file
     debug!("Writing response to {output_path}");
     let mut file = tokio::fs::File::create(output_path).await?;
     let mut stream = response.bytes_stream();
@@ -330,10 +323,8 @@ pub async fn create_session(
         "Creating dynamic session via HTTP POST"
     );
 
-    // Read pipeline YAML content
     let pipeline_content = fs::read_to_string(pipeline_path).await?;
 
-    // Prepare HTTP request body
     let request_body = CreateSessionRequest { name: name.clone(), yaml: pipeline_content };
 
     let client = reqwest::Client::new();

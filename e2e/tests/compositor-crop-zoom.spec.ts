@@ -25,10 +25,6 @@ import {
 } from './test-helpers';
 import { WEBCAM_PIP_CROPPED_YAML } from './compositor-fixtures';
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 /**
  * Navigate to the monitor view, open the first session, wait for the
  * compositor node to render, and return the compositor node locator
@@ -60,10 +56,6 @@ async function setupCompositorView(page: Page) {
   return { compositorNode, canvasInner };
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 test.describe('Compositor Crop & Zoom Controls', () => {
   let collector: ConsoleErrorCollector;
   let sessionId: string | null = null;
@@ -77,8 +69,6 @@ test.describe('Compositor Crop & Zoom Controls', () => {
     baseURL,
   }) => {
     test.setTimeout(120_000);
-
-    // ── 1. Create session via API with crop/zoom on in_1 ─────────────────
 
     const apiContext = await request.newContext({
       baseURL: baseURL!,
@@ -100,8 +90,6 @@ test.describe('Compositor Crop & Zoom Controls', () => {
     expect(sessionId).toBeTruthy();
     await apiContext.dispose();
 
-    // ── 2. Navigate to monitor view, find compositor node ────────────────
-
     const { compositorNode } = await setupCompositorView(page);
 
     // Verify expected layers are visible in the layer list.
@@ -111,8 +99,6 @@ test.describe('Compositor Crop & Zoom Controls', () => {
     await expect(inputLayer0).toBeVisible({ timeout: 5_000 });
     await expect(inputLayer1).toBeVisible({ timeout: 5_000 });
     await expect(textLayer).toBeVisible({ timeout: 5_000 });
-
-    // ── 3. Select a video layer — Crop & Zoom section should appear ──────
 
     await inputLayer1.click();
 
@@ -137,8 +123,6 @@ test.describe('Compositor Crop & Zoom Controls', () => {
     await expect(panXSlider).not.toHaveAttribute('data-disabled', '');
     await expect(tiltYSlider).not.toHaveAttribute('data-disabled', '');
 
-    // ── 4. Reset button restores defaults ────────────────────────────────
-
     const resetButton = compositorNode.getByTestId('crop-zoom-reset');
     await expect(resetButton).toBeVisible();
     await resetButton.click();
@@ -150,30 +134,22 @@ test.describe('Compositor Crop & Zoom Controls', () => {
     await expect(panXSlider).toHaveAttribute('data-disabled', '', { timeout: 3_000 });
     await expect(tiltYSlider).toHaveAttribute('data-disabled', '', { timeout: 3_000 });
 
-    // ── 5. Select first video layer — Crop & Zoom should also appear ─────
-
     await inputLayer0.click();
     await expect(cropSection).toBeVisible({ timeout: 5_000 });
 
     // in_0 has default crop (zoom=1.0), so pan/tilt should be disabled.
     await expect(zoomValue).toHaveText('1.0×', { timeout: 3_000 });
 
-    // ── 6. Select text overlay — Crop & Zoom should NOT appear ───────────
-
     await textLayer.click();
 
     // The crop section should disappear for text overlays.
     await expect(cropSection).not.toBeVisible({ timeout: 5_000 });
-
-    // ── 7. Console error check ──────────────────────────────────────────
 
     const unexpected = collector.getUnexpected(MOQ_BENIGN_PATTERNS);
     if (unexpected.length > 0) {
       console.warn('Unexpected console errors (non-fatal):', unexpected);
     }
   });
-
-  // ── Cleanup ─────────────────────────────────────────────────────────────
 
   test.afterEach(async ({ baseURL }) => {
     if (sessionId) {

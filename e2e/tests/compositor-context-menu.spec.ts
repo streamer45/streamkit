@@ -26,10 +26,6 @@ import {
 } from './test-helpers';
 import { WEBCAM_PIP_YAML } from './compositor-fixtures';
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 test.describe('Compositor Context Menu', () => {
   let collector: ConsoleErrorCollector;
   let sessionId: string | null = null;
@@ -43,8 +39,6 @@ test.describe('Compositor Context Menu', () => {
     baseURL,
   }) => {
     test.setTimeout(120_000);
-
-    // ── 1. Create session via API ────────────────────────────────────────
 
     const apiContext = await request.newContext({
       baseURL: baseURL!,
@@ -65,8 +59,6 @@ test.describe('Compositor Context Menu', () => {
     sessionId = createData.session_id;
     expect(sessionId).toBeTruthy();
     await apiContext.dispose();
-
-    // ── 2. Navigate to monitor view, find compositor node ────────────────
 
     await page.goto('/monitor');
     await ensureLoggedIn(page);
@@ -89,14 +81,10 @@ test.describe('Compositor Context Menu', () => {
     const canvasInner = compositorNode.locator('[data-canvas-width]');
     await expect(canvasInner).toBeVisible({ timeout: 5_000 });
 
-    // ── 3. Verify layer list items exist ─────────────────────────────────
-
     const textLayer = compositorNode.getByText('Text 0', { exact: true }).first();
     const inputLayer = compositorNode.getByText('Input 1', { exact: true }).first();
     await expect(textLayer).toBeVisible({ timeout: 5_000 });
     await expect(inputLayer).toBeVisible({ timeout: 5_000 });
-
-    // ── 4. Right-click a video layer → context menu appears ─────────────
 
     // Find the "in_1" LayerBox on the canvas to right-click on it.
     const videoLayerBox = canvasInner.locator('.nodrag.nopan').filter({ hasText: 'in_1' }).first();
@@ -119,12 +107,8 @@ test.describe('Compositor Context Menu', () => {
     // Video layers should NOT have a "Delete" option.
     await expect(page.getByTestId('ctx-delete')).not.toBeVisible();
 
-    // ── 5. Dismiss with Escape ──────────────────────────────────────────
-
     await page.keyboard.press('Escape');
     await expect(contextMenu).not.toBeVisible({ timeout: 3_000 });
-
-    // ── 6. Right-click a text layer → shows Delete option ───────────────
 
     // Select text layer first.
     await textLayer.click();
@@ -139,14 +123,10 @@ test.describe('Compositor Context Menu', () => {
     // Text layers should have "Delete" option.
     await expect(page.getByTestId('ctx-delete')).toBeVisible();
 
-    // ── 7. Click "Bring to Front" action ────────────────────────────────
-
     await page.getByTestId('ctx-bring-to-front').click();
 
     // Menu should close after clicking an action.
     await expect(contextMenu).not.toBeVisible({ timeout: 3_000 });
-
-    // ── 8. Right-click preserves selection (focus loss fix) ─────────────
 
     // Select "Input 1" from layer list.
     await inputLayer.click();
@@ -163,8 +143,6 @@ test.describe('Compositor Context Menu', () => {
     await page.keyboard.press('Escape');
     await expect(contextMenu).not.toBeVisible({ timeout: 3_000 });
 
-    // ── 9. Delete text overlay via context menu ─────────────────────────
-
     // Select text layer.
     await textLayer.click();
 
@@ -179,15 +157,11 @@ test.describe('Compositor Context Menu', () => {
       timeout: 5_000,
     });
 
-    // ── 10. Console error check ─────────────────────────────────────────
-
     const unexpected = collector.getUnexpected(MOQ_BENIGN_PATTERNS);
     if (unexpected.length > 0) {
       console.warn('Unexpected console errors (non-fatal):', unexpected);
     }
   });
-
-  // ── Cleanup ─────────────────────────────────────────────────────────────
 
   test.afterEach(async ({ baseURL }) => {
     if (sessionId) {

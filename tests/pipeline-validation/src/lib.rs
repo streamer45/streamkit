@@ -39,8 +39,6 @@ pub struct Expected {
     /// to run. If the node is missing, the test is skipped (returns Ok).
     pub requires_node: Option<String>,
 
-    // --- Video expectations (optional — omit for audio-only tests) ---
-
     /// Expected video codec name as reported by ffprobe (e.g. "vp9", "h264", "av1").
     pub codec_name: Option<String>,
 
@@ -53,8 +51,6 @@ pub struct Expected {
     /// Optional: expected pixel format (e.g. "yuv420p").
     pub pix_fmt: Option<String>,
 
-    // --- Audio expectations (optional — omit for video-only tests) ---
-
     /// Expected audio codec name as reported by ffprobe (e.g. "opus", "mp3", "flac").
     pub audio_codec: Option<String>,
 
@@ -63,8 +59,6 @@ pub struct Expected {
 
     /// Expected number of audio channels (e.g. 2).
     pub channels: Option<u32>,
-
-    // --- Input file (optional — for pipelines that accept file uploads) ---
 
     /// Relative path (from the test directory) to an input file to upload.
     /// If set, the pipeline will be run with a file upload instead of no input.
@@ -223,8 +217,6 @@ pub fn validate_output(output_path: &Path, expected: &Expected) -> Result<(), St
             expected.container_format, format_name
         ));
     }
-
-    // --- Video validation (if video expectations are set) ---
     if let Some(ref expected_codec) = expected.codec_name {
         let video = probe
             .streams
@@ -268,8 +260,6 @@ pub fn validate_output(output_path: &Path, expected: &Expected) -> Result<(), St
             }
         }
     }
-
-    // --- Audio validation (if audio expectations are set) ---
     if let Some(ref expected_audio_codec) = expected.audio_codec {
         let audio = probe
             .streams
@@ -319,5 +309,4 @@ pub fn validate_output(output_path: &Path, expected: &Expected) -> Result<(), St
 
     Ok(())
 }
-
 

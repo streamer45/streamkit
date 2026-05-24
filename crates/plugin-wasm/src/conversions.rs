@@ -363,8 +363,6 @@ mod tests {
         };
         assert_eq!(type_id, "plugin::native::x@1");
     }
-
-    // ── Round-trip edge cases ───────────────────────────────────────────
     //
     // These exercise the boundary conditions that pure-data unit tests above
     // can miss: large payloads, multi-byte UTF-8, and nested custom data.
@@ -462,8 +460,6 @@ mod tests {
         assert_eq!(out.channels, 2);
         assert_eq!(out.samples.as_slice(), &[-1.0, -0.5, 0.0, 0.5, 1.0, 0.123_456_7]);
     }
-
-    // ── Property-style round-trip ────────────────────────────────────────
     //
     // Hand-rolled because `proptest` is not a workspace dependency. A small
     // deterministic LCG drives the input space — failure replays exactly via

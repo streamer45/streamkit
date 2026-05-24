@@ -202,10 +202,8 @@ async fn test_load_native_plugin() {
     };
     let plugin_path = ensure_gain_plugin_built().await;
 
-    // Read plugin file
     let plugin_bytes = fs::read(&plugin_path).await.expect("Failed to read plugin file");
 
-    // Upload plugin
     let form = multipart::Form::new().part(
         "plugin",
         multipart::Part::bytes(plugin_bytes)
@@ -226,7 +224,6 @@ async fn test_load_native_plugin() {
 
     println!("Uploaded plugin: {:?}", summary);
 
-    // Verify plugin metadata
     assert_eq!(summary["kind"], "plugin::native::gain");
     assert_eq!(summary["original_kind"], "gain");
     assert_eq!(summary["plugin_type"], "native");
@@ -235,7 +232,6 @@ async fn test_load_native_plugin() {
 
     println!("✅ Successfully loaded native plugin");
 
-    // List plugins to verify it's loaded
     let list_url = format!("http://{}/api/v1/plugins", server.addr);
     let list_response = client.get(&list_url).send().await.expect("Failed to list plugins");
 
@@ -266,7 +262,6 @@ async fn test_native_plugin_in_pipeline() {
     };
     let plugin_path = ensure_gain_plugin_built().await;
 
-    // Upload plugin
     let plugin_bytes = fs::read(&plugin_path).await.expect("Failed to read plugin file");
     let form = multipart::Form::new().part(
         "plugin",
@@ -283,13 +278,10 @@ async fn test_native_plugin_in_pipeline() {
 
     println!("✅ Uploaded plugin");
 
-    // Create a session with the plugin
-
     let ws_url = format!("ws://{}/api/v1/control", server.addr);
     let (ws_stream, _) = connect_async(&ws_url).await.expect("Failed to connect to WebSocket");
     let (mut write, mut read) = ws_stream.split();
 
-    // Create session
     let create_request = Request {
         message_type: MessageType::Request,
         correlation_id: Some("create-session".to_string()),
@@ -308,7 +300,6 @@ async fn test_native_plugin_in_pipeline() {
 
     println!("✅ Created session: {}", session_id);
 
-    // Add plugin node to pipeline
     let add_node_request = Request {
         message_type: MessageType::Request,
         correlation_id: Some("add-node".to_string()),
@@ -336,7 +327,6 @@ async fn test_native_plugin_in_pipeline() {
 
     wait_for_node_added(&mut read, &session_id, "gain_plugin").await;
 
-    // Get pipeline to verify node was added
     let get_pipeline_request = Request {
         message_type: MessageType::Request,
         correlation_id: Some("get-pipeline".to_string()),
@@ -598,7 +588,6 @@ async fn test_unload_native_plugin() {
     let client = reqwest::Client::new();
     let plugins_url = format!("http://{}/api/v1/plugins", server.addr);
 
-    // Upload plugin
     let plugin_bytes = fs::read(&plugin_path).await.expect("Failed to read plugin file");
     let form = multipart::Form::new().part(
         "plugin",
@@ -611,13 +600,11 @@ async fn test_unload_native_plugin() {
     assert_eq!(response.status(), StatusCode::CREATED);
     println!("✅ Loaded plugin");
 
-    // Verify plugin is listed
     let list_response = client.get(&plugins_url).send().await.expect("Failed to list");
     let plugins: Vec<serde_json::Value> = list_response.json().await.unwrap();
     assert_eq!(plugins.len(), 1);
     println!("✅ Plugin appears in list");
 
-    // Unload plugin (URL-encoded plugin::native::gain)
     let unload_url = format!("http://{}/api/v1/plugins/plugin%3A%3Anative%3A%3Again", server.addr);
     let unload_response = client.delete(&unload_url).send().await.expect("Failed to unload");
     assert_eq!(
@@ -627,13 +614,11 @@ async fn test_unload_native_plugin() {
     );
     println!("✅ Unloaded plugin");
 
-    // Verify plugin is no longer listed
     let list_response = client.get(&plugins_url).send().await.expect("Failed to list");
     let plugins: Vec<serde_json::Value> = list_response.json().await.unwrap();
     assert_eq!(plugins.len(), 0, "Plugin should be unloaded");
     println!("✅ Plugin no longer in list");
 
-    // Verify server is still responsive after unload
     let health_url = format!("http://{}/api/v1/config", server.addr);
     let health_response = client.get(&health_url).send().await.expect("Server not responsive");
     assert!(health_response.status().is_success(), "Server should still be healthy");
@@ -656,7 +641,6 @@ async fn test_reload_native_plugin() {
     let plugins_url = format!("http://{}/api/v1/plugins", server.addr);
     let unload_url = format!("http://{}/api/v1/plugins/plugin%3A%3Anative%3A%3Again", server.addr);
 
-    // First load
     let plugin_bytes = fs::read(&plugin_path).await.expect("Failed to read plugin file");
     let form = multipart::Form::new().part(
         "plugin",
@@ -667,7 +651,6 @@ async fn test_reload_native_plugin() {
     assert_eq!(response.status(), StatusCode::CREATED);
     println!("✅ First load successful");
 
-    // Unload
     let response = client.delete(&unload_url).send().await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     println!("✅ Unload successful");
@@ -708,7 +691,6 @@ async fn test_reload_native_plugin() {
     assert_eq!(response.status(), StatusCode::CREATED);
     println!("✅ Third load successful");
 
-    // Final health check
     let health_url = format!("http://{}/api/v1/config", server.addr);
     let health_response = client.get(&health_url).send().await.unwrap();
     assert!(health_response.status().is_success());
@@ -734,7 +716,6 @@ async fn test_unload_plugin_after_pipeline_use() {
     let client = reqwest::Client::new();
     let plugins_url = format!("http://{}/api/v1/plugins", server.addr);
 
-    // Upload plugin
     let plugin_bytes = fs::read(&plugin_path).await.expect("Failed to read plugin file");
     let form = multipart::Form::new().part(
         "plugin",
@@ -745,12 +726,10 @@ async fn test_unload_plugin_after_pipeline_use() {
     assert_eq!(response.status(), StatusCode::CREATED);
     println!("✅ Loaded plugin");
 
-    // Create session and use plugin
     let ws_url = format!("ws://{}/api/v1/control", server.addr);
     let (ws_stream, _) = connect_async(&ws_url).await.expect("Failed to connect");
     let (mut write, mut read) = ws_stream.split();
 
-    // Create session
     let create_request = Request {
         message_type: MessageType::Request,
         correlation_id: Some("create".to_string()),

@@ -11,7 +11,6 @@ use serde_json::Value;
 use std::sync::Mutex;
 use streamkit_plugin_sdk_wasm as sdk;
 
-// Generate bindings, reusing SDK types for faster compilation
 wit_bindgen::generate!({
     world: "plugin",
     path: "../../../wit",
@@ -22,16 +21,12 @@ wit_bindgen::generate!({
     },
 });
 
-// Import the generated traits
 use exports::streamkit::plugin::node::{Guest, GuestNodeInstance};
 
-// Use SDK types directly
 use sdk::{AudioFormat, InputPin, NodeMetadata, OutputPin, Packet, PacketType, SampleFormat};
 
-// Root type for this plugin export
 struct GainPlugin;
 
-// Per-instance state for a single node instance
 struct GainInstance {
     gain_linear: Mutex<f32>,
 }
@@ -78,7 +73,6 @@ impl Guest for GainPlugin {
 
 impl GuestNodeInstance for GainInstance {
     fn new(params: Option<String>) -> Self {
-        // Parse parameters (expecting {"gain_db": <number>})
         let gain_db = params
             .as_deref()
             .and_then(|params_str| serde_json::from_str::<Value>(params_str).ok())
@@ -107,12 +101,10 @@ impl GuestNodeInstance for GainInstance {
                     .gain_linear
                     .lock()
                     .map_err(|_| "Gain state lock poisoned".to_string())?;
-                // Apply gain to all samples
                 for sample in &mut audio_frame.samples {
                     *sample *= gain;
                 }
 
-                // Send the processed audio to the output
                 sdk::host::send_output("out", &Packet::Audio(audio_frame))?;
                 Ok(())
             }
@@ -152,5 +144,4 @@ impl GuestNodeInstance for GainInstance {
     }
 }
 
-// Export the plugin using the generated macro
 export!(GainPlugin);

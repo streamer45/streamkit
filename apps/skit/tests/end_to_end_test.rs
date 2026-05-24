@@ -20,7 +20,6 @@ use tokio::net::TcpListener;
 use tokio::time::{timeout, Duration};
 
 async fn start_test_server() -> Option<(SocketAddr, tokio::task::JoinHandle<()>)> {
-    // Find an available port by binding to port 0
     let listener = match TcpListener::bind("127.0.0.1:0").await {
         Ok(listener) => listener,
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return None,
@@ -28,13 +27,11 @@ async fn start_test_server() -> Option<(SocketAddr, tokio::task::JoinHandle<()>)
     };
     let addr = listener.local_addr().unwrap();
 
-    // Start server in background using the existing listener
     let server_handle = tokio::spawn(async move {
         let (app, _state) = streamkit_server::server::create_app(Config::default(), None);
         axum::serve(listener, app.into_make_service()).await.unwrap();
     });
 
-    // Give server time to start
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     Some((addr, server_handle))
@@ -44,7 +41,6 @@ async fn start_test_server() -> Option<(SocketAddr, tokio::task::JoinHandle<()>)
 async fn test_double_volume_end_to_end() {
     let _ = tracing_subscriber::fmt::try_init();
 
-    // Start test server
     let Some((addr, _server_handle)) = start_test_server().await else {
         eprintln!("Skipping end-to-end tests: local TCP bind not permitted");
         return;
@@ -89,7 +85,6 @@ async fn test_double_volume_end_to_end() {
 
     let response_body = response.bytes().await.expect("Failed to read response body");
 
-    // Validate the Ogg/Opus file by actually parsing and decoding it
     let cursor = Cursor::new(response_body.as_ref());
     let mut packet_reader = ogg::PacketReader::new(cursor);
 
@@ -97,23 +92,19 @@ async fn test_double_volume_end_to_end() {
     let mut total_samples_decoded = 0;
     let mut packet_count = 0;
 
-    // Read all packets from the Ogg stream
     while let Some(packet) = packet_reader.read_packet().expect("Failed to read Ogg packet") {
         packet_count += 1;
 
-        // Skip the OpusHead header packet
         if packet.data.len() >= 8 && &packet.data[0..8] == b"OpusHead" {
             // Verify OpusHead structure
             assert_eq!(packet.data[8], 1, "Invalid Opus version");
             continue;
         }
 
-        // Skip the OpusTags packet
         if packet.data.len() >= 8 && &packet.data[0..8] == b"OpusTags" {
             continue;
         }
 
-        // Initialize decoder on first audio packet
         if opus_decoder.is_none() {
             opus_decoder = Some(
                 opus::Decoder::new(48000, opus::Channels::Stereo)
@@ -121,7 +112,6 @@ async fn test_double_volume_end_to_end() {
             );
         }
 
-        // Decode the Opus packet
         if let Some(ref mut decoder) = opus_decoder {
             let mut output = vec![0i16; 48000]; // Max frame size
             let samples = decoder
@@ -157,7 +147,6 @@ async fn test_missing_config_field() {
         return;
     };
 
-    // Send request with only media, no config
     let audio_data = b"fake audio data";
     let form = multipart::Form::new()
         .part("media", multipart::Part::bytes(audio_data.to_vec()).file_name("test.ogg"));
@@ -178,7 +167,6 @@ async fn test_missing_media_field() {
         return;
     };
 
-    // Send request with only config, no media
     let form = multipart::Form::new().text("config", "steps:\n  - kind: passthrough");
 
     let client = reqwest::Client::new();

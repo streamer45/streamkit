@@ -510,8 +510,6 @@ pub struct CNativePluginAPI {
     /// Destroy a plugin instance.
     /// handle: Plugin instance handle.
     pub destroy_instance: extern "C" fn(CPluginHandle),
-
-    // ── v3 additions ──────────────────────────────────────────────────────
     /// Query source configuration after instance creation.
     ///
     /// `None` for processor plugins. When `Some`, the returned
@@ -528,8 +526,6 @@ pub struct CNativePluginAPI {
     ///
     /// `None` for processor plugins.
     pub tick: Option<extern "C" fn(CPluginHandle, *const CNodeCallbacks) -> CTickResult>,
-
-    // ── v4 additions ──────────────────────────────────────────────────────
     /// Query runtime-discovered param schema after instance creation.
     ///
     /// Returns a [`CSchemaResult`] describing additional tunable parameters
@@ -540,8 +536,6 @@ pub struct CNativePluginAPI {
     /// `None` when the plugin has no runtime-discovered parameters (the
     /// common case — most plugins declare everything statically).
     pub get_runtime_param_schema: Option<extern "C" fn(CPluginHandle) -> CSchemaResult>,
-
-    // ── v5 additions ──────────────────────────────────────────────────────
     /// Deliver an upstream hint to a source plugin instance.
     ///
     /// `hint_json` is a null-terminated JSON string representing the
@@ -553,8 +547,6 @@ pub struct CNativePluginAPI {
     /// hints.
     pub on_upstream_hint: Option<extern "C" fn(CPluginHandle, *const c_char) -> CResult>,
 }
-
-// ── v6 additions: frame pool allocation ────────────────────────────────
 
 /// Result of a video buffer allocation from the host's frame pool.
 ///
@@ -632,16 +624,10 @@ pub type CAllocAudioFn = extern "C" fn(usize, *mut c_void) -> CAllocAudioResult;
 pub struct CNodeCallbacks {
     /// Size of this struct in bytes (set by the host).
     pub struct_size: usize,
-
-    // ── output ──────────────────────────────────────────────────────────
     pub output_callback: COutputCallback,
     pub output_user_data: *mut c_void,
-
-    // ── telemetry ───────────────────────────────────────────────────────
     pub telemetry_callback: CTelemetryCallback,
     pub telemetry_user_data: *mut c_void,
-
-    // ── frame pool allocation (v6) ─────────────────────────────────────
     /// May be `None` if the host has no video pool for this pipeline.
     pub alloc_video: Option<CAllocVideoFn>,
     /// May be `None` if the host has no audio pool for this pipeline.

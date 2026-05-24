@@ -36,10 +36,6 @@ import {
 } from './perf-helpers';
 import { WEBCAM_PIP_YAML } from './compositor-fixtures';
 
-// ---------------------------------------------------------------------------
-// Test
-// ---------------------------------------------------------------------------
-
 test.describe('Monitor Session Load Perf — Re-render Budget', () => {
   let collector: ConsoleErrorCollector;
   let sessionId: string | null = null;
@@ -51,8 +47,6 @@ test.describe('Monitor Session Load Perf — Re-render Budget', () => {
   test('session load stays within render budget', async ({ page, baseURL }) => {
     // Session creation + full load + settle time.
     test.setTimeout(90_000);
-
-    // ── 1. Create a multi-node session via API ──────────────────────────
     //
     // The Webcam PiP pipeline has ~10 nodes which exercises the session
     // load path well — each node will fire WebSocket state events that
@@ -79,8 +73,6 @@ test.describe('Monitor Session Load Perf — Re-render Budget', () => {
     expect(sessionId).toBeTruthy();
     await apiContext.dispose();
 
-    // ── 2. Navigate to monitor view ─────────────────────────────────────
-
     await page.goto('/monitor');
     await ensureLoggedIn(page);
     if (!page.url().includes('/monitor')) {
@@ -94,8 +86,6 @@ test.describe('Monitor Session Load Perf — Re-render Budget', () => {
     await expect(page.getByTestId('sessions-list')).toBeVisible({
       timeout: 10_000,
     });
-
-    // ── 3. Verify dev-mode profiler is available ────────────────────────
 
     const hasPerfData = await page.evaluate(() => {
       const w = window as Window & {
@@ -111,8 +101,6 @@ test.describe('Monitor Session Load Perf — Re-render Budget', () => {
         'window.__PERF_DATA__ not found — test requires the Vite dev server (just ui)'
       );
     }
-
-    // ── 4. Reset perf data, then trigger session load ───────────────────
     //
     // MonitorView auto-selects the first session on mount, so by the time
     // we reach this point the session may already be selected and its
@@ -136,8 +124,6 @@ test.describe('Monitor Session Load Perf — Re-render Budget', () => {
     await expect(page.getByTestId('monitor-view')).toBeVisible({
       timeout: 15_000,
     });
-
-    // ── 5. Wait for the session graph to fully load ─────────────────────
     //
     // Wait for React Flow nodes to appear — this signals that the
     // pipeline has been hydrated and rendered via auto-selection.
@@ -170,8 +156,6 @@ test.describe('Monitor Session Load Perf — Re-render Budget', () => {
         prevTotal = total;
       }
     }
-
-    // ── 6. Capture and assert render budgets ────────────────────────────
 
     const snapshot = await capturePerfData(page);
     console.log('\n' + formatPerfSummary(snapshot));
@@ -216,15 +200,11 @@ test.describe('Monitor Session Load Perf — Re-render Budget', () => {
       'Perf snapshot should contain at least one profiled component after session load'
     ).toBeGreaterThan(0);
 
-    // ── 7. Console error check ──────────────────────────────────────────
-
     const unexpected = collector.getUnexpected(MOQ_BENIGN_PATTERNS);
     if (unexpected.length > 0) {
       console.warn('Unexpected console errors (non-fatal):', unexpected);
     }
   });
-
-  // ── Cleanup ─────────────────────────────────────────────────────────────
 
   test.afterEach(async ({ baseURL }) => {
     if (sessionId) {

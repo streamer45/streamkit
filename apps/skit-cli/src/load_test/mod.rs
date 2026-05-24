@@ -36,7 +36,6 @@ pub async fn run_load_test(
     let mut config = LoadTestConfig::from_file(config_path)
         .with_context(|| format!("Failed to load config from {config_path}"))?;
 
-    // Apply CLI overrides
     if let Some(server) = server_override {
         config.server.url = server;
     }
@@ -79,7 +78,6 @@ pub async fn run_load_test(
         }
     });
 
-    // Populate environment (load plugins, etc.)
     if config.populate.load_plugins {
         info!("Pre-loading plugins...");
         populate_environment(&config).await?;
@@ -87,7 +85,6 @@ pub async fn run_load_test(
 
     let metrics = MetricsCollector::new();
 
-    // Run the appropriate scenario
     let result = match config.test.scenario {
         Scenario::OneShot => run_oneshot_scenario(&config, metrics, shutdown_token, cleanup).await,
         Scenario::Dynamic => run_dynamic_scenario(&config, metrics, shutdown_token, cleanup).await,

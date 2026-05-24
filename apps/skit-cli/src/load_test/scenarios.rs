@@ -24,8 +24,6 @@ pub async fn run_oneshot_scenario(
     config: &LoadTestConfig,
     metrics: MetricsCollector,
     shutdown: tokio_util::sync::CancellationToken,
-    // cleanup parameter is not used in oneshot scenario (no sessions created)
-    // but kept for API consistency with other scenario functions
     _cleanup: bool,
 ) -> Result<FinalMetrics> {
     if !config.oneshot.enabled {
@@ -34,7 +32,6 @@ pub async fn run_oneshot_scenario(
 
     info!("Starting OneShot scenario with {} workers", config.oneshot.concurrency);
 
-    // Spawn worker tasks
     let mut handles = Vec::new();
     for worker_id in 0..config.oneshot.concurrency {
         let cfg = config.clone();
@@ -47,7 +44,6 @@ pub async fn run_oneshot_scenario(
         handles.push(handle);
     }
 
-    // Start progress reporter
     let progress_handle = if config.output.real_time_updates {
         let m = metrics.clone();
         let interval = Duration::from_millis(config.output.update_interval_ms);
@@ -71,7 +67,7 @@ pub async fn run_oneshot_scenario(
         None
     };
 
-    // Wait for duration (0 = run until shutdown)
+    // 0 = run until shutdown
     if config.test.duration_secs == 0 {
         shutdown.cancelled().await;
         info!("Shutdown signal received");
@@ -87,10 +83,8 @@ pub async fn run_oneshot_scenario(
         }
     }
 
-    // Give workers a moment to gracefully shut down
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Abort any workers that haven't stopped yet
     for handle in handles {
         handle.abort();
     }
@@ -98,8 +92,6 @@ pub async fn run_oneshot_scenario(
     if let Some(handle) = progress_handle {
         handle.abort();
     }
-
-    // No cleanup needed for oneshot scenario (no sessions created)
 
     Ok(metrics.finalize().await)
 }
@@ -125,13 +117,9 @@ pub async fn run_dynamic_scenario(
 
     info!("Starting Dynamic scenario (target: {} sessions)", config.dynamic.session_count);
 
-    // Track all created session IDs for cleanup
     let session_ids = Arc::new(Mutex::new(Vec::new()));
-
-    // Channel for passing created sessions to tuner
     let (session_tx, session_rx) = mpsc::channel::<DynamicSession>(100);
 
-    // Clone for tracking
     let session_ids_tracker = session_ids.clone();
     let (tracking_tx, mut tracking_rx) = mpsc::channel::<String>(100);
     tokio::spawn(async move {
@@ -140,8 +128,7 @@ pub async fn run_dynamic_scenario(
         }
     });
 
-    // Create broadcaster sessions first (if configured)
-    // Broadcasters publish to canonical broadcast names so subscribers can find them
+    // Broadcasters publish to canonical names so subscribers can find them.
     if let Some(ref broadcaster) = config.dynamic.broadcaster {
         info!("Creating {} broadcaster session(s)...", broadcaster.count);
         for i in 0..broadcaster.count {
@@ -181,11 +168,10 @@ pub async fn run_dynamic_scenario(
                 },
             }
         }
-        // Brief delay to let broadcasters connect to MoQ relay
+        // Let broadcasters connect to MoQ relay before creating subscribers.
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
-    // Spawn session creator
     let creator_handle = {
         let cfg = config.clone();
         let m = metrics.clone();
@@ -197,7 +183,6 @@ pub async fn run_dynamic_scenario(
         })
     };
 
-    // Spawn session tuner
     let tuner_handle = {
         let cfg = config.clone();
         let m = metrics.clone();
@@ -207,7 +192,6 @@ pub async fn run_dynamic_scenario(
         })
     };
 
-    // Start progress reporter
     let progress_handle = if config.output.real_time_updates {
         let m = metrics.clone();
         let interval = Duration::from_millis(config.output.update_interval_ms);
@@ -231,7 +215,7 @@ pub async fn run_dynamic_scenario(
         None
     };
 
-    // Wait for duration (0 = run until shutdown)
+    // 0 = run until shutdown
     if config.test.duration_secs == 0 {
         shutdown.cancelled().await;
         info!("Shutdown signal received");
@@ -247,10 +231,8 @@ pub async fn run_dynamic_scenario(
         }
     }
 
-    // Give workers a moment to gracefully shut down
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Abort workers if they haven't stopped
     creator_handle.abort();
     tuner_handle.abort();
 
@@ -258,7 +240,6 @@ pub async fn run_dynamic_scenario(
         handle.abort();
     }
 
-    // Cleanup sessions if requested
     if cleanup {
         let ids = session_ids.lock().await.clone();
         if !ids.is_empty() {
@@ -296,12 +277,10 @@ pub async fn run_mixed_scenario(
         .to_lowercase();
     info!(run_id = %run_id, "Load test run id (broadcast namespace)");
 
-    // Track all created session IDs for cleanup
     let session_ids = Arc::new(Mutex::new(Vec::new()));
 
     let mut handles = Vec::new();
 
-    // Spawn oneshot workers
     for worker_id in 0..config.oneshot.concurrency {
         let cfg = config.clone();
         let m = metrics.clone();
@@ -313,10 +292,8 @@ pub async fn run_mixed_scenario(
         handles.push(handle);
     }
 
-    // Channel for dynamic sessions
     let (session_tx, session_rx) = mpsc::channel(100);
 
-    // Clone for tracking
     let session_ids_tracker = session_ids.clone();
     let (tracking_tx, mut tracking_rx) = mpsc::channel::<String>(100);
     tokio::spawn(async move {
@@ -325,8 +302,7 @@ pub async fn run_mixed_scenario(
         }
     });
 
-    // Create broadcaster sessions first (if configured)
-    // Broadcasters publish to canonical broadcast names so subscribers can find them
+    // Broadcasters publish to canonical names so subscribers can find them.
     if let Some(ref broadcaster) = config.dynamic.broadcaster {
         info!("Creating {} broadcaster session(s)...", broadcaster.count);
         for i in 0..broadcaster.count {
@@ -366,11 +342,10 @@ pub async fn run_mixed_scenario(
                 },
             }
         }
-        // Brief delay to let broadcasters connect to MoQ relay
+        // Let broadcasters connect to MoQ relay before creating subscribers.
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
-    // Spawn session creator
     let creator_handle = {
         let cfg = config.clone();
         let m = metrics.clone();
@@ -383,7 +358,6 @@ pub async fn run_mixed_scenario(
     };
     handles.push(creator_handle);
 
-    // Spawn session tuner
     let tuner_handle = {
         let cfg = config.clone();
         let m = metrics.clone();
@@ -394,7 +368,6 @@ pub async fn run_mixed_scenario(
     };
     handles.push(tuner_handle);
 
-    // Start progress reporter
     let progress_handle = if config.output.real_time_updates {
         let m = metrics.clone();
         let interval = Duration::from_millis(config.output.update_interval_ms);
@@ -418,7 +391,7 @@ pub async fn run_mixed_scenario(
         None
     };
 
-    // Wait for duration (0 = run until shutdown)
+    // 0 = run until shutdown
     if config.test.duration_secs == 0 {
         shutdown.cancelled().await;
         info!("Shutdown signal received");
@@ -434,10 +407,8 @@ pub async fn run_mixed_scenario(
         }
     }
 
-    // Give workers a moment to gracefully shut down
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Abort any workers that haven't stopped yet
     for handle in handles {
         handle.abort();
     }
@@ -446,7 +417,6 @@ pub async fn run_mixed_scenario(
         handle.abort();
     }
 
-    // Cleanup sessions if requested
     if cleanup {
         let ids = session_ids.lock().await.clone();
         if !ids.is_empty() {

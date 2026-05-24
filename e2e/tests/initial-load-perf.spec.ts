@@ -50,8 +50,6 @@ test.describe('Initial Load Perf — Node Render Budget', () => {
   }) => {
     test.setTimeout(90_000);
 
-    // ── 1. Create Webcam PiP session via API ──────────────────────────────
-
     const apiContext = await request.newContext({
       baseURL: baseURL!,
       extraHTTPHeaders: getAuthHeaders(),
@@ -73,8 +71,6 @@ test.describe('Initial Load Perf — Node Render Budget', () => {
     expect(sessionId).toBeTruthy();
     await apiContext.dispose();
 
-    // ── 2. Navigate to monitor view ───────────────────────────────────────
-
     await page.goto('/monitor');
     await ensureLoggedIn(page);
     if (!page.url().includes('/monitor')) {
@@ -83,8 +79,6 @@ test.describe('Initial Load Perf — Node Render Budget', () => {
     await expect(page.getByTestId('monitor-view')).toBeVisible({
       timeout: 15_000,
     });
-
-    // ── 3. Verify dev-mode profiler is available ──────────────────────────
 
     const hasPerfData = await page.evaluate(() => {
       const w = window as Window & {
@@ -100,8 +94,6 @@ test.describe('Initial Load Perf — Node Render Budget', () => {
         'window.__PERF_DATA__ not found — test requires the Vite dev server (just ui)'
       );
     }
-
-    // ── 4. Reset perf data, then trigger initial load ─────────────────────
     //
     // Reset profiler BEFORE clicking the session so we only capture the
     // renders caused by the initial pipeline load + ReactFlow layout.
@@ -125,8 +117,6 @@ test.describe('Initial Load Perf — Node Render Budget', () => {
     // Give ReactFlow time to finish dimension measurement and auto-layout.
     // This is the window where redundant re-renders used to happen.
     await page.waitForTimeout(2_000);
-
-    // ── 5. Capture and assert render budgets ──────────────────────────────
 
     const snapshot = await capturePerfData(page);
     console.log('\n' + formatPerfSummary(snapshot));
@@ -156,8 +146,6 @@ test.describe('Initial Load Perf — Node Render Budget', () => {
         maxDuration: 500,
       });
     }
-
-    // ── 6. Cross-node cascade check ───────────────────────────────────────
     //
     // All profiled nodes should have roughly similar render counts during
     // initial load.  If one node type has dramatically more renders, it
@@ -179,15 +167,11 @@ test.describe('Initial Load Perf — Node Render Budget', () => {
       }
     }
 
-    // ── 7. Console error check ────────────────────────────────────────────
-
     const unexpected = collector.getUnexpected(MOQ_BENIGN_PATTERNS);
     if (unexpected.length > 0) {
       console.warn('Unexpected console errors (non-fatal):', unexpected);
     }
   });
-
-  // ── Cleanup ───────────────────────────────────────────────────────────────
 
   test.afterEach(async ({ baseURL }) => {
     if (sessionId) {

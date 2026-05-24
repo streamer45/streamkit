@@ -92,8 +92,6 @@ static PLUGIN_METRICS: std::sync::OnceLock<PluginMetrics> = std::sync::OnceLock:
 fn global_metrics() -> &'static PluginMetrics {
     PLUGIN_METRICS.get_or_init(PluginMetrics::new)
 }
-
-// ── Host-side FFI panic guards ─────────────────────────────────────────────
 //
 // These guard the `extern "C"` callbacks that the host exposes to plugins.
 // A misbehaving plugin could trigger a panic in host code (e.g. via a
@@ -402,8 +400,6 @@ impl Drop for InstanceState {
 fn worker_died_error(op: &str, node: &str) -> StreamKitError {
     StreamKitError::Runtime(format!("Worker thread for node {node} died during {op}"))
 }
-
-// ── Per-instance worker thread types ───────────────────────────────────────
 
 /// Message sent from the async side to the worker thread.
 enum WorkerRequest {
@@ -1242,8 +1238,6 @@ impl ProcessorNode for NativeNodeWrapper {
         self.run_processor(context).instrument(span).await
     }
 }
-
-// ── Private run implementations ────────────────────────────────────────────
 impl NativeNodeWrapper {
     /// Spawn a dedicated worker thread for this plugin instance.
     fn spawn_worker(
@@ -1699,8 +1693,6 @@ impl NativeNodeWrapper {
                 return Err(e);
             },
         };
-
-        // ── Ready → Start handshake ─────────────────────────────────────
         // Emit Ready so the pipeline coordinator knows this node is waiting
         // for the Start signal before producing data.
         if let Err(e) =
@@ -1783,8 +1775,6 @@ impl NativeNodeWrapper {
                 }
             }
         }
-
-        // ── Running ─────────────────────────────────────────────────────
         if let Err(e) =
             context.state_tx.send(NodeStateUpdate::new(node_name.clone(), NodeState::Running)).await
         {
@@ -1948,8 +1938,6 @@ impl NativeNodeWrapper {
                     }
                 }
             }
-
-            // ── Tick ────────────────────────────────────────────────────
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             self.send_to_worker(
                 WorkerCallContext {
@@ -2313,8 +2301,6 @@ extern "C" fn telemetry_callback_shim(
     })
 }
 
-// ── Frame pool allocation shims (v6) ─────────────────────────────────────
-
 /// Allocate a video buffer from the host's frame pool.
 extern "C" fn alloc_video_shim(min_bytes: usize, user_data: *mut c_void) -> CAllocVideoResult {
     ffi_guard_alloc_video(|| {
@@ -2432,8 +2418,6 @@ mod ffi_guard_tests {
     fn host_guard_unit_catches_panic() {
         ffi_guard_unit(|| panic!("unit boom"));
     }
-
-    // ── Real shim tests ────────────────────────────────────────────────
     //
     // These exercise the actual `extern "C"` callback shims (not just the
     // guard helpers) so that accidentally removing a guard from a shim
@@ -2499,8 +2483,6 @@ mod ffi_guard_tests {
         assert!(r.data.is_null());
     }
 
-    // ── CallGuard / ApiPtr tests ───────────────────────────────────────
-
     /// Dummy `extern "C"` stubs used to populate a test `CNativePluginAPI`.
     mod test_stubs {
         use super::*;
@@ -2565,7 +2547,7 @@ mod ffi_guard_tests {
         api
     }
 
-    /// Helper: build a minimal `InstanceState` for guard tests.
+    /// build a minimal `InstanceState` for guard tests.
     fn test_instance_state() -> Arc<InstanceState> {
         // SAFETY: loading libc is harmless; we never call any symbols from it.
         let lib = unsafe { Library::new("libc.so.6").expect("libc must be loadable") };
@@ -2750,8 +2732,6 @@ mod ffi_guard_tests {
             "ApiPtr must round-trip the pointer without losing provenance"
         );
     }
-
-    // ── Worker thread tests ────────────────────────────────────────────
 
     /// Additional stubs for worker tests (error-returning, slow variants).
     mod worker_stubs {
@@ -3340,8 +3320,6 @@ mod ffi_guard_tests {
     // we cannot test that path with an extern "C" stub because Rust aborts
     // on panic-across-FFI.  See the comment in worker_stubs above.
 
-    // ── plugin_log_enabled_callback tests ──────────────────────────────
-
     /// Minimal subscriber that only enables events at or above a given level.
     struct LevelGateSubscriber(tracing::Level);
 
@@ -3482,8 +3460,6 @@ mod ffi_guard_tests {
         assert_eq!(*seen_target.lock().unwrap(), Some("whisper".to_string()));
     }
 
-    // ── Fix 1: EnvFilter cache poisoning ───────────────────────────────
-
     #[test]
     fn plugin_log_metadata_is_unique_per_target_level() {
         let meta_a = plugin_log_static_metadata("unique_a", tracing::Level::INFO);
@@ -3561,8 +3537,6 @@ mod ffi_guard_tests {
         );
     }
 
-    // ── Fix 2: HandleGuard tests ───────────────────────────────────────
-
     #[test]
     fn handle_guard_calls_destroy_on_drop() {
         let _lock = test_stubs::GUARD_TEST_MUTEX.lock().unwrap();
@@ -3624,8 +3598,6 @@ mod ffi_guard_tests {
             "HandleGuard must destroy handle on panic"
         );
     }
-
-    // ── Fix 3: on_upstream_hint timeout tests ──────────────────────────
 
     mod hint_timeout_stubs {
         use super::*;

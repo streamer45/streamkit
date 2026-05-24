@@ -20,20 +20,12 @@ use streamkit_plugin_sdk_native::streamkit_core::types::{
     AudioCodec, AudioFormat, EncodedAudioFormat, PacketMetadata, SampleFormat,
 };
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 const AAC_SAMPLE_RATE: u32 = 48_000;
 const AAC_CHANNELS: u16 = 2;
 const AAC_FRAME_SAMPLES: usize = 1024;
 const AAC_CONTENT_TYPE: &str = "audio/aac";
 
 const DEFAULT_BITRATE: usize = 128_000;
-
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
 struct AacEncoderConfig {
@@ -51,10 +43,6 @@ impl Default for AacEncoderConfig {
         Self { bitrate: DEFAULT_BITRATE }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Node
-// ---------------------------------------------------------------------------
 
 pub struct AacEncoderNode {
     encoder: shiguredo_fdk_aac::Encoder,
@@ -269,9 +257,5 @@ impl NativeProcessorNode for AacEncoderNode {
         plugin_info!(self.logger, "AAC encoder cleanup");
     }
 }
-
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
 
 streamkit_plugin_sdk_native::native_plugin_entry!(AacEncoderNode);

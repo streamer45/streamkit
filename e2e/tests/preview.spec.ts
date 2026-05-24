@@ -116,10 +116,6 @@ async function deleteSession(baseURL: string, sessionId: string): Promise<void> 
   }
 }
 
-// ---------------------------------------------------------------------------
-// Test: Preview API with a video-only pipeline
-// ---------------------------------------------------------------------------
-
 test.describe('Preview API — Video-Only Pipeline', () => {
   // A minimal video pipeline: colorbars → pixel_convert → vp9_encoder → sink.
   // No MoQ peer needed — preview will create its own.
@@ -159,7 +155,6 @@ nodes:
     let sessionId: string | null = null;
 
     try {
-      // ── 1. Create session ────────────────────────────────────────────────
       const sessionName = `preview-video-test-${Date.now()}`;
       const createResponse = await apiContext.post('/api/v1/sessions', {
         data: { name: sessionName, yaml: videoOnlyPipelineYaml },
@@ -172,8 +167,6 @@ nodes:
 
       // Wait for pipeline nodes to be running
       await pollPipeline(baseURL!, sessionId, allNodesRunning, 30_000);
-
-      // ── 2. Start preview (auto-detect tap point) ─────────────────────────
       const previewResponse = await apiContext.post(`/api/v1/sessions/${sessionId}/preview`, {
         data: {},
       });
@@ -189,8 +182,6 @@ nodes:
       expect(preview.broadcast).toBe('output');
       // Video-only pipeline should detect video
       expect(preview.video).toBe(true);
-
-      // ── 3. Verify the preview subgraph was injected ──────────────────────
       // Wait for the preview moq_peer node to appear in the pipeline
       const previewPeerId = `_preview_${preview.preview_id}_peer`;
       const pipeline = await pollPipeline(
@@ -218,15 +209,11 @@ nodes:
       );
       expect(tapConnection).toBeDefined();
       expect(tapConnection!.mode).toBe('best_effort');
-
-      // ── 4. List previews ─────────────────────────────────────────────────
       const listResponse = await apiContext.get(`/api/v1/sessions/${sessionId}/preview`);
       expect(listResponse.ok()).toBeTruthy();
       const previews = (await listResponse.json()) as PreviewInfo[];
       expect(previews.length).toBe(1);
       expect(previews[0].preview_id).toBe(preview.preview_id);
-
-      // ── 5. Stop preview ──────────────────────────────────────────────────
       const stopResponse = await apiContext.delete(
         `/api/v1/sessions/${sessionId}/preview/${preview.preview_id}`
       );
@@ -240,8 +227,6 @@ nodes:
         15_000
       );
       expect(cleanedPipeline.nodes[previewPeerId]).toBeUndefined();
-
-      // ── 6. Verify no previews remain ─────────────────────────────────────
       const listAfterStop = await apiContext.get(`/api/v1/sessions/${sessionId}/preview`);
       const previewsAfterStop = (await listAfterStop.json()) as PreviewInfo[];
       expect(previewsAfterStop.length).toBe(0);
@@ -251,10 +236,6 @@ nodes:
     }
   });
 });
-
-// ---------------------------------------------------------------------------
-// Test: Preview API with a compositor + MoQ pipeline (video-only)
-// ---------------------------------------------------------------------------
 
 test.describe('Preview API — Compositor MoQ Pipeline', () => {
   test('auto-detects video tap point in a compositor MoQ pipeline', async ({ baseURL }) => {
@@ -274,7 +255,6 @@ test.describe('Preview API — Compositor MoQ Pipeline', () => {
     let sessionId: string | null = null;
 
     try {
-      // ── 1. Create session ────────────────────────────────────────────────
       const sessionName = `preview-compositor-test-${Date.now()}`;
       const createResponse = await apiContext.post('/api/v1/sessions', {
         data: { name: sessionName, yaml: pipelineYaml },
@@ -287,8 +267,6 @@ test.describe('Preview API — Compositor MoQ Pipeline', () => {
 
       // Wait for pipeline to be running
       await pollPipeline(baseURL!, sessionId, allNodesRunning, 60_000);
-
-      // ── 2. Start preview ─────────────────────────────────────────────────
       const previewResponse = await apiContext.post(`/api/v1/sessions/${sessionId}/preview`, {
         data: {},
       });
@@ -301,12 +279,8 @@ test.describe('Preview API — Compositor MoQ Pipeline', () => {
       const preview = JSON.parse(previewText) as PreviewResponse;
       expect(preview.preview_id).toBeTruthy();
       expect(preview.video).toBe(true);
-
-      // ── 3. Verify preview nodes appear ───────────────────────────────────
       const previewPeerId = `_preview_${preview.preview_id}_peer`;
       await pollPipeline(baseURL!, sessionId, (p) => previewPeerId in p.nodes, 15_000);
-
-      // ── 4. Stop preview and verify cleanup ───────────────────────────────
       const stopResponse = await apiContext.delete(
         `/api/v1/sessions/${sessionId}/preview/${preview.preview_id}`
       );
@@ -319,10 +293,6 @@ test.describe('Preview API — Compositor MoQ Pipeline', () => {
     }
   });
 });
-
-// ---------------------------------------------------------------------------
-// Test: Preview API error cases
-// ---------------------------------------------------------------------------
 
 test.describe('Preview API — Error Cases', () => {
   const minimalPipelineYaml = `mode: dynamic

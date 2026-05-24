@@ -36,8 +36,6 @@
 
 import { readFileSync } from "node:fs";
 
-// ─── CLI arg parsing ────────────────────────────────────────────────
-
 const args = process.argv.slice(2);
 const file = args.find((a) => !a.startsWith("--"));
 if (!file) {
@@ -77,8 +75,6 @@ const showCascade = args.includes("--cascade");
 const showWhy = args.includes("--why");
 const summaryOnly = args.includes("--summary");
 
-// ─── Parse profiling data ───────────────────────────────────────────
-
 let data;
 try {
   data = JSON.parse(readFileSync(file, "utf8"));
@@ -92,8 +88,6 @@ if (data.version !== 5) {
     `Warning: expected profiling format version 5, got ${data.version}`
   );
 }
-
-// ─── Build name map from snapshots ──────────────────────────────────
 
 /**
  * React DevTools profiling format stores component names in `snapshots`.
@@ -126,8 +120,6 @@ function buildParentMap(root) {
   }
   return parentMap;
 }
-
-// ─── Analyze commits ────────────────────────────────────────────────
 
 function formatReason(change) {
   if (!change) return "parent re-rendered";
@@ -216,8 +208,6 @@ function analyzeRoot(root) {
 
   return { nameMap, parentMap, componentStats, commitSummaries };
 }
-
-// ─── Reporting ──────────────────────────────────────────────────────
 
 function pad(str, len) {
   return String(str).padEnd(len);
@@ -443,8 +433,6 @@ function printCascade(analysis) {
     }
   }
 }
-
-// ─── Main ───────────────────────────────────────────────────────────
 
 for (const root of data.dataForRoots) {
   const analysis = analyzeRoot(root);
