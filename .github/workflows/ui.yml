@@ -40,7 +40,8 @@ jobs:
         run: bun run test:run
 
       - name: Coverage
-        # Informational during initial rollout — see codecov.yml.
+        # Threshold violations are caught by the all-checks gate — see
+        # ci.yml "Verify Codecov thresholds" and codecov.yml.
         continue-on-error: true
         run: bun run test:coverage
 
