@@ -108,7 +108,7 @@ impl ProcessorNode for JsonSerialize {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Test assertions use unwrap/expect to fail loudly.
 mod tests {
     use super::*;
     use crate::test_utils::{assert_state_running, assert_state_stopped, create_test_context};
