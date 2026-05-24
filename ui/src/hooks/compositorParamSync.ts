@@ -99,8 +99,6 @@ export function mergeRemoteImageParams(
   });
 }
 
-// ── Hook ────────────────────────────────────────────────────────────────────
-
 export function useParamAtomSync(
   sessionId: string | undefined,
   nodeId: string,

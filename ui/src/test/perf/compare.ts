@@ -18,8 +18,6 @@ import type { BaselineEntry, BaselineFile, ComparisonResult, MeasureResult } fro
 /** Default location for the baseline file (repo-root relative). */
 const DEFAULT_BASELINE_PATH = path.resolve(import.meta.dirname, '../../../../perf-baselines.json');
 
-// ── Baseline I/O ─────────────────────────────────────────────────────────────
-
 export function readBaseline(filePath: string = DEFAULT_BASELINE_PATH): BaselineFile {
   try {
     const raw = fs.readFileSync(filePath, 'utf-8');
@@ -50,8 +48,6 @@ export function writeBaseline(
 
   fs.writeFileSync(filePath, JSON.stringify(existing, null, 2) + '\n');
 }
-
-// ── Comparison ───────────────────────────────────────────────────────────────
 
 /**
  * Significance threshold in standard deviations.  A change must exceed
@@ -94,8 +90,6 @@ export function compare(current: MeasureResult, baseline: BaselineEntry | null):
     status,
   };
 }
-
-// ── Report formatting ────────────────────────────────────────────────────────
 
 function fmtDelta(delta: number | null, unit: string = ''): string {
   if (delta === null) return 'N/A';

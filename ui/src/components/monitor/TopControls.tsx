@@ -16,9 +16,7 @@ import { Button } from '@/components/ui/Button';
 
 import { ConnectionStatus } from './ConnectionStatus';
 
-// ---------------------------------------------------------------------------
 // Props
-// ---------------------------------------------------------------------------
 
 export interface TopControlsProps {
   isConnected: boolean;
@@ -31,9 +29,7 @@ export interface TopControlsProps {
   previewError: string | null;
 }
 
-// ---------------------------------------------------------------------------
 // Component
-// ---------------------------------------------------------------------------
 
 export const TopControls = React.memo(
   ({

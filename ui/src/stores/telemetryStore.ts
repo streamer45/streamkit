@@ -52,7 +52,6 @@ interface TelemetryStore {
   /** Default max events per session */
   defaultMaxEvents: number;
 
-  // Actions
   addEvent: (event: TelemetryEvent) => void;
   clearSession: (sessionId: string) => void;
   setEnabled: (sessionId: string, enabled: boolean) => void;
@@ -63,7 +62,6 @@ interface TelemetryStore {
   getEventsByType: (sessionId: string, eventType: string) => TelemetryEvent[];
 }
 
-// Generate a unique event ID
 let eventCounter = 0;
 function generateEventId(): string {
   return `evt-${Date.now()}-${++eventCounter}`;
@@ -85,7 +83,6 @@ export const useTelemetryStore = create<TelemetryStore>((set, get) => ({
       const maxEvents = sessionData?.maxEvents ?? prev.defaultMaxEvents;
       const currentEvents = sessionData?.events ?? [];
 
-      // Add new event and trim to maxEvents (ring buffer behavior)
       const newEvents = [...currentEvents, event];
       if (newEvents.length > maxEvents) {
         newEvents.splice(0, newEvents.length - maxEvents);
@@ -125,7 +122,6 @@ export const useTelemetryStore = create<TelemetryStore>((set, get) => ({
       const sessionData = prev.sessions.get(sessionId);
       const currentEvents = sessionData?.events ?? [];
 
-      // Trim events if necessary
       const trimmedEvents =
         currentEvents.length > maxEvents
           ? currentEvents.slice(currentEvents.length - maxEvents)

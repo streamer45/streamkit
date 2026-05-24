@@ -68,7 +68,6 @@ export const NativeStreamPlayer: React.FC<NativeStreamPlayerProps> = ({
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
 
-  // ── Seek to the live edge ──
   const seekToLiveEdge = useCallback((video: HTMLVideoElement) => {
     const buf = video.buffered;
     if (buf.length === 0) return;
@@ -83,7 +82,6 @@ export const NativeStreamPlayer: React.FC<NativeStreamPlayerProps> = ({
     }
   }, []);
 
-  // ── Main effect: autoplay + live-edge timer ──
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;

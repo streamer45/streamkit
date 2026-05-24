@@ -116,7 +116,6 @@ interface StreamState {
   secondaryCamera: Publish.Source.Camera | null;
   secondaryScreen: Publish.Source.Screen | null;
 
-  // Actions
   setServerUrl: (url: string) => void;
   setMoqToken: (token: string) => void;
   setInputBroadcast: (broadcast: string) => void;

@@ -48,7 +48,6 @@ function findUpstreamOutputType(
     (o) => o.name === (incomingEdge.sourceHandle || 'out')
   );
 
-  // Return type if upstream output has explicit type (not another Passthrough)
   if (upstreamOutput && upstreamOutput.produces_type !== 'Passthrough') {
     return upstreamOutput.produces_type;
   }

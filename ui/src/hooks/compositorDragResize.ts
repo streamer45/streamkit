@@ -23,8 +23,6 @@ import type {
 import { detectSnapGuides } from './compositorResizeHelpers';
 import type { SnapGuides } from './compositorResizeHelpers';
 
-// ── Drag state ref type ──────────────────────────────────────────────────
-
 export interface DragState {
   type: 'drag' | 'resize';
   layerId: string;
@@ -39,8 +37,6 @@ export interface DragState {
   currentY: number;
   origFontSize?: number;
 }
-
-// ── Dependency bag ───────────────────────────────────────────────────────
 
 export interface DragResizeDeps {
   canvasWidth: number;
@@ -69,8 +65,6 @@ export interface DragResizeDeps {
     bottom: HTMLDivElement | null;
   }>;
 }
-
-// ── Extracted helpers (reduce handlePointerMove complexity) ───────────────
 
 /** Scale font-size of all <span> elements inside a text overlay during resize
  *  so the text visually tracks the handle without snap-back on drop. */
@@ -102,8 +96,6 @@ function updateSnapGuideVisibility(
   if (refs.top) refs.top.style.opacity = guides.topEdge ? ON : '0';
   if (refs.bottom) refs.bottom.style.opacity = guides.bottomEdge ? ON : '0';
 }
-
-// ── Hook ─────────────────────────────────────────────────────────────────
 
 export function useCompositorDragResize(deps: DragResizeDeps) {
   const {

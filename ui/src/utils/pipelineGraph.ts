@@ -15,9 +15,7 @@ import type {
   OutputPin,
 } from '@/types/types';
 
-// ---------------------------------------------------------------------------
 // Edge-alert helpers (slow-input-timeout)
-// ---------------------------------------------------------------------------
 
 export type SlowTimeoutDetails = {
   slowPins: string[];
@@ -69,9 +67,7 @@ export const describeSlowInputs = (
   return sources;
 };
 
-// ---------------------------------------------------------------------------
 // Edge connection validation
-// ---------------------------------------------------------------------------
 
 const isValidEdgeConnection = (conn: Connection, nodeMap: Map<string, RFNode>): boolean => {
   const sourceNode = nodeMap.get(conn.from_node);
@@ -109,9 +105,7 @@ export const buildEdgesFromConnections = (connections: Connection[], nodes: RFNo
     }));
 };
 
-// ---------------------------------------------------------------------------
 // YAML generation
-// ---------------------------------------------------------------------------
 
 export const generatePipelineYaml = (pipeline: Pipeline, orderedNames: string[]): string => {
   const yamlObject: { nodes: Record<string, unknown> } = { nodes: {} };
@@ -139,9 +133,7 @@ export const generatePipelineYaml = (pipeline: Pipeline, orderedNames: string[])
   return dump(yamlObject, { skipInvalid: true });
 };
 
-// ---------------------------------------------------------------------------
 // ReactFlow node construction
-// ---------------------------------------------------------------------------
 
 export interface BuildNodeParams {
   nodeName: string;

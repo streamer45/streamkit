@@ -61,9 +61,7 @@ vi.mock('@moq/signals', () => ({
   Signal: vi.fn(),
 }));
 
-// ---------------------------------------------------------------------------
 // decideConnect
-// ---------------------------------------------------------------------------
 
 describe('decideConnect', () => {
   it('should reject empty server URL', () => {
@@ -185,9 +183,7 @@ describe('decideConnect', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // formatConnectError
-// ---------------------------------------------------------------------------
 
 describe('formatConnectError', () => {
   it('should format Error instances', () => {
@@ -206,9 +202,7 @@ describe('formatConnectError', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // cleanupConnectAttempt
-// ---------------------------------------------------------------------------
 
 describe('cleanupConnectAttempt', () => {
   function makeAttempt(overrides?: Partial<ConnectAttempt>): ConnectAttempt {
@@ -296,9 +290,7 @@ describe('cleanupConnectAttempt', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // waitForSignalValue
-// ---------------------------------------------------------------------------
 
 describe('waitForSignalValue', () => {
   /** Minimal mock that behaves like a @moq/signals Signal<T>. */
@@ -405,9 +397,7 @@ describe('waitForSignalValue', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // NULL_MOQ_REFS
-// ---------------------------------------------------------------------------
 
 describe('NULL_MOQ_REFS', () => {
   it('should have all expected keys set to null', () => {
@@ -437,9 +427,7 @@ describe('NULL_MOQ_REFS', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // analyzeSecondaryBroadcastTracks
-// ---------------------------------------------------------------------------
 
 describe('analyzeSecondaryBroadcastTracks', () => {
   it('returns needsVideo=true and camera source for a single camera video track', () => {
@@ -588,9 +576,7 @@ describe('analyzeSecondaryBroadcastTracks', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // filterSecondaryTracks
-// ---------------------------------------------------------------------------
 
 describe('filterSecondaryTracks', () => {
   const allTracks = [
@@ -666,9 +652,7 @@ describe('filterSecondaryTracks', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // buildVideoEncoderConfig
-// ---------------------------------------------------------------------------
 
 describe('buildVideoEncoderConfig', () => {
   it('returns default vp09 codec when no track is provided', () => {
@@ -789,9 +773,7 @@ describe('buildVideoEncoderConfig', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // validateTrackCodecs
-// ---------------------------------------------------------------------------
 
 // validateTrackCodecs uses `logger.warn` from tslog. In this test environment,
 // tslog routes all output through `console.log` (not `console.warn`), so we
@@ -864,9 +846,7 @@ describe('validateTrackCodecs', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // performConnect
-// ---------------------------------------------------------------------------
 
 describe('performConnect', () => {
   /** Minimal mock that behaves like a @moq/signals Signal<T>. */

@@ -47,9 +47,7 @@ import {
 } from '@/utils/sessionStatus';
 import { formatUptime, formatDateTime } from '@/utils/time';
 
-// ---------------------------------------------------------------------------
 // Shared types
-// ---------------------------------------------------------------------------
 
 export interface SessionItemProps {
   session: { id: string; name: string | null; created_at: string };
@@ -62,9 +60,7 @@ export interface SessionInfoDisplayProps {
   session: { id: string; name: string | null; created_at: string };
 }
 
-// ---------------------------------------------------------------------------
 // SessionUptime — isolated 1 s re-render
-// ---------------------------------------------------------------------------
 
 export const SessionUptime: React.FC<{ createdAt: string }> = React.memo(({ createdAt }) => {
   const [uptime, setUptime] = useState('');
@@ -82,9 +78,7 @@ export const SessionUptime: React.FC<{ createdAt: string }> = React.memo(({ crea
   return <>{uptime}</>;
 });
 
-// ---------------------------------------------------------------------------
 // InlineCopyButton
-// ---------------------------------------------------------------------------
 
 export const InlineCopyButton: React.FC<{
   text: string;
@@ -131,9 +125,7 @@ export const InlineCopyButton: React.FC<{
   );
 });
 
-// ---------------------------------------------------------------------------
 // SessionInfoChip — expandable chip on canvas top bar
-// ---------------------------------------------------------------------------
 
 export const SessionInfoChip: React.FC<SessionInfoDisplayProps> = React.memo(({ session }) => {
   const nodeStates = useSessionNodeStates(session.id);
@@ -239,9 +231,7 @@ export const SessionInfoChip: React.FC<SessionInfoDisplayProps> = React.memo(({ 
   );
 });
 
-// ---------------------------------------------------------------------------
 // SessionItem — sidebar list entry
-// ---------------------------------------------------------------------------
 
 export const SessionItem: React.FC<SessionItemProps> = React.memo(
   ({ session, isActive, onClick, onDelete }) => {

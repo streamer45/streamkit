@@ -15,7 +15,6 @@ interface SessionData {
 interface SessionStore {
   sessions: Map<string, SessionData>;
 
-  // Actions
   updateNodeViewData: (sessionId: string, nodeId: string, data: unknown) => void;
   updateRuntimeSchema: (sessionId: string, nodeId: string, schema: unknown) => void;
   setPipeline: (sessionId: string, pipeline: Pipeline) => void;

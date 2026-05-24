@@ -18,8 +18,6 @@
 
 import { getWebSocketService } from '@/services/websocket';
 
-// ── Singleton rev counters ──────────────────────────────────────────────────
-
 /** Per-node config revision counters, keyed by nodeId.
  *  Shared across all hook instances — a ref-map so React doesn't
  *  re-render when the counter bumps. */

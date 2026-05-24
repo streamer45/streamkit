@@ -22,8 +22,6 @@ import {
 import type { LayerState, TextOverlayState, ImageOverlayState } from './compositorLayerParsers';
 import { bumpConfigRev, getClientNonce } from './useConfigRev';
 
-// ── Commit adapter ──────────────────────────────────────────────────────────
-
 /** Unified commit interface that hides the onConfigChange / onParamChange branching. */
 export interface CommitAdapter {
   /** Persist video layer changes. */
@@ -117,8 +115,6 @@ export function createCommitAdapter(
     },
   };
 }
-
-// ── Hook ────────────────────────────────────────────────────────────────────
 
 export interface UseCompositorCommitOptions {
   nodeId: string;

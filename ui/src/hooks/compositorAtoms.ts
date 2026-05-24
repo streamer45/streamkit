@@ -26,11 +26,7 @@ import type {
   OverlayBase,
 } from './compositorLayerParsers';
 
-// ── Store type ──────────────────────────────────────────────────────────────
-
 export type CompositorStore = ReturnType<typeof createStore>;
-
-// ── Core atoms ──────────────────────────────────────────────────────────────
 
 /** Ordered list of video layer IDs. */
 export const layerIdsAtom = atom<string[]>([]);
@@ -59,8 +55,6 @@ export const nullImageOverlayAtom = atom<ImageOverlayState | null>(null);
 export const nullOpacityAtom = atom(1);
 export const nullRotationAtom = atom(0);
 
-// ── Derived atoms ───────────────────────────────────────────────────────────
-
 /** All video layers as an array, derived from per-layer atoms. */
 export const allLayersAtom = atom<LayerState[]>((get) => {
   const ids = get(layerIdsAtom);
@@ -83,7 +77,6 @@ export const allImageOverlaysAtom = atom<ImageOverlayState[]>((get) => {
     .filter((o): o is ImageOverlayState => o !== null);
 });
 
-// ── Derived atom families for field-level subscriptions ──────────────────────
 //
 // These return primitives, so Jotai's Object.is check ensures that when a
 // slider tick writes a new LayerState with changed opacity, subscribers of
@@ -110,8 +103,6 @@ export const selectedLayerKindAtom = atom<LayerKind | null>((get) => {
   if (get(imageOverlayIdsAtom).includes(id)) return 'image';
   return null;
 });
-
-// ── Equality helpers ────────────────────────────────────────────────────────
 
 /** Equality check for string arrays (avoids spurious atom writes). */
 function idsEqual(a: readonly string[], b: readonly string[]): boolean {
@@ -175,8 +166,6 @@ function textOverlayEqual(a: TextOverlayState, b: TextOverlayState): boolean {
 function imageOverlayEqual(a: ImageOverlayState, b: ImageOverlayState): boolean {
   return baseFieldsEqual(a, b) && a.assetPath === b.assetPath;
 }
-
-// ── Bulk helpers ────────────────────────────────────────────────────────────
 
 /** Set all video layers in the store, skipping unchanged atoms (by value). */
 export function setLayersInStore(store: CompositorStore, layers: LayerState[]): void {

@@ -42,8 +42,6 @@ function useNodeStateAndParams(nodeId: string, sessionId: string): NodeState | u
   return state ?? undefined;
 }
 
-// ── Setup ───────────────────────────────────────────────────────────────────
-
 const SESSION_ID = 'test-session';
 const NODE_ID = 'test-node';
 
@@ -70,7 +68,6 @@ describe('useNodeStateFromAtom render-performance', () => {
       }
     };
 
-    // ── Positive control: a hook that DOES subscribe to params ──────────
     // Proves the test harness detects re-renders from param writes.
     const control = measureHookRenders(
       (props: { nodeId: string; sessionId: string }) =>
@@ -82,7 +79,6 @@ describe('useNodeStateFromAtom render-performance', () => {
     );
     expect(control.meanRenderCount).toBeGreaterThanOrEqual(15);
 
-    // ── Actual test: useNodeStateFromAtom must NOT re-render ────────────
     const result = measureHookRenders(
       (props: { nodeId: string; sessionId: string }) =>
         useNodeStateFromAtom(props.nodeId, props.sessionId, undefined),

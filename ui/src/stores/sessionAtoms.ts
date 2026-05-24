@@ -21,15 +21,11 @@ import type { NodeState, NodeStats, Pipeline } from '@/types/types';
 import { deepMerge } from '@/utils/controlProps';
 import { deepEqual } from '@/utils/deepEqual';
 
-// ── Default store reference ─────────────────────────────────────────────────
-
 /** The default (provider-less) Jotai store for session atoms.
  *  Used by the WebSocket service (non-React) and compositorServerSync
  *  (inside compositor Provider where the default store isn't reachable
  *  via useAtomValue). */
 export const sessionStore = getDefaultStore();
-
-// ── Composite key helper ────────────────────────────────────────────────────
 
 export function nodeKey(sessionId: string, nodeId: string): string {
   return `${sessionId}\0${nodeId}`;
@@ -49,13 +45,9 @@ export const nullStateAtom = atom<NodeState | null>(null);
  *  avoid creating a permanent empty-key entry in `sessionConnectedAtom`. */
 export const nullConnectedAtom = atom(false);
 
-// ── Per-node atoms ──────────────────────────────────────────────────────────
-
 export const nodeStateAtom = atomFamily((_key: string) => atom<NodeState | null>(null));
 export const nodeStatsAtom = atomFamily((_key: string) => atom<NodeStats | null>(null));
 export const nodeViewDataAtom = atomFamily((_key: string) => atom<unknown>(undefined));
-
-// ── Per-node params atom ────────────────────────────────────────────────────
 
 /** Per-node params atom -- stores the full Record<string, unknown> for a node. */
 export const nodeParamsAtom = atomFamily((_key: string) => atom<Record<string, unknown>>({}));
@@ -114,11 +106,7 @@ export function resetSessionParams(sessionId: string): void {
   }
 }
 
-// ── Per-session connected atom ──────────────────────────────────────────────
-
 export const sessionConnectedAtom = atomFamily((_sessionId: string) => atom(false));
-
-// ── Batch write helpers ─────────────────────────────────────────────────────
 
 /** Write batched node state updates to atoms. Called from WebSocket RAF flush.
  *  Skips writes when the new value is deeply equal to the current one so

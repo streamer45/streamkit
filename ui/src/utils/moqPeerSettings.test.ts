@@ -6,9 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { extractMoqPeerSettings, updateUrlPath } from './moqPeerSettings';
 
-// ---------------------------------------------------------------------------
 // extractMoqPeerSettings — reads the declarative `client` section
-// ---------------------------------------------------------------------------
 
 describe('extractMoqPeerSettings', () => {
   it('should return null for empty YAML', () => {
@@ -247,9 +245,7 @@ client:
     expect(result!.outputsVideo).toBe(false);
   });
 
-  // ---------------------------------------------------------------------------
   // videoSourceType extraction
-  // ---------------------------------------------------------------------------
 
   it('should default videoSourceType to camera when not specified', () => {
     const yaml = `
@@ -328,9 +324,7 @@ client:
     expect(result!.videoSourceType).toBe('camera');
   });
 
-  // ---------------------------------------------------------------------------
   // Multi-broadcast track grouping
-  // ---------------------------------------------------------------------------
 
   it('should extract multi-broadcast tracks and publishBroadcasts', () => {
     const yaml = `
@@ -376,9 +370,7 @@ client:
   });
 });
 
-// ---------------------------------------------------------------------------
 // updateUrlPath — preserves host when applying a gateway path
-// ---------------------------------------------------------------------------
 
 describe('updateUrlPath', () => {
   it('should replace path on a standard URL', () => {

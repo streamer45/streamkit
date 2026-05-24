@@ -58,15 +58,11 @@ import {
 import type { LayerState, TextOverlayState, OverlayBase } from './compositorLayerParsers';
 import { getLocalConfigRev, getClientNonce } from './useConfigRev';
 
-// ── Source dims ref type ─────────────────────────────────────────────────────
-
 /** Per-layer source frame dimensions, keyed by layer id.
  *  Populated from `ResolvedLayer.source_width`/`source_height` in server
  *  view data.  Kept separate from `LayerState` so prediction inputs
  *  (runtime server metadata) don't mix with config/geometry state. */
 export type SourceDimsMap = Map<string, { width: number; height: number }>;
-
-// ── Pure helpers ────────────────────────────────────────────────────────────
 
 /** Map server geometry onto existing client LayerState[], preserving all
  *  config-driven fields (opacity, rotation, z_index, mirror, crop, visible).
@@ -157,8 +153,6 @@ export function mergeTextMeasurements(
   return changed ? next : base;
 }
 
-// ── Server layout helpers ────────────────────────────────────────────────────
-
 /** True when the view-data tick was rendered from pre-commit config
  *  (rev older than our latest stamped commit).  Empty sender is the
  *  server's pre-stamp default (see compositor `mod.rs` view-data emit:
@@ -213,8 +207,6 @@ function applyServerLayoutToStore(store: CompositorStore, layout: CompositorLayo
     if (next !== prevImg) setImageOverlaysInStore(store, next);
   }
 }
-
-// ── Hook ────────────────────────────────────────────────────────────────────
 
 /** Subscribe to server-driven layout updates for a compositor node.
  *

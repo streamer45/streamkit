@@ -20,8 +20,6 @@ import { AssetCard, type UnifiedAsset } from './AssetCard';
 import ConfirmModal from './ConfirmModal';
 import { UploadDropZone } from './UploadDropZone';
 
-// ── Styled components ───────────────────────────────────────────────────────
-
 const LibraryWrapper = styled.div`
   display: flex;
   flex-direction: column;
@@ -166,8 +164,6 @@ const EmptyState = styled.div`
   color: var(--sk-text-muted);
 `;
 
-// ── Types ────────────────────────────────────────────────────────────────────
-
 type TypeFilter = 'all' | string; // 'all' or a type_id
 
 interface AssetLibraryProps {
@@ -175,8 +171,6 @@ interface AssetLibraryProps {
   /** When provided, only items for which this returns true show a drag affordance. */
   isDraggable?: (item: UnifiedAsset) => boolean;
 }
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
 
 /** Append typed assets if the filter matches. */
 function appendIfMatches<T extends 'audio' | 'image' | 'font'>(
@@ -234,8 +228,6 @@ function getUploadConfig(
   };
 }
 
-// ── Sub-components ───────────────────────────────────────────────────────────
-
 function AssetListSection({
   title,
   items,
@@ -268,8 +260,6 @@ function AssetListSection({
     </>
   );
 }
-
-// ── Hooks ────────────────────────────────────────────────────────────────────
 
 /** Aggregate loading / error state across core and plugin queries. */
 function aggregateQueryState(
@@ -317,8 +307,7 @@ function useAssetData(typeFilter: TypeFilter, assetTypes: AssetTypeInfo[] | unde
     })),
   });
 
-  // Extract the data arrays from the query results so useMemo deps are stable
-  // (useQueries returns a new array reference every render).
+  // useQueries returns a new array ref every render; stabilise for useMemo deps.
   const pluginQueryData = pluginQueries.map((q) => q.data);
   const prevPluginDataRef = useRef(pluginQueryData);
   const stablePluginData = pluginQueryData.every((d, i) => d === prevPluginDataRef.current[i])
@@ -326,7 +315,6 @@ function useAssetData(typeFilter: TypeFilter, assetTypes: AssetTypeInfo[] | unde
     : pluginQueryData;
   prevPluginDataRef.current = stablePluginData;
 
-  // Mutations
   const uploadAudio = useUploadAudioAsset();
   const deleteAudio = useDeleteAudioAsset();
   const uploadImage = useUploadImageAsset();
@@ -382,8 +370,6 @@ function useAssetData(typeFilter: TypeFilter, assetTypes: AssetTypeInfo[] | unde
   };
 }
 
-// ── Component ────────────────────────────────────────────────────────────────
-
 export function AssetLibrary({ onDragStart, isDraggable }: AssetLibraryProps) {
   const { can } = usePermissions();
   const toast = useToast();
@@ -402,7 +388,6 @@ export function AssetLibrary({ onDragStart, isDraggable }: AssetLibraryProps) {
   const { data: assetTypes } = useAssetTypes();
   const data = useAssetData(typeFilter, assetTypes);
 
-  // ── Derived data ───────────────────────────────────────────────────────
   const filteredItems = useMemo(() => {
     const search = searchTerm.toLowerCase();
     const fmt = formatFilter.toLowerCase();
@@ -433,7 +418,6 @@ export function AssetLibrary({ onDragStart, isDraggable }: AssetLibraryProps) {
     [typeFilter, assetTypes]
   );
 
-  // ── Handlers ───────────────────────────────────────────────────────────
   const handleFileSelect = useCallback(
     async (files: FileList) => {
       const file = files?.[0];
@@ -494,7 +478,6 @@ export function AssetLibrary({ onDragStart, isDraggable }: AssetLibraryProps) {
     setAssetToDelete(null);
   }, [assetToDelete, data, toast, queryClient]);
 
-  // ── Loading / Error ────────────────────────────────────────────────────
   if (data.isLoading) {
     return (
       <LibraryWrapper>

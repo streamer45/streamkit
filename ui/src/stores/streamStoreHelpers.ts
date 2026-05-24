@@ -1148,7 +1148,6 @@ export async function performConnect(
       validateTrackCodecs(state.tracks);
       set({ connectingStep: 'devices' });
 
-      // Filter tracks belonging to the primary broadcast for setupPublishPath.
       const primaryBroadcast = state.publishBroadcasts[0] ?? state.inputBroadcast;
       const primaryTracks = state.tracks.filter(
         (t) => (t.broadcast ?? primaryBroadcast) === primaryBroadcast

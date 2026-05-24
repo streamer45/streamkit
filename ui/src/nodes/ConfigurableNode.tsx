@@ -193,9 +193,7 @@ function formatMinMaxLabels(
   };
 }
 
-// ---------------------------------------------------------------------------
 // Numeric slider control
-// ---------------------------------------------------------------------------
 
 const NumericSliderControl: React.FC<NumericSliderControlProps> = ({
   nodeId,

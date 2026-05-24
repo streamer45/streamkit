@@ -101,8 +101,6 @@ function makeImageOverlay(
   };
 }
 
-// ── Pure merge function tests ───────────────────────────────────────────────
-
 describe('mergeRemoteLayerParams', () => {
   it('updates config fields from parsed while preserving geometry', () => {
     const current = [makeLayer('in_0', { x: 160, y: 0, width: 960, height: 720 })];
@@ -256,8 +254,6 @@ describe('mergeRemoteImageParams', () => {
     expect(result[0].opacity).toBe(0.7);
   });
 });
-
-// ── Integration: atom → compositor store propagation ────────────────────────
 
 describe('useParamAtomSync integration', () => {
   it('remote param write propagates config to compositor store', () => {

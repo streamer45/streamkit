@@ -419,7 +419,6 @@ function createEdgesFromPipeline(
 
         const sourceId = labelToIdMap.get(sourceLabel);
 
-        // Validate that the referenced node exists
         if (!sourceId) {
           throw new Error(
             `Node "${label}" references non-existent node "${sourceLabel}" in needs.`
@@ -446,7 +445,6 @@ function createEdgesFromPipeline(
         }
         if (!targetHandleName) return;
 
-        // Validate connection compatibility
         validateConnectionCompatibility(
           sourceNode,
           targetNode,

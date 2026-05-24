@@ -238,9 +238,7 @@ describe('mixed schema extraction', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // deepMergeSchemas
-// ---------------------------------------------------------------------------
 
 describe('deepMergeSchemas', () => {
   it('returns empty object when both are undefined', () => {

@@ -45,16 +45,10 @@ import { usePreviewPanelInteraction, type ResizeEdge } from './usePreviewPanelIn
 // Re-export styled components for external consumers.
 export { VolumeSlider } from './OutputPreviewPanel.styles';
 
-// ---------------------------------------------------------------------------
 // Hooks — re-exported from dedicated module for backward compatibility
-// ---------------------------------------------------------------------------
 
 // Re-export so existing imports from this file continue to work.
 export { useAudioControls } from '@/hooks/useAudioControls';
-
-// ---------------------------------------------------------------------------
-// Sub-components
-// ---------------------------------------------------------------------------
 
 /** Human-readable connecting-step labels (mirrors StreamView). */
 const CONNECTING_STEP_TEXT: Record<string, string> = {
@@ -252,9 +246,7 @@ const ResizeEdges: React.FC<{
 ));
 ResizeEdges.displayName = 'ResizeEdges';
 
-// ---------------------------------------------------------------------------
 // Main component
-// ---------------------------------------------------------------------------
 
 interface OutputPreviewPanelProps {
   /** Whether a session is selected in the Monitor View */

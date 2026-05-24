@@ -17,8 +17,6 @@ import { createPortal } from 'react-dom';
 import type { LayerKind } from '@/hooks/useCompositorLayers';
 import type { CompositorEntry } from '@/nodes/compositorNodeParts';
 
-// ── Styled components ───────────────────────────────────────────────────────
-
 const MenuOverlay = styled.div`
   position: fixed;
   inset: 0;
@@ -61,8 +59,6 @@ const MenuDivider = styled.div`
   margin: 2px 0;
 `;
 
-// ── Types ───────────────────────────────────────────────────────────────────
-
 export interface ContextMenuState {
   layerId: string;
   layerKind: LayerKind;
@@ -78,8 +74,6 @@ export interface CompositorContextMenuProps {
   onRemoveImage: (id: string) => void;
   onClose: () => void;
 }
-
-// ── Component ───────────────────────────────────────────────────────────────
 
 export const CompositorContextMenu: React.FC<CompositorContextMenuProps> = ({
   menu,

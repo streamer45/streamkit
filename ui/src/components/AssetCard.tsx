@@ -13,8 +13,6 @@ import type {
   PluginAsset,
 } from '@/types/generated/api-types';
 
-// ── Types ────────────────────────────────────────────────────────────────────
-
 /** Discriminated union so each card knows how to render its content. */
 export type UnifiedAsset =
   | { type: 'audio'; asset: AudioAsset }
@@ -31,8 +29,6 @@ interface AssetCardProps {
   /** Override the default draggable check (`!!onDragStart`). */
   isDraggable?: boolean;
 }
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatFileSize(bytes: number | bigint): string {
   const numBytes = typeof bytes === 'bigint' ? Number(bytes) : bytes;
@@ -108,8 +104,6 @@ function getLicense(item: UnifiedAsset): string | undefined {
   }
   return undefined;
 }
-
-// ── Styled components ────────────────────────────────────────────────────────
 
 const CardWrapper = styled.div<{ $draggable: boolean }>`
   display: flex;
@@ -241,8 +235,6 @@ const DeleteButton = styled.button`
     cursor: not-allowed;
   }
 `;
-
-// ── Component ────────────────────────────────────────────────────────────────
 
 export function AssetCard({ item, onDelete, canDelete, onDragStart, isDraggable }: AssetCardProps) {
   const canDrag = isDraggable ?? !!onDragStart;

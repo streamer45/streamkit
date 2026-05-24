@@ -121,7 +121,6 @@ interface LayoutStore {
   leftSize: number;
   rightSize: number;
 
-  // Actions
   setPreset: (preset: LayoutPreset) => void;
   setLeftCollapsed: (collapsed: boolean) => void;
   setRightCollapsed: (collapsed: boolean) => void;

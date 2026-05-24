@@ -11,8 +11,6 @@ import { fetchApi } from './base';
 
 const logger = getLogger('fontAssets');
 
-// ── Font loading for canvas preview ─────────────────────────────────────────
-
 /** Set of font asset paths that have already been loaded into the browser. */
 const loadedFonts = new Set<string>();
 
@@ -137,8 +135,6 @@ export async function deleteFontAsset(id: string): Promise<void> {
 
   logger.info('Deleted font asset:', id);
 }
-
-// ── React Query hooks ───────────────────────────────────────────────────────
 
 /**
  * Hook to fetch font assets with caching

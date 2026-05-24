@@ -12,9 +12,7 @@ import { nodeParamsAtom } from '@/stores/sessionAtoms';
 import { buildParamUpdate, readByPath } from '@/utils/controlProps';
 import type { ToggleConfig, TextConfig } from '@/utils/jsonSchema';
 
-// ---------------------------------------------------------------------------
 // Styled components for toggle/text controls
-// ---------------------------------------------------------------------------
 
 export const ControlLabel = styled.div`
   display: flex;
@@ -35,9 +33,7 @@ export const ControlDescription = styled.div`
   color: var(--sk-text-muted);
 `;
 
-// ---------------------------------------------------------------------------
 // Toggle control styled components
-// ---------------------------------------------------------------------------
 
 const ToggleRow = styled.div`
   display: flex;
@@ -81,9 +77,7 @@ const ToggleTrack = styled.button<{ checked: boolean }>`
   }
 `;
 
-// ---------------------------------------------------------------------------
 // Text input control styled components
-// ---------------------------------------------------------------------------
 
 const TextInputWrapper = styled.div`
   display: flex;
@@ -119,9 +113,7 @@ const CompactTextInput = styled.input`
   }
 `;
 
-// ---------------------------------------------------------------------------
 // Boolean toggle control
-// ---------------------------------------------------------------------------
 
 interface BooleanToggleControlProps {
   nodeId: string;
@@ -189,9 +181,7 @@ export const BooleanToggleControl: React.FC<BooleanToggleControlProps> = React.m
 );
 BooleanToggleControl.displayName = 'BooleanToggleControl';
 
-// ---------------------------------------------------------------------------
 // Text input control
-// ---------------------------------------------------------------------------
 
 interface TextInputControlProps {
   nodeId: string;

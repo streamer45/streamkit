@@ -13,14 +13,10 @@
 import type { LayerKind } from './compositorConstants';
 import type { LayerState, ResizeHandle } from './compositorLayerParsers';
 
-// ── Constants ───────────────────────────────────────────────────────────────
-
 /** Grid step used when snap-to-grid is active (pixels in canvas space). */
 export const SNAP_GRID = 10;
 /** Distance threshold for snapping to centre guidelines (pixels). */
 export const SNAP_THRESHOLD = 8;
-
-// ── Snap guide detection ────────────────────────────────────────────────────
 
 /** Which snap guides are currently active during a drag. */
 export interface SnapGuides {
@@ -57,8 +53,6 @@ export function detectSnapGuides(
     bottomEdge: Math.abs(layer.y + layer.height - canvasHeight) < 1,
   };
 }
-
-// ── Drag / resize computation ───────────────────────────────────────────────
 
 /** Compute the updated layer position/size from a drag or resize interaction.
  *  Pure function — no React dependencies. */
@@ -118,8 +112,6 @@ function computeDragPosition(
 
   return { ...orig, x: nx, y: ny };
 }
-
-// ── Resize internals ────────────────────────────────────────────────────────
 
 /** Mutable position/size bag passed between resize phases. */
 interface Dims {
@@ -356,8 +348,6 @@ function clampResizeToBounds(
 
   return { x: newX, y: newY, width: newW, height: newH };
 }
-
-// ── Main resize entry point ─────────────────────────────────────────────────
 
 function computeResizePosition(
   orig: LayerState,

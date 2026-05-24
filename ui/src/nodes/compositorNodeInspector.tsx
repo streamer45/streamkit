@@ -56,8 +56,6 @@ import {
 } from './compositorNodeWidgets';
 import type { CropZoomPatch, PositionSizePatch } from './compositorNodeWidgets';
 
-// ── Compositor inspector component ──────────────────────────────────────────
-
 export interface CompositorInspectorProps {
   updateLayerOpacity: (id: string, v: number) => void;
   updateLayerRotation: (id: string, v: number) => void;

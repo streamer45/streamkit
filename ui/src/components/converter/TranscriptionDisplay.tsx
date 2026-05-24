@@ -91,7 +91,6 @@ async function readTranscriptionStream(
     );
   }
 
-  // Process any remaining data in buffer
   if (buffer.trim()) {
     const extracted = extractJsonValues(buffer);
     processBufferedLines(
@@ -242,7 +241,6 @@ const LoadingContainer = styled.div`
 
 interface TranscriptionDisplayProps {
   stream: ReadableStream<Uint8Array>;
-  // Add a unique key to force remount
   processingKey?: number;
   // Callback when stream processing is complete
   onComplete?: () => void;
@@ -254,7 +252,6 @@ interface TranscriptionDisplayProps {
  * Format milliseconds as MM:SS.mmm
  */
 function formatTimestamp(ms: bigint | number): string {
-  // Convert bigint to number for calculations
   const msNum = typeof ms === 'bigint' ? Number(ms) : ms;
   const totalSeconds = Math.floor(msNum / 1000);
   const minutes = Math.floor(totalSeconds / 60);

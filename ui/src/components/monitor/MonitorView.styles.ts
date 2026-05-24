@@ -14,9 +14,7 @@ import * as Tooltip from '@radix-ui/react-tooltip';
 
 import { Button } from '@/components/ui/Button';
 
-// ---------------------------------------------------------------------------
 // Legend
-// ---------------------------------------------------------------------------
 
 export const LegendContainer = styled.div`
   position: absolute;
@@ -58,9 +56,7 @@ export const LegendDot = styled.div<{ color: string }>`
   flex-shrink: 0;
 `;
 
-// ---------------------------------------------------------------------------
 // Connection status
-// ---------------------------------------------------------------------------
 
 export const ConnectionStatusContainer = styled.div<{ connected: boolean }>`
   display: inline-flex;
@@ -96,9 +92,7 @@ export const ConnectionStatusDot = styled.div<{ connected: boolean }>`
   }
 `;
 
-// ---------------------------------------------------------------------------
 // Left panel (session list)
-// ---------------------------------------------------------------------------
 
 export const LeftPanelAside = styled.aside`
   height: 100%;
@@ -229,9 +223,7 @@ export const SessionDeleteButton = styled.button`
   }
 `;
 
-// ---------------------------------------------------------------------------
 // Session tooltip
-// ---------------------------------------------------------------------------
 
 export const SessionTooltipContent = styled(Tooltip.Content)`
   background: var(--sk-panel-bg);
@@ -262,9 +254,7 @@ export const TooltipValue = styled.span`
   color: var(--sk-text);
 `;
 
-// ---------------------------------------------------------------------------
 // Nodes library
-// ---------------------------------------------------------------------------
 
 export const NodesLibraryContainer = styled.div`
   height: 100%;
@@ -279,9 +269,7 @@ export const EmptyStateText = styled.div`
   text-align: center;
 `;
 
-// ---------------------------------------------------------------------------
 // Center panel / canvas overlay
-// ---------------------------------------------------------------------------
 
 export const CenterPanelContainer = styled.div`
   width: 100%;
@@ -332,9 +320,7 @@ export const TopRightControls = styled.div`
   }
 `;
 
-// ---------------------------------------------------------------------------
 // Session chip (top-left of canvas)
-// ---------------------------------------------------------------------------
 
 export const SessionChipContainer = styled.div`
   position: relative;
@@ -381,9 +367,7 @@ export const SessionStatusDot = styled.span<{ color: string }>`
   box-shadow: 0 0 6px ${(p) => `${p.color}55`};
 `;
 
-// ---------------------------------------------------------------------------
 // Session details popover
-// ---------------------------------------------------------------------------
 
 export const SessionDetailsPanel = styled.div`
   position: absolute;
@@ -425,9 +409,7 @@ export const DetailsValue = styled.span`
   white-space: nowrap;
 `;
 
-// ---------------------------------------------------------------------------
 // Action buttons
-// ---------------------------------------------------------------------------
 
 export const ButtonGroup = styled.div`
   display: flex;
@@ -441,9 +423,7 @@ export const ButtonGroup = styled.div`
   }
 `;
 
-// ---------------------------------------------------------------------------
 // Empty state
-// ---------------------------------------------------------------------------
 
 export const EmptyMonitorState = styled.div`
   display: flex;
