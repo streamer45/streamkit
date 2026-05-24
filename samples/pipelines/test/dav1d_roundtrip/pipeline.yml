@@ -24,7 +24,7 @@ nodes:
       width: 320
       height: 240
       fps: 30
-      frame_count: 30
+      frame_count: 10
       pixel_format: nv12
       draw_time: true
       draw_time_use_pts: true
