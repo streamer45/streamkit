@@ -1251,3 +1251,839 @@ impl UnifiedPluginManager {
 
 /// Convenience alias for sharing the unified plugin manager behind an async mutex.
 pub type SharedUnifiedPluginManager = Arc<Mutex<UnifiedPluginManager>>;
+
+#[cfg(test)]
+// Tests intentionally panic via unwrap/expect to surface broken preconditions
+// directly rather than propagating through `?`.
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use std::process::Command;
+    use std::sync::OnceLock;
+    use tempfile::TempDir;
+
+    fn make_manager(tmp: &TempDir) -> UnifiedPluginManager {
+        let base = tmp.path().to_path_buf();
+        let wasm = base.join("wasm");
+        let native = base.join("native");
+        let resource_manager =
+            Arc::new(streamkit_core::ResourceManager::new(streamkit_core::ResourcePolicy {
+                keep_loaded: true,
+                max_memory_mb: None,
+            }));
+        let engine =
+            Arc::new(streamkit_engine::Engine::with_resource_manager(resource_manager.clone()));
+        UnifiedPluginManager::new(engine, resource_manager, base, wasm, native, None)
+            .expect("manager builds from a fresh tmpdir")
+    }
+
+    /// Returns the cached `.so` path, panicking in CI when the fixture
+    /// is unavailable so silent skips can't inflate reported coverage.
+    /// Outside CI a missing fixture only logs a `tracing::warn!`.
+    fn panicking_plugin_so_or_skip() -> Option<PathBuf> {
+        let so = panicking_plugin_so_raw();
+        if so.is_none() {
+            let test_name = std::thread::current().name().unwrap_or("<unknown>").to_string();
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "panicking-plugin fixture missing in CI; test `{test_name}` would silently \
+                 skip. The streamkit-plugin-native build script normally produces it in \
+                 target/debug/build/streamkit-plugin-native-*/out/.",
+            );
+            tracing::warn!("skipping `{test_name}`: panicking-plugin .so not found");
+        }
+        so
+    }
+
+    /// Locates (or builds, once per process) the panicking-plugin `.so`
+    /// that streamkit-plugin-native's build script produces in its OUT_DIR.
+    /// We can't read that OUT_DIR from outside the crate, so we either
+    /// reuse an existing build artefact or invoke `cargo build` on demand.
+    fn panicking_plugin_so_raw() -> Option<PathBuf> {
+        static CACHED: OnceLock<Option<PathBuf>> = OnceLock::new();
+        CACHED
+            .get_or_init(|| {
+                // Walk the workspace target/ for the build script's output.
+                // The hash in the path is the build script's fingerprint;
+                // there can be multiple (different feature combos), so pick
+                // the first matching .so.
+                let workspace_root = workspace_root()?;
+                if let Some(path) = find_existing_so(&workspace_root.join("target")) {
+                    return Some(path);
+                }
+                // Fall back to building the fixture directly. The fixture
+                // crate is a tiny cdylib with no heavy dependencies; in a
+                // warm cargo cache this takes ~1-2s.
+                let fixture_manifest = workspace_root
+                    .join("crates/plugin-native/tests/fixtures/panicking-plugin/Cargo.toml");
+                if !fixture_manifest.exists() {
+                    return None;
+                }
+                let target_dir =
+                    workspace_root.join("target/skit-plugin-tests/panicking-plugin-target");
+                let status = Command::new(option_env!("CARGO").unwrap_or("cargo"))
+                    .args(["build", "--manifest-path"])
+                    .arg(&fixture_manifest)
+                    .arg("--target-dir")
+                    .arg(&target_dir)
+                    .status()
+                    .ok()?;
+                if !status.success() {
+                    return None;
+                }
+                let so = target_dir.join("debug").join("libpanicking_plugin.so");
+                so.exists().then_some(so)
+            })
+            .clone()
+    }
+
+    fn workspace_root() -> Option<PathBuf> {
+        // CARGO_MANIFEST_DIR points at apps/skit; the workspace root is two
+        // levels up.
+        let manifest_dir = option_env!("CARGO_MANIFEST_DIR")?;
+        let p = Path::new(manifest_dir).parent()?.parent()?.to_path_buf();
+        Some(p)
+    }
+
+    fn find_existing_so(target_dir: &Path) -> Option<PathBuf> {
+        // The build script's output lives at
+        //   {target}/debug/build/streamkit-plugin-native-*/out/...
+        // Under coverage the effective target/ is target/coverage/, so try
+        // every immediate subdirectory of target/ that contains a debug/build/
+        // folder (covers both the plain layout and CARGO_TARGET_DIR overrides).
+        let direct = target_dir.join("debug/build");
+        if let Some(hit) = scan_build_dir(&direct) {
+            return Some(hit);
+        }
+        let entries = std::fs::read_dir(target_dir).ok()?;
+        for entry in entries.flatten() {
+            let candidate_root = entry.path().join("debug/build");
+            if let Some(hit) = scan_build_dir(&candidate_root) {
+                return Some(hit);
+            }
+        }
+        None
+    }
+
+    fn scan_build_dir(build_dir: &Path) -> Option<PathBuf> {
+        let entries = std::fs::read_dir(build_dir).ok()?;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !name.starts_with("streamkit-plugin-native-") {
+                continue;
+            }
+            let candidate =
+                entry.path().join("out/panicking-plugin-target/debug/libpanicking_plugin.so");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn list_plugins_returns_empty_on_a_fresh_manager() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = make_manager(&tmp);
+        assert!(mgr.list_plugins().is_empty());
+        assert!(!mgr.is_plugin_loaded("plugin::native::panicking"));
+    }
+
+    #[test]
+    fn new_creates_missing_wasm_and_native_directories() {
+        // Manager::new must create both plugin subdirs even when only the
+        // base dir exists; load_existing would otherwise fail on the first
+        // read_dir call.
+        let tmp = TempDir::new().unwrap();
+        let _mgr = make_manager(&tmp);
+        assert!(tmp.path().join("wasm").is_dir());
+        assert!(tmp.path().join("native").is_dir());
+    }
+
+    #[test]
+    fn unload_plugin_returns_not_loaded_error_for_unknown_kind() {
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        let err = mgr
+            .unload_plugin("plugin::native::nope", false)
+            .expect_err("unloading an unknown plugin must fail");
+        let msg = err.to_string();
+        assert!(msg.contains("not currently loaded"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn load_from_path_returns_error_when_file_does_not_exist() {
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        let bogus = tmp.path().join("does_not_exist.so");
+        let err = mgr
+            .load_from_path(PluginType::Native, &bogus)
+            .expect_err("non-existent native plugin path must fail");
+        // The error path is either the explicit `does not exist` from
+        // load_native_plugin or the OS-level `No such file or directory`
+        // raised by the chmod step in load_from_written_path on Unix.
+        // Both indicate the missing file -- pin that we don't silently
+        // succeed.
+        let msg = err.to_string();
+        assert!(
+            msg.contains("does not exist") || msg.to_lowercase().contains("no such file"),
+            "unexpected native error: {msg}",
+        );
+
+        let bogus_wasm = tmp.path().join("does_not_exist.wasm");
+        let err = mgr
+            .load_from_path(PluginType::Wasm, &bogus_wasm)
+            .expect_err("non-existent WASM plugin path must fail");
+        assert!(
+            err.to_string().contains("failed to compile WASM plugin")
+                || err.to_string().contains("does not exist"),
+            "unexpected WASM error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_from_bytes_rejects_empty_file_name() {
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        let err = mgr.load_from_bytes("", b"junk").expect_err("empty name must fail");
+        assert!(err.to_string().contains("must not be empty"));
+    }
+
+    #[test]
+    fn load_from_bytes_rejects_path_traversal_in_file_name() {
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        let err = mgr
+            .load_from_bytes("../escape.wasm", b"")
+            .expect_err("path-traversal must be rejected");
+        assert!(err.to_string().contains("plain file name"), "got {err}");
+    }
+
+    #[test]
+    fn load_from_bytes_rejects_unsupported_extension() {
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        let err =
+            mgr.load_from_bytes("evil.txt", b"").expect_err("unknown extension must be rejected");
+        assert!(err.to_string().contains("valid extension"), "got {err}");
+    }
+
+    #[test]
+    fn load_from_bytes_rejects_oversize_file_name() {
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        let long = format!("{}.wasm", "a".repeat(300));
+        let err = mgr.load_from_bytes(&long, b"").expect_err("oversize name must fail");
+        assert!(err.to_string().contains("too long"), "got {err}");
+    }
+
+    #[test]
+    fn load_from_bytes_cleans_up_temp_file_on_invalid_wasm_payload() {
+        // Writing garbage to a .wasm file passes the upload-path validation
+        // but trips the runtime compile -- the helper must remove the
+        // partial file so a retry with the same name isn't blocked.
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        let _ = mgr.load_from_bytes("garbage.wasm", b"not a wasm module");
+        let target = tmp.path().join("wasm").join("garbage.wasm");
+        assert!(!target.exists(), "partial wasm file must be cleaned up");
+    }
+
+    #[test]
+    fn load_from_temp_file_rejects_invalid_extension() {
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        let payload = tmp.path().join("payload");
+        std::fs::write(&payload, b"x").unwrap();
+        let err = mgr
+            .load_from_temp_file("evil.exe", &payload)
+            .expect_err("unsupported extension must be rejected");
+        assert!(err.to_string().contains("valid extension"), "got {err}");
+    }
+
+    #[test]
+    fn load_from_temp_file_rejects_missing_temp_file() {
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        let bogus = tmp.path().join("missing");
+        let err = mgr
+            .load_from_temp_file("ok.wasm", &bogus)
+            .expect_err("missing temp file must be rejected");
+        assert!(
+            err.to_string().contains("failed to stat") || err.to_string().contains("not a file"),
+            "got {err}",
+        );
+    }
+
+    #[test]
+    fn collect_plugin_asset_specs_returns_empty_with_no_loaded_plugins() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = make_manager(&tmp);
+        assert!(mgr.collect_plugin_asset_specs().is_empty());
+    }
+
+    #[test]
+    fn load_existing_returns_empty_when_no_plugins_present() {
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        let summaries = mgr.load_existing().expect("load_existing on empty dirs is Ok");
+        assert!(summaries.is_empty());
+    }
+
+    #[test]
+    fn load_native_directory_warns_and_skips_bare_so_files() {
+        // A bare .so directly in native_directory (not in a subdir) must be
+        // ignored: load_existing must still return Ok, and the file must not
+        // be loaded.
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        let bare_so = tmp.path().join("native").join("dropped.so");
+        std::fs::write(&bare_so, b"not a real library").unwrap();
+
+        let summaries = mgr.load_existing().expect("bare library must not be a hard failure");
+        assert!(summaries.is_empty(), "bare .so must not register, got {summaries:?}");
+        assert!(mgr.list_plugins().is_empty());
+    }
+
+    fn write_active_record(plugin_dir: &Path, record_file: &str, record_json: &str) -> PathBuf {
+        let active = plugin_dir.join("active");
+        std::fs::create_dir_all(&active).unwrap();
+        let path = active.join(record_file);
+        std::fs::write(&path, record_json).unwrap();
+        path
+    }
+
+    #[test]
+    fn load_active_plugin_record_skips_when_entrypoint_missing() {
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        let record = serde_json::json!({
+            "plugin_id": "ghost",
+            "version": "0.1.0",
+            "node_kind": "ghost",
+            "kind": "native",
+            "entrypoint": tmp.path().join("nope/libghost.so").display().to_string(),
+            "installed_at_ms": 0u64,
+        });
+        let _record_path = write_active_record(tmp.path(), "ghost.json", &record.to_string());
+
+        let summaries = mgr.load_existing().expect("missing entrypoint is logged, not propagated");
+        assert!(
+            summaries.is_empty(),
+            "active record with missing entrypoint must not register, got {summaries:?}",
+        );
+    }
+
+    #[test]
+    fn load_active_plugin_record_skips_invalid_plugin_id() {
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        let record = serde_json::json!({
+            "plugin_id": "../escape",
+            "version": "0.1.0",
+            "node_kind": "ghost",
+            "kind": "native",
+            "entrypoint": "/dev/null",
+            "installed_at_ms": 0u64,
+        });
+        write_active_record(tmp.path(), "bad.json", &record.to_string());
+        let summaries = mgr.load_existing().expect("invalid id is logged, not propagated");
+        assert!(summaries.is_empty());
+    }
+
+    #[test]
+    fn load_active_plugin_record_skips_malformed_json() {
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        write_active_record(tmp.path(), "broken.json", "not json at all");
+        let summaries = mgr.load_existing().expect("malformed record is logged, not propagated");
+        assert!(summaries.is_empty());
+    }
+
+    #[test]
+    fn load_native_plugin_happy_path_registers_then_dedups_then_unloads() {
+        // This test exercises the only "real plugin load" path we can reach
+        // from apps/skit: the panicking-plugin .so produced by
+        // streamkit-plugin-native's build.rs.  When that artefact isn't
+        // available (e.g. minimal build, sandbox without cargo, etc.) we
+        // skip rather than fail -- the validation-path tests above still
+        // cover everything else.
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
+
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        // Install via load_from_path so we don't disturb the .so location.
+        let summary = mgr
+            .load_from_path(PluginType::Native, &so)
+            .expect("happy-path load of panicking-plugin");
+
+        assert_eq!(summary.plugin_type, PluginType::Native);
+        assert_eq!(summary.original_kind, "panicking");
+        assert_eq!(summary.kind, "plugin::native::panicking");
+        assert!(mgr.is_plugin_loaded("plugin::native::panicking"));
+
+        // list_plugins now contains the entry.
+        let listed = mgr.list_plugins();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].kind, "plugin::native::panicking");
+
+        // A second load with the same kind must trip check_kind_conflict
+        // (or the wasm-side equivalent) and surface ERR_ALREADY_LOADED.
+        let dup = mgr
+            .load_from_path(PluginType::Native, &so)
+            .expect_err("duplicate kind must be rejected");
+        let msg = dup.to_string();
+        assert!(
+            msg.contains(ERR_ALREADY_LOADED) || msg.contains(ERR_ALREADY_REGISTERED),
+            "duplicate-load error must carry the sentinel: {msg}",
+        );
+
+        // Unload round-trip.
+        let removed = mgr
+            .unload_plugin("plugin::native::panicking", false)
+            .expect("unload of a freshly-loaded plugin must succeed");
+        assert_eq!(removed.kind, "plugin::native::panicking");
+        assert!(!mgr.is_plugin_loaded("plugin::native::panicking"));
+        assert!(mgr.list_plugins().is_empty());
+
+        // Second unload must report not-loaded.
+        let err = mgr
+            .unload_plugin("plugin::native::panicking", false)
+            .expect_err("second unload must fail");
+        assert!(err.to_string().contains("not currently loaded"));
+    }
+
+    #[test]
+    fn list_plugins_includes_loaded_native_after_load_existing() {
+        // Drop the fixture .so into a subdirectory of native_directory so
+        // load_native_dir_plugins picks it up via the directory-bundle path
+        // (phase 2 of load_all_native_plugins).
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        let bundle_dir = tmp.path().join("native").join("panicking");
+        std::fs::create_dir_all(&bundle_dir).unwrap();
+        let dest = bundle_dir.join("libpanicking_plugin.so");
+        std::fs::copy(&so, &dest).unwrap();
+
+        let summaries = mgr.load_existing().expect("load_existing succeeds with one bundle");
+        assert_eq!(summaries.len(), 1, "expected one loaded plugin, got {summaries:?}");
+        assert_eq!(summaries[0].kind, "plugin::native::panicking");
+        assert!(mgr.is_plugin_loaded("plugin::native::panicking"));
+    }
+
+    #[test]
+    fn load_existing_skips_directory_bundle_when_kind_already_loaded() {
+        // Two bundles providing the same plugin kind: the first wins; the
+        // second must be skipped via the ERR_ALREADY_LOADED sentinel branch
+        // in load_native_dir_plugins.
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        // bundle-a is alphabetically earlier and wins.
+        for sub in ["bundle-a", "bundle-b"] {
+            let dir = tmp.path().join("native").join(sub);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::copy(&so, dir.join("libpanicking_plugin.so")).unwrap();
+        }
+        let summaries = mgr.load_existing().expect("load_existing succeeds");
+        assert_eq!(summaries.len(), 1, "duplicate bundle must be deduplicated, got {summaries:?}");
+        assert_eq!(mgr.list_plugins().len(), 1);
+    }
+
+    #[test]
+    fn load_from_temp_file_native_happy_path_moves_and_loads() {
+        // Exercise the move-probe-rename path in load_from_temp_file for a
+        // real native plugin: temp file disappears, target file appears,
+        // plugin is registered.
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+
+        let staging = tmp.path().join("staging");
+        std::fs::create_dir_all(&staging).unwrap();
+        let temp_so = staging.join("libpanicking_plugin.so");
+        std::fs::copy(&so, &temp_so).unwrap();
+
+        let summary = mgr
+            .load_from_temp_file("libpanicking_plugin.so", &temp_so)
+            .expect("native plugin uploaded via temp file must load");
+
+        assert_eq!(summary.kind, "plugin::native::panicking");
+        assert!(!temp_so.exists(), "temp file must be moved into the plugin tree");
+        let target = tmp.path().join("native/panicking_plugin/libpanicking_plugin.so");
+        assert!(target.exists(), "plugin must land at {}", target.display());
+        assert!(mgr.is_plugin_loaded("plugin::native::panicking"));
+    }
+
+    #[test]
+    fn load_from_temp_file_detects_existing_kind_and_keeps_original_file() {
+        // After a successful load via temp file, a second upload of the
+        // *same* plugin must be rejected without clobbering the existing
+        // file (check_native_upload_conflict path).
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+
+        let staging = tmp.path().join("staging");
+        std::fs::create_dir_all(&staging).unwrap();
+        let temp_so_1 = staging.join("a.so");
+        std::fs::copy(&so, &temp_so_1).unwrap();
+        mgr.load_from_temp_file("first.so", &temp_so_1).expect("first load");
+
+        let temp_so_2 = staging.join("b.so");
+        std::fs::copy(&so, &temp_so_2).unwrap();
+        let err = mgr
+            .load_from_temp_file("second.so", &temp_so_2)
+            .expect_err("duplicate upload must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(ERR_ALREADY_LOADED) || msg.contains(ERR_ALREADY_REGISTERED),
+            "expected dedup sentinel, got: {msg}",
+        );
+        // The first plugin file must still be there.
+        let first = tmp.path().join("native/first/first.so");
+        assert!(first.exists(), "original file at {} must survive", first.display());
+    }
+
+    #[test]
+    fn load_from_bytes_native_happy_path_writes_and_loads() {
+        // load_from_bytes for a native plugin should write the bytes,
+        // probe for conflicts, then register the plugin.
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        let bytes = std::fs::read(&so).unwrap();
+
+        let summary = mgr
+            .load_from_bytes("libpanicking_plugin.so", &bytes)
+            .expect("native plugin uploaded via bytes must load");
+        assert_eq!(summary.kind, "plugin::native::panicking");
+        let target = tmp.path().join("native/panicking_plugin/libpanicking_plugin.so");
+        assert!(target.exists(), "plugin must land at {}", target.display());
+    }
+
+    #[test]
+    fn load_from_bytes_native_dedup_keeps_existing_file_and_cleans_tmp() {
+        // After a successful load_from_bytes, a second call with the same
+        // payload must be rejected and must not leave the .tmp probe file
+        // behind.
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        let bytes = std::fs::read(&so).unwrap();
+        mgr.load_from_bytes("a.so", &bytes).expect("first load");
+
+        let err =
+            mgr.load_from_bytes("b.so", &bytes).expect_err("duplicate upload must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(ERR_ALREADY_LOADED) || msg.contains(ERR_ALREADY_REGISTERED),
+            "expected dedup sentinel, got: {msg}",
+        );
+        let tmp_probe = tmp.path().join("native/b/b.tmp");
+        assert!(!tmp_probe.exists(), "probe tmp file must be cleaned up");
+    }
+
+    #[test]
+    fn unload_with_remove_file_deletes_library_and_empty_parent_dir() {
+        // unload_plugin(_, remove_file=true) must delete the .so file and,
+        // if the parent is now an empty subdir of native_directory, remove
+        // it too (try_remove_empty_plugin_dir path).
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        let bundle_dir = tmp.path().join("native").join("panicking-bundle");
+        std::fs::create_dir_all(&bundle_dir).unwrap();
+        let dest = bundle_dir.join("libpanicking_plugin.so");
+        std::fs::copy(&so, &dest).unwrap();
+
+        mgr.load_existing().expect("load_existing succeeds");
+        assert!(mgr.is_plugin_loaded("plugin::native::panicking"));
+
+        mgr.unload_plugin("plugin::native::panicking", true).expect("unload with delete");
+
+        assert!(!dest.exists(), "plugin file must be removed");
+        assert!(!bundle_dir.exists(), "empty bundle dir must be removed");
+    }
+
+    #[test]
+    fn load_active_plugin_record_skips_when_entrypoint_outside_base_dir() {
+        // Use the real fixture under /tmp so canonicalize() succeeds. The
+        // active record points outside the plugin_base_dir and must be
+        // rejected with a warning rather than registered.
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        // Place the .so outside plugin_base_dir.
+        let outside = tempfile::tempdir().unwrap();
+        let outside_so = outside.path().join("libpanicking_plugin.so");
+        std::fs::copy(&so, &outside_so).unwrap();
+
+        let record = serde_json::json!({
+            "plugin_id": "panicking",
+            "version": "0.1.0",
+            "node_kind": "panicking",
+            "kind": "native",
+            "entrypoint": outside_so.display().to_string(),
+            "installed_at_ms": 0u64,
+        });
+        write_active_record(tmp.path(), "panicking.json", &record.to_string());
+
+        let summaries = mgr.load_existing().expect("load_existing returns Ok");
+        assert!(
+            summaries.is_empty(),
+            "entrypoint outside base dir must be skipped, got {summaries:?}",
+        );
+    }
+
+    #[test]
+    fn load_active_plugin_record_happy_path_registers_with_version() {
+        // Full active-record path: entrypoint exists under plugin_base_dir
+        // and the record's node_kind matches what the .so reports. Plugin
+        // is registered with the version from the record.
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        let bundle_dir = tmp.path().join("bundles/panicking-0.1.0");
+        std::fs::create_dir_all(&bundle_dir).unwrap();
+        let entrypoint = bundle_dir.join("libpanicking_plugin.so");
+        std::fs::copy(&so, &entrypoint).unwrap();
+
+        let record = serde_json::json!({
+            "plugin_id": "panicking",
+            "version": "0.1.0",
+            "node_kind": "panicking",
+            "kind": "native",
+            "entrypoint": entrypoint.display().to_string(),
+            "installed_at_ms": 0u64,
+        });
+        write_active_record(tmp.path(), "panicking.json", &record.to_string());
+
+        let summaries = mgr.load_existing().expect("load_existing succeeds");
+        assert_eq!(summaries.len(), 1, "active record must register, got {summaries:?}");
+        let s = &summaries[0];
+        assert_eq!(s.kind, "plugin::native::panicking");
+        assert_eq!(s.version.as_deref(), Some("0.1.0"));
+        assert!(mgr.is_plugin_loaded("plugin::native::panicking"));
+    }
+
+    #[test]
+    fn load_active_plugin_record_skips_on_invalid_version() {
+        // validate_path_component should reject versions with path separators,
+        // so the record is logged and skipped.
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        let record = serde_json::json!({
+            "plugin_id": "ok",
+            "version": "../etc",
+            "node_kind": "ok",
+            "kind": "native",
+            "entrypoint": "/tmp/missing.so",
+            "installed_at_ms": 0u64,
+        });
+        write_active_record(tmp.path(), "bad-version.json", &record.to_string());
+        let summaries = mgr.load_existing().expect("invalid version is logged, not propagated");
+        assert!(summaries.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn spawn_load_existing_loads_bundle_with_prewarm_failure_logged() {
+        // spawn_load_existing kicks off background loading; the prewarm
+        // path tries `prewarm_engine_plugin` first with primary params,
+        // then with fallback_params if provided. The panicking-plugin
+        // fixture intentionally panics on `process()` (which is what
+        // create_node calls indirectly), so prewarm will fail — we want
+        // to verify the background task still completes cleanly.
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
+        let tmp = TempDir::new().unwrap();
+        let mgr = {
+            let m = make_manager(&tmp);
+            Arc::new(Mutex::new(m))
+        };
+        let bundle_dir = tmp.path().join("native").join("panicking");
+        std::fs::create_dir_all(&bundle_dir).unwrap();
+        std::fs::copy(&so, bundle_dir.join("libpanicking_plugin.so")).unwrap();
+
+        let prewarm = crate::config::PrewarmConfig {
+            enabled: true,
+            plugins: vec![crate::config::PrewarmPluginConfig {
+                kind: "plugin::native::panicking".to_string(),
+                params: Some(serde_json::json!({"primary": true})),
+                fallback_params: Some(serde_json::json!({"fallback": true})),
+            }],
+        };
+        let registry = crate::plugin_assets::PluginAssetRegistry::new();
+
+        UnifiedPluginManager::spawn_load_existing(Arc::clone(&mgr), prewarm, registry);
+
+        // Wait for the spawned task to load the plugin. Poll for up to a
+        // few seconds — the actual load is fast (single .so) but the task
+        // includes a prewarm attempt that may take a moment to fail.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let loaded = {
+                let guard = mgr.lock().await;
+                guard.is_plugin_loaded("plugin::native::panicking")
+            };
+            if loaded {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "spawn_load_existing failed to register the plugin in time",
+            );
+        }
+        // Give the prewarm path (primary + fallback) time to run.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn spawn_load_existing_no_op_when_no_plugins_found() {
+        // No plugins on disk -> spawn_load_existing must finish without
+        // panicking and leave the manager with zero plugins.
+        let tmp = TempDir::new().unwrap();
+        let mgr = Arc::new(Mutex::new(make_manager(&tmp)));
+        let prewarm = crate::config::PrewarmConfig::default();
+        let registry = crate::plugin_assets::PluginAssetRegistry::new();
+
+        UnifiedPluginManager::spawn_load_existing(Arc::clone(&mgr), prewarm, registry);
+        // Give the task a moment to run.
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let is_empty = {
+            let guard = mgr.lock().await;
+            guard.list_plugins().is_empty()
+        };
+        assert!(is_empty);
+    }
+
+    #[test]
+    fn load_active_plugin_record_skips_when_kind_does_not_match_record() {
+        // The fixture reports node_kind `panicking`, but we declare the
+        // record's node_kind as something else. After load_from_path
+        // succeeds, the kind mismatch must trigger an unload + skip.
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        let bundle_dir = tmp.path().join("bundles/mismatched-0.1.0");
+        std::fs::create_dir_all(&bundle_dir).unwrap();
+        let entrypoint = bundle_dir.join("libpanicking_plugin.so");
+        std::fs::copy(&so, &entrypoint).unwrap();
+
+        let record = serde_json::json!({
+            "plugin_id": "mismatched",
+            "version": "0.1.0",
+            "node_kind": "something_else",
+            "kind": "native",
+            "entrypoint": entrypoint.display().to_string(),
+            "installed_at_ms": 0u64,
+        });
+        write_active_record(tmp.path(), "mismatched.json", &record.to_string());
+
+        let summaries = mgr.load_existing().expect("load_existing returns Ok");
+        assert!(summaries.is_empty(), "kind mismatch must trigger skip, got {summaries:?}");
+        assert!(mgr.list_plugins().is_empty(), "the temporarily-loaded plugin must be unloaded");
+    }
+
+    #[test]
+    fn load_existing_warns_and_logs_version_when_active_record_dedupes_directory_bundle() {
+        // First the active record loads the panicking plugin. Then a
+        // directory bundle also providing the same kind is encountered
+        // in phase 2 — this exercises the ERR_ALREADY_LOADED log branch
+        // which also reads the bundle's plugin.yml for version reporting.
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+
+        // Active record load (phase 1).
+        let bundle1 = tmp.path().join("bundles/panicking-1.0.0");
+        std::fs::create_dir_all(&bundle1).unwrap();
+        let entry1 = bundle1.join("libpanicking_plugin.so");
+        std::fs::copy(&so, &entry1).unwrap();
+        let record = serde_json::json!({
+            "plugin_id": "panicking",
+            "version": "1.0.0",
+            "node_kind": "panicking",
+            "kind": "native",
+            "entrypoint": entry1.display().to_string(),
+            "installed_at_ms": 0u64,
+        });
+        write_active_record(tmp.path(), "panicking.json", &record.to_string());
+
+        // Directory bundle (phase 2) with manifest declaring an older version.
+        let bundle2 = tmp.path().join("native/panicking-old");
+        std::fs::create_dir_all(&bundle2).unwrap();
+        std::fs::copy(&so, bundle2.join("libpanicking_plugin.so")).unwrap();
+        std::fs::write(
+            bundle2.join("plugin.yml"),
+            "id: panicking\nversion: 0.1.0\nnode_kind: panicking\nkind: native\nentrypoint: libpanicking_plugin.so\n",
+        )
+        .unwrap();
+
+        let summaries = mgr.load_existing().expect("load_existing returns Ok");
+        assert_eq!(summaries.len(), 1, "active record wins, got {summaries:?}");
+        assert_eq!(summaries[0].version.as_deref(), Some("1.0.0"));
+    }
+
+    #[test]
+    fn load_wasm_directory_skips_non_wasm_files_silently() {
+        // load_wasm_plugins_from_dir lists the wasm directory and filters
+        // entries by extension; non-.wasm files must be skipped without
+        // surfacing an error.
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        std::fs::write(tmp.path().join("wasm").join("notes.txt"), "ignored").unwrap();
+        let summaries = mgr.load_existing().expect("non-wasm files must be skipped quietly");
+        assert!(summaries.is_empty(), "no wasm plugins to load, got {summaries:?}");
+        assert!(mgr.list_plugins().is_empty());
+    }
+
+    #[test]
+    fn load_wasm_directory_logs_and_continues_on_invalid_wasm_payload() {
+        // An invalid .wasm file in the wasm directory must cause
+        // load_wasm_plugin to fail; the loop should log the error and
+        // proceed without aborting load_existing.
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        std::fs::write(tmp.path().join("wasm").join("garbage.wasm"), b"not valid wasm").unwrap();
+        let summaries = mgr.load_existing().expect("invalid wasm must not abort load_existing");
+        assert!(summaries.is_empty(), "no successful loads, got {summaries:?}");
+        assert!(mgr.list_plugins().is_empty());
+    }
+
+    #[test]
+    fn collect_plugin_asset_specs_includes_assets_from_loaded_plugin_manifest() {
+        // After loading a native plugin, drop a plugin.yml next to the .so
+        // declaring an asset spec. collect_plugin_asset_specs must include it.
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        let bundle_dir = tmp.path().join("native").join("panicking");
+        std::fs::create_dir_all(&bundle_dir).unwrap();
+        std::fs::copy(&so, bundle_dir.join("libpanicking_plugin.so")).unwrap();
+        let manifest = r#"
+id: panicking
+version: 0.1.0
+node_kind: panicking
+kind: native
+entrypoint: libpanicking_plugin.so
+assets:
+  - type_id: model_file
+    label: "Model File"
+    extensions: [bin]
+"#;
+        std::fs::write(bundle_dir.join("plugin.yml"), manifest).unwrap();
+
+        mgr.load_existing().expect("load_existing succeeds");
+        let specs = mgr.collect_plugin_asset_specs();
+        assert_eq!(specs.len(), 1, "manifest with assets must yield one entry: {specs:?}");
+        let (plugin_id, node_kind, asset_specs) = &specs[0];
+        assert_eq!(plugin_id, "panicking");
+        assert_eq!(node_kind, "plugin::native::panicking");
+        assert_eq!(asset_specs.len(), 1);
+        assert_eq!(asset_specs[0].type_id, "model_file");
+    }
+}
