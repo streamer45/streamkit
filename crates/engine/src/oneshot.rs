@@ -134,6 +134,14 @@ pub struct OneshotInput<S> {
 
 impl Engine {
     /// Run a pipeline as a self-contained one-shot task.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on compilation, node creation, or invalid pipeline structure.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the registry lock is poisoned.
     #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     pub async fn run_oneshot_pipeline<S, E>(
         &self,

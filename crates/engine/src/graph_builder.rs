@@ -29,6 +29,14 @@ pub struct LiveNode {
 }
 
 /// Wires up and spawns all nodes for a given pipeline definition.
+///
+/// # Errors
+///
+/// Returns an error on node init failure, incompatible pin types, or missing connections.
+///
+/// # Panics
+///
+/// Panics if a connection references a node not present in the map.
 #[allow(
     clippy::cognitive_complexity,
     clippy::too_many_lines,
