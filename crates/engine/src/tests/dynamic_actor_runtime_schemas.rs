@@ -27,10 +27,6 @@ use streamkit_core::types::PacketType;
 
 use crate::{DynamicEngineConfig, DynamicEngineHandle, Engine};
 
-// ---------------------------------------------------------------------------
-// Test node: returns a runtime param schema after initialization
-// ---------------------------------------------------------------------------
-
 struct SchemaNode;
 
 #[streamkit_core::async_trait]
@@ -71,10 +67,6 @@ impl ProcessorNode for SchemaNode {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Test node: constructor succeeds but initialize() fails
-// ---------------------------------------------------------------------------
-
 struct FailingInitNode;
 
 #[streamkit_core::async_trait]
@@ -97,10 +89,6 @@ impl ProcessorNode for FailingInitNode {
         Ok(())
     }
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 fn build_handle_with_schema_and_failing() -> DynamicEngineHandle {
     let mut registry = NodeRegistry::new();
@@ -153,10 +141,6 @@ async fn wait_for_node_state(
     panic!("node '{node_id}' did not reach expected state within {timeout:?}");
 }
 
-// ---------------------------------------------------------------------------
-// Test 4: Runtime schema discovery
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn runtime_schema_discovery_reaches_get_and_subscribe() {
     let handle = build_handle_with_schema_and_failing();
@@ -197,10 +181,6 @@ async fn runtime_schema_discovery_reaches_get_and_subscribe() {
     handle.shutdown_and_wait().await.expect("shutdown");
 }
 
-// ---------------------------------------------------------------------------
-// Test 6: No NodeAddedNotification on creation failure
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn node_added_not_emitted_on_creation_failure() {
     let handle = build_handle_with_schema_and_failing();
@@ -235,10 +215,6 @@ async fn node_added_not_emitted_on_creation_failure() {
 
     handle.shutdown_and_wait().await.expect("shutdown");
 }
-
-// ---------------------------------------------------------------------------
-// Test 9: Init failure transitions node to Failed
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn init_failure_transitions_to_failed() {

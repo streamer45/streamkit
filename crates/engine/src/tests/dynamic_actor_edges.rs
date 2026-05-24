@@ -393,19 +393,45 @@ async fn disconnect_after_connect_cleans_up_tracking() {
     let states = handle.get_node_states().await.expect("get_node_states");
     assert!(states.contains_key("src") && states.contains_key("dest"));
 
-    // Redundant disconnect on the same edge should be a silent noop.
+    // Reconnect the same edge. If disconnect did not clean up the
+    // distributor, the second Connect would add a duplicate output
+    // to the PinDistributor. Removing the dest afterwards would then
+    // leave a dangling output, potentially panicking or erroring on
+    // subsequent sends. A clean cycle proves cleanup happened.
     handle
-        .send_control(EngineControlMessage::Disconnect {
+        .send_control(EngineControlMessage::Connect {
             from_node: "src".to_string(),
             from_pin: "out".to_string(),
             to_node: "dest".to_string(),
             to_pin: "in".to_string(),
+            mode: streamkit_core::control::ConnectionMode::Reliable,
         })
         .await
-        .expect("redundant disconnect");
+        .expect("reconnect");
 
-    let states = handle.get_node_states().await.expect("get_node_states after redundant");
-    assert!(states.contains_key("src"), "nodes should survive redundant disconnect");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Remove dest to tear down the reconnected edge.
+    handle
+        .send_control(EngineControlMessage::RemoveNode { node_id: "dest".to_string() })
+        .await
+        .expect("remove dest");
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        if let Ok(states) = handle.get_node_states().await {
+            if !states.contains_key("dest") {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // Source must survive the full connect → disconnect → reconnect →
+    // remove-dest cycle, proving no stale distributor state remained.
+    let states = handle.get_node_states().await.expect("final states");
+    assert!(states.contains_key("src"), "source should survive full disconnect-reconnect cycle");
+    assert!(!states.contains_key("dest"), "dest should be removed after RemoveNode");
 
     handle.shutdown_and_wait().await.expect("shutdown");
 }
@@ -465,9 +491,48 @@ async fn disconnect_cancels_pending_connection() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    // Slow node should exist — the cancelled deferred connection was NOT replayed.
     let states = handle.get_node_states().await.expect("get_node_states");
     assert!(states.contains_key("slow"), "slow node should exist after creation");
+
+    // If the cancelled pending connection had been replayed, the
+    // distributor would already have an output for (slow, in).
+    // Connecting the same edge now and then removing slow exercises
+    // whether a duplicate output exists — duplicates would leave a
+    // stale entry in the distributor after removal, causing errors
+    // on subsequent sends from src.
+    handle
+        .send_control(EngineControlMessage::Connect {
+            from_node: "src".to_string(),
+            from_pin: "out".to_string(),
+            to_node: "slow".to_string(),
+            to_pin: "in".to_string(),
+            mode: streamkit_core::control::ConnectionMode::Reliable,
+        })
+        .await
+        .expect("fresh connect after cancelled pending");
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    handle
+        .send_control(EngineControlMessage::RemoveNode { node_id: "slow".to_string() })
+        .await
+        .expect("remove slow");
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        if let Ok(states) = handle.get_node_states().await {
+            if !states.contains_key("slow") {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // Source must be healthy after the full cycle, proving the
+    // pending connection was truly cancelled and not replayed.
+    let states = handle.get_node_states().await.expect("final states");
+    assert!(states.contains_key("src"), "source should survive pending-cancel cycle");
+    assert!(!states.contains_key("slow"), "slow should be removed");
 
     handle.shutdown_and_wait().await.expect("shutdown");
 }

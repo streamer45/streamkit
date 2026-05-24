@@ -124,10 +124,6 @@ fn add_live_node(
     control_rx
 }
 
-// ---------------------------------------------------------------------------
-// Tests 1–3: Updates for removed nodes are silently ignored
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn state_update_for_removed_node_is_ignored() {
     let mut engine = create_test_engine();
@@ -194,10 +190,6 @@ async fn view_data_update_for_removed_node_is_ignored() {
         "subscriber should NOT receive view data for a removed node"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Tests: Closed subscribers are pruned by retain logic
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn closed_state_subscriber_is_pruned() {
@@ -288,10 +280,6 @@ async fn closed_stats_subscriber_is_pruned() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Test 10: Stats delta computation when counters reset
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn stats_delta_handles_counter_reset() {
     let mut engine = create_test_engine();
@@ -333,10 +321,6 @@ async fn stats_delta_handles_counter_reset() {
     assert_eq!(stored.received, 8);
     assert_eq!(stored.sent, 7);
 }
-
-// ---------------------------------------------------------------------------
-// Test 11: Stats handler uses fallback labels when cache is missing
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn stats_fallback_labels_when_cache_missing() {
