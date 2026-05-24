@@ -713,7 +713,7 @@ mod app_integration_tests {
     }
 
     #[tokio::test]
-    async fn config_handler_allowed_for_default_role() {
+    async fn config_handler_allowed_for_admin_role() {
         let (app, _state) = create_app(default_config(), None);
         let resp = app
             .oneshot(
@@ -976,15 +976,12 @@ mod app_integration_tests {
             .oneshot(Request::builder().uri("/api/v1/auth/me").body(Body::empty()).unwrap())
             .await
             .unwrap();
-        let status = resp.status();
-        // The auth subrouter handles /api/v1/auth/me; without a valid token
-        // the handler itself returns 401 (not auth_guard_middleware).
-        // If auth_guard intercepted, the response body would differ.
-        assert_ne!(
-            status,
-            StatusCode::NOT_FOUND,
-            "auth subrouter is not mounted — /api/v1/auth/me should not 404"
-        );
+        // me_handler returns 200 + JSON { authenticated: false } when no token
+        // is provided. auth_guard_middleware would return 401 + plain text.
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = read_json(resp.into_body()).await;
+        assert_eq!(json["authenticated"], false);
+        assert_eq!(json["auth_enabled"], true);
     }
 
     #[tokio::test]
