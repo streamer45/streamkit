@@ -18,13 +18,8 @@ use streamkit_core::control::EngineControlMessage;
 use streamkit_core::state::NodeState;
 use streamkit_core::{NodeRegistry, ProcessorNode, StreamKitError};
 
-// ---------------------------------------------------------------------------
-// Test node implementations
-// ---------------------------------------------------------------------------
-
-/// A node whose constructor sleeps for a configurable duration, simulating
-/// heavy FFI work (e.g., ONNX model loading). Uses `std::thread::sleep`
-/// because the constructor runs inside `spawn_blocking`.
+/// Simulates heavy FFI work (e.g., ONNX model loading) via `std::thread::sleep`
+/// inside `spawn_blocking`.
 struct SlowTestNode;
 
 impl SlowTestNode {
@@ -77,9 +72,7 @@ impl ProcessorNode for SlowTestNode {
     }
 }
 
-/// A slow node that records every `UpdateParams` message it receives.
-/// Used to verify that TuneNode messages sent while the node is Creating
-/// are queued and replayed after initialization.
+/// Records `UpdateParams` messages to verify deferred-tune replay.
 struct TuneTrackingSlowNode {
     tune_count: Arc<AtomicU32>,
 }
@@ -235,10 +228,6 @@ impl ProcessorNode for FastTestNode {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helper: build an engine with a pre-populated registry
-// ---------------------------------------------------------------------------
-
 fn build_engine(registry: NodeRegistry) -> (Engine, DynamicEngineHandle) {
     let engine = Engine {
         registry: Arc::new(std::sync::RwLock::new(registry)),
@@ -266,10 +255,6 @@ where
     false
 }
 
-// ---------------------------------------------------------------------------
-// Test 1: Basic async creation — actor can process other AddNode messages
-//         while a slow node is being created.
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 #[allow(clippy::expect_used)]
@@ -335,10 +320,6 @@ async fn test_basic_async_creation() {
     handle.shutdown_and_wait().await.expect("shutdown");
 }
 
-// ---------------------------------------------------------------------------
-// Test 2: Deferred connections — Connect sent before slow node finishes
-//         is replayed after creation completes.
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 #[allow(clippy::expect_used)]
@@ -411,10 +392,6 @@ async fn test_deferred_connections() {
     handle.shutdown_and_wait().await.expect("shutdown");
 }
 
-// ---------------------------------------------------------------------------
-// Test 3: Multiple slow nodes — they should be created concurrently
-//         (total time ≈ max, not sum).
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 #[allow(clippy::expect_used)]
@@ -484,10 +461,6 @@ async fn test_multiple_slow_nodes_concurrent() {
     handle.shutdown_and_wait().await.expect("shutdown");
 }
 
-// ---------------------------------------------------------------------------
-// Test 4: Creation failure — node transitions to Failed, pending connections
-//         referencing it are drained.
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 #[allow(clippy::expect_used)]
@@ -557,9 +530,6 @@ async fn test_creation_failure() {
     handle.shutdown_and_wait().await.expect("shutdown");
 }
 
-// ---------------------------------------------------------------------------
-// Test 5: RemoveNode while Creating — background result is discarded.
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 #[allow(clippy::expect_used)]
@@ -616,10 +586,6 @@ async fn test_remove_node_while_creating() {
     handle.shutdown_and_wait().await.expect("shutdown");
 }
 
-// ---------------------------------------------------------------------------
-// Test 6: Pipeline activation timing — source nodes do NOT activate until
-//         all nodes leave Creating state.
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 #[allow(clippy::expect_used)]
@@ -711,9 +677,6 @@ async fn test_pipeline_activation_timing() {
     handle.shutdown_and_wait().await.expect("shutdown");
 }
 
-// ---------------------------------------------------------------------------
-// Test 7: Duplicate AddNode — second call is rejected.
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 #[allow(clippy::expect_used)]
@@ -768,10 +731,6 @@ async fn test_duplicate_add_node() {
     handle.shutdown_and_wait().await.expect("shutdown");
 }
 
-// ---------------------------------------------------------------------------
-// Test 8: RemoveNode then re-AddNode with same ID — new node is created
-//         correctly and old creation result is discarded.
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 #[allow(clippy::expect_used)]
@@ -854,9 +813,6 @@ async fn test_remove_then_readd_same_id() {
     handle.shutdown_and_wait().await.expect("shutdown");
 }
 
-// ---------------------------------------------------------------------------
-// Test 9: Shutdown while Creating — clean shutdown, no panics.
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 #[allow(clippy::expect_used)]
@@ -891,10 +847,6 @@ async fn test_shutdown_while_creating() {
     assert!(result.is_ok(), "shutdown should complete cleanly: {result:?}");
 }
 
-// ---------------------------------------------------------------------------
-// Test 10: Connect with one realized, one creating — connection is deferred
-//          and replayed correctly.
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 #[allow(clippy::expect_used)]
@@ -974,10 +926,6 @@ async fn test_connect_one_realized_one_creating() {
     handle.shutdown_and_wait().await.expect("shutdown");
 }
 
-// ---------------------------------------------------------------------------
-// Test 11: TuneNode messages sent while a node is Creating are queued and
-//          replayed after initialization completes.
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 #[allow(clippy::expect_used)]

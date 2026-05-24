@@ -36,7 +36,6 @@ where
 #[tokio::test]
 #[allow(clippy::expect_used, clippy::similar_names)]
 async fn test_backpressure_no_deadlock() {
-    // Initialize tracing for test visibility
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
         .with_max_level(tracing::Level::DEBUG)
@@ -62,7 +61,6 @@ async fn test_backpressure_no_deadlock() {
     // Add nodes: file_read -> demuxer -> pacer -> muxer -> file_write
     // Pacer will slow down Audio packets from demuxer, creating backpressure
 
-    // 1. Add file_reader node
     handle
         .send_control(EngineControlMessage::AddNode {
             node_id: "reader".to_string(),
@@ -73,7 +71,6 @@ async fn test_backpressure_no_deadlock() {
         .await
         .expect("Failed to add file_reader");
 
-    // 2. Add ogg demuxer node
     handle
         .send_control(EngineControlMessage::AddNode {
             node_id: "demuxer".to_string(),
@@ -83,7 +80,6 @@ async fn test_backpressure_no_deadlock() {
         .await
         .expect("Failed to add demuxer");
 
-    // 3. Add a pacer node (introduces artificial delay to create backpressure)
     handle
         .send_control(EngineControlMessage::AddNode {
             node_id: "pacer".to_string(),
@@ -93,7 +89,6 @@ async fn test_backpressure_no_deadlock() {
         .await
         .expect("Failed to add pacer");
 
-    // 4. Add ogg muxer node
     handle
         .send_control(EngineControlMessage::AddNode {
             node_id: "muxer".to_string(),
@@ -103,7 +98,6 @@ async fn test_backpressure_no_deadlock() {
         .await
         .expect("Failed to add muxer");
 
-    // 5. Add a file_writer node
     handle
         .send_control(EngineControlMessage::AddNode {
             node_id: "writer".to_string(),
@@ -158,7 +152,6 @@ async fn test_backpressure_no_deadlock() {
         .await
         .expect("Failed to connect muxer to writer");
 
-    // 6. Wait for nodes to become ready and start processing
     let nodes_ready = wait_for_states(&handle, Duration::from_secs(5), |states| {
         let reader_ok = states
             .get("reader")
@@ -169,21 +162,16 @@ async fn test_backpressure_no_deadlock() {
     .await;
     assert!(nodes_ready, "Reader should be running/ready and pacer should be running");
 
-    // 7. Let the pipeline run for a bit - this is where deadlock would occur in the old architecture
-    // The demuxer will produce Audio packets faster than pacer can forward them (0.1x speed)
+    // Pacer at 0.1x creates backpressure; old architecture would deadlock here.
     tokio::time::sleep(Duration::from_secs(3)).await;
-
-    // 8. Verify the pipeline is still responsive (no deadlock)
     let result = timeout(Duration::from_secs(1), handle.get_node_states()).await;
     assert!(result.is_ok(), "Pipeline should remain responsive under backpressure");
 
     let states = result.expect("Should get response").expect("Failed to get states");
     tracing::info!("Node states after backpressure test: {:?}", states);
 
-    // 9. Verify data is flowing through the pipeline
-    // Note: We only check reader stats because the reader completes quickly and flushes its stats.
-    // Other nodes may not have flushed stats yet since NodeStatsTracker batches updates
-    // (every 10s or 1000 packets). The key test is that the pipeline didn't deadlock (step 8).
+    // Only reader stats are reliable here — other nodes may not have flushed
+    // yet (NodeStatsTracker batches every 10s / 1000 packets).
     let stats = handle.get_node_stats().await.expect("Failed to get node stats");
 
     tracing::info!("All node stats: {:?}", stats);
@@ -191,12 +179,8 @@ async fn test_backpressure_no_deadlock() {
     let reader_stats = stats.get("reader").expect("Reader stats missing");
     assert!(reader_stats.sent > 0, "Reader should have sent Binary packets to demuxer");
 
-    // 10. Shutdown
     handle.send_control(EngineControlMessage::Shutdown).await.expect("Failed to shutdown");
-
     tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // Cleanup
     let _ = tokio::fs::remove_file(output_path).await;
 }
 
@@ -212,9 +196,6 @@ async fn test_dynamic_connection_under_backpressure() {
 
     let engine = Engine::without_plugins();
     let handle = engine.start_dynamic_actor(DynamicEngineConfig::default());
-
-    // Create a simple pipeline with pacer that can fan-out to multiple consumers
-    // Just verify the architecture handles dynamic connections without deadlocking
 
     handle
         .send_control(EngineControlMessage::AddNode {
@@ -235,7 +216,6 @@ async fn test_dynamic_connection_under_backpressure() {
     let result = timeout(Duration::from_secs(1), handle.get_node_states()).await;
     assert!(result.is_ok(), "Engine should remain responsive");
 
-    // Shutdown
     handle.send_control(EngineControlMessage::Shutdown).await.unwrap();
 }
 
@@ -252,7 +232,6 @@ async fn test_node_removal_under_backpressure() {
     let engine = Engine::without_plugins();
     let handle = engine.start_dynamic_actor(DynamicEngineConfig::default());
 
-    // Add a pacer node
     handle
         .send_control(EngineControlMessage::AddNode {
             node_id: "pacer".to_string(),
@@ -268,7 +247,6 @@ async fn test_node_removal_under_backpressure() {
     .await;
     assert!(pacer_created, "Pacer should have left Creating state");
 
-    // Remove the node
     handle
         .send_control(EngineControlMessage::RemoveNode { node_id: "pacer".to_string() })
         .await
@@ -276,7 +254,6 @@ async fn test_node_removal_under_backpressure() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Verify engine remains responsive after node removal
     let result = timeout(Duration::from_secs(1), handle.get_node_states()).await;
     assert!(result.is_ok(), "Engine should remain responsive after removing node");
 

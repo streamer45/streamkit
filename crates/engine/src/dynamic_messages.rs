@@ -13,12 +13,7 @@ use streamkit_core::view_data::NodeViewDataUpdate;
 use tokio::sync::mpsc;
 
 /// Unique identifier for a connection (FromNode, FromPin, ToNode, ToPin).
-///
-/// This is carried on the control plane (connect/disconnect) and also used as the
-/// key for routing state inside [`crate::dynamic_pin_distributor::PinDistributorActor`].
-///
-/// Performance note: packet fan-out can touch this identifier on error paths; storing
-/// the parts as `Arc<str>` makes cloning cheap when needed.
+/// Parts stored as `Arc<str>` for cheap cloning on fan-out error paths.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ConnectionId {
     pub from_node: Arc<str>,
@@ -53,13 +48,8 @@ pub struct RuntimeSchemaUpdate {
     pub schema: serde_json::Value,
 }
 
-/// Notification emitted when a node has been *successfully* created and
-/// initialized — i.e. the plugin's constructor returned `Ok` and
-/// `initialize_node` completed without error.  This is what the WebSocket
-/// layer turns into the public `NodeAdded` event, so clients see
-/// `nodeadded` only after the engine has confirmed the node is real.
-///
-/// Failures are reported separately via `NodeStateUpdate { state: Failed }`.
+/// Emitted once a node's constructor and `initialize_node` both succeed.
+/// Failures are reported via `NodeStateUpdate { state: Failed }`.
 #[derive(Clone, Debug)]
 pub struct NodeAddedNotification {
     pub node_id: String,
@@ -101,7 +91,6 @@ pub enum QueryMessage {
     },
 }
 
-// Re-export ConnectionMode from core for use by pin distributor
 pub use streamkit_core::control::ConnectionMode;
 
 /// Messages to configure the PinDistributorActor at runtime.

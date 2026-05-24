@@ -1088,7 +1088,7 @@ async fn best_effort_flush_does_not_misroute_after_remove_then_readd() {
         "in".to_string(),
     );
 
-    // --- v1: park a packet, leave the reservation pending against
+    // v1: park a packet, leave the reservation pending against
     // slow_rx_v1 (kept alive so reserve_owned() can later resolve OK).
     let (tx_v1, mut slow_rx_v1) = mpsc::channel(1);
     config_tx
@@ -1115,7 +1115,7 @@ async fn best_effort_flush_does_not_misroute_after_remove_then_readd() {
         .await
         .expect("add v2");
 
-    // --- v2: park a packet, scheduling a NEW reservation against tx_v2.
+    // v2: park a packet, scheduling a NEW reservation against tx_v2.
     data_tx.send(Packet::Text("v2-a".into())).await.expect("send v2-a");
     data_tx.send(Packet::Text("v2-b".into())).await.expect("send v2-b");
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
