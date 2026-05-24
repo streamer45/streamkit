@@ -2,35 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! Telemetry tap node for observing packets and emitting telemetry events.
-//!
-//! This node acts as a passthrough that observes packets and converts them to
-//! telemetry events, enabling visibility into pipeline data flow without modifying
-//! the packets themselves.
-//!
-//! ## Design
-//!
-//! - **Passthrough is primary**: Packets flow through unmodified
-//! - **Side-effect emission**: Converts packets to telemetry bus events
-//! - **Does the heavy lifting**: VAD and Whisper nodes don't need changes
-//! - **No redaction**: That happens server-side
-//!
-//! ## Configuration
-//!
-//! ```yaml
-//! - id: tap
-//!   kind: core::telemetry_tap
-//!   params:
-//!     # Which packet types to convert to telemetry
-//!     packet_types: ["Transcription", "Custom"]  # default
-//!     # Filter Custom packets by event_type pattern
-//!     event_type_filter: ["vad.*", "stt.*"]  # empty = all
-//!     # Rate limit per event type
-//!     max_events_per_sec: 100  # default
-//!     # Audio sampling (if Audio is in packet_types)
-//!     audio_sample_interval_ms: 1000  # emit aggregate every 1s
-//! ```
-
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

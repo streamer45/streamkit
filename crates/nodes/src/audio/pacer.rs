@@ -2,8 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! Audio pacer node - Paces audio output and fills gaps with silence
-
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -17,26 +15,16 @@ use streamkit_core::{
 };
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 
-/// Configuration for the AudioPacerNode
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct AudioPacerConfig {
-    /// Playback speed multiplier (1.0 = real-time, 2.0 = 2x speed, 0.5 = half speed)
     pub speed: f32,
-    /// Maximum number of audio frames to buffer internally
-    /// Default: 32 frames (~640ms of audio at 20ms/frame)
     #[schemars(range(min = 1))]
     pub buffer_size: usize,
-    /// Generate silence frames when input queue is empty to maintain continuous stream
-    /// Prevents gaps in audio output (useful for real-time streaming protocols like MoQ)
-    /// Default: true
+    /// Emit silence when input queue is empty (prevents gaps in real-time streams).
     pub generate_silence: bool,
-    /// Optional initial audio format used to start pacing immediately (before the first input frame).
-    ///
-    /// Without an initial format, the pacer learns `(sample_rate, channels)` from the first
-    /// received frame. For pipelines that may take seconds before producing the first frame
-    /// (e.g., STT → LLM → TTS), this can cause downstream consumers to see a long gap and
-    /// underflow. Setting these lets the pacer emit silence right away.
+    /// Set both to start emitting silence immediately instead of waiting for the
+    /// first input frame (avoids downstream underflow in slow pipelines).
     pub initial_sample_rate: Option<u32>,
     pub initial_channels: Option<u16>,
 }
@@ -53,23 +41,8 @@ impl Default for AudioPacerConfig {
     }
 }
 
-/// An audio-specific pacer that maintains continuous audio streams by generating silence
-/// when the input queue is empty.
-///
-/// Unlike the generic `core::pacer`, this node:
-/// - Only works with Audio packets (raw PCM audio)
-/// - Generates silence frames to fill gaps in the stream
-/// - Maintains audio format consistency (sample rate, channels, format)
-/// - Prevents client buffer starvation in real-time streaming scenarios
-///
-/// Use cases:
-/// - Real-time voice agents where TTS generates audio in bursts
-/// - Streaming protocols (MoQ, WebRTC) that expect continuous audio
-/// - Preventing "audio underflow" errors in client decoders
-///
-/// Pipeline placement:
-/// - After TTS/audio generation, before encoding
-/// - Example: `tts → resample → audio::pacer → opus_encoder → transport`
+/// Unlike `core::pacer`, generates silence to fill gaps and maintain
+/// continuous audio output for real-time streaming.
 pub struct AudioPacerNode {
     speed: f32,
     buffer_size: usize,
@@ -124,7 +97,6 @@ impl AudioPacerNode {
         })
     }
 
-    /// Calculate duration from AudioFrame samples
     fn calculate_audio_duration(frame: &AudioFrame) -> Duration {
         #[allow(clippy::cast_precision_loss)]
         let samples_per_channel = frame.samples.len() as f64 / f64::from(frame.channels);
@@ -142,7 +114,6 @@ impl AudioPacerNode {
         AudioFrame::new(sample_rate, channels, samples)
     }
 
-    /// Returns a clone of the cached silence frame (O(1) due to Arc-backed samples).
     fn get_cached_silence(
         cached_silence: &mut Option<AudioFrame>,
         sample_rate: u32,
@@ -159,7 +130,6 @@ impl AudioPacerNode {
         silence
     }
 
-    /// Adjust duration by speed multiplier
     fn adjust_for_speed(&self, duration: Duration) -> Duration {
         duration.div_f32(self.speed)
     }
@@ -237,7 +207,6 @@ impl ProcessorNode for AudioPacerNode {
 
         loop {
             tokio::select! {
-                // Receive audio frames from upstream - only when queue isn't full
                 Some(packet) = input_rx.recv(), if !input_closed && audio_queue.len() < self.buffer_size => {
                     match packet {
                         Packet::Audio(frame) => {

@@ -2,8 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! This module contains all built-in transport node implementations.
-
 use streamkit_core::NodeRegistry;
 
 pub mod moq;
@@ -20,7 +18,6 @@ mod rtmp_client;
 #[cfg(feature = "rtmp")]
 pub mod rtmp;
 
-/// Registers all available transport nodes with the engine's registry.
 pub fn register_transport_nodes(registry: &mut NodeRegistry) {
     moq::register_moq_nodes(registry);
 

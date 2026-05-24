@@ -2,23 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! Object store write node — streams binary data to S3-compatible object storage.
-//!
-//! Uses [Apache OpenDAL](https://opendal.apache.org/) to support S3, MinIO,
-//! RustFS, and other S3-compatible backends.  (Only the `services-s3` feature
-//! is compiled; GCS / Azure would require additional OpenDAL features.)
-//!
-//! Incoming [`Packet::Binary`] packets are buffered up to `chunk_size` and
-//! written via OpenDAL's multipart [`Writer`](opendal::Writer), keeping memory
-//! bounded regardless of the total upload size.
-//!
-//! ## Passthrough mode
-//!
-//! When `passthrough` is enabled (default: `false`), the node also forwards
-//! every incoming packet to its `"out"` pin, allowing it to sit inline in a
-//! linear pipeline (e.g. `muxer → s3_writer → http_output`).  This is
-//! required for oneshot pipelines which do not support fan-out.
-
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -28,11 +11,7 @@ use streamkit_core::{
     PinCardinality, ProcessorNode, StreamKitError,
 };
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/// Default buffer/chunk size: 5 MiB (the S3 minimum multipart part size).
+/// 5 MiB — the S3 minimum multipart part size.
 const DEFAULT_CHUNK_SIZE: usize = 5 * 1024 * 1024;
 
 /// S3 minimum multipart part size (5 MiB).  Intermediate parts smaller than
@@ -48,11 +27,6 @@ fn default_region() -> String {
     "us-east-1".to_string()
 }
 
-// ---------------------------------------------------------------------------
-// Configuration
-// ---------------------------------------------------------------------------
-
-/// Configuration for the object store write node.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ObjectStoreWriteConfig {
@@ -124,10 +98,6 @@ pub struct ObjectStoreWriteConfig {
     pub passthrough: bool,
 }
 
-// ---------------------------------------------------------------------------
-// Credential helpers
-// ---------------------------------------------------------------------------
-
 /// Resolve a credential value.
 ///
 /// Resolution order:
@@ -167,10 +137,6 @@ fn resolve_credential(
     }
     Err(StreamKitError::Configuration(format!("No {label} provided (set via config or env var)")))
 }
-
-// ---------------------------------------------------------------------------
-// Node
-// ---------------------------------------------------------------------------
 
 /// RAII guard that aborts an OpenDAL multipart upload on drop unless
 /// explicitly disarmed via [`AbortOnDrop::disarm`].  Protects against
@@ -302,10 +268,6 @@ impl ObjectStoreWriteNode {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ProcessorNode implementation
-// ---------------------------------------------------------------------------
-
 #[async_trait]
 impl ProcessorNode for ObjectStoreWriteNode {
     fn input_pins(&self) -> Vec<InputPin> {
@@ -333,7 +295,6 @@ impl ProcessorNode for ObjectStoreWriteNode {
         let node_name = context.output_sender.node_name().to_string();
         state_helpers::emit_initializing(&context.state_tx, &node_name);
 
-        // ── Resolve credentials ──────────────────────────────────────────
         let access_key = resolve_credential(
             self.config.access_key_id_env.as_deref(),
             self.config.access_key_id.as_deref(),
@@ -364,7 +325,6 @@ impl ProcessorNode for ObjectStoreWriteNode {
             "ObjectStoreWriteNode initializing"
         );
 
-        // ── Build OpenDAL operator ───────────────────────────────────────
         let operator = {
             let mut cfg = std::collections::HashMap::new();
             cfg.insert("bucket".to_string(), self.config.bucket.clone());
@@ -387,7 +347,6 @@ impl ProcessorNode for ObjectStoreWriteNode {
 
         tracing::info!(%node_name, "S3 operator created, verifying bucket access");
 
-        // ── Verify bucket exists and is accessible ────────────────────────
         // Stat the root path — this issues a lightweight HEAD request to the
         // bucket, catching "NoSuchBucket" or permission errors at init time
         // rather than after streaming data for minutes.
@@ -402,7 +361,6 @@ impl ProcessorNode for ObjectStoreWriteNode {
 
         tracing::info!(%node_name, "Bucket verified, opening writer");
 
-        // ── Open writer (multipart upload) ───────────────────────────────
         let writer_future = operator.writer_with(&self.config.key).chunk(self.config.chunk_size);
 
         // Apply content type if configured.
@@ -429,7 +387,6 @@ impl ProcessorNode for ObjectStoreWriteNode {
 
         state_helpers::emit_running(&context.state_tx, &node_name);
 
-        // ── Receive loop ─────────────────────────────────────────────────
         let mut input_rx = context.take_input("in")?;
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
         let mut packet_count: u64 = 0;
@@ -497,7 +454,6 @@ impl ProcessorNode for ObjectStoreWriteNode {
             }
         }
 
-        // ── Flush remaining buffer ───────────────────────────────────────
         if !buffer.is_empty() {
             tracing::debug!(
                 %node_name,
@@ -515,7 +471,6 @@ impl ProcessorNode for ObjectStoreWriteNode {
             chunks_written += 1;
         }
 
-        // ── Close (finalize multipart upload) ────────────────────────────
         tracing::info!(
             %node_name,
             "Closing S3 writer (finalizing multipart upload)"
@@ -546,10 +501,6 @@ impl ProcessorNode for ObjectStoreWriteNode {
         Ok(())
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]

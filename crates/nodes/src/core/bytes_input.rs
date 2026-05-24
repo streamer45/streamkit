@@ -12,9 +12,7 @@ use streamkit_core::{
 };
 use tokio::sync::mpsc;
 
-/// An input node that reads a stream of byte chunks from a channel
-/// and sends them out as `Packet::Binary` packets. This node is special-cased
-/// by the stateless runner to represent the HTTP request body.
+/// Special-cased by the stateless runner to represent the HTTP request body.
 pub struct BytesInputNode {
     streams: Vec<BytesInputStream>,
 }
@@ -26,8 +24,6 @@ struct BytesInputStream {
 }
 
 impl BytesInputNode {
-    /// Creates a new BytesInputNode directly with a channel receiver.
-    /// This is a safe, compile-time checked way to provide the input stream.
     pub fn new(
         pin: impl Into<String>,
         stream_rx: mpsc::Receiver<Bytes>,
@@ -36,7 +32,6 @@ impl BytesInputNode {
         Self { streams: vec![BytesInputStream { pin: pin.into(), stream_rx, content_type }] }
     }
 
-    /// Creates a BytesInputNode with multiple output pins/streams.
     pub fn with_streams(streams: Vec<(String, mpsc::Receiver<Bytes>, Option<String>)>) -> Self {
         let streams = streams
             .into_iter()

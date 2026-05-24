@@ -40,18 +40,14 @@ impl Default for TextChunkerConfig {
     }
 }
 
-/// Splits incoming text into chunks (sentences or word groups) for streaming TTS generation
 pub struct TextChunkerNode {
     config: TextChunkerConfig,
     buffer: String,
 }
 
 impl TextChunkerNode {
-    /// Creates a new text chunking node from configuration parameters.
-    ///
     /// # Errors
-    ///
-    /// Returns an error if the configuration parameters cannot be parsed.
+    /// Returns `Err` if config parsing fails.
     pub fn new(params: Option<&serde_json::Value>) -> Result<Self, StreamKitError> {
         let config: TextChunkerConfig = config_helpers::parse_config_optional(params)?;
         Ok(Self { config, buffer: String::new() })

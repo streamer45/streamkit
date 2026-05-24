@@ -2,8 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! Pacer node - Paces packet output based on timing metadata or calculated durations
-
 use async_trait::async_trait;
 use opentelemetry::global;
 use opentelemetry::KeyValue;
@@ -19,7 +17,6 @@ use streamkit_core::{
 };
 use tokio::time::{Instant, MissedTickBehavior};
 
-/// Configuration for the PacerNode
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct PacerConfig {
@@ -42,28 +39,11 @@ impl Default for PacerConfig {
     }
 }
 
-/// A node that paces packet output based on timing metadata or calculated durations.
+/// Paces output using timing metadata.
 ///
-/// Uses `tokio::time::interval` with `MissedTickBehavior::Skip` for drift-free pacing.
-/// Supports dynamic speed control via runtime parameter updates.
-///
-/// **Backpressure**: Maintains an internal bounded queue to prevent loading entire files
-/// into memory while still allowing smooth pacing. When the queue fills, backpressure
-/// propagates upstream to slow down file reading.
-///
-/// **Initial Burst**: Sends the first N packets at 10x speed (reduced delay) to build up
-/// client-side buffers for absorbing network jitter. For example, with 20ms Opus frames,
-/// burst packets are sent every 2ms instead of 20ms, building a 500ms buffer in just 50ms.
-/// The burst counter resets when there's a significant gap (>300ms) between incoming packets,
-/// allowing each logical audio segment (e.g., TTS sentences, AI responses) to get its own
-/// initial burst. This distinguishes between real gaps (sentence boundaries) and temporary
-/// queue emptying (small chunks from upstream nodes).
-///
-/// Timing sources (in order of preference):
-/// 1. `Packet::Binary.metadata.duration_us` - Explicit duration from demuxer
-/// 2. `Packet::Audio.metadata.duration_us` - Explicit duration
-/// 3. Calculated from AudioFrame: `samples.len() / (sample_rate * channels)`
-/// 4. Zero duration (pass through immediately) for packets without timing info
+/// Bounded internal queue prevents unbounded memory growth. Optional initial
+/// burst builds client-side buffers for jitter absorption (resets on >300ms
+/// gaps between packets).
 pub struct PacerNode {
     speed: f32,
     buffer_size: usize,

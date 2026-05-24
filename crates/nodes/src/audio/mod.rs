@@ -2,15 +2,12 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! This module contains all built-in audio node implementations and their registration logic.
-
 use streamkit_core::NodeRegistry;
 
 pub mod codecs;
 pub mod filters;
 pub mod pacer;
 
-/// Registers all available audio nodes with the engine's registry.
 pub fn register_audio_nodes(registry: &mut NodeRegistry) {
     filters::register_audio_filters(registry);
     codecs::register_audio_codecs(registry);

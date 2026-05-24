@@ -24,16 +24,10 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use tokio::sync::mpsc;
 
-// --- WAV Demuxer Constants ---
-
-/// Channel buffer size for demuxer pipeline communication
 const DEMUXER_CHANNEL_CAPACITY: usize = 32;
 
-/// Output frame size - 20ms at 48kHz stereo (960 samples per channel * 2 = 1920 total)
-/// This matches Opus encoder expectations
+/// 20ms at 48kHz stereo; matches Opus encoder frame size.
 const OUTPUT_FRAME_SIZE: usize = 1920;
-
-// --- WAV Demuxer ---
 
 use crate::streaming_utils::StreamingReader;
 
@@ -41,18 +35,13 @@ use crate::streaming_utils::StreamingReader;
 #[serde(default, deny_unknown_fields)]
 pub struct WavDemuxerConfig {}
 
-/// A node that demuxes WAV container files to raw PCM audio frames.
 pub struct WavDemuxerNode {
     _config: WavDemuxerConfig,
 }
 
 impl WavDemuxerNode {
-    /// Creates a new WAV demuxer node.
-    ///
     /// # Errors
-    ///
-    /// Currently always returns `Ok`, but the signature allows for future error cases
-    /// (e.g., if config validation is added).
+    /// Returns `Err` if the config is invalid.
     pub const fn new(config: WavDemuxerConfig) -> Result<Self, StreamKitError> {
         Ok(Self { _config: config })
     }
@@ -360,11 +349,8 @@ fn demux_wav_streaming_incremental(
 
 use streamkit_core::{config_helpers, registry::StaticPins};
 
-/// Registers the WAV demuxer node.
-///
 /// # Panics
-///
-/// Panics if the default WAV demuxer cannot be created (should never happen).
+/// Panics if default configs or JSON schemas fail to serialize.
 #[allow(clippy::expect_used)] // Schema serialization and default config should never fail
 pub fn register_wav_nodes(registry: &mut NodeRegistry) {
     #[cfg(feature = "symphonia")]
@@ -402,7 +388,6 @@ mod tests {
     use std::path::Path;
     use tokio::sync::mpsc;
 
-    // Helper to read test audio files
     #[allow(clippy::uninlined_format_args)]
     fn read_sample_file(filename: &str) -> Vec<u8> {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/audio").join(filename);
@@ -419,7 +404,6 @@ mod tests {
 
         let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
 
-        // Create WAV demuxer node
         let node = WavDemuxerNode::new(WavDemuxerConfig::default()).unwrap();
 
         let node_handle = tokio::spawn(async move { Box::new(node).run(context).await });
@@ -427,7 +411,6 @@ mod tests {
         assert_state_initializing(&mut state_rx).await;
         assert_state_running(&mut state_rx).await;
 
-        // Read and send WAV test file
         let wav_data = read_sample_file("sample.wav");
         let packet = create_test_binary_packet(wav_data);
         input_tx.send(packet).await.unwrap();
@@ -436,7 +419,6 @@ mod tests {
         assert_state_stopped(&mut state_rx).await;
         node_handle.await.unwrap().unwrap();
 
-        // Verify output
         let output_packets = mock_sender.get_packets_for_pin("out").await;
         assert!(!output_packets.is_empty(), "Expected at least one output packet");
 
@@ -456,7 +438,6 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::unwrap_used)]
     async fn test_wav_multiple_packets() {
-        // Test that demuxer can handle data split across multiple packets
         let (input_tx, input_rx) = mpsc::channel(10);
         let mut inputs = HashMap::new();
         inputs.insert("in".to_string(), input_rx);
@@ -470,7 +451,6 @@ mod tests {
         assert_state_initializing(&mut state_rx).await;
         assert_state_running(&mut state_rx).await;
 
-        // Read WAV file and split into multiple packets
         let wav_data = read_sample_file("sample.wav");
         let chunk_size = wav_data.len() / 3;
 
@@ -486,7 +466,6 @@ mod tests {
         assert_state_stopped(&mut state_rx).await;
         node_handle.await.unwrap().unwrap();
 
-        // Verify we got output
         let output_packets = mock_sender.get_packets_for_pin("out").await;
         assert!(!output_packets.is_empty(), "Expected output even when input split across packets");
     }

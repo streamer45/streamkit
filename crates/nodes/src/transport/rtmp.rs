@@ -2,15 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! RTMP publisher (sink) node.
-//!
-//! Uses an internal sans-I/O RTMP client (`rtmp_client`) to publish encoded
-//! H.264 video and AAC audio to an arbitrary RTMP or RTMPS endpoint
-//! (e.g. YouTube Live, Twitch).
-//!
-//! The node manages the TCP (or TLS) socket itself, feeding bytes between
-//! tokio I/O and the client's `feed_recv_buf()` / `send_buf()` interface.
-
 use super::rtmp_client::{
     AudioFormat as RtmpAudioFormat, AudioFrame as RtmpAudioFrame, AvcPacketType, AvcSequenceHeader,
     RtmpConnectionState, RtmpPublishClientConnection, RtmpTimestamp, RtmpTimestampDelta, RtmpUrl,
@@ -31,11 +22,6 @@ use streamkit_core::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-// ---------------------------------------------------------------------------
-// Configuration
-// ---------------------------------------------------------------------------
-
-/// Configuration for the RTMP publisher node.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RtmpPublishConfig {
@@ -93,14 +79,6 @@ const fn default_channels() -> u8 {
     2
 }
 
-// ---------------------------------------------------------------------------
-// Node
-// ---------------------------------------------------------------------------
-
-/// RTMP publisher sink node.
-///
-/// Accepts encoded H.264 video and AAC audio on separate input pins and
-/// publishes them to an RTMP endpoint using the FLV/RTMP wire format.
 pub struct RtmpPublishNode {
     config: RtmpPublishConfig,
 }
@@ -110,10 +88,6 @@ impl RtmpPublishNode {
         Self { config }
     }
 }
-
-// ---------------------------------------------------------------------------
-// ProcessorNode implementation
-// ---------------------------------------------------------------------------
 
 #[async_trait]
 impl ProcessorNode for RtmpPublishNode {
@@ -150,14 +124,12 @@ impl ProcessorNode for RtmpPublishNode {
 
         state_helpers::emit_initializing(&context.state_tx, &node_name);
 
-        // ── Validate AAC config ──────────────────────────────────────────
         validate_aac_config(&self.config).map_err(|e| {
             let msg = format!("Invalid AAC config: {e}");
             state_helpers::emit_failed(&context.state_tx, &node_name, &msg);
             StreamKitError::Configuration(msg)
         })?;
 
-        // ── Resolve stream key (env var takes precedence) ───────────────
         let full_url = resolve_rtmp_url(&self.config).map_err(|e| {
             let msg = format!("RTMP URL resolution failed: {e}");
             state_helpers::emit_failed(&context.state_tx, &node_name, &msg);
@@ -168,7 +140,6 @@ impl ProcessorNode for RtmpPublishNode {
         let masked_url = mask_stream_key(&full_url);
         tracing::info!(%node_name, url = %masked_url, "RtmpPublishNode starting");
 
-        // ── Parse RTMP URL ──────────────────────────────────────────────
         let rtmp_url: RtmpUrl = full_url.parse().map_err(|e| {
             StreamKitError::Configuration(format!(
                 "Invalid RTMP URL '{}': {e}",
@@ -183,7 +154,6 @@ impl ProcessorNode for RtmpPublishNode {
             "Parsed RTMP URL"
         );
 
-        // ── Connect TCP (+ optional TLS) ────────────────────────────────
         let mut stream = connect(&rtmp_url).await.map_err(|e| {
             let msg = format!("Failed to connect to RTMP server: {e}");
             state_helpers::emit_failed(&context.state_tx, &node_name, &msg);
@@ -192,7 +162,6 @@ impl ProcessorNode for RtmpPublishNode {
 
         tracing::info!(%node_name, "TCP connection established");
 
-        // ── Create RTMP connection and drive handshake ───────────────────
         let mut connection = RtmpPublishClientConnection::new(rtmp_url);
 
         drive_handshake(&mut connection, &mut stream, &node_name).await.map_err(|e| {
@@ -205,11 +174,9 @@ impl ProcessorNode for RtmpPublishNode {
 
         state_helpers::emit_running(&context.state_tx, &node_name);
 
-        // ── Obtain input receivers ──────────────────────────────────────
         let mut video_rx = context.take_input("video")?;
         let mut audio_rx = context.take_input("audio")?;
 
-        // ── Stats / metrics ─────────────────────────────────────────────
         let meter = opentelemetry::global::meter("streamkit");
         let packet_counter = meter.u64_counter("rtmp_publish.packets").build();
         let video_labels =
@@ -218,7 +185,6 @@ impl ProcessorNode for RtmpPublishNode {
             [KeyValue::new("node", node_name.clone()), KeyValue::new("track", "audio")];
         let mut stats = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
 
-        // ── Publishing state ────────────────────────────────────────────
         let mut audio_seq_header_sent = false;
         let mut video_packet_count: u64 = 0;
         let mut audio_packet_count: u64 = 0;
@@ -229,7 +195,6 @@ impl ProcessorNode for RtmpPublishNode {
         // wall-clock times (same pattern as the WebM muxer).
         let mut ts_state = RtmpTimestampState::new();
 
-        // ── Main publishing loop ────────────────────────────────────────
         tracing::info!(%node_name, "Entering RTMP publishing loop");
 
         let result: Result<(), StreamKitError> = async {
@@ -342,10 +307,6 @@ impl ProcessorNode for RtmpPublishNode {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// TCP / TLS connection helpers
-// ---------------------------------------------------------------------------
 
 /// Unified async stream over plain TCP or TLS.
 enum RtmpStream {
@@ -515,10 +476,6 @@ async fn connect(url: &RtmpUrl) -> Result<RtmpStream, String> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// RTMP protocol helpers
-// ---------------------------------------------------------------------------
-
 /// Drive the RTMP handshake until the connection reaches [`RtmpConnectionState::Publishing`].
 async fn drive_handshake(
     connection: &mut RtmpPublishClientConnection,
@@ -663,10 +620,6 @@ fn drain_events(connection: &mut RtmpPublishClientConnection, node_name: &str) -
     disconnected
 }
 
-// ---------------------------------------------------------------------------
-// Per-track timestamp rebase (mirrors WebM muxer `stage_frame` logic)
-// ---------------------------------------------------------------------------
-
 /// Backward timestamp jump threshold (ms).  Jumps larger than this trigger
 /// a rebase offset reset.  Typically caused by the compositor calibrating
 /// its running clock to a newly-arrived remote MoQ input.
@@ -798,8 +751,6 @@ impl RtmpTimestampState {
     }
 }
 
-// ---------------------------------------------------------------------------
-
 /// Process one encoded video packet and send it via RTMP.
 ///
 /// Converts H.264 Annex B to AVCC format, extracts SPS/PPS on keyframes
@@ -908,10 +859,6 @@ fn process_video_packet(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Audio packet processing
-// ---------------------------------------------------------------------------
-
 /// Process one encoded audio packet and send it via RTMP.
 ///
 /// On the first audio packet, sends an AAC `AudioSpecificConfig` as the
@@ -992,9 +939,6 @@ fn process_audio_packet(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// H.264 Annex B → AVCC conversion
-// ---------------------------------------------------------------------------
 //
 // These helpers mirror the logic in `containers/mp4.rs`.  A shared
 // `h264_utils` module could deduplicate them in a follow-up refactor.
@@ -1107,10 +1051,6 @@ fn convert_annexb_to_avcc(data: &[u8]) -> AvccConversion {
     AvccConversion { video_data, sps_list, pps_list }
 }
 
-// ---------------------------------------------------------------------------
-// AAC AudioSpecificConfig builder
-// ---------------------------------------------------------------------------
-
 /// Build a 2-byte AAC-LC `AudioSpecificConfig` for the RTMP sequence header.
 ///
 /// Layout (ISO 14496-3 §1.6.2.1):
@@ -1153,11 +1093,6 @@ fn build_aac_audio_specific_config(sample_rate: u32, channels: u8) -> Vec<u8> {
     vec![byte0, byte1]
 }
 
-// ---------------------------------------------------------------------------
-// Node registration
-// ---------------------------------------------------------------------------
-
-/// Registers all RTMP transport nodes with the engine's registry.
 pub fn register_rtmp_nodes(registry: &mut NodeRegistry) {
     let default_node = RtmpPublishNode::new(RtmpPublishConfig {
         url: String::new(),
@@ -1182,10 +1117,6 @@ pub fn register_rtmp_nodes(registry: &mut NodeRegistry) {
          converting to the RTMP/FLV wire format. Supports both RTMP and RTMPS (TLS).",
     );
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
@@ -1284,8 +1215,6 @@ mod tests {
         assert_eq!(asc[0], 0x12);
         assert_eq!(asc[1], 0x08);
     }
-
-    // ── AAC config validation tests ─────────────────────────────────────
 
     #[test]
     fn validate_aac_config_valid() {
@@ -1398,8 +1327,6 @@ mod tests {
         }
     }
 
-    // ── resolve_rtmp_url tests ──────────────────────────────────────────
-
     fn make_config(url: &str, key: Option<&str>, key_env: Option<&str>) -> RtmpPublishConfig {
         RtmpPublishConfig {
             url: url.to_string(),
@@ -1460,8 +1387,6 @@ mod tests {
         let err = resolve_rtmp_url_with_env(&cfg, |_| Ok(String::new())).unwrap_err();
         assert!(err.contains("empty"), "error should mention 'empty': {err}");
     }
-
-    // ── RtmpTimestampState rebase tests ───────────────────────────────
 
     /// Helper: build a `Packet::Binary` with a given `timestamp_us`.
     fn make_packet(timestamp_us: Option<u64>) -> Packet {

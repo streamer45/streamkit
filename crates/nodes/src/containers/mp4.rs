@@ -44,10 +44,6 @@ use streamkit_core::{
 
 use crate::video::DEFAULT_VIDEO_FRAME_DURATION_US;
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 /// Default video timescale (90 kHz — standard for MPEG transport streams / MP4).
 const DEFAULT_VIDEO_TIMESCALE: NonZeroU32 = match NonZeroU32::new(90_000) {
     Some(v) => v,
@@ -74,10 +70,6 @@ const FMP4_FIRST_FLUSH_DEFER_CAP: usize = 10 * FMP4_SEGMENT_FLUSH_THRESHOLD;
 /// 10× the normal cap = 3,000 samples ≈ 1 minute of audio at typical
 /// AAC frame rates (~47 frames/sec).
 const FMP4_SKIP_CLASS_HARD_CAP: usize = 10 * FMP4_FIRST_FLUSH_DEFER_CAP;
-
-// ---------------------------------------------------------------------------
-// Sample entry construction helpers
-// ---------------------------------------------------------------------------
 
 /// Build an AVC1 (H.264) sample entry box from SPS/PPS NAL units.
 ///
@@ -182,10 +174,6 @@ fn parse_avcc_codec_private(data: &[u8]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>, u8, u8,
         (vec![data.to_vec()], vec![vec![0x68, 0xce, 0x38, 0x80]], 66, 0, 31)
     }
 }
-
-// ---------------------------------------------------------------------------
-// H.264 Annex B → AVCC conversion
-// ---------------------------------------------------------------------------
 
 /// NAL unit type bitmask (lower 5 bits of NAL header byte).
 const H264_NAL_TYPE_MASK: u8 = 0x1F;
@@ -459,10 +447,6 @@ fn build_av01_sample_entry(width: u16, height: u16, codec_private: Option<&[u8]>
     })
 }
 
-// ---------------------------------------------------------------------------
-// File-backed buffer (reused pattern from WebM muxer)
-// ---------------------------------------------------------------------------
-
 /// A file-backed buffer for **File** mode MP4 muxing.
 ///
 /// All writes go to an anonymous temporary file on disk so the muxer can
@@ -514,10 +498,6 @@ impl Seek for FileBackedBuffer {
         self.inner.seek(pos)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Configuration
-// ---------------------------------------------------------------------------
 
 /// MP4 muxer streaming mode.
 #[derive(Deserialize, Debug, Default, Clone, Copy, JsonSchema)]
@@ -598,11 +578,6 @@ impl Default for Mp4MuxerConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Node
-// ---------------------------------------------------------------------------
-
-/// Frame variant received from input channels.
 enum MuxFrame {
     Audio(Bytes, Option<PacketMetadata>),
     Video(Bytes, Option<PacketMetadata>),
@@ -688,11 +663,8 @@ fn mp4_content_type(audio: Option<AudioCodec>, video: Option<VideoCodec>) -> &'s
     }
 }
 
-/// A node that muxes encoded H.264/AV1 video and/or AAC/Opus audio into an MP4 container.
-///
-/// Supports two modes:
-/// - **Stream** (fMP4): produces fragmented segments sent downstream immediately.
-/// - **File**: writes to a temp file on disk and sends the finalized MP4 once.
+/// Muxes H.264/AV1 video and/or AAC/Opus audio into an MP4 container
+/// (fMP4 streaming or regular file mode).
 pub struct Mp4MuxerNode {
     config: Mp4MuxerConfig,
 }
@@ -996,10 +968,6 @@ impl ProcessorNode for Mp4MuxerNode {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
-
 /// Resolve timescale values from config, falling back to compile-time constants.
 fn resolve_timescales(config: &Mp4MuxerConfig) -> (NonZeroU32, NonZeroU32) {
     let video_ts = NonZeroU32::new(config.video_timescale).unwrap_or(DEFAULT_VIDEO_TIMESCALE);
@@ -1103,10 +1071,6 @@ fn partition_samples_by_track(
 
     (sorted_samples, sorted_payloads)
 }
-
-// ---------------------------------------------------------------------------
-// Stream (fMP4) mode
-// ---------------------------------------------------------------------------
 
 /// Accumulate a single video frame into the pending segment state.
 ///
@@ -1523,10 +1487,6 @@ async fn flush_fmp4_segment(
     Ok(false)
 }
 
-// ---------------------------------------------------------------------------
-// File (regular MP4) mode
-// ---------------------------------------------------------------------------
-
 /// Run the muxer in regular MP4 file mode.
 ///
 /// Media data is written to a temporary file on disk.  The muxer tracks
@@ -1821,10 +1781,6 @@ async fn finalize_file_mode(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Shared receive helper
-// ---------------------------------------------------------------------------
-
 /// Receive the next frame from audio/video inputs or the control channel.
 ///
 /// Returns `None` when a non-shutdown control message arrives or a
@@ -1974,10 +1930,6 @@ async fn receive_dual_track(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Utilities
-// ---------------------------------------------------------------------------
-
 /// Convert a duration in microseconds to timescale ticks.
 fn us_to_ticks(duration_us: u64, timescale: u32) -> u32 {
     // duration_ticks = duration_us * timescale / 1_000_000
@@ -1986,13 +1938,8 @@ fn us_to_ticks(duration_us: u64, timescale: u32) -> u32 {
     u32::try_from(ticks).unwrap_or(u32::MAX)
 }
 
-// ---------------------------------------------------------------------------
-// Registration
-// ---------------------------------------------------------------------------
-
 use streamkit_core::{config_helpers, registry::StaticPins};
 
-/// Registers the MP4 container nodes.
 pub fn register_mp4_nodes(registry: &mut NodeRegistry) {
     let default_muxer = Mp4MuxerNode::new(Mp4MuxerConfig::default());
     register_static_node!(
@@ -2010,10 +1957,6 @@ pub fn register_mp4_nodes(registry: &mut NodeRegistry) {
          regular MP4 file output with fast-start.",
     );
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -2647,7 +2590,7 @@ mod tests {
 
         let mut muxer = Fmp4SegmentMuxer::new().unwrap();
 
-        // --- Segment 1: audio-only (simulates audio arriving before video keyframe) ---
+        // Segment 1: audio-only (audio arrives before video keyframe)
         // NOTE: We intentionally include the video sample_entry in this first
         // segment even though the video data hasn't arrived yet.  This mirrors
         // what the flush-gating fix does: it defers the first flush until both
@@ -2720,7 +2663,7 @@ mod tests {
         let segment_result = demuxer.handle_media_segment(&segment).unwrap();
         assert_eq!(segment_result.len(), 31, "Should have 30 audio + 1 video sample");
 
-        // --- Segment 2: subsequent A/V segment (no sample entries needed) ---
+        // Segment 2: A/V (no sample entries needed)
         let mut samples2 = Vec::new();
         let mut payloads2: Vec<Bytes> = Vec::new();
         let mut offset2: u64 = 0;
@@ -2793,10 +2736,6 @@ mod tests {
         assert_eq!(sps_list[0], sps);
         assert_eq!(pps_list[0], pps);
     }
-
-    // -----------------------------------------------------------------------
-    // Annex B → AVCC conversion tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn parse_annexb_single_nal_4byte_sc() {

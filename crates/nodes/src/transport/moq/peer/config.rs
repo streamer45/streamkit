@@ -2,10 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! Configuration types and helper structs for `MoqPeerNode`.
-//!
-//! Extracted from `peer/mod.rs` to reduce file size and improve navigability.
-
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -13,8 +9,6 @@ use std::sync::Arc;
 use streamkit_core::timing::MediaClock;
 use streamkit_core::types::{AudioCodec, Packet, PacketType, VideoCodec};
 use tokio::sync::{broadcast, mpsc, watch, Semaphore};
-
-// ── Internal helper types ────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct NodeStatsDelta {
@@ -174,8 +168,6 @@ pub(super) struct SubscriberSendCtx<'a> {
     pub audio_codec: AudioCodec,
 }
 
-// ── Shared map of dynamic output pin senders ─────────────────────────────────
-
 /// Shared map of dynamically created output pin senders.
 ///
 /// When downstream nodes connect to track-named pins (e.g. `moq_peer.audio/data`),
@@ -187,8 +179,6 @@ pub(super) struct SubscriberSendCtx<'a> {
 /// lock is never held across an `.await` point — only brief synchronous reads
 /// and writes.
 pub(super) type DynamicOutputs = Arc<std::sync::RwLock<HashMap<String, mpsc::Sender<Packet>>>>;
-
-// ── Free functions ───────────────────────────────────────────────────────────
 
 pub(super) fn normalize_gateway_path(path: &str) -> String {
     let trimmed = path.trim();
@@ -284,8 +274,6 @@ pub(super) fn make_broadcast_frame(packet: Packet, kind: MediaKind) -> Option<Br
         None
     }
 }
-
-// ── MoqPeerConfig ────────────────────────────────────────────────────────────
 
 #[derive(Deserialize, Debug, JsonSchema, Clone)]
 #[serde(default, deny_unknown_fields)]
@@ -395,8 +383,6 @@ impl MoqPeerConfig {
 mod tests {
     use super::*;
 
-    // ── normalize_gateway_path tests ─────────────────────────────────────
-
     #[test]
     fn normalize_gateway_path_default() {
         assert_eq!(normalize_gateway_path("/moq"), "/moq");
@@ -432,8 +418,6 @@ mod tests {
         assert_eq!(normalize_gateway_path("/api/moq/"), "/api/moq");
     }
 
-    // ── join_gateway_path tests ──────────────────────────────────────────
-
     #[test]
     fn join_gateway_path_normal() {
         assert_eq!(join_gateway_path("/moq", "input"), "/moq/input");
@@ -448,8 +432,6 @@ mod tests {
     fn join_gateway_path_nested_base() {
         assert_eq!(join_gateway_path("/api/moq", "input"), "/api/moq/input");
     }
-
-    // ── media_kind_for_packet_type tests ─────────────────────────────────
 
     #[test]
     fn media_kind_audio() {
@@ -476,8 +458,6 @@ mod tests {
     fn media_kind_binary_returns_none() {
         assert_eq!(media_kind_for_packet_type(&PacketType::Binary), None);
     }
-
-    // ── infer_kind_from_packet tests ─────────────────────────────────────
 
     #[test]
     fn infer_kind_video_content_type() {
@@ -509,8 +489,6 @@ mod tests {
         assert_eq!(infer_kind_from_packet(&packet), MediaKind::Audio);
     }
 
-    // ── make_broadcast_frame tests ───────────────────────────────────────
-
     #[test]
     fn make_broadcast_frame_video_defaults_keyframe_true() {
         let packet = Packet::Binary {
@@ -540,8 +518,6 @@ mod tests {
         let packet = Packet::Text(std::sync::Arc::from("not binary"));
         assert!(make_broadcast_frame(packet, MediaKind::Audio).is_none());
     }
-
-    // ── MoqPeerConfig tests ──────────────────────────────────────────────
 
     #[test]
     fn config_primary_input_broadcast_default() {

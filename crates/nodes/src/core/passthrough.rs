@@ -8,8 +8,6 @@ use streamkit_core::{
     state_helpers, InputPin, NodeContext, OutputPin, PinCardinality, ProcessorNode, StreamKitError,
 };
 
-/// A simple node that does nothing, just passes any packet it receives through.
-/// This is useful for testing the pipeline architecture and routing.
 #[derive(Default)]
 pub struct PassthroughNode;
 

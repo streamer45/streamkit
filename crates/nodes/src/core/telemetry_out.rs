@@ -2,11 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! Telemetry output node
-//!
-//! Consumes packets and emits telemetry events to the session telemetry bus (WebSocket).
-//! This is a terminal node (no outputs) intended for side branches.
-
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

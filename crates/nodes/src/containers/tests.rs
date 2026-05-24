@@ -2,8 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! Integration tests for container nodes (OGG, WAV, WebM)
-
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_macros)]
 
 use super::ogg::{OggDemuxerConfig, OggDemuxerNode, OggMuxerConfig, OggMuxerNode};
@@ -19,7 +17,6 @@ use streamkit_core::node::ProcessorNode;
 use streamkit_core::types::{AudioCodec, EncodedAudioFormat, Packet, PacketType};
 use tokio::sync::mpsc;
 
-/// Helper to read test audio files
 fn read_sample_file(filename: &str) -> Vec<u8> {
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -29,12 +26,7 @@ fn read_sample_file(filename: &str) -> Vec<u8> {
     std::fs::read(&path).unwrap_or_else(|_| panic!("Failed to read test file: {}", path.display()))
 }
 
-/// Helper to create a mock Opus packet for testing
-/// This creates a minimal valid Opus packet (silence)
 fn create_mock_opus_packet() -> Packet {
-    // Minimal Opus packet (20ms of silence, mono, 48kHz)
-    // Opus packet format: TOC byte + compressed data
-    // TOC: 0xFC = CELT-only mode, 20ms, mono
     let opus_data = vec![0xFC, 0xF8]; // TOC + minimal payload
     Packet::Binary { data: Bytes::from(opus_data), content_type: None, metadata: None }
 }
@@ -75,7 +67,6 @@ async fn test_ogg_muxer_basic() {
     assert_state_initializing(&mut state_rx).await;
     assert_state_running(&mut state_rx).await;
 
-    // Send some mock Opus packets
     for _ in 0..5 {
         input_tx.send(create_mock_opus_packet()).await.unwrap();
     }
@@ -84,11 +75,9 @@ async fn test_ogg_muxer_basic() {
     assert_state_stopped(&mut state_rx).await;
     node_handle.await.unwrap().unwrap();
 
-    // Verify output
     let output_packets = mock_sender.get_packets_for_pin("out").await;
     assert!(!output_packets.is_empty(), "OGG muxer should produce output packets");
 
-    // Verify it's Binary packets with audio/ogg content type
     for packet in &output_packets {
         match packet {
             Packet::Binary { content_type, .. } => {
@@ -121,7 +110,6 @@ async fn test_ogg_muxer_multiple_packets() {
     assert_state_initializing(&mut state_rx).await;
     assert_state_running(&mut state_rx).await;
 
-    // Send multiple Opus packets
     for i in 0..20 {
         tracing::debug!("Sending Opus packet {}", i);
         input_tx.send(create_mock_opus_packet()).await.unwrap();
@@ -148,7 +136,6 @@ async fn test_ogg_demuxer_basic() {
 
     let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
 
-    // Create OGG demuxer node
     let node = OggDemuxerNode::new(OggDemuxerConfig::default());
 
     let node_handle = tokio::spawn(async move { Box::new(node).run(context).await });
@@ -156,7 +143,6 @@ async fn test_ogg_demuxer_basic() {
     assert_state_initializing(&mut state_rx).await;
     assert_state_running(&mut state_rx).await;
 
-    // Read and send OGG test file
     let ogg_data = read_sample_file("sample.ogg");
     let packet = create_test_binary_packet(ogg_data);
     input_tx.send(packet).await.unwrap();
@@ -165,11 +151,9 @@ async fn test_ogg_demuxer_basic() {
     assert_state_stopped(&mut state_rx).await;
     node_handle.await.unwrap().unwrap();
 
-    // Verify output
     let output_packets = mock_sender.get_packets_for_pin("out").await;
     assert!(!output_packets.is_empty(), "OGG demuxer should extract packets");
 
-    // Verify we got Binary packets (Opus-encoded)
     for packet in &output_packets {
         match packet {
             Packet::Binary { data, .. } => {
@@ -184,7 +168,6 @@ async fn test_ogg_demuxer_basic() {
 
 #[tokio::test]
 async fn test_ogg_demuxer_multiple_chunks() {
-    // Test that demuxer can handle OGG data split across multiple packets
     let (input_tx, input_rx) = mpsc::channel(10);
     let mut inputs = HashMap::new();
     inputs.insert("in".to_string(), input_rx);
@@ -198,7 +181,6 @@ async fn test_ogg_demuxer_multiple_chunks() {
     assert_state_initializing(&mut state_rx).await;
     assert_state_running(&mut state_rx).await;
 
-    // Read OGG file and split into chunks
     let ogg_data = read_sample_file("sample.ogg");
     let chunk_size = ogg_data.len() / 4;
 
@@ -214,7 +196,6 @@ async fn test_ogg_demuxer_multiple_chunks() {
     assert_state_stopped(&mut state_rx).await;
     node_handle.await.unwrap().unwrap();
 
-    // Verify we got output even with chunked input
     let output_packets = mock_sender.get_packets_for_pin("out").await;
     assert!(!output_packets.is_empty(), "Should extract packets even when input is chunked");
 
@@ -223,7 +204,6 @@ async fn test_ogg_demuxer_multiple_chunks() {
 
 #[tokio::test]
 async fn test_ogg_roundtrip() {
-    // Test muxing and then demuxing
     // Step 1: Mux some Opus packets to OGG
     let (mux_input_tx, mux_input_rx) = mpsc::channel(10);
     let mut mux_inputs = HashMap::new();
@@ -239,7 +219,6 @@ async fn test_ogg_roundtrip() {
     assert_state_initializing(&mut mux_state_rx).await;
     assert_state_running(&mut mux_state_rx).await;
 
-    // Send Opus packets to muxer
     for _ in 0..10 {
         mux_input_tx.send(create_mock_opus_packet()).await.unwrap();
     }
@@ -268,7 +247,6 @@ async fn test_ogg_roundtrip() {
     assert_state_initializing(&mut demux_state_rx).await;
     assert_state_running(&mut demux_state_rx).await;
 
-    // Send muxed OGG packets to demuxer
     for packet in muxed_packets {
         demux_input_tx.send(packet).await.unwrap();
     }
@@ -298,7 +276,6 @@ async fn test_webm_muxer_basic() {
         }),
     );
 
-    // Create WebM muxer node
     let config = WebMMuxerConfig::default();
     let node = WebMMuxerNode::new(config);
 
@@ -307,7 +284,6 @@ async fn test_webm_muxer_basic() {
     assert_state_initializing(&mut state_rx).await;
     assert_state_running(&mut state_rx).await;
 
-    // Send some mock Opus packets
     for _ in 0..5 {
         input_tx.send(create_mock_opus_packet()).await.unwrap();
     }
@@ -316,7 +292,6 @@ async fn test_webm_muxer_basic() {
     assert_state_stopped(&mut state_rx).await;
     node_handle.await.unwrap().unwrap();
 
-    // Verify output
     let output_packets = mock_sender.get_packets_for_pin("out").await;
     assert!(!output_packets.is_empty(), "WebM muxer should produce output packets");
 
@@ -332,7 +307,6 @@ async fn test_webm_muxer_basic() {
         "WebM output should include OpusHead codec private"
     );
 
-    // Verify it's Binary packets with audio/webm content type
     for packet in &output_packets {
         match packet {
             Packet::Binary { content_type, .. } => {
@@ -371,7 +345,6 @@ async fn test_webm_muxer_multiple_packets() {
     assert_state_initializing(&mut state_rx).await;
     assert_state_running(&mut state_rx).await;
 
-    // Send multiple Opus packets
     for i in 0..15 {
         tracing::debug!("Sending Opus packet {} to WebM muxer", i);
         input_tx.send(create_mock_opus_packet()).await.unwrap();
@@ -384,7 +357,6 @@ async fn test_webm_muxer_multiple_packets() {
     let output_packets = mock_sender.get_packets_for_pin("out").await;
     assert!(!output_packets.is_empty(), "WebM should produce output from multiple input packets");
 
-    // Verify the output data is not empty
     let total_bytes: usize = output_packets
         .iter()
         .map(|p| match p {
@@ -404,7 +376,6 @@ async fn test_webm_muxer_multiple_packets() {
 
 #[tokio::test]
 async fn test_webm_sliding_window() {
-    // Test that WebM muxer handles long streams with sliding window
     let (input_tx, input_rx) = mpsc::channel(10);
     let mut inputs = HashMap::new();
     inputs.insert("in".to_string(), input_rx);
@@ -418,8 +389,6 @@ async fn test_webm_sliding_window() {
         }),
     );
 
-    // Create config (chunk_size was removed — the default streaming mode
-    // flushes incrementally on every frame write).
     let config = WebMMuxerConfig::default();
     let node = WebMMuxerNode::new(config);
 
@@ -428,7 +397,6 @@ async fn test_webm_sliding_window() {
     assert_state_initializing(&mut state_rx).await;
     assert_state_running(&mut state_rx).await;
 
-    // Send many packets to test sliding window behavior
     for i in 0..50 {
         if i % 10 == 0 {
             tracing::debug!("Sent {} packets to WebM muxer", i);
@@ -456,8 +424,6 @@ async fn test_webm_mux_vp9_video_only() {
     use crate::test_utils::create_test_video_frame;
     use crate::video::vp9::{Vp9EncoderConfig, Vp9EncoderNode};
     use streamkit_core::types::{PacketMetadata, PixelFormat};
-
-    // ---- Step 1: Encode some raw I420 frames to VP9 ----
 
     let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
     let mut enc_inputs = HashMap::new();
@@ -501,8 +467,6 @@ async fn test_webm_mux_vp9_video_only() {
     let encoded_packets = enc_sender.get_packets_for_pin("out").await;
     assert!(!encoded_packets.is_empty(), "VP9 encoder produced no packets");
 
-    // ---- Step 2: Mux the encoded VP9 packets into WebM ----
-
     let (mux_video_tx, mux_video_rx) = mpsc::channel(10);
     let mut mux_inputs = HashMap::new();
     // Only video, no audio
@@ -535,8 +499,6 @@ async fn test_webm_mux_vp9_video_only() {
     assert_state_stopped(&mut mux_state_rx).await;
     mux_handle.await.unwrap().unwrap();
 
-    // ---- Step 3: Validate output ----
-
     let output_packets = mux_sender.get_packets_for_pin("out").await;
     assert!(!output_packets.is_empty(), "WebM muxer produced no output");
 
@@ -557,7 +519,6 @@ async fn test_webm_mux_vp9_video_only() {
         "WebM output does not start with EBML header"
     );
 
-    // Verify content type
     if let Packet::Binary { content_type, .. } = &output_packets[0] {
         let ct = content_type.as_ref().expect("content_type should be set");
         assert_eq!(ct.as_ref(), "video/webm; codecs=\"vp9\"");
@@ -587,8 +548,6 @@ async fn test_webm_mux_audio_and_video() {
     use crate::test_utils::create_test_video_frame;
     use crate::video::vp9::{Vp9EncoderConfig, Vp9EncoderNode};
     use streamkit_core::types::{EncodedVideoFormat, PacketMetadata, PixelFormat, VideoCodec};
-
-    // ---- Step 1: Encode a few raw I420 frames to VP9 ----
 
     let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
     let mut enc_inputs = HashMap::new();
@@ -632,8 +591,6 @@ async fn test_webm_mux_audio_and_video() {
     let encoded_video_packets = enc_sender.get_packets_for_pin("out").await;
     assert!(!encoded_video_packets.is_empty(), "VP9 encoder produced no packets");
 
-    // ---- Step 2: Mux audio + video into WebM ----
-
     let (mux_audio_tx, mux_audio_rx) = mpsc::channel(10);
     let (mux_video_tx, mux_video_rx) = mpsc::channel(10);
     let mut mux_inputs = HashMap::new();
@@ -667,11 +624,9 @@ async fn test_webm_mux_audio_and_video() {
     assert_state_initializing(&mut mux_state_rx).await;
     assert_state_running(&mut mux_state_rx).await;
 
-    // Send audio packets
     for _ in 0..10 {
         mux_audio_tx.send(create_mock_opus_packet()).await.unwrap();
     }
-    // Send video packets
     for packet in encoded_video_packets {
         mux_video_tx.send(packet).await.unwrap();
     }
@@ -680,8 +635,6 @@ async fn test_webm_mux_audio_and_video() {
 
     assert_state_stopped(&mut mux_state_rx).await;
     mux_handle.await.unwrap().unwrap();
-
-    // ---- Step 3: Validate output ----
 
     let output_packets = mux_sender.get_packets_for_pin("out").await;
     assert!(!output_packets.is_empty(), "WebM muxer produced no output for audio+video");
@@ -694,7 +647,6 @@ async fn test_webm_mux_audio_and_video() {
         }
     }
 
-    // Verify EBML header
     assert!(webm_bytes.len() >= 4, "WebM output too small: {} bytes", webm_bytes.len());
     assert_eq!(
         &webm_bytes[..4],
@@ -702,7 +654,6 @@ async fn test_webm_mux_audio_and_video() {
         "WebM output does not start with EBML header"
     );
 
-    // Verify content type includes both codecs
     if let Packet::Binary { content_type, .. } = &output_packets[0] {
         let ct = content_type.as_ref().expect("content_type should be set");
         assert_eq!(
@@ -733,8 +684,6 @@ async fn test_webm_mux_vp9_auto_detect_dimensions() {
     use crate::test_utils::create_test_video_frame;
     use crate::video::vp9::{Vp9EncoderConfig, Vp9EncoderNode};
     use streamkit_core::types::{EncodedVideoFormat, PacketMetadata, PixelFormat, VideoCodec};
-
-    // ---- Step 1: Encode raw frames to VP9 ----
 
     let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
     let mut enc_inputs = HashMap::new();
@@ -778,8 +727,6 @@ async fn test_webm_mux_vp9_auto_detect_dimensions() {
     let encoded_packets = enc_sender.get_packets_for_pin("out").await;
     assert!(!encoded_packets.is_empty(), "VP9 encoder produced no packets");
 
-    // ---- Step 2: Mux with auto-detect dimensions (video_width=0, video_height=0) ----
-
     let (mux_video_tx, mux_video_rx) = mpsc::channel(10);
     let mut mux_inputs = HashMap::new();
     // Single pin for video-only.  With width/height = 0 the muxer uses a single pin.
@@ -814,15 +761,12 @@ async fn test_webm_mux_vp9_auto_detect_dimensions() {
     assert_state_stopped(&mut mux_state_rx).await;
     mux_handle.await.unwrap().unwrap();
 
-    // ---- Step 3: Validate output ----
-
     let output_packets = mux_sender.get_packets_for_pin("out").await;
     assert!(
         !output_packets.is_empty(),
         "WebM muxer produced no output with auto-detected dimensions"
     );
 
-    // Verify EBML header is valid
     let mut webm_bytes = Vec::new();
     for packet in &output_packets {
         if let Packet::Binary { data, .. } = packet {
@@ -852,8 +796,6 @@ async fn test_webm_mux_file_mode() {
     use crate::test_utils::create_test_video_frame;
     use crate::video::vp9::{Vp9EncoderConfig, Vp9EncoderNode};
     use streamkit_core::types::{EncodedVideoFormat, PacketMetadata, PixelFormat, VideoCodec};
-
-    // ---- Step 1: Encode raw I420 frames to VP9 ----
 
     let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
     let mut enc_inputs = HashMap::new();
@@ -897,8 +839,6 @@ async fn test_webm_mux_file_mode() {
     let encoded_packets = enc_sender.get_packets_for_pin("out").await;
     assert!(!encoded_packets.is_empty(), "VP9 encoder produced no packets");
 
-    // ---- Step 2: Mux in File mode ----
-
     let (mux_video_tx, mux_video_rx) = mpsc::channel(10);
     let mut mux_inputs = HashMap::new();
     mux_inputs.insert("in".to_string(), mux_video_rx);
@@ -934,8 +874,6 @@ async fn test_webm_mux_file_mode() {
 
     assert_state_stopped(&mut mux_state_rx).await;
     mux_handle.await.unwrap().unwrap();
-
-    // ---- Step 3: Validate File mode output ----
 
     let output_packets = mux_sender.get_packets_for_pin("out").await;
     // File mode emits a single packet after finalization
@@ -1083,8 +1021,6 @@ async fn test_webm_mux_dynamic_pipeline_classifies_inputs_from_packets() {
         AudioCodec, EncodedAudioFormat, EncodedVideoFormat, PacketMetadata, PixelFormat, VideoCodec,
     };
 
-    // ---- Step 1: Encode a real VP9 keyframe ----
-
     let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
     let mut enc_inputs = HashMap::new();
     enc_inputs.insert("in".to_string(), enc_input_rx);
@@ -1124,8 +1060,6 @@ async fn test_webm_mux_dynamic_pipeline_classifies_inputs_from_packets() {
 
     let encoded_video_packets = enc_sender.get_packets_for_pin("out").await;
     assert!(!encoded_video_packets.is_empty(), "VP9 encoder produced no packets");
-
-    // ---- Step 2: Mux with InputTypeResolved (dynamic pipeline simulation) ----
 
     let (mux_audio_tx, mux_audio_rx) = mpsc::channel(10);
     let (mux_video_tx, mux_video_rx) = mpsc::channel(10);
@@ -1175,11 +1109,9 @@ async fn test_webm_mux_dynamic_pipeline_classifies_inputs_from_packets() {
         .unwrap();
     drop(pin_mgmt_tx);
 
-    // Send audio packets
     for _ in 0..5 {
         mux_audio_tx.send(create_mock_opus_packet()).await.unwrap();
     }
-    // Send video packets
     for packet in encoded_video_packets {
         mux_video_tx.send(packet).await.unwrap();
     }
@@ -1192,7 +1124,6 @@ async fn test_webm_mux_dynamic_pipeline_classifies_inputs_from_packets() {
     assert_state_stopped(&mut mux_state_rx).await;
     mux_handle.await.unwrap().unwrap();
 
-    // Verify we got output packets (the muxer actually produced WebM data)
     let output_packets = mux_sender.get_packets_for_pin("out").await;
     assert!(
         !output_packets.is_empty(),
@@ -1211,8 +1142,6 @@ async fn test_webm_mux_dynamic_pipeline_video_only() {
     use crate::video::vp9::{Vp9EncoderConfig, Vp9EncoderNode};
     use streamkit_core::pins::PinManagementMessage;
     use streamkit_core::types::{EncodedVideoFormat, PacketMetadata, PixelFormat, VideoCodec};
-
-    // ---- Step 1: Encode a real VP9 keyframe ----
 
     let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
     let mut enc_inputs = HashMap::new();
@@ -1254,8 +1183,6 @@ async fn test_webm_mux_dynamic_pipeline_video_only() {
     let encoded_video_packets = enc_sender.get_packets_for_pin("out").await;
     assert!(!encoded_video_packets.is_empty(), "VP9 encoder produced no packets");
 
-    // ---- Step 2: Video-only mux with InputTypeResolved ----
-
     let (mux_video_tx, mux_video_rx) = mpsc::channel(10);
     let mut mux_inputs = HashMap::new();
     mux_inputs.insert("in".to_string(), mux_video_rx);
@@ -1288,7 +1215,6 @@ async fn test_webm_mux_dynamic_pipeline_video_only() {
         .unwrap();
     drop(pin_mgmt_tx);
 
-    // Send video packets
     for packet in encoded_video_packets {
         mux_video_tx.send(packet).await.unwrap();
     }
@@ -1315,8 +1241,6 @@ async fn test_webm_mux_av1_video_only() {
     use crate::test_utils::create_test_video_frame;
     use crate::video::av1::{Av1EncoderConfig, Av1EncoderNode};
     use streamkit_core::types::{PacketMetadata, PixelFormat};
-
-    // ---- Step 1: Encode some raw NV12 frames to AV1 ----
 
     let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
     let mut enc_inputs = HashMap::new();
@@ -1357,8 +1281,6 @@ async fn test_webm_mux_av1_video_only() {
     let encoded_packets = enc_sender.get_packets_for_pin("out").await;
     assert!(!encoded_packets.is_empty(), "AV1 encoder produced no packets");
 
-    // ---- Step 2: Mux the encoded AV1 packets into WebM ----
-
     let (mux_video_tx, mux_video_rx) = mpsc::channel(10);
     let mut mux_inputs = HashMap::new();
     mux_inputs.insert("in".to_string(), mux_video_rx);
@@ -1389,8 +1311,6 @@ async fn test_webm_mux_av1_video_only() {
 
     assert_state_stopped(&mut mux_state_rx).await;
     mux_handle.await.unwrap().unwrap();
-
-    // ---- Step 3: Validate output ----
 
     let output_packets = mux_sender.get_packets_for_pin("out").await;
     assert!(!output_packets.is_empty(), "WebM muxer produced no output");
@@ -1443,8 +1363,6 @@ async fn test_webm_mux_av1_via_input_type_resolved() {
         AudioCodec, EncodedAudioFormat, EncodedVideoFormat, PacketMetadata, PixelFormat, VideoCodec,
     };
 
-    // ---- Step 1: Encode some AV1 frames ----
-
     let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
     let mut enc_inputs = HashMap::new();
     enc_inputs.insert("in".to_string(), enc_input_rx);
@@ -1481,8 +1399,6 @@ async fn test_webm_mux_av1_via_input_type_resolved() {
 
     let encoded_video = enc_sender.get_packets_for_pin("out").await;
     assert!(!encoded_video.is_empty(), "AV1 encoder produced no packets");
-
-    // ---- Step 2: Mux via InputTypeResolved (dynamic pipeline) ----
 
     let (mux_audio_tx, mux_audio_rx) = mpsc::channel(10);
     let (mux_video_tx, mux_video_rx) = mpsc::channel(10);
@@ -1527,7 +1443,6 @@ async fn test_webm_mux_av1_via_input_type_resolved() {
         .unwrap();
     drop(pin_mgmt_tx);
 
-    // Send audio + video packets.
     for _ in 0..3 {
         mux_audio_tx.send(create_mock_opus_packet()).await.unwrap();
     }
@@ -1540,8 +1455,6 @@ async fn test_webm_mux_av1_via_input_type_resolved() {
     assert_state_running(&mut mux_state_rx).await;
     assert_state_stopped(&mut mux_state_rx).await;
     mux_handle.await.unwrap().unwrap();
-
-    // ---- Step 3: Verify content type includes "av1,opus" ----
 
     let output_packets = mux_sender.get_packets_for_pin("out").await;
     assert!(!output_packets.is_empty(), "WebM muxer produced no output");

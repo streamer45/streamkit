@@ -2,31 +2,15 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! Shared async select-loop for codec-style nodes.
-//!
-//! Many nodes follow the same pattern: a blocking task produces
-//! `Result<T, String>` items, an input task feeds packets into the blocking
-//! task, and an async select-loop forwards results to the output sender while
-//! handling shutdown and input completion.  [`codec_forward_loop`] captures
-//! this pattern so individual nodes don't need to duplicate it.
-
 use opentelemetry::KeyValue;
 use streamkit_core::stats::NodeStatsTracker;
 use streamkit_core::types::Packet;
 use streamkit_core::NodeContext;
 use tokio::sync::mpsc;
 
-/// Drain remaining codec results while concurrently awaiting the codec task.
-///
-/// We must keep reading from `result_rx` while the codec task is still
-/// running because the codec task uses `blocking_send()` on a bounded
-/// channel (capacity 32).  If we awaited the codec task first (without
-/// draining), the channel would fill up and the codec task would block
-/// forever — a deadlock.
-///
-/// Once the codec task finishes, `result_tx` is dropped, so
-/// `result_rx.recv()` will eventually return `None` and we exit the
-/// drain loop naturally with all results forwarded.
+/// Must drain `result_rx` concurrently with the codec task: the codec
+/// uses `blocking_send` on a bounded channel, so awaiting the task
+/// without draining would deadlock.
 async fn drain_codec_results<T: Send + 'static, F: Fn(T) -> Packet + Send + Sync>(
     result_rx: &mut mpsc::Receiver<Result<T, String>>,
     mut codec_task: tokio::task::JoinHandle<()>,
@@ -82,14 +66,6 @@ async fn drain_codec_results<T: Send + 'static, F: Fn(T) -> Packet + Send + Sync
     tracing::debug!("{label} drain complete: forwarded {drained} result(s)");
 }
 
-/// Shared select-loop that forwards codec results to the output sender.
-///
-/// Handles three concurrent events:
-/// 1. Results arriving from the blocking codec task.
-/// 2. Shutdown control messages.
-/// 3. Input task completion (triggers drain of remaining results).
-///
-/// `to_packet` converts a codec-specific result `T` into a [`Packet`].
 #[allow(clippy::too_many_arguments)]
 pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
     context: &mut NodeContext,
@@ -102,8 +78,6 @@ pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
     to_packet: impl Fn(T) -> Packet + Send + Sync,
     label: &str,
 ) {
-    /// Forwards a single successful codec result to the output sender.
-    /// Returns `true` if the output channel is closed (caller should break).
     async fn forward_one(
         packet: Packet,
         context: &mut NodeContext,

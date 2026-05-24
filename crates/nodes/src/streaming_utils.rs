@@ -7,36 +7,12 @@ use std::collections::VecDeque;
 use std::io::Read;
 use tokio::sync::mpsc;
 
-/// A bounded, zero-copy Read implementation for streaming data.
+/// Bounded, zero-copy `Read` over a channel of `Bytes` chunks.
 ///
-/// This reader uses a `VecDeque<Bytes>` and drops chunks after they're consumed.
-/// Memory usage is bounded when used with a bounded tokio channel.
-///
-/// Key design principles:
-/// - **Bounded memory**: Upstream is backpressured via bounded channel capacity
-/// - **Zero-copy receive**: Accepts `Bytes` directly (no Vec<u8> conversion)
-/// - **Blocking recv**: Blocks waiting for data, allowing upstream to pace delivery
-///
-/// # Safety Invariant
-///
-/// **IMPORTANT**: This reader uses `blocking_recv()` which will block the current thread.
-/// It MUST only be used inside `tokio::task::spawn_blocking` contexts. Using it on a Tokio
-/// worker thread will stall the runtime and cause latency spikes for unrelated tasks.
-///
-/// Correct usage:
-/// ```ignore
-/// let rx = mpsc::channel(32);
-/// tokio::task::spawn_blocking(move || {
-///     let reader = StreamingReader::new(rx);
-///     // ... use reader.read() safely here ...
-/// });
-/// ```
+/// Uses `blocking_recv()` — **must** run inside `spawn_blocking`.
 pub struct StreamingReader {
-    /// Queue of pending chunks - consumed chunks are dropped
     chunks: VecDeque<Bytes>,
-    /// Current read position within the front chunk
     chunk_offset: usize,
-    /// Channel receiver for incoming data
     rx: mpsc::Receiver<Bytes>,
     eof: bool,
 }

@@ -2,12 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! Sink node
-//!
-//! Accepts any packets and discards them.
-//! Useful as a terminal node for side-branches (e.g. VAD events → telemetry tap → sink),
-//! debugging, and graph wiring where a node requires an output connection.
-
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use streamkit_core::types::PacketType;
@@ -24,11 +18,8 @@ pub struct SinkConfig {}
 pub struct SinkNode;
 
 impl SinkNode {
-    /// Creates a new sink node.
-    ///
     /// # Errors
-    ///
-    /// Returns an error if the configuration parameters cannot be parsed.
+    /// Returns `Err` if config parsing fails.
     pub fn new(params: Option<&serde_json::Value>) -> Result<Self, StreamKitError> {
         let _config: SinkConfig = config_helpers::parse_config_optional(params)?;
         Ok(Self)

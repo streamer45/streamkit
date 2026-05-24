@@ -26,31 +26,22 @@ use tokio::sync::mpsc;
 
 use crate::streaming_utils::StreamingReader;
 
-// --- MP3 Decoder Constants ---
-
-/// Channel buffer size for decoder pipeline communication
 const DECODER_CHANNEL_CAPACITY: usize = 32;
 
-/// Output frame size - 20ms at 48kHz stereo (960 samples per channel * 2 = 1920 total)
-/// This matches Opus encoder expectations
+/// 20ms at 48kHz stereo; matches Opus encoder frame size.
 const OUTPUT_FRAME_SIZE: usize = 1920;
-
-// --- MP3 Decoder ---
 
 #[derive(Deserialize, Debug, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Mp3DecoderConfig {}
 
-/// A node that decodes MP3 audio files to raw PCM audio frames.
 pub struct Mp3DecoderNode {
     _config: Mp3DecoderConfig,
 }
 
 impl Mp3DecoderNode {
-    /// Creates a new MP3 decoder node.
-    ///
     /// # Errors
-    /// Currently returns `Ok` in all cases, but the `Result` type is kept for future extensibility.
+    /// Returns `Err` if the config is invalid.
     pub const fn new(config: Mp3DecoderConfig) -> Result<Self, StreamKitError> {
         Ok(Self { _config: config })
     }
@@ -324,9 +315,7 @@ fn decode_mp3_streaming_incremental(
         }
     }
 
-    // Send any remaining samples as a final chunk
     if !rechunk_buffer.is_empty() {
-        // Calculate duration for the final chunk
         let samples_per_channel = rechunk_buffer.len() / channels as usize;
         let duration_us = (samples_per_channel as u64 * 1_000_000) / u64::from(sample_rate);
 
@@ -350,11 +339,8 @@ fn decode_mp3_streaming_incremental(
 
 use streamkit_core::{config_helpers, registry::StaticPins};
 
-/// Registers the MP3 decoder node.
-///
 /// # Panics
-///
-/// Panics if the default MP3 decoder cannot be created (should never happen).
+/// Panics if default configs or JSON schemas fail to serialize.
 #[allow(clippy::expect_used)] // Schema serialization and default config should never fail
 pub fn register_mp3_nodes(registry: &mut NodeRegistry) {
     #[cfg(feature = "symphonia")]
@@ -392,7 +378,6 @@ mod tests {
     use std::path::Path;
     use tokio::sync::mpsc;
 
-    // Helper to read test audio files
     fn read_sample_file(filename: &str) -> Vec<u8> {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/audio").join(filename);
         std::fs::read(&path)
@@ -401,46 +386,35 @@ mod tests {
 
     #[tokio::test]
     async fn test_mp3_decode() {
-        // Create input channel
         let (input_tx, input_rx) = mpsc::channel(10);
         let mut inputs = HashMap::new();
         inputs.insert("in".to_string(), input_rx);
 
         let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
 
-        // Create MP3 decoder node
         let node = Mp3DecoderNode::new(Mp3DecoderConfig::default()).unwrap();
 
-        // Spawn node task
         let node_handle = tokio::spawn(async move { Box::new(node).run(context).await });
 
-        // Wait for initializing and running states
         assert_state_initializing(&mut state_rx).await;
         assert_state_running(&mut state_rx).await;
 
-        // Read and send MP3 test file
         let mp3_data = read_sample_file("sample.mp3");
         let packet = create_test_binary_packet(mp3_data);
         input_tx.send(packet).await.unwrap();
 
-        // Close input to signal completion
         drop(input_tx);
 
-        // Wait for stopped state
         assert_state_stopped(&mut state_rx).await;
 
-        // Wait for node to finish
         node_handle.await.unwrap().unwrap();
 
-        // Verify output packets
         let output_packets = mock_sender.get_packets_for_pin("out").await;
         assert!(!output_packets.is_empty(), "Expected at least one output packet");
 
-        // Verify the first packet contains audio data
         let audio_data = extract_audio_data(&output_packets[0]).expect("Should be audio packet");
         assert!(!audio_data.is_empty(), "Expected non-empty audio data from MP3 decoder");
 
-        // Verify audio format
         if let Packet::Audio(frame) = &output_packets[0] {
             assert!(frame.sample_rate > 0, "Sample rate should be greater than 0");
             assert!(frame.channels > 0, "Channels should be greater than 0");
@@ -455,7 +429,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_mp3_multiple_packets() {
-        // Test that decoder can handle data split across multiple packets
         let (input_tx, input_rx) = mpsc::channel(10);
         let mut inputs = HashMap::new();
         inputs.insert("in".to_string(), input_rx);
@@ -469,7 +442,6 @@ mod tests {
         assert_state_initializing(&mut state_rx).await;
         assert_state_running(&mut state_rx).await;
 
-        // Read MP3 file and split into multiple packets
         let mp3_data = read_sample_file("sample.mp3");
         let chunk_size = mp3_data.len() / 3;
 
@@ -485,7 +457,6 @@ mod tests {
         assert_state_stopped(&mut state_rx).await;
         node_handle.await.unwrap().unwrap();
 
-        // Verify we got output
         let output_packets = mock_sender.get_packets_for_pin("out").await;
         assert!(!output_packets.is_empty(), "Expected output even when input split across packets");
     }

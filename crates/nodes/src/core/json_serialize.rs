@@ -2,11 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! JSON Serialization Node
-//!
-//! Converts any packet type to JSON-encoded binary data.
-//! Useful for sending structured data over binary transports (HTTP, WebSocket, files).
-
 use async_trait::async_trait;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -17,7 +12,6 @@ use streamkit_core::{
     StreamKitError,
 };
 
-/// Configuration for JSON serialization
 #[derive(Serialize, Deserialize, Default, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct JsonSerializeConfig {
@@ -29,18 +23,14 @@ pub struct JsonSerializeConfig {
     pub newline_delimited: bool,
 }
 
-/// Node that serializes any packet to JSON binary format
 pub struct JsonSerialize {
     pretty: bool,
     newline_delimited: bool,
 }
 
 impl JsonSerialize {
-    /// Creates a new JSON serialization node from configuration parameters.
-    ///
     /// # Errors
-    ///
-    /// Returns an error if the configuration parameters cannot be parsed.
+    /// Returns `Err` if config parsing fails.
     pub fn new(params: Option<&serde_json::Value>) -> Result<Self, StreamKitError> {
         let config: JsonSerializeConfig = config_helpers::parse_config_optional(params)?;
 

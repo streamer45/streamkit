@@ -2,8 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! File read node - Streams raw bytes from a file
-
 use async_trait::async_trait;
 use bytes::Bytes;
 use schemars::JsonSchema;
@@ -15,7 +13,6 @@ use streamkit_core::{
 };
 use tokio::io::AsyncReadExt;
 
-/// Configuration for the FileReadNode
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FileReadConfig {
@@ -30,10 +27,6 @@ const fn default_chunk_size() -> usize {
     8192
 }
 
-/// A node that reads a file and outputs its contents as Binary packets.
-///
-/// This node is format-agnostic - it just streams raw bytes.
-/// Demuxers and decoders downstream handle format parsing and timing extraction.
 pub struct FileReadNode {
     config: FileReadConfig,
 }

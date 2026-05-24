@@ -2,8 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! HTTP pull node - Fetches and streams data from HTTP/HTTPS URLs
-
 use async_trait::async_trait;
 use bytes::{BufMut, BytesMut};
 use futures_util::StreamExt;
@@ -17,7 +15,6 @@ use streamkit_core::{
     PinCardinality, ProcessorNode, StreamKitError,
 };
 
-/// Configuration for the HttpPullNode
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HttpPullConfig {
@@ -33,11 +30,6 @@ const fn default_chunk_size() -> usize {
     8192
 }
 
-/// A node that fetches data from an HTTP/HTTPS URL and outputs it as Binary packets.
-///
-/// This node attempts to use HTTP range requests for efficient streaming.
-/// If range requests are not supported by the server, it falls back to downloading
-/// the entire file to a temporary location and streaming from there.
 pub struct HttpPullNode {
     config: HttpPullConfig,
 }
@@ -290,7 +282,6 @@ mod tests {
         assert_eq!(node.output_pins()[0].produces_type, PacketType::Binary);
     }
 
-    /// Helper to create a mock HTTP server for streaming tests
     #[allow(clippy::unwrap_used)]
     async fn start_mock_server(_test_data: &'static [u8]) -> Option<String> {
         #[allow(clippy::unwrap_used)]

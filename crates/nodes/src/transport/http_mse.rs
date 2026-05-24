@@ -2,13 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! HTTP MSE output node — serves WebM streams to HTTP clients for MSE playback.
-//!
-//! This node accepts `Packet::Binary` data (WebM chunks) from an upstream muxer
-//! and broadcasts them to connected HTTP clients as chunked responses. Late-joining
-//! clients receive the buffered WebM initialization segment so MSE
-//! `SourceBuffer.appendBuffer()` works correctly.
-
 use async_trait::async_trait;
 use bytes::Bytes;
 use schemars::JsonSchema;
@@ -20,7 +13,6 @@ use streamkit_core::{
 };
 use tokio::sync::mpsc;
 
-/// Configuration for the HttpMse node.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HttpMseConfig {
@@ -65,12 +57,7 @@ const WEBM_TRACKS_ID: [u8; 4] = [0x16, 0x54, 0xAE, 0x6B];
 /// keyframes are infrequent (e.g. 10 s interval at high bitrate).
 const MAX_GOP_BUFFER_SIZE: usize = 2 * 1024 * 1024; // 2 MB
 
-/// A node that serves WebM binary data to HTTP clients for MSE playback.
-///
-/// It accepts `Packet::Binary` from an upstream WebM muxer (in Live mode) and
-/// fans out the chunks to all connected HTTP clients. The WebM initialization
-/// segment (EBML header + Segment + Tracks) is buffered and replayed to
-/// late-joining clients.
+/// Buffers the WebM init segment and replays it to late-joining HTTP clients.
 pub struct HttpMseNode {
     config: HttpMseConfig,
 }
@@ -924,8 +911,6 @@ mod tests {
         assert_eq!(init, expected);
     }
 
-    // ── find_tracks_end tests ──
-
     #[test]
     fn test_cross_chunk_forward_data_includes_full_cluster_header_3_1() {
         // Cluster ID 0x1F43B675 split 3|1: overlap has [1F,43,B6], data starts with [75,...].
@@ -980,8 +965,6 @@ mod tests {
             &fwd[..fwd.len().min(8)]
         );
     }
-
-    // ── find_tracks_end tests ──
 
     #[test]
     fn test_find_tracks_end_basic() {
@@ -1050,8 +1033,6 @@ mod tests {
         assert_eq!(find_tracks_end(&data), Some(22));
     }
 
-    // ── Cluster preamble parsing ──
-
     #[test]
     fn test_find_cluster_preamble_end_basic() {
         // Cluster ID (4) + unknown size VINT 8-byte (8) + Timecode 0xE7 (1) + VINT size 0x82 (1) + 2 bytes value
@@ -1084,8 +1065,6 @@ mod tests {
         // Only the Cluster ID, no size VINT.
         assert_eq!(find_cluster_preamble_end(&WEBM_CLUSTER_ID), None);
     }
-
-    // ── Init segment truncation at Tracks end ──
 
     #[test]
     fn test_init_segment_truncated_at_tracks_end() {

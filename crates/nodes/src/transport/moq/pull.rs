@@ -2,8 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! MoQ Pull Node - subscribes to broadcasts from a MoQ server
-
 use crate::video::{AV1_CONTENT_TYPE, H264_CONTENT_TYPE, VP9_CONTENT_TYPE};
 use async_trait::async_trait;
 use bytes::Buf;
@@ -50,21 +48,8 @@ pub struct MoqPullConfig {
     pub audio_codec: Option<AudioCodec>,
 }
 
-/// A node that connects to a MoQ server, subscribes to a broadcast,
-/// and outputs the received media as encoded packets.
-///
-/// This node performs catalog discovery during initialization and supports
-/// both audio (Opus/AAC) and video (VP9/AV1/H264) tracks.
-///
-/// **Output pins**
-/// - Always exposes a stable `out` pin (audio) for backward-compatible pipelines.
-/// - Also exposes one output pin per discovered track (by track name).
-/// - At runtime, the node subscribes to the first discovered audio track and emits
-///   its packets to both `out` and the track-named pin.
-/// - Video tracks are output on their track-named pin (e.g. `video/data`).
 pub struct MoqPullNode {
     config: MoqPullConfig,
-    /// Dynamically discovered output pins (one per track)
     output_pins: Vec<OutputPin>,
 }
 
