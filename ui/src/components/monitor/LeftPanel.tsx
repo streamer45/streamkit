@@ -27,9 +27,7 @@ import NodePalette from '@/components/NodePalette';
 import { TabsContent, TabsList, TabsRoot, TabsTrigger } from '@/components/ui/Tabs';
 import type { NodeDefinition } from '@/types/types';
 
-// ---------------------------------------------------------------------------
 // Props
-// ---------------------------------------------------------------------------
 
 interface LeftPanelProps {
   isLoadingSessions: boolean;
@@ -43,9 +41,7 @@ interface LeftPanelProps {
   pluginTypes: Map<string, 'wasm' | 'native'>;
 }
 
-// ---------------------------------------------------------------------------
 // Component
-// ---------------------------------------------------------------------------
 
 export const LeftPanel = React.memo(
   ({

@@ -20,8 +20,6 @@ interface CreateSessionResponse {
   created_at: string;
 }
 
-// ── Preview types ──────────────────────────────────────────────────────
-
 export interface PreviewResponse {
   preview_id: string;
   gateway_path: string;
@@ -81,8 +79,6 @@ export async function createSession(
 
   return result;
 }
-
-// ── Preview API ────────────────────────────────────────────────────────
 
 export async function startPreview(
   sessionId: string,

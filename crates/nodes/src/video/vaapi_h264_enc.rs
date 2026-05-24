@@ -37,10 +37,7 @@ use cros_codecs::libva::{
 use super::vaapi_av1::write_nv12_to_va_surface;
 use streamkit_core::types::{PixelFormat, VideoFrame};
 
-// ---------------------------------------------------------------------------
 // Constants
-// ---------------------------------------------------------------------------
-
 /// H.264 macroblock size in pixels.
 const MB_SIZE: u32 = 16;
 
@@ -60,10 +57,7 @@ const DEFAULT_CODED_BUF_SIZE: usize = 1_500_000;
 const SLICE_TYPE_P: u8 = 0;
 const SLICE_TYPE_I: u8 = 2;
 
-// ---------------------------------------------------------------------------
 // Encoder configuration
-// ---------------------------------------------------------------------------
-
 /// Configuration for the custom VA-API H.264 encoder.
 pub(super) struct H264EncConfig {
     /// Display (visible) width.
@@ -78,10 +72,7 @@ pub(super) struct H264EncConfig {
     pub low_power: bool,
 }
 
-// ---------------------------------------------------------------------------
 // Reference frame tracking
-// ---------------------------------------------------------------------------
-
 /// Metadata for a reference frame in the DPB.
 struct RefPic {
     /// VA surface used as the reconstructed reference.
@@ -92,10 +83,7 @@ struct RefPic {
     frame_num: u32,
 }
 
-// ---------------------------------------------------------------------------
 // Encoder
-// ---------------------------------------------------------------------------
-
 /// A self-contained VA-API H.264 encoder.
 ///
 /// Manages its own VA config, context, scratch surface pool, and reference
@@ -398,10 +386,7 @@ impl VaH264Encoder {
         Ok(())
     }
 
-    // -----------------------------------------------------------------------
     // Private helpers
-    // -----------------------------------------------------------------------
-
     /// Get a scratch surface for the reconstructed reference frame.
     ///
     /// Rotates through the pre-allocated pool.
@@ -661,10 +646,7 @@ impl VaH264Encoder {
     }
 }
 
-// ---------------------------------------------------------------------------
 // H.264 NALU generation (SPS / PPS)
-// ---------------------------------------------------------------------------
-
 /// Minimal bitstream writer for constructing H.264 NALUs with exp-Golomb
 /// coded fields.
 struct BitWriter {
@@ -924,10 +906,7 @@ impl VaH264Encoder {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Utility functions
-// ---------------------------------------------------------------------------
-
 /// Build an invalid `PictureH264` placeholder (fills unused reference slots).
 fn build_invalid_pic() -> PictureH264 {
     PictureH264::new(VA_INVALID_ID, 0, VA_PICTURE_H264_INVALID, 0, 0)

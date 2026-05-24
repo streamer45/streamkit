@@ -81,25 +81,20 @@ pub enum StreamKitError {
     ResourceExhausted(String),
 }
 
-/// Convenience type alias for Results using `StreamKitError`.
 pub type Result<T> = std::result::Result<T, StreamKitError>;
 
-// Backward compatibility: Allow conversion from StreamKitError to String
 impl From<StreamKitError> for String {
     fn from(err: StreamKitError) -> Self {
         err.to_string()
     }
 }
 
-// Backward compatibility: Allow conversion from String to StreamKitError
-// This defaults to Runtime error for generic string errors
 impl From<String> for StreamKitError {
     fn from(s: String) -> Self {
         Self::Runtime(s)
     }
 }
 
-// Backward compatibility: Allow conversion from &str to StreamKitError
 impl From<&str> for StreamKitError {
     fn from(s: &str) -> Self {
         Self::Runtime(s.to_string())

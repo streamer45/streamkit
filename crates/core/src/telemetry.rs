@@ -149,36 +149,20 @@ impl Default for TelemetryConfig {
     }
 }
 
-/// Helper for emitting telemetry events from nodes.
-///
-/// Provides best-effort, non-blocking emission with automatic rate limiting
-/// and drop accounting. Uses `try_send()` to never block audio processing.
-///
-/// ## Drop Accounting
-///
-/// Dropped events are tracked and can be reported via health telemetry.
-/// Call `emit_health()` periodically to report dropped event counts.
+/// Best-effort, non-blocking telemetry emitter with rate limiting and drop accounting.
 pub struct TelemetryEmitter {
     node_id: String,
     session_id: Option<String>,
     tx: Option<mpsc::Sender<TelemetryEvent>>,
-    /// Events dropped because channel was full
     dropped_full: AtomicU64,
-    /// Events dropped due to rate limiting
     dropped_rate_limit: AtomicU64,
-    /// Last health emission time for throttling
     last_health_emit: Instant,
-    /// Rate limiter state: (event_type_hash, last_emit_time, count_in_window)
     rate_limit_state: std::sync::Mutex<RateLimitState>,
 }
 
-/// Internal rate limiting state
 struct RateLimitState {
-    /// Per-event-type tracking: event_type -> (last_emit_instant, count_in_window)
     per_type: std::collections::HashMap<String, (Instant, u32)>,
-    /// Window duration for rate limiting
     window: std::time::Duration,
-    /// Max events per window per event_type
     max_per_window: u32,
 }
 
@@ -193,10 +177,8 @@ impl Default for RateLimitState {
 }
 
 impl TelemetryEmitter {
-    /// Health emission interval (5 seconds)
     const HEALTH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
-    /// Create a new telemetry emitter for a node.
     pub fn new(
         node_id: String,
         session_id: Option<String>,
@@ -213,13 +195,11 @@ impl TelemetryEmitter {
         }
     }
 
-    /// Get current timestamp in microseconds since UNIX epoch.
     #[allow(clippy::cast_possible_truncation)] // u64 microseconds covers ~500,000 years
     fn now_us() -> u64 {
         SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(0)
     }
 
-    /// Check if an event should be rate-limited.
     #[allow(clippy::expect_used)] // Mutex poisoning indicates a serious bug, panic is appropriate
     fn should_rate_limit(&self, event_type: &str) -> bool {
         let mut state = self.rate_limit_state.lock().expect("rate limit mutex poisoned");
@@ -248,14 +228,11 @@ impl TelemetryEmitter {
         false
     }
 
-    /// Best-effort emit a telemetry event. Never blocks.
-    ///
-    /// Returns `true` if the event was sent (or queued), `false` if dropped.
+    /// Best-effort emit. Returns `true` if queued, `false` if dropped.
     pub fn emit(&self, event_type: &str, data: JsonValue) -> bool {
         self.emit_internal(event_type, None, None, data)
     }
 
-    /// Emit an event with a correlation ID for grouping related events.
     pub fn emit_with_correlation(
         &self,
         event_type: &str,
@@ -265,12 +242,10 @@ impl TelemetryEmitter {
         self.emit_internal(event_type, Some(correlation_id), None, data)
     }
 
-    /// Emit an event with a turn ID for voice agent conversation grouping.
     pub fn emit_with_turn(&self, event_type: &str, turn_id: &str, data: JsonValue) -> bool {
         self.emit_internal(event_type, None, Some(turn_id), data)
     }
 
-    /// Emit an event with both correlation and turn IDs.
     pub fn emit_correlated(
         &self,
         event_type: &str,
@@ -281,7 +256,6 @@ impl TelemetryEmitter {
         self.emit_internal(event_type, Some(correlation_id), Some(turn_id), data)
     }
 
-    /// Internal emit implementation.
     fn emit_internal(
         &self,
         event_type: &str,
@@ -293,13 +267,11 @@ impl TelemetryEmitter {
             return false;
         };
 
-        // Rate limiting check
         if self.should_rate_limit(event_type) {
             self.dropped_rate_limit.fetch_add(1, Ordering::Relaxed);
             return false;
         }
 
-        // Ensure data is an object and add standard fields
         if let Some(obj) = data.as_object_mut() {
             obj.insert("event_type".to_string(), JsonValue::String(event_type.to_string()));
             if let Some(cid) = correlation_id {
@@ -309,7 +281,6 @@ impl TelemetryEmitter {
                 obj.insert("turn_id".to_string(), JsonValue::String(tid.to_string()));
             }
         } else {
-            // Wrap non-object data
             data = serde_json::json!({
                 "event_type": event_type,
                 "correlation_id": correlation_id,
@@ -325,7 +296,6 @@ impl TelemetryEmitter {
             Self::now_us(),
         );
 
-        // Best-effort send - never block
         match tx.try_send(event) {
             Ok(()) => true,
             Err(mpsc::error::TrySendError::Full(_)) => {
@@ -336,14 +306,10 @@ impl TelemetryEmitter {
         }
     }
 
-    /// Get the current dropped event counts.
     pub fn dropped_counts(&self) -> (u64, u64) {
         (self.dropped_full.load(Ordering::Relaxed), self.dropped_rate_limit.load(Ordering::Relaxed))
     }
 
-    /// Emit a health event if the interval has passed or if there are dropped events.
-    ///
-    /// Returns `true` if a health event was emitted.
     pub fn maybe_emit_health(&mut self) -> bool {
         let (dropped_full, dropped_rate_limit) = self.dropped_counts();
         let has_drops = dropped_full > 0 || dropped_rate_limit > 0;
@@ -356,7 +322,6 @@ impl TelemetryEmitter {
         if has_drops || interval_passed {
             self.last_health_emit = Instant::now();
 
-            // Only emit if there's something to report
             if has_drops {
                 let emitted = self.emit(
                     "telemetry.health",
@@ -366,7 +331,6 @@ impl TelemetryEmitter {
                     }),
                 );
 
-                // Reset counters after emission
                 if emitted {
                     self.dropped_full.store(0, Ordering::Relaxed);
                     self.dropped_rate_limit.store(0, Ordering::Relaxed);
@@ -379,11 +343,6 @@ impl TelemetryEmitter {
         false
     }
 
-    /// Configure rate limiting for this emitter.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal rate limit mutex is poisoned (indicates a prior panic).
     #[allow(clippy::expect_used)] // Mutex poisoning indicates a serious bug, panic is appropriate
     pub fn set_rate_limit(&self, max_per_second: u32) {
         let mut state = self.rate_limit_state.lock().expect("rate limit mutex poisoned");
@@ -392,15 +351,12 @@ impl TelemetryEmitter {
     }
 }
 
-/// Helper functions for emitting telemetry events directly from a sender.
-/// These are lower-level functions for cases where you don't want to use `TelemetryEmitter`.
 pub mod telemetry_helpers {
     use super::TelemetryEvent;
     use serde_json::Value as JsonValue;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::sync::mpsc;
 
-    /// Emit a simple telemetry event.
     #[allow(clippy::cast_possible_truncation)] // u64 microseconds covers ~500,000 years
     pub fn emit(
         tx: &mpsc::Sender<TelemetryEvent>,

@@ -24,13 +24,9 @@ fn gain_schema(_gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
     })
 }
 
-/// The configuration struct for the AudioGainNode.
 #[derive(Deserialize, Debug, Clone, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct AudioGainConfig {
-    /// A linear multiplier for the audio amplitude (e.g., 0.5 is -6dB).
-    /// This parameter can be updated in real-time while the node is running.
-    /// Valid range: 0.0 to 4.0
     #[schemars(schema_with = "gain_schema")]
     pub gain: f32,
 }
@@ -42,11 +38,8 @@ impl Default for AudioGainConfig {
 }
 
 impl AudioGainConfig {
-    /// Validate the gain parameter is within acceptable bounds.
-    ///
     /// # Errors
-    ///
-    /// Returns an error if the gain is outside the range [0.0, 4.0] or is NaN/infinite.
+    /// Returns `Err` if gain is non-finite or outside `[0.0, 4.0]`.
     pub fn validate(&self) -> Result<(), String> {
         const MIN_GAIN: f32 = 0.0;
         const MAX_GAIN: f32 = 4.0;
@@ -66,18 +59,13 @@ impl AudioGainConfig {
     }
 }
 
-/// A node that adjusts the volume of raw audio frames.
-/// This node operates on 32-bit floating-point audio samples.
 pub struct AudioGainNode {
     config: AudioGainConfig,
 }
 
 impl AudioGainNode {
-    /// Create a new audio gain node with the given configuration.
-    ///
     /// # Errors
-    ///
-    /// Returns an error if the gain configuration is invalid (e.g., out of range or non-finite).
+    /// Returns `Err` if config validation fails.
     pub fn new(config: AudioGainConfig) -> Result<Self, String> {
         config.validate()?;
         Ok(Self { config })
@@ -335,7 +323,6 @@ mod tests {
 
         let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
 
-        // Zero gain should silence audio
         let node = AudioGainNode::new(AudioGainConfig { gain: 0.0 }).unwrap();
 
         let node_handle = tokio::spawn(async move { Box::new(node).run(context).await });

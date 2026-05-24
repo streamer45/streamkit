@@ -36,8 +36,6 @@ const MAX_FILENAME_LENGTH: usize = 255;
 /// Prevents memory exhaustion when `serve_handler` reads files into memory.
 const MAX_ASSET_SIZE_BYTES: usize = 100 * 1024 * 1024;
 
-// ── Registered asset type ────────────────────────────────────────────────────
-
 /// A fully resolved asset type registered by a loaded plugin.
 #[derive(Debug, Clone)]
 pub struct RegisteredAssetType {
@@ -68,8 +66,6 @@ pub struct RegisteredAssetType {
     /// Directory for user-uploaded assets.
     pub user_dir: PathBuf,
 }
-
-// ── Registry ─────────────────────────────────────────────────────────────────
 
 /// Thread-safe registry of plugin-declared asset types.
 ///
@@ -244,8 +240,6 @@ impl PluginAssetRegistry {
     }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
 /// Sanitize filename by removing dangerous characters.
 ///
 /// After sanitization, rejects results that resolve to `.` or `..` (directory
@@ -378,8 +372,6 @@ async fn scan_directory(
 
     Ok(assets)
 }
-
-// ── Handlers ─────────────────────────────────────────────────────────────────
 
 /// `GET /api/v1/assets/plugin/{type_id}` — list all assets of a plugin type.
 async fn list_handler(
@@ -714,8 +706,6 @@ async fn update_handler(
     .into_response()
 }
 
-// ── Asset Type Discovery ─────────────────────────────────────────────────────
-
 /// `GET /api/v1/asset-types` — returns all registered asset types (core + plugin).
 pub async fn list_asset_types_handler(
     State(app_state): State<Arc<AppState>>,
@@ -788,8 +778,6 @@ pub async fn list_asset_types_handler(
 
     Json(types)
 }
-
-// ── Upload helper ────────────────────────────────────────────────────────────
 
 async fn write_upload_to_disk(
     mut field: axum::extract::multipart::Field<'_>,
@@ -871,8 +859,6 @@ fn validate_file_in_directory(
     Ok(())
 }
 
-// ── Router ───────────────────────────────────────────────────────────────────
-
 /// Create the router for plugin asset endpoints and the asset-types discovery
 /// endpoint.
 ///
@@ -894,8 +880,6 @@ pub fn plugin_assets_router() -> Router<Arc<AppState>> {
             get(serve_handler).put(update_handler).layer(DefaultBodyLimit::max(10 * 1024 * 1024)),
         )
 }
-
-// ── Manifest loading helper ──────────────────────────────────────────────────
 
 /// Attempt to read a `plugin.yml` from the same directory as a plugin library.
 ///
@@ -956,8 +940,6 @@ pub fn read_local_plugin_manifest(
     None
 }
 
-// ── Error type ───────────────────────────────────────────────────────────────
-
 #[derive(Debug)]
 pub enum PluginAssetError {
     IoError(String),
@@ -1014,7 +996,6 @@ impl std::error::Error for PluginAssetError {}
 mod tests {
     use super::*;
 
-    /// Helper to build a minimal `RegisteredAssetType` for testing.
     fn test_asset_type(extensions: &[&str]) -> RegisteredAssetType {
         RegisteredAssetType {
             type_id: "test".to_string(),
@@ -1030,8 +1011,6 @@ mod tests {
             user_dir: PathBuf::from("samples/test/user"),
         }
     }
-
-    // ── sanitize_filename ────────────────────────────────────────────────
 
     #[test]
     fn sanitize_keeps_safe_chars() {
@@ -1084,8 +1063,6 @@ mod tests {
     fn sanitize_preserves_hidden_file() {
         assert_eq!(sanitize_filename(".hidden.txt"), ".hidden.txt");
     }
-
-    // ── validate_filename ────────────────────────────────────────────────
 
     #[test]
     fn validate_accepts_valid_extension() {
@@ -1154,8 +1131,6 @@ mod tests {
         assert!(validate_filename("", &at).is_err());
     }
 
-    // ── validate_file_in_directory ───────────────────────────────────────
-
     #[test]
     fn validate_file_in_dir_accepts_child() {
         let dir = std::env::temp_dir();
@@ -1176,8 +1151,6 @@ mod tests {
         std::fs::remove_file(&outside).unwrap();
         std::fs::remove_dir(&dir).unwrap();
     }
-
-    // ── register validation ─────────────────────────────────────────────
 
     #[tokio::test]
     async fn register_rejects_empty_type_id() {

@@ -2,16 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! MoQ Peer Node - bidirectional server that accepts WebTransport connections
-//!
-//! This node supports a publish/subscribe architecture:
-//! - One publisher connects to `{gateway_path}/input` to send media
-//! - Multiple subscribers connect to `{gateway_path}/output` to receive processed media
-//!
-//! Input and output pins are type-agnostic: both `in` and `in_1` accept any
-//! supported encoded media type (Opus audio, VP9/AV1 video). The actual media kind
-//! flowing through each pin is determined at runtime from `NodeContext::input_types`.
-
 mod config;
 
 pub use config::MoqPeerConfig;
@@ -2649,9 +2639,6 @@ mod tests {
         );
     }
 
-    // --- has_expected_tracks tests ---
-
-    /// Helper: build a dummy track_handles map with the given track names.
     fn dummy_track_handles(
         names: &[&str],
     ) -> HashMap<String, tokio::task::JoinHandle<Result<(), StreamKitError>>> {

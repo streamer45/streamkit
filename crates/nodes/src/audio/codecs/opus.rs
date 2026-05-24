@@ -21,35 +21,22 @@ use streamkit_core::{
 };
 use tokio::sync::mpsc;
 
-// --- Opus Constants ---
-
-/// Standard Opus sample rate (48 kHz)
 const OPUS_SAMPLE_RATE: u32 = 48000;
-
-/// Maximum Opus frame size in samples (20ms at 48kHz)
+/// 20ms at 48kHz
 const OPUS_MAX_FRAME_SIZE: usize = 1920;
-
-/// Output buffer size for encoded Opus packets
 const OPUS_OUTPUT_BUFFER_SIZE: usize = 4000;
-
-// --- Opus Decoder ---
 
 #[derive(Deserialize, Debug, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct OpusDecoderConfig {}
 
-/// A node that decodes Opus packets into raw audio frames.
 pub struct OpusDecoderNode {
     _config: OpusDecoderConfig,
 }
 
 impl OpusDecoderNode {
-    /// Creates a new Opus decoder node.
-    ///
     /// # Errors
-    ///
-    /// Currently always returns `Ok`, but the signature allows for future error cases
-    /// (e.g., if decoder initialization fails).
+    /// Returns `Err` if the config is invalid.
     pub const fn new(config: OpusDecoderConfig) -> Result<Self, StreamKitError> {
         Ok(Self { _config: config })
     }
@@ -102,8 +89,6 @@ impl ProcessorNode for OpusDecoderNode {
         let (result_tx, mut result_rx) =
             mpsc::channel::<Result<Packet, String>>(get_codec_channel_capacity());
 
-        // Blocking task: decodes Opus packets and produces AudioFrame packets
-        // for the generic codec_forward_loop helper.
         let decode_task = tokio::task::spawn_blocking(move || {
             let mut decoder = match opus::Decoder::new(OPUS_SAMPLE_RATE, opus::Channels::Mono) {
                 Ok(d) => d,
@@ -171,7 +156,7 @@ impl ProcessorNode for OpusDecoderNode {
                     if let Packet::Binary { data, metadata, .. } = packet {
                         packet_count += 1;
 
-                        // Skip Opus header packets - they start with "OpusHead" or "OpusTags"
+                        // Skip Opus header packets ("OpusHead" / "OpusTags")
                         if data.len() >= 8
                             && (&data[0..8] == b"OpusHead" || &data[0..8] == b"OpusTags")
                         {
@@ -183,7 +168,6 @@ impl ProcessorNode for OpusDecoderNode {
                             continue;
                         }
 
-                        // Skip very small packets that are likely metadata (less than 10 bytes)
                         if data.len() < 10 {
                             tracing::debug!(
                                 packet_num = packet_count,
@@ -193,10 +177,7 @@ impl ProcessorNode for OpusDecoderNode {
                             continue;
                         }
 
-                        // Send to blocking task for decoding (with metadata)
                         if decode_tx_clone.send((data, metadata)).await.is_ok() {
-                            // Note: We don't have access to stats_tracker in this closure,
-                            // so we'll track stats in the main loop where we process results
                         } else {
                             tracing::error!("Decode task has shut down unexpectedly");
                             return;
@@ -227,8 +208,6 @@ impl ProcessorNode for OpusDecoderNode {
     }
 }
 
-// --- Opus Encoder ---
-
 fn bitrate_schema(_gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({
         "type": "integer",
@@ -255,18 +234,13 @@ impl Default for OpusEncoderConfig {
     }
 }
 
-/// A node that encodes raw audio frames into Opus packets.
 pub struct OpusEncoderNode {
     config: OpusEncoderConfig,
 }
 
 impl OpusEncoderNode {
-    /// Creates a new Opus encoder node.
-    ///
     /// # Errors
-    ///
-    /// Currently always returns `Ok`, but the signature allows for future error cases
-    /// (e.g., if encoder initialization fails or config validation is added).
+    /// Returns `Err` if the config is invalid.
     pub const fn new(config: OpusEncoderConfig) -> Result<Self, StreamKitError> {
         Ok(Self { config })
     }
@@ -298,8 +272,7 @@ impl ProcessorNode for OpusEncoderNode {
     }
 
     fn content_type(&self) -> Option<String> {
-        // Raw Opus frames over HTTP are conventionally labeled as audio/opus
-        // When wrapped in Ogg, the container node (ogg::muxer) overrides to audio/ogg.
+        // Ogg container node overrides to audio/ogg when wrapping.
         Some("audio/opus".to_string())
     }
 
@@ -466,11 +439,8 @@ impl ProcessorNode for OpusEncoderNode {
 
 use streamkit_core::{config_helpers, registry::StaticPins};
 
-/// Registers the Opus codec nodes.
-///
 /// # Panics
-///
-/// Panics if default Opus encoder/decoder cannot be created (should never happen).
+/// Panics if default configs or JSON schemas fail to serialize.
 #[allow(clippy::expect_used)] // Schema serialization and default configs should never fail
 pub fn register_opus_nodes(registry: &mut NodeRegistry) {
     #[cfg(feature = "opus")]
@@ -535,7 +505,6 @@ mod tests {
 
         let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
 
-        // Create Opus encoder (default is 64 kbps)
         let config = OpusEncoderConfig::default();
         let node = OpusEncoderNode::new(config).unwrap();
 
@@ -544,7 +513,6 @@ mod tests {
         assert_state_initializing(&mut state_rx).await;
         assert_state_running(&mut state_rx).await;
 
-        // Send audio frames (20ms at 48kHz mono = 960 samples)
         for _ in 0..10 {
             let packet = create_test_audio_packet(48000, 1, 960, 0.5);
             input_tx.send(packet).await.unwrap();
@@ -554,16 +522,13 @@ mod tests {
         assert_state_stopped(&mut state_rx).await;
         node_handle.await.unwrap().unwrap();
 
-        // Verify output - should have Opus-encoded packets
         let output_packets = mock_sender.get_packets_for_pin("out").await;
         assert_eq!(output_packets.len(), 10, "Should have 10 encoded Opus packets");
 
-        // Verify they're Binary packets
         for packet in &output_packets {
             match packet {
                 Packet::Binary { data, .. } => {
                     assert!(!data.is_empty(), "Opus packet should have data");
-                    // Opus packets are typically much smaller than raw audio
                     assert!(data.len() < 1000, "Opus packet should be compressed");
                 },
                 _ => panic!("Expected Binary packet from Opus encoder"),
@@ -581,7 +546,6 @@ mod tests {
 
         let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
 
-        // Create Opus encoder with higher bitrate for stereo
         let config = OpusEncoderConfig { bitrate: 128_000 };
         let node = OpusEncoderNode::new(config).unwrap();
 
@@ -590,7 +554,6 @@ mod tests {
         assert_state_initializing(&mut state_rx).await;
         assert_state_running(&mut state_rx).await;
 
-        // Send stereo audio frames (20ms at 48kHz stereo = 960 samples per channel * 2 = 1920 total)
         for _ in 0..5 {
             let packet = create_test_audio_packet(48000, 2, 960, 0.3);
             input_tx.send(packet).await.unwrap();
@@ -614,7 +577,6 @@ mod tests {
 
         let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
 
-        // Create Opus decoder
         let config = OpusDecoderConfig::default();
         let node = OpusDecoderNode::new(config).unwrap();
 
@@ -623,12 +585,10 @@ mod tests {
         assert_state_initializing(&mut state_rx).await;
         assert_state_running(&mut state_rx).await;
 
-        // First, encode some audio to get valid Opus packets
         let mut encoder =
             opus::Encoder::new(48000, opus::Channels::Mono, opus::Application::Audio).unwrap();
         encoder.set_bitrate(opus::Bitrate::Bits(64000)).unwrap();
 
-        // Encode a few frames
         let mut opus_out = vec![0u8; 4000];
         for _ in 0..5 {
             let audio_samples = vec![0.5f32; 960]; // 20ms mono at 48kHz
@@ -642,11 +602,9 @@ mod tests {
         assert_state_stopped(&mut state_rx).await;
         node_handle.await.unwrap().unwrap();
 
-        // Verify output - should have decoded audio frames
         let output_packets = mock_sender.get_packets_for_pin("out").await;
         assert_eq!(output_packets.len(), 5, "Should have 5 decoded audio frames");
 
-        // Verify they're Audio packets with correct format
         for packet in &output_packets {
             match packet {
                 Packet::Audio(frame) => {
@@ -667,8 +625,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_opus_roundtrip() {
-        // Test encoding then decoding
-        // Step 1: Encode audio to Opus
         let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
         let mut enc_inputs = HashMap::new();
         enc_inputs.insert("in".to_string(), enc_input_rx);
@@ -683,7 +639,6 @@ mod tests {
         assert_state_initializing(&mut enc_state_rx).await;
         assert_state_running(&mut enc_state_rx).await;
 
-        // Send original audio
         let original_packets = vec![
             create_test_audio_packet(48000, 2, 960, 0.1),
             create_test_audio_packet(48000, 2, 960, 0.2),
@@ -705,7 +660,6 @@ mod tests {
 
         println!("✅ Encoded {} audio frames to Opus", encoded_packets.len());
 
-        // Step 2: Decode Opus back to audio
         let (dec_input_tx, dec_input_rx) = mpsc::channel(10);
         let mut dec_inputs = HashMap::new();
         dec_inputs.insert("in".to_string(), dec_input_rx);
@@ -720,7 +674,6 @@ mod tests {
         assert_state_initializing(&mut dec_state_rx).await;
         assert_state_running(&mut dec_state_rx).await;
 
-        // Send encoded packets to decoder
         for packet in encoded_packets {
             dec_input_tx.send(packet).await.unwrap();
         }
@@ -734,13 +687,11 @@ mod tests {
 
         println!("✅ Decoded {} Opus packets back to audio", decoded_packets.len());
 
-        // Verify decoded audio has correct format
-        // Note: Current decoder implementation decodes to mono, even if input was stereo
+        // Decoder is mono-only currently
         for (i, packet) in decoded_packets.iter().enumerate() {
             match packet {
                 Packet::Audio(frame) => {
                     assert_eq!(frame.sample_rate, 48_000, "Frame {i} should have 48kHz");
-                    // Decoder is mono-only currently
                     assert_eq!(frame.channels, 1, "Frame {i} should be mono (decoder limitation)");
                     assert_eq!(
                         frame.samples.len(),
@@ -757,7 +708,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_opus_encoder_channel_switching() {
-        // Test that encoder handles mono → stereo transitions
         let (input_tx, input_rx) = mpsc::channel(10);
         let mut inputs = HashMap::new();
         inputs.insert("in".to_string(), input_rx);
@@ -772,13 +722,11 @@ mod tests {
         assert_state_initializing(&mut state_rx).await;
         assert_state_running(&mut state_rx).await;
 
-        // Send mono frames
         for _ in 0..3 {
             let packet = create_test_audio_packet(48000, 1, 960, 0.5);
             input_tx.send(packet).await.unwrap();
         }
 
-        // Switch to stereo
         for _ in 0..3 {
             let packet = create_test_audio_packet(48000, 2, 960, 0.5);
             input_tx.send(packet).await.unwrap();
@@ -796,7 +744,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_opus_encoder_undersized_frame() {
-        // Test that encoder handles frames smaller than 20ms
         let (input_tx, input_rx) = mpsc::channel(10);
         let mut inputs = HashMap::new();
         inputs.insert("in".to_string(), input_rx);
@@ -811,13 +758,8 @@ mod tests {
         assert_state_initializing(&mut state_rx).await;
         assert_state_running(&mut state_rx).await;
 
-        // Send normal frame
         input_tx.send(create_test_audio_packet(48000, 1, 960, 0.5)).await.unwrap();
-
-        // Send undersized frame (will be padded with silence)
         input_tx.send(create_test_audio_packet(48000, 1, 480, 0.3)).await.unwrap();
-
-        // Send another normal frame
         input_tx.send(create_test_audio_packet(48000, 1, 960, 0.5)).await.unwrap();
 
         drop(input_tx);
@@ -832,7 +774,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_opus_encoder_bitrate_modes() {
-        // Test different bitrate settings
         for (bitrate, label) in
             [(32_000, "32kbps"), (64_000, "64kbps"), (128_000, "128kbps"), (256_000, "256kbps")]
         {
@@ -850,7 +791,6 @@ mod tests {
             assert_state_initializing(&mut state_rx).await;
             assert_state_running(&mut state_rx).await;
 
-            // Send a few frames
             for _ in 0..3 {
                 input_tx.send(create_test_audio_packet(48000, 2, 960, 0.5)).await.unwrap();
             }

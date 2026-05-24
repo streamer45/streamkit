@@ -137,7 +137,6 @@ async fn test_upstream_resize_hint_end_to_end() {
 
     let mut registry = NodeRegistry::new();
 
-    // Register the test source.
     registry.register_dynamic(
         "test::hint_source",
         move |_params| Ok(Box::new(HintCapturingSource { captured_hints: captured_clone.clone() })),
@@ -146,7 +145,6 @@ async fn test_upstream_resize_hint_end_to_end() {
         false,
     );
 
-    // Register the real compositor node.
     let constraints = streamkit_core::constraints::GlobalNodeConstraints::default();
     streamkit_nodes::video::compositor::register_compositor_nodes(&mut registry, &constraints);
 
@@ -157,7 +155,6 @@ async fn test_upstream_resize_hint_end_to_end() {
     };
     let handle = engine.start_dynamic_actor(DynamicEngineConfig::default());
 
-    // 1. Add the source node.
     handle
         .send_control(EngineControlMessage::AddNode {
             node_id: "source".to_string(),
@@ -167,7 +164,6 @@ async fn test_upstream_resize_hint_end_to_end() {
         .await
         .expect("add source");
 
-    // 2. Add the compositor node with an initial layer config.
     handle
         .send_control(EngineControlMessage::AddNode {
             node_id: "compositor".to_string(),
@@ -186,8 +182,7 @@ async fn test_upstream_resize_hint_end_to_end() {
         .await
         .expect("add compositor");
 
-    // 3. Connect source → compositor (this triggers the hint channel wiring).
-    //    Small delay to let both nodes start their run loops.
+    // Let both nodes start their run loops before connecting.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     handle
@@ -214,7 +209,6 @@ async fn test_upstream_resize_hint_end_to_end() {
     assert_eq!(initial_hints[0].width, 640);
     assert_eq!(initial_hints[0].height, 480);
 
-    // 4. Update the compositor's layer rect to a new size.
     captured_hints.lock().expect("lock poisoned").clear();
 
     handle
@@ -279,7 +273,6 @@ async fn test_upstream_resize_hint_preexisting_pin() {
     };
     let handle = engine.start_dynamic_actor(DynamicEngineConfig::default());
 
-    // 1. Add the source node.
     handle
         .send_control(EngineControlMessage::AddNode {
             node_id: "source".to_string(),
@@ -289,8 +282,7 @@ async fn test_upstream_resize_hint_preexisting_pin() {
         .await
         .expect("add source");
 
-    // 2. Add the compositor with `num_inputs: 1` so the "in" pin is
-    //    pre-created at construction time (not dynamically).
+    // num_inputs: 1 so "in" pin is pre-created (not dynamic).
     handle
         .send_control(EngineControlMessage::AddNode {
             node_id: "compositor".to_string(),
@@ -313,10 +305,6 @@ async fn test_upstream_resize_hint_preexisting_pin() {
     // Let both nodes start their run loops.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    // 3. Connect source → compositor.  Because `num_inputs` was set, the
-    //    engine finds the pre-existing "in" pin and takes the fast path
-    //    in `connect_nodes`.  Our fix ensures a hint channel is still
-    //    created via `AttachHintSender`.
     handle
         .send_control(EngineControlMessage::Connect {
             from_node: "source".to_string(),
@@ -341,7 +329,6 @@ async fn test_upstream_resize_hint_preexisting_pin() {
     assert_eq!(initial_hints[0].width, 640);
     assert_eq!(initial_hints[0].height, 480);
 
-    // 4. Update the layer rect and verify the resize hint flows.
     captured_hints.lock().expect("lock poisoned").clear();
 
     handle

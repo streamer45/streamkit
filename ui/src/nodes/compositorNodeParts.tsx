@@ -6,8 +6,6 @@ import styled from '@emotion/styled';
 
 import type { LayerKind } from '@/hooks/useCompositorLayers';
 
-// ── Friendly label helpers ──────────────────────────────────────────────────
-
 export function friendlyLabel(id: string, kind: LayerKind, index?: number): string {
   switch (kind) {
     case 'video': {
@@ -22,8 +20,6 @@ export function friendlyLabel(id: string, kind: LayerKind, index?: number): stri
       return id;
   }
 }
-
-// ── Styled components ───────────────────────────────────────────────────────
 
 export const CompositorOuterWrapper = styled.div`
   position: relative;
@@ -149,8 +145,6 @@ export const NoSelectionText = styled.div`
   text-align: center;
   padding: 4px 0;
 `;
-
-// ── Overlay management styled components ────────────────────────────────────
 
 export const AddOverlayButton = styled.button`
   display: inline-flex;
@@ -419,8 +413,6 @@ export interface CompositorEntry {
   visible: boolean;
 }
 
-// ── Rotation presets ────────────────────────────────────────────────────────
-
 export const ROTATION_PRESETS = [0, 90, 180, 270] as const;
 
 export const RotationPresetsRow = styled.div`
@@ -479,8 +471,6 @@ export const ResetButton = styled.button`
     opacity: 0.4;
   }
 `;
-
-// ── Side Inspector Panel ────────────────────────────────────────────────────
 
 export const SidePanel = styled.div`
   position: absolute;

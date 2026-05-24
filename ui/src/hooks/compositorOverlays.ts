@@ -36,8 +36,6 @@ import {
 import type { LayerKind } from './compositorConstants';
 import type { LayerState, TextOverlayState, ImageOverlayState } from './compositorLayerParsers';
 
-// ── Shared dependency bag ────────────────────────────────────────────────
-
 export interface OverlayDeps {
   commitAdapter: CommitAdapter | null;
   setLayers: React.Dispatch<React.SetStateAction<LayerState[]>>;
@@ -50,8 +48,6 @@ export interface OverlayDeps {
   throttledConfigChange: ((layers: LayerState[]) => void) | null;
   throttledOverlayCommit: ((text: TextOverlayState[], img: ImageOverlayState[]) => void) | null;
 }
-
-// ── Hook ─────────────────────────────────────────────────────────────────
 
 export function useCompositorOverlays(deps: OverlayDeps) {
   const {
@@ -67,14 +63,11 @@ export function useCompositorOverlays(deps: OverlayDeps) {
     throttledOverlayCommit,
   } = deps;
 
-  // ── selectLayer ──────────────────────────────────────────────────────
-
   const selectLayer = useCallback(
     (id: string | null) => setSelectedLayerId(id),
     [setSelectedLayerId]
   );
 
-  // ── Layer property updates ───────────────────────────────────────────
   //
   // Opacity and rotation write to atoms via the atom-backed setLayers.
   // Only the affected layer's atom changes — fine-grained reactivity
@@ -162,8 +155,6 @@ export function useCompositorOverlays(deps: OverlayDeps) {
     [setLayers, layersRef, throttledConfigChange]
   );
 
-  // ── Visibility toggle ──────────────────────────────────────────────
-
   const toggleLayerVisibility = useCallback(
     (layerId: string) => {
       if (layersRef.current.some((l) => l.id === layerId)) {
@@ -199,8 +190,6 @@ export function useCompositorOverlays(deps: OverlayDeps) {
       throttledConfigChange,
     ]
   );
-
-  // ── Mirror toggle ──────────────────────────────────────────────────
 
   const updateLayerMirror = useCallback(
     (layerId: string, axis: 'horizontal' | 'vertical') => {
@@ -238,8 +227,6 @@ export function useCompositorOverlays(deps: OverlayDeps) {
     ]
   );
 
-  // ── Crop / zoom update ──────────────────────────────────────────────────
-
   const updateLayerCropZoom = useCallback(
     (
       layerId: string,
@@ -266,8 +253,6 @@ export function useCompositorOverlays(deps: OverlayDeps) {
     [setLayers, layersRef, throttledConfigChange]
   );
 
-  // ── Overlay commit helper ──────────────────────────────────────────
-
   const commitOverlays = useCallback(
     (nextText: TextOverlayState[], nextImg: ImageOverlayState[]) => {
       commitAdapter?.commitOverlays(nextText, nextImg);
@@ -280,8 +265,6 @@ export function useCompositorOverlays(deps: OverlayDeps) {
   useEffect(() => {
     commitOverlaysRef.current = commitOverlays;
   }, [commitOverlays]);
-
-  // ── Generic overlay update / remove ────────────────────────────────
 
   const updateOverlay = useCallback(
     <T extends { id: string }>(
@@ -321,8 +304,6 @@ export function useCompositorOverlays(deps: OverlayDeps) {
     [commitOverlays, setSelectedLayerId]
   );
 
-  // ── Z-index helpers ────────────────────────────────────────────────
-
   const maxZIndex = useCallback((): number => {
     let max = -1;
     for (const l of layersRef.current) if (l.zIndex > max) max = l.zIndex;
@@ -330,8 +311,6 @@ export function useCompositorOverlays(deps: OverlayDeps) {
     for (const o of imageOverlaysRef.current) if (o.zIndex > max) max = o.zIndex;
     return max;
   }, [layersRef, textOverlaysRef, imageOverlaysRef]);
-
-  // ── Text overlay CRUD ──────────────────────────────────────────────
 
   const addTextOverlay = useCallback(
     (text: string) => {
@@ -400,8 +379,6 @@ export function useCompositorOverlays(deps: OverlayDeps) {
     [removeOverlay, setTextOverlays, imageOverlaysRef]
   );
 
-  // ── Image overlay CRUD ─────────────────────────────────────────────
-
   const addImageOverlay = useCallback(
     (assetPath: string, naturalWidth?: number, naturalHeight?: number) => {
       setImageOverlays((prev) => {
@@ -453,8 +430,6 @@ export function useCompositorOverlays(deps: OverlayDeps) {
       ]),
     [removeOverlay, setImageOverlays, textOverlaysRef]
   );
-
-  // ── Batch reorder ──────────────────────────────────────────────────
 
   const reorderLayers = useCallback(
     (entries: Array<{ id: string; kind: LayerKind; zIndex: number }>) => {

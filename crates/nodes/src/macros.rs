@@ -2,7 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-/// Registers a node with dynamic pins using its `factory()` method.
 macro_rules! register_dynamic_node {
     ($registry:expr, $name:expr, $node_type:ty, $config_type:ty,
      [$($cat:expr),* $(,)?], $desc:expr $(,)?) => {
@@ -22,7 +21,6 @@ macro_rules! register_dynamic_node {
     };
 }
 
-/// Registers a node with static pins.
 macro_rules! register_static_node {
     ($registry:expr, $name:expr, $factory:expr, $config_type:ty, $pins:expr,
      [$($cat:expr),* $(,)?], $desc:expr $(,)?) => {

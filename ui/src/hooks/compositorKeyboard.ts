@@ -21,8 +21,6 @@ import type { LayerKind } from './compositorConstants';
 import { SNAP_GRID } from './compositorLayerParsers';
 import type { LayerState, TextOverlayState, ImageOverlayState } from './compositorLayerParsers';
 
-// ── Dependency bag ──────────────────────────────────────────────────────────
-
 export interface CompositorKeyboardDeps {
   /** Currently selected layer id (null = nothing selected). */
   selectedLayerId: string | null;
@@ -33,24 +31,19 @@ export interface CompositorKeyboardDeps {
   /** Remove an image overlay by id. */
   removeImageOverlay: (id: string) => void;
 
-  // ── Refs for reading current state without re-render deps ────────────
   layersRef: React.MutableRefObject<LayerState[]>;
   textOverlaysRef: React.MutableRefObject<TextOverlayState[]>;
   imageOverlaysRef: React.MutableRefObject<ImageOverlayState[]>;
 
-  // ── Mutators (video layers) ──────────────────────────────────────────
   setLayers: React.Dispatch<React.SetStateAction<LayerState[]>>;
   throttledConfigChange: ((layers: LayerState[]) => void) | null;
 
-  // ── Mutators (overlays) ──────────────────────────────────────────────
   updateTextOverlay: (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => void;
   updateImageOverlay: (id: string, updates: Partial<Omit<ImageOverlayState, 'id'>>) => void;
 
   /** Whether the compositor is in a disabled / read-only state. */
   disabled?: boolean;
 }
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
 
 /** Arrow key names that map to a nudge direction. */
 const ARROW_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
@@ -62,8 +55,6 @@ function arrowDelta(key: string, shift: boolean): [number, number] {
   const dy = key === 'ArrowUp' ? -step : key === 'ArrowDown' ? step : 0;
   return [dx, dy];
 }
-
-// ── Hook ────────────────────────────────────────────────────────────────────
 
 export function useCompositorKeyboard(
   wrapperRef: React.RefObject<HTMLDivElement | null>,

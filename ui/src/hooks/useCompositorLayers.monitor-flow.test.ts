@@ -36,8 +36,6 @@ import type { UseCompositorLayersOptions } from './useCompositorLayers';
 import { useCompositorLayers } from './useCompositorLayers';
 import { resetAllConfigRevs, bumpConfigRev } from './useConfigRev';
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
 const SESSION_ID = 'test-session';
 const NODE_ID = 'compositor';
 
@@ -156,16 +154,12 @@ function pushServerViewData(layout: CompositorLayout) {
   useSessionStore.getState().updateNodeViewData(SESSION_ID, NODE_ID, layout);
 }
 
-// ── Lifecycle ───────────────────────────────────────────────────────────────
-
 afterEach(() => {
   // Clean up store between tests
   clearSessionAtoms(SESSION_ID);
   useSessionStore.getState().clearSession(SESSION_ID);
   resetAllConfigRevs();
 });
-
-// ── Tests ───────────────────────────────────────────────────────────────────
 
 describe('Monitor view data flow integration', () => {
   it('server-resolved layer positions survive a params echo-back', () => {
@@ -684,8 +678,6 @@ describe('Monitor view data flow integration', () => {
     expect(layer1.opacity).toBe(1);
   });
 });
-
-// ── Causal consistency: stale view-data gating ──────────────────────────────
 
 // Mock the WebSocket service for nonce control in stale-echo tests.
 // The mock must be hoisted so vi.mock runs before imports.

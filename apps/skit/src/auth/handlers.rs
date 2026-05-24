@@ -29,14 +29,10 @@ const AUTH_MAX_BODY_BYTES: usize = 64 * 1024;
 const AUTH_MAX_CONCURRENCY: usize = 64;
 const RELOAD_KEYS_MAX_CONCURRENCY: usize = 1;
 
-/// Request body for login endpoint.
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
-    /// The API token to validate and set as session cookie
     pub token: String,
 }
-
-/// Response for /me endpoint.
 #[derive(Debug, Serialize)]
 pub struct MeResponse {
     pub authenticated: bool,
@@ -44,19 +40,15 @@ pub struct MeResponse {
     pub role: Option<String>,
     pub jti: Option<String>,
 }
-
-/// Request body for creating an API token.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CreateApiTokenRequest {
     pub role: String,
     #[serde(default)]
     pub label: Option<String>,
-    /// TTL in seconds (uses default if not specified)
+    /// TTL in seconds (uses config default if absent).
     #[serde(default)]
     pub ttl_secs: Option<u64>,
 }
-
-/// Request body for creating a MoQ token.
 #[derive(Debug, Deserialize, Serialize)]
 #[allow(dead_code)]
 pub struct CreateMoqTokenRequest {
@@ -67,12 +59,10 @@ pub struct CreateMoqTokenRequest {
     pub publish: Vec<String>,
     #[serde(default)]
     pub label: Option<String>,
-    /// TTL in seconds (uses default if not specified)
+    /// TTL in seconds (uses config default if absent).
     #[serde(default)]
     pub ttl_secs: Option<u64>,
 }
-
-/// Response for token creation.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateTokenResponse {
     pub token: String,
@@ -82,7 +72,6 @@ pub struct CreateTokenResponse {
     pub url_template: Option<String>,
 }
 
-/// Token info for listing.
 #[derive(Debug, Serialize)]
 pub struct TokenInfo {
     pub jti: String,
@@ -95,7 +84,6 @@ pub struct TokenInfo {
     pub created_by: String,
 }
 
-/// Helper to get auth context from headers, returning appropriate errors.
 async fn get_auth_context(
     headers: &HeaderMap,
     app_state: &AppState,
@@ -119,7 +107,6 @@ async fn get_auth_context(
     .await
 }
 
-/// Helper to require admin role.
 fn require_admin(auth: &AuthContext) -> Result<(), (StatusCode, String)> {
     if auth.role != "admin" {
         return Err((StatusCode::FORBIDDEN, "Admin role required".to_string()));
@@ -127,9 +114,7 @@ fn require_admin(auth: &AuthContext) -> Result<(), (StatusCode, String)> {
     Ok(())
 }
 
-/// POST /api/v1/auth/login
-///
-/// Validates a token and sets it as a session cookie.
+/// `POST /api/v1/auth/login` — validate token and set session cookie.
 pub async fn login_handler(
     State(app_state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -170,9 +155,7 @@ pub async fn login_handler(
     (StatusCode::NO_CONTENT, [(SET_COOKIE, cookie)]).into_response()
 }
 
-/// POST /api/v1/auth/logout
-///
-/// Clears the session cookie.
+/// `POST /api/v1/auth/logout` — clear session cookie.
 pub async fn logout_handler(State(app_state): State<Arc<AppState>>) -> impl IntoResponse {
     let Some(cookie) = build_logout_cookie(&app_state.config) else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to build cookie".to_string())
@@ -182,9 +165,7 @@ pub async fn logout_handler(State(app_state): State<Arc<AppState>>) -> impl Into
     (StatusCode::NO_CONTENT, [(SET_COOKIE, cookie)]).into_response()
 }
 
-/// GET /api/v1/auth/me
-///
-/// Returns current authentication status.
+/// `GET /api/v1/auth/me` — current authentication status.
 pub async fn me_handler(
     State(app_state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -214,9 +195,7 @@ pub async fn me_handler(
     }
 }
 
-/// POST /api/v1/auth/tokens
-///
-/// Create a new API token (admin only).
+/// `POST /api/v1/auth/tokens` — create API token (admin only).
 pub async fn create_token_handler(
     State(app_state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -257,9 +236,7 @@ pub async fn create_token_handler(
         .into_response()
 }
 
-/// GET /api/v1/auth/tokens
-///
-/// List all minted tokens (admin only).
+/// `GET /api/v1/auth/tokens` — list minted tokens (admin only).
 pub async fn list_tokens_handler(
     State(app_state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -310,9 +287,7 @@ pub async fn list_tokens_handler(
     Json(token_infos).into_response()
 }
 
-/// DELETE /api/v1/auth/tokens/:jti
-///
-/// Revoke a token by its jti (admin only).
+/// `DELETE /api/v1/auth/tokens/:jti` — revoke token (admin only).
 pub async fn revoke_token_handler(
     State(app_state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -331,13 +306,11 @@ pub async fn revoke_token_handler(
         return e.into_response();
     }
 
-    // Prevent revoking own token
     if auth_ctx.claims.jti == jti {
         return (StatusCode::BAD_REQUEST, "Cannot revoke your own token".to_string())
             .into_response();
     }
 
-    // Revoke the token
     match app_state.auth.revoke_token(&jti).await {
         Ok(()) => {},
         Err(crate::auth::AuthError::UnknownToken) => {
@@ -352,9 +325,7 @@ pub async fn revoke_token_handler(
     (StatusCode::OK, "Token revoked").into_response()
 }
 
-/// POST /api/v1/auth/moq-tokens
-///
-/// Create a new MoQ token (admin only).
+/// `POST /api/v1/auth/moq-tokens` — create MoQ token (admin only).
 #[cfg(feature = "moq")]
 pub async fn create_moq_token_handler(
     State(app_state): State<Arc<AppState>>,
@@ -398,8 +369,7 @@ pub async fn create_moq_token_handler(
     let root_path =
         if req.root.starts_with('/') { req.root.clone() } else { format!("/{}", req.root) };
 
-    // Prefer a full URL when the server is configured with a MoQ gateway URL (this matches what the
-    // Stream view expects). Otherwise fall back to a relative path.
+    // Prefer a full URL when configured with a MoQ gateway URL; else relative path.
     let url_template = app_state
         .config
         .server
@@ -433,12 +403,9 @@ pub async fn create_moq_token_handler(
     Json(CreateTokenResponse { token, jti: meta.jti, exp: meta.exp, url_template }).into_response()
 }
 
-/// POST /api/v1/auth/reload-keys
+/// `POST /api/v1/auth/reload-keys` — reload keys from disk (admin only).
 ///
-/// Reload signing/verification keys from disk (admin only).
-///
-/// Call this after an out-of-band key rotation (e.g. `skit auth rotate-key`)
-/// so the running server picks up the new keys without a restart.
+/// Call after out-of-band rotation (e.g. `skit auth rotate-key`).
 pub async fn reload_keys_handler(
     State(app_state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -466,7 +433,6 @@ pub async fn reload_keys_handler(
     }
 }
 
-/// Build the auth router with all authentication endpoints.
 pub fn auth_router() -> axum::Router<Arc<AppState>> {
     use axum::routing::{delete, get, post};
 

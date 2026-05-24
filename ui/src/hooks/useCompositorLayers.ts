@@ -177,10 +177,8 @@ export const useCompositorLayers = (
     throttleMs = PARAM_THROTTLE_MS,
   } = options;
 
-  // ── Per-instance Jotai store ────────────────────────────────────────────
   const store = useMemo(() => {
     const s = createStore();
-    // Initialize atoms from params
     const parsed = parseLayers(params, canvasWidth, canvasHeight);
     setLayersInStore(s, parsed);
     setTextOverlaysInStore(s, parseTextOverlays(params));
@@ -191,7 +189,6 @@ export const useCompositorLayers = (
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Atom-backed setters ─────────────────────────────────────────────────
   // These are drop-in replacements for React.Dispatch<SetStateAction<T>>
   // so sub-hooks (compositorOverlays, compositorDragResize) don't need
   // interface changes.
@@ -241,7 +238,6 @@ export const useCompositorLayers = (
     [store]
   );
 
-  // ── Reactive primitives (no array subscriptions!) ────────────────────────
   // Only subscribe to lightweight primitive atoms to avoid re-rendering
   // CompositorNode on every layer property change.
   const [selectedLayerId, setSelectedLayerIdState] = useState(() => store.get(selectedLayerIdAtom));
@@ -260,7 +256,6 @@ export const useCompositorLayers = (
     };
   }, [store]);
 
-  // ── Stable refs ─────────────────────────────────────────────────────────
   // Sub-hooks read these in callbacks to get the latest values without
   // triggering dependency changes.  Synced from atom subscriptions.
   const paramsRef = useRef(params);
@@ -306,7 +301,6 @@ export const useCompositorLayers = (
   // doesn't overwrite in-flight client state.
   const activeInteractionRef = useRef(false);
 
-  // ── Commit / persistence ───────────────────────────────────────────────────
   const { commitAdapter, throttledConfigChange, throttledOverlayCommit } = useCompositorCommit({
     nodeId,
     onConfigChange,
@@ -318,7 +312,6 @@ export const useCompositorLayers = (
     imageOverlaysRef,
   });
 
-  // ── Sync from props ─────────────────────────────────────────────────────
   // Track previous parsed results so sync-from-props can detect which
   // config fields ACTUALLY changed in the new params vs the previous parse.
   // Without this, topology rebuilds with stale params overwrite local
@@ -411,10 +404,8 @@ export const useCompositorLayers = (
     prevParsedRef.current.img = parsedImg;
   }, [params, canvasWidth, canvasHeight, sessionId, store]);
 
-  // ── Server-driven layout (Monitor view only) ───────────────────────────
   useServerLayoutSync(sessionId, nodeId, store, dragStateRef, sourceDimsRef, activeInteractionRef);
 
-  // ── Remote param sync (Monitor view only) ─────────────────────────────
   useParamAtomSync(
     sessionId,
     nodeId,
@@ -425,7 +416,6 @@ export const useCompositorLayers = (
     activeInteractionRef
   );
 
-  // ── Find layer across all types ─────────────────────────────────────────
   const findAnyLayer = useCallback(
     (layerId: string): { state: LayerState; kind: LayerKind } | null => {
       const v = layersRef.current.find((l) => l.id === layerId);
@@ -461,7 +451,6 @@ export const useCompositorLayers = (
     []
   );
 
-  // ── Overlay CRUD, property updates, reorder ─────────────────────────────
   const overlayOps = useCompositorOverlays({
     commitAdapter,
     setLayers,
@@ -475,7 +464,6 @@ export const useCompositorLayers = (
     throttledOverlayCommit,
   });
 
-  // ── Drag / resize handlers ──────────────────────────────────────────────
   const { handleLayerPointerDown, handleResizePointerDown } = useCompositorDragResize({
     canvasWidth,
     canvasHeight,

@@ -9,8 +9,6 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 
-// ── Configuration ───────────────────────────────────────────────────────────
-
 /// Shape used to clip a composited layer.
 ///
 /// `Rect` (the default) renders the layer as-is within its destination
@@ -342,16 +340,12 @@ impl Default for CompositorConfig {
     }
 }
 
-// ── Server-computed layout types ─────────────────────────────────────────
 // Emitted via the view data channel so the frontend can render layers /
-// overlays at server-computed positions (server is the source of truth for
-// geometry in Monitor view).
-//
-// These structs carry ONLY values that the client cannot derive from config
-// alone — primarily aspect-fit positions and text measurements.  Config-echo
-// fields (opacity, rotation, z_index, mirror, crop) are intentionally
-// excluded so that stale view-data echoes never overwrite the client's
-// authoritative local state during high-frequency interactions.
+// overlays at server-computed positions.  These structs carry ONLY values
+// that the client cannot derive from config alone — primarily aspect-fit
+// positions and text measurements.  Config-echo fields (opacity, rotation,
+// z_index, mirror, crop) are intentionally excluded so that stale
+// view-data echoes never overwrite the client's authoritative local state.
 
 /// Server-computed geometry for a single video layer.
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]

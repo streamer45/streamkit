@@ -29,10 +29,6 @@ import {
 } from './test-helpers';
 import { WEBCAM_PIP_CIRCLE_YAML } from './compositor-fixtures';
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 /**
  * Assert that a MirrorButton styled-component is active or inactive.
  *
@@ -81,10 +77,6 @@ async function setupCompositorView(page: Page) {
   return { compositorNode, canvasInner };
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 test.describe('Compositor Crop Shape Controls', () => {
   let collector: ConsoleErrorCollector;
   let sessionId: string | null = null;
@@ -98,8 +90,6 @@ test.describe('Compositor Crop Shape Controls', () => {
     baseURL,
   }) => {
     test.setTimeout(120_000);
-
-    // ── 1. Create session via API with circle crop on in_1 ───────────────
 
     const apiContext = await request.newContext({
       baseURL: baseURL!,
@@ -121,8 +111,6 @@ test.describe('Compositor Crop Shape Controls', () => {
     expect(sessionId).toBeTruthy();
     await apiContext.dispose();
 
-    // ── 2. Navigate to monitor view, find compositor node ────────────────
-
     const { compositorNode, canvasInner } = await setupCompositorView(page);
 
     // Verify expected layers are visible in the layer list.
@@ -133,14 +121,10 @@ test.describe('Compositor Crop Shape Controls', () => {
     await expect(inputLayer1).toBeVisible({ timeout: 5_000 });
     await expect(textLayer).toBeVisible({ timeout: 5_000 });
 
-    // ── 3. Select video layer with circle crop ───────────────────────────
-
     await inputLayer1.click();
 
     const cropSection = compositorNode.getByTestId('crop-zoom-section');
     await expect(cropSection).toBeVisible({ timeout: 5_000 });
-
-    // ── 4. Verify shape segmented control ────────────────────────────────
 
     const rectButton = compositorNode.getByTestId('crop-shape-rect');
     const circleButton = compositorNode.getByTestId('crop-shape-circle');
@@ -152,8 +136,6 @@ test.describe('Compositor Crop Shape Controls', () => {
     await expectButtonActive(circleButton, true);
     await expectButtonActive(rectButton, false);
 
-    // ── 5. Verify canvas preview shows circular clip-path ─────────────────
-
     const videoLayerBox = canvasInner.locator('.nodrag.nopan').filter({ hasText: 'in_1' }).first();
     await expect(videoLayerBox).toBeVisible({ timeout: 5_000 });
 
@@ -164,8 +146,6 @@ test.describe('Compositor Crop Shape Controls', () => {
       return inner ? window.getComputedStyle(inner).clipPath : 'none';
     });
     expect(clipPath).toMatch(/^circle\(/);
-
-    // ── 6. Switch to Rect ────────────────────────────────────────────────
 
     await rectButton.click();
 
@@ -179,8 +159,6 @@ test.describe('Compositor Crop Shape Controls', () => {
     });
     expect(clipPathAfterRect).toBe('none');
 
-    // ── 7. Switch back to Circle ─────────────────────────────────────────
-
     await circleButton.click();
 
     await expectButtonActive(circleButton, true);
@@ -190,8 +168,6 @@ test.describe('Compositor Crop Shape Controls', () => {
       return inner ? window.getComputedStyle(inner).clipPath : 'none';
     });
     expect(clipPathAfterCircle).toMatch(/^circle\(/);
-
-    // ── 8. Reset restores shape to Rect ──────────────────────────────────
 
     const resetButton = compositorNode.getByTestId('crop-zoom-reset');
     await expect(resetButton).toBeVisible();
@@ -211,12 +187,8 @@ test.describe('Compositor Crop Shape Controls', () => {
     });
     expect(clipPathAfterReset).toBe('none');
 
-    // ── 9. Select text overlay — Crop & Zoom should NOT appear ───────────
-
     await textLayer.click();
     await expect(cropSection).not.toBeVisible({ timeout: 5_000 });
-
-    // ── 10. Select in_0 — Crop & Zoom should appear with Rect default ────
 
     await inputLayer0.click();
     await expect(cropSection).toBeVisible({ timeout: 5_000 });
@@ -224,15 +196,11 @@ test.describe('Compositor Crop Shape Controls', () => {
     // in_0 has no crop_shape set (defaults to rect).
     await expectButtonActive(rectButton, true);
 
-    // ── 11. Console error check ──────────────────────────────────────────
-
     const unexpected = collector.getUnexpected(MOQ_BENIGN_PATTERNS);
     if (unexpected.length > 0) {
       console.warn('Unexpected console errors (non-fatal):', unexpected);
     }
   });
-
-  // ── Cleanup ─────────────────────────────────────────────────────────────
 
   test.afterEach(async ({ baseURL }) => {
     if (sessionId) {

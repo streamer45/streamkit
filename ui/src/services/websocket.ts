@@ -63,7 +63,6 @@ export class WebSocketService {
    *  updates.  Exposed via `getClientNonce()`. */
   private clientNonce: string = uuidv4();
 
-  // ── Frame-level batching for high-frequency events ──────────────────
   // Buffer node-state and node-stats updates that arrive in rapid
   // succession (e.g. during session initialisation) and flush them as a
   // single store mutation at the next animation frame.
@@ -191,7 +190,6 @@ export class WebSocketService {
   }
 
   private handleMessage(message: Response | Event): void {
-    // Handle responses with correlation_id
     if (message.type === 'response' && message.correlation_id) {
       const pending = this.pendingRequests.get(message.correlation_id);
       if (pending) {
@@ -202,12 +200,10 @@ export class WebSocketService {
       }
     }
 
-    // Handle events
     if (message.type === 'event') {
       this.handleEvent(message as Event);
     }
 
-    // Notify all message handlers
     this.messageHandlers.forEach((handler) => {
       try {
         handler(message);
@@ -308,8 +304,6 @@ export class WebSocketService {
   private flushBatchedUpdates(): void {
     this.batchFlushRafId = null;
 
-    // Convert pending Maps to Records and flush to Jotai atoms.
-    // Node components and edge-alert subscriptions read directly from atoms.
     const stateUpdates = new Map<string, Record<string, NodeState>>();
     for (const [sessionId, updates] of this.pendingNodeStates) {
       stateUpdates.set(sessionId, Object.fromEntries(updates));
@@ -330,11 +324,6 @@ export class WebSocketService {
 
   private handleNodeParamsChanged(payload: NodeParamsChangedPayload): void {
     const { session_id, node_id, params } = payload;
-
-    // Update session store for pipeline view
-    // WARNING: This is problematic because it causes re-renders that cause issues with react flow.
-    //
-    // useSessionStore.getState().updateNodeParams(session_id, node_id, params as Record<string, unknown>);
 
     if (params && typeof params === 'object' && !Array.isArray(params)) {
       const p = params as Record<string, unknown>;
@@ -415,7 +404,6 @@ export class WebSocketService {
       const correlationId = request.correlation_id || uuidv4();
       const requestWithId = { ...request, correlation_id: correlationId };
 
-      // Set up timeout for request
       const timeout = window.setTimeout(() => {
         this.pendingRequests.delete(correlationId);
         reject(new Error('Request timeout'));
@@ -479,9 +467,7 @@ export class WebSocketService {
 
   subscribeToSession(sessionId: string): void {
     this.subscribedSessions.add(sessionId);
-    // Set the connection status based on CURRENT WebSocket state.
-    // Ensure the session entry exists in the store so that setConnected
-    // (which no longer auto-creates entries) has something to update.
+    // Ensure the session store entry exists before updating connection status.
     const isConnected = this.ws?.readyState === WebSocket.OPEN;
     logger.debug(
       'Subscribing to session',
@@ -535,14 +521,12 @@ export class WebSocketService {
   private notifyConnectionStatus(connected: boolean): void {
     logger.debug('Connection status changed:', connected, 'readyState:', this.ws?.readyState);
 
-    // Update all subscribed sessions
     this.subscribedSessions.forEach((sessionId) => {
       logger.debug('Updating connection status for session', sessionId, ':', connected);
       writeSessionConnected(sessionId, connected);
       useSessionStore.getState().setConnected(sessionId, connected);
     });
 
-    // Notify handlers
     this.connectionStatusHandlers.forEach((handler) => {
       try {
         handler(connected);

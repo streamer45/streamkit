@@ -24,8 +24,6 @@ import {
   serializeImageOverlays,
 } from './compositorLayerParsers';
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
 function makeTextOverlay(overrides: Partial<TextOverlayState> = {}): TextOverlayState {
   return {
     id: 'text_0',
@@ -99,8 +97,6 @@ const layerHasExtraChanges = (a: LayerState, b: LayerState) =>
   a.cropY !== b.cropY ||
   a.cropShape !== b.cropShape ||
   a.aspectFit !== b.aspectFit;
-
-// ── Tests ───────────────────────────────────────────────────────────────────
 
 describe('mergeOverlayState', () => {
   describe('preserveGeometry=false (Design view)', () => {
@@ -457,7 +453,6 @@ describe('mergeOverlayState', () => {
   });
 });
 
-// ── fitRectPreservingAspect ─────────────────────────────────────────────────
 // Test vectors mirror Rust tests in compositor/tests.rs:test_fit_rect_preserving_aspect
 
 describe('fitRectPreservingAspect', () => {
@@ -509,8 +504,6 @@ describe('fitRectPreservingAspect', () => {
     expect(fitRectPreservingAspect(640, 480, bounds)).toEqual(bounds);
   });
 });
-
-// ── detectSnapGuides — edge-snap detection ──────────────────────────────────
 
 describe('detectSnapGuides', () => {
   const CW = 1920;
@@ -570,8 +563,6 @@ describe('detectSnapGuides', () => {
   });
 });
 
-// ── computeUpdatedLayer — edge-snap in drag ─────────────────────────────────
-
 describe('computeUpdatedLayer edge snapping', () => {
   const CW = 1920;
   const CH = 1080;
@@ -614,8 +605,6 @@ describe('computeUpdatedLayer edge snapping', () => {
     expect(result.x).toBe((CW - w) / 2); // 0 — both agree
   });
 });
-
-// ── computeUpdatedLayer — edge-snap in resize ───────────────────────────────
 
 describe('computeUpdatedLayer resize edge snapping', () => {
   const CW = 1920;
@@ -686,8 +675,6 @@ describe('computeUpdatedLayer resize edge snapping', () => {
     expect(result.y).toBeGreaterThanOrEqual(0);
   });
 });
-
-// ── computeUpdatedLayer — text overlay free resize (no AR constraint) ────────
 
 describe('computeUpdatedLayer text overlay free resize', () => {
   const CW = 1920;
@@ -799,8 +786,6 @@ describe('computeUpdatedLayer text overlay free resize', () => {
     expect(result.width / result.height).toBeCloseTo(ar, 5);
   });
 });
-
-// ── parseImageOverlays / serializeImageOverlays ─────────────────────────────
 
 describe('parseImageOverlays', () => {
   it('parses overlays with asset_path', () => {

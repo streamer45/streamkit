@@ -29,10 +29,6 @@ import {
 } from './test-helpers';
 import { WEBCAM_PIP_CIRCLE_YAML } from './compositor-fixtures';
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 /**
  * Assert that a MirrorButton styled-component is active or inactive.
  *
@@ -81,10 +77,6 @@ async function setupCompositorView(page: Page, sessionName: string) {
   return { compositorNode, canvasInner };
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 test.describe('Webcam Circle PiP Pipeline — E2E Validation', () => {
   let collector: ConsoleErrorCollector;
   let sessionId: string | null = null;
@@ -99,8 +91,6 @@ test.describe('Webcam Circle PiP Pipeline — E2E Validation', () => {
     baseURL,
   }) => {
     test.setTimeout(120_000);
-
-    // ── 1. Create circle PiP session via API ─────────────────────────────
 
     const apiContext = await request.newContext({
       baseURL: baseURL!,
@@ -123,11 +113,7 @@ test.describe('Webcam Circle PiP Pipeline — E2E Validation', () => {
     expect(sessionId).toBeTruthy();
     await apiContext.dispose();
 
-    // ── 2. Navigate to monitor view, find compositor node ────────────────
-
     const { compositorNode, canvasInner } = await setupCompositorView(page, sessionName);
-
-    // ── 3. Verify all expected layers exist ──────────────────────────────
 
     const inputLayer0 = compositorNode.getByText('Input 0', { exact: true }).first();
     const inputLayer1 = compositorNode.getByText('Input 1', { exact: true }).first();
@@ -137,12 +123,8 @@ test.describe('Webcam Circle PiP Pipeline — E2E Validation', () => {
     await expect(inputLayer1).toBeVisible({ timeout: 5_000 });
     await expect(textLayer).toBeVisible({ timeout: 5_000 });
 
-    // ── 4. Verify LIVE badge (session is active) ─────────────────────────
-
     const liveBadge = compositorNode.getByText('LIVE');
     await expect(liveBadge).toBeVisible({ timeout: 5_000 });
-
-    // ── 5. Verify canvas shows circular preview on in_1 ──────────────────
 
     const videoLayerBox = canvasInner.locator('.nodrag.nopan').filter({ hasText: 'in_1' }).first();
     await expect(videoLayerBox).toBeVisible({ timeout: 5_000 });
@@ -155,15 +137,11 @@ test.describe('Webcam Circle PiP Pipeline — E2E Validation', () => {
     });
     expect(clipPath).toMatch(/^circle\(/);
 
-    // ── 6. Verify in_0 does NOT have circular preview ────────────────────
-
     const bgLayerBox = canvasInner.locator('.nodrag.nopan').filter({ hasText: 'in_0' }).first();
     await expect(bgLayerBox).toBeVisible({ timeout: 5_000 });
 
     const bgClipPath = await bgLayerBox.evaluate((el) => window.getComputedStyle(el).clipPath);
     expect(bgClipPath).toBe('none');
-
-    // ── 7. Select in_1 — Crop & Zoom shows circle shape ─────────────────
 
     await inputLayer1.click();
 
@@ -184,28 +162,20 @@ test.describe('Webcam Circle PiP Pipeline — E2E Validation', () => {
     await expect(panXSlider).not.toHaveAttribute('data-disabled', '');
     await expect(tiltYSlider).not.toHaveAttribute('data-disabled', '');
 
-    // ── 8. Select in_0 — Crop & Zoom shows rect shape (default) ──────────
-
     await inputLayer0.click();
     await expect(cropSection).toBeVisible({ timeout: 5_000 });
 
     const rectButton = compositorNode.getByTestId('crop-shape-rect');
     await expectButtonActive(rectButton, true);
 
-    // ── 9. Select text layer — no Crop & Zoom section ────────────────────
-
     await textLayer.click();
     await expect(cropSection).not.toBeVisible({ timeout: 5_000 });
-
-    // ── 10. Console error check ──────────────────────────────────────────
 
     const unexpected = collector.getUnexpected(MOQ_BENIGN_PATTERNS);
     if (unexpected.length > 0) {
       console.warn('Unexpected console errors (non-fatal):', unexpected);
     }
   });
-
-  // ── Cleanup ─────────────────────────────────────────────────────────────
 
   test.afterEach(async ({ baseURL }) => {
     if (sessionId) {

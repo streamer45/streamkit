@@ -2,15 +2,12 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! Test utilities for node testing
-
 use std::collections::HashMap;
 use streamkit_core::node::{NodeContext, OutputRouting, OutputSender, RoutedPacketMessage};
 use streamkit_core::state::NodeStateUpdate;
 use streamkit_core::types::{Packet, PixelFormat, VideoFrame, VideoLayout};
 use tokio::sync::mpsc;
 
-/// Creates a test NodeContext with mock channels
 #[allow(clippy::implicit_hasher)]
 pub fn create_test_context(
     inputs: HashMap<String, mpsc::Receiver<streamkit_core::types::Packet>>,
@@ -47,10 +44,6 @@ pub fn create_test_context(
     (context, mock_sender, state_rx)
 }
 
-/// Creates a test NodeContext that also returns the pin management sender.
-///
-/// Use this when a test needs to send `PinManagementMessage` variants
-/// (e.g. `InputTypeResolved`) to the node under test.
 #[allow(clippy::implicit_hasher)]
 pub fn create_test_context_with_pin_mgmt(
     inputs: HashMap<String, mpsc::Receiver<streamkit_core::types::Packet>>,
@@ -91,11 +84,6 @@ pub fn create_test_context_with_pin_mgmt(
     (context, mock_sender, state_rx, pin_mgmt_tx)
 }
 
-/// Creates a test NodeContext configured for **oneshot / batch** mode.
-///
-/// Identical to [`create_test_context`] but sets `cancellation_token` to
-/// `Some(CancellationToken::new())` so nodes that branch on pipeline mode
-/// (e.g. the compositor) exercise the oneshot code path.
 #[allow(clippy::implicit_hasher)]
 pub fn create_oneshot_test_context(
     inputs: HashMap<String, mpsc::Receiver<streamkit_core::types::Packet>>,
@@ -107,8 +95,6 @@ pub fn create_oneshot_test_context(
     (context, mock_sender, state_rx)
 }
 
-/// Mock OutputSender that captures sent packets via a channel.
-/// Uses the same RoutedPacketMessage type as the real implementation for consistency.
 #[derive(Clone)]
 pub struct MockOutputSender {
     receiver: std::sync::Arc<tokio::sync::Mutex<mpsc::Receiver<RoutedPacketMessage>>>,
@@ -127,13 +113,10 @@ impl MockOutputSender {
         Self::default()
     }
 
-    /// Create an OutputSender from this mock
     pub fn to_output_sender(&self, node_name: String) -> OutputSender {
         OutputSender::new(node_name, OutputRouting::Routed(self.sender.clone()))
     }
 
-    /// Receive a single packet (non-blocking).
-    /// Returns (node_name, pin_name, packet) as Strings for test convenience.
     pub async fn try_recv(&self) -> Option<(String, String, Packet)> {
         let mut receiver = self.receiver.lock().await;
         receiver
@@ -142,8 +125,6 @@ impl MockOutputSender {
             .map(|(node, pin, packet)| (node.to_string(), pin.to_string(), packet))
     }
 
-    /// Receive packets with timeout.
-    /// Returns (node_name, pin_name, packet) as Strings for test convenience.
     pub async fn recv_timeout(
         &self,
         timeout: std::time::Duration,
@@ -156,8 +137,6 @@ impl MockOutputSender {
             .map(|(node, pin, packet)| (node.to_string(), pin.to_string(), packet))
     }
 
-    /// Collect all available packets.
-    /// Returns Vec of (node_name, pin_name, packet) as Strings for test convenience.
     pub async fn collect_packets(&self) -> Vec<(String, String, Packet)> {
         let mut packets = Vec::new();
         while let Some(packet) = self.try_recv().await {
@@ -166,7 +145,6 @@ impl MockOutputSender {
         packets
     }
 
-    /// Get all packets sent to a specific output pin
     pub async fn get_packets_for_pin(&self, pin_name: &str) -> Vec<streamkit_core::types::Packet> {
         let all_packets = self.collect_packets().await;
         all_packets
@@ -177,7 +155,6 @@ impl MockOutputSender {
     }
 }
 
-/// Helper to create a simple audio packet for testing
 pub fn create_test_audio_packet(
     sample_rate: u32,
     channels: u16,
@@ -192,19 +169,12 @@ pub fn create_test_audio_packet(
     Packet::Audio(streamkit_core::types::AudioFrame::new(sample_rate, channels, samples))
 }
 
-/// Helper to create a test binary packet
 pub fn create_test_binary_packet(data: Vec<u8>) -> Packet {
     Packet::Binary { data: bytes::Bytes::from(data), content_type: None, metadata: None }
 }
 
-/// Helper to create a simple video frame for testing.
-///
 /// # Panics
-///
-/// Panics if the width/height/pixel-format combination is not accepted by
-/// [`VideoFrame::new`] (e.g. zero dimensions or a mismatch between the computed
-/// layout size and the allocated buffer). Callers in tests pick these values
-/// deliberately, so a panic indicates a bug in the test itself.
+/// Panics if the width/height/format combination is invalid.
 #[allow(clippy::expect_used)]
 pub fn create_test_video_frame(
     width: u32,
@@ -230,7 +200,6 @@ pub fn create_test_video_frame(
         .expect("test video frame dimensions/format should be valid")
 }
 
-/// Helper to create a simple video packet for testing.
 pub fn create_test_video_packet(
     width: u32,
     height: u32,
@@ -240,7 +209,6 @@ pub fn create_test_video_packet(
     Packet::Video(create_test_video_frame(width, height, pixel_format, fill_value))
 }
 
-/// Helper to extract audio data from a packet
 pub fn extract_audio_data(packet: &Packet) -> Option<&[f32]> {
     match packet {
         Packet::Audio(frame) => Some(&frame.samples),
@@ -248,11 +216,8 @@ pub fn extract_audio_data(packet: &Packet) -> Option<&[f32]> {
     }
 }
 
-/// Helper to assert that a state update was received and matches the expected state type
-///
 /// # Panics
-///
-/// Panics if the state update is not received within the timeout or if the state does not match the expected state.
+/// Panics if the state update is not received or doesn't match.
 #[allow(clippy::expect_used)]
 pub async fn assert_state_update(
     state_rx: &mut mpsc::Receiver<NodeStateUpdate>,
@@ -272,7 +237,6 @@ pub async fn assert_state_update(
     );
 }
 
-/// Helper to assert Initializing state
 pub async fn assert_state_initializing(state_rx: &mut mpsc::Receiver<NodeStateUpdate>) {
     assert_state_update(
         state_rx,
@@ -282,13 +246,11 @@ pub async fn assert_state_initializing(state_rx: &mut mpsc::Receiver<NodeStateUp
     .await;
 }
 
-/// Helper to assert Running state
 pub async fn assert_state_running(state_rx: &mut mpsc::Receiver<NodeStateUpdate>) {
     assert_state_update(state_rx, |s| matches!(s, streamkit_core::NodeState::Running), "Running")
         .await;
 }
 
-/// Helper to assert Stopped state
 pub async fn assert_state_stopped(state_rx: &mut mpsc::Receiver<NodeStateUpdate>) {
     assert_state_update(
         state_rx,
@@ -298,7 +260,6 @@ pub async fn assert_state_stopped(state_rx: &mut mpsc::Receiver<NodeStateUpdate>
     .await;
 }
 
-/// Helper to assert Failed state
 pub async fn assert_state_failed(state_rx: &mut mpsc::Receiver<NodeStateUpdate>) {
     assert_state_update(
         state_rx,

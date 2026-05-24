@@ -2,8 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-// Re-export all generated types to provide a single entry point for the UI.
-// Import the specific generated types needed for composing new types in this file.
+// Re-export all generated types; import only what's needed for composed types below.
 import type {
   MessageType,
   RequestPayload,

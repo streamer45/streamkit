@@ -49,15 +49,11 @@ test.describe('Stream View - Overlay Controls', () => {
     page,
   }) => {
     test.setTimeout(60_000);
-
-    // ── 1. Select the overlay-controls test pipeline ─────────────────
     const templateCard = page.getByText('Test: Overlay Controls', {
       exact: true,
     });
     await expect(templateCard).toBeVisible({ timeout: 15_000 });
     await templateCard.click();
-
-    // ── 2. Create session ────────────────────────────────────────────
     const createButton = page.getByRole('button', { name: /Create Session/i });
     await expect(createButton).toBeEnabled({ timeout: 5_000 });
     await createButton.click();
@@ -67,13 +63,9 @@ test.describe('Stream View - Overlay Controls', () => {
 
     const sessionIdText = await page.getByText(/Session ID:/).textContent();
     sessionId = sessionIdText?.replace(/Session ID:\s*/, '').trim() ?? null;
-
-    // ── 3. Verify "Pipeline Controls" section appears ────────────────
     const controls = page.getByTestId('overlay-controls');
     await expect(controls).toBeVisible({ timeout: 5_000 });
     await expect(controls.getByText('Pipeline Controls', { exact: true })).toBeVisible();
-
-    // ── 4. Verify all control labels are rendered ────────────────────
     // Scope all locators to the controls section to avoid collisions
     // with the YAML editor that also displays control label strings.
     // Use label locators to avoid collisions with button text.
@@ -87,8 +79,6 @@ test.describe('Stream View - Overlay Controls', () => {
 
     // Verify group heading.
     await expect(controls.getByText('Dimensions', { exact: true })).toBeVisible();
-
-    // ── 5. Exercise toggle control ───────────────────────────────────
     // The toggle defaults to true (checked).  Click it to toggle off.
     const toggleButton = controls.locator('button[aria-label="Draw Time"]');
     await expect(toggleButton).toBeVisible();
@@ -114,8 +104,6 @@ test.describe('Stream View - Overlay Controls', () => {
     expect(togglePayload, 'Toggle should send { draw_time: false }').toEqual({
       draw_time: false,
     });
-
-    // ── 6. Exercise text control ─────────────────────────────────────
     const textInput = controls.locator('input[placeholder="Label"]');
     await expect(textInput).toBeVisible();
     // Clear the default value and type a new one.
@@ -144,8 +132,6 @@ test.describe('Stream View - Overlay Controls', () => {
     expect(textPayload, 'Text should send { label: "World" }').toEqual({
       label: 'World',
     });
-
-    // ── 7. Exercise number/slider control ────────────────────────────
     // Clear previous messages to isolate slider messages.
     wsSentMessages.length = 0;
 
@@ -180,8 +166,6 @@ test.describe('Stream View - Overlay Controls', () => {
     expect((sliderPayload as Record<string, Record<string, unknown>>).properties).toHaveProperty(
       'width'
     );
-
-    // ── 8. Exercise select control ───────────────────────────────────
     wsSentMessages.length = 0;
 
     const selectDropdown = controls.locator('select[aria-label="Format"]');
@@ -205,8 +189,6 @@ test.describe('Stream View - Overlay Controls', () => {
         )?.pixel_format === 'nv12'
     );
     expect(selectMsg, 'Expected a TuneNodeAsync message for the select control').toBeTruthy();
-
-    // ── 9. Exercise button control ───────────────────────────────────
     wsSentMessages.length = 0;
 
     const resetButton = controls.getByRole('button', { name: 'Reset' });
@@ -229,13 +211,9 @@ test.describe('Stream View - Overlay Controls', () => {
         )?.reset === true
     );
     expect(buttonMsg, 'Expected a TuneNodeAsync message for the button control').toBeTruthy();
-
-    // ── 10. Assert no unexpected console errors ──────────────────────
     const unexpected = collector.getUnexpected();
     expect(unexpected, `Unexpected console errors: ${unexpected.join('; ')}`).toHaveLength(0);
     collector.stop();
-
-    // ── 11. Destroy session ──────────────────────────────────────────
     const destroyButton = page.getByRole('button', {
       name: /Destroy Session/i,
     });

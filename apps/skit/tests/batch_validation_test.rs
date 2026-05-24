@@ -30,7 +30,6 @@ type WsStream =
 type WsWriter = futures_util::stream::SplitSink<WsStream, WsMessage>;
 type WsReader = futures_util::stream::SplitStream<WsStream>;
 
-/// Helper to read messages from WebSocket, skipping events until we get a response with matching correlation_id
 async fn read_response(read: &mut WsReader, expected_correlation_id: &str) -> Response {
     loop {
         let message = timeout(Duration::from_secs(5), read.next())
@@ -80,7 +79,6 @@ async fn start_test_server_with_config(
     Some((addr, server_handle))
 }
 
-/// Helper: connect to WS, create a session, and return (write, read, session_id).
 async fn setup_session(addr: SocketAddr) -> (WsWriter, WsReader, String) {
     let ws_url = format!("ws://{}/api/v1/control", addr);
     let (ws_stream, _) = connect_async(&ws_url).await.expect("Failed to connect to WebSocket");
@@ -106,7 +104,6 @@ async fn setup_session(addr: SocketAddr) -> (WsWriter, WsReader, String) {
     (write, read, session_id)
 }
 
-/// Helper: send a ValidateBatch request and return the response payload.
 async fn send_validate_batch(
     write: &mut WsWriter,
     read: &mut WsReader,
@@ -125,7 +122,6 @@ async fn send_validate_batch(
     read_response(read, correlation_id).await.payload
 }
 
-/// Helper: send an ApplyBatch request and return the response payload.
 async fn send_apply_batch(
     write: &mut WsWriter,
     read: &mut WsReader,
@@ -183,10 +179,6 @@ async fn connect_with_role(addr: SocketAddr, role: &str) -> (WsWriter, WsReader)
     let (ws_stream, _) = connect_async(request).await.expect("Failed to connect to WebSocket");
     ws_stream.split()
 }
-
-// ---------------------------------------------------------------------------
-// ValidateBatch tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_validate_batch_rejects_http_input_node() {
@@ -570,10 +562,6 @@ async fn test_validate_batch_rejects_cross_role_ownership() {
         },
     }
 }
-
-// ---------------------------------------------------------------------------
-// ApplyBatch tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_apply_batch_rejects_http_input_node() {

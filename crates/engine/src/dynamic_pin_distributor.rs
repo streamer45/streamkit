@@ -58,11 +58,8 @@ struct OutputConnection {
 
 /// Actor responsible for distributing packets from a single output pin (Data Plane).
 pub struct PinDistributorActor {
-    /// Input from the node (data path)
     data_rx: mpsc::Receiver<streamkit_core::types::Packet>,
-    /// Input from the control plane
     config_rx: mpsc::Receiver<PinConfigMsg>,
-    /// Map of active downstream connections with their modes
     outputs: HashMap<ConnectionId, OutputConnection>,
     /// In-flight `reserve_owned()` futures for best-effort outputs whose
     /// downstream channel was full when a packet arrived. Each future
@@ -70,34 +67,19 @@ pub struct PinDistributorActor {
     /// then drains the connection's `pending_best_effort` slot through the
     /// reserved permit.
     pending_flushes: FuturesUnordered<BoxFuture<'static, FlushResult>>,
-    /// Next `OutputConnection::generation` to assign on `AddConnection`.
-    /// Used to fence stale flushes from prior incarnations of the same
-    /// `ConnectionId`.
     next_generation: u64,
-    /// Metadata for logging
     node_id: String,
     pin_name: String,
-    /// Telemetry: packets successfully distributed
     packets_distributed_counter: opentelemetry::metrics::Counter<u64>,
-    /// Telemetry: packets dropped (no outputs configured)
     packets_dropped_counter: opentelemetry::metrics::Counter<u64>,
-    /// Telemetry: packets dropped due to best-effort backpressure
     best_effort_drops_counter: opentelemetry::metrics::Counter<u64>,
-    /// Telemetry: number of active outputs
     outputs_active_gauge: opentelemetry::metrics::Gauge<u64>,
-    /// Telemetry: time spent blocked on downstream backpressure (send().await)
     send_wait_histogram: opentelemetry::metrics::Histogram<f64>,
-    /// Telemetry: depth of the distributor's incoming queue
     queue_depth_gauge: opentelemetry::metrics::Gauge<u64>,
-    /// Telemetry: estimated backlog in bytes
     queue_depth_bytes_gauge: opentelemetry::metrics::Gauge<u64>,
-    /// Telemetry: estimated backlog in media seconds (based on observed durations)
     queue_depth_seconds_gauge: opentelemetry::metrics::Gauge<f64>,
-    /// Pre-built metric labels - allocated once in new(), reused on every packet
     metric_labels: [opentelemetry::KeyValue; 2],
-    /// EWMA of packet size in bytes for this pin
     avg_packet_size_bytes: f64,
-    /// EWMA of packet duration in seconds for this pin (when available)
     avg_packet_duration_s: f64,
 }
 
@@ -131,7 +113,6 @@ pub(crate) fn json_byte_len(value: &serde_json::Value) -> usize {
 }
 
 impl PinDistributorActor {
-    /// Creates a new pin distributor actor.
     pub(super) fn new(
         data_rx: mpsc::Receiver<streamkit_core::types::Packet>,
         config_rx: mpsc::Receiver<PinConfigMsg>,
@@ -279,7 +260,7 @@ impl PinDistributorActor {
         );
     }
 
-    /// Handles configuration messages. Returns false if shutdown is requested.
+    /// Returns `false` on shutdown.
     fn handle_config(&mut self, msg: PinConfigMsg) -> bool {
         match msg {
             PinConfigMsg::AddConnection { id, tx, mode } => {
@@ -307,10 +288,6 @@ impl PinDistributorActor {
         true
     }
 
-    /// Distributes a single packet to all outputs.
-    ///
-    /// For `Reliable` connections: synchronized backpressure - waits for slow consumers.
-    /// For `BestEffort` connections: drops packets when buffer is full (no waiting).
     #[allow(
         clippy::cognitive_complexity,
         clippy::cast_precision_loss,
@@ -346,20 +323,16 @@ impl PinDistributorActor {
         }
 
         if self.outputs.is_empty() {
-            // No outputs configured - drop packet and record metric
-            // Use pre-built labels - no allocation on hot path
             self.packets_dropped_counter.add(1, &self.metric_labels);
             return;
         }
 
-        // Optimization: Handle the common case of a single destination without cloning.
+        // Single-output fast path: avoids cloning the packet.
         if self.outputs.len() == 1 {
-            // Best-effort needs a small per-output buffer (pending_best_effort), but does not await.
             if matches!(
                 self.outputs.values().next().map(|c| &c.mode),
                 Some(ConnectionMode::BestEffort)
             ) {
-                // Use let-else pattern for safety instead of unwrap
                 let Some((id, conn)) = self.outputs.iter_mut().next() else {
                     tracing::error!(
                         "{}.{}: Outputs unexpectedly empty despite len() == 1",
@@ -404,7 +377,6 @@ impl PinDistributorActor {
                     },
                 }
             } else {
-                // Reliable: preserve synchronized backpressure semantics.
                 let Some((id, conn)) = self.outputs.iter().next() else {
                     tracing::error!(
                         "{}.{}: Outputs unexpectedly empty despite len() == 1",
@@ -452,13 +424,6 @@ impl PinDistributorActor {
             return;
         }
 
-        // Fan-out to multiple outputs.
-        //
-        // Strategy:
-        // - For Reliable connections: fall back to `send().await` if channel is full.
-        // - For BestEffort connections: keep newest packet in a 1-slot buffer and
-        //   schedule a `reserve_owned()` flush so the parked packet is delivered
-        //   once the downstream channel frees a slot.
         let mut successes = 0u64;
         let mut best_effort_drops = 0u64;
         let mut to_remove: Vec<ConnectionId> = Vec::new();
@@ -512,7 +477,6 @@ impl PinDistributorActor {
             }
         }
 
-        // Wait for all pending reliable sends to complete
         while let Some((id, waited_secs, result)) = pending.next().await {
             self.send_wait_histogram.record(waited_secs, &self.metric_labels);
             if result.is_err() {
@@ -522,7 +486,6 @@ impl PinDistributorActor {
             }
         }
 
-        // Remove closed connections
         for id in &to_remove {
             tracing::warn!(
                 "{}.{}: Downstream connection {} closed during fan-out.",
@@ -533,7 +496,6 @@ impl PinDistributorActor {
             self.remove_output(id);
         }
 
-        // Record metrics
         if successes > 0 {
             self.packets_distributed_counter.add(successes, &self.metric_labels);
         }
@@ -549,16 +511,13 @@ impl PinDistributorActor {
         }
     }
 
-    /// Remove a downstream connection and update the active-outputs gauge.
     fn remove_output(&mut self, id: &ConnectionId) {
         self.outputs.remove(id);
         self.outputs_active_gauge.record(self.outputs.len() as u64, &self.metric_labels);
     }
 
-    /// Handle a completed `reserve_owned()` reservation: deliver the connection's
-    /// current `pending_best_effort` packet through the permit (always the
-    /// newest observed since the last successful send), or release the permit
-    /// if a fresher packet has already gone through via `try_send`.
+    /// Deliver the newest pending best-effort packet through the permit,
+    /// or release the permit if a fresher packet already went through.
     fn handle_flush_completion(
         &mut self,
         id: &ConnectionId,
@@ -600,7 +559,6 @@ impl PinDistributorActor {
         }
     }
 
-    /// Extract approximate size in bytes and optional duration (seconds) for a packet.
     #[allow(clippy::cast_precision_loss)]
     fn packet_stats(packet: &Packet) -> (f64, Option<f64>) {
         match packet {

@@ -131,7 +131,6 @@ impl Completer for SkitCompleter {
         let words: Vec<&str> = line[..pos].split_whitespace().collect();
 
         if words.is_empty() || (words.len() == 1 && !line.ends_with(' ')) {
-            // Complete command names
             let start = line.rfind(' ').map_or(0, |i| i + 1);
             let prefix = &line[start..pos];
             let matches: Vec<Pair> = self
@@ -145,26 +144,21 @@ impl Completer for SkitCompleter {
             // Complete YAML filenames for pipeline files in create command
             let (start, candidates) = self.filename_completer.complete(line, pos, ctx)?;
 
-            // Filter to only show YAML files and directories
             // We already have lowercase strings, so ASCII case-insensitive comparison is unnecessary
             #[allow(clippy::case_sensitive_file_extension_comparisons)]
             let yaml_matches: Vec<Pair> = candidates
                 .into_iter()
                 .filter(|pair| {
                     let lower = pair.replacement.to_lowercase();
-                    // Keep directories (they don't have extensions) and YAML files
                     !lower.contains('.') || lower.ends_with(".yaml") || lower.ends_with(".yml")
                 })
                 .collect();
 
             Ok((start, yaml_matches))
         } else if words[0] == "oneshot" && words.len() <= 3 && !line.ends_with(' ') {
-            // Complete file paths for oneshot command arguments
-            // oneshot <pipeline.yaml> <input> <output>
             let (start, candidates) = self.filename_completer.complete(line, pos, ctx)?;
 
             if words.len() == 2 {
-                // First argument: pipeline file (YAML only)
                 // We already have lowercase strings, so ASCII case-insensitive comparison is unnecessary
                 #[allow(clippy::case_sensitive_file_extension_comparisons)]
                 let yaml_matches: Vec<Pair> = candidates
@@ -176,14 +170,12 @@ impl Completer for SkitCompleter {
                     .collect();
                 Ok((start, yaml_matches))
             } else {
-                // Second and third arguments: any file path
                 Ok((start, candidates))
             }
         } else if (words[0] == "loadtest" || words[0] == "lt")
             && words.len() == 2
             && !line.ends_with(' ')
         {
-            // Complete TOML filenames for loadtest config
             let (start, candidates) = self.filename_completer.complete(line, pos, ctx)?;
 
             // We already have lowercase strings, so ASCII case-insensitive comparison is unnecessary
@@ -199,7 +191,6 @@ impl Completer for SkitCompleter {
         } else if words.len() >= 2
             && (words[0] == "destroy" || words[0] == "tune" || words[0] == "watch")
         {
-            // Complete session names for commands that need them
             let start = line.rfind(' ').map_or(0, |i| i + 1);
             let prefix = &line[start..pos];
             let matches: Vec<Pair> = self
@@ -237,8 +228,7 @@ impl Shell {
     pub fn new(server_url: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let mut ws_url = Url::parse(server_url)?;
         match ws_url.scheme() {
-            // set_scheme only fails for invalid schemes, but "ws" and "wss" are always valid
-            // Using expect is justified here: these are hardcoded valid schemes
+            // Hardcoded valid schemes; set_scheme cannot fail.
             #[allow(clippy::expect_used)]
             "http" => {
                 ws_url.set_scheme("ws").expect("ws is a valid URL scheme");
@@ -247,7 +237,7 @@ impl Shell {
             "https" => {
                 ws_url.set_scheme("wss").expect("wss is a valid URL scheme");
             },
-            "ws" | "wss" => (), // Scheme is already correct
+            "ws" | "wss" => (),
             _ => return Err("Server URL must be http(s) or ws(s)".into()),
         }
         ws_url.set_path("/api/v1/control");
@@ -291,7 +281,6 @@ impl Shell {
         println!("Type 'help' for available commands, 'exit' to quit");
         println!();
 
-        // Initial session list to populate completions
         if let Err(e) = self.refresh_sessions().await {
             warn!("Failed to load initial session list: {e}");
         }
@@ -441,11 +430,9 @@ impl Shell {
         let req_json = serde_json::to_string(&list_sessions_req)?;
         ws_stream.send(Message::Text(req_json.into())).await?;
 
-        // Read until we get a response (ignore any interleaved events)
         let sessions = loop {
             match ws_stream.next().await {
                 Some(Ok(Message::Text(res_text))) => {
-                    // Peek at message type
                     let v: serde_json::Value = serde_json::from_str(&res_text)?;
                     if v.get("type").and_then(|t| t.as_str()) == Some("response") {
                         let response: Response = serde_json::from_str(&res_text)?;
@@ -461,11 +448,8 @@ impl Shell {
                             },
                         }
                     }
-                    // Ignore events and unknown message types while waiting for response
                 },
-                Some(Ok(_)) => {
-                    // Non-text message; ignore and continue
-                },
+                Some(Ok(_)) => {},
                 Some(Err(e)) => {
                     ws_stream.close(None).await?;
                     return Err(e.into());
@@ -518,10 +502,7 @@ impl Shell {
             .replace("wss://", "https://")
             .replace("/api/v1/control", "");
 
-        // Use the existing create_session function from client.rs
         crate::client::create_session(pipeline_path, &name, &http_url).await?;
-
-        // Refresh sessions after creation
         self.refresh_sessions().await?;
 
         Ok(())
@@ -538,7 +519,6 @@ impl Shell {
 
         let session_id = args[0];
 
-        // Use the existing destroy_session function from client.rs
         crate::client::destroy_session(session_id, &self.ws_url.replace("/api/v1/control", ""))
             .await?;
 

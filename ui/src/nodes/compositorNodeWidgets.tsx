@@ -43,12 +43,9 @@ import {
   CompactSliderTrack,
 } from './compositorSliderParts';
 
-// ── Re-export slider parts for downstream consumers ────────────────────────
 export { CompactSliderRange, CompactSliderRoot, CompactSliderThumb, CompactSliderTrack };
 
 const logger = getLogger('compositorNodeWidgets');
-
-// ── Position / size input grid ──────────────────────────────────────────────
 
 const PositionSizeGrid = styled.div`
   display: grid;
@@ -64,8 +61,6 @@ const FieldLabel = styled.span`
   font-weight: 500;
   text-align: right;
 `;
-
-// ── Memoized inspector sub-sections ─────────────────────────────────────────
 
 export type PositionSizePatch = {
   x?: number;
@@ -458,8 +453,6 @@ export const CropZoomControl: React.FC<{
   }
 );
 CropZoomControl.displayName = 'CropZoomControl';
-
-// ── Unified layer list ──────────────────────────────────────────────────────
 
 export const CompositorEntryList: React.FC<{
   entries: CompositorEntry[];

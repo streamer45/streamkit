@@ -2,13 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! MoQ (Media over QUIC) transport nodes
-//!
-//! This module provides nodes for working with MoQ streams:
-//! - `moq_pull`: Client that subscribes to broadcasts from a MoQ server
-//! - `moq_push`: Client that publishes packets to a MoQ server
-//! - `moq_peer`: Bidirectional server that accepts WebTransport connections
-
 #![cfg(feature = "moq")]
 
 mod catalog_consumer;
@@ -159,7 +152,6 @@ pub(super) fn parse_moq_url(raw: &str, jwt: Option<&str>) -> Result<Url, StreamK
     Ok(url)
 }
 
-/// Registers the MoQ transport nodes.
 pub fn register_moq_nodes(registry: &mut NodeRegistry) {
     #[cfg(feature = "moq")]
     {

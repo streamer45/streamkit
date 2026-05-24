@@ -2,8 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! MoQ Push Node - publishes packets to a MoQ broadcast
-
 use super::constants::{
     catalog_audio_codec, catalog_video_codec, moq_accepted_media_types, resolve_audio_codec,
     resolve_video_codec,
@@ -97,11 +95,6 @@ impl Default for MoqPushConfig {
     }
 }
 
-/// A node that receives encoded media and publishes it to a MoQ broadcast.
-///
-/// Supports arbitrary combinations of audio (Opus) and video (VP9) inputs.
-/// Audio is accepted on the `in` pin, and video on the `in_1` pin.
-/// Either or both may be connected; at least one must be present.
 pub struct MoqPushNode {
     config: MoqPushConfig,
 }

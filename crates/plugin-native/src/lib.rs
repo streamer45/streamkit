@@ -78,20 +78,15 @@ impl LoadedNativePlugin {
 
         info!(?path, "Loading native plugin");
 
-        // Load the dynamic library
-        // SAFETY: Loading a dynamic library is inherently unsafe as we're executing code
-        // from an external source. The plugin is trusted code (verified by the user/admin).
+        // SAFETY: Plugin is trusted code (verified by the user/admin).
         let library = unsafe {
             Library::new(path).map_err(|e| {
                 let path_display = path.display();
-                // libloading::Error contains detailed information about what went wrong
                 anyhow!("Failed to load library '{path_display}': {e}.")
             })?
         };
 
-        // Get the plugin API symbol
-        // SAFETY: Looking up symbols in the loaded library. The function signature must match
-        // the plugin's export. The native_plugin_entry! macro ensures this contract is upheld.
+        // SAFETY: Signature contract upheld by native_plugin_entry! macro.
         let api_fn: Symbol<extern "C" fn() -> *const CNativePluginAPI> = unsafe {
             library.get(PLUGIN_API_SYMBOL).map_err(|e| {
                 anyhow!(
@@ -108,8 +103,7 @@ impl LoadedNativePlugin {
             return Err(anyhow!("Plugin API function returned null pointer"));
         }
 
-        // SAFETY: We've verified the pointer is non-null. The plugin API struct is valid for
-        // the lifetime of the loaded library, which we keep alive via Arc<Library>.
+        // SAFETY: Non-null verified above; library kept alive via Arc<Library>.
         let api = unsafe { &*api_ptr };
 
         // Check API version compatibility — accept v6 through v9.
@@ -130,7 +124,6 @@ impl LoadedNativePlugin {
             ));
         }
 
-        // Extract metadata
         let mut metadata = Self::extract_metadata(api)?;
 
         let set_log_enabled_callback = if api.version >= 9 {
@@ -152,12 +145,8 @@ impl LoadedNativePlugin {
             None
         };
 
-        // Detect source plugin capability from the v3 API fields.
-        // If the plugin provides `get_source_config`, we probe it with a temporary
-        // instance to read tick parameters.  If instance creation fails we fall back
-        // to treating it as a processor plugin.
+        // Probe source config via a temporary instance; fall back to processor on failure.
         if let Some(get_source_config) = api.get_source_config {
-            // Create a temporary instance with no params to query source config
             let temp_handle = (api.create_instance)(
                 std::ptr::null(),
                 plugin_log_callback_noop,
@@ -205,8 +194,7 @@ impl LoadedNativePlugin {
             return Err(anyhow!("Plugin metadata is null"));
         }
 
-        // SAFETY: We've verified the pointer is non-null. The metadata struct is valid for
-        // the lifetime of the plugin API call.
+        // SAFETY: Non-null verified above; valid for the duration of this call.
         let c_meta = unsafe { &*c_metadata };
 
         // SAFETY: c_meta.kind is a valid C string pointer provided by the plugin.
@@ -386,11 +374,9 @@ pub fn register_plugins(
         let categories = metadata.categories.clone();
         let is_source = metadata.is_source;
 
-        // Source plugins register with empty inputs (they produce data, not consume it).
         let inputs = if is_source { Vec::new() } else { metadata.inputs.clone() };
         let outputs = metadata.outputs.clone();
 
-        // Debug: Log what we're registering
         tracing::info!(
             kind = %kind,
             inputs = ?inputs,
@@ -398,11 +384,9 @@ pub fn register_plugins(
             "Registering native plugin with pins"
         );
 
-        // Create the factory closure
         let plugin_arc = Arc::new(plugin);
         let factory = move |params: Option<&serde_json::Value>| plugin_arc.create_node(params);
 
-        // Register with static pins (extracted from plugin metadata)
         let static_pins = streamkit_core::registry::StaticPins { inputs, outputs };
         registry.register_static(&kind, factory, param_schema, static_pins, categories, false);
 
@@ -413,7 +397,7 @@ pub fn register_plugins(
     Ok(count)
 }
 
-/// Helper function to add the `plugin::native::` prefix to plugin kinds
+/// Add the `plugin::native::` prefix to plugin kinds.
 ///
 /// # Errors
 ///
@@ -424,12 +408,10 @@ pub fn namespaced_kind(original_kind: &str) -> Result<String> {
     const PLUGIN_KIND_PREFIX: &str = "plugin::native::";
     const RESERVED_PREFIX: &str = "core::";
 
-    // Validate: reject if already has a namespace prefix
     if original_kind.starts_with(PLUGIN_KIND_PREFIX) {
         return Ok(original_kind.to_string());
     }
 
-    // Validate: reject if contains namespace separator
     if original_kind.contains("::") {
         return Err(anyhow!(
             "Plugin kind '{original_kind}' contains '::' which is reserved for namespace prefixes. \
@@ -437,7 +419,6 @@ pub fn namespaced_kind(original_kind: &str) -> Result<String> {
         ));
     }
 
-    // Validate: reject if uses reserved prefix
     if original_kind.starts_with(RESERVED_PREFIX) {
         return Err(anyhow!(
             "Plugin kind '{original_kind}' uses reserved prefix '{RESERVED_PREFIX}'. \

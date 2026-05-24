@@ -36,8 +36,6 @@ import {
 
 export type { LayerKind } from './compositorConstants';
 
-// ── Public types ────────────────────────────────────────────────────────────
-
 export interface LayerState {
   /** Pin name, e.g. "in_0" */
   id: string;
@@ -124,7 +122,6 @@ export interface ImageOverlayState {
 /** Which edge/corner is being resized */
 export type ResizeHandle = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
 
-// ── Re-exports from compositorResizeHelpers ─────────────────────────────────
 // Snap/drag/resize computation was extracted to compositorResizeHelpers.ts.
 // Re-export here for backward compatibility with existing imports.
 export {
@@ -152,8 +149,6 @@ export interface OverlayBase {
   mirrorVertical: boolean;
   visible: boolean;
 }
-
-// ── Parsing ─────────────────────────────────────────────────────────────────
 
 /** Read a field from either the flat format or the legacy nested "transform:" format. */
 function readField<T>(
@@ -274,8 +269,6 @@ export function parseImageOverlays(params: Record<string, unknown>): ImageOverla
   });
 }
 
-// ── Serialization ───────────────────────────────────────────────────────────
-
 /** Round and clamp a layer's rect for the wire format. */
 function serializeRect(o: OverlayBase): Rect {
   return {
@@ -350,8 +343,6 @@ export function serializeLayers(layers: LayerState[]): Record<string, LayerConfi
   }
   return layersMap;
 }
-
-// ── Merge / diff ────────────────────────────────────────────────────────────
 
 /** Keys that belong to OverlayBase and are resolved by the server.
  *  Used by `mergeOverlayState` to separate server-owned fields from
@@ -500,8 +491,6 @@ export function buildConfig(
       : (params.text_overlays ?? []),
   };
 }
-
-// ── Aspect-fit prediction ───────────────────────────────────────────────────
 
 /** Compute a destination rect that fits `srcW × srcH` within `bounds`
  *  while preserving the source aspect ratio.  The fitted rect is centred

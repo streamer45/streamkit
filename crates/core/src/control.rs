@@ -19,11 +19,7 @@ use ts_rs::TS;
 #[ts(export)]
 pub enum NodeControlMessage {
     UpdateParams(#[ts(type = "JsonValue")] serde_json::Value),
-    /// Start signal for source nodes waiting in Ready state.
-    /// Tells the node to begin producing packets.
     Start,
-    /// Shutdown signal for graceful termination.
-    /// Nodes should clean up resources and exit their run loop when receiving this.
     Shutdown,
 }
 
@@ -44,15 +40,11 @@ pub enum NodeControlMessage {
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionMode {
-    /// Normal connection with synchronized backpressure.
-    /// If the downstream consumer is slow, the upstream producer will wait.
-    /// This ensures no packet loss but can stall the pipeline.
+    /// Backpressure: upstream waits when downstream is slow (no loss, may stall).
     #[default]
     Reliable,
 
-    /// Best-effort connection that drops packets when the downstream buffer is full.
-    /// Useful for observer outputs (metrics, UI, debug taps) that shouldn't stall
-    /// the main data flow. Dropped packets are logged and counted in metrics.
+    /// Drops packets when downstream buffer is full (no stall, may lose data).
     BestEffort,
 }
 
@@ -117,7 +109,6 @@ mod strip_sync_metadata_tests {
     }
 }
 
-/// A message sent to the central Engine actor to modify the pipeline graph itself.
 #[derive(Debug)]
 pub enum EngineControlMessage {
     AddNode {

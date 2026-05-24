@@ -12,7 +12,6 @@ use streamkit_core::{
 };
 use tokio::sync::mpsc;
 
-/// Configuration for BytesOutputNode
 #[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BytesOutputConfig {
@@ -22,12 +21,9 @@ pub struct BytesOutputConfig {
     pub content_type: Option<String>,
 }
 
-/// An output node that receives binary packets and streams their
-/// contents back to the stateless runner. This node is special-cased
-/// to represent the HTTP response body.
+/// Special-cased by the stateless runner to represent the HTTP response body.
 pub struct BytesOutputNode {
     result_tx: mpsc::Sender<Bytes>,
-    /// Configured content type (from params)
     configured_content_type: Option<String>,
 }
 
@@ -36,11 +32,8 @@ impl BytesOutputNode {
         Self { result_tx, configured_content_type: None }
     }
 
-    /// Creates a new `BytesOutputNode` with configuration from YAML parameters.
-    ///
     /// # Errors
-    ///
-    /// Returns an error if the configuration parameters cannot be parsed.
+    /// Returns `Err` if config parsing fails.
     pub fn new_with_config(
         result_tx: mpsc::Sender<Bytes>,
         params: Option<&serde_json::Value>,
@@ -49,7 +42,6 @@ impl BytesOutputNode {
         Ok(Self { result_tx, configured_content_type: config.content_type })
     }
 
-    /// Get the configured content type from parameters
     pub fn configured_content_type(&self) -> Option<String> {
         self.configured_content_type.clone()
     }

@@ -55,7 +55,6 @@ pub struct MseGateway {
 }
 
 impl MseGateway {
-    /// Create a new MSE gateway.
     pub fn new() -> Self {
         Self { routes: Arc::new(RwLock::new(HashMap::new())) }
     }
@@ -98,8 +97,7 @@ impl MseGateway {
             return Err(MseConnectError::AtCapacity);
         }
 
-        // Create a channel for streaming chunks to this client's HTTP response body.
-        // Capacity of 64 provides ~2s of buffer at 30fps before backpressure.
+        // Capacity 64 ≈ 2s buffer at 30fps before backpressure.
         let (body_tx, body_rx) = mpsc::channel(64);
 
         let client = MseClient { body_tx };
@@ -109,8 +107,6 @@ impl MseGateway {
             return Err(MseConnectError::NodeStopped);
         }
 
-        // Return a guard that decrements the active client counter on drop,
-        // ensuring the count stays accurate when the HTTP response ends.
         let guard = MseClientGuard { counter: active_clients };
 
         Ok((content_type, body_rx, guard))

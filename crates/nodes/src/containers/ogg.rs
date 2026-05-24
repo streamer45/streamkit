@@ -20,12 +20,7 @@ use streamkit_core::{
 };
 use tokio::io::duplex;
 
-// --- Ogg Constants ---
-
-/// Default page flush threshold for Ogg muxer (typical max Ogg page size)
 const DEFAULT_CHUNK_SIZE: usize = 65536;
-
-// --- Ogg Muxer ---
 
 #[derive(Clone)]
 struct SharedPacketBuffer(Arc<Mutex<Vec<u8>>>);
@@ -79,7 +74,6 @@ impl Default for OggMuxerConfig {
     }
 }
 
-/// A node that muxes compressed packets (like Opus) into an Ogg container stream.
 pub struct OggMuxerNode {
     config: OggMuxerConfig,
 }
@@ -332,13 +326,10 @@ impl ProcessorNode for OggMuxerNode {
     }
 }
 
-// --- Ogg Demuxer ---
-
 #[derive(Deserialize, Debug, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct OggDemuxerConfig {}
 
-/// A node that demuxes an Ogg container stream into its underlying compressed packets.
 pub struct OggDemuxerNode {
     _config: OggDemuxerConfig,
 }
@@ -549,8 +540,6 @@ impl ProcessorNode for OggDemuxerNode {
     }
 }
 
-// --- Symphonia-based Ogg Demuxer (Alternative Implementation) ---
-
 #[cfg(feature = "symphonia")]
 use symphonia::core::formats::FormatOptions;
 #[cfg(feature = "symphonia")]
@@ -566,7 +555,6 @@ use crate::streaming_utils::StreamingReader;
 #[serde(default, deny_unknown_fields)]
 pub struct SymphoniaOggDemuxerConfig {}
 
-/// Symphonia-based Ogg demuxer node (more robust alternative to the ogg crate based one)
 #[cfg(feature = "symphonia")]
 pub struct SymphoniaOggDemuxerNode {
     _config: SymphoniaOggDemuxerConfig,
@@ -827,7 +815,6 @@ impl ProcessorNode for SymphoniaOggDemuxerNode {
 
 use streamkit_core::{config_helpers, registry::StaticPins};
 
-/// Registers the Ogg container nodes.
 pub fn register_ogg_nodes(registry: &mut NodeRegistry) {
     #[cfg(feature = "ogg")]
     {

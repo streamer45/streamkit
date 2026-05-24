@@ -254,7 +254,6 @@ impl DynamicEngine {
                     self.handle_state_update(&state_update);
                 },
                 Some(stats_update) = stats_rx.recv() => {
-                    // handle_stats_update is synchronous (no .await needed)
                     self.handle_stats_update(&stats_update);
                 },
                 Some(telemetry_event) = telemetry_rx.recv() => {
@@ -317,16 +316,10 @@ impl DynamicEngine {
         }
     }
 
-    /// Checks if all nodes in the pipeline are Ready or Running.
-    /// If all nodes are ready, sends Start signal to nodes in Ready state.
-    /// This ensures that source nodes don't start producing packets until the entire
-    /// pipeline is initialized, preventing packet loss.
-    ///
-    /// Takes `&self` not `&mut self` because it only reads pipeline state and sends messages
+    /// Sends `Start` to source nodes once every node has left `Creating`.
     pub(crate) fn check_and_activate_pipeline(&self) {
         use tokio::sync::mpsc::error::TrySendError;
 
-        // Skip if we have no nodes
         if self.node_states.is_empty() {
             return;
         }
@@ -351,7 +344,6 @@ impl DynamicEngine {
             return;
         }
 
-        // Find nodes in Ready state.
         let ready_nodes: Vec<String> = self
             .node_states
             .iter()
@@ -365,7 +357,7 @@ impl DynamicEngine {
             .collect();
 
         if ready_nodes.is_empty() {
-            return; // No nodes waiting to be activated
+            return;
         }
 
         // Prefer sending Start only to source nodes (nodes with no inputs).
@@ -388,9 +380,8 @@ impl DynamicEngine {
             start_targets.len()
         );
 
-        // Send Start message to all source nodes that are still Ready.
-        // Avoid stalling the control-plane task on backpressure: try_send fast-path,
-        // and fall back to a spawned async send if the channel is full.
+        // try_send fast-path; fall back to spawned send on backpressure
+        // to avoid stalling the control-plane task.
         for node_id in start_targets {
             if let Some(live_node) = self.live_nodes.get(&node_id) {
                 tracing::info!("Sending Start signal to node: {}", node_id);
@@ -499,12 +490,8 @@ impl DynamicEngine {
         });
     }
 
-    /// Handles a node statistics update by storing it and broadcasting to subscribers
-    ///
-    /// Not async because all operations are synchronous (no .await calls)
-    /// Takes by reference to avoid unnecessary clones when broadcasting to subscribers
+    /// Stores a stats update and broadcasts it to subscribers.
     pub(crate) fn handle_stats_update(&mut self, update: &NodeStatsUpdate) {
-        // Ignore stats updates for nodes that have been removed
         if !self.live_nodes.contains_key(&update.node_id) {
             tracing::trace!(
                 node = %update.node_id,
@@ -588,10 +575,7 @@ impl DynamicEngine {
         });
     }
 
-    /// Helper function to initialize a node and its I/O actors (Pin Distributors).
-    ///
-    /// Channel senders are bundled in `NodeChannels` to keep the signature
-    /// under the clippy::too_many_arguments threshold.
+    /// Initialize a node and spawn its I/O actors (Pin Distributors).
     async fn initialize_node(
         &mut self,
         node: Box<dyn streamkit_core::ProcessorNode>,
@@ -601,7 +585,6 @@ impl DynamicEngine {
     ) -> Result<(), StreamKitError> {
         let mut node = node;
 
-        // Tier 1: Initialization-time discovery (dynamic pins, probing external resources, etc.)
         let init_ctx =
             InitContext { node_id: node_id.to_string(), state_tx: channels.state.clone() };
         match node.initialize(&init_ctx).await {
@@ -616,8 +599,6 @@ impl DynamicEngine {
         if let Some(schema) = node.runtime_param_schema() {
             self.runtime_schemas.insert(node_id.to_string(), schema.clone());
 
-            // Notify subscribers so the UI can merge the schema immediately
-            // rather than waiting for a manual pipeline re-fetch.
             let update = RuntimeSchemaUpdate { node_id: node_id.to_string(), schema };
             self.runtime_schema_subscribers
                 .retain(|subscriber| subscriber.send(update.clone()).is_ok());
@@ -625,7 +606,6 @@ impl DynamicEngine {
 
         let (control_tx, control_rx) = mpsc::channel(CONTROL_CAPACITY);
 
-        // 0. Capture pin metadata for runtime type validation
         let input_pins = node.input_pins();
         let output_pins = node.output_pins();
         self.node_pin_metadata.insert(
@@ -633,59 +613,44 @@ impl DynamicEngine {
             NodePinMetadata { input_pins: input_pins.clone(), output_pins: output_pins.clone() },
         );
 
-        // 1. Setup Inputs
         let mut node_inputs_map = HashMap::new();
         for pin in input_pins {
             let (tx, rx) = mpsc::channel(self.node_input_capacity);
-            // Store the Sender so the engine can provide it to upstream PinDistributors.
             self.node_inputs.insert((node_id.to_string(), pin.name.clone()), tx);
             node_inputs_map.insert(pin.name, rx);
         }
 
-        // 2. Setup Outputs (Spawn Pin Distributors)
         let mut node_outputs_map = HashMap::new();
         for pin in output_pins {
-            // Create channels for the PinDistributor
             let (data_tx, data_rx) = mpsc::channel(self.pin_distributor_capacity);
             let (config_tx, config_rx) = mpsc::channel(CONTROL_CAPACITY);
 
-            // Spawn the PinDistributorActor
             let distributor =
                 PinDistributorActor::new(data_rx, config_rx, node_id.to_string(), pin.name.clone());
             tokio::spawn(distributor.run());
 
-            // Store the configuration sender in the engine state
             self.pin_distributors.insert((node_id.to_string(), pin.name.clone()), config_tx);
-
-            // Provide the data sender to the node itself
             node_outputs_map.insert(pin.name.clone(), data_tx);
         }
 
-        // 3. Initialize State and Stats
-        // Use broadcast_state_update so the gauge transition (e.g.
-        // Creating → Initializing) zeroes the previous gauge and sets
-        // the new one atomically — no window where no gauge reads 1.
+        // broadcast_state_update zeroes the previous gauge atomically.
         self.broadcast_state_update(node_id, NodeState::Initializing);
         Arc::make_mut(&mut self.node_stats).insert(node_id.to_string(), NodeStats::default());
 
-        // 4. Setup pin management channel.
-        // Always created so the engine can deliver `InputTypeResolved` to
-        // every node.  Dynamic-pin nodes additionally receive
-        // `AddedInputPin` / `RemoveInputPin` etc. through the same channel.
+        // Always created: all nodes need `InputTypeResolved`; dynamic-pin
+        // nodes also receive `AddedInputPin`/`RemoveInputPin` here.
         let (pin_management_tx, pin_management_rx) = mpsc::channel(CONTROL_CAPACITY);
         self.pin_management_txs.insert(node_id.to_string(), pin_management_tx);
         if node.supports_dynamic_pins() {
             self.dynamic_pin_nodes.insert(node_id.to_string());
         }
 
-        // 5. Create NodeContext
         let context = NodeContext {
             inputs: node_inputs_map,
             // Dynamic pipelines wire connections after nodes are spawned, so
             // input types are not known at construction time.
             input_types: HashMap::new(),
             control_rx,
-            // We use OutputRouting::Direct, pointing the node directly to its Pin Distributors
             output_sender: OutputSender::new(
                 node_id.to_string(),
                 OutputRouting::Direct(node_outputs_map),
@@ -704,7 +669,6 @@ impl DynamicEngine {
             engine_control_tx: Some(self.engine_control_tx.clone()),
         };
 
-        // 5. Spawn Node
         let task_handle = tokio::spawn(node.run(context).instrument(tracing::info_span!(
             "node_run",
             session.id = %self.session_id.as_deref().unwrap_or("<unknown>"),
@@ -717,11 +681,8 @@ impl DynamicEngine {
         Ok(())
     }
 
-    /// Validates type compatibility between source and destination pins.
-    ///
-    /// For dynamic pipelines, this provides runtime type checking to prevent
-    /// incompatible connections. Passthrough types are allowed and will be
-    /// resolved at runtime based on actual packet types.
+    /// Runtime type-check for a proposed connection. Passthrough types are
+    /// allowed and resolved later.
     pub(crate) fn validate_connection_types(
         &self,
         from_node: &str,
@@ -922,8 +883,7 @@ impl DynamicEngine {
                 return;
             }
 
-            // Wait for the pin to be created (with timeout to avoid blocking
-            // the engine indefinitely if the node is unresponsive).
+            // Timeout avoids blocking the engine if the node is unresponsive.
             let pin =
                 match tokio::time::timeout(std::time::Duration::from_secs(5), response_rx).await {
                     Ok(Ok(Ok(pin))) => pin,
@@ -940,16 +900,13 @@ impl DynamicEngine {
                     },
                 };
 
-            // Create the channel for this new pin
             let (tx, rx) = mpsc::channel(self.node_input_capacity);
             self.node_inputs.insert((to_node.clone(), pin.name.clone()), tx.clone());
 
-            // Create a parallel hint channel (downstream → upstream) so the
-            // destination node can send advisory hints back to the source.
+            // Hint channel: downstream → upstream advisory hints (e.g. preferred size).
             let (hint_tx, hint_rx) = mpsc::channel::<streamkit_core::UpstreamHint>(1);
             pending_hint_rx = Some(hint_rx);
 
-            // Update our pin metadata so future validations can resolve this pin by name.
             let meta = self.node_pin_metadata.entry(to_node.clone()).or_insert_with(|| {
                 NodePinMetadata { input_pins: Vec::new(), output_pins: Vec::new() }
             });
@@ -972,12 +929,6 @@ impl DynamicEngine {
             return;
         };
 
-        // 2. Find the source Pin Distributor configuration Sender
-        // If the pin doesn't exist and the node supports dynamic pins, create it first.
-        // Also resolve the upstream `produces_type` so we can include it in
-        // the deferred AddedInputPin message (step 2b).
-        // Track whether we dynamically created the output pin so we can roll
-        // it back if step 2b fails.
         let config_tx;
         let source_produces_type: streamkit_core::types::PacketType;
         let mut created_dynamic_output: Option<String> = None;
@@ -999,14 +950,12 @@ impl DynamicEngine {
                 );
                 return;
             };
-            // Node supports dynamic pins — create the output pin on-demand
             tracing::info!(
                 "Dynamically creating output pin '{}.{}' for connection",
                 from_node,
                 from_pin
             );
 
-            // Request pin creation from the node
             let (response_tx, response_rx) = tokio::sync::oneshot::channel();
             let msg = streamkit_core::pins::PinManagementMessage::RequestAddOutputPin {
                 suggested_name: Some(from_pin.clone()),
@@ -1024,8 +973,7 @@ impl DynamicEngine {
                 return;
             }
 
-            // Wait for the node to respond with the pin definition (with
-            // timeout to avoid blocking the engine indefinitely).
+            // Timeout avoids blocking the engine if the node is unresponsive.
             let pin =
                 match tokio::time::timeout(std::time::Duration::from_secs(5), response_rx).await {
                     Ok(Ok(Ok(pin))) => pin,
@@ -1057,19 +1005,15 @@ impl DynamicEngine {
                 pin.name, from_pin
             );
 
-            // Create channels for the PinDistributor
             let (data_tx, data_rx) = mpsc::channel(self.pin_distributor_capacity);
             let (cfg_tx, cfg_rx) = mpsc::channel(CONTROL_CAPACITY);
 
-            // Spawn the PinDistributorActor
             let distributor =
                 PinDistributorActor::new(data_rx, cfg_rx, from_node.clone(), pin.name.clone());
             tokio::spawn(distributor.run());
 
-            // Store the configuration sender in the engine state
             self.pin_distributors.insert((from_node.clone(), pin.name.clone()), cfg_tx.clone());
 
-            // Update pin metadata so future validations can resolve this pin by name
             let meta = self.node_pin_metadata.entry(from_node.clone()).or_insert_with(|| {
                 NodePinMetadata { input_pins: Vec::new(), output_pins: Vec::new() }
             });
@@ -1077,10 +1021,7 @@ impl DynamicEngine {
                 meta.output_pins.push(pin.clone());
             }
 
-            // Now that we have the concrete pin definition, validate type
-            // compatibility against the destination.  This catches YAML typos
-            // like `moq_peer.nonexistent/garbage` that were previously allowed
-            // through the early-return in validate_connection_types.
+            // Validate type compatibility now that the pin is concrete.
             if let Some(dest_meta) = self.node_pin_metadata.get(&to_node) {
                 let dest_pin_def = dest_meta.input_pins.iter().find(|p| p.name == to_pin);
                 if let Some(dest_pin_def) = dest_pin_def {
@@ -1188,7 +1129,6 @@ impl DynamicEngine {
             }
         }
 
-        // Resolve Passthrough by tracing backward through connections.
         let resolved_type =
             if matches!(source_produces_type, streamkit_core::types::PacketType::Passthrough) {
                 self.resolve_passthrough_type(&from_node, &from_pin)
@@ -1209,9 +1149,8 @@ impl DynamicEngine {
             }
         }
 
-        // 2d. Deliver the hint receiver to the source node so it can
-        // receive advisory hints (e.g. preferred output size) from the
-        // downstream consumer.
+        // Deliver the hint receiver so the source can receive advisory
+        // hints (e.g. preferred output size) from downstream.
         if let Some(hint_rx) = pending_hint_rx.take() {
             if let Some(pin_mgmt_tx) = self.pin_management_txs.get(&from_node) {
                 tracing::info!(
@@ -1233,7 +1172,6 @@ impl DynamicEngine {
             }
         }
 
-        // 3. Send configuration message
         let connection_id = crate::dynamic_messages::ConnectionId::new(
             from_node.clone(),
             from_pin.clone(),
@@ -1250,7 +1188,6 @@ impl DynamicEngine {
             );
         }
 
-        // Record the connection for Passthrough type resolution.
         self.connections.insert((to_node.clone(), to_pin.clone()), (from_node, from_pin));
     }
 
@@ -1279,8 +1216,7 @@ impl DynamicEngine {
                 return produces;
             }
 
-            // Trace backward: find any connection feeding this node's input
-            // pins, then look up that upstream output's type.
+            // Trace backward through input connections.
             let input_pins = self
                 .node_pin_metadata
                 .get(&current_node)
@@ -1300,7 +1236,6 @@ impl DynamicEngine {
             }
 
             if !found_upstream {
-                // No upstream connection found — can't resolve further.
                 tracing::debug!(
                     "Cannot resolve Passthrough for {}.{}: no upstream connection",
                     current_node,
@@ -1360,7 +1295,6 @@ impl DynamicEngine {
         }
     }
 
-    /// Helper function to disconnect nodes.
     async fn disconnect_nodes(
         &mut self,
         from_node: String,
@@ -1370,14 +1304,10 @@ impl DynamicEngine {
     ) {
         tracing::info!("Disconnecting {}.{} -> {}.{}", from_node, from_pin, to_node, to_pin);
 
-        // Remove from connection tracking.
         self.connections.remove(&(to_node.clone(), to_pin.clone()));
 
-        // 1. Find the source Pin Distributor configuration Sender
-        // Use let...else for cleaner early return pattern
         let Some(config_tx) = self.pin_distributors.get(&(from_node.clone(), from_pin.clone()))
         else {
-            // If it doesn't exist, it's already disconnected or never existed.
             tracing::warn!(
                 "Cannot disconnect: Source output '{}.{}' distributor not found.",
                 from_node,
@@ -1386,7 +1316,6 @@ impl DynamicEngine {
             return;
         };
 
-        // 2. Send configuration message
         let connection_id = crate::dynamic_messages::ConnectionId::new(
             from_node.clone(),
             from_pin.clone(),
@@ -1404,18 +1333,15 @@ impl DynamicEngine {
         }
     }
 
-    /// Helper function to gracefully shut down a node and its associated actors.
+    /// Gracefully shut down a node and its associated actors.
     async fn shutdown_node(&mut self, node_id: &str) {
         if let Some(state) = self.node_states.get(node_id) {
             self.zero_state_gauge(node_id, state);
         }
 
-        // 1. Stop the node task gracefully
         if let Some(live_node) = self.live_nodes.remove(node_id) {
-            // First, try graceful shutdown by sending a control message
             if live_node.control_tx.send(NodeControlMessage::Shutdown).await.is_ok() {
                 let mut task_handle = live_node.task_handle;
-                // Wait for graceful shutdown with timeout
                 let shutdown_result =
                     tokio::time::timeout(std::time::Duration::from_secs(5), &mut task_handle).await;
 
@@ -1431,26 +1357,21 @@ impl DynamicEngine {
                         tokio::time::timeout(std::time::Duration::from_secs(1), task_handle).await;
                 }
             } else {
-                // Control channel closed, node may have already exited
                 tracing::debug!(node_id = %node_id, "Node control channel closed, assuming exited");
             }
         }
 
-        // 2. Clean up inputs
         self.node_inputs.retain(|(name, _), _| name != node_id);
 
-        // 3. Stop and clean up Pin Distributors
         let distributors_to_remove: Vec<(String, String)> =
             self.pin_distributors.keys().filter(|(name, _)| name == node_id).cloned().collect();
 
         for key in distributors_to_remove {
             if let Some(config_tx) = self.pin_distributors.remove(&key) {
-                // Send shutdown signal. The actor will exit gracefully after draining.
                 let _ = config_tx.send(PinConfigMsg::Shutdown).await;
             }
         }
 
-        // 4. Clean up Control Plane state
         Arc::make_mut(&mut self.node_states).remove(node_id);
         Arc::make_mut(&mut self.node_stats).remove(node_id);
         Arc::make_mut(&mut self.node_view_data).remove(node_id);
@@ -1556,11 +1477,8 @@ impl DynamicEngine {
         self.node_state_gauge.record(0, &[node_id_kv, KeyValue::new("state", state_name)]);
     }
 
-    /// Broadcast a state update to all subscribers (used when the actor itself
-    /// synthesizes a state transition, e.g. `Creating → Failed`).
-    ///
-    /// Reads the previous state from `node_states` **before** inserting the
-    /// new one, so the one-hot gauge zeroing is correct.
+    /// Broadcast a state update to all subscribers. Reads the previous state
+    /// before inserting so one-hot gauge zeroing is correct.
     fn broadcast_state_update(&mut self, node_id: &str, new_state: NodeState) {
         let state_name = Self::node_state_name(&new_state);
         let node_id_kv = self
@@ -1570,8 +1488,6 @@ impl DynamicEngine {
         self.node_state_transitions_counter
             .add(1, &[node_id_kv.clone(), KeyValue::new("state", state_name)]);
 
-        // Zero-out the previous state's gauge series (one-hot pattern),
-        // mirroring the logic in `handle_state_update`.
         if let Some(prev_state) = self.node_states.get(node_id) {
             let prev_state_name = Self::node_state_name(prev_state);
             if prev_state_name != state_name {
@@ -1603,7 +1519,6 @@ impl DynamicEngine {
     /// Execute any pending connections whose both endpoints are now realized
     /// (i.e., present in `live_nodes`).
     async fn flush_pending_connections(&mut self) {
-        // Drain the vec, keeping connections that still have unrealized endpoints.
         let pending = std::mem::take(&mut self.pending_connections);
         let mut still_pending = Vec::new();
 
@@ -1659,8 +1574,7 @@ impl DynamicEngine {
         matches!(self.node_states.get(node_id), Some(NodeState::Creating))
     }
 
-    /// Handles a single control message sent to the engine.
-    /// Returns true if the engine should continue running, false if it should shut down.
+    /// Returns `true` to continue running, `false` on shutdown.
     #[allow(clippy::cognitive_complexity)]
     async fn handle_engine_control(&mut self, msg: EngineControlMessage) -> bool {
         match msg {
@@ -1668,16 +1582,8 @@ impl DynamicEngine {
                 self.engine_operations_counter.add(1, &[KeyValue::new("operation", "add_node")]);
                 tracing::info!(name = %node_id, kind = %kind, "Adding node to graph (async)");
 
-                // Defence-in-depth duplicate guard.  The WebSocket
-                // handler holds the session's `pipeline` + `creating_nodes`
-                // locks atomically and rejects duplicate ids before
-                // they ever reach this actor (see `handle_add_node` in
-                // `apps/skit/src/websocket_handlers.rs`).  This branch
-                // therefore only fires under abnormal control-plane
-                // paths (e.g. internal callers that bypass the WS
-                // layer).  In that case we drop the message and log;
-                // emitting a synthetic Failed here would clobber the
-                // legitimate node's state.
+                // Defence-in-depth: the WS handler rejects duplicates
+                // before they reach this actor; this guards non-WS callers.
                 if self.node_states.contains_key(&node_id) {
                     tracing::error!(
                         node_id = %node_id,
@@ -1694,8 +1600,6 @@ impl DynamicEngine {
                 self.next_creation_id += 1;
                 self.active_creations.insert(node_id.clone(), creation_id);
 
-                // Record kind immediately so the actor loop continues
-                // processing the next message without blocking.
                 self.node_kinds.insert(node_id.clone(), kind.clone());
                 self.node_metric_labels.insert(
                     node_id.clone(),
@@ -1708,8 +1612,6 @@ impl DynamicEngine {
                     },
                 );
 
-                // Insert Creating state and broadcast to subscribers.
-                // broadcast_state_update handles gauge + node_states insert.
                 self.broadcast_state_update(&node_id, NodeState::Creating);
 
                 // Spawn background creation: `create_node` may invoke FFI
@@ -1718,11 +1620,8 @@ impl DynamicEngine {
                 let tx = self.node_created_tx.clone();
                 let spawn_node_id = node_id;
                 let spawn_kind = kind.clone();
-                // Clone params so the spawned closure can pass them by
-                // reference into create_node while the outer `params`
-                // remains owned and travels (via NodeCreatedEvent) to
-                // handle_node_created — which needs them to populate
-                // the NodeAddedNotification on success.
+                // Cloned: `create_node` borrows them while the owned
+                // value travels via `NodeCreatedEvent` for the notification.
                 let spawn_params = params.clone();
                 tokio::spawn(async move {
                     let result = tokio::task::spawn_blocking(move || {
@@ -1761,10 +1660,7 @@ impl DynamicEngine {
                 tracing::info!(name = %node_id, "Removing node from graph");
 
                 if self.is_node_creating(&node_id) {
-                    // Node is still being created in the background.
-                    // Remove the active_creations entry so that when the
-                    // background task completes, handle_node_created finds
-                    // no matching entry and discards the result.
+                    // Remove tracking so the background result is discarded.
                     tracing::info!(
                         node_id = %node_id,
                         "Node is still Creating — cancelling"
@@ -1775,12 +1671,10 @@ impl DynamicEngine {
                     Arc::make_mut(&mut self.node_states).remove(&node_id);
                     self.node_kinds.remove(&node_id);
                     self.node_metric_labels.remove(&node_id);
-                    // Drain pending connections and tunes referencing this node.
                     self.pending_connections
                         .retain(|pc| pc.from_node != node_id && pc.to_node != node_id);
                     self.pending_tunes.retain(|pt| pt.node_id != node_id);
                 } else {
-                    // Normal shutdown for a fully initialized node.
                     self.shutdown_node(&node_id).await;
                 }
             },
@@ -1828,7 +1722,6 @@ impl DynamicEngine {
                         mode,
                     });
                 } else {
-                    // Both endpoints are realized — connect immediately.
                     self.connect_nodes(from_node, from_pin, to_node, to_pin, mode).await;
                     self.check_and_activate_pipeline();
                 }
@@ -1845,7 +1738,6 @@ impl DynamicEngine {
                         && pc.to_pin == to_pin)
                 });
 
-                // Delegate disconnection logic for realized connections.
                 self.disconnect_nodes(from_node, from_pin, to_node, to_pin).await;
             },
             EngineControlMessage::TuneNode { node_id, message } => {
@@ -1866,7 +1758,6 @@ impl DynamicEngine {
             EngineControlMessage::Shutdown => {
                 tracing::info!("Received shutdown signal, stopping all nodes");
 
-                // Discard any in-flight background creation results.
                 self.active_creations.clear();
                 self.pending_connections.clear();
                 self.pending_tunes.clear();
@@ -1926,7 +1817,6 @@ impl DynamicEngine {
 
                 futures::future::join_all(shutdown_futures).await;
 
-                // Zero out gauge metrics for all nodes.
                 for (node_id, state) in self.node_states.as_ref() {
                     let node_id_kv = self.node_metric_labels.get(node_id.as_str()).map_or_else(
                         || KeyValue::new("node_id", node_id.clone()),

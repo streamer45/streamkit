@@ -197,58 +197,45 @@ pub enum NodeState {
     Stopped { reason: StopReason },
 }
 
-/// A state update message sent by a node to report its current state.
-/// These updates are used for monitoring, debugging, and UI visualization.
 #[derive(Debug, Clone)]
 pub struct NodeStateUpdate {
-    /// The unique identifier of the node reporting the state
     pub node_id: String,
-    /// The new state of the node
     pub state: NodeState,
-    /// When this state change occurred
     pub timestamp: SystemTime,
 }
 
 impl NodeStateUpdate {
-    /// Creates a new state update with the current timestamp.
     #[inline]
     pub fn new(node_id: String, state: NodeState) -> Self {
         Self { node_id, state, timestamp: SystemTime::now() }
     }
 }
 
-/// Helper functions for emitting node state updates.
-/// These functions reduce boilerplate when sending state updates from nodes.
 pub mod state_helpers {
     use super::{NodeState, NodeStateUpdate, StopReason};
     use tokio::sync::mpsc;
 
-    /// Emits a state update to the provided channel.
-    /// Failures are silently ignored as state tracking is best-effort.
+    /// Best-effort: failures are silently ignored.
     #[inline]
     pub fn emit_state(state_tx: &mpsc::Sender<NodeStateUpdate>, node_id: &str, state: NodeState) {
         let _ = state_tx.try_send(NodeStateUpdate::new(node_id.to_string(), state));
     }
 
-    /// Emits an Initializing state.
     #[inline]
     pub fn emit_initializing(state_tx: &mpsc::Sender<NodeStateUpdate>, node_id: &str) {
         emit_state(state_tx, node_id, NodeState::Initializing);
     }
 
-    /// Emits a Ready state.
     #[inline]
     pub fn emit_ready(state_tx: &mpsc::Sender<NodeStateUpdate>, node_id: &str) {
         emit_state(state_tx, node_id, NodeState::Ready);
     }
 
-    /// Emits a Running state.
     #[inline]
     pub fn emit_running(state_tx: &mpsc::Sender<NodeStateUpdate>, node_id: &str) {
         emit_state(state_tx, node_id, NodeState::Running);
     }
 
-    /// Emits a Stopped state with the given reason.
     #[inline]
     pub fn emit_stopped(
         state_tx: &mpsc::Sender<NodeStateUpdate>,
@@ -258,7 +245,6 @@ pub mod state_helpers {
         emit_state(state_tx, node_id, NodeState::Stopped { reason: reason.into() });
     }
 
-    /// Emits a Failed state with the given error.
     #[inline]
     pub fn emit_failed(
         state_tx: &mpsc::Sender<NodeStateUpdate>,
@@ -268,7 +254,6 @@ pub mod state_helpers {
         emit_state(state_tx, node_id, NodeState::Failed { reason: error.into() });
     }
 
-    /// Emits a Recovering state with the given reason and optional details.
     #[inline]
     pub fn emit_recovering(
         state_tx: &mpsc::Sender<NodeStateUpdate>,
@@ -279,11 +264,7 @@ pub mod state_helpers {
         emit_state(state_tx, node_name, NodeState::Recovering { reason: reason.into(), details });
     }
 
-    /// Emits a Recovering state with retry attempt tracking.
-    ///
-    /// This is a convenience helper for nodes implementing retry logic.
-    /// The attempt count and max attempts are included in the details field
-    /// for monitoring and debugging.
+    /// Recovering state with retry attempt tracking.
     ///
     /// # Example
     /// ```no_run
@@ -315,7 +296,6 @@ pub mod state_helpers {
         emit_recovering(state_tx, node_name, reason, Some(details));
     }
 
-    /// Emits a Degraded state with the given reason.
     #[inline]
     pub fn emit_degraded(
         state_tx: &mpsc::Sender<NodeStateUpdate>,

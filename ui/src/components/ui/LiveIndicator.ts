@@ -15,8 +15,6 @@
 
 import styled from '@emotion/styled';
 
-// ── Pulsing dot ──────────────────────────────────────────────────────────────
-
 export const LiveDot = styled.div<{ size?: 'small' | 'default' }>`
   width: ${(p) => (p.size === 'small' ? '4px' : '6px')};
   height: ${(p) => (p.size === 'small' ? '4px' : '6px')};
@@ -35,8 +33,6 @@ export const LiveDot = styled.div<{ size?: 'small' | 'default' }>`
     }
   }
 `;
-
-// ── Badge wrapper ────────────────────────────────────────────────────────────
 
 export const LiveBadge = styled.span<{ size?: 'small' | 'default' }>`
   display: inline-flex;

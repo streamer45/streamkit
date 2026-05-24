@@ -32,20 +32,14 @@ use streamkit_core::{
 };
 use tokio::sync::mpsc;
 
-// ---------------------------------------------------------------------------
 // Shared types
-// ---------------------------------------------------------------------------
-
 /// Encoded output packet shared across all video encoder nodes.
 pub struct EncodedPacket {
     pub data: Bytes,
     pub metadata: Option<PacketMetadata>,
 }
 
-// ---------------------------------------------------------------------------
 // Frame budget monitor
-// ---------------------------------------------------------------------------
-
 /// Detects when video encoding consistently exceeds the frame duration budget,
 /// which causes A/V desync and pipeline backpressure.
 ///
@@ -149,10 +143,7 @@ impl FrameBudgetMonitor {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Layer 1: Node-level trait (all encoder nodes)
-// ---------------------------------------------------------------------------
-
 /// Trait for video encoder nodes that use the channel + `spawn_blocking` +
 /// [`codec_forward_loop`](crate::codec_utils::codec_forward_loop) architecture.
 ///
@@ -200,7 +191,6 @@ pub async fn run_encoder<E: EncoderNodeRunner>(
     tracing::info!("{} starting", E::NODE_LABEL);
     let mut input_rx = context.take_input("in")?;
 
-    // ── Metrics ──────────────────────────────────────────────────────────
     let meter = global::meter("skit_nodes");
     let packets_processed_counter = meter.u64_counter(E::PACKETS_COUNTER_NAME).build();
     let encode_duration_histogram = meter
@@ -208,21 +198,17 @@ pub async fn run_encoder<E: EncoderNodeRunner>(
         .with_boundaries(streamkit_core::metrics::HISTOGRAM_BOUNDARIES_CODEC_PACKET.to_vec())
         .build();
 
-    // ── Channels ─────────────────────────────────────────────────────────
     let (encode_tx, encode_rx) =
         mpsc::channel::<(VideoFrame, Option<PacketMetadata>)>(get_codec_channel_capacity());
     let (result_tx, mut result_rx) =
         mpsc::channel::<Result<EncodedPacket, String>>(get_codec_channel_capacity());
 
-    // ── Codec task ───────────────────────────────────────────────────────
     let encode_task = encoder.spawn_codec_task(encode_rx, result_tx, encode_duration_histogram);
 
-    // ── State transition ─────────────────────────────────────────────────
     state_helpers::emit_running(&context.state_tx, &node_name);
     let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
     let batch_size = context.batch_size;
 
-    // ── Input task ───────────────────────────────────────────────────────
     let encode_tx_clone = encode_tx.clone();
     let node_label = E::NODE_LABEL;
     let mut input_task = tokio::spawn(async move {
@@ -247,7 +233,6 @@ pub async fn run_encoder<E: EncoderNodeRunner>(
         tracing::info!("{node_label} input stream closed");
     });
 
-    // ── Forward loop ─────────────────────────────────────────────────────
     crate::codec_utils::codec_forward_loop(
         &mut context,
         &mut result_rx,
@@ -270,10 +255,7 @@ pub async fn run_encoder<E: EncoderNodeRunner>(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
 // Layer 2: Codec-level trait (single-thread encoders: VP9, AV1)
-// ---------------------------------------------------------------------------
-
 /// A video encoder codec that follows the single-thread
 /// `create → encode → flush` pattern inside `spawn_blocking`.
 ///
@@ -453,7 +435,7 @@ pub fn spawn_standard_encode_task<E: StandardVideoEncoder>(
 mod tests {
     use super::*;
 
-    /// Helper: create a monitor and feed it a sequence of frame timings.
+    /// Create a monitor and feed it a sequence of frame timings.
     /// Returns the final consecutive_slow count and whether warned was set.
     fn run_monitor(frames: &[(Duration, Option<u64>)]) -> (u64, bool) {
         let mut monitor = FrameBudgetMonitor::new("test");

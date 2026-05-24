@@ -398,7 +398,6 @@ const SamplePipelinesPane = forwardRef<SamplePipelinesPaneRef, SamplePipelinesPa
       }
     };
 
-    // Filter samples by mode if specified
     const filteredSamples = mode ? samples.filter((s) => s.mode === mode) : samples;
 
     const systemSamples = filteredSamples.filter((s) => s.is_system);

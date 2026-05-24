@@ -42,16 +42,9 @@
 
 use std::sync::OnceLock;
 
-/// Default capacity for codec async/blocking handoff channels.
 const DEFAULT_CODEC_CHANNEL_CAPACITY: usize = 32;
-
-/// Default capacity for streaming reader channels (container demuxers).
 const DEFAULT_STREAM_CHANNEL_CAPACITY: usize = 8;
-
-/// Default duplex buffer size for ogg demuxer (64KB).
 const DEFAULT_DEMUXER_BUFFER_SIZE: usize = 64 * 1024;
-
-/// Default capacity for MoQ transport peer internal channels.
 const DEFAULT_MOQ_PEER_CHANNEL_CAPACITY: usize = 100;
 
 /// Runtime configuration for node internal buffers.
@@ -90,7 +83,6 @@ impl Default for NodeBufferConfig {
     }
 }
 
-/// Global storage for the node buffer configuration.
 static NODE_BUFFER_CONFIG: OnceLock<NodeBufferConfig> = OnceLock::new();
 
 /// Sets the global node buffer configuration.
@@ -116,38 +108,21 @@ pub fn set_node_buffer_config(config: NodeBufferConfig) {
     }
 }
 
-/// Returns the configured codec channel capacity.
-///
-/// Used by codec nodes that offload CPU work to blocking tasks (e.g. Opus).
-/// Returns the default (32) if no configuration was set.
 #[inline]
 pub fn get_codec_channel_capacity() -> usize {
     NODE_BUFFER_CONFIG.get().map_or(DEFAULT_CODEC_CHANNEL_CAPACITY, |c| c.codec_channel_capacity)
 }
 
-/// Returns the configured stream channel capacity.
-///
-/// Used by streaming readers that hand off `Bytes` into blocking demux/decode tasks
-/// (container demuxers and some non-Opus codecs).
-/// Returns the default (8) if no configuration was set.
 #[inline]
 pub fn get_stream_channel_capacity() -> usize {
     NODE_BUFFER_CONFIG.get().map_or(DEFAULT_STREAM_CHANNEL_CAPACITY, |c| c.stream_channel_capacity)
 }
 
-/// Returns the configured demuxer buffer size in bytes.
-///
-/// Used by ogg demuxer for its duplex buffer. Returns the default (64KB)
-/// if no configuration was set.
 #[inline]
 pub fn get_demuxer_buffer_size() -> usize {
     NODE_BUFFER_CONFIG.get().map_or(DEFAULT_DEMUXER_BUFFER_SIZE, |c| c.demuxer_buffer_size)
 }
 
-/// Returns the configured MoQ peer channel capacity.
-///
-/// Used by MoQ transport peer tasks for per-connection internal buffering.
-/// Returns the default (100) if no configuration was set.
 #[inline]
 pub fn get_moq_peer_channel_capacity() -> usize {
     NODE_BUFFER_CONFIG

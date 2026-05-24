@@ -19,7 +19,6 @@ fn test_validate_connection_types_compatible() {
     let audio_format =
         AudioFormat { sample_rate: 48000, channels: 2, sample_format: SampleFormat::F32 };
 
-    // Create source node with RawAudio output
     engine.node_pin_metadata.insert(
         "source".to_string(),
         NodePinMetadata {
@@ -32,7 +31,6 @@ fn test_validate_connection_types_compatible() {
         },
     );
 
-    // Create destination node that accepts RawAudio
     engine.node_pin_metadata.insert(
         "dest".to_string(),
         NodePinMetadata {
@@ -45,7 +43,6 @@ fn test_validate_connection_types_compatible() {
         },
     );
 
-    // Should succeed
     let result = engine.validate_connection_types("source", "out", "dest", "in");
     assert!(result.is_ok());
 }
@@ -58,7 +55,6 @@ fn test_validate_connection_types_incompatible() {
     let audio_format =
         AudioFormat { sample_rate: 48000, channels: 2, sample_format: SampleFormat::F32 };
 
-    // Create source node with encoded Opus output
     engine.node_pin_metadata.insert(
         "source".to_string(),
         NodePinMetadata {
@@ -74,7 +70,6 @@ fn test_validate_connection_types_incompatible() {
         },
     );
 
-    // Create destination node that only accepts RawAudio
     engine.node_pin_metadata.insert(
         "dest".to_string(),
         NodePinMetadata {
@@ -100,7 +95,6 @@ fn test_validate_connection_types_passthrough_source() {
     let audio_format =
         AudioFormat { sample_rate: 48000, channels: 2, sample_format: SampleFormat::F32 };
 
-    // Create source node with Passthrough output (like pacer)
     engine.node_pin_metadata.insert(
         "pacer".to_string(),
         NodePinMetadata {
@@ -117,7 +111,6 @@ fn test_validate_connection_types_passthrough_source() {
         },
     );
 
-    // Create destination node that accepts RawAudio
     engine.node_pin_metadata.insert(
         "dest".to_string(),
         NodePinMetadata {
@@ -139,7 +132,6 @@ fn test_validate_connection_types_passthrough_source() {
 fn test_validate_connection_types_any_destination() {
     let mut engine = create_test_engine();
 
-    // Create source node with encoded Opus output
     engine.node_pin_metadata.insert(
         "source".to_string(),
         NodePinMetadata {
@@ -155,7 +147,6 @@ fn test_validate_connection_types_any_destination() {
         },
     );
 
-    // Create destination node that accepts Any
     engine.node_pin_metadata.insert(
         "dest".to_string(),
         NodePinMetadata {
@@ -189,7 +180,6 @@ fn test_validate_connection_types_node_not_found() {
 fn test_validate_connection_types_pin_not_found() {
     let mut engine = create_test_engine();
 
-    // Create source node
     engine.node_pin_metadata.insert(
         "source".to_string(),
         NodePinMetadata {
@@ -205,7 +195,6 @@ fn test_validate_connection_types_pin_not_found() {
         },
     );
 
-    // Create destination node
     engine.node_pin_metadata.insert(
         "dest".to_string(),
         NodePinMetadata {
@@ -220,8 +209,6 @@ fn test_validate_connection_types_pin_not_found() {
             output_pins: vec![],
         },
     );
-
-    // Try to validate connection with non-existent source pin
     let result = engine.validate_connection_types("source", "nonexistent", "dest", "in");
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("Source pin 'nonexistent' not found"));
@@ -231,7 +218,6 @@ fn test_validate_connection_types_pin_not_found() {
 fn test_validate_connection_types_dynamic_pin_prefix_match() {
     let mut engine = create_test_engine();
 
-    // Create source node with Binary output (simple unit variant)
     engine.node_pin_metadata.insert(
         "source".to_string(),
         NodePinMetadata {

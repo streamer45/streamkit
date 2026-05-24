@@ -48,8 +48,6 @@ use crate::video::pixel_ops::{
     i420_to_rgba8_buf, nv12_to_rgba8_buf, rgba8_to_i420_buf, rgba8_to_nv12_buf,
 };
 
-// ── Config ──────────────────────────────────────────────────────────────────
-
 /// Configuration for the pixel format converter node.
 #[derive(Deserialize, Debug, Clone, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -63,8 +61,6 @@ impl Default for PixelConvertConfig {
         Self { output_format: "nv12".to_string() }
     }
 }
-
-// ── Node ────────────────────────────────────────────────────────────────────
 
 /// Converts raw video frames between pixel formats (RGBA8, NV12, I420).
 ///
@@ -141,7 +137,6 @@ impl ProcessorNode for PixelConvertNode {
         let packets_processed_counter =
             meter.u64_counter("pixel_convert_packets_processed").build();
 
-        // ── Blocking conversion thread ──────────────────────────────────
         let target_format = self.target_format;
         let otel_node_name = node_name.clone();
         let video_pool = context.video_pool.clone();
@@ -292,8 +287,6 @@ impl ProcessorNode for PixelConvertNode {
     }
 }
 
-// ── Conversion helper ───────────────────────────────────────────────────────
-
 /// Convert a `VideoFrame` to the given `target_format`.
 ///
 /// Allocates the output buffer from `video_pool` when available.
@@ -362,8 +355,6 @@ fn convert_frame(
     )
 }
 
-// ── Registration ────────────────────────────────────────────────────────────
-
 use streamkit_core::registry::StaticPins;
 
 #[allow(clippy::expect_used, clippy::missing_panics_doc)] // Default config and schema serialization should never fail
@@ -385,8 +376,6 @@ pub fn register_pixel_convert_nodes(registry: &mut NodeRegistry) {
          Passthrough when input format already matches the target.",
     );
 }
-
-// ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]

@@ -45,10 +45,6 @@ use crate::permissions::Permissions;
 use crate::session::Session;
 use crate::state::AppState;
 
-// ---------------------------------------------------------------------------
-// Auth helper
-// ---------------------------------------------------------------------------
-
 /// Extract `(role_name, permissions)` from the HTTP request parts that `rmcp`
 /// injects into the request-context extensions.
 ///
@@ -70,10 +66,6 @@ fn extract_auth(
         |parts| crate::role_extractor::get_role_and_permissions(&parts.headers, app_state),
     ))
 }
-
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
 
 /// Look up a session by name or ID, verify permission, and return the session
 /// along with the caller's role name and permissions.
@@ -171,10 +163,6 @@ async fn assemble_pipeline_state(session: &Session) -> Pipeline {
 
     api_pipeline
 }
-
-// ---------------------------------------------------------------------------
-// MCP tool argument structs
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct OneshotInput {
@@ -286,10 +274,6 @@ pub struct UpdatePipelineArgs {
     /// reconcile the running session.
     pub yaml: String,
 }
-
-// ---------------------------------------------------------------------------
-// StreamKit MCP service
-// ---------------------------------------------------------------------------
 
 /// StreamKit MCP service implementing `rmcp::ServerHandler`.
 #[derive(Clone)]
@@ -1065,10 +1049,6 @@ impl StreamKitMcp {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Pipeline diffing
-// ---------------------------------------------------------------------------
-
 /// Result of diffing two pipelines.
 struct DiffResult {
     /// Structural batch operations (disconnect, remove, add, connect).
@@ -1207,10 +1187,6 @@ fn diff_pipeline(current: &Pipeline, desired: &Pipeline) -> DiffResult {
 
     DiffResult { operations: ops, params_changed }
 }
-
-// ---------------------------------------------------------------------------
-// ServerHandler trait impl
-// ---------------------------------------------------------------------------
 
 #[tool_handler(router = self.tool_router)]
 #[prompt_handler(router = self.prompt_router)]
@@ -1354,10 +1330,6 @@ impl ServerHandler for StreamKitMcp {
         Ok(ListResourceTemplatesResult::with_all_items(vec![template]))
     }
 }
-
-// ---------------------------------------------------------------------------
-// Service factory
-// ---------------------------------------------------------------------------
 
 /// Create the `StreamableHttpService` tower service for mounting in the Axum
 /// router via `nest_service`.

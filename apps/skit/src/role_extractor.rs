@@ -43,13 +43,9 @@ fn augment_plugin_asset_permissions(perms: &mut Permissions, app_state: &Arc<App
     }
 }
 
-/// Helper function to extract permissions from headers and state
+/// Extract permissions from headers and state.
 ///
-/// For now, this reads from:
-/// 1. A configured trusted role header (set by launcher or auth layer)
-/// 2. SK_ROLE environment variable (fallback)
-/// 3. Config default_role (final fallback)
-///
+/// Reads from: trusted role header → `SK_ROLE` env var → config `default_role`.
 /// Plugin asset type patterns are augmented dynamically so that default
 /// roles don't need a broad `samples/*/` wildcard.
 pub fn get_permissions(headers: &HeaderMap, app_state: &Arc<AppState>) -> Permissions {

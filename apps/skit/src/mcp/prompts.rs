@@ -32,10 +32,6 @@ pub(super) fn create_prompt_router() -> PromptRouter<StreamKitMcp> {
     StreamKitMcp::prompt_router()
 }
 
-// ---------------------------------------------------------------------------
-// Prompt argument structs
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Deserialize, rmcp::schemars::JsonSchema)]
 pub(super) struct DesignPipelinePromptArgs {
     /// Optional natural language description of the desired pipeline.
@@ -48,10 +44,6 @@ pub(super) struct DebugPipelinePromptArgs {
     /// Session ID or name to debug.
     pub session_id: String,
 }
-
-// ---------------------------------------------------------------------------
-// Prompt router
-// ---------------------------------------------------------------------------
 
 #[prompt_router]
 impl StreamKitMcp {
@@ -108,10 +100,6 @@ impl StreamKitMcp {
             .with_description(format!("Debug StreamKit session '{}'", args.session_id)))
     }
 }
-
-// ---------------------------------------------------------------------------
-// Content builder helpers
-// ---------------------------------------------------------------------------
 
 /// Build the `design_pipeline` prompt content string.
 fn build_design_pipeline_content(

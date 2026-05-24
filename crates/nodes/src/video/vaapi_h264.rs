@@ -73,10 +73,7 @@ use super::vaapi_av1::{
     nv12_fourcc, open_va_and_gbm, open_va_display, read_nv12_from_mapping, vaapi_decode_loop_body,
 };
 
-// ---------------------------------------------------------------------------
 // Constants
-// ---------------------------------------------------------------------------
-
 /// H.264 macroblock size — coded resolution must be aligned to this.
 const H264_MB_SIZE: u32 = 16;
 
@@ -86,10 +83,7 @@ const DEFAULT_QUALITY: u32 = 26;
 /// Default framerate for rate-control hints.
 const DEFAULT_FRAMERATE: u32 = 30;
 
-// ---------------------------------------------------------------------------
 // Decoder
-// ---------------------------------------------------------------------------
-
 /// Configuration for the VA-API H.264 hardware decoder node.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -232,10 +226,7 @@ impl ProcessorNode for VaapiH264DecoderNode {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Decoder — blocking decode loop
-// ---------------------------------------------------------------------------
-
 /// Blocking decode loop running inside `spawn_blocking`.
 ///
 /// Opens the VA-API display and GBM device, creates the H.264
@@ -278,10 +269,7 @@ fn vaapi_h264_decode_loop(
     );
 }
 
-// ---------------------------------------------------------------------------
 // Encoder
-// ---------------------------------------------------------------------------
-
 /// Configuration for the VA-API H.264 hardware encoder node.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -402,10 +390,7 @@ impl EncoderNodeRunner for VaapiH264EncoderNode {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Encoder — internal codec wrapper
-// ---------------------------------------------------------------------------
-
 /// Internal encoder state wrapping the custom VA-API H.264 encoder shim.
 ///
 /// Uses [`VaH264Encoder`] which drives `libva` directly, bypassing GBM
@@ -471,10 +456,7 @@ impl StandardVideoEncoder for VaapiH264Encoder {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Keyframe detection
-// ---------------------------------------------------------------------------
-
 /// Detect whether an H.264 Annex B bitstream contains an IDR (keyframe)
 /// NAL unit.
 ///
@@ -542,10 +524,7 @@ fn merge_h264_keyframe_metadata(
     })
 }
 
-// ---------------------------------------------------------------------------
 // Registration
-// ---------------------------------------------------------------------------
-
 use streamkit_core::registry::StaticPins;
 
 #[allow(clippy::expect_used, clippy::missing_panics_doc)] // Default config and schema serialization should never fail
@@ -585,16 +564,11 @@ pub fn register_vaapi_h264_nodes(registry: &mut NodeRegistry) {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_macros)]
 mod tests {
     use super::*;
-
-    // ── Unit tests (no GPU required) ─────────────────────────────────
 
     #[test]
     fn test_force_cpu_rejected_decoder() {
@@ -652,8 +626,6 @@ mod tests {
         assert_eq!(node.content_type(), Some(H264_CONTENT_TYPE.to_string()));
     }
 
-    // ── Registration test ────────────────────────────────────────────
-
     #[test]
     fn test_registration() {
         let mut registry = NodeRegistry::new();
@@ -668,7 +640,6 @@ mod tests {
         );
     }
 
-    // ── GPU integration tests ────────────────────────────────────────
     //
     // These require a VA-API capable GPU with H.264 support.  They are
     // compiled with the `vaapi` feature but skip at runtime if no VA-API
@@ -789,8 +760,6 @@ mod tests {
             }
         }
     }
-
-    // ── Keyframe detection unit tests ────────────────────────────────
 
     #[test]
     fn test_h264_idr_detection_with_4byte_start_code() {

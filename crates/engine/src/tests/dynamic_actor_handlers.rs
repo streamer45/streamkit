@@ -64,7 +64,6 @@ impl ProcessorNode for EmittingNode {
         let _ =
             ctx.state_tx.send(NodeStateUpdate::new(NODE_ID.to_string(), NodeState::Ready)).await;
 
-        // Wait for Start before emitting the rest.
         loop {
             match ctx.control_rx.recv().await {
                 Some(NodeControlMessage::Start) => break,
@@ -73,11 +72,9 @@ impl ProcessorNode for EmittingNode {
             }
         }
 
-        // 1. NodeStateUpdate → handle_state_update
         let _ =
             ctx.state_tx.send(NodeStateUpdate::new(NODE_ID.to_string(), NodeState::Running)).await;
 
-        // 2. TelemetryEvent → handle_telemetry_event
         if let Some(tx) = ctx.telemetry_tx.as_ref() {
             let event = TelemetryEvent::new(
                 None,
@@ -88,7 +85,6 @@ impl ProcessorNode for EmittingNode {
             let _ = tx.send(event).await;
         }
 
-        // 3. NodeStatsUpdate → handle_stats_update
         if let Some(tx) = ctx.stats_tx.as_ref() {
             let update = NodeStatsUpdate {
                 node_id: NODE_ID.to_string(),
@@ -104,7 +100,6 @@ impl ProcessorNode for EmittingNode {
             let _ = tx.send(update).await;
         }
 
-        // 4. NodeViewDataUpdate → handle_view_data_update
         if let Some(tx) = ctx.view_data_tx.as_ref() {
             let update = NodeViewDataUpdate {
                 node_id: NODE_ID.to_string(),
@@ -114,7 +109,6 @@ impl ProcessorNode for EmittingNode {
             let _ = tx.send(update).await;
         }
 
-        // Wait for shutdown.
         loop {
             match ctx.control_rx.recv().await {
                 Some(NodeControlMessage::Shutdown) | None => return Ok(()),

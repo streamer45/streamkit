@@ -708,7 +708,6 @@ impl SessionManager {
         self.sessions.values().find(|session| session.name.as_deref() == Some(identifier)).cloned()
     }
 
-    /// Helper function to record metrics when a session is destroyed
     fn record_session_destruction(&self, duration_secs: f64) {
         self.sessions_destroyed_counter.add(1, &[]);
         self.sessions_active_gauge.record(self.sessions.len() as u64, &[]);

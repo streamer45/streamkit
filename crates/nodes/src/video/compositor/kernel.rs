@@ -35,10 +35,6 @@ impl From<Rect> for BlitRect {
     }
 }
 
-// ── Compositing kernel (runs on a persistent blocking thread) ────────────────
-
-// ── YUV → RGBA conversion cache ─────────────────────────────────────────────
-
 /// Cached RGBA conversion result for a single layer slot.
 struct CachedConversion {
     /// Identity of the source data (`Arc::as_ptr` cast to `usize`).
@@ -417,8 +413,6 @@ pub fn composite_frame(
         })
         .collect();
 
-    // ── Unified z-sorted blit ─────────────────────────────────────────────
-    //
     // Collect all blittable items (video layers + image/text overlays) into
     // a single list, sort by (z_index, insertion_order), then blit in order.
     // This replaces the former three separate loops and allows overlays to

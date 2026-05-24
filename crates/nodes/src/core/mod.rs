@@ -24,17 +24,9 @@ pub mod text_chunker;
 use passthrough::PassthroughNode;
 use streamkit_core::registry::StaticPins;
 
-/// Registers all available core nodes with the engine's main registry.
-///
-/// Node-specific server-level constraints are extracted from `constraints`.
-///
-/// Note: This does not register the special-purpose input/output nodes,
-/// as they are instantiated manually by the stateless runner.
-///
 /// # Panics
-///
-/// Panics if config schemas cannot be serialized to JSON (should never happen).
-#[allow(clippy::expect_used)] // Schema serialization should never fail for valid types
+/// Panics if default configs or JSON schemas fail to serialize.
+#[allow(clippy::expect_used)] // Schema serialization should never fail
 pub fn register_core_nodes(registry: &mut NodeRegistry, constraints: &GlobalNodeConstraints) {
     let _ = constraints;
 

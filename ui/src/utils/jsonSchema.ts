@@ -169,9 +169,7 @@ export const validateValue = (value: unknown, schema: JsonSchemaProperty): strin
   return null;
 };
 
-// ---------------------------------------------------------------------------
 // Schema merging — runtime enrichment
-// ---------------------------------------------------------------------------
 
 /** Deep-merge a runtime param schema into a base (static) schema, preserving base-only fields. */
 export const deepMergeSchemas = (
@@ -196,9 +194,7 @@ export const deepMergeSchemas = (
   };
 };
 
-// ---------------------------------------------------------------------------
 // Toggle (boolean) config extraction
-// ---------------------------------------------------------------------------
 
 export interface ToggleConfig {
   key: string;
@@ -225,9 +221,7 @@ export const extractToggleConfigs = (schema: JsonSchema | undefined): ToggleConf
   }, [] as ToggleConfig[]);
 };
 
-// ---------------------------------------------------------------------------
 // Text (string) config extraction
-// ---------------------------------------------------------------------------
 
 export interface TextConfig {
   key: string;
@@ -259,9 +253,7 @@ export const extractTextConfigs = (schema: JsonSchema | undefined): TextConfig[]
   }, [] as TextConfig[]);
 };
 
-// ---------------------------------------------------------------------------
 // Schema → ControlConfig conversion
-// ---------------------------------------------------------------------------
 
 /** Derive a human-readable label: "clock_running" → "Clock Running". */
 function labelFromKey(key: string): string {

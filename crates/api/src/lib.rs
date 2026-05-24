@@ -12,225 +12,94 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use ts_rs::TS;
 
-// YAML pipeline format compilation
 pub mod yaml;
 
-// Re-export types so client crates can use them
 pub use streamkit_core::control::{ConnectionMode, NodeControlMessage};
 pub use streamkit_core::{NodeDefinition, NodeState, NodeStats};
 
-// --- Message Types ---
-
-/// The type of WebSocket message being sent or received.
-///
-/// StreamKit uses a request/response pattern with optional events:
-/// - **Request**: Client sends to server with correlation_id
-/// - **Response**: Server replies with matching correlation_id
-/// - **Event**: Server broadcasts to all clients (no correlation_id)
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, TS)]
 #[ts(export)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageType {
-    /// Client-initiated request that expects a response
     Request,
-    /// Server response to a specific request (matched by correlation_id)
     Response,
-    /// Server-initiated broadcast event (no correlation_id)
     Event,
 }
 
-// --- Base Message ---
-
-/// Generic WebSocket message container for requests, responses, and events.
-///
-/// # Example (Request)
-/// ```json
-/// {
-///   "type": "request",
-///   "correlation_id": "abc123",
-///   "payload": {
-///     "action": "createsession",
-///     "name": "My Session"
-///   }
-/// }
-/// ```
-///
-/// # Example (Response)
-/// ```json
-/// {
-///   "type": "response",
-///   "correlation_id": "abc123",
-///   "payload": {
-///     "action": "sessioncreated",
-///     "session_id": "sess_xyz",
-///     "name": "My Session"
-///   }
-/// }
-/// ```
-///
-/// # Example (Event)
-/// ```json
-/// {
-///   "type": "event",
-///   "payload": {
-///     "event": "nodestatechanged",
-///     "session_id": "sess_xyz",
-///     "node_id": "gain1",
-///     "state": { "Running": null }
-///   }
-/// }
-/// ```
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Message<T> {
-    /// The type of message (Request, Response, or Event)
     #[serde(rename = "type")]
     pub message_type: MessageType,
-    /// Optional correlation ID for matching requests with responses.
-    /// Present in Request and Response messages, absent in Event messages.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub correlation_id: Option<String>,
-    /// The message payload (RequestPayload, ResponsePayload, or EventPayload)
     pub payload: T,
 }
 
-// --- Client-to-Server Payloads (Requests) ---
-
-/// Client-to-server request payload types.
-///
-/// All requests should include a correlation_id in the outer Message wrapper
-/// to match responses.
-///
-/// # Session Management
-/// - `CreateSession`: Create a new dynamic pipeline session
-/// - `DestroySession`: Destroy an existing session
-/// - `ListSessions`: List all sessions visible to the current role
-///
-/// # Pipeline Manipulation
-/// - `AddNode`: Add a node to a session's pipeline
-/// - `RemoveNode`: Remove a node from a session's pipeline
-/// - `Connect`: Connect two nodes in a session's pipeline
-/// - `Disconnect`: Disconnect two nodes in a session's pipeline
-/// - `TuneNode`: Send control message to a node (with response)
-/// - `TuneNodeAsync`: Send control message to a node (fire-and-forget)
-///
-/// # Batch Operations
-/// - `ValidateBatch`: Validate multiple operations without applying
-/// - `ApplyBatch`: Apply multiple operations atomically
-///
-/// # Discovery
-/// - `ListNodes`: List all available node types
-/// - `GetPipeline`: Get current pipeline state for a session
-/// - `GetPermissions`: Get current user's permissions
 #[derive(Serialize, Deserialize, Debug, TS)]
 #[ts(export)]
 #[serde(tag = "action")]
 #[serde(rename_all = "lowercase")]
 pub enum RequestPayload {
-    /// Create a new dynamic pipeline session
     CreateSession {
-        /// Optional session name for identification
         #[serde(skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
-    /// Destroy an existing session and clean up resources
     DestroySession {
-        /// The session ID to destroy
         session_id: String,
     },
-    /// List all sessions visible to the current user/role
     ListSessions,
-    /// List all available node types and their schemas
     ListNodes,
-    /// Add a node to a session's pipeline
     AddNode {
-        /// The session ID to add the node to
         session_id: String,
-        /// Unique identifier for this node instance
         node_id: String,
-        /// Node type (e.g., "audio::gain", "plugin::native::whisper")
         kind: String,
-        /// Optional JSON configuration parameters for the node
         #[serde(skip_serializing_if = "Option::is_none")]
         #[ts(type = "JsonValue")]
         params: Option<serde_json::Value>,
     },
-    /// Remove a node from a session's pipeline
     RemoveNode {
-        /// The session ID containing the node
         session_id: String,
-        /// The node ID to remove
         node_id: String,
     },
-    /// Connect two nodes in a session's pipeline
     Connect {
-        /// The session ID containing the nodes
         session_id: String,
-        /// Source node ID
         from_node: String,
-        /// Source output pin name
         from_pin: String,
-        /// Destination node ID
         to_node: String,
-        /// Destination input pin name
         to_pin: String,
-        /// Connection mode (reliable or best-effort). Defaults to Reliable.
         #[serde(default)]
         mode: ConnectionMode,
     },
-    /// Disconnect two nodes in a session's pipeline
     Disconnect {
-        /// The session ID containing the nodes
         session_id: String,
-        /// Source node ID
         from_node: String,
-        /// Source output pin name
         from_pin: String,
-        /// Destination node ID
         to_node: String,
-        /// Destination input pin name
         to_pin: String,
     },
-    /// Send a control message to a node and wait for response
     TuneNode {
-        /// The session ID containing the node
         session_id: String,
-        /// The node ID to send the message to
         node_id: String,
-        /// The control message (UpdateParams, Start, or Shutdown)
         message: NodeControlMessage,
     },
-    /// Fire-and-forget version of TuneNode for frequent updates.
-    /// No response is sent, making it suitable for high-frequency parameter updates.
+    /// Fire-and-forget; no response sent.
     TuneNodeAsync {
-        /// The session ID containing the node
         session_id: String,
-        /// The node ID to send the message to
         node_id: String,
-        /// The control message (typically UpdateParams)
         message: NodeControlMessage,
     },
-    /// Get the current pipeline state for a session
     GetPipeline {
-        /// The session ID to query
         session_id: String,
     },
-    /// Validate a batch of operations without applying them.
-    /// Returns validation errors if any operations would fail.
     ValidateBatch {
-        /// The session ID to validate operations against
         session_id: String,
-        /// List of operations to validate
         operations: Vec<BatchOperation>,
     },
-    /// Apply a batch of operations atomically.
     /// All operations succeed or all fail together.
     ApplyBatch {
-        /// The session ID to apply operations to
         session_id: String,
-        /// List of operations to apply atomically
         operations: Vec<BatchOperation>,
     },
-    /// Get current user's permissions based on their role
     GetPermissions,
 }
 
@@ -267,11 +136,7 @@ pub enum BatchOperation {
 
 pub type Request = Message<RequestPayload>;
 
-// --- Server-to-Client Payloads (Responses & Events) ---
-
-// Allowed: This is an API contract where explicit boolean fields provide clarity
-// for TypeScript consumers. Using bitflags would complicate the API without benefit.
-#[allow(clippy::struct_excessive_bools)]
+#[allow(clippy::struct_excessive_bools)] // API contract: explicit bool fields for TS consumers
 #[derive(Serialize, Deserialize, Debug, Clone, TS)]
 #[ts(export, export_to = "bindings/")]
 pub struct PermissionsInfo {
@@ -301,7 +166,6 @@ pub enum ResponsePayload {
         session_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         name: Option<String>,
-        /// ISO 8601 formatted timestamp when the session was created
         created_at: String,
     },
     SessionDestroyed {
@@ -356,59 +220,43 @@ pub struct SessionInfo {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// ISO 8601 formatted timestamp when the session was created
     pub created_at: String,
 }
 
 pub type Response = Message<ResponsePayload>;
 
-// --- Event Payloads (Server-to-Client) ---
-
-/// Events are asynchronous notifications sent from the server to subscribed clients.
-/// Unlike responses, events are not correlated to specific requests.
 #[derive(Serialize, Deserialize, Debug, Clone, TS)]
 #[ts(export)]
 #[serde(tag = "event")]
 #[serde(rename_all = "lowercase")]
 pub enum EventPayload {
-    /// A node's state has changed (e.g., from Running to Recovering).
-    /// Clients can use this to update UI indicators and monitor pipeline health.
     NodeStateChanged {
         session_id: String,
         node_id: String,
         state: NodeState,
-        /// ISO 8601 formatted timestamp
         timestamp: String,
     },
-    /// A node's statistics have been updated (packets processed, discarded, errored).
-    /// These updates are throttled at the source to prevent overload.
     NodeStatsUpdated {
         session_id: String,
         node_id: String,
         stats: NodeStats,
-        /// ISO 8601 formatted timestamp
         timestamp: String,
     },
-    /// A node's parameters have been updated.
-    /// Clients can use this to keep their view of the pipeline state in sync.
     NodeParamsChanged {
         session_id: String,
         node_id: String,
         #[ts(type = "JsonValue")]
         params: serde_json::Value,
     },
-    // --- Session Lifecycle Events ---
     SessionCreated {
         session_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         name: Option<String>,
-        /// ISO 8601 formatted timestamp when the session was created
         created_at: String,
     },
     SessionDestroyed {
         session_id: String,
     },
-    // --- Pipeline Structure Events ---
     NodeAdded {
         session_id: String,
         node_id: String,
@@ -434,41 +282,25 @@ pub enum EventPayload {
         to_node: String,
         to_pin: String,
     },
-    // --- View Data Events ---
-    /// A node's view data has been updated (e.g., compositor resolved layout).
-    /// View data carries structured JSON that the frontend interprets per-node-type.
     NodeViewDataUpdated {
         session_id: String,
         node_id: String,
         #[ts(type = "JsonValue")]
         data: serde_json::Value,
-        /// ISO 8601 formatted timestamp
         timestamp: String,
     },
-    // --- Telemetry Events ---
-    /// Telemetry event from a node (transcription results, VAD events, LLM responses, etc.).
-    /// The data payload contains event-specific fields including event_type for filtering.
-    /// These events are best-effort and may be dropped under load.
+    /// Best-effort; may be dropped under load.
     NodeTelemetry {
-        /// The session this event belongs to
         session_id: String,
-        /// The node that emitted this event
         node_id: String,
-        /// Packet type identifier (e.g., "core::telemetry/event@1")
         type_id: String,
-        /// Event payload containing event_type, correlation_id, turn_id, and event-specific data
         #[ts(type = "JsonValue")]
         data: serde_json::Value,
-        /// Microsecond timestamp from the packet metadata (if available)
         #[serde(skip_serializing_if = "Option::is_none")]
         timestamp_us: Option<u64>,
-        /// RFC 3339 formatted timestamp for convenience
         timestamp: String,
     },
-    // --- Runtime Schema Events ---
-    /// A node's runtime param schema has been discovered after initialization.
-    /// The UI should merge this with the static per-kind schema so controls
-    /// can render for dynamically discovered parameters (e.g. Slint properties).
+    /// UI should merge with static per-kind schema for dynamically discovered params.
     RuntimeSchemasUpdated {
         session_id: String,
         node_id: String,
@@ -479,22 +311,16 @@ pub enum EventPayload {
 
 pub type Event = Message<EventPayload>;
 
-// --- Pipeline Types (merged from pipeline crate) ---
-
-/// Engine execution mode
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default, TS)]
 #[ts(export)]
 #[serde(rename_all = "lowercase")]
 pub enum EngineMode {
-    /// One-shot file conversion pipeline (requires http_input/http_output)
     #[serde(rename = "oneshot")]
     OneShot,
-    /// Long-running dynamic pipeline (for real-time processing)
     #[default]
     Dynamic,
 }
 
-/// Represents a connection between two nodes in the graph.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq, TS)]
 #[ts(export)]
 pub struct Connection {
@@ -502,7 +328,6 @@ pub struct Connection {
     pub from_pin: String,
     pub to_node: String,
     pub to_pin: String,
-    /// How this connection handles backpressure. Defaults to `Reliable`.
     #[serde(default, skip_serializing_if = "is_default_mode")]
     pub mode: ConnectionMode,
 }
@@ -512,19 +337,16 @@ fn is_default_mode(mode: &ConnectionMode) -> bool {
     *mode == ConnectionMode::Reliable
 }
 
-/// Represents a single node's configuration within the pipeline.
 #[derive(Debug, Deserialize, Serialize, Clone, TS)]
 #[ts(export)]
 pub struct Node {
     pub kind: String,
     #[ts(type = "JsonValue")]
     pub params: Option<serde_json::Value>,
-    /// Runtime state (only populated in API responses)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<NodeState>,
 }
 
-/// The top-level structure for a pipeline definition, used by the engine and API.
 #[derive(Debug, Deserialize, Serialize, Default, Clone, TS)]
 #[ts(export)]
 pub struct Pipeline {
@@ -534,8 +356,7 @@ pub struct Pipeline {
     pub description: Option<String>,
     #[serde(default)]
     pub mode: EngineMode,
-    /// Declarative UI metadata — forwarded unchanged from `UserPipeline`,
-    /// ignored by the engine for execution.
+    /// Declarative UI metadata; ignored by the engine.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub client: Option<yaml::ClientSection>,
@@ -543,26 +364,21 @@ pub struct Pipeline {
     pub nodes: indexmap::IndexMap<String, Node>,
     pub connections: Vec<Connection>,
     /// Resolved per-node view data (e.g., compositor layout).
-    /// Only populated in API responses; absent from pipeline definitions.
+    /// Only populated in API responses.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     #[ts(type = "Record<string, JsonValue> | null")]
     pub view_data: Option<HashMap<String, serde_json::Value>>,
-    /// Per-instance runtime param schema overrides discovered after node
-    /// initialization.  Only populated in API responses for nodes whose
-    /// `ProcessorNode::runtime_param_schema()` returned `Some`.
+    /// Only populated in API responses.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     #[ts(type = "Record<string, JsonValue> | null")]
     pub runtime_schemas: Option<HashMap<String, serde_json::Value>>,
 }
 
-// Type aliases for backwards compatibility
 pub type ApiConnection = Connection;
 pub type ApiNode = Node;
 pub type ApiPipeline = Pipeline;
-
-// --- Sample Pipelines (for oneshot converter) ---
 
 #[derive(Serialize, Deserialize, Debug, Clone, TS)]
 #[ts(export)]
@@ -573,7 +389,6 @@ pub struct SamplePipeline {
     pub yaml: String,
     pub is_system: bool,
     pub mode: String,
-    /// Whether this is a reusable fragment (partial pipeline) vs a complete pipeline
     #[serde(default)]
     pub is_fragment: bool,
 }
@@ -586,84 +401,50 @@ pub struct SavePipelineRequest {
     pub yaml: String,
     #[serde(default)]
     pub overwrite: bool,
-    /// Whether this is a fragment (partial pipeline) vs a complete pipeline
     #[serde(default)]
     pub is_fragment: bool,
 }
 
-// --- Audio Assets ---
-
 #[derive(Serialize, Deserialize, Debug, Clone, TS)]
 #[ts(export)]
 pub struct AudioAsset {
-    /// Unique identifier (filename, including extension)
     pub id: String,
-    /// Display name
     pub name: String,
-    /// Server-relative path suitable for `core::file_reader` (e.g., `samples/audio/system/foo.wav`)
     pub path: String,
-    /// File extension/format (opus, ogg, flac, mp3, wav)
     pub format: String,
-    /// File size in bytes
     #[ts(type = "number")]
     pub size_bytes: u64,
-    /// License information from .license file
     #[serde(skip_serializing_if = "Option::is_none")]
     pub license: Option<String>,
-    /// Whether this is a system asset (true) or user asset (false)
     pub is_system: bool,
 }
-
-// --- Font Assets ---
 
 #[derive(Serialize, Deserialize, Debug, Clone, TS)]
 #[ts(export)]
 pub struct FontAsset {
-    /// Unique identifier (filename, including extension)
     pub id: String,
-    /// Display name (e.g. "Inter", "Roboto Bold")
     pub name: String,
-    /// Server-relative path suitable for compositor `font_name`
-    /// (e.g. `samples/fonts/system/Inter.ttf`)
     pub path: String,
-    /// File extension/format (ttf, otf)
     pub format: String,
-    /// File size in bytes
     #[ts(type = "number")]
     pub size_bytes: u64,
-    /// Whether this is a system asset (true) or user upload (false)
     pub is_system: bool,
 }
 
-// --- Plugin Assets (generic, registered by plugins) ---
-
-/// A generic asset owned by a plugin, served via the plugin asset registry.
 #[derive(Serialize, Deserialize, Debug, Clone, TS)]
 #[ts(export)]
 pub struct PluginAsset {
-    /// Unique identifier (filename, including extension)
     pub id: String,
-    /// Display name
     pub name: String,
-    /// Server-relative path (e.g., `samples/slint/system/scoreboard.slint`)
     pub path: String,
-    /// File extension/format
     pub format: String,
-    /// File size in bytes
     #[ts(type = "number")]
     pub size_bytes: u64,
-    /// Whether this is a system asset (true) or user upload (false)
     pub is_system: bool,
-    /// Which plugin asset type this belongs to
     pub type_id: String,
-    /// Which plugin owns this asset
     pub plugin_id: String,
 }
 
-// --- Asset Type Discovery ---
-
-/// Describes a registered asset type (core or plugin-provided).
-/// Whether an asset type is built into the server or registered by a plugin.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, TS)]
 #[ts(export)]
 #[serde(rename_all = "lowercase")]
@@ -672,56 +453,35 @@ pub enum AssetTypeSource {
     Plugin,
 }
 
-///
-/// Returned by `GET /api/v1/asset-types` so the UI can dynamically render
-/// type filters, upload zones, and drag-drop behaviour.
+/// Returned by `GET /api/v1/asset-types`.
 #[derive(Serialize, Deserialize, Debug, Clone, TS)]
 #[ts(export)]
 pub struct AssetTypeInfo {
-    /// URL-safe identifier (e.g. `audio`, `images`, `fonts`, `slint`).
     pub type_id: String,
-    /// Human-readable label (e.g. "Audio", "Slint Files").
     pub label: String,
-    /// Whether this type is built-in or registered by a plugin.
     pub source: AssetTypeSource,
-    /// Plugin ID that registered this type (only set when `source == "plugin"`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plugin_id: Option<String>,
-    /// Namespaced node kind to create on drag-drop (e.g. `plugin::native::slint`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_kind: Option<String>,
-    /// Node parameter that references this asset (e.g. `slint_file`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_param: Option<String>,
-    /// Allowed file extensions.
     pub extensions: Vec<String>,
-    /// UI icon hint (e.g. `music`, `image`, `type`, `code`, `file`).
     pub icon_hint: String,
-    /// Whether files of this type can be edited in-place (text content).
     pub editable: bool,
 }
-
-// --- Image Assets ---
 
 #[derive(Serialize, Deserialize, Debug, Clone, TS)]
 #[ts(export)]
 pub struct ImageAsset {
-    /// Unique identifier (filename, including extension)
     pub id: String,
-    /// Display name
     pub name: String,
-    /// Server-relative path suitable for compositor `asset_path` (e.g., `samples/images/system/logo.png`)
     pub path: String,
-    /// File extension/format (png, jpg, jpeg, webp, gif)
     pub format: String,
-    /// Image width in pixels
     pub width: u32,
-    /// Image height in pixels
     pub height: u32,
-    /// File size in bytes
     #[ts(type = "number")]
     pub size_bytes: u64,
-    /// Whether this is a system asset (true) or user asset (false)
     pub is_system: bool,
 }
 

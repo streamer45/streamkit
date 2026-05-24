@@ -133,8 +133,6 @@ export function updateUrlPath(baseUrl: string, newPath: string): string {
   }
 }
 
-// ── Stream store integration ─────────────────────────────────────────────────
-
 export interface MoqSettingsActions {
   setServerUrl: (url: string) => void;
   setInputBroadcast: (broadcast: string) => void;

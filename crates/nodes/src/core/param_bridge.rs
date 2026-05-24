@@ -2,26 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! Parameter bridge node
-//!
-//! Accepts packets on its input and converts them into `UpdateParams` control
-//! messages sent to a configured sibling node via
-//! [`NodeContext::tune_sibling()`].  This enables cross-node control within the
-//! pipeline graph — the same mechanism the WebSocket/REST API uses, but
-//! initiated from inside the data flow.
-//!
-//! Three mapping modes are supported:
-//!
-//! - **Auto** — smart per-packet-type mapping (e.g. `Transcription.text` →
-//!   `{ "properties": { "text": "..." } }`).
-//! - **Template** — a user-supplied JSON template with `{{ field }}` placeholders
-//!   replaced by values extracted from the incoming packet.
-//! - **Raw** — forward the packet payload as-is (useful after a `core::script`
-//!   node that already produced the desired JSON shape).
-//!
-//! This is a terminal node (no output pins) and is designed for `best_effort`
-//! side branches so it never stalls the main data flow.
-
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -483,8 +463,6 @@ mod tests {
         CustomEncoding, CustomPacketData, TranscriptionData, TranscriptionSegment,
     };
 
-    // ── extract_text ────────────────────────────────────────────────
-
     #[test]
     fn extract_text_from_transcription() {
         let pkt = Packet::Transcription(Arc::new(TranscriptionData {
@@ -524,8 +502,6 @@ mod tests {
         assert_eq!(extract_text(&pkt), None);
     }
 
-    // ── auto_map ────────────────────────────────────────────────────
-
     #[test]
     fn auto_map_transcription() {
         let pkt = Packet::Transcription(Arc::new(TranscriptionData {
@@ -563,8 +539,6 @@ mod tests {
         let pkt = Packet::Binary { data: bytes::Bytes::new(), content_type: None, metadata: None };
         assert!(auto_map(&pkt).is_none());
     }
-
-    // ── apply_template ──────────────────────────────────────────────
 
     /// Helper: build a text-only context for template tests.
     fn text_ctx(s: &str) -> JsonValue {
@@ -667,8 +641,6 @@ mod tests {
         assert_eq!(apply_template(&tmpl, &ctx), json!({ "properties": { "speaking": true } }));
     }
 
-    // ── raw_payload ─────────────────────────────────────────────────
-
     #[test]
     fn raw_payload_custom() {
         let data = json!({"properties": {"text": "direct"}});
@@ -710,8 +682,6 @@ mod tests {
         let pkt = Packet::Binary { data: bytes::Bytes::new(), content_type: None, metadata: None };
         assert!(raw_payload(&pkt).is_none());
     }
-
-    // ── ParamBridgeNode::new (config validation) ────────────────────
 
     #[test]
     fn config_requires_params() {

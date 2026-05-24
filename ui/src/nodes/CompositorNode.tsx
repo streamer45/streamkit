@@ -34,8 +34,6 @@ import {
 } from './compositorNodeParts';
 import { CompositorEntryList } from './compositorNodeWidgets';
 
-// ── Node data interface ─────────────────────────────────────────────────────────────
-
 interface CompositorNodeData {
   label: string;
   kind: string;
@@ -99,8 +97,6 @@ const ConnectedContextMenu: React.FC<ConnectedContextMenuProps> = React.memo((pr
   return <CompositorContextMenu entries={entries} {...props} />;
 });
 ConnectedContextMenu.displayName = 'ConnectedContextMenu';
-
-// ── Main compositor node ──────────────────────────────────────────────────────────────
 
 const CompositorNode: React.FC<CompositorNodeProps> = React.memo(function CompositorNode({
   id,
@@ -166,7 +162,6 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(function Compos
     []
   );
 
-  // ── Keyboard shortcuts ────────────────────────────────────────────────
   const compositorWrapperRef = useRef<HTMLDivElement>(null);
   useCompositorKeyboard(compositorWrapperRef, { ...keyboardDeps, disabled });
 

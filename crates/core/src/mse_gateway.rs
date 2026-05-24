@@ -49,17 +49,14 @@ pub trait MseGatewayTrait: Send + Sync {
     async fn unregister_stream(&self, path: &str);
 }
 
-/// Global gateway registry — nodes call [`get_mse_gateway`] to obtain the gateway.
 static GATEWAY: std::sync::OnceLock<Arc<dyn MseGatewayTrait>> = std::sync::OnceLock::new();
 
-/// Initialize the global MSE gateway (called by the server at startup).
 pub fn init_mse_gateway(gateway: Arc<dyn MseGatewayTrait>) {
     if GATEWAY.set(gateway).is_err() {
         tracing::warn!("MSE gateway already initialized");
     }
 }
 
-/// Get the global MSE gateway (called by nodes).
 pub fn get_mse_gateway() -> Option<Arc<dyn MseGatewayTrait>> {
     GATEWAY.get().cloned()
 }

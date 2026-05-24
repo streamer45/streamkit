@@ -144,26 +144,10 @@ struct SpanState {
 /// Shared state for telemetry spans across JavaScript calls
 type SpanRegistry = Arc<Mutex<HashMap<String, SpanState>>>;
 
-/// A node that executes user-provided JavaScript for API integration, webhooks,
-/// text transformation, and dynamic routing.
+/// Sandboxed QuickJS runtime for user-provided JavaScript.
 ///
-/// ## Use Cases
-/// - API integration (fetch external data)
-/// - Webhook notifications (send transcriptions to Slack/Discord)
-/// - Text transformation (format, filter, route)
-/// - Conditional processing (drop/transform based on content)
-/// - Metadata-based routing (add routing flags)
-///
-/// ## Anti-Patterns
-/// - Audio processing (use native plugins instead)
-/// - Blocking operations (keep scripts fast <100ms)
-///
-/// ## Security
-/// - Memory limit (64MB default)
-/// - Execution timeout (100ms default)
-/// - fetch() URL allowlist (server config only, empty = block all)
-/// - No filesystem access
-/// - No per-pipeline allowlist override (prevents bypass via user-uploaded pipelines)
+/// Security: 64MB memory limit, 100ms execution timeout, fetch() URL allowlist
+/// (server config only), no filesystem access.
 #[derive(Debug)]
 pub struct ScriptNode {
     config: ScriptConfig,
@@ -274,15 +258,8 @@ impl ScriptNode {
         Self::is_url_allowed_by_patterns(url, &secret.allowed_fetch_urls)
     }
 
-    /// Creates a new script node from configuration parameters.
-    ///
     /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Script is empty
-    /// - QuickJS runtime initialization fails
-    /// - Script has syntax errors
-    /// - Script doesn't define a `process(packet)` function
+    /// Returns `Err` if config parsing fails.
     pub fn new(
         params: Option<&serde_json::Value>,
         global_config: Option<GlobalScriptConfig>,
@@ -966,13 +943,7 @@ impl ScriptNode {
         Ok(())
     }
 
-    /// Registers the fetch() API with POST support, secret injection, and URL allowlist validation
-    ///
-    /// Supports:
-    /// - GET/POST/PUT/PATCH/DELETE methods
-    /// - JSON request bodies (must be pre-stringified with JSON.stringify)
-    /// - HTTP headers from secrets (configured in pipeline, injected by Rust)
-    /// - Custom headers from JavaScript (in addition to secret-based ones)
+    /// Registers the fetch() API with secret injection and URL allowlist validation.
     ///
     /// # Usage from JavaScript
     /// ```javascript
@@ -1163,14 +1134,8 @@ impl ScriptNode {
         Ok(())
     }
 
-    /// Registers the telemetry API for JavaScript.
-    ///
-    /// Provides three methods:
-    /// - `telemetry.emit(event_type, data)` - Emit a simple telemetry event
-    /// - `telemetry.startSpan(event_type, data?)` - Start a span and return a span_id
-    /// - `telemetry.endSpan(span_id, data?)` - End a span and emit with duration
-    ///
-    /// All timing is computed host-side to avoid JavaScript clock issues.
+    /// Registers the telemetry API (`emit`, `startSpan`, `endSpan`).
+    /// Timing is computed host-side to avoid JavaScript clock issues.
     ///
     /// # Usage from JavaScript
     /// ```javascript
@@ -1396,10 +1361,7 @@ impl ScriptNode {
 /// `const x = {}; x.self = x; return { type: 'Custom', data: x };`).
 const JS_TO_JSON_MAX_DEPTH: usize = 64;
 
-/// Helper function to convert a rquickjs Value to serde_json::Value.
-///
-/// Imposes a depth limit of [`JS_TO_JSON_MAX_DEPTH`] to guard against cyclic
-/// objects and unbounded recursion.
+/// Depth-limited conversion; guards against cyclic objects.
 fn js_value_to_json(value: &rquickjs::Value<'_>) -> Option<JsonValue> {
     js_value_to_json_inner(value, 0)
 }

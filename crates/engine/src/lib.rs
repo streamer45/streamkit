@@ -2,8 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! engine: The core pipeline execution engine for Skit.
-//! This crate is responsible for running pipeline graphs, both oneshot and dynamic.
+//! Pipeline execution engine — oneshot and dynamic modes.
 
 use opentelemetry::global;
 use std::collections::HashMap;
@@ -57,29 +56,22 @@ impl Default for Engine {
 }
 
 impl Engine {
-    /// Creates a new engine with a populated node registry.
     pub fn new() -> Self {
         Self::build(true, None, None, &GlobalNodeConstraints::new())
     }
 
-    /// Creates a new engine with a custom plugin directory.
     pub fn with_plugin_dir(plugin_dir: Option<std::path::PathBuf>) -> Self {
         Self::build(true, plugin_dir, None, &GlobalNodeConstraints::new())
     }
 
-    /// Creates a new engine with only built-in nodes registered, skipping plugin loading.
     pub fn without_plugins() -> Self {
         Self::build(false, None, None, &GlobalNodeConstraints::new())
     }
 
-    /// Creates a new engine with resource management support.
-    /// This is typically used by the server to enable shared resource caching (ML models, etc.).
     pub fn with_resource_manager(resource_manager: Arc<streamkit_core::ResourceManager>) -> Self {
         Self::build(false, None, Some(resource_manager), &GlobalNodeConstraints::new())
     }
 
-    /// Creates a new engine with resource management and server-level node
-    /// constraints.  This is the full-featured constructor used by the server.
     pub fn with_resource_manager_and_constraints(
         resource_manager: Arc<streamkit_core::ResourceManager>,
         constraints: &GlobalNodeConstraints,
@@ -135,13 +127,6 @@ impl Engine {
         }
     }
 
-    /// Starts the long-running dynamic actor in the background,
-    /// returning a handle to send it control messages and query its state.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the engine registry lock is poisoned (only possible if another thread
-    /// panicked while holding the lock).
     #[cfg(feature = "dynamic")]
     pub fn start_dynamic_actor(&self, config: DynamicEngineConfig) -> DynamicEngineHandle {
         let (control_tx, control_rx) = mpsc::channel(DEFAULT_ENGINE_CONTROL_CAPACITY);
@@ -167,7 +152,6 @@ impl Engine {
             "Starting Dynamic Engine actor"
         );
 
-        // Internal channel for background node creation results.
         let (nc_tx, nc_rx) = mpsc::channel(64);
 
         let meter = global::meter("skit_engine");

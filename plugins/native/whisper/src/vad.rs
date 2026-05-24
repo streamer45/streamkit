@@ -37,7 +37,6 @@ impl SileroVAD {
             return Err(format!("Silero VAD only supports 8kHz or 16kHz, got {sample_rate}Hz"));
         }
 
-        // Load ONNX model
         let session = Session::builder()
             .map_err(|e| format!("Failed to create session builder: {e}"))?
             .with_optimization_level(GraphOptimizationLevel::Level3)
@@ -81,7 +80,6 @@ impl SileroVAD {
         // Sample rate as int64 scalar array
         let sr_input = Array1::from_vec(vec![i64::from(self.sample_rate)]);
 
-        // Convert to ort::Value
         let input_value = Value::from_array(audio_input)
             .map_err(|e| format!("Failed to convert audio to Value: {e}"))?;
 
@@ -253,7 +251,6 @@ mod tests {
                     sample_count as f32 / 16000.0
                 );
 
-                // Process in 512-sample chunks
                 let mut speech_chunks = 0;
                 let mut silence_chunks = 0;
                 let mut probabilities = Vec::new();

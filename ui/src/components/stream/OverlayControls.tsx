@@ -15,9 +15,7 @@ import { buildParamUpdate } from '@/utils/controlProps';
 import { deepMergeSchemas, schemaToControlConfigs } from '@/utils/jsonSchema';
 import type { JsonSchema } from '@/utils/jsonSchema';
 
-// ---------------------------------------------------------------------------
 // Props
-// ---------------------------------------------------------------------------
 
 interface OverlayControlsProps {
   pipelineYaml: string;
@@ -28,9 +26,7 @@ interface OverlayControlsProps {
   pipeline?: Pipeline | null;
 }
 
-// ---------------------------------------------------------------------------
 // Styled components
-// ---------------------------------------------------------------------------
 
 const ControlsContainer = styled.div`
   display: flex;
@@ -175,17 +171,13 @@ const ActionButton = styled.button`
   }
 `;
 
-// ---------------------------------------------------------------------------
 // Debounce delay for text inputs (ms)
-// ---------------------------------------------------------------------------
 const TEXT_DEBOUNCE_MS = 300;
 
 // Throttle delay for slider updates (ms)
 const SLIDER_THROTTLE_MS = 100;
 
-// ---------------------------------------------------------------------------
 // Individual control widgets
-// ---------------------------------------------------------------------------
 
 const ToggleControl: React.FC<{
   control: ControlConfig;
@@ -366,9 +358,7 @@ const SelectControl: React.FC<{
   );
 };
 
-// ---------------------------------------------------------------------------
 // Main component
-// ---------------------------------------------------------------------------
 
 /** Groups controls by their `group` field. Ungrouped controls come first. */
 function groupControls(controls: ControlConfig[]): Map<string | null, ControlConfig[]> {

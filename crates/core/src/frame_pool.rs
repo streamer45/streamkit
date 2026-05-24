@@ -246,7 +246,6 @@ impl<T> PooledFrameData<T> {
 
 impl<T: Clone + Default> Clone for PooledFrameData<T> {
     fn clone(&self) -> Self {
-        // Fast path: if pooled and pool is alive, try to allocate from a bucket to avoid heap alloc.
         if let Some(pool) = &self.pool {
             if let Some(inner) = pool.upgrade() {
                 if let Ok(mut guard) = inner.lock() {

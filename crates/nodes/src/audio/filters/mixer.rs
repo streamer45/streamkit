@@ -54,27 +54,15 @@ impl Default for ClockedMixerConfig {
     }
 }
 
-/// Configuration for the AudioMixerNode.
 #[derive(Deserialize, Debug, Clone, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct AudioMixerConfig {
-    /// Timeout in milliseconds for waiting for slow inputs.
-    /// If specified, the mixer will wait up to this duration for all active pins to provide frames.
-    /// If timeout expires, missing pins will be mixed as silence.
-    /// If not specified (None), the mixer will wait indefinitely (strict broadcast synchronization).
-    /// Default: Some(100)
+    /// `None` = wait indefinitely (strict sync); `Some(ms)` = treat missing pins as silence.
     pub sync_timeout_ms: Option<u64>,
 
-    /// Number of input pins to pre-create.
-    /// Required for stateless/oneshot pipelines where pins must exist before graph building.
-    /// Optional for dynamic pipelines where pins are created on-demand.
-    /// If specified, pins will be named in_0, in_1, ..., in_{N-1}.
+    /// Required for oneshot pipelines; dynamic pipelines create pins on-demand.
     pub num_inputs: Option<usize>,
 
-    /// Enable clocked mixing mode (dedicated mixing thread + per-input jitter buffers).
-    ///
-    /// When enabled, the mixer emits frames on a fixed cadence determined by
-    /// `sample_rate` and `frame_samples_per_channel`.
     pub clocked: Option<ClockedMixerConfig>,
 }
 
@@ -84,25 +72,13 @@ impl Default for AudioMixerConfig {
     }
 }
 
-/// A node that mixes multiple raw audio streams into a single stream.
-/// This node operates on 32-bit floating-point audio.
+/// Mixes multiple raw audio streams into one. Supports dynamic pin creation/removal.
 ///
-/// The mixer operates in dynamic mode, supporting runtime pin creation and removal.
-/// It implements broadcast synchronization: waits for all active pins to provide frames
-/// before mixing (with optional timeout for slow inputs).
-///
-/// **EOF Handling**: When a pin receives EOF (e.g., file playback completes), it is
-/// automatically removed from the active pin set, and mixing continues with remaining pins.
-///
-/// **Output Format Stability**: The mixer tracks the maximum channel count it has observed
-/// and never decreases output channels thereafter. This avoids downstream glitches when a
-/// higher-channel input ends and only lower-channel inputs remain (e.g., continued speech
-/// after a stereo music track completes). Mono inputs are upmixed when output is stereo.
+/// On EOF a pin is removed and mixing continues with the rest. Max observed channel
+/// count never decreases — mono inputs are upmixed when output is stereo.
 pub struct AudioMixerNode {
     config: AudioMixerConfig,
-    /// Current input pins (may grow dynamically)
     input_pins: Vec<InputPin>,
-    /// Next input ID for dynamic pin naming
     next_input_id: usize,
 }
 
@@ -867,7 +843,6 @@ impl AudioMixerNode {
         }
     }
 
-    /// Mix buffered frames and send output
     async fn mix_and_send(
         &self,
         slots: &mut [InputSlot],
@@ -971,11 +946,6 @@ impl AudioMixerNode {
         Ok(())
     }
 
-    /// Mix a source frame into the output buffer, handling channel conversion
-    /// Supports:
-    /// - Mono (1ch) -> Stereo (2ch): Duplicate mono signal to both channels
-    /// - Stereo (2ch) -> Stereo (2ch): Direct mixing
-    /// - Other configurations: Basic channel mapping
     #[allow(clippy::needless_range_loop)]
     fn mix_frame_with_channel_conversion(
         output: &mut [f32],
@@ -1025,7 +995,6 @@ impl AudioMixerNode {
         }
     }
 
-    /// Fair round-robin receive from any input; try_recv all, then async wait on current.
     async fn recv_from_any(
         slots: &mut [InputSlot],
         round_robin_idx: &mut usize,
@@ -1580,7 +1549,6 @@ mod tests {
 
         let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
 
-        // Create mixer - now always dynamic mode
         let node = AudioMixerNode::new(AudioMixerConfig {
             sync_timeout_ms: Some(100),
             ..Default::default()
@@ -1591,23 +1559,16 @@ mod tests {
         assert_state_initializing(&mut state_rx).await;
         assert_state_running(&mut state_rx).await;
 
-        // Send packets to both inputs (10 samples per channel, 2 channels = 20 total samples)
-        // Input 1: all samples = 0.5
-        // Input 2: all samples = 0.3
-        // Expected output: all samples = 0.8
         let packet1 = create_test_audio_packet(48000, 2, 10, 0.5);
         let packet2 = create_test_audio_packet(48000, 2, 10, 0.3);
 
         input1_tx.send(packet1).await.unwrap();
         input2_tx.send(packet2).await.unwrap();
 
-        // Give time for mixing to occur
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-        // Verify mixed output - should have one packet
         let output_packets = mock_sender.get_packets_for_pin("out").await;
 
-        // Close inputs after checking packets to allow clean shutdown
         drop(input1_tx);
         drop(input2_tx);
 
@@ -1620,7 +1581,6 @@ mod tests {
         let audio_data = extract_audio_data(&output_packets[0]).expect("Should be audio");
         assert_eq!(audio_data.len(), 20); // 10 samples * 2 channels
 
-        // Verify mixing: 0.5 + 0.3 = 0.8
         for &sample in audio_data {
             assert!((sample - 0.8).abs() < 0.001, "Expected ~0.8, got {}", sample);
         }

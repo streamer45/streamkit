@@ -140,13 +140,11 @@ async fn panicking_plugin_returns_error_not_abort() {
 
     let failure_reason = await_failed(&mut state_rx).await;
 
-    // 2. The panic message is logged / propagated.
     assert!(
         failure_reason.contains("panicking-plugin: intentional panic in process_packet"),
         "Failure reason should contain the panic message, got: {failure_reason}"
     );
 
-    // 3. The node task completed with an error (not a crash).
     let run_result = tokio::time::timeout(std::time::Duration::from_secs(5), node_handle)
         .await
         .expect("node task should complete within timeout")

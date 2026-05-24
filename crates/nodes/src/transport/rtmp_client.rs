@@ -25,10 +25,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 
-// ---------------------------------------------------------------------------
-// Error
-// ---------------------------------------------------------------------------
-
 /// Error type for the RTMP client module.
 #[derive(Debug)]
 pub(super) struct Error {
@@ -48,10 +44,6 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
-
-// ---------------------------------------------------------------------------
-// RtmpUrl
-// ---------------------------------------------------------------------------
 
 /// Parsed RTMP URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,10 +145,6 @@ impl fmt::Display for RtmpUrl {
     }
 }
 
-// ---------------------------------------------------------------------------
-// RtmpTimestamp / RtmpTimestampDelta
-// ---------------------------------------------------------------------------
-
 /// RTMP timestamp (milliseconds, u32).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct RtmpTimestamp(u32);
@@ -180,10 +168,6 @@ impl RtmpTimestampDelta {
         self.0
     }
 }
-
-// ---------------------------------------------------------------------------
-// Media types (public API for the rtmp.rs node)
-// ---------------------------------------------------------------------------
 
 /// Video frame type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -299,10 +283,6 @@ impl AvcSequenceHeader {
         Ok(buf)
     }
 }
-
-// ---------------------------------------------------------------------------
-// AMF0 codec (subset)
-// ---------------------------------------------------------------------------
 
 /// AMF0 value — only the types needed for RTMP publish commands.
 #[derive(Debug, Clone, PartialEq)]
@@ -434,10 +414,6 @@ fn amf0_decode_string_payload(data: &[u8]) -> Result<(String, usize), Error> {
     Ok((s, 2 + len))
 }
 
-// ---------------------------------------------------------------------------
-// RTMP Messages
-// ---------------------------------------------------------------------------
-
 /// A fully decoded inbound RTMP message.
 struct InboundMessage {
     #[cfg(test)]
@@ -484,10 +460,6 @@ fn csid_for_stream(stream_id: u32) -> u16 {
     // Clamp to avoid overflow — in practice stream IDs are small.
     CSID_COMMAND + (stream_id.min(u32::from(u16::MAX) - u32::from(CSID_COMMAND)) as u16)
 }
-
-// ---------------------------------------------------------------------------
-// Chunk Encoder
-// ---------------------------------------------------------------------------
 
 /// Per-csid state for outbound header compression.
 #[derive(Default)]
@@ -637,10 +609,6 @@ fn encode_message_header(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Chunk Decoder
-// ---------------------------------------------------------------------------
-
 /// Per-csid state for inbound chunk reassembly.
 #[derive(Default, Clone)]
 struct ChunkDecoderCsidState {
@@ -689,7 +657,6 @@ impl ChunkDecoder {
 
             let mut pos = 0;
 
-            // ── Basic header ────────────────────────────────────────
             if pos >= self.buf.len() {
                 return Ok(None);
             }
@@ -720,7 +687,6 @@ impl ChunkDecoder {
                 _ => u16::from(csid_low),
             };
 
-            // ── Message header ──────────────────────────────────────
             let header_len: usize = match fmt {
                 0 => 11,
                 1 => 7,
@@ -825,7 +791,6 @@ impl ChunkDecoder {
                 state.timestamp_delta = ext;
             }
 
-            // ── Payload ─────────────────────────────────────────────
             // If bytes_remaining == 0, this is the first chunk of a new message.
             if state.bytes_remaining == 0 {
                 state.payload.clear();
@@ -862,10 +827,6 @@ impl ChunkDecoder {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Handshake
-// ---------------------------------------------------------------------------
 
 /// Client-side RTMP handshake state machine.
 struct Handshake {
@@ -1006,10 +967,6 @@ fn fill_random(buf: &mut [u8]) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Connection State
-// ---------------------------------------------------------------------------
-
 /// RTMP connection states (publish-client subset).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RtmpConnectionState {
@@ -1042,10 +999,6 @@ pub(super) enum RtmpConnectionEvent {
     StateChanged(RtmpConnectionState),
     DisconnectedByPeer { reason: String },
 }
-
-// ---------------------------------------------------------------------------
-// RtmpPublishClientConnection
-// ---------------------------------------------------------------------------
 
 /// Sans-I/O RTMP publish client connection.
 ///
@@ -1117,7 +1070,6 @@ impl RtmpPublishClientConnection {
     /// Feed received bytes from the server.  Drives the state machine
     /// (handshake → connect → createStream → publish).
     pub fn feed_recv_buf(&mut self, buf: &[u8]) -> Result<(), Error> {
-        // ── Handshake phase ─────────────────────────────────────────
         // ACK sequence numbers are based on post-handshake bytes only
         // (RTMP spec §5.4), so we defer the counter increment.
         if let Some(ref mut hs) = self.handshake {
@@ -1145,14 +1097,12 @@ impl RtmpPublishClientConnection {
             return Ok(());
         }
 
-        // ── Post-handshake: decode chunks ───────────────────────────
         self.total_bytes_received += buf.len() as u64;
         self.decoder.push(buf);
         while let Some(msg) = self.decoder.decode_message()? {
             self.handle_message(&msg)?;
         }
 
-        // ── ACK tracking ────────────────────────────────────────────
         self.maybe_send_ack();
 
         Ok(())
@@ -1274,10 +1224,6 @@ impl RtmpPublishClientConnection {
         self.events.pop_front()
     }
 
-    // -------------------------------------------------------------------
-    // Internal: connect sequence
-    // -------------------------------------------------------------------
-
     /// Send the initial RTMP connect command sequence after handshake.
     fn send_connect_sequence(&mut self) -> Result<(), Error> {
         // 1. WinAckSize (server should ACK every 2.5 MB).
@@ -1317,10 +1263,6 @@ impl RtmpPublishClientConnection {
         self.set_state(RtmpConnectionState::Connecting);
         Ok(())
     }
-
-    // -------------------------------------------------------------------
-    // Internal: message handling
-    // -------------------------------------------------------------------
 
     /// Handle a fully assembled inbound RTMP message.
     fn handle_message(&mut self, msg: &InboundMessage) -> Result<(), Error> {
@@ -1581,10 +1523,6 @@ impl RtmpPublishClientConnection {
         }
     }
 
-    // -------------------------------------------------------------------
-    // Internal: helpers
-    // -------------------------------------------------------------------
-
     /// Set state and emit a `StateChanged` event.
     fn set_state(&mut self, new_state: RtmpConnectionState) {
         if self.state != new_state {
@@ -1660,16 +1598,10 @@ fn extract_object_field(val: &Amf0Value, field: &str) -> Option<String> {
     None
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-
-    // ── URL parsing ─────────────────────────────────────────────────
 
     #[test]
     fn parse_rtmp_url_basic() {
@@ -1741,8 +1673,6 @@ mod tests {
         assert_eq!(url.host, "host");
     }
 
-    // ── AMF0 ────────────────────────────────────────────────────────
-
     #[test]
     fn amf0_number_roundtrip() {
         let val = Amf0Value::Number(42.5);
@@ -1798,8 +1728,6 @@ mod tests {
         assert_eq!(decoded, val);
         assert_eq!(consumed, buf.len());
     }
-
-    // ── Chunk encoder ───────────────────────────────────────────────
 
     #[test]
     fn chunk_encoder_fmt0_basic() {
@@ -1929,8 +1857,6 @@ mod tests {
         assert_eq!(csid_for_stream(2), 5);
     }
 
-    // ── Chunk decoder ───────────────────────────────────────────────
-
     #[test]
     fn chunk_decode_fmt0_single_chunk() {
         // Encode a message, then decode it.
@@ -2010,8 +1936,6 @@ mod tests {
         }
     }
 
-    // ── Handshake ───────────────────────────────────────────────────
-
     #[test]
     fn handshake_c0c1_length() {
         let (_, c0c1) = Handshake::new();
@@ -2086,8 +2010,6 @@ mod tests {
         assert_eq!(leftover, extra);
     }
 
-    // ── AvcSequenceHeader ───────────────────────────────────────────
-
     #[test]
     fn avc_sequence_header_to_bytes() {
         let header = AvcSequenceHeader {
@@ -2131,8 +2053,6 @@ mod tests {
         assert!(header.to_bytes().is_err());
     }
 
-    // ── FLV header byte construction ────────────────────────────────
-
     #[test]
     fn flv_video_header_keyframe_avc() {
         // KeyFrame (1) << 4 | AVC (7) = 0x17.
@@ -2158,8 +2078,6 @@ mod tests {
         let channels: u8 = 1;
         assert_eq!((format << 4) | (rate << 2) | (size << 1) | channels, 0xAF);
     }
-
-    // ── State machine ───────────────────────────────────────────────
 
     #[test]
     fn connection_starts_in_handshaking() {
@@ -2228,8 +2146,6 @@ mod tests {
         assert_eq!(format!("{state}"), "Publishing");
     }
 
-    // ── Encode/decode roundtrip ─────────────────────────────────────
-
     #[test]
     fn encode_decode_roundtrip_various_messages() {
         let messages = vec![
@@ -2284,8 +2200,6 @@ mod tests {
         }
     }
 
-    // ── Basic header encoding ───────────────────────────────────────
-
     #[test]
     fn basic_header_1byte_form() {
         let mut out = Vec::new();
@@ -2313,10 +2227,8 @@ mod tests {
         assert_eq!(val, 320);
     }
 
-    // ── Full server simulation (YouTube-like flow) ────────────────
-
-    /// Helper: build an RTMP chunk from scratch using our encoder, simulating
-    /// a server sending a message.  Returns the raw bytes ready to feed into
+    /// Build an RTMP chunk from scratch using our encoder, simulating
+    /// a server sending a message. Returns the raw bytes ready to feed into
     /// a client connection's `feed_recv_buf`.
     fn server_encode(
         encoder: &mut ChunkEncoder,
@@ -2342,12 +2254,10 @@ mod tests {
         let mut conn = RtmpPublishClientConnection::new(url);
         assert_eq!(conn.state(), RtmpConnectionState::Handshaking);
 
-        // ── Step 1: client sends C0+C1 ──────────────────────────────
         let c0c1 = conn.send_buf().to_vec();
         assert_eq!(c0c1.len(), 1 + HANDSHAKE_SIZE);
         conn.advance_send_buf(c0c1.len());
 
-        // ── Step 2: server sends S0+S1+S2 (no leftover bytes) ───────
         let mut s0s1s2 = Vec::with_capacity(1 + HANDSHAKE_SIZE * 2);
         s0s1s2.push(0x03); // S0
         s0s1s2.extend_from_slice(&vec![0xBB; HANDSHAKE_SIZE]); // S1
@@ -2360,7 +2270,6 @@ mod tests {
         assert!(conn.send_buf().len() > HANDSHAKE_SIZE);
         conn.advance_send_buf(conn.send_buf().len()); // simulate flush
 
-        // ── Step 3: server sends WinAckSize + SetPeerBandwidth ──────
         let mut srv_enc = ChunkEncoder::new();
         let win_ack = server_encode(
             &mut srv_enc,
@@ -2384,7 +2293,6 @@ mod tests {
         assert!(!conn.send_buf().is_empty());
         conn.advance_send_buf(conn.send_buf().len());
 
-        // ── Step 4: server sends connect _result ────────────────────
         let mut result_payload = Vec::new();
         amf0_encode(&Amf0Value::String("_result".to_string()), &mut result_payload).unwrap();
         amf0_encode(&Amf0Value::Number(1.0), &mut result_payload).unwrap();
@@ -2416,7 +2324,6 @@ mod tests {
         assert_eq!(conn.state(), RtmpConnectionState::Connected);
         conn.advance_send_buf(conn.send_buf().len());
 
-        // ── Step 5: server sends createStream _result ───────────────
         let mut cs_payload = Vec::new();
         amf0_encode(&Amf0Value::String("_result".to_string()), &mut cs_payload).unwrap();
         amf0_encode(&Amf0Value::Number(2.0), &mut cs_payload).unwrap();
@@ -2430,7 +2337,6 @@ mod tests {
         assert_eq!(conn.media_stream_id, 1);
         conn.advance_send_buf(conn.send_buf().len());
 
-        // ── Step 6: server sends onStatus(NetStream.Publish.Start) ──
         let mut status_payload = Vec::new();
         amf0_encode(&Amf0Value::String("onStatus".to_string()), &mut status_payload).unwrap();
         amf0_encode(&Amf0Value::Number(0.0), &mut status_payload).unwrap();
@@ -2449,7 +2355,6 @@ mod tests {
         conn.feed_recv_buf(&status_msg).unwrap();
         assert_eq!(conn.state(), RtmpConnectionState::Publishing);
 
-        // ── Step 7: verify we can send media ────────────────────────
         let video = VideoFrame {
             timestamp: RtmpTimestamp::from_millis(0),
             composition_timestamp_offset: RtmpTimestampDelta::ZERO,

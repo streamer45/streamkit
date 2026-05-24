@@ -50,10 +50,7 @@ use super::encoder_trait::{self, EncodedPacket, EncoderNodeRunner, StandardVideo
 use super::HwAccelMode;
 use super::AV1_CONTENT_TYPE;
 
-// ---------------------------------------------------------------------------
 // Decoder
-// ---------------------------------------------------------------------------
-
 /// Configuration for the NVIDIA AV1 decoder node.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -378,10 +375,7 @@ fn copy_nvdec_frame(
         .map_err(|e| e.to_string())
 }
 
-// ---------------------------------------------------------------------------
 // Encoder
-// ---------------------------------------------------------------------------
-
 /// Configuration for the NVIDIA AV1 encoder node.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -509,10 +503,7 @@ impl EncoderNodeRunner for NvAv1EncoderNode {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Internal NVENC wrapper implementing StandardVideoEncoder
-// ---------------------------------------------------------------------------
-
 struct NvAv1Encoder {
     encoder: shiguredo_nvcodec::Encoder,
     next_pts: i64,
@@ -658,10 +649,7 @@ fn merge_keyframe_metadata(
     )
 }
 
-// ---------------------------------------------------------------------------
 // Registration
-// ---------------------------------------------------------------------------
-
 use streamkit_core::registry::StaticPins;
 
 #[allow(clippy::expect_used, clippy::missing_panics_doc)] // Default config and schema serialization should never fail
@@ -709,10 +697,7 @@ pub fn register_nv_av1_nodes(registry: &mut NodeRegistry) {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_macros)]
 mod tests {
@@ -724,8 +709,6 @@ mod tests {
     use std::borrow::Cow;
     use std::collections::HashMap;
     use tokio::sync::mpsc;
-
-    // ── Helpers ─────────────────────────────────────────────────────────────
 
     /// Returns `true` if CUDA libraries can be loaded AND a decoder can
     /// actually be created on device 0.  This catches machines that have
@@ -772,8 +755,6 @@ mod tests {
         };
         shiguredo_nvcodec::Encoder::new(config).is_ok()
     }
-
-    // ── Unit tests (no GPU required) ────────────────────────────────────────
 
     #[test]
     fn force_cpu_decoder_rejected() {
@@ -878,8 +859,6 @@ mod tests {
         let expected_size = 4 * 4 + 4 * 2;
         assert_eq!(nv12.len(), expected_size, "NV12 buffer size mismatch");
     }
-
-    // ── GPU integration tests ───────────────────────────────────────────────
 
     /// Encode several NV12 frames via NVENC, then decode them via NVDEC.
     /// This is the full HW roundtrip test.
@@ -1170,8 +1149,6 @@ mod tests {
             }
         }
     }
-
-    // ── Registration test ────────────────────────────────────────────────
 
     #[test]
     fn test_node_registration() {

@@ -29,13 +29,7 @@ import { useAtomValue } from 'jotai/react';
 import { nodeKey, nodeStateAtom, nullStateAtom } from '@/stores/sessionAtoms';
 import type { NodeState } from '@/types/types';
 
-/**
- * Read a node's `NodeState` from the per-node Jotai atom.
- *
- * @param nodeId   ReactFlow node id
- * @param sessionId  Active session id (undefined in design view)
- * @param fallback   Value to return when sessionId is absent (design view)
- */
+/** Read a node's `NodeState` from the per-node Jotai atom. */
 export function useNodeStateFromAtom(
   nodeId: string,
   sessionId: string | undefined,

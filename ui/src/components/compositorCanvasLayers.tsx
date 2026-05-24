@@ -25,14 +25,10 @@ import {
   TextContent,
 } from './compositorCanvasStyles';
 
-// ── Hue generation ──────────────────────────────────────────────────────────
-
 /** Golden-angle-based hue to maximise visual separation between layers */
 export function layerHue(index: number): number {
   return (index * 137.508) % 360;
 }
-
-// ── Font mapping ────────────────────────────────────────────────────────────
 
 /** CSS fallback stacks for fonts that haven't been loaded via @font-face yet. */
 const FONT_FALLBACK_MAP: Record<string, string> = {
@@ -112,8 +108,6 @@ export function layerBoxStyle(
   };
 }
 
-// ── Resize handles ──────────────────────────────────────────────────────────
-
 const HANDLES: ResizeHandle[] = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
 
 /** Handles available for text overlays — excludes pure-vertical `n`/`s`
@@ -138,8 +132,6 @@ export const ResizeHandles: React.FC<{
   </>
 ));
 ResizeHandles.displayName = 'ResizeHandles';
-
-// ── Video input layer ───────────────────────────────────────────────────────
 
 export const VideoLayer: React.FC<{
   layerId: string;
@@ -219,8 +211,6 @@ export const VideoLayer: React.FC<{
   );
 });
 VideoLayer.displayName = 'VideoLayer';
-
-// ── Text overlay layer ──────────────────────────────────────────────────────
 
 export const TextOverlayLayer: React.FC<{
   overlayId: string;
@@ -388,8 +378,6 @@ export const TextOverlayLayer: React.FC<{
 );
 TextOverlayLayer.displayName = 'TextOverlayLayer';
 
-// ── Image overlay layer ─────────────────────────────────────────────────────
-
 export const ImageOverlayLayer: React.FC<{
   overlayId: string;
   index: number;
@@ -410,8 +398,6 @@ export const ImageOverlayLayer: React.FC<{
   const imgSrc = useMemo(() => {
     if (!overlay?.assetPath) return undefined;
 
-    // Extract scope (user/system) and filename from the path
-    // (e.g. "samples/images/user/photo.png" → scope="user", filename="photo.png")
     const parts = overlay.assetPath.split('/');
     const filename = parts.pop() ?? '';
     const scope = parts.pop() ?? 'user';

@@ -2,9 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-// Allowed: This is a CLI code generation tool, not server code.
-// Using println! for progress output is appropriate here.
-#![allow(clippy::disallowed_macros)]
+#![allow(clippy::disallowed_macros)] // CLI tool — println! is appropriate
 
 use std::fs;
 use std::path::Path;

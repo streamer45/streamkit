@@ -32,7 +32,6 @@ pub mod telemetry;
 pub mod websocket;
 pub mod websocket_handlers;
 
-// Re-export commonly used items for convenience
 pub use config::Config;
 pub use permissions::{Permissions, PermissionsConfig};
 pub use role_extractor::get_permissions;

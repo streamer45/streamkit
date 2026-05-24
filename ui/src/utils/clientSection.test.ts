@@ -380,9 +380,7 @@ nodes:
   });
 });
 
-// -----------------------------------------------------------------------
 // Monitor preview config derivation (Gap 4a)
-// -----------------------------------------------------------------------
 
 describe('deriveSettingsFromClient — monitor preview scenarios', () => {
   it('derives watch-only settings for monitor preview (no publish)', () => {
@@ -536,9 +534,7 @@ describe('deriveSettingsFromClient — monitor preview scenarios', () => {
   });
 });
 
-// -----------------------------------------------------------------------
 // ConvertView-driven pipeline classification (Gap 4b)
-// -----------------------------------------------------------------------
 
 describe('parseClientFromYaml — trigger vs none and output-type', () => {
   it('parses trigger input type', () => {

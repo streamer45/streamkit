@@ -829,7 +829,6 @@ const ConvertView: React.FC = () => {
 
       if (outputMode === 'playback') {
         if (isStreaming && result.responseStream) {
-          // Increment stream key to force component remount with new stream
           setStreamKey((prev) => prev + 1);
           setMediaStream(result.responseStream);
           setMediaContentType(result.contentType || null);

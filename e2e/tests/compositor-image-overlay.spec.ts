@@ -31,10 +31,6 @@ import {
 } from './test-helpers';
 import { WEBCAM_PIP_YAML } from './compositor-fixtures';
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 async function setupCompositorView(page: Page) {
   await page.goto('/monitor');
   await ensureLoggedIn(page);
@@ -79,10 +75,6 @@ function readSystemLogoPng(): Buffer {
   return readFileSync(resolve(repoRoot, 'samples/images/system/streamkit-logo.png'));
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 test.describe('Compositor Image Overlay Lifecycle', () => {
   let collector: ConsoleErrorCollector;
   let sessionId: string | null = null;
@@ -96,8 +88,6 @@ test.describe('Compositor Image Overlay Lifecycle', () => {
     baseURL,
   }) => {
     test.setTimeout(120_000);
-
-    // ── 1. Create session via API ────────────────────────────────────────
 
     const apiContext = await request.newContext({
       baseURL: baseURL!,
@@ -119,8 +109,6 @@ test.describe('Compositor Image Overlay Lifecycle', () => {
     expect(sessionId).toBeTruthy();
     await apiContext.dispose();
 
-    // ── 2. Navigate to monitor view, find compositor node ────────────────
-
     const { compositorNode, canvasInner } = await setupCompositorView(page);
 
     // Verify baseline layers exist.
@@ -131,8 +119,6 @@ test.describe('Compositor Image Overlay Lifecycle', () => {
       timeout: 5_000,
     });
 
-    // ── 3. Open Add menu — verify Text and Image options ─────────────────
-
     const addButton = compositorNode.getByRole('button', { name: /Add/i });
     await expect(addButton).toBeVisible({ timeout: 5_000 });
     await addButton.click();
@@ -142,8 +128,6 @@ test.describe('Compositor Image Overlay Lifecycle', () => {
     const imageMenuItem = compositorNode.getByText('Image', { exact: true }).last();
     await expect(textMenuItem).toBeVisible({ timeout: 3_000 });
     await expect(imageMenuItem).toBeVisible({ timeout: 3_000 });
-
-    // ── 4. Add image overlay via file picker ─────────────────────────────
 
     // The "Image" menu item triggers a hidden file input via a programmatic
     // click.  We use Playwright's filechooser event to intercept the native
@@ -159,21 +143,15 @@ test.describe('Compositor Image Overlay Lifecycle', () => {
       buffer: readSystemLogoPng(),
     });
 
-    // ── 5. Verify image layer appears in layer list ──────────────────────
-
     // Wait for the image layer to appear.  The layer list and the canvas
     // both render "Image 0" text.  We target the layer list item which is
     // NOT inside the canvas [data-canvas-width] area.
     const imageLayer = compositorNode.getByText('Image 0', { exact: true }).first();
     await expect(imageLayer).toBeVisible({ timeout: 5_000 });
 
-    // ── 6. Verify image layer box appears on canvas ──────────────────────
-
     // The image overlay box on the canvas has a unique aria-label.
     const imageLayerBox = canvasInner.locator('[aria-label*="Image overlay"]').first();
     await expect(imageLayerBox).toBeVisible({ timeout: 5_000 });
-
-    // ── 7. Select image layer — inspector controls appear ────────────────
 
     // Click the image layer box on the canvas to select it.  The canvas box
     // has a unique aria-label so we avoid ambiguity with the layer list text.
@@ -206,12 +184,8 @@ test.describe('Compositor Image Overlay Lifecycle', () => {
       .first();
     await expect(mirrorSection).toBeVisible({ timeout: 5_000 });
 
-    // ── 8. Crop & Zoom should NOT appear for image layers ────────────────
-
     const cropSection = compositorNode.getByTestId('crop-zoom-section');
     await expect(cropSection).not.toBeVisible({ timeout: 3_000 });
-
-    // ── 9. Delete image overlay via context menu ─────────────────────────
 
     // Right-click the image layer box on the canvas to open context menu.
     await imageLayerBox.click({ button: 'right' });
@@ -228,8 +202,6 @@ test.describe('Compositor Image Overlay Lifecycle', () => {
     await expect(compositorNode.getByText('Image 0', { exact: true }).first()).not.toBeVisible({
       timeout: 5_000,
     });
-
-    // ── 10. Console error check ──────────────────────────────────────────
 
     const unexpected = collector.getUnexpected(MOQ_BENIGN_PATTERNS);
     if (unexpected.length > 0) {
@@ -249,8 +221,6 @@ test.describe('Compositor Image Overlay Lifecycle', () => {
 
     const testFileName = `e2e-test-${Date.now()}.png`;
     const pngBuffer = readSystemLogoPng();
-
-    // ── 1. Upload image asset via multipart POST ─────────────────────────
 
     const uploadResponse = await apiContext.post('/api/v1/assets/images', {
       multipart: {
@@ -286,8 +256,6 @@ test.describe('Compositor Image Overlay Lifecycle', () => {
     expect(asset.size_bytes).toBeGreaterThan(0);
     expect(asset.is_system).toBe(false);
 
-    // ── 2. List assets — uploaded image and system logo should appear ────
-
     const listResponse = await apiContext.get('/api/v1/assets/images');
     expect(listResponse.ok()).toBeTruthy();
 
@@ -304,8 +272,6 @@ test.describe('Compositor Image Overlay Lifecycle', () => {
     expect(systemLogo, 'Bundled system logo not found in list').toBeTruthy();
     expect(systemLogo!.is_system).toBe(true);
 
-    // ── 3. Serve image file — GET /api/v1/assets/images/file/{scope}/{id} ─
-
     const serveResponse = await apiContext.get(
       `/api/v1/assets/images/file/user/${encodeURIComponent(testFileName)}`
     );
@@ -316,8 +282,6 @@ test.describe('Compositor Image Overlay Lifecycle', () => {
 
     const servedBytes = await serveResponse.body();
     expect(servedBytes.length).toBe(pngBuffer.length);
-
-    // ── 4. Duplicate upload — expect 409 Conflict ────────────────────────
 
     const dupResponse = await apiContext.post('/api/v1/assets/images', {
       multipart: {
@@ -331,14 +295,10 @@ test.describe('Compositor Image Overlay Lifecycle', () => {
 
     expect(dupResponse.status()).toBe(409);
 
-    // ── 5. Delete asset ──────────────────────────────────────────────────
-
     const deleteResponse = await apiContext.delete(
       `/api/v1/assets/images/${encodeURIComponent(testFileName)}`
     );
     expect(deleteResponse.ok(), `Delete failed: ${deleteResponse.status()}`).toBeTruthy();
-
-    // ── 6. Verify asset is gone from list ────────────────────────────────
 
     const listAfterDelete = await apiContext.get('/api/v1/assets/images');
     expect(listAfterDelete.ok()).toBeTruthy();
@@ -349,8 +309,6 @@ test.describe('Compositor Image Overlay Lifecycle', () => {
 
     await apiContext.dispose();
   });
-
-  // ── Cleanup ─────────────────────────────────────────────────────────────
 
   test.afterEach(async ({ baseURL }) => {
     if (sessionId) {

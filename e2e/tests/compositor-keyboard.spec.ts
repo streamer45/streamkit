@@ -28,10 +28,6 @@ import { WEBCAM_PIP_YAML } from './compositor-fixtures';
 /** SNAP_GRID from compositorLayerParsers — default arrow-key nudge step. */
 const SNAP_GRID = 10;
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 /**
  * Focus the compositor keyboard wrapper and dispatch a keydown event.
  *
@@ -111,10 +107,6 @@ async function setupCompositorView(page: Page) {
   return { compositorNode, canvasInner };
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 test.describe('Compositor Keyboard Shortcuts', () => {
   let collector: ConsoleErrorCollector;
   let sessionId: string | null = null;
@@ -128,8 +120,6 @@ test.describe('Compositor Keyboard Shortcuts', () => {
     baseURL,
   }) => {
     test.setTimeout(120_000);
-
-    // ── 1. Create session via API ────────────────────────────────────────
 
     const apiContext = await request.newContext({
       baseURL: baseURL!,
@@ -151,8 +141,6 @@ test.describe('Compositor Keyboard Shortcuts', () => {
     expect(sessionId).toBeTruthy();
     await apiContext.dispose();
 
-    // ── 2. Navigate to monitor view, find compositor node ────────────────
-
     const { compositorNode, canvasInner } = await setupCompositorView(page);
 
     // Verify expected layers are visible in the layer list.
@@ -160,8 +148,6 @@ test.describe('Compositor Keyboard Shortcuts', () => {
     const textLayer = compositorNode.getByText('Text 0', { exact: true }).first();
     await expect(inputLayer).toBeVisible({ timeout: 5_000 });
     await expect(textLayer).toBeVisible({ timeout: 5_000 });
-
-    // ── 3. Arrow key nudge on a video layer ─────────────────────────────
 
     // Select "Input 1" in the layer list.
     await inputLayer.click();
@@ -186,16 +172,12 @@ test.describe('Compositor Keyboard Shortcuts', () => {
     expect(pos2!.left).toBe(pos1!.left);
     expect(pos2!.top).toBe(pos1!.top + 1);
 
-    // ── 4. Delete on a video layer is a no-op ───────────────────────────
-
     await pressKey(page, 'Delete');
 
     // The video layer must still exist.
     const posAfterDelete = await getCanvasLayerPosition(canvasInner, 'in_1');
     expect(posAfterDelete, 'Video layer should survive Delete').not.toBeNull();
     expect(posAfterDelete!.left).toBe(pos2!.left);
-
-    // ── 5. Escape deselects the current layer ───────────────────────────
 
     await pressKey(page, 'Escape');
 
@@ -205,8 +187,6 @@ test.describe('Compositor Keyboard Shortcuts', () => {
     const posAfterEsc = await getCanvasLayerPosition(canvasInner, 'in_1');
     expect(posAfterEsc).not.toBeNull();
     expect(posAfterEsc!.left).toBe(pos2!.left); // unchanged
-
-    // ── 6. Arrow key nudge on a text overlay ────────────────────────────
 
     await textLayer.click();
 
@@ -220,8 +200,6 @@ test.describe('Compositor Keyboard Shortcuts', () => {
     expect(textPos1!.left).toBe(textPos0!.left - SNAP_GRID);
     expect(textPos1!.top).toBe(textPos0!.top);
 
-    // ── 7. Delete removes the text overlay ──────────────────────────────
-
     await pressKey(page, 'Delete');
 
     // "Text 0" should no longer appear in the layer list.
@@ -229,15 +207,11 @@ test.describe('Compositor Keyboard Shortcuts', () => {
       timeout: 5_000,
     });
 
-    // ── 8. Console error check ──────────────────────────────────────────
-
     const unexpected = collector.getUnexpected(MOQ_BENIGN_PATTERNS);
     if (unexpected.length > 0) {
       console.warn('Unexpected console errors (non-fatal):', unexpected);
     }
   });
-
-  // ── Cleanup ─────────────────────────────────────────────────────────────
 
   test.afterEach(async ({ baseURL }) => {
     if (sessionId) {

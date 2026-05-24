@@ -370,7 +370,6 @@ async fn dispatch(command: Commands) {
             if let Err(e) =
                 streamkit_client::process_oneshot(&pipeline, &inputs, &output, &server).await
             {
-                // Error already logged via tracing above
                 error!(error = %e, "Failed to process oneshot pipeline");
                 std::process::exit(1);
             }
@@ -379,7 +378,6 @@ async fn dispatch(command: Commands) {
             info!("Starting StreamKit client - creating session");
 
             if let Err(e) = streamkit_client::create_session(&pipeline, &name, &server).await {
-                // Error already logged via tracing above
                 error!(error = %e, "Failed to create dynamic session");
                 std::process::exit(1);
             }
@@ -388,7 +386,6 @@ async fn dispatch(command: Commands) {
             info!("Starting StreamKit client - destroying session");
 
             if let Err(e) = streamkit_client::destroy_session(&session_id, &server).await {
-                // Error already logged via tracing above
                 error!(error = %e, "Failed to destroy session");
                 std::process::exit(1);
             }
@@ -399,7 +396,6 @@ async fn dispatch(command: Commands) {
             if let Err(e) =
                 streamkit_client::tune_node(&session_id, &node_id, &param, &value, &server).await
             {
-                // Error already logged via tracing above
                 error!(error = %e, "Failed to tune node");
                 std::process::exit(1);
             }
@@ -408,7 +404,6 @@ async fn dispatch(command: Commands) {
             info!("Starting StreamKit client - listing sessions");
 
             if let Err(e) = streamkit_client::list_sessions(&server).await {
-                // Error already logged via tracing above
                 error!(error = %e, "Failed to list sessions");
                 std::process::exit(1);
             }
@@ -417,7 +412,6 @@ async fn dispatch(command: Commands) {
             info!("Starting StreamKit client - interactive shell");
 
             if let Err(e) = streamkit_client::start_shell(&server).await {
-                // Error already logged via tracing above
                 error!(error = %e, "Failed to start interactive shell");
                 std::process::exit(1);
             }
@@ -439,7 +433,6 @@ async fn dispatch(command: Commands) {
             if let Err(e) =
                 streamkit_client::run_load_test(&config, server, sessions, duration, cleanup).await
             {
-                // Error already logged via tracing above
                 error!(error = %e, "Load test failed");
                 std::process::exit(1);
             }

@@ -34,20 +34,13 @@ impl Default for NodeStats {
     }
 }
 
-/// A statistics update message sent by a node to report its current metrics.
-/// These updates are throttled to prevent overload (typically every 2s or 1000 packets).
 #[derive(Debug, Clone)]
 pub struct NodeStatsUpdate {
-    /// The unique identifier of the node reporting the stats
     pub node_id: String,
-    /// The current statistics snapshot
     pub stats: NodeStats,
-    /// When this snapshot was taken
     pub timestamp: SystemTime,
 }
 
-/// Helper for tracking and throttling node statistics updates.
-/// Automatically sends updates every 2 seconds or 1000 packets.
 pub struct NodeStatsTracker {
     stats: NodeStats,
     start_time: std::time::Instant,
@@ -58,11 +51,9 @@ pub struct NodeStatsTracker {
 }
 
 impl NodeStatsTracker {
-    /// Throttling configuration
     const SEND_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
     const SEND_PACKET_THRESHOLD: u64 = 1000;
 
-    /// Create a new stats tracker for a node
     pub fn new(
         node_id: String,
         stats_tx: Option<tokio::sync::mpsc::Sender<NodeStatsUpdate>>,
@@ -78,56 +69,46 @@ impl NodeStatsTracker {
         }
     }
 
-    /// Record a received packet
     #[inline]
     pub const fn received(&mut self) {
         self.stats.received += 1;
     }
 
-    /// Record multiple received packets (for batched stats reporting)
     #[inline]
     pub const fn received_n(&mut self, count: u64) {
         self.stats.received += count;
     }
 
-    /// Record a sent packet
     #[inline]
     pub const fn sent(&mut self) {
         self.stats.sent += 1;
     }
 
-    /// Record multiple sent packets (for batched stats reporting)
     #[inline]
     pub const fn sent_n(&mut self, count: u64) {
         self.stats.sent += count;
     }
 
-    /// Record a discarded packet
     #[inline]
     pub const fn discarded(&mut self) {
         self.stats.discarded += 1;
     }
 
-    /// Record multiple discarded packets (for batched stats reporting)
     #[inline]
     pub const fn discarded_n(&mut self, count: u64) {
         self.stats.discarded += count;
     }
 
-    /// Record an error
     #[inline]
     pub const fn errored(&mut self) {
         self.stats.errored += 1;
     }
 
-    /// Record multiple errors (for batched stats reporting)
     #[inline]
     pub const fn errored_n(&mut self, count: u64) {
         self.stats.errored += count;
     }
 
-    /// Automatically send stats if threshold is met (every 2s or 1000 packets).
-    /// Call this after processing a batch of packets.
     pub fn maybe_send(&mut self) {
         // Many nodes only increment one side of the counters (e.g. pure sources only `sent`,
         // pure sinks only `received`). Use the max to keep the threshold behavior consistent
@@ -151,10 +132,8 @@ impl NodeStatsTracker {
         }
     }
 
-    /// Force send stats immediately (useful for final updates)
     pub fn force_send(&mut self) {
         if let Some(ref stats_tx) = self.stats_tx {
-            // Update duration before sending
             self.stats.duration_secs = self.start_time.elapsed().as_secs_f64();
 
             let _ = stats_tx.try_send(NodeStatsUpdate {

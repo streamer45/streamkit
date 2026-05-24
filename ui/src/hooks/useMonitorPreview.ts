@@ -235,14 +235,12 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
         await previewLoadConfig();
       }
 
-      // Check for cancellation after the config load await
       if (controller.signal.aborted) return;
 
       // Ask the server to inject a preview subgraph.
       const result = await startPreview(selectedSessionId, undefined, undefined, controller.signal);
 
-      // Check for cancellation after the API await — if the session
-      // changed while we were waiting, tear down the just-created preview.
+      // Session changed while awaiting — tear down the just-created preview.
       if (controller.signal.aborted) {
         stopPreview(selectedSessionId, result.preview_id).catch(() => {});
         return;

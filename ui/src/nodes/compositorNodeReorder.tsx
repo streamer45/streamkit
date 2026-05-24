@@ -19,8 +19,6 @@ import {
   type CompositorEntry,
 } from './compositorNodeParts';
 
-// ── Z-order button ──────────────────────────────────────────────────────────
-
 const ZOrderButton = styled.button`
   display: inline-flex;
   align-items: center;
@@ -59,8 +57,7 @@ const ZBadge = styled.span`
   flex-shrink: 0;
 `;
 
-// ── Reorder section (memoised to avoid cascade during opacity/rotation drags) ─
-
+// Memoised to avoid cascade re-renders during opacity/rotation drags.
 const LayerReorderSection: React.FC<{
   entries: CompositorEntry[];
   selectedLayerId: string | null;

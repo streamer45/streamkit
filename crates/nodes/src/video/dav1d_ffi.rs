@@ -15,10 +15,7 @@
 
 use std::ffi::{c_int, c_void};
 
-// ---------------------------------------------------------------------------
 // Constants
-// ---------------------------------------------------------------------------
-
 /// dav1d error code for EAGAIN ("not ready, drain pictures first").
 /// Matches `-(EAGAIN)` on Linux where `EAGAIN = 11`.
 pub const DAV1D_EAGAIN: c_int = -11;
@@ -27,9 +24,7 @@ pub const DAV1D_EAGAIN: c_int = -11;
 /// for Main profile).
 pub const DAV1D_PIXEL_LAYOUT_I420: c_int = 1;
 
-// ---------------------------------------------------------------------------
 // Opaque struct sizes
-// ---------------------------------------------------------------------------
 //
 // Each size is a generous upper bound on the real C struct.
 // `dav1d_abi_check.c` verifies `sizeof(…) <= *_SIZE` at build time.
@@ -38,10 +33,7 @@ const SETTINGS_SIZE: usize = 1024;
 const DATA_SIZE: usize = 128;
 const PICTURE_SIZE: usize = 1024;
 
-// ---------------------------------------------------------------------------
 // Dav1dSettings
-// ---------------------------------------------------------------------------
-
 /// Opaque wrapper for the C `Dav1dSettings` struct.
 ///
 /// Populated by [`dav1d_default_settings`]; individual fields are set via
@@ -74,10 +66,7 @@ impl Dav1dSettings {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Dav1dData
-// ---------------------------------------------------------------------------
-
 /// Opaque wrapper for the C `Dav1dData` struct.
 ///
 /// Managed entirely through [`dav1d_data_create`] / [`dav1d_send_data`] /
@@ -94,10 +83,7 @@ impl Dav1dData {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Dav1dPicture
-// ---------------------------------------------------------------------------
-
 /// Opaque wrapper for the C `Dav1dPicture` struct.
 ///
 /// Decoded pictures are read through offset-based accessors whose correctness
@@ -215,10 +201,7 @@ impl Dav1dPicture {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Extern functions
-// ---------------------------------------------------------------------------
-
 extern "C" {
     /// Initialize settings to default values.
     pub fn dav1d_default_settings(s: *mut Dav1dSettings);

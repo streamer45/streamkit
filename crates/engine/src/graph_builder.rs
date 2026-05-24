@@ -30,26 +30,13 @@ pub struct LiveNode {
 
 /// Wires up and spawns all nodes for a given pipeline definition.
 ///
-/// The `state_tx` parameter is optional - if provided, nodes will report their state changes
-/// to this channel. This is used in dynamic pipelines for monitoring. In stateless pipelines,
-/// this can be `None` and nodes will simply ignore state reporting.
-///
 /// # Errors
 ///
-/// Returns an error if:
-/// - Node initialization fails
-/// - Pin types are incompatible for requested connections
-/// - Required input pins are not connected
-/// - Nodes are spawned but fail to start
+/// Returns an error on node init failure, incompatible pin types, or missing connections.
 ///
 /// # Panics
 ///
-/// Panics if internal state becomes inconsistent (nodes referenced in connections
-/// but not present in the nodes map). This should never happen with validated pipeline
-/// definitions from the pipeline compiler.
-///
-/// The `implicit_hasher` warning is allowed because this function is only called with standard
-/// `HashMap` instances and doesn't benefit from hasher generalization.
+/// Panics if a connection references a node not present in the map.
 #[allow(
     clippy::cognitive_complexity,
     clippy::too_many_lines,
@@ -87,12 +74,9 @@ pub async fn wire_and_spawn_graph(
         )));
     }
 
-    // --- 1. Initialize nodes (allows Tier 1 dynamic pin discovery) ---
-    // Create a dummy state channel for initialization if no state_tx provided
     let (init_state_tx, _init_state_rx) = mpsc::channel(DEFAULT_STATE_CHANNEL_CAPACITY);
     let init_state_tx = state_tx.clone().unwrap_or(init_state_tx);
 
-    // Iterate over mutable references more concisely
     for (node_id, node) in &mut nodes {
         let init_ctx = InitContext { node_id: node_id.clone(), state_tx: init_state_tx.clone() };
 
@@ -107,7 +91,6 @@ pub async fn wire_and_spawn_graph(
                     inputs.len(),
                     outputs.len()
                 );
-                // Pins are already updated in the node itself via &mut
             },
             Err(e) => {
                 tracing::error!("Node '{}' failed to initialize: {}", node_id, e);
@@ -116,17 +99,14 @@ pub async fn wire_and_spawn_graph(
         }
     }
 
-    // --- 2. Create channels for all connections ---
     let mut output_txs: HashMap<(String, String), mpsc::Sender<Packet>> = HashMap::new();
     let mut input_rxs: HashMap<(String, String), mpsc::Receiver<Packet>> = HashMap::new();
 
-    // Validate all declared connections against node pin types using the shared registry.
     let registry = packet_type_registry();
     let mut out_pin_types: HashMap<(String, String), PacketType> = HashMap::new();
     let mut in_pin_accepts: HashMap<(String, String), Vec<PacketType>> = HashMap::new();
     let mut in_pin_cardinality: HashMap<(String, String), PinCardinality> = HashMap::new();
 
-    // Iterate concisely over references
     for (name, node) in &nodes {
         for pin in node.output_pins() {
             out_pin_types.insert((name.clone(), pin.name.clone()), pin.produces_type.clone());
@@ -137,8 +117,7 @@ pub async fn wire_and_spawn_graph(
         }
     }
 
-    // --- Type inference pass: Resolve Passthrough types ---
-    // Build a map of which output feeds which input for type propagation
+    // Resolve Passthrough types by tracing inputs backward.
     let mut connections_by_to: HashMap<(String, String), Vec<&crate::Connection>> = HashMap::new();
     for conn in connections {
         connections_by_to
@@ -147,25 +126,18 @@ pub async fn wire_and_spawn_graph(
             .push(conn);
     }
 
-    // Iteratively resolve Passthrough types (max 100 iterations to avoid infinite loops)
     let mut changed = true;
     let mut iteration = 0;
     while changed && iteration < 100 {
         changed = false;
         iteration += 1;
 
-        // Collect updates to apply (to avoid borrow checker issues)
         let mut updates: Vec<((String, String), PacketType)> = Vec::new();
 
-        // Iterate concisely over references
         for ((node_name, pin_name), pin_type) in &out_pin_types {
             if matches!(pin_type, PacketType::Passthrough) {
-                // Find the input pin for this node and trace back to find the source type
-                // For passthrough nodes, we assume there's a primary input pin (usually "in")
-                // We need to find what connects to this node's input
                 let input_pins = nodes.get(node_name).map(|n| n.input_pins()).unwrap_or_default();
 
-                // Try to find the source type from any input connection
                 let mut found = false;
                 for input_pin in input_pins {
                     if let Some(source_conns) =
@@ -175,7 +147,6 @@ pub async fn wire_and_spawn_graph(
                             if let Some(source_type) = out_pin_types
                                 .get(&(source_conn.from_node.clone(), source_conn.from_pin.clone()))
                             {
-                                // Only resolve if the source is not also Passthrough
                                 if !matches!(source_type, PacketType::Passthrough) {
                                     tracing::debug!(
                                         "Resolved Passthrough type for {}.{} to {:?} (from {}.{})",
@@ -202,7 +173,6 @@ pub async fn wire_and_spawn_graph(
             }
         }
 
-        // Apply all updates
         for ((node_name, pin_name), resolved_type) in updates {
             out_pin_types.insert((node_name, pin_name), resolved_type);
             changed = true;
@@ -286,7 +256,6 @@ pub async fn wire_and_spawn_graph(
                     )));
                 },
                 PinCardinality::Dynamic { .. } => {
-                    // Dynamic pins should be created at runtime, not pre-connected
                     tracing::error!(
                         "Input pin '{}.{}' has Dynamic cardinality but multiple static connections",
                         conn.to_node,
@@ -362,16 +331,16 @@ pub async fn wire_and_spawn_graph(
             output_sender: OutputSender::new(name.clone(), OutputRouting::Direct(direct_outputs)),
             batch_size,
             state_tx: node_state_tx.clone(),
-            stats_tx: stats_tx.clone(), // Used by oneshot metrics recording
-            telemetry_tx: None,         // Stateless pipelines don't emit telemetry
-            session_id: None,           // Stateless pipelines don't have sessions
+            stats_tx: stats_tx.clone(),
+            telemetry_tx: None,
+            session_id: None,
             cancellation_token: cancellation_token.clone(),
-            pin_management_rx: None, // Stateless pipelines don't support dynamic pins
+            pin_management_rx: None,
             audio_pool: audio_pool.clone(),
             video_pool: video_pool.clone(),
             pipeline_mode: streamkit_core::PipelineMode::Oneshot,
-            view_data_tx: None,      // Stateless pipelines don't emit view data
-            engine_control_tx: None, // Stateless pipelines don't support cross-node control
+            view_data_tx: None,
+            engine_control_tx: None,
         };
 
         tracing::debug!("Starting task for node '{}'", name);
@@ -418,9 +387,7 @@ pub async fn wire_and_spawn_graph(
                 ];
                 histogram.record(duration.as_secs_f64(), &labels);
 
-                // Send final state based on result
                 let final_state = match &result {
-                    // Use () instead of _ for unit type to be explicit
                     Ok(()) => NodeState::Stopped { reason: StopReason::Completed },
                     Err(e) => NodeState::Failed { reason: e.to_string() },
                 };
@@ -431,7 +398,6 @@ pub async fn wire_and_spawn_graph(
                     timestamp: SystemTime::now(),
                 }).await;
 
-                // If we have a global state channel, forward the final state there too
                 if let Some(global_tx) = state_tx_clone {
                     let _ = global_tx.send(NodeStateUpdate {
                         node_id: name_for_state,

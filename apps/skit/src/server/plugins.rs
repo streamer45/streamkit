@@ -140,8 +140,7 @@ pub(super) async fn upload_plugin_handler(
             }
         }
 
-        // Ensure all data is flushed to disk before we try to load the plugin.
-        // This is important because load_from_temp_file uses sync file operations.
+        // Flush before load_from_temp_file (which uses sync I/O).
         if let Err(e) = file.flush().await {
             let _ = tokio::fs::remove_file(&tmp_path).await;
             return Err(PluginHttpError::BadRequest(format!("Failed to flush temp file: {e}")));
@@ -150,7 +149,6 @@ pub(super) async fn upload_plugin_handler(
             let _ = tokio::fs::remove_file(&tmp_path).await;
             return Err(PluginHttpError::BadRequest(format!("Failed to sync temp file: {e}")));
         }
-        // Explicitly drop the file handle to ensure it's closed before we read it
         drop(file);
 
         plugin_file_name = Some(file_name);

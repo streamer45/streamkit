@@ -53,8 +53,6 @@ use super::svt_av1_ffi::{
 
 use super::AV1_CONTENT_TYPE;
 
-// ── Default config values ────────────────────────────────────────────────────
-
 /// Default to constant-quality mode (CRF).  In bitrate mode SVT-AV1 may
 /// buffer frames for rate-control look-ahead.  CRF mode with low-delay
 /// prediction structure emits packets with minimal latency.
@@ -71,10 +69,7 @@ const SVT_AV1_DEFAULT_PARALLELISM: u32 = 0;
 /// Default frame rate (matches rav1e encoder default).
 const SVT_AV1_DEFAULT_FPS: u32 = 30;
 
-// ---------------------------------------------------------------------------
 // Configuration struct
-// ---------------------------------------------------------------------------
-
 #[derive(Deserialize, Debug, JsonSchema, Clone)]
 #[serde(default, deny_unknown_fields)]
 pub struct SvtAv1EncoderConfig {
@@ -110,10 +105,7 @@ impl Default for SvtAv1EncoderConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Encoder node
-// ---------------------------------------------------------------------------
-
 pub struct SvtAv1EncoderNode {
     config: SvtAv1EncoderConfig,
 }
@@ -293,10 +285,7 @@ impl EncoderNodeRunner for SvtAv1EncoderNode {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Internal codec types
-// ---------------------------------------------------------------------------
-
 use super::encoder_trait::{self, EncodedPacket, EncoderNodeRunner};
 
 /// Wrapper around `*mut EbComponentType` that can be sent across threads.
@@ -313,10 +302,7 @@ struct SendableHandle(*mut EbComponentType);
 // usage pattern (see `SvtAv1EncApp`).
 unsafe impl Send for SendableHandle {}
 
-// ---------------------------------------------------------------------------
 // Receive loop (runs on its own OS thread)
-// ---------------------------------------------------------------------------
-
 /// Blocking receive loop: calls `svt_av1_enc_get_packet` in a loop until
 /// the encoder signals EOS or `EB_NoErrorEmptyQueue`.
 ///
@@ -393,10 +379,7 @@ fn receive_loop(handle: SendableHandle, result_tx: &mpsc::Sender<Result<EncodedP
     }
 }
 
-// ---------------------------------------------------------------------------
 // SVT-AV1 encoder wrapper (send-side only)
-// ---------------------------------------------------------------------------
-
 struct SvtAv1Encoder {
     handle: *mut EbComponentType,
     next_pts: i64,
@@ -757,10 +740,7 @@ fn send_eos(handle: *mut EbComponentType) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
-
 /// Set a single SVT-AV1 config parameter by name (string API).
 fn set_param(config: &mut EbSvtAv1EncConfiguration, name: &str, value: &str) -> Result<(), String> {
     let c_name = CString::new(name).map_err(|_| format!("invalid parameter name: {name}"))?;
@@ -779,10 +759,7 @@ fn set_param(config: &mut EbSvtAv1EncConfiguration, name: &str, value: &str) -> 
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
 // Registration
-// ---------------------------------------------------------------------------
-
 use streamkit_core::registry::StaticPins;
 
 pub fn register_svt_av1_nodes(registry: &mut NodeRegistry) {
@@ -803,10 +780,7 @@ pub fn register_svt_av1_nodes(registry: &mut NodeRegistry) {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_macros)]
 mod tests {

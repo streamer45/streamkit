@@ -22,8 +22,6 @@
 
 import type { Page } from '@playwright/test';
 
-// ── Types mirroring ui/src/perf/profiler.ts ──────────────────────────────────
-
 export interface PerfCommit {
   id: string;
   phase: 'mount' | 'update' | 'nested-update';
@@ -45,8 +43,6 @@ export interface PerfSnapshot {
   session: number;
   startedAt: string;
 }
-
-// ── Core helpers ─────────────────────────────────────────────────────────────
 
 /**
  * Reset the in-app perf profiler and return the (empty) initial state.
@@ -76,8 +72,6 @@ export async function capturePerfData(page: Page): Promise<PerfSnapshot> {
     return JSON.parse(JSON.stringify(w.__PERF_DATA__)) as PerfSnapshot;
   });
 }
-
-// ── Comparison utilities ─────────────────────────────────────────────────────
 
 export interface RenderBudget {
   /** Maximum allowed render count.  Exceeding this fails the assertion. */

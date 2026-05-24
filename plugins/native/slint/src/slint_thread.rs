@@ -123,8 +123,6 @@ pub fn send_work(item: SlintWorkItem) -> Result<(), String> {
         .map_err(|_| "Slint renderer thread is no longer running".to_string())
 }
 
-// ── Slint thread main loop ──────────────────────────────────────────────────
-
 /// A property pair discovered at registration: a source property
 /// `{name}` and its corresponding `prev-{name}`.  When the source
 /// property changes in an `UpdateConfig`, the old value is
@@ -263,7 +261,6 @@ fn handle_render(instances: &mut HashMap<NodeId, InstanceState>, node_id: &NodeI
     slint::platform::update_timers_and_animations();
 
     let rgba_data = if state.config.static_ui {
-        // ── Static UI path: cache the rendered frame ────────
         let kf_idx = if state.config.property_keyframes.is_empty() {
             None
         } else {
@@ -287,7 +284,6 @@ fn handle_render(instances: &mut HashMap<NodeId, InstanceState>, node_id: &NodeI
         }
         state.cached_frame.clone().unwrap_or_default()
     } else {
-        // ── Dynamic UI path: always re-render ───────────────
         render_slint_frame(&mut state.instance, &state.config)
     };
 
@@ -379,8 +375,6 @@ impl InstanceState {
     }
 }
 
-// ── Slint rendering internals ───────────────────────────────────────────────
-
 /// Scope guard that clears the `CURRENT_WINDOW` thread-local on drop.
 ///
 /// Used by `create_slint_instance` to ensure the thread-local is cleaned up
@@ -426,7 +420,6 @@ fn create_slint_instance(
     let compiler = slint_interpreter::Compiler::default();
     let result = pollster::block_on(compiler.build_from_path(&config.slint_file));
 
-    // Check for compilation errors.
     let diags: Vec<_> = result
         .diagnostics()
         .filter(|d| d.level() == slint_interpreter::DiagnosticLevel::Error)
@@ -440,7 +433,6 @@ fn create_slint_instance(
         ));
     }
 
-    // Get the component definition.
     let definition = if let Some(ref name) = config.component {
         result
             .component(name)
@@ -453,7 +445,6 @@ fn create_slint_instance(
             .ok_or_else(|| format!("No exported components in '{}'", config.slint_file))?
     };
 
-    // Create the minimal software window.
     let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
     #[allow(clippy::cast_precision_loss)]
     window.set_size(LogicalSize::new((width as f32).max(1.0), (height as f32).max(1.0)));
@@ -479,7 +470,6 @@ fn create_slint_instance(
         .create()
         .map_err(|e| format!("Failed to create Slint component instance: {e}"))?;
 
-    // Set initial properties.
     set_properties(&component, &config.properties);
 
     // Allocate pixel buffer.
@@ -610,8 +600,6 @@ fn render_slint_frame(instance: &mut SlintInstance, config: &SlintConfig) -> Vec
     premultiplied_to_straight_rgba(&instance.buffer)
 }
 
-// ── Private helpers ─────────────────────────────────────────────────────────
-
 /// Map JSON property values to Slint `Value` and set them on the component.
 ///
 /// `revision` is always set **last** so that any properties it drives
@@ -679,8 +667,6 @@ fn premultiplied_to_straight_rgba(pixels: &[PremultipliedRgbaColor]) -> Vec<u8> 
     }
     bytes
 }
-
-// ── Slint platform backend ──────────────────────────────────────────────────
 
 // Thread-local holding the window adapter that `SlintBackend::create_window_adapter()`
 // should return.

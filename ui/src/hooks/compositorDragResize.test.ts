@@ -77,8 +77,6 @@ function makeDeps(overrides: Partial<DragResizeDeps> = {}): DragResizeDeps {
   };
 }
 
-// ── applyVisualUpdate — circle clip-path during resize ──────────────────────
-
 describe('useCompositorDragResize circle crop resize', () => {
   it('updates clipPath on the DOM element when resizing a circle-crop layer', () => {
     // Enable fake timers BEFORE dispatching events so rAF (shimmed as
@@ -179,8 +177,6 @@ describe('useCompositorDragResize circle crop resize', () => {
   });
 });
 
-// ── zero-delta guard ────────────────────────────────────────────────────────
-
 describe('useCompositorDragResize zero-delta guard', () => {
   let deps: DragResizeDeps;
 
@@ -249,7 +245,6 @@ describe('useCompositorDragResize zero-delta guard', () => {
   });
 });
 
-// ── First-drag-of-server-stub regression ────────────────────────────────────
 //
 // Auto-PiP layers materialised by `mapServerLayers` carry `serverOnly:
 // true`.  `serializeLayers` skips serverOnly layers so the server can keep

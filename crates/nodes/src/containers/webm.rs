@@ -23,20 +23,14 @@ use webm::mux::{
     AudioCodecId, AudioTrack, SegmentBuilder, SegmentMode, VideoCodecId, VideoTrack, Writer,
 };
 
-// --- WebM Constants ---
-
-/// Default audio frame duration when metadata is missing (20ms Opus frame).
+/// 20ms Opus frame.
 const DEFAULT_FRAME_DURATION_US: u64 = 20_000;
 
 use crate::video::{
     DEFAULT_VIDEO_FRAME_DURATION_US, VP9_BIT_DEPTH, VP9_CHROMA_SUBSAMPLING, VP9_LEVEL, VP9_PROFILE,
 };
 
-// ---------------------------------------------------------------------------
-// VP9 keyframe dimension parser
-// ---------------------------------------------------------------------------
-
-/// Minimal bit reader for parsing VP9 uncompressed headers (MSB-first).
+/// Bit reader for parsing VP9 uncompressed headers (MSB-first).
 struct BitReader<'a> {
     data: &'a [u8],
     byte_offset: usize,
@@ -224,8 +218,6 @@ fn opus_head_codec_private(
 
     Ok(head)
 }
-
-// --- WebM Muxer ---
 
 /// Internal state for [`SharedPacketBuffer`], protected by a single mutex
 /// to eliminate lock-ordering concerns between cursor, position tracking,
@@ -502,20 +494,9 @@ const fn webm_content_type(has_audio: bool, has_video: bool, video_is_av1: bool)
     }
 }
 
-/// A node that muxes encoded Opus audio and/or VP9/AV1 video packets into a WebM container stream.
+/// Muxes Opus audio and/or VP9/AV1 video into a WebM container.
 ///
-/// Input pins use generic names (`"in"`, `"in_1"`, …) — the media type carried by each
-/// input is detected at runtime from the packet's `content_type` field, **not** from the
-/// pin name.  This keeps the node future-proof for additional track types (subtitles,
-/// data channels, etc.) without requiring pin-name changes.
-///
-/// Pin layout (determined by config):
-/// - Default (no video dimensions): single pin `"in"` accepting audio **or** video.
-/// - With `video_width`/`video_height` > 0: two pins `"in"` + `"in_1"`, each accepting
-///   audio or video.  The muxer will auto-detect which track type each pin carries.
-///
-/// At least one input must be connected. When both are connected, audio and video frames
-/// are interleaved by arrival order as required by the WebM/Matroska container.
+/// Pin media type is auto-detected from packet content, not pin name.
 pub struct WebMMuxerNode {
     config: WebMMuxerConfig,
 }
@@ -792,15 +773,9 @@ impl ProcessorNode for WebMMuxerNode {
 
         let mut tracks = MuxTracks { audio: None, video: None };
 
-        // --- Resolve video dimensions -----------------------------------------
-        //
-        // When `video_width` / `video_height` are both 0 (the default) and a
-        // video input is connected, we auto-detect the dimensions from the
-        // first VP9 keyframe.  This avoids requiring the user to manually
-        // keep the muxer config in sync with the upstream encoder / compositor.
-        //
-        // The first video packet is buffered so it can be replayed through the
-        // normal receive loop after the segment is built.
+        // Auto-detect video dimensions from the first VP9 keyframe when
+        // video_width/video_height are both 0.  The first packet is buffered
+        // so it can be replayed after the segment is built.
 
         let mut first_video_packet: Option<(Bytes, Option<PacketMetadata>)> = None;
         let (video_width, video_height) = if has_video {
@@ -1688,7 +1663,6 @@ async fn flush_output(
 
 use streamkit_core::{config_helpers, registry::StaticPins};
 
-/// Registers the WebM container nodes.
 pub fn register_webm_nodes(registry: &mut NodeRegistry) {
     #[cfg(feature = "webm")]
     {
@@ -1725,7 +1699,6 @@ mod tests {
         }
     }
 
-    /// Helper to build a `WebMMuxerNode` with the given video dimensions.
     fn muxer_with_dims(w: u32, h: u32) -> WebMMuxerNode {
         WebMMuxerNode::new(WebMMuxerConfig {
             video_width: w,
@@ -1831,12 +1804,7 @@ mod tests {
         );
     }
 
-    // ---------------------------------------------------------------
-    // Timestamp logic unit tests
-    // ---------------------------------------------------------------
-
-    /// Helper: stage N frames on a single track via `stage_frame` and
-    /// return their rebased timestamps in nanoseconds.
+    /// Stage N frames on a single track and return their rebased timestamps.
     #[allow(clippy::too_many_arguments)]
     fn stage_n(
         n: usize,
@@ -2222,7 +2190,6 @@ mod tests {
         let mut audio_last: Option<u64> = None;
         let mut last_written_ns: u64 = 0;
 
-        // ── Phase 1: 60 pre-calibration video frames (≈2s at 30fps) ──
         for i in 0u64..60 {
             let ts_us = i * 33_333;
             let pf = stage_frame(
@@ -2251,7 +2218,6 @@ mod tests {
             video_pre_cal_ns / 1_000_000
         );
 
-        // ── Phase 2: Audio arrives, rebased to current video position ──
         for i in 0u64..10 {
             let ts_us = i * 20_000; // MoQ-normalized, starts near 0
             let pf = stage_frame(
@@ -2273,9 +2239,7 @@ mod tests {
             last_written_ns = strictly_increasing_ts(pf.timestamp_ns, last_written_ns);
         }
 
-        // ── Phase 3: Compositor calibrates — video timestamps jump back
-        //    to near 0 (MoQ epoch) ──
-        // This simulates the compositor output after cal_offset is applied:
+        // Compositor calibrates — video timestamps jump back to near 0 (MoQ epoch).
         // output_ts = running_clock + cal_offset ≈ 2s + (-2s) = 0.
         let mut post_cal_video_ts = Vec::new();
         for i in 0u64..30 {
@@ -2301,7 +2265,6 @@ mod tests {
             last_written_ns = write_ts;
         }
 
-        // ── Phase 4: Continue audio for comparison ──
         let mut post_cal_audio_ts = Vec::new();
         for i in 10u64..40 {
             let ts_us = i * 20_000;
@@ -2326,7 +2289,6 @@ mod tests {
             last_written_ns = write_ts;
         }
 
-        // ── Assertions ──
         // After the rebase reset, post-calibration video should quickly
         // re-align with audio.  The last video and audio timestamps
         // should be within 500ms of each other (not the ~2s permanent

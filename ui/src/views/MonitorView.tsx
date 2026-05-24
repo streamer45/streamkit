@@ -614,7 +614,6 @@ const MonitorViewContent: React.FC = () => {
         handleDraftParamChange(nodeId, key, value);
         return;
       }
-      // Validate before sending to server
       const error = validateParamValueRef.current(nodeId, key, value);
       if (error) {
         toast.error(`Invalid value for ${key}: ${error}`);
@@ -1103,7 +1102,6 @@ const MonitorViewContent: React.FC = () => {
       return;
     }
 
-    // Calculate drop position in flow coordinates
     const position = screenToFlow({
       x: event.clientX,
       y: event.clientY,
@@ -1364,7 +1362,6 @@ const MonitorViewContent: React.FC = () => {
     ]
   );
 
-  // Extract selected node label for YAML highlighting
   const selectedNodeLabel = React.useMemo(() => {
     return stableSelectedNode?.data?.label as string | undefined;
   }, [stableSelectedNode]);

@@ -109,10 +109,6 @@ function noNodesFailed(pipeline: PipelineResponse): boolean {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Test: dav1d decode → compositor → SVT-AV1 encode (self-contained via relay)
-// ---------------------------------------------------------------------------
-
 test.describe('MoQ Relay — dav1d Compositor Pipeline (SVT-AV1)', () => {
   let sessionId: string | null = null;
 
@@ -126,8 +122,6 @@ test.describe('MoQ Relay — dav1d Compositor Pipeline (SVT-AV1)', () => {
       test.skip(true, 'moq-relay not available (E2E_RELAY_URL not set)');
       return;
     }
-
-    // ── 1. Create session via API ──────────────────────────────────────────
 
     const yaml = loadPipelineFixture('moq-relay-dav1d-compositor.yaml', relayUrl);
 
@@ -148,8 +142,6 @@ test.describe('MoQ Relay — dav1d Compositor Pipeline (SVT-AV1)', () => {
     sessionId = createData.session_id;
     expect(sessionId).toBeTruthy();
     await apiContext.dispose();
-
-    // ── 2. Wait for all nodes to reach "running" state ────────────────────
     // AV1 encoding (especially SVT-AV1 init) can take longer than VP9,
     // so we use a generous timeout.
 
@@ -171,8 +163,6 @@ test.describe('MoQ Relay — dav1d Compositor Pipeline (SVT-AV1)', () => {
       allNodesRunning(pipeline),
       `Not all nodes reached Running state: ${JSON.stringify(pipeline.nodes)}`
     ).toBe(true);
-
-    // ── 3. Verify specific dav1d-related nodes are present ────────────────
 
     const nodeKinds = Object.entries(pipeline.nodes).map(([id, n]) => ({
       id,
@@ -209,8 +199,6 @@ test.describe('MoQ Relay — dav1d Compositor Pipeline (SVT-AV1)', () => {
       nodeKinds.some((n) => n.kind === 'transport::moq::subscriber'),
       'Expected a transport::moq::subscriber node'
     ).toBe(true);
-
-    // ── 4. Let the pipeline run for a few seconds to confirm stability ────
 
     await new Promise((resolve) => setTimeout(resolve, 5_000));
 

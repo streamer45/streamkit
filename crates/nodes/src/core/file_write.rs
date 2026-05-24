@@ -2,8 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! File write node - Writes raw bytes to a file
-
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -14,7 +12,6 @@ use streamkit_core::{
 };
 use tokio::io::AsyncWriteExt;
 
-/// Configuration for the FileWriteNode
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FileWriteConfig {
@@ -29,8 +26,6 @@ const fn default_chunk_size() -> usize {
     8192
 }
 
-/// A node that receives Binary packets and writes them to a file.
-/// This node is format-agnostic - it just writes raw bytes.
 pub struct FileWriteNode {
     config: FileWriteConfig,
 }

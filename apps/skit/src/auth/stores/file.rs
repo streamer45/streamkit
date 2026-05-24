@@ -137,7 +137,6 @@ impl FileKeyProvider {
     /// Panics if the system random number generator fails (critical security failure).
     #[allow(clippy::expect_used)]
     pub async fn load_or_init(state_dir: &Path) -> Result<Self, AuthStoreError> {
-        // Ensure state directory exists
         tokio::fs::create_dir_all(state_dir).await?;
 
         let private_path = state_dir.join(PRIVATE_JWK_FILENAME);
@@ -190,7 +189,6 @@ impl FileKeyProvider {
             Jwks { keys: vec![] }
         };
 
-        // Ensure active key is present in JWKS.
         if !jwks.keys.iter().any(|k| k.kid == private_jwk.kid) {
             jwks.keys.push(private_jwk.to_public_jwk());
             Self::write_secure(&jwks_path, &serde_json::to_string_pretty(&jwks)?).await?;
@@ -208,7 +206,6 @@ impl FileKeyProvider {
             public_keys.insert(jwk.kid.clone(), Arc::from(bytes.into_boxed_slice()));
         }
 
-        // Ensure the active public key matches the private key.
         if let Some(existing) = public_keys.get(&private_jwk.kid) {
             if existing.as_ref() != public_key_bytes.as_ref() {
                 return Err(AuthStoreError::InvalidKey(
@@ -249,18 +246,13 @@ impl FileKeyProvider {
 
     #[cfg(not(unix))]
     fn verify_permissions(_path: &Path) -> Result<(), AuthStoreError> {
-        // Non-Unix platforms: skip permission check
         Ok(())
     }
 
-    /// Write file with secure permissions (0600).
-    ///
-    /// Ensures crash durability by calling `sync_all()` on the file
-    /// before the atomic rename and on the parent directory afterwards.
+    /// Write file with 0600 permissions and fsync for crash durability.
     pub(crate) async fn write_secure(path: &Path, content: &str) -> Result<(), AuthStoreError> {
         use tokio::io::AsyncWriteExt;
 
-        // Write to a unique temp file first to avoid partially-written files.
         let temp_path = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
 
         #[cfg(unix)]
@@ -287,14 +279,11 @@ impl FileKeyProvider {
             file.sync_all().await?;
         }
 
-        // Atomic rename (same directory).
         if let Err(e) = tokio::fs::rename(&temp_path, path).await {
-            // Best-effort cleanup of the temp file.
             let _ = tokio::fs::remove_file(&temp_path).await;
             return Err(e.into());
         }
 
-        // Fsync parent directory so the new directory entry is durable.
         if let Some(parent) = path.parent() {
             if let Ok(dir) = tokio::fs::File::open(parent).await {
                 let _ = dir.sync_all().await;
@@ -459,7 +448,6 @@ impl KeyProvider for FileKeyProvider {
             new_public_keys.insert(jwk.kid.clone(), Arc::from(bytes.into_boxed_slice()));
         }
 
-        // Ensure the active public key is in the map (mirrors load_or_init behaviour).
         let active_pub: Arc<[u8]> = Arc::from(public_from_file.into_boxed_slice());
         if let Some(existing) = new_public_keys.get(&private.kid) {
             if existing.as_ref() != active_pub.as_ref() {
@@ -471,8 +459,7 @@ impl KeyProvider for FileKeyProvider {
             new_public_keys.insert(private.kid.clone(), active_pub);
         }
 
-        // Keep the JWKS struct consistent with public_keys so that
-        // /.well-known/jwks.json always advertises the active key.
+        // /.well-known/jwks.json must always advertise the active key.
         let mut jwks = jwks;
         if !jwks.keys.iter().any(|k| k.kid == private.kid) {
             jwks.keys.push(private.to_public_jwk());
@@ -537,13 +524,9 @@ fn generate_new_private_key() -> Result<(PrivateJwk, SigningKeyMaterial, Arc<[u8
     Ok((private, signing, public_key_arc))
 }
 
-/// File-based revocation store with in-memory lookup.
-///
-/// Revocations are stored in `revoked.json` and loaded into memory at startup.
-/// The `is_revoked` check is a fast HashSet lookup.
+/// File-based revocation store (`revoked.json`) with in-memory `HashSet` lookup.
 pub struct FileRevocationStore {
     state_dir: PathBuf,
-    /// In-memory map for fast lookups (token_hash -> exp)
     revoked: RwLock<HashMap<String, u64>>,
 }
 

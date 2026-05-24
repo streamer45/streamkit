@@ -13,11 +13,8 @@ use mixer::{AudioMixerConfig, AudioMixerNode};
 pub mod resampler;
 use resampler::{AudioResamplerConfig, AudioResamplerNode};
 
-/// Registers all available audio filter nodes with the engine's registry.
-///
 /// # Panics
-///
-/// Panics if default node configs are invalid (should never happen).
+/// Panics if default configs or JSON schemas fail to serialize.
 #[allow(clippy::expect_used)] // Schema serialization should never fail for valid types
 pub fn register_audio_filters(registry: &mut NodeRegistry) {
     #[cfg(feature = "audio_gain")]

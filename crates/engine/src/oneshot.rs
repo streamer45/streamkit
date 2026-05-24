@@ -2,26 +2,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! Oneshot pipeline execution for batch processing.
+//! Oneshot (stateless, run-once) pipeline execution.
 //!
-//! This module implements the "oneshot" execution mode where pipelines
-//! run once from start to finish, then terminate. Ideal for:
-//! - HTTP request processing
-//! - File transcoding jobs
-//! - Batch audio/video processing
-//!
-//! ## Stateless Architecture
-//!
-//! Oneshot pipelines use a stateless architecture: no persistent engine
-//! actor, all state is local to the execution. This design minimizes
-//! overhead for short-lived processing tasks.
-//!
-//! ## Current Limitation: Linear Pipelines Only
-//!
-//! The oneshot runner currently supports only linear graphs (no fan-out/branching).
-//! If an output pin has multiple downstream connections, graph wiring fails fast with
-//! a configuration error. Fan-out support can be added later by introducing an output
-//! router (e.g., per-pin distributors similar to the dynamic engine).
+//! Currently limited to linear graphs — fan-out is rejected at wire time.
 
 use crate::constants::{
     DEFAULT_BATCH_SIZE, DEFAULT_ONESHOT_IO_CAPACITY, DEFAULT_ONESHOT_MEDIA_CAPACITY,
@@ -108,14 +91,10 @@ use streamkit_core::stats::{NodeStats, NodeStatsUpdate};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-/// Configuration for oneshot pipeline execution.
 #[derive(Debug, Clone)]
 pub struct OneshotEngineConfig {
-    /// Batch size for packet processing (default: 32)
     pub packet_batch_size: usize,
-    /// Buffer size for media channels between nodes (default: 256)
     pub media_channel_capacity: usize,
-    /// Buffer size for I/O stream channels (default: 16)
     pub io_channel_capacity: usize,
 }
 
@@ -154,23 +133,15 @@ pub struct OneshotInput<S> {
 }
 
 impl Engine {
-    /// Runs a pipeline as a self-contained, one-shot task from a streaming input.
-    ///
-    /// Supports two modes:
-    /// - HTTP streaming mode (`inputs` non-empty): Uses http_input nodes with media streams
-    /// - File-based mode (`inputs` empty): Uses file_read nodes reading from disk
+    /// Run a pipeline as a self-contained one-shot task.
     ///
     /// # Errors
     ///
-    /// Returns an error if:
-    /// - Pipeline compilation fails
-    /// - Nodes cannot be created or wired
-    /// - The pipeline structure is invalid for oneshot execution
+    /// Returns an error on compilation, node creation, or invalid pipeline structure.
     ///
     /// # Panics
     ///
-    /// Panics if the engine's registry lock is poisoned (only possible if a thread panicked
-    /// while holding the lock).
+    /// Panics if the registry lock is poisoned.
     #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     pub async fn run_oneshot_pipeline<S, E>(
         &self,
@@ -200,7 +171,6 @@ impl Engine {
             guard.clone()
         };
 
-        // --- 1. Identify key nodes ---
         let mut output_node_id: Option<String> = None;
         let mut source_node_ids: Vec<String> = Vec::new();
         let mut http_input_nodes: Vec<String> = Vec::new();
@@ -235,12 +205,10 @@ impl Engine {
             )
         })?;
 
-        // --- 2. I/O channels and cancellation token ---
         let (output_stream_tx, output_stream_rx) = mpsc::channel(config.io_channel_capacity);
         let cancellation_token = cancellation_token.unwrap_or_default();
         tracing::debug!("Created I/O stream channels and cancellation token");
 
-        // --- 2.5. Bind http_input streams ---
         let mut nodes: HashMap<String, Box<dyn ProcessorNode>> = HashMap::new();
         let mut provided_inputs: HashMap<String, Vec<OneshotInput<S>>> = HashMap::new();
         let mut first_input_content_type: Option<String> = None;
@@ -336,7 +304,6 @@ impl Engine {
             }
         }
 
-        // --- 3. Validate that http_output is connected ---
         let final_node_id = definition
             .connections
             .iter()
@@ -361,8 +328,7 @@ impl Engine {
         })?;
         tracing::debug!("Creating final node instance of type '{}'", final_node_def.kind);
 
-        // Walk backward from the output node to find the first node
-        // that declares a content_type (skips passthrough-style nodes).
+        // Walk backward to find the first node with a declared content_type.
         let static_content_type = {
             let mut cursor = final_node_id.as_str();
             let mut found: Option<String> = None;
@@ -396,7 +362,6 @@ impl Engine {
             found
         };
 
-        // --- 4. Instantiate all nodes for the pipeline ---
         tracing::debug!("Creating special output node '{}'", output_node_id);
         let output_node_def = definition.nodes.get(&output_node_id).ok_or_else(|| {
             StreamKitError::Configuration(format!(
@@ -434,7 +399,6 @@ impl Engine {
 
         tracing::info!("Created {} nodes total", nodes.len());
 
-        // --- 5. Wire and spawn ---
         tracing::info!("Wiring up and spawning pipeline graph");
 
         let node_kinds: HashMap<String, String> =
@@ -452,7 +416,7 @@ impl Engine {
             &node_kinds,
             config.packet_batch_size,
             config.media_channel_capacity,
-            None, // No state tracking for oneshot pipelines
+            None,
             Some(stats_tx),
             Some(cancellation_token.clone()),
             Some(audio_pool),
@@ -463,13 +427,8 @@ impl Engine {
 
         spawn_oneshot_metrics_recorder(stats_rx, node_kinds_for_metrics);
 
-        // --- 5.5. Start source / generator nodes ---
-        // File readers need an explicit Start signal, and so do generator nodes
-        // (e.g. video::colorbars) that follow the Ready → Start lifecycle.
-        // We always scan for root nodes (never a to_node in any connection) so
-        // that mixed pipelines (e.g. http_input + colorbars) work correctly.
-        // http_input nodes are excluded because they are driven by the incoming
-        // HTTP stream rather than a Start signal.
+        // Start root nodes (sources/generators) that need an explicit Start
+        // signal. http_input nodes are excluded — they are stream-driven.
         let mut start_node_ids: Vec<String> = source_node_ids.clone();
 
         {
@@ -507,7 +466,6 @@ impl Engine {
             }
         }
 
-        // --- 7. Determine content-type for the response ---
         tracing::debug!(
             "Content type sources - configured: {:?}, static: {:?}, input: {:?}",
             configured_content_type,
@@ -551,7 +509,6 @@ fn spawn_oneshot_metrics_recorder(
     let node_kinds = std::sync::Arc::new(node_kinds);
 
     tokio::spawn(async move {
-        // Track previous stats per node to compute deltas
         let mut prev_stats: HashMap<String, NodeStats> = HashMap::new();
 
         while let Some(update) = stats_rx.recv().await {
@@ -593,7 +550,6 @@ fn spawn_oneshot_metrics_recorder(
                 }
             });
 
-            // Add deltas to counters (not absolute values)
             node_packets_received_counter.add(delta_received, labels);
             node_packets_sent_counter.add(delta_sent, labels);
             node_packets_discarded_counter.add(delta_discarded, labels);

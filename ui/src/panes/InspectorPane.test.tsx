@@ -15,7 +15,6 @@ vi.mock('@/stores/sessionAtoms', () => ({
   nodeParamsAtom: () => 'mock-atom',
 }));
 
-// Import after mocks are set up
 const { default: InspectorPane } = await import('./InspectorPane');
 
 const baseNodeDefinition: NodeDefinition = {

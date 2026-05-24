@@ -116,7 +116,7 @@ impl Logger {
     }
 }
 
-/// Helper macro to format tracing-style field syntax into a simple string
+/// Format tracing-style field syntax into a simple string.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __format_fields {
@@ -172,7 +172,7 @@ macro_rules! __format_fields {
     };
 }
 
-/// Helper macros for logging with tracing-style field syntax support
+/// Log with tracing-style field syntax support.
 #[macro_export]
 macro_rules! plugin_log {
     ($logger:expr, $level:expr, $($arg:tt)*) => {

@@ -100,13 +100,7 @@ pub enum AuthError {
     Moq(String),
 }
 
-/// Central authentication state for the server.
-///
-/// This struct manages all auth-related state including:
-/// - Whether auth is enabled
-/// - Key storage and rotation
-/// - Token revocation
-/// - Token metadata ("tokens we mint")
+/// Central authentication state (key material, revocation, token metadata).
 pub struct AuthState {
     enabled: bool,
     config: AuthConfig,
@@ -116,10 +110,7 @@ pub struct AuthState {
 }
 
 impl AuthState {
-    /// Create a disabled AuthState (sync, for use during initialization).
-    ///
-    /// This is useful when auth is disabled or when you need to create
-    /// the state synchronously before fully initializing.
+    /// Create a disabled `AuthState` (synchronous).
     pub fn disabled() -> Self {
         Self {
             enabled: false,
@@ -200,9 +191,7 @@ impl AuthState {
         self.revocation_store.as_ref()
     }
 
-    /// Check if a token is revoked by its token hash.
-    ///
-    /// Returns false if auth is disabled or if the revocation store is not available.
+    /// Returns false if auth is disabled or the revocation store is unavailable.
     #[allow(dead_code)]
     pub fn is_revoked(&self, token_hash: &str) -> bool {
         self.revocation_store.as_ref().is_some_and(|store| store.is_revoked(token_hash))
@@ -217,21 +206,14 @@ impl AuthState {
         self.key_provider.as_ref()
     }
 
-    /// Validate an API token and return its claims.
+    /// Verify JWT signature, expiration, audience, and claims structure.
     ///
-    /// This performs:
-    /// 1. JWT signature verification
-    /// 2. Expiration check
-    /// 3. Audience validation
-    /// 4. Claims structure validation
-    ///
-    /// Note: Revocation and "tokens we mint" checks should be done separately
-    /// by the caller for flexibility.
+    /// Revocation and "tokens we mint" checks are the caller's responsibility.
     ///
     /// # Errors
     ///
-    /// Returns errors for invalid tokens, expired tokens, signature verification
-    /// failures, or disabled auth.
+    /// Returns [`AuthError`] if auth is disabled, the token is malformed,
+    /// signature verification fails, or claims validation fails.
     pub fn validate_api_token(&self, token: &str) -> Result<ApiClaims, AuthError> {
         let key_provider = self.key_provider.as_ref().ok_or(AuthError::Disabled)?;
 
@@ -239,8 +221,7 @@ impl AuthState {
         validation.set_audience(&[AUD_API]);
         validation.set_required_spec_claims(&["exp", "aud", "jti"]);
 
-        // Prefer selecting the verification key by `kid` (header), but fall back to trying all
-        // known keys if `kid` is missing (best-effort compatibility).
+        // Prefer `kid` from the header; fall back to trying all known keys.
         let header = decode_header(token)?;
         let mut candidates: Vec<String> = Vec::new();
 
@@ -439,7 +420,6 @@ impl AuthState {
         let encoding_key = EncodingKey::from_ed_der(&key_material.pkcs8);
         let token = encode(&header, &claims, &encoding_key)?;
 
-        // Store metadata
         let token_hash = hash_token(&token);
         let meta = TokenMetadata {
             jti: jti.clone(),
@@ -527,7 +507,7 @@ impl AuthState {
         Ok(())
     }
 
-    /// Check if auth should be enabled based on config and bind address.
+    /// Whether auth should be enabled based on config and bind address.
     #[allow(dead_code)]
     pub const fn should_enable(config: &AuthConfig, bind_addr: &std::net::SocketAddr) -> bool {
         match config.mode {

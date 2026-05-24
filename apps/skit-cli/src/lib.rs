@@ -9,7 +9,6 @@ pub mod client;
 pub mod load_test;
 pub mod shell;
 
-// Re-export for convenience
 pub use client::{
     control_add_node, control_apply_batch, control_connect, control_disconnect,
     control_get_pipeline, control_list_nodes, control_remove_node, control_tune_async,

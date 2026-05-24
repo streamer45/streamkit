@@ -2,8 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! Audio resampler node - Changes playback speed by resampling audio data
-
 use async_trait::async_trait;
 use audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{Async, FixedAsync, PolynomialDegree, Resampler};
@@ -18,23 +16,16 @@ use streamkit_core::{
     OutputPin, PinCardinality, PooledSamples, ProcessorNode, StreamKitError,
 };
 
-/// Configuration for the AudioResamplerNode
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AudioResamplerConfig {
-    /// Target output sample rate in Hz (e.g., 48000, 24000, 16000)
-    /// Input audio will be resampled to this rate
-    /// Must be greater than 0
     #[schemars(range(min = 1))]
     pub target_sample_rate: u32,
-    /// Fixed chunk size for resampler (default: 960 frames = 20ms at 48kHz)
-    /// Larger values = better efficiency but more latency
+    /// Default: 960 (20ms at 48kHz). Larger = better efficiency, more latency.
     #[serde(default = "default_chunk_frames")]
     #[schemars(range(min = 1))]
     pub chunk_frames: usize,
-    /// Output frame size - packets will be buffered to this exact size (default: 960 = 20ms at 48kHz)
-    /// Must be a valid Opus frame size: 120, 240, 480, 960, 1920, or 2880 samples
-    /// Set to 0 to disable output buffering (variable frame sizes)
+    /// Must be a valid Opus frame size or 0 to disable output buffering.
     #[serde(default = "default_output_frame_size")]
     pub output_frame_size: usize,
 }
@@ -47,22 +38,8 @@ const fn default_output_frame_size() -> usize {
     960 // 20ms at 48kHz - matches Opus default
 }
 
-/// A node that resamples audio to convert between different sample rates.
-///
-/// This node uses rubato's async poly resampler with fixed input frames.
-/// Common use cases:
-/// - Converting 48kHz to 24kHz (downsampling)
-/// - Converting 16kHz to 48kHz (upsampling)
-/// - Normalizing various input rates to a standard output rate
-///
-/// **Note**: Sample rate conversion changes playback speed when interpreted at a fixed rate.
-/// This also changes pitch. For time-stretching without pitch change, a different algorithm is needed.
-///
-/// **Real-time optimizations**:
-/// - Resampler is created once and reused
-/// - Fixed chunk size for consistent processing
-/// - Pre-allocated buffers to avoid runtime allocation
-/// - Buffering to handle variable input sizes
+/// Sample rate conversion also changes pitch; for time-stretching without
+/// pitch change a different algorithm is needed.
 pub struct AudioResamplerNode {
     config: AudioResamplerConfig,
 }

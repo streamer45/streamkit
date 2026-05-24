@@ -129,7 +129,6 @@ async fn wait_for_node_state_failed(read: &mut WsRead, expected_node_id: &str) -
 }
 
 async fn start_test_server() -> Option<(SocketAddr, tokio::task::JoinHandle<()>)> {
-    // Find an available port by binding to port 0
     let listener = match TcpListener::bind("127.0.0.1:0").await {
         Ok(listener) => listener,
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return None,
@@ -137,13 +136,11 @@ async fn start_test_server() -> Option<(SocketAddr, tokio::task::JoinHandle<()>)
     };
     let addr = listener.local_addr().unwrap();
 
-    // Start server in background using the existing listener
     let server_handle = tokio::spawn(async move {
         let (app, _state) = streamkit_server::server::create_app(Config::default(), None);
         axum::serve(listener, app.into_make_service()).await.unwrap();
     });
 
-    // Give server time to start
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     Some((addr, server_handle))
@@ -158,13 +155,11 @@ async fn test_create_and_destroy_session() {
         return;
     };
 
-    // Connect to WebSocket
     let ws_url = format!("ws://{}/api/v1/control", addr);
     let (ws_stream, _) = connect_async(&ws_url).await.expect("Failed to connect to WebSocket");
 
     let (mut write, mut read) = ws_stream.split();
 
-    // Create session
     let create_request = Request {
         message_type: MessageType::Request,
         correlation_id: Some("test-1".to_string()),
@@ -174,7 +169,6 @@ async fn test_create_and_destroy_session() {
     let msg = serde_json::to_string(&create_request).unwrap();
     write.send(WsMessage::Text(msg.into())).await.expect("Failed to send create session request");
 
-    // Wait for response
     let response = read_response(&mut read, "test-1").await;
 
     assert_eq!(response.correlation_id, Some("test-1".to_string()));
@@ -189,7 +183,6 @@ async fn test_create_and_destroy_session() {
 
     println!("✅ Session created with ID: {}", session_id);
 
-    // List sessions
     let list_request = Request {
         message_type: MessageType::Request,
         correlation_id: Some("test-2".to_string()),
@@ -212,7 +205,6 @@ async fn test_create_and_destroy_session() {
 
     println!("✅ Session listed correctly");
 
-    // Destroy session
     let destroy_request = Request {
         message_type: MessageType::Request,
         correlation_id: Some("test-3".to_string()),
@@ -233,7 +225,6 @@ async fn test_create_and_destroy_session() {
 
     println!("✅ Session destroyed successfully");
 
-    // Verify session no longer exists
     let list_request = Request {
         message_type: MessageType::Request,
         correlation_id: Some("test-4".to_string()),
@@ -268,7 +259,6 @@ async fn test_multiple_sessions() {
     let (ws_stream, _) = connect_async(&ws_url).await.unwrap();
     let (mut write, mut read) = ws_stream.split();
 
-    // Create three sessions
     let mut session_ids = Vec::new();
 
     for i in 1..=3 {
@@ -293,7 +283,6 @@ async fn test_multiple_sessions() {
     assert_eq!(session_ids.len(), 3);
     println!("✅ Created 3 sessions");
 
-    // List all sessions
     let list_request = Request {
         message_type: MessageType::Request,
         correlation_id: Some("list".to_string()),
@@ -316,7 +305,6 @@ async fn test_multiple_sessions() {
 
     println!("✅ All 3 sessions listed correctly");
 
-    // Destroy all sessions
     for (i, session_id) in session_ids.iter().enumerate() {
         let destroy_request = Request {
             message_type: MessageType::Request,
@@ -348,7 +336,6 @@ async fn test_add_and_remove_nodes() {
     let (ws_stream, _) = connect_async(&ws_url).await.unwrap();
     let (mut write, mut read) = ws_stream.split();
 
-    // Create session
     let create_request = Request {
         message_type: MessageType::Request,
         correlation_id: Some("create".to_string()),
@@ -366,7 +353,6 @@ async fn test_add_and_remove_nodes() {
         _ => panic!("Expected SessionCreated"),
     };
 
-    // Add a gain node
     let add_node_request = Request {
         message_type: MessageType::Request,
         correlation_id: Some("add-node".to_string()),
@@ -398,7 +384,6 @@ async fn test_add_and_remove_nodes() {
 
     println!("✅ Added gain node");
 
-    // Get pipeline to verify node was added
     let get_pipeline_request = Request {
         message_type: MessageType::Request,
         correlation_id: Some("get-pipeline".to_string()),
@@ -422,7 +407,6 @@ async fn test_add_and_remove_nodes() {
 
     println!("✅ Pipeline contains the gain node");
 
-    // Remove the node
     let remove_node_request = Request {
         message_type: MessageType::Request,
         correlation_id: Some("remove-node".to_string()),
@@ -445,7 +429,6 @@ async fn test_add_and_remove_nodes() {
 
     println!("✅ Removed gain node");
 
-    // Verify node was removed
     let get_pipeline_request = Request {
         message_type: MessageType::Request,
         correlation_id: Some("get-pipeline-2".to_string()),
@@ -487,7 +470,6 @@ async fn test_addnode_failure_leaves_pipeline_empty() {
     let (ws_stream, _) = connect_async(&ws_url).await.unwrap();
     let (mut write, mut read) = ws_stream.split();
 
-    // Create session
     let create_request = Request {
         message_type: MessageType::Request,
         correlation_id: Some("create".to_string()),
@@ -693,7 +675,6 @@ async fn test_session_not_found() {
     let (ws_stream, _) = connect_async(&ws_url).await.unwrap();
     let (mut write, mut read) = ws_stream.split();
 
-    // Try to get pipeline for non-existent session
     let request = Request {
         message_type: MessageType::Request,
         correlation_id: Some("test".to_string()),
@@ -726,7 +707,6 @@ async fn test_session_destroy_shuts_down_pipeline() {
     let (ws_stream, _) = connect_async(&ws_url).await.unwrap();
     let (mut write, mut read) = ws_stream.split();
 
-    // Create session
     let create_request = Request {
         message_type: MessageType::Request,
         correlation_id: Some("create".to_string()),
@@ -746,7 +726,6 @@ async fn test_session_destroy_shuts_down_pipeline() {
 
     println!("✅ Session created: {}", session_id);
 
-    // Add a source node (audio::gain is a registered core node with in/out pins)
     let add_source_request = Request {
         message_type: MessageType::Request,
         correlation_id: Some("add-source".to_string()),
@@ -772,7 +751,6 @@ async fn test_session_destroy_shuts_down_pipeline() {
 
     println!("✅ Added source node");
 
-    // Add a second gain node
     let add_gain_request = Request {
         message_type: MessageType::Request,
         correlation_id: Some("add-gain".to_string()),
@@ -798,7 +776,6 @@ async fn test_session_destroy_shuts_down_pipeline() {
 
     println!("✅ Added gain node");
 
-    // Connect source to gain
     let connect_request = Request {
         message_type: MessageType::Request,
         correlation_id: Some("connect".to_string()),
@@ -826,10 +803,8 @@ async fn test_session_destroy_shuts_down_pipeline() {
 
     println!("✅ Connected nodes");
 
-    // Wait a bit to ensure the pipeline is running
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Get pipeline state to verify nodes are running
     let get_pipeline_request = Request {
         message_type: MessageType::Request,
         correlation_id: Some("get-pipeline".to_string()),
@@ -874,7 +849,6 @@ async fn test_session_destroy_shuts_down_pipeline() {
 
     println!("✅ Pipeline is running with nodes in valid states");
 
-    // Now destroy the session - this should shut down all nodes immediately
     let destroy_start = std::time::Instant::now();
 
     let destroy_request = Request {
@@ -911,7 +885,6 @@ async fn test_session_destroy_shuts_down_pipeline() {
         _ => panic!("Unexpected response"),
     }
 
-    // Verify session no longer exists
     let list_request = Request {
         message_type: MessageType::Request,
         correlation_id: Some("list".to_string()),
@@ -958,7 +931,6 @@ async fn test_concurrent_operations_no_lock_contention() {
     let (ws_stream, _) = connect_async(&ws_url).await.unwrap();
     let (mut write, mut read) = ws_stream.split();
 
-    // Create session
     let create_request = Request {
         message_type: MessageType::Request,
         correlation_id: Some("setup-create".to_string()),

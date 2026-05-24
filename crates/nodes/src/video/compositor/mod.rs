@@ -61,8 +61,6 @@ use tokio::sync::mpsc;
 
 use kernel::{composite_frame, ConversionCache};
 
-// ── Input slot ──────────────────────────────────────────────────────────────
-
 /// Holds a receiver and the most-recently-received frame for one input layer.
 struct InputSlot {
     name: String,
@@ -77,8 +75,6 @@ struct InputSlot {
     /// a hint channel during `connect_nodes`.
     hint_tx: Option<mpsc::Sender<UpstreamHint>>,
 }
-
-// ── Cached layer config ─────────────────────────────────────────────────────
 
 /// Pre-resolved layer configuration for a single slot.
 /// Rebuilt only when compositor config or pin set changes, avoiding
@@ -289,8 +285,6 @@ fn fit_rect_preserving_aspect(src_w: u32, src_h: u32, bounds: &config::Rect) -> 
     let offset_y = (bounds.height.saturating_sub(fit_h) / 2) as i32;
     config::Rect { x: bounds.x + offset_x, y: bounds.y + offset_y, width: fit_w, height: fit_h }
 }
-
-// ── Node ────────────────────────────────────────────────────────────────────
 
 /// Composites multiple raw video inputs onto a single RGBA8 canvas with
 /// optional image/text overlays.
@@ -555,7 +549,6 @@ impl ProcessorNode for CompositorNode {
         // Shared state for the compositing thread.
         let video_pool = context.video_pool.clone();
 
-        // ── Persistent compositing thread ───────────────────────────────
         // Instead of spawning a new blocking task per frame, we keep a
         // single long-lived thread that processes compositing work items
         // sent via a channel.  This avoids per-frame thread-pool
@@ -634,7 +627,6 @@ impl ProcessorNode for CompositorNode {
                     conversion_cache.clear();
                 }
 
-                // ── Choose GPU or CPU compositing path ──────────────
                 #[cfg(feature = "gpu")]
                 let (output_data, pixel_format) = {
                     let current_gpu_mode =
@@ -734,7 +726,6 @@ impl ProcessorNode for CompositorNode {
         // its conversion cache on the next frame.
         let mut clear_conversion_cache = false;
 
-        // ── OpenTelemetry metrics ───────────────────────────────────────
         let meter = global::meter("skit_nodes");
         let frames_dropped_counter = meter
             .u64_counter("compositor.frames_dropped")
@@ -749,8 +740,6 @@ impl ProcessorNode for CompositorNode {
             KeyValue::new("reason", "output_backpressure"),
         ];
 
-        // ── Tick / pacing ────────────────────────────────────────────────
-        //
         // Pipeline-mode strategy:
         //
         //   • Live (dynamic): Fixed-rate tick at the configured fps,
@@ -767,7 +756,6 @@ impl ProcessorNode for CompositorNode {
         ));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-        // ── Cached resolved scene ────────────────────────────────────────
         let mut layer_configs_dirty = true;
         let mut scene = ResolvedScene {
             configs: Vec::new(),
@@ -781,12 +769,10 @@ impl ProcessorNode for CompositorNode {
             },
         };
 
-        // ── View data (server-driven layout) ────────────────────────────
         let view_data_tx = context.view_data_tx.clone();
         let mut last_layout: Option<CompositorLayout> = None;
 
         loop {
-            // ── Wait for the next tick, or handle control / pin msgs ────
             tokio::select! {
                 biased;
 
@@ -883,8 +869,6 @@ impl ProcessorNode for CompositorNode {
                 } => {}
             }
 
-            // ── Dequeue input frames (non-blocking) ─────────────────────
-            //
             // In **live** mode we drain each slot to its most recent frame
             // so the compositor always renders the freshest content and
             // can recover from transient stalls without falling behind.
@@ -975,7 +959,6 @@ impl ProcessorNode for CompositorNode {
                 continue;
             }
 
-            // ── Rebuild resolved scene if needed ──────────────────────────
             if layer_configs_dirty {
                 scene = resolve_scene(&slots, &self.config, &image_overlays, &text_overlays);
                 layer_configs_dirty = false;
@@ -993,7 +976,6 @@ impl ProcessorNode for CompositorNode {
                 }
             }
 
-            // ── Send work to persistent compositing thread ─────────────
             // Build layer snapshots in pre-sorted draw order using the
             // cached per-slot configs (no HashMap lookup, no sort).
             let layers: Vec<Option<LayerSnapshot>> = scene
@@ -1155,7 +1137,6 @@ impl ProcessorNode for CompositorNode {
             output_seq += 1;
             running_timestamp_us += frame_duration_us;
 
-            // ── Check for closed input channels ─────────────────────────
             // Done *after* compositing so the compositor always produces
             // one final frame from each input before removing the slot.
             // Without this ordering the slot removal races with frame
@@ -1200,8 +1181,6 @@ impl ProcessorNode for CompositorNode {
         Ok(())
     }
 }
-
-// ── Private helpers on CompositorNode ───────────────────────────────────────
 
 impl CompositorNode {
     /// Re-decode image overlays, reusing cached bitmaps when the asset path
@@ -1544,8 +1523,6 @@ impl CompositorNode {
     }
 }
 
-// ── Registration ────────────────────────────────────────────────────────────
-
 pub fn register_compositor_nodes(
     registry: &mut NodeRegistry,
     constraints: &streamkit_core::constraints::GlobalNodeConstraints,
@@ -1571,8 +1548,6 @@ pub fn register_compositor_nodes(
          arbitrary inputs at runtime.",
     );
 }
-
-// ── CPU compositing helper ──────────────────────────────────────────────────
 
 /// Run the CPU compositing path with optional fused pixel format conversion.
 ///
@@ -1638,8 +1613,6 @@ fn cpu_composite_with_conversion(
         },
     }
 }
-
-// ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 #[allow(

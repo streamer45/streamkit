@@ -106,10 +106,6 @@ function noNodesFailed(pipeline: PipelineResponse): boolean {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Test: Audio-only relay echo (self-contained)
-// ---------------------------------------------------------------------------
-
 test.describe('MoQ Relay — Audio Echo Pipeline', () => {
   let sessionId: string | null = null;
 
@@ -123,8 +119,6 @@ test.describe('MoQ Relay — Audio Echo Pipeline', () => {
       test.skip(true, 'moq-relay not available (E2E_RELAY_URL not set)');
       return;
     }
-
-    // ── 1. Create session via API ──────────────────────────────────────────
 
     const yaml = loadPipelineFixture('moq-relay-echo.yaml', relayUrl);
 
@@ -146,8 +140,6 @@ test.describe('MoQ Relay — Audio Echo Pipeline', () => {
     expect(sessionId).toBeTruthy();
     await apiContext.dispose();
 
-    // ── 2. Wait for all nodes to reach "running" state ────────────────────
-
     const pipeline = await pollPipeline(
       baseURL!,
       sessionId!,
@@ -167,8 +159,6 @@ test.describe('MoQ Relay — Audio Echo Pipeline', () => {
       `Not all nodes reached Running state: ${JSON.stringify(pipeline.nodes)}`
     ).toBe(true);
 
-    // ── 3. Verify specific relay nodes are present ────────────────────────
-
     const nodeKinds = Object.entries(pipeline.nodes).map(([id, n]) => ({
       id,
       kind: n.kind,
@@ -185,8 +175,6 @@ test.describe('MoQ Relay — Audio Echo Pipeline', () => {
       nodeKinds.some((n) => n.kind === 'transport::moq::subscriber'),
       'Expected at least one transport::moq::subscriber node'
     ).toBe(true);
-
-    // ── 4. Let the pipeline run for a few seconds to confirm stability ────
 
     await new Promise((resolve) => setTimeout(resolve, 5_000));
 
@@ -212,10 +200,6 @@ test.describe('MoQ Relay — Audio Echo Pipeline', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Test: Multitrack relay (audio + video, self-contained)
-// ---------------------------------------------------------------------------
-
 test.describe('MoQ Relay — Multitrack (Audio + Video) Pipeline', () => {
   let sessionId: string | null = null;
 
@@ -229,8 +213,6 @@ test.describe('MoQ Relay — Multitrack (Audio + Video) Pipeline', () => {
       test.skip(true, 'moq-relay not available (E2E_RELAY_URL not set)');
       return;
     }
-
-    // ── 1. Create session via API ──────────────────────────────────────────
 
     const yaml = loadPipelineFixture('moq-relay-multitrack.yaml', relayUrl);
 
@@ -251,8 +233,6 @@ test.describe('MoQ Relay — Multitrack (Audio + Video) Pipeline', () => {
     sessionId = createData.session_id;
     expect(sessionId).toBeTruthy();
     await apiContext.dispose();
-
-    // ── 2. Wait for all nodes to reach "running" state ────────────────────
     // Multitrack pipelines need more time for video encoding to start and
     // for the subscriber to discover both audio and video tracks from the
     // relay's catalog.
@@ -276,8 +256,6 @@ test.describe('MoQ Relay — Multitrack (Audio + Video) Pipeline', () => {
       `Not all nodes reached Running state: ${JSON.stringify(pipeline.nodes)}`
     ).toBe(true);
 
-    // ── 3. Verify relay nodes for both publish and subscribe ──────────────
-
     const publisherNodes = Object.entries(pipeline.nodes).filter(
       ([, n]) => n.kind === 'transport::moq::publisher'
     );
@@ -296,8 +274,6 @@ test.describe('MoQ Relay — Multitrack (Audio + Video) Pipeline', () => {
       subscriberNodes.length,
       `Expected 1 transport::moq::subscriber node, found ${subscriberNodes.length}`
     ).toBe(1);
-
-    // ── 4. Let the pipeline run for a few seconds to confirm stability ────
 
     await new Promise((resolve) => setTimeout(resolve, 5_000));
 

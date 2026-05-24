@@ -20,11 +20,6 @@ pub mod streaming_utils;
 #[cfg(test)]
 pub mod test_utils;
 
-/// Register all built-in nodes.
-///
-/// Server-level constraints (script allowlist, compositor limits, etc.) are
-/// passed via the generic [`GlobalNodeConstraints`] container.  Each node
-/// module extracts only the constraint types it needs.
 pub fn register_nodes(registry: &mut NodeRegistry, constraints: &GlobalNodeConstraints) {
     core::register_core_nodes(registry, constraints);
     audio::register_audio_nodes(registry);

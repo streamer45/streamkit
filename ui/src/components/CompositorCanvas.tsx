@@ -40,8 +40,6 @@ const noopResizeStart = (() => {}) as (
   e: React.PointerEvent
 ) => void;
 
-// ── Main canvas ─────────────────────────────────────────────────────────────
-
 export interface CompositorCanvasProps {
   canvasWidth: number;
   canvasHeight: number;

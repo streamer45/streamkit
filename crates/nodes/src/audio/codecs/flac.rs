@@ -24,16 +24,10 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use tokio::sync::mpsc;
 
-// --- FLAC Decoder Constants ---
-
-/// Channel buffer size for decoder pipeline communication
 const DECODER_CHANNEL_CAPACITY: usize = 32;
 
-/// Output frame size - 20ms at 48kHz stereo (960 samples per channel * 2 = 1920 total)
-/// This matches Opus encoder expectations
+/// 20ms at 48kHz stereo; matches Opus encoder frame size.
 const OUTPUT_FRAME_SIZE: usize = 1920;
-
-// --- FLAC Decoder ---
 
 use crate::streaming_utils::StreamingReader;
 
@@ -41,16 +35,13 @@ use crate::streaming_utils::StreamingReader;
 #[serde(default, deny_unknown_fields)]
 pub struct FlacDecoderConfig {}
 
-/// A node that decodes FLAC audio files to raw PCM audio frames.
 pub struct FlacDecoderNode {
     _config: FlacDecoderConfig,
 }
 
 impl FlacDecoderNode {
-    /// Creates a new FLAC decoder node.
-    ///
     /// # Errors
-    /// Currently returns `Ok` in all cases, but the `Result` type is kept for future extensibility.
+    /// Returns `Err` if the config is invalid.
     pub const fn new(config: FlacDecoderConfig) -> Result<Self, StreamKitError> {
         Ok(Self { _config: config })
     }
@@ -317,11 +308,8 @@ fn decode_flac_streaming_incremental(
 
 use streamkit_core::{config_helpers, registry::StaticPins};
 
-/// Registers the FLAC decoder node.
-///
 /// # Panics
-///
-/// Panics if the default FLAC decoder cannot be created (should never happen).
+/// Panics if default configs or JSON schemas fail to serialize.
 #[allow(clippy::expect_used)] // Schema serialization and default config should never fail
 pub fn register_flac_nodes(registry: &mut NodeRegistry) {
     #[cfg(feature = "symphonia")]
@@ -359,7 +347,6 @@ mod tests {
     use std::path::Path;
     use tokio::sync::mpsc;
 
-    // Helper to read test audio files
     fn read_sample_file(filename: &str) -> Vec<u8> {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/audio").join(filename);
         std::fs::read(&path)

@@ -55,16 +55,12 @@ pub struct GlobalNodeConstraints {
 }
 
 impl GlobalNodeConstraints {
-    /// Create an empty constraints container.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Insert a constraint value.
-    ///
-    /// If a value of the same concrete type was already present it is
-    /// replaced and the old value is returned.
+    /// Replaces any existing value of the same type, returning the old one.
     pub fn insert<T: NodeConstraint>(&mut self, value: T) -> Option<T> {
         tracing::debug!(constraint = T::constraint_name(), "inserting node constraint");
         self.inner
@@ -73,7 +69,6 @@ impl GlobalNodeConstraints {
             .map(|boxed| *boxed)
     }
 
-    /// Retrieve a reference to a constraint value, if present.
     #[must_use]
     pub fn get<T: NodeConstraint>(&self) -> Option<&T> {
         self.inner.get(&TypeId::of::<T>()).and_then(|boxed| boxed.downcast_ref::<T>())

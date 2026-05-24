@@ -20,36 +20,23 @@ pub const AUD_API: &str = "skit-api";
 pub const AUD_MOQ: &str = "skit-moq";
 
 /// JWT claims for API tokens (HTTP API and WebSocket control plane).
-///
-/// These tokens are used for:
-/// - HTTP API authentication (via Authorization header or cookie)
-/// - WebSocket control plane connections
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiClaims {
-    /// Audience - must be "skit-api"
+    /// Must be [`AUD_API`].
     pub aud: String,
-
-    /// Subject - identifier for the token holder
     pub sub: String,
-
-    /// Role name (e.g., "admin", "user", "viewer")
+    /// E.g. `"admin"`, `"user"`, `"viewer"`.
     pub role: String,
-
-    /// Issued at (Unix timestamp in seconds)
+    /// Unix timestamp (seconds).
     pub iat: u64,
-
-    /// Expiration (Unix timestamp in seconds) - REQUIRED
+    /// Unix timestamp (seconds). Required.
     pub exp: u64,
-
-    /// JWT ID - REQUIRED for revocation
+    /// Required for revocation.
     pub jti: String,
 }
 
 impl ApiClaims {
     /// Create anonymous claims for when auth is disabled.
-    ///
-    /// This is used to maintain consistent AuthContext structure
-    /// even when authentication is not required.
     pub fn anonymous(role: &str) -> Self {
         Self {
             aud: AUD_API.to_string(),
@@ -61,11 +48,11 @@ impl ApiClaims {
         }
     }
 
-    /// Validate the claims structure (not cryptographic validation).
+    /// Validate claims structure (not cryptographic verification).
     ///
     /// # Errors
     ///
-    /// Returns validation errors for invalid audience, missing jti, or missing role.
+    /// Returns [`ClaimsValidationError`] on bad audience, missing `jti`, or missing role.
     pub fn validate(&self) -> Result<(), ClaimsValidationError> {
         if self.aud != AUD_API {
             return Err(ClaimsValidationError::InvalidAudience {
@@ -95,39 +82,36 @@ impl ApiClaims {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct MoqClaims {
-    /// Audience - must be "skit-moq"
+    /// Must be [`AUD_MOQ`].
     pub aud: String,
-
-    /// URL path prefix that this token is valid for (e.g., "/moq/session1")
+    /// URL path prefix this token is valid for (e.g. `"/moq/session1"`).
     pub root: String,
 
-    /// Allowed broadcast prefixes for subscribing (JWT claim: `get`).
-    /// Empty string means "all", empty array means "none".
+    /// Broadcast prefixes for subscribing (JWT claim: `get`).
+    /// `[""]` = all, `[]` = none.
     #[serde(default, rename = "get", alias = "subscribe")]
     pub subscribe: Vec<String>,
 
-    /// Allowed broadcast prefixes for publishing (JWT claim: `put`).
-    /// Empty string means "all", empty array means "none".
+    /// Broadcast prefixes for publishing (JWT claim: `put`).
+    /// `[""]` = all, `[]` = none.
     #[serde(default, rename = "put", alias = "publish")]
     pub publish: Vec<String>,
 
-    /// Issued at (Unix timestamp in seconds)
+    /// Unix timestamp (seconds).
     pub iat: u64,
-
-    /// Expiration (Unix timestamp in seconds) - REQUIRED
+    /// Unix timestamp (seconds). Required.
     pub exp: u64,
-
-    /// JWT ID - REQUIRED for revocation
+    /// Required for revocation.
     pub jti: String,
 }
 
 #[allow(dead_code)]
 impl MoqClaims {
-    /// Validate the claims structure (not cryptographic validation).
+    /// Validate claims structure (not cryptographic verification).
     ///
     /// # Errors
     ///
-    /// Returns validation errors for invalid audience, missing jti, or missing root.
+    /// Returns [`ClaimsValidationError`] on bad audience, missing `jti`, or missing root.
     pub fn validate(&self) -> Result<(), ClaimsValidationError> {
         if self.aud != AUD_MOQ {
             return Err(ClaimsValidationError::InvalidAudience {
