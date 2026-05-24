@@ -533,3 +533,300 @@ impl CompositorConfig {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn default_limits() -> GlobalCompositorConfig {
+        GlobalCompositorConfig::default()
+    }
+
+    fn valid_config() -> CompositorConfig {
+        CompositorConfig::default()
+    }
+
+    fn make_text_overlay(text: &str, font_size: u32, opacity: f32) -> TextOverlayConfig {
+        TextOverlayConfig {
+            id: "t1".into(),
+            text: text.into(),
+            transform: OverlayTransform { opacity, ..OverlayTransform::default() },
+            color: default_text_color(),
+            font_size,
+            font_name: None,
+            word_wrap: false,
+        }
+    }
+
+    fn make_image_overlay(opacity: f32, rotation: f32) -> ImageOverlayConfig {
+        ImageOverlayConfig {
+            id: "i1".into(),
+            asset_path: "test.png".into(),
+            transform: OverlayTransform {
+                opacity,
+                rotation_degrees: rotation,
+                ..OverlayTransform::default()
+            },
+        }
+    }
+
+    // --- Default impls ---
+
+    #[test]
+    fn compositor_config_defaults() {
+        let cfg = CompositorConfig::default();
+        assert_eq!(cfg.width, 1280);
+        assert_eq!(cfg.height, 720);
+        assert_eq!(cfg.fps, 30);
+        assert!(cfg.num_inputs.is_none());
+        assert!(cfg.layers.is_empty());
+        assert!(cfg.image_overlays.is_empty());
+        assert!(cfg.text_overlays.is_empty());
+        assert!(cfg.output_format.is_none());
+        assert!(cfg.gpu_mode.is_none());
+    }
+
+    #[test]
+    fn layer_config_defaults() {
+        let layer = LayerConfig::default();
+        assert!(layer.rect.is_none());
+        assert!(layer.aspect_fit);
+        assert!((layer.opacity - 1.0).abs() < f32::EPSILON);
+        assert_eq!(layer.z_index, 0);
+        assert!((layer.rotation_degrees).abs() < f32::EPSILON);
+        assert!(!layer.mirror_horizontal);
+        assert!(!layer.mirror_vertical);
+        assert!((layer.crop_zoom - 1.0).abs() < f32::EPSILON);
+        assert!((layer.crop_x - 0.5).abs() < f32::EPSILON);
+        assert!((layer.crop_y - 0.5).abs() < f32::EPSILON);
+        assert_eq!(layer.crop_shape, CropShape::Rect);
+    }
+
+    #[test]
+    fn overlay_transform_defaults() {
+        let t = OverlayTransform::default();
+        assert!((t.opacity - 1.0).abs() < f32::EPSILON);
+        assert!((t.rotation_degrees).abs() < f32::EPSILON);
+        assert_eq!(t.z_index, 0);
+        assert!(!t.mirror_horizontal);
+        assert!(!t.mirror_vertical);
+    }
+
+    #[test]
+    fn global_compositor_config_defaults() {
+        let g = GlobalCompositorConfig::default();
+        assert_eq!(g.max_canvas_dimension, 7680);
+        assert_eq!(g.max_font_size, 4096);
+        assert_eq!(g.max_text_length, 10_000);
+    }
+
+    // --- validate: valid config ---
+
+    #[test]
+    fn valid_default_config_passes() {
+        assert!(valid_config().validate(&default_limits()).is_ok());
+    }
+
+    // --- validate: canvas dimensions ---
+
+    #[test]
+    fn zero_width_rejected() {
+        let mut cfg = valid_config();
+        cfg.width = 0;
+        assert!(cfg.validate(&default_limits()).is_err());
+    }
+
+    #[test]
+    fn zero_height_rejected() {
+        let mut cfg = valid_config();
+        cfg.height = 0;
+        assert!(cfg.validate(&default_limits()).is_err());
+    }
+
+    #[test]
+    fn exceeding_max_dimension_rejected() {
+        let limits = GlobalCompositorConfig { max_canvas_dimension: 1920, ..default_limits() };
+        let mut cfg = valid_config();
+        cfg.width = 1921;
+        assert!(cfg.validate(&limits).is_err());
+    }
+
+    #[test]
+    fn max_dimension_exact_passes() {
+        let limits = GlobalCompositorConfig { max_canvas_dimension: 1920, ..default_limits() };
+        let mut cfg = valid_config();
+        cfg.width = 1920;
+        cfg.height = 1080;
+        assert!(cfg.validate(&limits).is_ok());
+    }
+
+    // --- validate: fps ---
+
+    #[test]
+    fn zero_fps_rejected() {
+        let mut cfg = valid_config();
+        cfg.fps = 0;
+        assert!(cfg.validate(&default_limits()).is_err());
+    }
+
+    // --- validate_opacity ---
+
+    #[test]
+    fn opacity_valid_boundaries() {
+        assert!(validate_opacity(0.0, "test").is_ok());
+        assert!(validate_opacity(1.0, "test").is_ok());
+        assert!(validate_opacity(0.5, "test").is_ok());
+    }
+
+    #[test]
+    fn opacity_nan_rejected() {
+        assert!(validate_opacity(f32::NAN, "test").is_err());
+    }
+
+    #[test]
+    fn opacity_below_zero_rejected() {
+        assert!(validate_opacity(-0.1, "test").is_err());
+    }
+
+    #[test]
+    fn opacity_above_one_rejected() {
+        assert!(validate_opacity(1.1, "test").is_err());
+    }
+
+    // --- validate_rotation ---
+
+    #[test]
+    fn rotation_valid_values() {
+        assert!(validate_rotation(0.0, "test").is_ok());
+        assert!(validate_rotation(360.0, "test").is_ok());
+        assert!(validate_rotation(-180.0, "test").is_ok());
+    }
+
+    #[test]
+    fn rotation_nan_rejected() {
+        assert!(validate_rotation(f32::NAN, "test").is_err());
+    }
+
+    #[test]
+    fn rotation_inf_rejected() {
+        assert!(validate_rotation(f32::INFINITY, "test").is_err());
+    }
+
+    // --- validate_crop ---
+
+    #[test]
+    fn crop_valid_values() {
+        assert!(validate_crop(1.0, 0.0, 0.0, "test").is_ok());
+        assert!(validate_crop(2.0, 0.5, 0.5, "test").is_ok());
+        assert!(validate_crop(1.0, 1.0, 1.0, "test").is_ok());
+    }
+
+    #[test]
+    fn crop_zoom_below_one_rejected() {
+        assert!(validate_crop(0.9, 0.5, 0.5, "test").is_err());
+    }
+
+    #[test]
+    fn crop_x_out_of_range_rejected() {
+        assert!(validate_crop(1.0, -0.1, 0.5, "test").is_err());
+        assert!(validate_crop(1.0, 1.1, 0.5, "test").is_err());
+    }
+
+    #[test]
+    fn crop_y_out_of_range_rejected() {
+        assert!(validate_crop(1.0, 0.5, -0.1, "test").is_err());
+        assert!(validate_crop(1.0, 0.5, 1.1, "test").is_err());
+    }
+
+    // --- validate: layer opacity/rotation/crop ---
+
+    #[test]
+    fn layer_invalid_opacity_rejected() {
+        let mut cfg = valid_config();
+        cfg.layers.insert("in_0".into(), LayerConfig { opacity: 1.5, ..LayerConfig::default() });
+        assert!(cfg.validate(&default_limits()).is_err());
+    }
+
+    #[test]
+    fn layer_invalid_rotation_rejected() {
+        let mut cfg = valid_config();
+        cfg.layers.insert(
+            "in_0".into(),
+            LayerConfig { rotation_degrees: f32::NAN, ..LayerConfig::default() },
+        );
+        assert!(cfg.validate(&default_limits()).is_err());
+    }
+
+    #[test]
+    fn layer_invalid_crop_rejected() {
+        let mut cfg = valid_config();
+        cfg.layers.insert("in_0".into(), LayerConfig { crop_zoom: 0.5, ..LayerConfig::default() });
+        assert!(cfg.validate(&default_limits()).is_err());
+    }
+
+    // --- validate: overlay opacity/rotation ---
+
+    #[test]
+    fn image_overlay_invalid_opacity_rejected() {
+        let mut cfg = valid_config();
+        cfg.image_overlays.push(make_image_overlay(1.5, 0.0));
+        assert!(cfg.validate(&default_limits()).is_err());
+    }
+
+    #[test]
+    fn image_overlay_invalid_rotation_rejected() {
+        let mut cfg = valid_config();
+        cfg.image_overlays.push(make_image_overlay(1.0, f32::INFINITY));
+        assert!(cfg.validate(&default_limits()).is_err());
+    }
+
+    #[test]
+    fn text_overlay_invalid_opacity_rejected() {
+        let mut cfg = valid_config();
+        cfg.text_overlays.push(make_text_overlay("hello", 24, f32::NAN));
+        assert!(cfg.validate(&default_limits()).is_err());
+    }
+
+    // --- validate: font_size / text length ---
+
+    #[test]
+    fn font_size_exceeding_max_rejected() {
+        let limits = GlobalCompositorConfig { max_font_size: 100, ..default_limits() };
+        let mut cfg = valid_config();
+        cfg.text_overlays.push(make_text_overlay("hello", 101, 1.0));
+        assert!(cfg.validate(&limits).is_err());
+    }
+
+    #[test]
+    fn font_size_at_max_passes() {
+        let limits = GlobalCompositorConfig { max_font_size: 100, ..default_limits() };
+        let mut cfg = valid_config();
+        cfg.text_overlays.push(make_text_overlay("hello", 100, 1.0));
+        assert!(cfg.validate(&limits).is_ok());
+    }
+
+    #[test]
+    fn text_length_exceeding_max_rejected() {
+        let limits = GlobalCompositorConfig { max_text_length: 10, ..default_limits() };
+        let mut cfg = valid_config();
+        cfg.text_overlays.push(make_text_overlay("this text is longer than ten bytes", 24, 1.0));
+        assert!(cfg.validate(&limits).is_err());
+    }
+
+    // --- validate: output_format ---
+
+    #[test]
+    fn valid_output_format_passes() {
+        let mut cfg = valid_config();
+        cfg.output_format = Some("nv12".into());
+        assert!(cfg.validate(&default_limits()).is_ok());
+    }
+
+    #[test]
+    fn invalid_output_format_rejected() {
+        let mut cfg = valid_config();
+        cfg.output_format = Some("invalid_format".into());
+        assert!(cfg.validate(&default_limits()).is_err());
+    }
+}

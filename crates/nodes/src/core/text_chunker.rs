@@ -250,3 +250,346 @@ impl ProcessorNode for TextChunkerNode {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::test_utils::{
+        assert_state_initializing, assert_state_running, assert_state_stopped, create_test_context,
+    };
+    use std::collections::HashMap;
+    use tokio::sync::mpsc;
+
+    fn make_node(split_mode: SplitMode, min_length: usize, chunk_words: usize) -> TextChunkerNode {
+        TextChunkerNode {
+            config: TextChunkerConfig { split_mode, min_length, chunk_words },
+            buffer: String::new(),
+        }
+    }
+
+    // --- factory / new ---
+
+    #[test]
+    fn new_default_config() {
+        let node = TextChunkerNode::new(None).unwrap();
+        assert!(matches!(node.config.split_mode, SplitMode::Sentences));
+        assert_eq!(node.config.min_length, 10);
+        assert_eq!(node.config.chunk_words, 5);
+    }
+
+    #[test]
+    fn new_explicit_config() {
+        let params = serde_json::json!({
+            "split_mode": "words",
+            "min_length": 20,
+            "chunk_words": 3
+        });
+        let node = TextChunkerNode::new(Some(&params)).unwrap();
+        assert!(matches!(node.config.split_mode, SplitMode::Words));
+        assert_eq!(node.config.min_length, 20);
+        assert_eq!(node.config.chunk_words, 3);
+    }
+
+    #[test]
+    fn factory_returns_node() {
+        let factory = TextChunkerNode::factory();
+        assert!(factory(None).is_ok());
+    }
+
+    // --- extract_sentence ---
+
+    #[test]
+    fn sentence_below_min_length_returns_none() {
+        let mut node = make_node(SplitMode::Sentences, 20, 5);
+        node.buffer = "Hi. ".to_string();
+        assert!(node.extract_sentence().is_none());
+    }
+
+    #[test]
+    fn sentence_period_space_boundary() {
+        let mut node = make_node(SplitMode::Sentences, 1, 5);
+        node.buffer = "Hello world. More text".to_string();
+        assert_eq!(node.extract_sentence().unwrap(), "Hello world.");
+        assert_eq!(node.buffer, "More text");
+    }
+
+    #[test]
+    fn sentence_exclamation_boundary() {
+        let mut node = make_node(SplitMode::Sentences, 1, 5);
+        node.buffer = "Wow! Next".to_string();
+        assert_eq!(node.extract_sentence().unwrap(), "Wow!");
+    }
+
+    #[test]
+    fn sentence_question_newline_boundary() {
+        let mut node = make_node(SplitMode::Sentences, 1, 5);
+        node.buffer = "Really?\nYes".to_string();
+        assert_eq!(node.extract_sentence().unwrap(), "Really?");
+    }
+
+    #[test]
+    fn sentence_trailing_period() {
+        let mut node = make_node(SplitMode::Sentences, 1, 5);
+        node.buffer = "End of text.".to_string();
+        assert_eq!(node.extract_sentence().unwrap(), "End of text.");
+        assert!(node.buffer.is_empty());
+    }
+
+    #[test]
+    fn sentence_trailing_cjk_punctuation() {
+        let mut node = make_node(SplitMode::Sentences, 1, 5);
+        node.buffer = "日本語のテスト。".to_string();
+        assert_eq!(node.extract_sentence().unwrap(), "日本語のテスト。");
+    }
+
+    #[test]
+    fn sentence_no_boundary_returns_none() {
+        let mut node = make_node(SplitMode::Sentences, 1, 5);
+        node.buffer = "no boundary here".to_string();
+        assert!(node.extract_sentence().is_none());
+    }
+
+    #[test]
+    fn sentence_multi_sentence_buffer() {
+        let mut node = make_node(SplitMode::Sentences, 1, 5);
+        node.buffer = "First. Second. Third".to_string();
+        assert_eq!(node.extract_sentence().unwrap(), "First.");
+        assert_eq!(node.extract_sentence().unwrap(), "Second.");
+        assert!(node.extract_sentence().is_none());
+        assert_eq!(node.buffer, "Third");
+    }
+
+    // --- extract_clause ---
+
+    #[test]
+    fn clause_below_min_length_returns_none() {
+        let mut node = make_node(SplitMode::Clauses, 50, 5);
+        node.buffer = "Short, text".to_string();
+        assert!(node.extract_clause().is_none());
+    }
+
+    #[test]
+    fn clause_comma_boundary() {
+        let mut node = make_node(SplitMode::Clauses, 1, 5);
+        node.buffer = "first clause, second clause".to_string();
+        assert_eq!(node.extract_clause().unwrap(), "first clause,");
+    }
+
+    #[test]
+    fn clause_semicolon_boundary() {
+        let mut node = make_node(SplitMode::Clauses, 1, 5);
+        node.buffer = "before; after".to_string();
+        assert_eq!(node.extract_clause().unwrap(), "before;");
+    }
+
+    #[test]
+    fn clause_dash_boundary() {
+        let mut node = make_node(SplitMode::Clauses, 1, 5);
+        node.buffer = "one thing — another thing".to_string();
+        assert_eq!(node.extract_clause().unwrap(), "one thing —");
+    }
+
+    #[test]
+    fn clause_colon_boundary() {
+        let mut node = make_node(SplitMode::Clauses, 1, 5);
+        node.buffer = "items: apples".to_string();
+        assert_eq!(node.extract_clause().unwrap(), "items:");
+    }
+
+    #[test]
+    fn clause_trailing_comma() {
+        let mut node = make_node(SplitMode::Clauses, 1, 5);
+        node.buffer = "trailing comma,".to_string();
+        assert_eq!(node.extract_clause().unwrap(), "trailing comma,");
+        assert!(node.buffer.is_empty());
+    }
+
+    #[test]
+    fn clause_trailing_semicolon() {
+        let mut node = make_node(SplitMode::Clauses, 1, 5);
+        node.buffer = "trailing semicolon;".to_string();
+        assert_eq!(node.extract_clause().unwrap(), "trailing semicolon;");
+    }
+
+    #[test]
+    fn clause_trailing_colon() {
+        let mut node = make_node(SplitMode::Clauses, 1, 5);
+        node.buffer = "trailing colon:".to_string();
+        assert_eq!(node.extract_clause().unwrap(), "trailing colon:");
+    }
+
+    #[test]
+    fn clause_also_splits_on_sentence_boundaries() {
+        let mut node = make_node(SplitMode::Clauses, 1, 5);
+        node.buffer = "Hello world. More".to_string();
+        assert_eq!(node.extract_clause().unwrap(), "Hello world.");
+    }
+
+    // --- extract_word_chunk ---
+
+    #[test]
+    fn word_chunk_below_threshold_returns_none() {
+        let mut node = make_node(SplitMode::Words, 1, 5);
+        node.buffer = "one two three".to_string();
+        assert!(node.extract_word_chunk().is_none());
+    }
+
+    #[test]
+    fn word_chunk_exact_threshold() {
+        let mut node = make_node(SplitMode::Words, 1, 3);
+        node.buffer = "one two three".to_string();
+        let chunk = node.extract_word_chunk().unwrap();
+        assert_eq!(chunk, "one two three");
+    }
+
+    #[test]
+    fn word_chunk_above_threshold() {
+        let mut node = make_node(SplitMode::Words, 1, 3);
+        node.buffer = "one two three four five".to_string();
+        let chunk = node.extract_word_chunk().unwrap();
+        assert_eq!(chunk, "one two three");
+        assert_eq!(node.buffer, "four five");
+    }
+
+    #[test]
+    fn word_chunk_multiple_extractions() {
+        let mut node = make_node(SplitMode::Words, 1, 2);
+        node.buffer = "a b c d e".to_string();
+        assert_eq!(node.extract_word_chunk().unwrap(), "a b");
+        assert_eq!(node.extract_word_chunk().unwrap(), "c d");
+        assert!(node.extract_word_chunk().is_none());
+        assert_eq!(node.buffer, "e");
+    }
+
+    // --- extract_chunk dispatching ---
+
+    #[test]
+    fn extract_chunk_dispatches_to_sentence_mode() {
+        let mut node = make_node(SplitMode::Sentences, 1, 5);
+        node.buffer = "Hello world. More".to_string();
+        assert_eq!(node.extract_chunk().unwrap(), "Hello world.");
+    }
+
+    #[test]
+    fn extract_chunk_dispatches_to_clause_mode() {
+        let mut node = make_node(SplitMode::Clauses, 1, 5);
+        node.buffer = "first clause, rest".to_string();
+        assert_eq!(node.extract_chunk().unwrap(), "first clause,");
+    }
+
+    #[test]
+    fn extract_chunk_dispatches_to_word_mode() {
+        let mut node = make_node(SplitMode::Words, 1, 2);
+        node.buffer = "alpha beta gamma".to_string();
+        assert_eq!(node.extract_chunk().unwrap(), "alpha beta");
+    }
+
+    // --- run() integration ---
+
+    #[tokio::test]
+    async fn run_chunks_text_and_flushes_remainder() {
+        let (input_tx, input_rx) = mpsc::channel(10);
+        let mut inputs = HashMap::new();
+        inputs.insert("in".to_string(), input_rx);
+
+        let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
+
+        let node = TextChunkerNode::new(Some(&serde_json::json!({
+            "split_mode": "sentences",
+            "min_length": 1
+        })))
+        .unwrap();
+        let handle = tokio::spawn(async move { Box::new(node).run(context).await });
+
+        assert_state_initializing(&mut state_rx).await;
+        assert_state_running(&mut state_rx).await;
+
+        input_tx.send(Packet::Text("First sentence. Second".into())).await.unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let packets = mock_sender.get_packets_for_pin("out").await;
+        assert_eq!(packets.len(), 1);
+        match &packets[0] {
+            Packet::Text(t) => assert_eq!(t.as_ref(), "First sentence."),
+            _ => panic!("Expected text packet"),
+        }
+
+        drop(input_tx);
+        assert_state_stopped(&mut state_rx).await;
+        handle.await.unwrap().unwrap();
+
+        let remaining = mock_sender.get_packets_for_pin("out").await;
+        assert_eq!(remaining.len(), 1);
+        match &remaining[0] {
+            Packet::Text(t) => assert_eq!(t.as_ref(), "Second"),
+            _ => panic!("Expected text packet"),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_handles_binary_input_as_utf8() {
+        let (input_tx, input_rx) = mpsc::channel(10);
+        let mut inputs = HashMap::new();
+        inputs.insert("in".to_string(), input_rx);
+
+        let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
+
+        let node = TextChunkerNode::new(Some(&serde_json::json!({
+            "split_mode": "sentences",
+            "min_length": 1
+        })))
+        .unwrap();
+        let handle = tokio::spawn(async move { Box::new(node).run(context).await });
+
+        assert_state_initializing(&mut state_rx).await;
+        assert_state_running(&mut state_rx).await;
+
+        let binary_text = Packet::Binary {
+            data: bytes::Bytes::from("Done."),
+            content_type: None,
+            metadata: None,
+        };
+        input_tx.send(binary_text).await.unwrap();
+
+        drop(input_tx);
+        assert_state_stopped(&mut state_rx).await;
+        handle.await.unwrap().unwrap();
+
+        let packets = mock_sender.get_packets_for_pin("out").await;
+        assert_eq!(packets.len(), 1);
+        match &packets[0] {
+            Packet::Text(t) => assert_eq!(t.as_ref(), "Done."),
+            _ => panic!("Expected text packet"),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_skips_empty_text() {
+        let (input_tx, input_rx) = mpsc::channel(10);
+        let mut inputs = HashMap::new();
+        inputs.insert("in".to_string(), input_rx);
+
+        let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
+
+        let node = TextChunkerNode::new(Some(&serde_json::json!({
+            "split_mode": "sentences",
+            "min_length": 1
+        })))
+        .unwrap();
+        let handle = tokio::spawn(async move { Box::new(node).run(context).await });
+
+        assert_state_initializing(&mut state_rx).await;
+        assert_state_running(&mut state_rx).await;
+
+        input_tx.send(Packet::Text("".into())).await.unwrap();
+
+        drop(input_tx);
+        assert_state_stopped(&mut state_rx).await;
+        handle.await.unwrap().unwrap();
+
+        let packets = mock_sender.get_packets_for_pin("out").await;
+        assert!(packets.is_empty());
+    }
+}

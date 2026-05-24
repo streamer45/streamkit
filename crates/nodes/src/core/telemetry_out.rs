@@ -246,3 +246,263 @@ pub fn register(registry: &mut streamkit_core::NodeRegistry) {
          This is a terminal node intended for best-effort side branches.",
     );
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use streamkit_core::types::{CustomEncoding, TranscriptionSegment};
+
+    // --- new / create_telemetry_out ---
+
+    #[test]
+    fn new_default_config() {
+        let node = TelemetryOutNode::new(None).unwrap();
+        assert_eq!(node.config.packet_types, vec!["Transcription", "Custom"]);
+        assert!(node.config.event_type_filter.is_empty());
+        assert_eq!(node.config.max_events_per_sec, 100);
+    }
+
+    #[test]
+    fn new_custom_config() {
+        let params = serde_json::json!({
+            "packet_types": ["Text"],
+            "event_type_filter": ["vad.*"],
+            "max_events_per_sec": 50
+        });
+        let node = TelemetryOutNode::new(Some(params)).unwrap();
+        assert_eq!(node.config.packet_types, vec!["Text"]);
+        assert_eq!(node.config.event_type_filter, vec!["vad.*"]);
+        assert_eq!(node.config.max_events_per_sec, 50);
+    }
+
+    #[test]
+    fn new_invalid_config_returns_error() {
+        let params = serde_json::json!({ "unknown_field": true });
+        assert!(TelemetryOutNode::new(Some(params)).is_err());
+    }
+
+    #[test]
+    fn create_telemetry_out_no_params() {
+        assert!(create_telemetry_out(None).is_ok());
+    }
+
+    // --- should_tap_packet_type ---
+
+    #[test]
+    fn tap_default_transcription() {
+        let node = TelemetryOutNode::new(None).unwrap();
+        let pkt = Packet::Transcription(Arc::new(TranscriptionData {
+            text: "hi".into(),
+            segments: vec![],
+            language: None,
+            metadata: None,
+        }));
+        assert!(node.should_tap_packet_type(&pkt));
+    }
+
+    #[test]
+    fn tap_default_custom() {
+        let node = TelemetryOutNode::new(None).unwrap();
+        let pkt = Packet::Custom(Arc::new(CustomPacketData {
+            type_id: "test".into(),
+            encoding: CustomEncoding::Json,
+            data: serde_json::json!({}),
+            metadata: None,
+        }));
+        assert!(node.should_tap_packet_type(&pkt));
+    }
+
+    #[test]
+    fn tap_default_rejects_text() {
+        let node = TelemetryOutNode::new(None).unwrap();
+        assert!(!node.should_tap_packet_type(&Packet::Text("hello".into())));
+    }
+
+    #[test]
+    fn tap_case_insensitive() {
+        let params = serde_json::json!({ "packet_types": ["tEXT"] });
+        let node = TelemetryOutNode::new(Some(params)).unwrap();
+        assert!(node.should_tap_packet_type(&Packet::Text("hello".into())));
+    }
+
+    #[test]
+    fn tap_binary_packet() {
+        let params = serde_json::json!({ "packet_types": ["Binary"] });
+        let node = TelemetryOutNode::new(Some(params)).unwrap();
+        let pkt = Packet::Binary {
+            data: bytes::Bytes::from_static(b"test"),
+            content_type: None,
+            metadata: None,
+        };
+        assert!(node.should_tap_packet_type(&pkt));
+    }
+
+    // --- matches_event_type_filter ---
+
+    #[test]
+    fn filter_empty_matches_all() {
+        let node = TelemetryOutNode::new(None).unwrap();
+        assert!(node.matches_event_type_filter("anything"));
+        assert!(node.matches_event_type_filter("vad.speech_start"));
+    }
+
+    #[test]
+    fn filter_dot_star_glob() {
+        let params = serde_json::json!({ "event_type_filter": ["vad.*"] });
+        let node = TelemetryOutNode::new(Some(params)).unwrap();
+        assert!(node.matches_event_type_filter("vad.speech_start"));
+        assert!(node.matches_event_type_filter("vad.speech_end"));
+        assert!(!node.matches_event_type_filter("stt.result"));
+    }
+
+    #[test]
+    fn filter_star_glob() {
+        let params = serde_json::json!({ "event_type_filter": ["vad*"] });
+        let node = TelemetryOutNode::new(Some(params)).unwrap();
+        assert!(node.matches_event_type_filter("vad.speech_start"));
+        assert!(node.matches_event_type_filter("vad_something"));
+        assert!(!node.matches_event_type_filter("stt.result"));
+    }
+
+    #[test]
+    fn filter_exact_match() {
+        let params = serde_json::json!({ "event_type_filter": ["stt.result"] });
+        let node = TelemetryOutNode::new(Some(params)).unwrap();
+        assert!(node.matches_event_type_filter("stt.result"));
+        assert!(!node.matches_event_type_filter("stt.result.extra"));
+    }
+
+    #[test]
+    fn filter_multiple_patterns() {
+        let params = serde_json::json!({ "event_type_filter": ["vad.*", "stt.result"] });
+        let node = TelemetryOutNode::new(Some(params)).unwrap();
+        assert!(node.matches_event_type_filter("vad.x"));
+        assert!(node.matches_event_type_filter("stt.result"));
+        assert!(!node.matches_event_type_filter("other.event"));
+    }
+
+    // --- truncate_preview ---
+
+    #[test]
+    fn truncate_short_string_unchanged() {
+        assert_eq!(TelemetryOutNode::truncate_preview("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_long_string_adds_ellipsis() {
+        assert_eq!(TelemetryOutNode::truncate_preview("hello world", 5), "hello...");
+    }
+
+    #[test]
+    fn truncate_zero_max_returns_empty() {
+        assert_eq!(TelemetryOutNode::truncate_preview("anything", 0), "");
+    }
+
+    #[test]
+    fn truncate_exact_length_no_ellipsis() {
+        assert_eq!(TelemetryOutNode::truncate_preview("abcde", 5), "abcde");
+    }
+
+    // --- transcription_to_telemetry ---
+
+    #[test]
+    fn transcription_telemetry_structure() {
+        let data = TranscriptionData {
+            text: "Hello world, this is a test.".into(),
+            segments: vec![
+                TranscriptionSegment {
+                    text: "Hello world,".into(),
+                    start_time_ms: 0,
+                    end_time_ms: 1000,
+                    confidence: Some(0.95),
+                },
+                TranscriptionSegment {
+                    text: "this is a test.".into(),
+                    start_time_ms: 1000,
+                    end_time_ms: 2000,
+                    confidence: None,
+                },
+            ],
+            language: Some("en".into()),
+            metadata: None,
+        };
+
+        let json = TelemetryOutNode::transcription_to_telemetry(&data);
+        assert_eq!(json["text_length"], 28);
+        assert_eq!(json["segment_count"], 2);
+        assert_eq!(json["language"], "en");
+        assert!(json["text_preview"].as_str().unwrap().starts_with("Hello world"));
+    }
+
+    #[test]
+    fn transcription_telemetry_no_language() {
+        let data = TranscriptionData {
+            text: "test".into(),
+            segments: vec![],
+            language: None,
+            metadata: None,
+        };
+        let json = TelemetryOutNode::transcription_to_telemetry(&data);
+        assert!(json["language"].is_null());
+        assert_eq!(json["segment_count"], 0);
+    }
+
+    // --- custom_to_event_type ---
+
+    #[test]
+    fn custom_event_type_telemetry_passthrough() {
+        let custom = CustomPacketData {
+            type_id: TELEMETRY_TYPE_ID.to_string(),
+            encoding: CustomEncoding::Json,
+            data: serde_json::json!({ "event_type": "my.custom.event" }),
+            metadata: None,
+        };
+        assert_eq!(TelemetryOutNode::custom_to_event_type(&custom), "my.custom.event");
+    }
+
+    #[test]
+    fn custom_event_type_vad_adds_prefix() {
+        let custom = CustomPacketData {
+            type_id: VAD_EVENT_TYPE_ID.to_string(),
+            encoding: CustomEncoding::Json,
+            data: serde_json::json!({ "event_type": "speech_start" }),
+            metadata: None,
+        };
+        assert_eq!(TelemetryOutNode::custom_to_event_type(&custom), "vad.speech_start");
+    }
+
+    #[test]
+    fn custom_event_type_vad_already_prefixed() {
+        let custom = CustomPacketData {
+            type_id: VAD_EVENT_TYPE_ID.to_string(),
+            encoding: CustomEncoding::Json,
+            data: serde_json::json!({ "event_type": "vad.speech_end" }),
+            metadata: None,
+        };
+        assert_eq!(TelemetryOutNode::custom_to_event_type(&custom), "vad.speech_end");
+    }
+
+    #[test]
+    fn custom_event_type_fallback_unknown() {
+        let custom = CustomPacketData {
+            type_id: "some::other/type@1".to_string(),
+            encoding: CustomEncoding::Json,
+            data: serde_json::json!({}),
+            metadata: None,
+        };
+        assert_eq!(TelemetryOutNode::custom_to_event_type(&custom), "custom.unknown");
+    }
+
+    #[test]
+    fn custom_event_type_other_type_with_event_type() {
+        let custom = CustomPacketData {
+            type_id: "some::other/type@1".to_string(),
+            encoding: CustomEncoding::Json,
+            data: serde_json::json!({ "event_type": "my_event" }),
+            metadata: None,
+        };
+        assert_eq!(TelemetryOutNode::custom_to_event_type(&custom), "my_event");
+    }
+}
