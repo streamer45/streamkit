@@ -192,7 +192,7 @@ fn normalize_base_path(base_path: Option<&str>) -> Option<String> {
         .map(str::trim)
         .and_then(|p| if p.is_empty() { None } else { Some(p) })
         .map(|p| p.trim_end_matches('/'))
-        .and_then(|p| if p == "/" { None } else { Some(p) })
+        .and_then(|p| if p.is_empty() { None } else { Some(p) })
         .map(|p| if p.starts_with('/') { p.to_string() } else { format!("/{p}") })
 }
 
@@ -556,9 +556,8 @@ mod helper_tests {
         assert_eq!(normalize_base_path(Some("")), None);
         assert_eq!(normalize_base_path(Some("   ")), None);
 
-        // BUG(#485): "/" should normalise to None but instead returns Some("/").
-        // When #485 is fixed this assertion should change to `None`.
-        assert_eq!(normalize_base_path(Some("/")).as_deref(), Some("/"));
+        assert_eq!(normalize_base_path(Some("/")), None);
+        assert_eq!(normalize_base_path(Some("///")), None);
 
         assert_eq!(normalize_base_path(Some("/foo")).as_deref(), Some("/foo"));
         assert_eq!(normalize_base_path(Some("foo")).as_deref(), Some("/foo"));
@@ -1908,16 +1907,7 @@ pub fn create_app(
 
     // If server.base_path is set (e.g. "/s/session_xxx"), serve the entire app under that
     // prefix too. This makes subpath deployments work even without a reverse-proxy rewrite.
-    let base_path = app_state
-        .config
-        .server
-        .base_path
-        .as_deref()
-        .map(str::trim)
-        .and_then(|p| if p.is_empty() { None } else { Some(p) })
-        .map(|p| p.trim_end_matches('/'))
-        .and_then(|p| if p == "/" { None } else { Some(p) })
-        .map(|p| if p.starts_with('/') { p.to_string() } else { format!("/{p}") });
+    let base_path = normalize_base_path(app_state.config.server.base_path.as_deref());
 
     let router = if let Some(base_path) = base_path {
         let cloned = router.clone();
