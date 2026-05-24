@@ -1063,7 +1063,7 @@ mod app_integration_tests {
 
     #[tokio::test]
     async fn origin_guard_rejects_mutating_request_with_non_utf8_origin() {
-        // Fixed in #494: non-UTF-8 Origin bytes now return 403 Forbidden.
+        // Invalid Origin bytes should be rejected rather than treated like an absent header.
         let (app, _state) = create_app(default_config(), None);
         let resp = app
             .oneshot(
