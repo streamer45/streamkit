@@ -2,15 +2,31 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-# Codecov configuration. Initial rollout is informational only — gates are
-# disabled below and will be ratcheted up once a baseline has been collected.
+# Codecov configuration. The project and patch statuses below report
+# red on threshold violations (a real signal for reviewers), but they
+# do not block merges yet — the coverage jobs in .github/workflows/{skit,ui}.yml
+# are still `continue-on-error: true` and the required `All Checks Passed`
+# gate only watches GitHub Actions job results, not Codecov commit
+# statuses. Removing the informational override here is step 1 of two;
+# step 2 (wiring the Codecov statuses into the merge gate) is tracked
+# in issue #487.
 #
-# Ratchet plan (concrete meaning of "ratcheted up"):
-#   Phase 1 (now):     informational: true,  threshold: 100% (no gating)
-#   Phase 2 (~2 wks):  informational: false, project.threshold: 1%
-#                        (any coverage drop >1% blocks the PR)
-#   Phase 3 (~4 wks):  add patch.target: 80% (new code must hit 80%)
-# Phase transitions are intentionally manual — edit this file and remove
+# Status-stringency ratchet (separate from the coverage-sprint phases
+# tracked in agent_docs/coverage.md):
+#   Stage 1:           informational: true,  threshold: 100% (silent)
+#   Stage 2 (current): project flags surface red, threshold: 1%
+#                        (any coverage drop >1% reports red)
+#   Stage 3 (current): patch.default surfaces red, target: 80%
+#                        (new / changed code below 80% reports red)
+#   Stage 4 (future):  tighten component_management default_rules from
+#                        informational to red-surfacing once `engine`,
+#                        `nodes`, and `server` are consistently above
+#                        80%.
+#   Merge-gate wiring: separate change to either include Codecov
+#                        statuses in branch protection or fail the
+#                        coverage jobs on threshold violations —
+#                        tracked in issue #487.
+# Stage transitions are intentionally manual — edit this file and remove
 # `informational: true` / tighten `threshold` / `target` as the baseline
 # settles. The `backend` and `ui` flag totals on the Codecov dashboard are
 # the headline numbers to watch when deciding when to advance.
@@ -27,19 +43,16 @@ coverage:
         flags:
           - backend
         target: auto
-        threshold: 100%
-        informational: true
+        threshold: 1%
       ui:
         flags:
           - ui
         target: auto
-        threshold: 100%
-        informational: true
+        threshold: 1%
     patch:
       default:
-        target: auto
-        threshold: 100%
-        informational: true
+        target: 80%
+        threshold: 0%
 
 # Flags are project-level rollups uploaded from CI (one per workflow).
 # Their `paths` are intentionally broader than the named components below:
@@ -115,10 +128,10 @@ component_management:
 comment:
   layout: "header, diff, flags, components, files"
   behavior: default
-  # Comment on every PR during Phase 1 so the team sees the numbers
-  # land. Flip to `true` at Phase 2 (when gates become enforcing) so
-  # the bot only speaks up when coverage actually changed.
-  require_changes: false
+  # Now that the Codecov statuses report red on threshold violations,
+  # the bot only needs to comment when coverage actually changed —
+  # otherwise PRs with no covered files get noisy "no change" comments.
+  require_changes: true
 
 ignore:
   - "**/generated/**"
@@ -130,3 +143,12 @@ ignore:
   - "apps/skit-cli/**"
   - "sdks/**"
   - "docs/**"
+  # Boilerplate / infrastructure that cannot be meaningfully unit-tested
+  # without standing up real subsystems (jemalloc, tracing-subscriber,
+  # OTel SDK, pprof, wgpu adapter). Excluded after Phase 4 to keep the
+  # headline `backend` flag focused on testable hot paths.
+  - "apps/skit/src/main.rs"
+  - "apps/skit/src/logging.rs"
+  - "apps/skit/src/telemetry.rs"
+  - "apps/skit/src/profiling.rs"
+  - "crates/nodes/src/video/compositor/gpu.rs"
