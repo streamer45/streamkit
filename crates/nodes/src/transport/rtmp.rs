@@ -1494,4 +1494,69 @@ mod tests {
             "video_data should be empty for SPS/PPS-only access units"
         );
     }
+
+    #[test]
+    fn stamp_with_no_metadata_defaults_to_zero() {
+        let mut state = RtmpTimestampState::new();
+        let pkt = Packet::Binary {
+            data: bytes::Bytes::from_static(&[0]),
+            metadata: None,
+            content_type: None,
+        };
+        let ts = state.stamp(&pkt, Track::Video, "test");
+        assert_eq!(ts, 0);
+    }
+
+    #[test]
+    fn config_default_sample_rate() {
+        assert_eq!(default_sample_rate(), 48_000);
+    }
+
+    #[test]
+    fn config_default_channels() {
+        assert_eq!(default_channels(), 2);
+    }
+
+    #[test]
+    fn convert_annexb_sei_and_aud_in_video_data() {
+        let mut annexb = Vec::new();
+        // SEI NAL (type 6)
+        annexb.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        let sei = [0x06, 0x05, 0x04, 0x03];
+        annexb.extend_from_slice(&sei);
+        // AUD NAL (type 9)
+        annexb.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        let aud = [0x09, 0x10];
+        annexb.extend_from_slice(&aud);
+        // IDR slice (type 5)
+        annexb.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        let idr = [0x65, 0x88, 0x84];
+        annexb.extend_from_slice(&idr);
+
+        let result = convert_annexb_to_avcc(&annexb);
+
+        assert!(result.sps_list.is_empty());
+        assert!(result.pps_list.is_empty());
+
+        // All three NALs (SEI, AUD, IDR) should appear in video_data.
+        let avcc = &result.video_data;
+        let mut nal_types = Vec::new();
+        let mut offset = 0;
+        while offset + 4 <= avcc.len() {
+            let len = u32::from_be_bytes([
+                avcc[offset],
+                avcc[offset + 1],
+                avcc[offset + 2],
+                avcc[offset + 3],
+            ]) as usize;
+            offset += 4;
+            assert!(offset + len <= avcc.len(), "AVCC data truncated");
+            nal_types.push(avcc[offset] & H264_NAL_TYPE_MASK);
+            offset += len;
+        }
+
+        assert!(nal_types.contains(&6), "SEI should be in video_data");
+        assert!(nal_types.contains(&9), "AUD should be in video_data");
+        assert!(nal_types.contains(&5), "IDR should be in video_data");
+    }
 }
