@@ -371,8 +371,9 @@ impl PinDistributorActor {
 
                 match conn.tx.try_send(packet) {
                     Ok(()) => {
-                        // Newer packet superseded any parked one; drop stale.
-                        conn.pending_best_effort = None;
+                        if conn.pending_best_effort.take().is_some() {
+                            self.best_effort_drops_counter.add(1, &self.metric_labels);
+                        }
                         self.packets_distributed_counter.add(1, &self.metric_labels);
                     },
                     Err(TrySendError::Full(packet)) => {
@@ -399,7 +400,7 @@ impl PinDistributorActor {
                             self.pin_name,
                             id
                         );
-                        self.outputs.remove(&id);
+                        self.remove_output(&id);
                     },
                 }
             } else {
@@ -432,7 +433,7 @@ impl PinDistributorActor {
                                 self.pin_name,
                                 id
                             );
-                            self.outputs.remove(&id);
+                            self.remove_output(&id);
                         } else {
                             self.packets_distributed_counter.add(1, &self.metric_labels);
                         }
@@ -444,7 +445,7 @@ impl PinDistributorActor {
                             self.pin_name,
                             id
                         );
-                        self.outputs.remove(&id);
+                        self.remove_output(&id);
                     },
                 }
             }
@@ -468,7 +469,9 @@ impl PinDistributorActor {
             match conn.mode {
                 ConnectionMode::BestEffort => match conn.tx.try_send(packet.clone()) {
                     Ok(()) => {
-                        conn.pending_best_effort = None;
+                        if conn.pending_best_effort.take().is_some() {
+                            best_effort_drops += 1;
+                        }
                         successes += 1;
                     },
                     Err(TrySendError::Full(packet_clone)) => {
@@ -520,14 +523,14 @@ impl PinDistributorActor {
         }
 
         // Remove closed connections
-        for id in to_remove {
+        for id in &to_remove {
             tracing::warn!(
                 "{}.{}: Downstream connection {} closed during fan-out.",
                 self.node_id,
                 self.pin_name,
                 id
             );
-            self.outputs.remove(&id);
+            self.remove_output(id);
         }
 
         // Record metrics
@@ -544,6 +547,12 @@ impl PinDistributorActor {
                 (id, generation, result)
             }));
         }
+    }
+
+    /// Remove a downstream connection and update the active-outputs gauge.
+    fn remove_output(&mut self, id: &ConnectionId) {
+        self.outputs.remove(id);
+        self.outputs_active_gauge.record(self.outputs.len() as u64, &self.metric_labels);
     }
 
     /// Handle a completed `reserve_owned()` reservation: deliver the connection's
@@ -587,8 +596,7 @@ impl PinDistributorActor {
                 self.pin_name,
                 id
             );
-            self.outputs.remove(id);
-            self.outputs_active_gauge.record(self.outputs.len() as u64, &self.metric_labels);
+            self.remove_output(id);
         }
     }
 
