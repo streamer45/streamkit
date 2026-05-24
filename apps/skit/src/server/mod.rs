@@ -322,11 +322,8 @@ async fn origin_guard_middleware(
 
     if is_api && is_mutating {
         if let Some(origin_val) = req.headers().get(header::ORIGIN) {
-            let origin = match origin_val.to_str() {
-                Ok(s) => s,
-                Err(_) => {
-                    return (StatusCode::FORBIDDEN, "Invalid Origin header").into_response();
-                },
+            let Ok(origin) = origin_val.to_str() else {
+                return (StatusCode::FORBIDDEN, "Invalid Origin header").into_response();
             };
 
             let allowed = app_state
