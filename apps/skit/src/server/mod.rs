@@ -192,7 +192,7 @@ fn normalize_base_path(base_path: Option<&str>) -> Option<String> {
         .map(str::trim)
         .and_then(|p| if p.is_empty() { None } else { Some(p) })
         .map(|p| p.trim_end_matches('/'))
-        .and_then(|p| if p == "/" { None } else { Some(p) })
+        .and_then(|p| if p.is_empty() { None } else { Some(p) })
         .map(|p| if p.starts_with('/') { p.to_string() } else { format!("/{p}") })
 }
 
@@ -556,9 +556,8 @@ mod helper_tests {
         assert_eq!(normalize_base_path(Some("")), None);
         assert_eq!(normalize_base_path(Some("   ")), None);
 
-        // BUG(#485): "/" should normalise to None but instead returns Some("/").
-        // When #485 is fixed this assertion should change to `None`.
-        assert_eq!(normalize_base_path(Some("/")).as_deref(), Some("/"));
+        assert_eq!(normalize_base_path(Some("/")), None);
+        assert_eq!(normalize_base_path(Some("///")), None);
 
         assert_eq!(normalize_base_path(Some("/foo")).as_deref(), Some("/foo"));
         assert_eq!(normalize_base_path(Some("foo")).as_deref(), Some("/foo"));
