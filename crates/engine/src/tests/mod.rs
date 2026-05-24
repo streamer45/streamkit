@@ -31,10 +31,8 @@ mod pipeline_activation;
 #[cfg(feature = "dynamic")]
 mod upstream_hints;
 
-/// Construct a minimal [`DynamicEngine`] for direct-construction tests.
-///
-/// Shared across `pipeline_activation`, `connection_types`, and
-/// `dynamic_actor_update_filters` to avoid field-list drift.
+/// Construct a minimal [`DynamicEngine`] for direct-construction tests,
+/// avoiding field-list drift across callers.
 #[cfg(feature = "dynamic")]
 pub fn create_test_engine() -> crate::dynamic_actor::DynamicEngine {
     use std::collections::HashMap;
