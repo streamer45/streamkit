@@ -326,7 +326,7 @@ async fn origin_guard_middleware(
                 Ok(s) => s,
                 Err(_) => {
                     return (StatusCode::FORBIDDEN, "Invalid Origin header").into_response();
-                }
+                },
             };
 
             let allowed = app_state
