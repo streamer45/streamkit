@@ -145,11 +145,10 @@ ignore:
   - "docs/**"
   # Boilerplate / infrastructure that cannot be meaningfully unit-tested
   # without standing up real subsystems (jemalloc, tracing-subscriber,
-  # OTel SDK, pprof, MoQ/QUIC, wgpu adapter). Excluded after Phase 4 to
-  # keep the headline `backend` flag focused on testable hot paths.
+  # OTel SDK, pprof, wgpu adapter). Excluded after Phase 4 to keep the
+  # headline `backend` flag focused on testable hot paths.
   - "apps/skit/src/main.rs"
   - "apps/skit/src/logging.rs"
   - "apps/skit/src/telemetry.rs"
   - "apps/skit/src/profiling.rs"
-  - "apps/skit/src/server/moq.rs"
   - "crates/nodes/src/video/compositor/gpu.rs"
