@@ -909,3 +909,346 @@ nodes:
         assert_eq!(mode, EngineMode::default());
     }
 }
+
+#[cfg(test)]
+// reason: handler tests intentionally use unwrap/expect so setup failures and
+// response decoding failures produce direct assertion panics.
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod handler_tests {
+    use super::*;
+    use crate::config::{AuthMode, Config};
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Request, StatusCode};
+    use streamkit_api::{SamplePipeline, SavePipelineRequest};
+    use tempfile::TempDir;
+    use tower::ServiceExt;
+
+    fn make_state(samples_dir: &std::path::Path) -> Arc<AppState> {
+        let mut config = Config::default();
+        config.auth.mode = AuthMode::Disabled;
+        config.server.samples_dir = samples_dir.to_string_lossy().into_owned();
+        config
+            .permissions
+            .roles
+            .insert("admin".to_string(), crate::permissions::Permissions::admin());
+        crate::server::create_app_state(config, None)
+    }
+
+    /// Build a fixture samples tree.
+    fn make_samples_tree() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        std::fs::create_dir_all(base.join("oneshot")).unwrap();
+        std::fs::create_dir_all(base.join("dynamic")).unwrap();
+        std::fs::create_dir_all(base.join("user")).unwrap();
+
+        std::fs::write(
+            base.join("oneshot").join("alpha.yml"),
+            "name: \"Alpha\"\ndescription: \"alpha desc\"\nmode: oneshot\nnodes:\n  in:\n    kind: streamkit::http_input\n",
+        )
+        .unwrap();
+
+        std::fs::write(
+            base.join("dynamic").join("beta.yaml"),
+            "name: \"Beta\"\ndescription: \"beta desc\"\nmode: dynamic\nnodes:\n  in:\n    kind: streamkit::http_input\n",
+        )
+        .unwrap();
+
+        // Hidden file and non-yaml file must be filtered by has_yaml_extension.
+        std::fs::write(base.join("oneshot").join(".DS_Store"), b"junk").unwrap();
+        std::fs::write(base.join("oneshot").join("notes.txt"), b"ignored").unwrap();
+        // Dotdir contents would only be touched if the loader recursed, which it
+        // intentionally does not.
+        std::fs::create_dir_all(base.join("oneshot").join(".hidden")).unwrap();
+        std::fs::write(base.join("oneshot").join(".hidden").join("snuck.yml"), "name: \"snuck\"\n")
+            .unwrap();
+
+        tmp
+    }
+
+    #[tokio::test]
+    async fn list_samples_returns_oneshot_and_dynamic_and_filters_non_yaml() {
+        let tmp = make_samples_tree();
+        let state = make_state(tmp.path());
+        let perms = crate::permissions::Permissions::admin();
+
+        let samples = list_samples(&state, &perms).await.unwrap();
+
+        let ids: Vec<_> = samples.iter().map(|s| s.id.as_str()).collect();
+        assert!(ids.contains(&"oneshot/alpha"), "missing oneshot sample, got {ids:?}");
+        assert!(ids.contains(&"dynamic/beta"), "missing dynamic sample, got {ids:?}");
+
+        // .DS_Store, .txt files, and dotdir contents must not leak into the list.
+        for s in &samples {
+            assert!(!s.id.ends_with(".DS_Store"), "hidden file leaked: {}", s.id);
+            assert!(!s.id.ends_with("notes"), "non-yaml file leaked: {}", s.id);
+            assert!(!s.id.contains(".hidden"), "dotdir traversal leaked: {}", s.id);
+        }
+
+        let alpha = samples.iter().find(|s| s.id == "oneshot/alpha").unwrap();
+        assert_eq!(alpha.name, "Alpha");
+        assert_eq!(alpha.description, "alpha desc");
+        assert_eq!(alpha.mode, "oneshot");
+        assert!(alpha.is_system, "bundled samples must be marked as system");
+    }
+
+    #[tokio::test]
+    async fn list_samples_missing_dir_returns_empty_vec() {
+        let tmp = TempDir::new().unwrap();
+        // No subdirs created -- every base/<subdir>.exists() check returns false.
+        let state = make_state(tmp.path());
+        let perms = crate::permissions::Permissions::admin();
+
+        let samples = list_samples(&state, &perms).await.unwrap();
+        assert!(samples.is_empty(), "missing dir must yield Ok(vec![]), got {samples:?}");
+    }
+
+    #[tokio::test]
+    async fn list_samples_handler_filters_to_oneshot_only() {
+        let tmp = make_samples_tree();
+        let state = make_state(tmp.path());
+
+        let app = samples_router().with_state(state);
+        let resp = app
+            .clone()
+            .oneshot(Request::builder().uri("/api/v1/samples/oneshot").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let samples: Vec<SamplePipeline> = serde_json::from_slice(&body).unwrap();
+        assert!(samples.iter().all(|s| s.mode == "oneshot"));
+        assert!(samples.iter().any(|s| s.id == "oneshot/alpha"));
+    }
+
+    #[tokio::test]
+    async fn list_dynamic_samples_handler_filters_to_dynamic_only() {
+        let tmp = make_samples_tree();
+        let state = make_state(tmp.path());
+
+        let app = samples_router().with_state(state);
+        let resp = app
+            .oneshot(Request::builder().uri("/api/v1/samples/dynamic").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let samples: Vec<SamplePipeline> = serde_json::from_slice(&body).unwrap();
+        assert!(samples.iter().all(|s| s.mode == "dynamic"));
+        assert!(samples.iter().any(|s| s.id == "dynamic/beta"));
+    }
+
+    #[tokio::test]
+    async fn get_sample_returns_existing_oneshot_with_namespaced_id() {
+        let tmp = make_samples_tree();
+        let state = make_state(tmp.path());
+        let perms = crate::permissions::Permissions::admin();
+
+        let sample = get_sample(&state, "oneshot/alpha", &perms).await.unwrap();
+        assert_eq!(sample.id, "oneshot/alpha");
+        assert_eq!(sample.name, "Alpha");
+        assert_eq!(sample.mode, "oneshot");
+        assert!(sample.yaml.contains("streamkit::http_input"));
+    }
+
+    #[tokio::test]
+    async fn get_sample_unknown_id_returns_not_found() {
+        let tmp = make_samples_tree();
+        let state = make_state(tmp.path());
+        let perms = crate::permissions::Permissions::admin();
+
+        let err = get_sample(&state, "oneshot/does-not-exist", &perms).await.unwrap_err();
+        assert!(matches!(err, SamplesError::NotFound), "expected NotFound, got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn get_sample_path_traversal_in_id_is_rejected() {
+        let tmp = make_samples_tree();
+        let state = make_state(tmp.path());
+        let perms = crate::permissions::Permissions::admin();
+
+        // The legacy id form (no prefix) carrying a `..` segment must be rejected
+        // by `get_sample` before any filesystem access.
+        let err = get_sample(&state, "../../../etc/passwd", &perms).await.unwrap_err();
+        assert!(
+            matches!(err, SamplesError::InvalidFilename(_)),
+            "expected InvalidFilename, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_sample_handler_rejects_path_traversal_with_400() {
+        let tmp = make_samples_tree();
+        let state = make_state(tmp.path());
+        let app = samples_router().with_state(state);
+
+        // axum path matching consumes the entire `{id}` segment, so we URL-encode
+        // the slashes to keep the traversal attempt embedded in the id.
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/samples/oneshot/..%2F..%2Fetc%2Fpasswd")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "path-traversal request must produce 400, got {:?}",
+            resp.status()
+        );
+    }
+
+    #[tokio::test]
+    async fn save_sample_writes_user_dir_and_round_trips() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state(tmp.path());
+        let perms = crate::permissions::Permissions::admin();
+
+        let request = SavePipelineRequest {
+            name: "My Pipeline".to_string(),
+            description: "description here".to_string(),
+            yaml: "mode: oneshot\nnodes:\n  in:\n    kind: streamkit::http_input\n".to_string(),
+            overwrite: false,
+            is_fragment: false,
+        };
+        let filename = generate_safe_filename(&request.name);
+        assert_eq!(filename, "my_pipeline.yml");
+
+        let saved = save_sample(&state, &filename, &request).await.unwrap();
+        assert_eq!(saved.id, "user/my_pipeline");
+        assert!(!saved.is_system);
+
+        // Verify the file actually exists on disk.
+        let user_path = tmp.path().join("user").join("my_pipeline.yml");
+        assert!(user_path.exists(), "user pipeline must be persisted at {}", user_path.display());
+
+        // Round-trip: get_sample must find the just-saved entry.
+        let fetched = get_sample(&state, "user/my_pipeline", &perms).await.unwrap();
+        assert_eq!(fetched.id, "user/my_pipeline");
+        assert!(!fetched.is_system);
+    }
+
+    #[tokio::test]
+    async fn save_sample_without_overwrite_reports_conflict() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state(tmp.path());
+
+        let req = SavePipelineRequest {
+            name: "dup".to_string(),
+            description: String::new(),
+            yaml: "mode: dynamic\n".to_string(),
+            overwrite: false,
+            is_fragment: true,
+        };
+        save_sample(&state, "dup.yml", &req).await.unwrap();
+
+        let err = save_sample(&state, "dup.yml", &req).await.unwrap_err();
+        assert!(
+            matches!(err, SamplesError::AlreadyExists),
+            "expected AlreadyExists on second write without overwrite, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn save_sample_with_overwrite_replaces_existing() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state(tmp.path());
+
+        let req = SavePipelineRequest {
+            name: "overw".to_string(),
+            description: "first".to_string(),
+            yaml: "mode: dynamic\nnodes: {}\n".to_string(),
+            overwrite: false,
+            is_fragment: false,
+        };
+        save_sample(&state, "overw.yml", &req).await.unwrap();
+
+        let mut req2 = req.clone();
+        req2.description = "second".to_string();
+        req2.overwrite = true;
+        let result = save_sample(&state, "overw.yml", &req2).await.unwrap();
+        assert_eq!(result.description, "second");
+    }
+
+    #[tokio::test]
+    async fn delete_sample_removes_user_file_and_returns_not_found_after() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state(tmp.path());
+
+        let req = SavePipelineRequest {
+            name: "to-delete".to_string(),
+            description: String::new(),
+            yaml: "mode: dynamic\n".to_string(),
+            overwrite: false,
+            is_fragment: true,
+        };
+        save_sample(&state, "to-delete.yml", &req).await.unwrap();
+        assert!(tmp.path().join("user").join("to-delete.yml").exists());
+
+        delete_sample(&state, "user/to-delete").await.unwrap();
+        assert!(!tmp.path().join("user").join("to-delete.yml").exists());
+
+        let err = delete_sample(&state, "user/to-delete").await.unwrap_err();
+        assert!(matches!(err, SamplesError::NotFound));
+    }
+
+    #[tokio::test]
+    async fn delete_sample_refuses_to_touch_system_dirs() {
+        let tmp = make_samples_tree();
+        let state = make_state(tmp.path());
+
+        // Bundled oneshot/* samples must never be deletable via this code path.
+        let err = delete_sample(&state, "oneshot/alpha").await.unwrap_err();
+        assert!(matches!(err, SamplesError::Forbidden), "expected Forbidden, got {err:?}");
+        // The bundled file must still be present after the rejected delete.
+        assert!(tmp.path().join("oneshot").join("alpha.yml").exists());
+    }
+
+    #[tokio::test]
+    async fn save_sample_handler_rejects_oversize_yaml_with_413() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state(tmp.path());
+        let app = samples_router().with_state(state);
+
+        let oversize = "a: 1\n".repeat(MAX_FILE_SIZE / 4 + 4);
+        let req = SavePipelineRequest {
+            name: "too_big".to_string(),
+            description: String::new(),
+            yaml: oversize,
+            overwrite: false,
+            is_fragment: true,
+        };
+        let body = serde_json::to_vec(&req).unwrap();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/samples/oneshot")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn samples_error_status_codes_cover_every_variant() {
+        let cases: Vec<(SamplesError, StatusCode)> = vec![
+            (SamplesError::NotFound, StatusCode::NOT_FOUND),
+            (SamplesError::InvalidFilename("x".into()), StatusCode::BAD_REQUEST),
+            (SamplesError::FileTooLarge, StatusCode::PAYLOAD_TOO_LARGE),
+            (SamplesError::AlreadyExists, StatusCode::CONFLICT),
+            (SamplesError::Forbidden, StatusCode::FORBIDDEN),
+            (SamplesError::Io(std::io::Error::other("boom")), StatusCode::INTERNAL_SERVER_ERROR),
+        ];
+        for (err, expected) in cases {
+            assert_eq!(err.into_response().status(), expected);
+        }
+    }
+}

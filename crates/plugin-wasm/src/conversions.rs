@@ -363,4 +363,260 @@ mod tests {
         };
         assert_eq!(type_id, "plugin::native::x@1");
     }
+
+    // ── Round-trip edge cases ───────────────────────────────────────────
+    //
+    // These exercise the boundary conditions that pure-data unit tests above
+    // can miss: large payloads, multi-byte UTF-8, and nested custom data.
+
+    fn round_trip_packet(packet: Packet) -> Packet {
+        let wit = wit_types::Packet::from(packet);
+        Packet::try_from(wit)
+            .expect("round-trip via WIT must succeed for non-Transcription packets")
+    }
+
+    #[test]
+    fn round_trip_binary_packet_preserves_empty_payload() {
+        let original = Packet::Binary { data: Bytes::new(), content_type: None, metadata: None };
+        let Packet::Binary { data, content_type, metadata } = round_trip_packet(original) else {
+            panic!("round-trip must yield Binary");
+        };
+        assert!(data.is_empty());
+        assert!(content_type.is_none());
+        assert!(metadata.is_none());
+    }
+
+    #[test]
+    fn round_trip_binary_packet_preserves_1mib_payload_byte_for_byte() {
+        // 1 MiB boundary — exercises the Vec<u8>↔Bytes copy paths at a size
+        // large enough to catch any accidental truncation in the WIT bridge.
+        let size = 1024 * 1024;
+        let mut original = Vec::with_capacity(size);
+        for i in 0..size {
+            // i % 251 keeps a non-trivial repeating pattern (251 is prime).
+            original.push(u8::try_from(i % 251).expect("pattern fits in u8"));
+        }
+        let packet = Packet::Binary {
+            data: Bytes::from(original.clone()),
+            content_type: None,
+            metadata: None,
+        };
+        let Packet::Binary { data, .. } = round_trip_packet(packet) else {
+            panic!("round-trip must yield Binary");
+        };
+        assert_eq!(data.len(), original.len());
+        assert_eq!(data.as_ref(), original.as_slice());
+    }
+
+    #[test]
+    fn round_trip_text_packet_preserves_non_ascii_utf8_including_4byte_emoji() {
+        // Includes BMP (café), CJK (日本語), supplementary plane (🎵 = U+1F3B5
+        // encoded as a UTF-16 surrogate pair, 4-byte UTF-8). If the WIT bridge
+        // ever truncated or mishandled multi-byte sequences this would break.
+        let original = "café 日本語 🎵 \u{0301}\u{0308}";
+        let packet = Packet::Text(Arc::from(original));
+        let Packet::Text(text) = round_trip_packet(packet) else {
+            panic!("round-trip must yield Text");
+        };
+        assert_eq!(text.as_ref(), original);
+    }
+
+    #[test]
+    fn round_trip_custom_packet_preserves_two_layer_nested_variant() {
+        // Two layers deep: outer object → array → object → array → primitives.
+        let nested = serde_json::json!({
+            "envelope": {
+                "events": [
+                    {"kind": "open", "payload": {"score": 0.9, "tags": ["a", "b"]}},
+                    {"kind": "close", "payload": {"score": -0.1, "tags": []}},
+                ],
+                "summary": {"count": 2, "labels": ["A", "B"]},
+            },
+        });
+        let packet = Packet::Custom(Arc::new(CustomPacketData {
+            type_id: "plugin::test/nested@1".to_string(),
+            encoding: CustomEncoding::Json,
+            data: nested.clone(),
+            metadata: None,
+        }));
+        let Packet::Custom(custom) = round_trip_packet(packet) else {
+            panic!("round-trip must yield Custom");
+        };
+        assert_eq!(custom.type_id, "plugin::test/nested@1");
+        assert!(matches!(custom.encoding, CustomEncoding::Json));
+        assert_eq!(custom.data, nested);
+    }
+
+    #[test]
+    fn round_trip_audio_packet_preserves_samples_and_format_fields() {
+        let frame = streamkit_core::types::AudioFrame::new(
+            48_000,
+            2,
+            vec![-1.0, -0.5, 0.0, 0.5, 1.0, 0.123_456_7],
+        );
+        let original = Packet::Audio(frame);
+        let Packet::Audio(out) = round_trip_packet(original) else {
+            panic!("round-trip must yield Audio");
+        };
+        assert_eq!(out.sample_rate, 48_000);
+        assert_eq!(out.channels, 2);
+        assert_eq!(out.samples.as_slice(), &[-1.0, -0.5, 0.0, 0.5, 1.0, 0.123_456_7]);
+    }
+
+    // ── Property-style round-trip ────────────────────────────────────────
+    //
+    // Hand-rolled because `proptest` is not a workspace dependency. A small
+    // deterministic LCG drives the input space — failure replays exactly via
+    // the seed in the loop body.
+
+    fn lcg_next(state: &mut u64) -> u64 {
+        // Numerical Recipes constants — full-period 64-bit LCG.
+        *state =
+            state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        *state
+    }
+
+    fn random_packet_type(rng: &mut u64) -> wit_types::PacketType {
+        match lcg_next(rng) % 6 {
+            0 => wit_types::PacketType::RawAudio(wit_types::AudioFormat {
+                sample_rate: u32::try_from(lcg_next(rng) % 192_001).unwrap_or(0),
+                channels: u16::try_from(lcg_next(rng) % 16 + 1).unwrap_or(1),
+                sample_format: if lcg_next(rng).is_multiple_of(2) {
+                    wit_types::SampleFormat::Float32
+                } else {
+                    wit_types::SampleFormat::S16Le
+                },
+            }),
+            1 => wit_types::PacketType::OpusAudio,
+            2 => wit_types::PacketType::Text,
+            3 => wit_types::PacketType::Binary,
+            4 => wit_types::PacketType::Any,
+            _ => wit_types::PacketType::Custom(format!("plugin::test/pt@{}", lcg_next(rng) % 100)),
+        }
+    }
+
+    fn random_packet(rng: &mut u64) -> Packet {
+        match lcg_next(rng) % 4 {
+            0 => {
+                let len = (lcg_next(rng) % 16) as usize;
+                let samples: Vec<f32> = (0..len)
+                    .map(|i| {
+                        // Test-only randomization; bounded by len < 16 so f32
+                        // precision drift can't affect anything observable.
+                        #[allow(
+                            clippy::cast_precision_loss,
+                            clippy::suboptimal_flops,
+                            clippy::arithmetic_side_effects
+                        )]
+                        let v = {
+                            let r = (lcg_next(rng) % 2001) as f32;
+                            let j = i as f32;
+                            r / 1000.0 - (j % 2.0)
+                        };
+                        v
+                    })
+                    .collect();
+                let sample_rate = u32::try_from(lcg_next(rng) % 96_001 + 8_000).unwrap_or(48_000);
+                let channels = u16::try_from(lcg_next(rng) % 8 + 1).unwrap_or(1);
+                Packet::Audio(streamkit_core::types::AudioFrame::new(
+                    sample_rate,
+                    channels,
+                    samples,
+                ))
+            },
+            1 => {
+                let len = (lcg_next(rng) % 64) as usize;
+                let text: String =
+                    (0..len).map(|_| char::from(b'a' + (lcg_next(rng) % 26) as u8)).collect();
+                Packet::Text(Arc::from(text))
+            },
+            2 => {
+                let len = (lcg_next(rng) % 256) as usize;
+                let data: Vec<u8> = (0..len).map(|_| (lcg_next(rng) & 0xff) as u8).collect();
+                Packet::Binary { data: Bytes::from(data), content_type: None, metadata: None }
+            },
+            _ => {
+                let value = serde_json::json!({
+                    "n": lcg_next(rng) % 1000,
+                    "tag": format!("t{}", lcg_next(rng) % 50),
+                    "arr": [lcg_next(rng) % 10, lcg_next(rng) % 10, lcg_next(rng) % 10],
+                });
+                Packet::Custom(Arc::new(CustomPacketData {
+                    type_id: format!("plugin::test/p@{}", lcg_next(rng) % 100),
+                    encoding: CustomEncoding::Json,
+                    data: value,
+                    metadata: None,
+                }))
+            },
+        }
+    }
+
+    fn audio_format_round_trip(rng: &mut u64) -> bool {
+        let wit = match random_packet_type(rng) {
+            wit_types::PacketType::RawAudio(f) => f,
+            _ => wit_types::AudioFormat {
+                sample_rate: 48_000,
+                channels: 2,
+                sample_format: wit_types::SampleFormat::Float32,
+            },
+        };
+        let core = CorePacketType::from(&wit_types::PacketType::RawAudio(wit));
+        let CorePacketType::RawAudio(fmt) = core else { return false };
+        fmt.sample_rate == wit.sample_rate
+            && fmt.channels == wit.channels
+            && matches!(
+                (fmt.sample_format, wit.sample_format),
+                (streamkit_core::types::SampleFormat::F32, wit_types::SampleFormat::Float32,)
+                    | (streamkit_core::types::SampleFormat::S16Le, wit_types::SampleFormat::S16Le,)
+            )
+    }
+
+    fn packets_equivalent(a: &Packet, b: &Packet) -> bool {
+        match (a, b) {
+            (Packet::Audio(x), Packet::Audio(y)) => {
+                x.sample_rate == y.sample_rate
+                    && x.channels == y.channels
+                    && x.samples.as_slice() == y.samples.as_slice()
+            },
+            (Packet::Text(x), Packet::Text(y)) => x.as_ref() == y.as_ref(),
+            (Packet::Binary { data: dx, .. }, Packet::Binary { data: dy, .. }) => {
+                dx.as_ref() == dy.as_ref()
+            },
+            (Packet::Custom(x), Packet::Custom(y)) => {
+                x.type_id == y.type_id
+                    && x.data == y.data
+                    && matches!(
+                        (&x.encoding, &y.encoding),
+                        (CustomEncoding::Json, CustomEncoding::Json)
+                    )
+            },
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn round_trip_random_packets_seeded_loop_preserves_equivalence() {
+        // 256 iterations across all 4 packet variants — large enough to exercise
+        // many sample-count / payload-length combinations while staying fast.
+        let mut rng: u64 = 0x9E37_79B9_7F4A_7C15;
+        for i in 0..256 {
+            let original = random_packet(&mut rng);
+            let round = round_trip_packet(original.clone());
+            assert!(
+                packets_equivalent(&original, &round),
+                "round-trip mismatch on iteration {i}: orig={original:?} round={round:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn round_trip_random_audio_formats_preserves_fields_for_all_variants() {
+        let mut rng: u64 = 0xDEAD_BEEF_CAFE_F00D;
+        for i in 0..128 {
+            assert!(
+                audio_format_round_trip(&mut rng),
+                "audio format round-trip mismatch on iteration {i}"
+            );
+        }
+    }
 }

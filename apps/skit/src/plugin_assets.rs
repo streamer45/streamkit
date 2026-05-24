@@ -1475,4 +1475,1267 @@ mod tests {
         // user_dir should fall back to `samples/quirky/user`, not bare `user`.
         assert_eq!(patterns[0].1, "samples/quirky/user/*");
     }
+
+    #[test]
+    fn plugin_asset_error_display_messages() {
+        assert_eq!(PluginAssetError::IoError("boom".to_string()).to_string(), "IO error: boom");
+        assert_eq!(
+            PluginAssetError::InvalidFilename("bad".to_string()).to_string(),
+            "Invalid filename: bad"
+        );
+        assert_eq!(
+            PluginAssetError::InvalidFormat("nope".to_string()).to_string(),
+            "Invalid format: nope"
+        );
+        assert_eq!(
+            PluginAssetError::InvalidRequest("missing".to_string()).to_string(),
+            "Invalid request: missing"
+        );
+        assert_eq!(
+            PluginAssetError::FileTooLarge(42).to_string(),
+            "File too large (max: 42 bytes)"
+        );
+        assert_eq!(
+            PluginAssetError::FileExists("a.txt".to_string()).to_string(),
+            "File exists: a.txt"
+        );
+        assert_eq!(
+            PluginAssetError::NotFound("missing".to_string()).to_string(),
+            "Not found: missing"
+        );
+        assert_eq!(PluginAssetError::Forbidden.to_string(), "Forbidden");
+    }
+
+    #[tokio::test]
+    async fn plugin_asset_error_maps_to_expected_status_codes() {
+        for (err, expected) in [
+            (PluginAssetError::IoError("x".into()), StatusCode::INTERNAL_SERVER_ERROR),
+            (PluginAssetError::InvalidFilename("x".into()), StatusCode::BAD_REQUEST),
+            (PluginAssetError::InvalidFormat("x".into()), StatusCode::BAD_REQUEST),
+            (PluginAssetError::InvalidRequest("x".into()), StatusCode::BAD_REQUEST),
+            (PluginAssetError::FileTooLarge(1), StatusCode::PAYLOAD_TOO_LARGE),
+            (PluginAssetError::FileExists("a".into()), StatusCode::CONFLICT),
+            (PluginAssetError::NotFound("a".into()), StatusCode::NOT_FOUND),
+            (PluginAssetError::Forbidden, StatusCode::FORBIDDEN),
+        ] {
+            assert_eq!(err.into_response().status(), expected);
+        }
+    }
+}
+
+#[cfg(test)]
+// `unwrap`/`expect` in tests fail fast on setup mistakes; production policy enforced elsewhere.
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod handler_tests {
+    //! Integration-style tests that exercise the public Axum router built
+    //! by [`plugin_assets_router`].
+    //!
+    //! These tests bypass [`PluginAssetRegistry::register`] (which only
+    //! accepts relative `system_dir` values) and insert
+    //! [`RegisteredAssetType`] values pointing directly at a `TempDir`,
+    //! so each test runs against a fresh filesystem with no CWD
+    //! manipulation.
+
+    use super::*;
+    use crate::config::{AuthMode, Config};
+    use axum::body::{to_bytes, Body};
+    use axum::http::{header, Method, Request, StatusCode};
+    use std::path::Path;
+    use tempfile::TempDir;
+    use tower::ServiceExt;
+
+    fn make_state() -> Arc<AppState> {
+        let mut config = Config::default();
+        config.auth.mode = AuthMode::Disabled;
+        crate::server::create_app_state(config, None)
+    }
+
+    fn make_viewer_state() -> Arc<AppState> {
+        let mut config = Config::default();
+        config.auth.mode = AuthMode::Disabled;
+        config.permissions.default_role = "viewer".to_string();
+        crate::server::create_app_state(config, None)
+    }
+
+    /// Build a `RegisteredAssetType` whose directories live under the
+    /// supplied root.  Both system and user directories are created on
+    /// disk so handlers that canonicalize them succeed without first
+    /// running upload_handler.
+    fn registered_type(
+        root: &Path,
+        type_id: &str,
+        plugin_id: &str,
+        extensions: &[&str],
+        content_type: AssetContentType,
+        max_size_bytes: usize,
+    ) -> RegisteredAssetType {
+        let system_dir = root.join(type_id).join("system");
+        let user_dir = root.join(type_id).join("user");
+        std::fs::create_dir_all(&system_dir).unwrap();
+        std::fs::create_dir_all(&user_dir).unwrap();
+        RegisteredAssetType {
+            type_id: type_id.to_string(),
+            plugin_id: plugin_id.to_string(),
+            node_kind: format!("plugin::native::{plugin_id}"),
+            label: type_id.to_string(),
+            extensions: extensions.iter().copied().map(String::from).collect(),
+            max_size_bytes,
+            content_type,
+            icon_hint: None,
+            node_param: None,
+            system_dir,
+            user_dir,
+        }
+    }
+
+    async fn install_type(state: &Arc<AppState>, registered: RegisteredAssetType) {
+        let mut map = state.plugin_asset_registry.inner.write().await;
+        map.insert(registered.type_id.clone(), registered);
+    }
+
+    fn build_multipart_body(
+        boundary: &str,
+        field_name: &str,
+        filename: Option<&str>,
+        bytes: &[u8],
+    ) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        match filename {
+            Some(name) => body.extend_from_slice(
+                format!(
+                    "Content-Disposition: form-data; name=\"{field_name}\"; \
+                     filename=\"{name}\"\r\n"
+                )
+                .as_bytes(),
+            ),
+            None => body.extend_from_slice(
+                format!("Content-Disposition: form-data; name=\"{field_name}\"\r\n").as_bytes(),
+            ),
+        }
+        body.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        body
+    }
+
+    fn multipart_request(
+        method: Method,
+        uri: &str,
+        boundary: &str,
+        body: Vec<u8>,
+    ) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::CONTENT_TYPE, format!("multipart/form-data; boundary={boundary}"))
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    async fn body_bytes(body: Body) -> Vec<u8> {
+        to_bytes(body, 32 * 1024 * 1024).await.unwrap().to_vec()
+    }
+
+    async fn body_string(body: Body) -> String {
+        String::from_utf8(body_bytes(body).await).unwrap()
+    }
+
+    /// Build a minimal `RegisteredAssetType` for tests of pure helpers
+    /// (process_entry, scan_directory) that don't need a real AppState.
+    fn test_asset_type(extensions: &[&str]) -> RegisteredAssetType {
+        RegisteredAssetType {
+            type_id: "test".to_string(),
+            plugin_id: "test-plugin".to_string(),
+            node_kind: "plugin::native::test".to_string(),
+            label: "Test".to_string(),
+            extensions: extensions.iter().copied().map(String::from).collect(),
+            max_size_bytes: 1024,
+            content_type: AssetContentType::Binary,
+            icon_hint: None,
+            node_param: None,
+            system_dir: PathBuf::from("samples/test/system"),
+            user_dir: PathBuf::from("samples/test/user"),
+        }
+    }
+
+    #[tokio::test]
+    async fn process_entry_returns_none_for_directories() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("subdir");
+        std::fs::create_dir_all(&dir).unwrap();
+        let at = test_asset_type(&["txt"]);
+        let perms = RolePermissions::admin();
+        assert!(process_entry(dir, false, &perms, &at).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn process_entry_returns_none_for_disallowed_extension() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("notes.exe");
+        std::fs::write(&file, b"x").unwrap();
+        let at = test_asset_type(&["txt"]);
+        let perms = RolePermissions::admin();
+        assert!(process_entry(file, false, &perms, &at).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn process_entry_returns_none_when_filtered_by_permissions() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("clip.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let at = test_asset_type(&["txt"]);
+        // viewer has no permission to access `samples/test/user/*`.
+        let perms = RolePermissions::viewer();
+        assert!(process_entry(file, false, &perms, &at).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn process_entry_returns_user_asset_with_display_name() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("my_cool-file.txt");
+        std::fs::write(&file, b"hello").unwrap();
+        let at = test_asset_type(&["txt"]);
+        let perms = RolePermissions::admin();
+        let asset = process_entry(file, false, &perms, &at).await.unwrap();
+        assert_eq!(asset.id, "my_cool-file.txt");
+        assert_eq!(asset.name, "my cool file");
+        assert_eq!(asset.format, "txt");
+        assert_eq!(asset.size_bytes, 5);
+        assert!(!asset.is_system);
+        assert_eq!(asset.type_id, "test");
+        assert_eq!(asset.plugin_id, "test-plugin");
+        // Path uses the parent of `system_dir` as the base; pinned exactly to
+        // catch silent prefix drift in `process_entry`.
+        assert_eq!(asset.path, "samples/test/user/my_cool-file.txt");
+    }
+
+    #[tokio::test]
+    async fn scan_directory_returns_empty_for_missing_dir() {
+        let tmp = TempDir::new().unwrap();
+        let at = test_asset_type(&["txt"]);
+        let perms = RolePermissions::admin();
+        let assets =
+            scan_directory(&tmp.path().join("does-not-exist"), false, &perms, &at).await.unwrap();
+        assert!(assets.is_empty());
+    }
+
+    #[tokio::test]
+    async fn scan_directory_filters_and_collects() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), b"a").unwrap();
+        std::fs::write(tmp.path().join("b.txt"), b"bb").unwrap();
+        std::fs::write(tmp.path().join("c.exe"), b"x").unwrap();
+        std::fs::create_dir_all(tmp.path().join("nested")).unwrap();
+        let at = test_asset_type(&["txt"]);
+        let perms = RolePermissions::admin();
+        let mut assets = scan_directory(tmp.path(), false, &perms, &at).await.unwrap();
+        assets.sort_by(|a, b| a.id.cmp(&b.id));
+        assert_eq!(assets.len(), 2);
+        assert_eq!(assets[0].id, "a.txt");
+        assert_eq!(assets[1].id, "b.txt");
+    }
+
+    #[tokio::test]
+    async fn list_returns_404_for_unknown_type() {
+        let state = make_state();
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/assets/plugin/missing")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn list_returns_sorted_assets_across_scopes() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state();
+        let reg = registered_type(
+            tmp.path(),
+            "slint",
+            "slint-plugin",
+            &["slint"],
+            AssetContentType::Text,
+            65_536,
+        );
+        std::fs::write(reg.system_dir.join("alpha.slint"), b"// sys").unwrap();
+        std::fs::write(reg.user_dir.join("zeta.slint"), b"// user").unwrap();
+        std::fs::write(reg.user_dir.join("beta.slint"), b"// user").unwrap();
+        install_type(&state, reg).await;
+
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder().uri("/api/v1/assets/plugin/slint").body(Body::empty()).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: Vec<serde_json::Value> =
+            serde_json::from_slice(&body_bytes(resp.into_body()).await).unwrap();
+        let ids: Vec<&str> = body.iter().map(|v| v["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["alpha.slint", "beta.slint", "zeta.slint"]);
+        // sorted by display name (alpha/beta/zeta — underscores replaced).
+    }
+
+    #[tokio::test]
+    async fn list_returns_empty_when_no_files() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state();
+        let reg = registered_type(
+            tmp.path(),
+            "slint",
+            "slint-plugin",
+            &["slint"],
+            AssetContentType::Text,
+            65_536,
+        );
+        install_type(&state, reg).await;
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder().uri("/api/v1/assets/plugin/slint").body(Body::empty()).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&body_bytes(resp.into_body()).await).unwrap();
+        assert!(body.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn upload_forbidden_for_viewer() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_viewer_state();
+        install_type(
+            &state,
+            registered_type(
+                tmp.path(),
+                "slint",
+                "slint-plugin",
+                &["slint"],
+                AssetContentType::Text,
+                4096,
+            ),
+        )
+        .await;
+
+        let boundary = "boundary_viewer_upload";
+        let body = build_multipart_body(boundary, "file", Some("x.slint"), b"// hi");
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(multipart_request(Method::POST, "/api/v1/assets/plugin/slint", boundary, body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn upload_returns_404_for_unknown_type() {
+        let state = make_state();
+        let boundary = "boundary_unknown_type";
+        let body = build_multipart_body(boundary, "file", Some("x.slint"), b"// hi");
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(multipart_request(
+                Method::POST,
+                "/api/v1/assets/plugin/missing",
+                boundary,
+                body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_field_without_filename() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state();
+        install_type(
+            &state,
+            registered_type(
+                tmp.path(),
+                "slint",
+                "slint-plugin",
+                &["slint"],
+                AssetContentType::Text,
+                4096,
+            ),
+        )
+        .await;
+
+        let boundary = "boundary_no_filename";
+        let body = build_multipart_body(boundary, "file", None, b"data");
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(multipart_request(Method::POST, "/api/v1/assets/plugin/slint", boundary, body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert!(body_string(resp.into_body()).await.contains("No filename"));
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_disallowed_extension() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state();
+        install_type(
+            &state,
+            registered_type(
+                tmp.path(),
+                "slint",
+                "slint-plugin",
+                &["slint"],
+                AssetContentType::Text,
+                4096,
+            ),
+        )
+        .await;
+        let boundary = "boundary_bad_ext";
+        let body = build_multipart_body(boundary, "file", Some("bad.exe"), b"x");
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(multipart_request(Method::POST, "/api/v1/assets/plugin/slint", boundary, body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn upload_happy_path_writes_file_and_returns_asset() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state();
+        let reg = registered_type(
+            tmp.path(),
+            "slint",
+            "slint-plugin",
+            &["slint"],
+            AssetContentType::Text,
+            4096,
+        );
+        let user_dir = reg.user_dir.clone();
+        install_type(&state, reg).await;
+
+        let boundary = "boundary_happy_upload";
+        let payload = b"// hello, world\n";
+        let body = build_multipart_body(boundary, "file", Some("hello-world.slint"), payload);
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(multipart_request(Method::POST, "/api/v1/assets/plugin/slint", boundary, body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let v: serde_json::Value =
+            serde_json::from_slice(&body_bytes(resp.into_body()).await).unwrap();
+        assert_eq!(v["id"], "hello-world.slint");
+        assert_eq!(v["name"], "hello world");
+        assert_eq!(v["format"], "slint");
+        assert_eq!(v["size_bytes"].as_u64().unwrap(), payload.len() as u64);
+        assert_eq!(v["is_system"], false);
+
+        let written = std::fs::read(user_dir.join("hello-world.slint")).unwrap();
+        assert_eq!(written, payload);
+    }
+
+    #[tokio::test]
+    async fn upload_returns_409_on_duplicate() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state();
+        let reg = registered_type(
+            tmp.path(),
+            "slint",
+            "slint-plugin",
+            &["slint"],
+            AssetContentType::Text,
+            4096,
+        );
+        std::fs::write(reg.user_dir.join("dup.slint"), b"existing").unwrap();
+        install_type(&state, reg).await;
+
+        let boundary = "boundary_dup_upload";
+        let body = build_multipart_body(boundary, "file", Some("dup.slint"), b"new");
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(multipart_request(Method::POST, "/api/v1/assets/plugin/slint", boundary, body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn upload_returns_413_when_payload_exceeds_max_size() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state();
+        let reg = registered_type(
+            tmp.path(),
+            "slint",
+            "slint-plugin",
+            &["slint"],
+            AssetContentType::Text,
+            8, // tiny cap
+        );
+        let user_dir = reg.user_dir.clone();
+        install_type(&state, reg).await;
+
+        let boundary = "boundary_too_big";
+        let body = build_multipart_body(boundary, "file", Some("big.slint"), b"this is too large");
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(multipart_request(Method::POST, "/api/v1/assets/plugin/slint", boundary, body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        // The partial file should have been cleaned up.
+        assert!(!user_dir.join("big.slint").exists());
+    }
+
+    #[tokio::test]
+    async fn upload_returns_400_when_no_field_present() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state();
+        install_type(
+            &state,
+            registered_type(
+                tmp.path(),
+                "slint",
+                "slint-plugin",
+                &["slint"],
+                AssetContentType::Text,
+                4096,
+            ),
+        )
+        .await;
+
+        let boundary = "boundary_empty_body";
+        // Multipart body with closing boundary only — no fields.
+        let body = format!("--{boundary}--\r\n").into_bytes();
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(multipart_request(Method::POST, "/api/v1/assets/plugin/slint", boundary, body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn delete_forbidden_for_viewer() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_viewer_state();
+        install_type(
+            &state,
+            registered_type(
+                tmp.path(),
+                "slint",
+                "slint-plugin",
+                &["slint"],
+                AssetContentType::Text,
+                4096,
+            ),
+        )
+        .await;
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::DELETE)
+                    .uri("/api/v1/assets/plugin/slint/a.slint")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn delete_returns_404_for_unknown_type() {
+        let state = make_state();
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::DELETE)
+                    .uri("/api/v1/assets/plugin/missing/a.slint")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_rejects_path_traversal_in_id() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state();
+        install_type(
+            &state,
+            registered_type(
+                tmp.path(),
+                "slint",
+                "slint-plugin",
+                &["slint"],
+                AssetContentType::Text,
+                4096,
+            ),
+        )
+        .await;
+        let app = plugin_assets_router().with_state(state);
+        // axum decodes %2F -> '/'; check that even after decoding it's rejected.
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::DELETE)
+                    .uri("/api/v1/assets/plugin/slint/..%2Fpasswd")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn delete_returns_404_for_missing_file() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state();
+        install_type(
+            &state,
+            registered_type(
+                tmp.path(),
+                "slint",
+                "slint-plugin",
+                &["slint"],
+                AssetContentType::Text,
+                4096,
+            ),
+        )
+        .await;
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::DELETE)
+                    .uri("/api/v1/assets/plugin/slint/missing.slint")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_removes_file_returns_204() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state();
+        let reg = registered_type(
+            tmp.path(),
+            "slint",
+            "slint-plugin",
+            &["slint"],
+            AssetContentType::Text,
+            4096,
+        );
+        let path = reg.user_dir.join("clip.slint");
+        std::fs::write(&path, b"hi").unwrap();
+        install_type(&state, reg).await;
+
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::DELETE)
+                    .uri("/api/v1/assets/plugin/slint/clip.slint")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn serve_rejects_path_traversal_in_id() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state();
+        install_type(
+            &state,
+            registered_type(
+                tmp.path(),
+                "slint",
+                "slint-plugin",
+                &["slint"],
+                AssetContentType::Text,
+                4096,
+            ),
+        )
+        .await;
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/assets/plugin/slint/file/user/..%2Fpasswd")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn serve_rejects_invalid_scope() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state();
+        install_type(
+            &state,
+            registered_type(
+                tmp.path(),
+                "slint",
+                "slint-plugin",
+                &["slint"],
+                AssetContentType::Text,
+                4096,
+            ),
+        )
+        .await;
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/assets/plugin/slint/file/wrong-scope/x.slint")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn serve_returns_404_for_unknown_type() {
+        let state = make_state();
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/assets/plugin/missing/file/user/x.slint")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn serve_rejects_disallowed_extension() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state();
+        install_type(
+            &state,
+            registered_type(
+                tmp.path(),
+                "slint",
+                "slint-plugin",
+                &["slint"],
+                AssetContentType::Text,
+                4096,
+            ),
+        )
+        .await;
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/assets/plugin/slint/file/user/secret.env")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn serve_returns_text_content_type_for_text_assets() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state();
+        let reg = registered_type(
+            tmp.path(),
+            "slint",
+            "slint-plugin",
+            &["slint"],
+            AssetContentType::Text,
+            4096,
+        );
+        std::fs::write(reg.user_dir.join("a.slint"), b"// text body").unwrap();
+        install_type(&state, reg).await;
+
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/assets/plugin/slint/file/user/a.slint")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get(header::CONTENT_TYPE).unwrap(), "text/plain; charset=utf-8");
+        assert!(resp
+            .headers()
+            .get(header::CONTENT_DISPOSITION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("attachment; filename=\"a.slint\""));
+        assert_eq!(body_bytes(resp.into_body()).await, b"// text body".to_vec());
+    }
+
+    #[tokio::test]
+    async fn serve_returns_binary_content_type_for_binary_assets() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state();
+        let reg = registered_type(
+            tmp.path(),
+            "bin",
+            "bin-plugin",
+            &["bin"],
+            AssetContentType::Binary,
+            4096,
+        );
+        std::fs::write(reg.system_dir.join("blob.bin"), b"\x00\x01\x02").unwrap();
+        install_type(&state, reg).await;
+
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/assets/plugin/bin/file/system/blob.bin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get(header::CONTENT_TYPE).unwrap(), "application/octet-stream");
+        assert_eq!(body_bytes(resp.into_body()).await, b"\x00\x01\x02".to_vec());
+    }
+
+    #[tokio::test]
+    async fn serve_returns_404_for_missing_file() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state();
+        install_type(
+            &state,
+            registered_type(
+                tmp.path(),
+                "slint",
+                "slint-plugin",
+                &["slint"],
+                AssetContentType::Text,
+                4096,
+            ),
+        )
+        .await;
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/assets/plugin/slint/file/user/missing.slint")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn update_forbidden_for_viewer() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_viewer_state();
+        install_type(
+            &state,
+            registered_type(
+                tmp.path(),
+                "slint",
+                "slint-plugin",
+                &["slint"],
+                AssetContentType::Text,
+                4096,
+            ),
+        )
+        .await;
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::PUT)
+                    .uri("/api/v1/assets/plugin/slint/file/user/a.slint")
+                    .body(Body::from("// new"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn update_forbidden_for_system_scope() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state();
+        install_type(
+            &state,
+            registered_type(
+                tmp.path(),
+                "slint",
+                "slint-plugin",
+                &["slint"],
+                AssetContentType::Text,
+                4096,
+            ),
+        )
+        .await;
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::PUT)
+                    .uri("/api/v1/assets/plugin/slint/file/system/a.slint")
+                    .body(Body::from("// no"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn update_rejects_traversal_in_id() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state();
+        install_type(
+            &state,
+            registered_type(
+                tmp.path(),
+                "slint",
+                "slint-plugin",
+                &["slint"],
+                AssetContentType::Text,
+                4096,
+            ),
+        )
+        .await;
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::PUT)
+                    .uri("/api/v1/assets/plugin/slint/file/user/..%2Fpasswd")
+                    .body(Body::from("oops"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn update_returns_404_for_unknown_type() {
+        let state = make_state();
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::PUT)
+                    .uri("/api/v1/assets/plugin/missing/file/user/a.slint")
+                    .body(Body::from("body"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn update_rejects_non_text_asset_types() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state();
+        let reg = registered_type(
+            tmp.path(),
+            "bin",
+            "bin-plugin",
+            &["bin"],
+            AssetContentType::Binary,
+            4096,
+        );
+        std::fs::write(reg.user_dir.join("a.bin"), b"x").unwrap();
+        install_type(&state, reg).await;
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::PUT)
+                    .uri("/api/v1/assets/plugin/bin/file/user/a.bin")
+                    .body(Body::from("y"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert!(body_string(resp.into_body()).await.contains("in-place editing"));
+    }
+
+    #[tokio::test]
+    async fn update_rejects_bad_extension() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state();
+        install_type(
+            &state,
+            registered_type(
+                tmp.path(),
+                "slint",
+                "slint-plugin",
+                &["slint"],
+                AssetContentType::Text,
+                4096,
+            ),
+        )
+        .await;
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::PUT)
+                    .uri("/api/v1/assets/plugin/slint/file/user/bad.exe")
+                    .body(Body::from("// hi"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn update_returns_404_when_target_missing() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state();
+        install_type(
+            &state,
+            registered_type(
+                tmp.path(),
+                "slint",
+                "slint-plugin",
+                &["slint"],
+                AssetContentType::Text,
+                4096,
+            ),
+        )
+        .await;
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::PUT)
+                    .uri("/api/v1/assets/plugin/slint/file/user/missing.slint")
+                    .body(Body::from("// hi"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn update_returns_413_when_body_exceeds_max_size() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state();
+        let reg = registered_type(
+            tmp.path(),
+            "slint",
+            "slint-plugin",
+            &["slint"],
+            AssetContentType::Text,
+            4, // tiny cap to trigger the per-type limit (under the 10 MiB router cap)
+        );
+        std::fs::write(reg.user_dir.join("a.slint"), b"original").unwrap();
+        install_type(&state, reg).await;
+
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::PUT)
+                    .uri("/api/v1/assets/plugin/slint/file/user/a.slint")
+                    .body(Body::from("this is too long"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn update_writes_new_content_and_returns_metadata() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state();
+        let reg = registered_type(
+            tmp.path(),
+            "slint",
+            "slint-plugin",
+            &["slint"],
+            AssetContentType::Text,
+            4096,
+        );
+        let target = reg.user_dir.join("a-file.slint");
+        std::fs::write(&target, b"old").unwrap();
+        install_type(&state, reg).await;
+
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::PUT)
+                    .uri("/api/v1/assets/plugin/slint/file/user/a-file.slint")
+                    .body(Body::from("// updated"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v: serde_json::Value =
+            serde_json::from_slice(&body_bytes(resp.into_body()).await).unwrap();
+        assert_eq!(v["id"], "a-file.slint");
+        assert_eq!(v["name"], "a file");
+        assert_eq!(v["format"], "slint");
+        assert_eq!(v["size_bytes"].as_u64().unwrap(), 10);
+        assert_eq!(std::fs::read(&target).unwrap(), b"// updated");
+    }
+
+    #[tokio::test]
+    async fn asset_types_lists_core_when_no_plugins_registered() {
+        let state = make_state();
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(Request::builder().uri("/api/v1/asset-types").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v: Vec<serde_json::Value> =
+            serde_json::from_slice(&body_bytes(resp.into_body()).await).unwrap();
+        let ids: std::collections::BTreeSet<&str> =
+            v.iter().map(|t| t["type_id"].as_str().unwrap()).collect();
+        assert_eq!(
+            ids,
+            ["audio", "image", "font"].iter().copied().collect::<std::collections::BTreeSet<_>>()
+        );
+        for entry in &v {
+            assert_eq!(entry["source"], "core");
+            assert_eq!(entry["editable"], false);
+        }
+    }
+
+    #[tokio::test]
+    async fn asset_types_includes_registered_plugin_types() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state();
+        install_type(
+            &state,
+            registered_type(
+                tmp.path(),
+                "slint",
+                "slint-plugin",
+                &["slint"],
+                AssetContentType::Text,
+                4096,
+            ),
+        )
+        .await;
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(Request::builder().uri("/api/v1/asset-types").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v: Vec<serde_json::Value> =
+            serde_json::from_slice(&body_bytes(resp.into_body()).await).unwrap();
+        let slint =
+            v.iter().find(|t| t["type_id"] == "slint").expect("slint type should be registered");
+        assert_eq!(slint["source"], "plugin");
+        assert_eq!(slint["plugin_id"], "slint-plugin");
+        assert_eq!(slint["editable"], true);
+        assert_eq!(slint["icon_hint"], "file"); // default when None
+    }
+
+    fn minimal_manifest_yaml(id: &str) -> String {
+        format!(
+            "id: {id}\n\
+             version: 0.1.0\n\
+             node_kind: plugin::native::{id}\n\
+             kind: native\n\
+             entrypoint: lib{id}.so\n"
+        )
+    }
+
+    #[test]
+    fn read_local_plugin_manifest_returns_none_when_missing() {
+        let tmp = TempDir::new().unwrap();
+        let library = tmp.path().join("libsomething.so");
+        std::fs::write(&library, b"").unwrap();
+        assert!(read_local_plugin_manifest(&library).is_none());
+    }
+
+    #[test]
+    fn read_local_plugin_manifest_loads_plugin_yml_in_same_dir() {
+        let tmp = TempDir::new().unwrap();
+        let library = tmp.path().join("libslint.so");
+        std::fs::write(&library, b"").unwrap();
+        std::fs::write(tmp.path().join("plugin.yml"), minimal_manifest_yaml("slint")).unwrap();
+        let manifest = read_local_plugin_manifest(&library).expect("manifest");
+        assert_eq!(manifest.id, "slint");
+    }
+
+    #[test]
+    fn read_local_plugin_manifest_loads_plugin_yaml_in_same_dir() {
+        let tmp = TempDir::new().unwrap();
+        let library = tmp.path().join("libslint.so");
+        std::fs::write(&library, b"").unwrap();
+        std::fs::write(tmp.path().join("plugin.yaml"), minimal_manifest_yaml("slint")).unwrap();
+        let manifest = read_local_plugin_manifest(&library).expect("manifest");
+        assert_eq!(manifest.id, "slint");
+    }
+
+    #[test]
+    fn read_local_plugin_manifest_loads_stem_plugin_yml_fallback() {
+        let tmp = TempDir::new().unwrap();
+        let library = tmp.path().join("libslint.so");
+        std::fs::write(&library, b"").unwrap();
+        std::fs::write(tmp.path().join("slint.plugin.yml"), minimal_manifest_yaml("slint"))
+            .unwrap();
+        let manifest = read_local_plugin_manifest(&library).expect("manifest");
+        assert_eq!(manifest.id, "slint");
+    }
+
+    #[test]
+    fn read_local_plugin_manifest_returns_none_for_invalid_yaml() {
+        let tmp = TempDir::new().unwrap();
+        let library = tmp.path().join("libbad.so");
+        std::fs::write(&library, b"").unwrap();
+        // Missing all required fields — should fail to parse and return None.
+        std::fs::write(tmp.path().join("plugin.yml"), "not a manifest").unwrap();
+        assert!(read_local_plugin_manifest(&library).is_none());
+    }
 }
