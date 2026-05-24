@@ -255,7 +255,6 @@ where
     false
 }
 
-
 #[tokio::test]
 #[allow(clippy::expect_used)]
 async fn test_basic_async_creation() {
@@ -319,7 +318,6 @@ async fn test_basic_async_creation() {
 
     handle.shutdown_and_wait().await.expect("shutdown");
 }
-
 
 #[tokio::test]
 #[allow(clippy::expect_used)]
@@ -392,7 +390,6 @@ async fn test_deferred_connections() {
     handle.shutdown_and_wait().await.expect("shutdown");
 }
 
-
 #[tokio::test]
 #[allow(clippy::expect_used)]
 async fn test_multiple_slow_nodes_concurrent() {
@@ -460,7 +457,6 @@ async fn test_multiple_slow_nodes_concurrent() {
 
     handle.shutdown_and_wait().await.expect("shutdown");
 }
-
 
 #[tokio::test]
 #[allow(clippy::expect_used)]
@@ -530,7 +526,6 @@ async fn test_creation_failure() {
     handle.shutdown_and_wait().await.expect("shutdown");
 }
 
-
 #[tokio::test]
 #[allow(clippy::expect_used)]
 async fn test_remove_node_while_creating() {
@@ -585,7 +580,6 @@ async fn test_remove_node_while_creating() {
 
     handle.shutdown_and_wait().await.expect("shutdown");
 }
-
 
 #[tokio::test]
 #[allow(clippy::expect_used)]
@@ -677,7 +671,6 @@ async fn test_pipeline_activation_timing() {
     handle.shutdown_and_wait().await.expect("shutdown");
 }
 
-
 #[tokio::test]
 #[allow(clippy::expect_used)]
 async fn test_duplicate_add_node() {
@@ -730,7 +723,6 @@ async fn test_duplicate_add_node() {
 
     handle.shutdown_and_wait().await.expect("shutdown");
 }
-
 
 #[tokio::test]
 #[allow(clippy::expect_used)]
@@ -813,7 +805,6 @@ async fn test_remove_then_readd_same_id() {
     handle.shutdown_and_wait().await.expect("shutdown");
 }
 
-
 #[tokio::test]
 #[allow(clippy::expect_used)]
 async fn test_shutdown_while_creating() {
@@ -846,7 +837,6 @@ async fn test_shutdown_while_creating() {
     let result = handle.shutdown_and_wait().await;
     assert!(result.is_ok(), "shutdown should complete cleanly: {result:?}");
 }
-
 
 #[tokio::test]
 #[allow(clippy::expect_used)]
@@ -925,7 +915,6 @@ async fn test_connect_one_realized_one_creating() {
 
     handle.shutdown_and_wait().await.expect("shutdown");
 }
-
 
 #[tokio::test]
 #[allow(clippy::expect_used)]
