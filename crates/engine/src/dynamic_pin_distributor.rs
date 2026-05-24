@@ -8,21 +8,52 @@
 //! output pin to multiple downstream input pins. Supports two connection modes:
 //!
 //! - **Reliable**: Synchronized backpressure - waits for slow consumers
-//! - **BestEffort**: Avoids backpressure; keeps the newest packet when downstream is congested
+//! - **BestEffort**: Avoids backpressure; keeps the newest packet when downstream is congested.
+//!   When `try_send` reports `Full`, the packet is parked in `OutputConnection::pending_best_effort`
+//!   and a `reserve_owned()` future is scheduled in `pending_flushes`. As soon as the downstream
+//!   channel frees a slot, the actor's `select!` flush arm wakes, takes the *current* pending
+//!   packet (always the newest observed since the last successful send), and delivers it via the
+//!   reserved permit. If a fresher packet has since landed via a successful `try_send`, the permit
+//!   is dropped (releasing the slot) so we never deliver a stale packet on top of a newer one.
 
 use crate::dynamic_messages::{ConnectionId, ConnectionMode, PinConfigMsg};
+use futures::future::BoxFuture;
+use futures::stream::{FuturesUnordered, StreamExt};
 use std::collections::HashMap;
 use std::time::Instant;
 use streamkit_core::types::Packet;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::SendError;
+use tokio::sync::mpsc::OwnedPermit;
 
 const EWMA_ALPHA: f64 = 0.1;
+
+/// Result yielded by an in-flight best-effort reservation: which connection
+/// it belongs to, which incarnation (`generation`) of that connection
+/// scheduled the reservation, and either the reserved permit or a
+/// closed-channel error.
+type FlushResult = (ConnectionId, u64, Result<OwnedPermit<Packet>, SendError<()>>);
 
 /// Information about a downstream connection.
 struct OutputConnection {
     tx: mpsc::Sender<Packet>,
     mode: ConnectionMode,
+    /// Most recent best-effort packet observed while the downstream channel
+    /// was full. Overwritten on each `Full` (older packet dropped) and
+    /// cleared on any successful send (newer packet supersedes the parked
+    /// one).
     pending_best_effort: Option<Packet>,
+    /// True while a `reserve_owned()` future for this connection is queued
+    /// in `PinDistributorActor::pending_flushes`. At most one in-flight
+    /// reservation per output is enough because the actor is single-task:
+    /// when the flush wakes, it always delivers the latest pending packet.
+    flush_in_flight: bool,
+    /// Monotonically increasing token assigned at `AddConnection` time.
+    /// Each scheduled flush captures the generation of the connection that
+    /// scheduled it, so a stale permit from a previous incarnation of the
+    /// same `ConnectionId` (removed and later re-added) can be detected and
+    /// dropped instead of misrouting a fresh packet onto the old channel.
+    generation: u64,
 }
 
 /// Actor responsible for distributing packets from a single output pin (Data Plane).
@@ -33,6 +64,16 @@ pub struct PinDistributorActor {
     config_rx: mpsc::Receiver<PinConfigMsg>,
     /// Map of active downstream connections with their modes
     outputs: HashMap<ConnectionId, OutputConnection>,
+    /// In-flight `reserve_owned()` futures for best-effort outputs whose
+    /// downstream channel was full when a packet arrived. Each future
+    /// resolves once the channel has capacity again; the `run()` flush arm
+    /// then drains the connection's `pending_best_effort` slot through the
+    /// reserved permit.
+    pending_flushes: FuturesUnordered<BoxFuture<'static, FlushResult>>,
+    /// Next `OutputConnection::generation` to assign on `AddConnection`.
+    /// Used to fence stale flushes from prior incarnations of the same
+    /// `ConnectionId`.
+    next_generation: u64,
     /// Metadata for logging
     node_id: String,
     pin_name: String,
@@ -148,6 +189,8 @@ impl PinDistributorActor {
             data_rx,
             config_rx,
             outputs: HashMap::new(),
+            pending_flushes: FuturesUnordered::new(),
+            next_generation: 0,
             node_id,
             pin_name,
             packets_distributed_counter,
@@ -168,31 +211,59 @@ impl PinDistributorActor {
     pub(super) async fn run(mut self) {
         tracing::debug!("PinDistributorActor started for {}.{}", self.node_id, self.pin_name);
 
+        // Per-input liveness flags so closed receivers do not keep the loop
+        // spinning on `Ready(None)` (which would never satisfy `Some(_) = ...`
+        // and could deadlock when `pending_flushes` still has a long-lived
+        // reservation against a downstream that never frees capacity).
+        let mut config_open = true;
+        let mut data_open = true;
+
         loop {
             tokio::select! {
                 biased;
 
-                Some(msg) = self.config_rx.recv() => {
-                    if !self.handle_config(msg) {
-                        tracing::debug!(
-                            "{}.{}: PinDistributor received Shutdown. Draining.",
-                            self.node_id,
-                            self.pin_name
-                        );
-                        break;
+                msg = self.config_rx.recv(), if config_open => {
+                    if let Some(m) = msg {
+                        if !self.handle_config(m) {
+                            tracing::debug!(
+                                "{}.{}: PinDistributor received Shutdown. Draining.",
+                                self.node_id,
+                                self.pin_name
+                            );
+                            break;
+                        }
+                    } else {
+                        config_open = false;
+                        if !data_open {
+                            tracing::debug!(
+                                "{}.{}: PinDistributor inputs closed. Shutting down.",
+                                self.node_id,
+                                self.pin_name
+                            );
+                            break;
+                        }
                     }
                 },
 
-                Some(packet) = self.data_rx.recv() => {
-                    self.distribute_packet(packet).await;
+                packet = self.data_rx.recv(), if data_open => {
+                    if let Some(p) = packet {
+                        self.distribute_packet(p).await;
+                    } else {
+                        data_open = false;
+                        if !config_open {
+                            tracing::debug!(
+                                "{}.{}: PinDistributor inputs closed. Shutting down.",
+                                self.node_id,
+                                self.pin_name
+                            );
+                            break;
+                        }
+                    }
                 },
-                else => {
-                    tracing::debug!(
-                        "{}.{}: PinDistributor inputs closed. Shutting down.",
-                        self.node_id,
-                        self.pin_name
-                    );
-                    return;
+
+                Some((id, generation, permit_result)) = self.pending_flushes.next(),
+                    if !self.pending_flushes.is_empty() => {
+                    self.handle_flush_completion(&id, generation, permit_result);
                 },
             }
         }
@@ -212,7 +283,18 @@ impl PinDistributorActor {
     fn handle_config(&mut self, msg: PinConfigMsg) -> bool {
         match msg {
             PinConfigMsg::AddConnection { id, tx, mode } => {
-                self.outputs.insert(id, OutputConnection { tx, mode, pending_best_effort: None });
+                let generation = self.next_generation;
+                self.next_generation = self.next_generation.wrapping_add(1);
+                self.outputs.insert(
+                    id,
+                    OutputConnection {
+                        tx,
+                        mode,
+                        pending_best_effort: None,
+                        flush_in_flight: false,
+                        generation,
+                    },
+                );
             },
             PinConfigMsg::RemoveConnection { id } => {
                 self.outputs.remove(&id);
@@ -236,7 +318,6 @@ impl PinDistributorActor {
         clippy::cast_sign_loss
     )] // Fan-out with mode handling requires multiple paths and metric estimation casts
     async fn distribute_packet(&mut self, packet: Packet) {
-        use futures::stream::{FuturesUnordered, StreamExt};
         use tokio::sync::mpsc::error::TrySendError;
 
         let queue_len = self.data_rx.len() as u64;
@@ -288,17 +369,28 @@ impl PinDistributorActor {
                     return;
                 };
 
-                // Optimization: try_send first, only store on Full (avoids store-then-take in common case)
                 match conn.tx.try_send(packet) {
                     Ok(()) => {
+                        if conn.pending_best_effort.take().is_some() {
+                            self.best_effort_drops_counter.add(1, &self.metric_labels);
+                        }
                         self.packets_distributed_counter.add(1, &self.metric_labels);
                     },
                     Err(TrySendError::Full(packet)) => {
-                        // Channel full - store packet for later (drop-old semantics)
                         if conn.pending_best_effort.is_some() {
                             self.best_effort_drops_counter.add(1, &self.metric_labels);
                         }
                         conn.pending_best_effort = Some(packet);
+                        if !conn.flush_in_flight {
+                            conn.flush_in_flight = true;
+                            let tx = conn.tx.clone();
+                            let id_owned = id.clone();
+                            let generation = conn.generation;
+                            self.pending_flushes.push(Box::pin(async move {
+                                let result = tx.reserve_owned().await;
+                                (id_owned, generation, result)
+                            }));
+                        }
                     },
                     Err(TrySendError::Closed(_packet)) => {
                         let id = id.clone();
@@ -308,7 +400,7 @@ impl PinDistributorActor {
                             self.pin_name,
                             id
                         );
-                        self.outputs.remove(&id);
+                        self.remove_output(&id);
                     },
                 }
             } else {
@@ -341,7 +433,7 @@ impl PinDistributorActor {
                                 self.pin_name,
                                 id
                             );
-                            self.outputs.remove(&id);
+                            self.remove_output(&id);
                         } else {
                             self.packets_distributed_counter.add(1, &self.metric_labels);
                         }
@@ -353,7 +445,7 @@ impl PinDistributorActor {
                             self.pin_name,
                             id
                         );
-                        self.outputs.remove(&id);
+                        self.remove_output(&id);
                     },
                 }
             }
@@ -364,32 +456,37 @@ impl PinDistributorActor {
         //
         // Strategy:
         // - For Reliable connections: fall back to `send().await` if channel is full.
-        // - For BestEffort connections: keep newest packet in a 1-slot buffer and try_send it.
+        // - For BestEffort connections: keep newest packet in a 1-slot buffer and
+        //   schedule a `reserve_owned()` flush so the parked packet is delivered
+        //   once the downstream channel frees a slot.
         let mut successes = 0u64;
         let mut best_effort_drops = 0u64;
         let mut to_remove: Vec<ConnectionId> = Vec::new();
-        // Let Rust infer future type - avoids Box::pin allocation per future
+        let mut to_schedule_flush: Vec<(ConnectionId, u64, mpsc::Sender<Packet>)> = Vec::new();
         let mut pending = FuturesUnordered::new();
 
         for (id, conn) in &mut self.outputs {
             match conn.mode {
-                ConnectionMode::BestEffort => {
-                    // Optimization: try_send first, only store on Full (avoids store-then-take in common case)
-                    match conn.tx.try_send(packet.clone()) {
-                        Ok(()) => {
-                            successes += 1;
-                        },
-                        Err(TrySendError::Full(packet_clone)) => {
-                            // Channel full - store packet for later (drop-old semantics)
-                            if conn.pending_best_effort.is_some() {
-                                best_effort_drops += 1;
-                            }
-                            conn.pending_best_effort = Some(packet_clone);
-                        },
-                        Err(TrySendError::Closed(_packet_clone)) => {
-                            to_remove.push(id.clone());
-                        },
-                    }
+                ConnectionMode::BestEffort => match conn.tx.try_send(packet.clone()) {
+                    Ok(()) => {
+                        if conn.pending_best_effort.take().is_some() {
+                            best_effort_drops += 1;
+                        }
+                        successes += 1;
+                    },
+                    Err(TrySendError::Full(packet_clone)) => {
+                        if conn.pending_best_effort.is_some() {
+                            best_effort_drops += 1;
+                        }
+                        conn.pending_best_effort = Some(packet_clone);
+                        if !conn.flush_in_flight {
+                            conn.flush_in_flight = true;
+                            to_schedule_flush.push((id.clone(), conn.generation, conn.tx.clone()));
+                        }
+                    },
+                    Err(TrySendError::Closed(_packet_clone)) => {
+                        to_remove.push(id.clone());
+                    },
                 },
                 ConnectionMode::Reliable => {
                     let packet_clone = packet.clone();
@@ -426,14 +523,14 @@ impl PinDistributorActor {
         }
 
         // Remove closed connections
-        for id in to_remove {
+        for id in &to_remove {
             tracing::warn!(
                 "{}.{}: Downstream connection {} closed during fan-out.",
                 self.node_id,
                 self.pin_name,
                 id
             );
-            self.outputs.remove(&id);
+            self.remove_output(id);
         }
 
         // Record metrics
@@ -442,6 +539,64 @@ impl PinDistributorActor {
         }
         if best_effort_drops > 0 {
             self.best_effort_drops_counter.add(best_effort_drops, &self.metric_labels);
+        }
+
+        for (id, generation, tx) in to_schedule_flush {
+            self.pending_flushes.push(Box::pin(async move {
+                let result = tx.reserve_owned().await;
+                (id, generation, result)
+            }));
+        }
+    }
+
+    /// Remove a downstream connection and update the active-outputs gauge.
+    fn remove_output(&mut self, id: &ConnectionId) {
+        self.outputs.remove(id);
+        self.outputs_active_gauge.record(self.outputs.len() as u64, &self.metric_labels);
+    }
+
+    /// Handle a completed `reserve_owned()` reservation: deliver the connection's
+    /// current `pending_best_effort` packet through the permit (always the
+    /// newest observed since the last successful send), or release the permit
+    /// if a fresher packet has already gone through via `try_send`.
+    fn handle_flush_completion(
+        &mut self,
+        id: &ConnectionId,
+        generation: u64,
+        permit_result: Result<OwnedPermit<Packet>, SendError<()>>,
+    ) {
+        let Some(conn) = self.outputs.get_mut(id) else {
+            // Connection was removed (RemoveConnection / Closed) while the
+            // reservation was in flight. Dropping `permit_result` releases
+            // any reserved slot back to the channel (the permit is bound to
+            // the now-defunct Sender clone).
+            return;
+        };
+        if conn.generation != generation {
+            // Stale: this reservation belongs to a previous incarnation of
+            // the same ConnectionId that was removed and re-added. The
+            // permit is bound to the OLD channel; touching `conn` here
+            // (delivering its pending packet through the old permit, or
+            // resetting its flush_in_flight which guards the NEW reservation)
+            // would misroute data. Drop the permit silently.
+            return;
+        }
+        conn.flush_in_flight = false;
+        if let Ok(permit) = permit_result {
+            if let Some(packet) = conn.pending_best_effort.take() {
+                permit.send(packet);
+                self.packets_distributed_counter.add(1, &self.metric_labels);
+            }
+            // No pending packet: a newer try_send cleared it. Dropping
+            // `permit` here releases the reserved slot back to the channel.
+        } else {
+            tracing::warn!(
+                "{}.{}: BestEffort downstream {} closed while flush pending; removing.",
+                self.node_id,
+                self.pin_name,
+                id
+            );
+            self.remove_output(id);
         }
     }
 
