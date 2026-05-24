@@ -875,3 +875,180 @@ pub fn register_ogg_nodes(registry: &mut NodeRegistry) {
         );
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ogg_muxer_config_defaults() {
+        let config = OggMuxerConfig::default();
+        assert_eq!(config.stream_serial, 0);
+        assert!(matches!(config.codec, OggMuxerCodec::Opus));
+        assert_eq!(config.channels, 1);
+        assert_eq!(config.chunk_size, 65536);
+    }
+
+    #[test]
+    fn ogg_muxer_config_deserialization() {
+        let json = r#"{"stream_serial": 42, "channels": 2, "chunk_size": 4096}"#;
+        let config: OggMuxerConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.stream_serial, 42);
+        assert_eq!(config.channels, 2);
+        assert_eq!(config.chunk_size, 4096);
+    }
+
+    #[test]
+    fn ogg_demuxer_config_defaults() {
+        let config: OggDemuxerConfig = serde_json::from_str("{}").unwrap();
+        let _ = config;
+    }
+
+    #[test]
+    fn ogg_muxer_content_type() {
+        let node = OggMuxerNode::new(OggMuxerConfig::default());
+        assert_eq!(node.content_type(), Some("audio/ogg".to_string()));
+    }
+
+    #[test]
+    fn ogg_muxer_pins() {
+        let node = OggMuxerNode::new(OggMuxerConfig::default());
+        let inputs = node.input_pins();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].name, "in");
+
+        let outputs = node.output_pins();
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].name, "out");
+        assert!(matches!(outputs[0].produces_type, PacketType::Binary));
+    }
+
+    #[test]
+    fn ogg_demuxer_pins() {
+        let node = OggDemuxerNode::new(OggDemuxerConfig::default());
+        let inputs = node.input_pins();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].name, "in");
+
+        let outputs = node.output_pins();
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].name, "out");
+        assert!(matches!(
+            outputs[0].produces_type,
+            PacketType::EncodedAudio(EncodedAudioFormat { codec: AudioCodec::Opus, .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn ogg_mux_produces_valid_ogg_output() {
+        use crate::test_utils::{create_test_binary_packet, create_test_context};
+
+        let (input_tx, input_rx) = tokio::sync::mpsc::channel(10);
+        let mut inputs = std::collections::HashMap::new();
+        inputs.insert("in".to_string(), input_rx);
+
+        let (context, mock_sender, _state_rx) = create_test_context(inputs, 1);
+
+        let config = OggMuxerConfig { chunk_size: 128, ..OggMuxerConfig::default() };
+        let node = Box::new(OggMuxerNode::new(config));
+
+        let handle = tokio::spawn(async move { node.run(context).await });
+
+        for _ in 0..5 {
+            input_tx.send(create_test_binary_packet(vec![0xAB; 160])).await.unwrap();
+        }
+        drop(input_tx);
+
+        handle.await.unwrap().unwrap();
+
+        let packets = mock_sender.collect_packets().await;
+        assert!(!packets.is_empty(), "muxer should produce output");
+
+        let mut ogg_data = Vec::new();
+        for (_, _, pkt) in &packets {
+            if let Packet::Binary { data, content_type, .. } = pkt {
+                assert_eq!(content_type.as_deref(), Some("audio/ogg"));
+                ogg_data.extend_from_slice(data);
+            }
+        }
+
+        assert!(ogg_data.len() >= 4);
+        assert_eq!(&ogg_data[..4], b"OggS");
+    }
+
+    #[tokio::test]
+    async fn ogg_mux_demux_round_trip() {
+        use crate::test_utils::{create_test_binary_packet, create_test_context};
+
+        let (input_tx, input_rx) = tokio::sync::mpsc::channel(10);
+        let mut inputs = std::collections::HashMap::new();
+        inputs.insert("in".to_string(), input_rx);
+
+        let (context, mock_sender, _state_rx) = create_test_context(inputs, 1);
+
+        let config = OggMuxerConfig { chunk_size: 128, ..OggMuxerConfig::default() };
+        let node = Box::new(OggMuxerNode::new(config));
+
+        let handle = tokio::spawn(async move { node.run(context).await });
+
+        let original_payloads: Vec<Vec<u8>> = (0..3).map(|i| vec![0x10 + i; 160]).collect();
+
+        for payload in &original_payloads {
+            input_tx.send(create_test_binary_packet(payload.clone())).await.unwrap();
+        }
+        drop(input_tx);
+
+        handle.await.unwrap().unwrap();
+
+        let muxed_packets = mock_sender.collect_packets().await;
+        let mut ogg_data = Vec::new();
+        for (_, _, pkt) in &muxed_packets {
+            if let Packet::Binary { data, .. } = pkt {
+                ogg_data.extend_from_slice(data);
+            }
+        }
+        assert!(!ogg_data.is_empty());
+
+        let (demux_input_tx, demux_input_rx) = tokio::sync::mpsc::channel(10);
+        let mut demux_inputs = std::collections::HashMap::new();
+        demux_inputs.insert("in".to_string(), demux_input_rx);
+
+        let (demux_context, demux_sender, _demux_state_rx) = create_test_context(demux_inputs, 1);
+
+        let demux_node = Box::new(OggDemuxerNode::new(OggDemuxerConfig::default()));
+
+        let demux_handle = tokio::spawn(async move { demux_node.run(demux_context).await });
+
+        demux_input_tx.send(create_test_binary_packet(ogg_data)).await.unwrap();
+        drop(demux_input_tx);
+
+        demux_handle.await.unwrap().unwrap();
+
+        let demuxed = demux_sender.collect_packets().await;
+        let data_packets: Vec<_> = demuxed
+            .iter()
+            .filter_map(|(_, _, pkt)| {
+                if let Packet::Binary { data, .. } = pkt {
+                    if !data.is_empty()
+                        && !data.starts_with(b"OpusHead")
+                        && !data.starts_with(b"OpusTags")
+                    {
+                        return Some(data.clone());
+                    }
+                }
+                None
+            })
+            .collect();
+
+        assert_eq!(
+            data_packets.len(),
+            original_payloads.len(),
+            "demuxer should output one data packet per muxed payload"
+        );
+
+        for (i, data) in data_packets.iter().enumerate() {
+            assert_eq!(data.as_ref(), &original_payloads[i], "round-trip payload {i} should match");
+        }
+    }
+}

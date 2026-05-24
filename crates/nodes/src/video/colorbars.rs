@@ -810,5 +810,112 @@ mod tests {
         assert_eq!(config.height, 480);
         assert_eq!(config.fps, 30);
         assert_eq!(config.frame_count, 0);
+        assert_eq!(config.pixel_format, "nv12");
+        assert!(!config.draw_time);
+        assert!(!config.animate);
+    }
+
+    #[test]
+    fn test_colorbars_config_custom_deserialization() {
+        let json = r#"{
+            "width": 1280,
+            "height": 720,
+            "fps": 60,
+            "frame_count": 10,
+            "pixel_format": "rgba8"
+        }"#;
+        let config: ColorBarsConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.width, 1280);
+        assert_eq!(config.height, 720);
+        assert_eq!(config.fps, 60);
+        assert_eq!(config.frame_count, 10);
+        assert_eq!(config.pixel_format, "rgba8");
+    }
+
+    #[test]
+    fn test_smpte_colorbars_nv12() {
+        let width = 640u32;
+        let height = 480u32;
+        let layout = streamkit_core::types::VideoLayout::packed(width, height, PixelFormat::Nv12);
+        let total = layout.total_bytes();
+        let mut data = vec![0u8; total];
+        generate_smpte_colorbars_nv12(width, height, &mut data, &layout);
+
+        // Y plane: first pixel should be white (Y=180).
+        assert_eq!(data[0], 180);
+        // Last bar (rightmost column) should be blue (Y=35).
+        let last_y_col = (width - 1) as usize;
+        assert_eq!(data[last_y_col], 35);
+
+        // UV plane should be non-zero (chroma data present).
+        let planes = layout.planes();
+        let uv_plane = planes[1];
+        let uv_start = uv_plane.offset;
+        let uv_len = uv_plane.stride * uv_plane.height as usize;
+        let uv_data = &data[uv_start..uv_start + uv_len];
+        assert!(uv_data.iter().any(|&b| b != 0), "UV plane should contain chroma data");
+    }
+
+    #[test]
+    fn test_smpte_colorbars_rgba8() {
+        let width = 640u32;
+        let height = 480u32;
+        let total = (width * height * 4) as usize;
+        let mut data = vec![0u8; total];
+        generate_smpte_colorbars_rgba8(width, height, &mut data);
+
+        // First pixel should be 75% white (191, 191, 191, 255).
+        assert_eq!(&data[0..4], &[191, 191, 191, 255]);
+        // Last column should be blue (0, 0, 191, 255).
+        let last_px = ((width - 1) as usize) * 4;
+        assert_eq!(&data[last_px..last_px + 4], &[0, 0, 191, 255]);
+
+        // All alpha values should be 255.
+        for px in data.chunks_exact(4) {
+            assert_eq!(px[3], 255, "alpha should always be 255");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_colorbars_frame_count_limit() {
+        use crate::test_utils::create_oneshot_test_context;
+
+        let inputs = std::collections::HashMap::new();
+        let (mut context, mock_sender, mut state_rx) = create_oneshot_test_context(inputs, 1);
+
+        let (control_tx, control_rx) = tokio::sync::mpsc::channel(10);
+        context.control_rx = control_rx;
+
+        let config = ColorBarsConfig {
+            width: 32,
+            height: 32,
+            fps: 30,
+            frame_count: 5,
+            pixel_format: "i420".to_string(),
+            ..ColorBarsConfig::default()
+        };
+        let pixel_format = parse_pixel_format(&config.pixel_format).unwrap();
+        let node = Box::new(ColorBarsNode { config, pixel_format });
+
+        let handle = tokio::spawn(async move { node.run(context).await });
+
+        // Drain Initializing + Ready states, then send Start.
+        crate::test_utils::assert_state_initializing(&mut state_rx).await;
+        crate::test_utils::assert_state_update(
+            &mut state_rx,
+            |s| matches!(s, streamkit_core::NodeState::Ready),
+            "Ready",
+        )
+        .await;
+        control_tx.send(streamkit_core::control::NodeControlMessage::Start).await.unwrap();
+
+        handle.await.unwrap().unwrap();
+
+        let packets = mock_sender.collect_packets().await;
+        assert_eq!(packets.len(), 5, "should produce exactly 5 frames");
+
+        for (_, _, pkt) in &packets {
+            assert!(matches!(pkt, streamkit_core::types::Packet::Video(_)));
+        }
     }
 }
