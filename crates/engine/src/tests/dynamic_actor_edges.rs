@@ -225,10 +225,27 @@ async fn disconnect_with_unknown_endpoints_is_silent_noop() {
         .await
         .expect("send Disconnect (both ghost)");
 
-    // Real node must still be in node_states after three Disconnect attempts
-    // against various combinations of unknown endpoints.
     let states = handle.get_node_states().await.expect("get_node_states");
     assert!(states.contains_key("real"), "live node should still be present");
+
+    // Verify subsequent operations still work: add a second node and
+    // connect it to the surviving node.
+    add_and_wait(&handle, "partner").await;
+
+    handle
+        .send_control(EngineControlMessage::Connect {
+            from_node: "real".to_string(),
+            from_pin: "out".to_string(),
+            to_node: "partner".to_string(),
+            to_pin: "in".to_string(),
+            mode: streamkit_core::control::ConnectionMode::Reliable,
+        })
+        .await
+        .expect("connect after ghost disconnects");
+
+    let states = handle.get_node_states().await.expect("post-connect states");
+    assert!(states.contains_key("real"), "real should still be present after connect");
+    assert!(states.contains_key("partner"), "partner should be present after connect");
 
     handle.shutdown_and_wait().await.expect("shutdown");
 }
