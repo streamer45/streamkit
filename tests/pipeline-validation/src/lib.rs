@@ -145,7 +145,7 @@ pub fn run_pipeline(
     }
 
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout(std::time::Duration::from_secs(300))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
 
@@ -169,9 +169,15 @@ pub fn run_pipeline(
         .tempfile()
         .map_err(|e| format!("Failed to create temp file: {e}"))?;
 
-    let bytes = response
-        .bytes()
-        .map_err(|e| format!("Failed to read response body: {e}"))?;
+    let bytes = response.bytes().map_err(|e| {
+        let mut msg = format!("Failed to read response body: {e}");
+        let mut source = std::error::Error::source(&e);
+        while let Some(cause) = source {
+            msg.push_str(&format!("\n  caused by: {cause}"));
+            source = std::error::Error::source(cause);
+        }
+        msg
+    })?;
 
     if bytes.is_empty() {
         return Err(
