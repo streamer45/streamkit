@@ -321,7 +321,14 @@ async fn origin_guard_middleware(
     let is_mutating = matches!(method, Method::POST | Method::PUT | Method::PATCH | Method::DELETE);
 
     if is_api && is_mutating {
-        if let Some(origin) = req.headers().get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+        if let Some(origin_val) = req.headers().get(header::ORIGIN) {
+            let origin = match origin_val.to_str() {
+                Ok(s) => s,
+                Err(_) => {
+                    return (StatusCode::FORBIDDEN, "Invalid Origin header").into_response();
+                }
+            };
+
             let allowed = app_state
                 .config
                 .server
@@ -1058,10 +1065,8 @@ mod app_integration_tests {
     }
 
     #[tokio::test]
-    async fn origin_guard_allows_mutating_request_with_non_utf8_origin() {
-        // BUG(#494): non-UTF-8 Origin bytes bypass origin_guard entirely because
-        // `to_str().ok()` returns None and the request falls through as if no
-        // Origin were present. This test documents the current (buggy) behavior.
+    async fn origin_guard_rejects_mutating_request_with_non_utf8_origin() {
+        // Fixed in #494: non-UTF-8 Origin bytes now return 403 Forbidden.
         let (app, _state) = create_app(default_config(), None);
         let resp = app
             .oneshot(
@@ -1080,8 +1085,7 @@ mod app_integration_tests {
             )
             .await
             .unwrap();
-        // Should be FORBIDDEN but currently passes through (see #494).
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
