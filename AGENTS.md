@@ -56,6 +56,96 @@ the full architecture.
   include a comment explaining the rationale.
 - **UI tooling**: Use `bun install` / `bunx` / `bun run` — never npm or pnpm.
 
+## Pull Request Descriptions
+
+A reviewer should understand the PR **in under a minute**. Write a
+thoughtful human-style summary — not a machine-generated inventory.
+
+The PR template (`.github/PULL_REQUEST_TEMPLATE.md`) defines the sections;
+this section defines **what to put in them**.
+
+### Principle
+
+The same philosophy behind the Comment Guidelines below applies to PR
+descriptions: **say *why*, not *how***. The diff already shows *what*
+changed — the description should explain *why it matters*, *what a
+reviewer should watch for*, and *anything that isn't obvious from the
+code*.
+
+### Do NOT write
+
+- **File/function/test-case inventories** — listing every touched file,
+  helper, route, or test adds bulk without signal. The diff is one click
+  away.
+- **"What's tested" exhaustive lists** — enumerating every handler,
+  error path, or assertion. Summarize the coverage intent instead:
+  *"Added unit tests for the plugin loader's error paths and the WS
+  dispatch permission matrix."*
+- **Coverage tables by default** — include coverage numbers only when the
+  PR's explicit purpose is raising coverage, and even then one compact
+  table is enough. Never dump per-file coverage for a feature PR.
+- **Implementation narration** — *"Added a helper `foo()` that calls
+  `bar()` which returns …"*. This restates the diff.
+- **Repeating the commit list** — the commit history is already visible.
+- **Long "Production-code touchpoints" / "Conventions followed"
+  sections** — these belong in the code itself (or CONTRIBUTING.md),
+  not in every PR.
+
+### DO write
+
+- **2–5 bullets** describing the meaningful change and *why* it was made.
+- **Behavior changes** visible to users or downstream code — new API
+  surface, changed defaults, removed features.
+- **Anything surprising or risky** — concurrency changes, migration
+  steps, FFI boundary shifts, known edge cases.
+- **Scope decisions** — what was intentionally left out and why.
+- **Follow-ups** — related issues discovered, future work, known
+  limitations (with issue links when applicable).
+- **Review checklist** scaled to risk — a docs-only PR needs 0–1 items;
+  a concurrency fix might need 3–5.
+
+### Example (good)
+
+```markdown
+## Summary
+
+- Consolidate all agent skills into `.agents/skills/` per the
+  agentskills.io spec so any compliant agent discovers them.
+- Add YAML frontmatter (name, description, license) to every SKILL.md.
+- Handle SPDX compliance via REUSE.toml since inline headers break
+  frontmatter parsing.
+- `.claude/skills/` replaced with symlinks for backward compat.
+
+## Review & Validation
+
+- [ ] Verify symlinks resolve: `cat .claude/skills/architecture/SKILL.md`
+- [ ] `reuse lint` still passes
+```
+
+### Example (too long — avoid)
+
+```markdown
+## Summary
+
+Phase 4 / Stream F of the coverage sprint …
+
+### Coverage delta
+| File | Before | After | Target |
+| … 12-row table … |
+
+### What was added
+**`crates/plugin-wasm/`:**
+- `src/conversions.rs` — extended `#[cfg(test)] mod tests` with …
+- `src/wrapper.rs` — `#[cfg(test)]` tests for new/input_pins/…
+(another 40 lines of per-file narration)
+
+### Production-code touchpoints
+(another 10 lines restating what the diff shows)
+```
+
+The first version says everything the second one does — in 6 lines
+instead of 60.
+
 ## Comment Guidelines
 
 > *"NEVER try to explain HOW your code works in a comment … just tell

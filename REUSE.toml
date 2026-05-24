@@ -142,6 +142,14 @@ precedence = "override"
 SPDX-FileCopyrightText = "© Mermaid contributors"
 SPDX-License-Identifier = "MIT"
 
+# Agent skill SKILL.md files use YAML frontmatter on line 1, so inline SPDX
+# headers would break frontmatter parsing. Covered here instead.
+[[annotations]]
+path = ".agents/skills/**/SKILL.md"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "© 2025 StreamKit Contributors"
+SPDX-License-Identifier = "MPL-2.0"
+
 # LibriSpeech audio samples (CC-BY-4.0)
 [[annotations]]
 path = "samples/audio/system/speech_2m.*"

@@ -64,8 +64,9 @@ npx skills add anthropics/skills --skill webapp-testing -y
 
 ### Important: Install Location
 
-**Do not install skills into `.claude/skills/`** — that directory is
-repo-maintained and contains committed skills that symlink to `agent_docs/`.
+**Do not install skills into `.agents/skills/`** — that directory is
+repo-maintained and contains committed skills following the
+[Agent Skills specification](https://agentskills.io/specification).
 Running `npx skills add` there will mix vendored content into the tracked tree.
 
 Install user/third-party skills into a **personal** (non-tracked) location
@@ -74,15 +75,19 @@ agents, use the agent's per-user config directory.
 
 ## Repo-Maintained Skills
 
-StreamKit maintains two sets of committed skills:
+All committed skills live in **`.agents/skills/`** following the
+[Agent Skills specification](https://agentskills.io/specification). Each
+`SKILL.md` has YAML frontmatter (`name`, `description`, `license`) on
+line 1 and a body that references `guide.md` (symlinked to
+`agent_docs/<name>.md`) for progressive disclosure. SPDX compliance is
+handled via `REUSE.toml` so that frontmatter remains the first content.
 
-- **`.claude/skills/`** — Agent Skills standard (`SKILL.md` + frontmatter).
-  Each skill is a thin wrapper that symlinks `guide.md` → `agent_docs/<name>.md`
-  so Claude Code gets progressive disclosure with zero duplication.
-- **`.agents/skills/`** — Devin-specific testing workflows (compositor UI,
-  stream views). Follow the existing pattern when adding new Devin skills.
+`.claude/skills/` contains backward-compat symlinks into `.agents/skills/`
+so Claude Code picks them up from both locations.
 
-For skills that should work across multiple agents, use the `SKILL.md` format
-in `.claude/skills/` with a symlink to the canonical guide in `agent_docs/`.
+When adding a new skill, create it in `.agents/skills/<name>/` with:
+1. `SKILL.md` — frontmatter + brief body referencing `guide.md`
+2. `guide.md` — symlink to `../../../agent_docs/<name>.md`
+3. A symlink in `.claude/skills/<name>` → `../../.agents/skills/<name>`
 
 Learn more: [skills.sh documentation](https://skills.sh/docs)
