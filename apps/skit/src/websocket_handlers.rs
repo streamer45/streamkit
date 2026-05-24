@@ -1114,4 +1114,1050 @@ mod tests {
         assert_eq!(merged["properties"]["away_score"], 0);
         assert_eq!(merged["properties"]["show"], true);
     }
+
+    #[test]
+    fn deep_merge_null_source_replaces_value() {
+        // The contract is "non-object source replaces target wholesale", which
+        // explicitly includes `null` -- callers rely on this to clear keys.
+        let target = json!({ "x": 42, "y": "keep" });
+        let source = json!({ "x": null });
+        let merged = deep_merge_json(target, source);
+        assert!(merged["x"].is_null(), "null source must overwrite, got {merged:?}");
+        // Sibling keys are still preserved at the top level.
+        assert_eq!(merged["y"], "keep");
+    }
+
+    #[test]
+    fn deep_merge_array_source_replaces_object_target() {
+        // `[a]` is not an object so the recursive merge bails out and replaces
+        // the existing object wholesale -- pinning that we never silently
+        // attempt to "merge" arrays into objects.
+        let target = json!({ "list": { "a": 1, "b": 2 } });
+        let source = json!({ "list": [1, 2, 3] });
+        let merged = deep_merge_json(target, source);
+        assert_eq!(merged["list"], json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn deep_merge_object_source_replaces_array_target() {
+        // Conversely, an object source whose value is a non-object (here an
+        // array) replaces the existing array; the recursive case in
+        // deep_merge_json only fires when *both* sides are objects.
+        let target = json!({ "items": [1, 2] });
+        let source = json!({ "items": { "first": 1 } });
+        let merged = deep_merge_json(target, source);
+        assert_eq!(merged["items"], json!({ "first": 1 }));
+    }
+
+    #[test]
+    fn deep_merge_empty_object_source_is_a_noop_for_existing_keys() {
+        // An empty `{}` source must not erase or overwrite existing keys --
+        // the recursion is keyed off the source map, so no keys means no work.
+        let target = json!({ "a": 1, "nested": { "b": 2 } });
+        let source = json!({});
+        let merged = deep_merge_json(target.clone(), source);
+        assert_eq!(merged, target);
+    }
+
+    #[test]
+    fn deep_merge_root_non_object_source_replaces_root() {
+        // The root-level branch of the (_, source) arm fires when target
+        // isn't an object either; covers the "replace from a scalar" path.
+        let target = json!(42);
+        let source = json!("hello");
+        let merged = deep_merge_json(target, source);
+        assert_eq!(merged, json!("hello"));
+    }
+}
+
+#[cfg(test)]
+// reason: dispatcher tests intentionally use unwrap/expect in setup helpers so
+// failed preconditions panic at the call site instead of obscuring assertions.
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod dispatcher_tests {
+    use super::*;
+    use crate::config::{AuthMode, Config, SecurityConfig};
+    use crate::permissions::Permissions;
+    use crate::session::Session;
+    use crate::state::BroadcastEvent;
+    use serde_json::json;
+    use streamkit_api::{
+        BatchOperation, ConnectionMode, EventPayload, RequestPayload, ResponsePayload,
+    };
+    use streamkit_core::control::NodeControlMessage;
+    use streamkit_engine::Engine;
+    use tokio::sync::broadcast;
+
+    fn make_app_state() -> Arc<AppState> {
+        let mut config = Config::default();
+        config.auth.mode = AuthMode::Disabled;
+        // Bump the session limit so happy-path tests can register a fresh
+        // session without tripping permissions.can_accept_session().
+        config.permissions.max_concurrent_sessions = Some(8);
+        crate::server::create_app_state(config, None)
+    }
+
+    fn viewer_perms() -> Permissions {
+        Permissions::viewer()
+    }
+
+    async fn dispatch(
+        state: &Arc<AppState>,
+        perms: &Permissions,
+        role: &str,
+        payload: RequestPayload,
+    ) -> Option<ResponsePayload> {
+        handle_request_payload(payload, state, perms, role, Some("cid".into())).await
+    }
+
+    fn expect_error(resp: Option<ResponsePayload>, needle: &str) -> String {
+        match resp {
+            Some(ResponsePayload::Error { message }) => {
+                assert!(message.contains(needle), "error '{message}' missing '{needle}'");
+                message
+            },
+            other => panic!("expected ResponsePayload::Error containing '{needle}', got {other:?}"),
+        }
+    }
+
+    /// Spin up a Session with its dynamic engine actor and register it in
+    /// the AppState's SessionManager so dispatcher lookups succeed.
+    async fn fresh_session(state: &Arc<AppState>, role: &str) -> Session {
+        let session = Session::create(
+            &state.engine,
+            &state.config,
+            Some(format!("ws-dispatch-test-{}", uuid::Uuid::new_v4())),
+            state.event_tx.clone(),
+            Some(role.to_string()),
+        )
+        .await
+        .expect("Session::create succeeded");
+        state
+            .session_manager
+            .lock()
+            .await
+            .add_session(session.clone())
+            .expect("manager accepts a fresh session");
+        session
+    }
+
+    async fn session_with_creator(role: Option<&str>) -> Session {
+        // can_access_session only reads `created_by`, but Session::create is
+        // async (it spawns the dynamic engine actor). Stay async-native so
+        // the spawned actor's runtime outlives the Session we hand back.
+        let (tx, _rx) = broadcast::channel::<BroadcastEvent>(1);
+        let engine = Engine::without_plugins();
+        let config = Config::default();
+        Session::create(&engine, &config, Some("owned".into()), tx, role.map(str::to_owned))
+            .await
+            .expect("create test session")
+    }
+
+    #[tokio::test]
+    async fn can_access_session_grants_admin_with_access_all_sessions() {
+        let session = session_with_creator(Some("alice")).await;
+        assert!(can_access_session(&session, "bob", &Permissions::admin()));
+    }
+
+    #[tokio::test]
+    async fn can_access_session_grants_owner_without_access_all_sessions() {
+        let session = session_with_creator(Some("alice")).await;
+        let mut viewer = Permissions::viewer();
+        viewer.access_all_sessions = false;
+        assert!(can_access_session(&session, "alice", &viewer));
+    }
+
+    #[tokio::test]
+    async fn can_access_session_denies_other_role_without_access_all_sessions() {
+        let session = session_with_creator(Some("alice")).await;
+        let mut perms = Permissions::user();
+        perms.access_all_sessions = false;
+        assert!(!can_access_session(&session, "bob", &perms));
+    }
+
+    #[tokio::test]
+    async fn can_access_session_grants_anyone_when_creator_unset() {
+        let session = session_with_creator(None).await;
+        let mut perms = Permissions::user();
+        perms.access_all_sessions = false;
+        assert!(can_access_session(&session, "stranger", &perms));
+    }
+
+    fn read_only_security() -> SecurityConfig {
+        SecurityConfig {
+            allowed_file_paths: vec!["/tmp/allowed/**".to_string()],
+            allowed_write_paths: vec![],
+        }
+    }
+
+    #[test]
+    fn validate_update_params_security_accepts_neutral_kind() {
+        // A non-file kind has no restricted fields to validate -- the helper
+        // must return true so generic tunes are not blocked.
+        assert!(validate_update_params_security(
+            Some("audio::gain"),
+            &json!({ "gain": 0.5 }),
+            &read_only_security(),
+        ));
+    }
+
+    #[test]
+    fn validate_update_params_security_rejects_file_reader_escalation() {
+        // Path outside the allow-list must be rejected for file_reader.
+        assert!(!validate_update_params_security(
+            Some("core::file_reader"),
+            &json!({ "path": "/etc/passwd" }),
+            &read_only_security(),
+        ));
+    }
+
+    #[test]
+    fn validate_update_params_security_requires_string_path_for_file_reader() {
+        assert!(!validate_update_params_security(
+            Some("core::file_reader"),
+            &json!({ "path": 42 }),
+            &read_only_security(),
+        ));
+    }
+
+    #[test]
+    fn validate_update_params_security_rejects_unwritable_file_writer_path() {
+        // allowed_write_paths is empty -- every write must be rejected.
+        assert!(!validate_update_params_security(
+            Some("core::file_writer"),
+            &json!({ "path": "/tmp/anywhere/out.txt" }),
+            &read_only_security(),
+        ));
+    }
+
+    #[test]
+    fn validate_update_params_security_ignores_blank_script_path() {
+        // Empty string is treated as "no script" and must not trip validation.
+        assert!(validate_update_params_security(
+            Some("core::script"),
+            &json!({ "script_path": "   " }),
+            &read_only_security(),
+        ));
+    }
+
+    #[tokio::test]
+    async fn list_sessions_denied_for_viewer_without_list_perm() {
+        let state = make_app_state();
+        let mut perms = viewer_perms();
+        perms.list_sessions = false;
+        let resp = dispatch(&state, &perms, "viewer", RequestPayload::ListSessions).await;
+        expect_error(resp, "cannot list sessions");
+    }
+
+    #[tokio::test]
+    async fn list_sessions_returns_empty_when_no_sessions_exist() {
+        let state = make_app_state();
+        let resp = dispatch(&state, &Permissions::admin(), "admin", RequestPayload::ListSessions)
+            .await
+            .expect("ListSessions always produces a response");
+        match resp {
+            ResponsePayload::SessionsListed { sessions } => assert!(sessions.is_empty()),
+            other => panic!("expected SessionsListed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_sessions_filters_by_ownership_for_non_admin() {
+        let state = make_app_state();
+        let _alice = fresh_session(&state, "alice").await;
+        let _bob = fresh_session(&state, "bob").await;
+
+        let mut user = Permissions::user();
+        user.access_all_sessions = false;
+        let resp =
+            dispatch(&state, &user, "alice", RequestPayload::ListSessions).await.expect("response");
+        match resp {
+            ResponsePayload::SessionsListed { sessions } => {
+                // Only alice's session should be visible under user/alice perms.
+                assert_eq!(sessions.len(), 1, "expected 1 session, got {sessions:?}");
+            },
+            other => panic!("expected SessionsListed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_permissions_returns_role_and_permissions_info() {
+        let state = make_app_state();
+        let resp = dispatch(&state, &Permissions::admin(), "admin", RequestPayload::GetPermissions)
+            .await
+            .expect("GetPermissions always responds");
+        match resp {
+            ResponsePayload::Permissions { role, permissions } => {
+                assert_eq!(role, "admin");
+                assert!(permissions.create_sessions);
+                assert!(permissions.destroy_sessions);
+                assert!(permissions.tune_nodes);
+            },
+            other => panic!("expected Permissions, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_nodes_denied_when_perm_disabled() {
+        let state = make_app_state();
+        let mut perms = Permissions::viewer();
+        perms.list_nodes = false;
+        let resp = dispatch(&state, &perms, "viewer", RequestPayload::ListNodes).await;
+        expect_error(resp, "cannot list nodes");
+    }
+
+    #[tokio::test]
+    async fn list_nodes_includes_synthetic_oneshot_kinds_for_admin() {
+        let state = make_app_state();
+        let resp = dispatch(&state, &Permissions::admin(), "admin", RequestPayload::ListNodes)
+            .await
+            .expect("response");
+        match resp {
+            ResponsePayload::NodesListed { nodes } => {
+                let kinds: Vec<&str> = nodes.iter().map(|n| n.kind.as_str()).collect();
+                assert!(
+                    kinds.contains(&"streamkit::http_input"),
+                    "expected synthetic http_input node, got {kinds:?}",
+                );
+                assert!(
+                    kinds.contains(&"streamkit::http_output"),
+                    "expected synthetic http_output node, got {kinds:?}",
+                );
+            },
+            other => panic!("expected NodesListed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_nodes_filters_to_allowed_when_perms_restrict_kinds() {
+        let state = make_app_state();
+        let mut perms = Permissions::user();
+        // Restrict to a single allowed kind: the only oneshot kind any user
+        // role permits via is_node_allowed.
+        perms.allowed_nodes = vec!["streamkit::http_input".to_string()];
+        let resp =
+            dispatch(&state, &perms, "user", RequestPayload::ListNodes).await.expect("response");
+        match resp {
+            ResponsePayload::NodesListed { nodes } => {
+                assert!(nodes.iter().all(|n| n.kind == "streamkit::http_input"));
+            },
+            other => panic!("expected NodesListed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn create_session_denied_for_viewer() {
+        let state = make_app_state();
+        let resp = dispatch(
+            &state,
+            &viewer_perms(),
+            "viewer",
+            RequestPayload::CreateSession { name: Some("foo".into()) },
+        )
+        .await;
+        expect_error(resp, "cannot create sessions");
+    }
+
+    #[tokio::test]
+    async fn create_session_rejects_duplicate_name() {
+        let state = make_app_state();
+        // Re-using the same name as the just-inserted session must be rejected
+        // before Session::create allocates resources.
+        let existing = fresh_session(&state, "admin").await;
+        let dup_name = existing.name.clone().expect("session name");
+        let resp = dispatch(
+            &state,
+            &Permissions::admin(),
+            "admin",
+            RequestPayload::CreateSession { name: Some(dup_name.clone()) },
+        )
+        .await;
+        let msg = expect_error(resp, "already exists");
+        assert!(msg.contains(&dup_name));
+    }
+
+    #[tokio::test]
+    async fn create_session_happy_path_returns_session_created() {
+        let state = make_app_state();
+        let resp = dispatch(
+            &state,
+            &Permissions::admin(),
+            "admin",
+            RequestPayload::CreateSession { name: Some("hot-shiny".into()) },
+        )
+        .await
+        .expect("response");
+        match resp {
+            ResponsePayload::SessionCreated { session_id, name, created_at } => {
+                assert!(!session_id.is_empty());
+                assert!(!created_at.is_empty(), "created_at must be populated");
+                assert_eq!(name.as_deref(), Some("hot-shiny"));
+            },
+            other => panic!("expected SessionCreated, got {other:?}"),
+        }
+        // Side effect: the session is registered with the manager.
+        assert_eq!(state.session_manager.lock().await.session_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn create_session_rejected_when_global_limit_reached() {
+        // Build a state with the per-tenant cap pinned to 1, then saturate it.
+        let mut tight = Config::default();
+        tight.auth.mode = AuthMode::Disabled;
+        tight.permissions.max_concurrent_sessions = Some(1);
+        let state = crate::server::create_app_state(tight, None);
+        let _occupied = fresh_session(&state, "admin").await;
+
+        let resp = dispatch(
+            &state,
+            &Permissions::admin(),
+            "admin",
+            RequestPayload::CreateSession { name: Some("denied".into()) },
+        )
+        .await;
+        expect_error(resp, "Maximum concurrent sessions limit reached");
+    }
+
+    #[tokio::test]
+    async fn destroy_session_denied_for_viewer() {
+        let state = make_app_state();
+        let resp = dispatch(
+            &state,
+            &viewer_perms(),
+            "viewer",
+            RequestPayload::DestroySession { session_id: "ignored".into() },
+        )
+        .await;
+        expect_error(resp, "cannot destroy sessions");
+    }
+
+    #[tokio::test]
+    async fn destroy_session_not_found_returns_error() {
+        let state = make_app_state();
+        let resp = dispatch(
+            &state,
+            &Permissions::admin(),
+            "admin",
+            RequestPayload::DestroySession { session_id: "no-such-session".into() },
+        )
+        .await;
+        expect_error(resp, "not found");
+    }
+
+    #[tokio::test]
+    async fn destroy_session_blocks_non_owner() {
+        let state = make_app_state();
+        let session = fresh_session(&state, "alice").await;
+        let mut user = Permissions::user();
+        user.access_all_sessions = false;
+        let resp = dispatch(
+            &state,
+            &user,
+            "bob",
+            RequestPayload::DestroySession { session_id: session.id.clone() },
+        )
+        .await;
+        expect_error(resp, "you do not own this session");
+        // Session must still be registered after the rejected destroy.
+        assert_eq!(state.session_manager.lock().await.session_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn destroy_session_happy_path_emits_destroyed_event() {
+        let state = make_app_state();
+        let mut events = state.event_tx.subscribe();
+        let session = fresh_session(&state, "admin").await;
+
+        let resp = dispatch(
+            &state,
+            &Permissions::admin(),
+            "admin",
+            RequestPayload::DestroySession { session_id: session.id.clone() },
+        )
+        .await
+        .expect("response");
+        match resp {
+            ResponsePayload::SessionDestroyed { session_id } => {
+                assert_eq!(session_id, session.id);
+            },
+            other => panic!("expected SessionDestroyed, got {other:?}"),
+        }
+
+        // The SessionDestroyed event is broadcast synchronously before the
+        // background shutdown task is spawned, so subscribing before dispatch
+        // is sufficient.  Drain any older events until we see ours or run out.
+        let mut saw_destroyed = false;
+        for _ in 0..5 {
+            match tokio::time::timeout(std::time::Duration::from_millis(200), events.recv()).await {
+                Ok(Ok(ev)) => {
+                    if matches!(
+                        ev.event.payload,
+                        EventPayload::SessionDestroyed { session_id: ref id } if *id == session.id
+                    ) {
+                        saw_destroyed = true;
+                        break;
+                    }
+                },
+                _ => break,
+            }
+        }
+        assert!(saw_destroyed, "expected SessionDestroyed broadcast event");
+    }
+
+    #[tokio::test]
+    async fn add_node_denied_for_viewer() {
+        let state = make_app_state();
+        let resp = dispatch(
+            &state,
+            &viewer_perms(),
+            "viewer",
+            RequestPayload::AddNode {
+                session_id: "s".into(),
+                node_id: "n".into(),
+                kind: "core::passthrough".into(),
+                params: None,
+            },
+        )
+        .await;
+        expect_error(resp, "cannot modify sessions");
+    }
+
+    #[tokio::test]
+    async fn add_node_rejects_oneshot_only_kinds_in_dynamic_session() {
+        let state = make_app_state();
+        let session = fresh_session(&state, "admin").await;
+        let resp = dispatch(
+            &state,
+            &Permissions::admin(),
+            "admin",
+            RequestPayload::AddNode {
+                session_id: session.id.clone(),
+                node_id: "n".into(),
+                kind: "streamkit::http_input".into(),
+                params: None,
+            },
+        )
+        .await;
+        expect_error(resp, "oneshot-only");
+    }
+
+    #[tokio::test]
+    async fn add_node_rejects_disallowed_kind_with_permission_denied() {
+        let state = make_app_state();
+        let session = fresh_session(&state, "admin").await;
+        let mut perms = Permissions::admin();
+        perms.allowed_nodes = vec!["core::passthrough".to_string()];
+        let resp = dispatch(
+            &state,
+            &perms,
+            "admin",
+            RequestPayload::AddNode {
+                session_id: session.id.clone(),
+                node_id: "n".into(),
+                kind: "core::sink".into(),
+                params: None,
+            },
+        )
+        .await;
+        expect_error(resp, "not allowed");
+    }
+
+    #[tokio::test]
+    async fn add_node_session_not_found_returns_error() {
+        let state = make_app_state();
+        let resp = dispatch(
+            &state,
+            &Permissions::admin(),
+            "admin",
+            RequestPayload::AddNode {
+                session_id: "missing".into(),
+                node_id: "n".into(),
+                kind: "core::passthrough".into(),
+                params: None,
+            },
+        )
+        .await;
+        expect_error(resp, "not found");
+    }
+
+    #[tokio::test]
+    async fn add_node_happy_path_returns_success_and_reserves_id() {
+        let state = make_app_state();
+        let session = fresh_session(&state, "admin").await;
+        let resp = dispatch(
+            &state,
+            &Permissions::admin(),
+            "admin",
+            RequestPayload::AddNode {
+                session_id: session.id.clone(),
+                node_id: "alpha".into(),
+                kind: "core::passthrough".into(),
+                params: None,
+            },
+        )
+        .await
+        .expect("response");
+        assert!(matches!(resp, ResponsePayload::Success), "expected Success, got {resp:?}");
+        // Duplicate AddNode for the same id must be rejected by the in-flight
+        // reservation taken on the first call.
+        let dup = dispatch(
+            &state,
+            &Permissions::admin(),
+            "admin",
+            RequestPayload::AddNode {
+                session_id: session.id.clone(),
+                node_id: "alpha".into(),
+                kind: "core::passthrough".into(),
+                params: None,
+            },
+        )
+        .await;
+        expect_error(dup, "already");
+    }
+
+    #[tokio::test]
+    async fn remove_node_denied_for_viewer() {
+        let state = make_app_state();
+        let resp = dispatch(
+            &state,
+            &viewer_perms(),
+            "viewer",
+            RequestPayload::RemoveNode { session_id: "s".into(), node_id: "n".into() },
+        )
+        .await;
+        expect_error(resp, "cannot modify sessions");
+    }
+
+    #[tokio::test]
+    async fn remove_node_session_not_found_returns_error() {
+        let state = make_app_state();
+        let resp = dispatch(
+            &state,
+            &Permissions::admin(),
+            "admin",
+            RequestPayload::RemoveNode { session_id: "missing".into(), node_id: "n".into() },
+        )
+        .await;
+        expect_error(resp, "not found");
+    }
+
+    #[tokio::test]
+    async fn remove_node_happy_path_returns_success() {
+        let state = make_app_state();
+        let session = fresh_session(&state, "admin").await;
+        {
+            // Pre-insert a node directly into the durable pipeline model so the
+            // remove handler has something to scrub.
+            let mut pipeline = session.pipeline.lock().await;
+            pipeline.nodes.insert(
+                "alpha".to_string(),
+                streamkit_api::Node {
+                    kind: "core::passthrough".to_string(),
+                    params: None,
+                    state: None,
+                },
+            );
+        }
+        let resp = dispatch(
+            &state,
+            &Permissions::admin(),
+            "admin",
+            RequestPayload::RemoveNode { session_id: session.id.clone(), node_id: "alpha".into() },
+        )
+        .await
+        .expect("response");
+        assert!(matches!(resp, ResponsePayload::Success));
+        // Node must be gone from the durable model.
+        let has_alpha = {
+            let pipeline = session.pipeline.lock().await;
+            pipeline.nodes.contains_key("alpha")
+        };
+        assert!(!has_alpha);
+    }
+
+    fn connect_payload(session_id: &str) -> RequestPayload {
+        RequestPayload::Connect {
+            session_id: session_id.to_string(),
+            from_node: "a".into(),
+            from_pin: "out".into(),
+            to_node: "b".into(),
+            to_pin: "in".into(),
+            mode: ConnectionMode::Reliable,
+        }
+    }
+
+    fn disconnect_payload(session_id: &str) -> RequestPayload {
+        RequestPayload::Disconnect {
+            session_id: session_id.to_string(),
+            from_node: "a".into(),
+            from_pin: "out".into(),
+            to_node: "b".into(),
+            to_pin: "in".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_denied_for_viewer() {
+        let state = make_app_state();
+        let resp = dispatch(&state, &viewer_perms(), "viewer", connect_payload("s")).await;
+        expect_error(resp, "cannot modify sessions");
+    }
+
+    #[tokio::test]
+    async fn connect_session_not_found_returns_error() {
+        let state = make_app_state();
+        let resp =
+            dispatch(&state, &Permissions::admin(), "admin", connect_payload("missing")).await;
+        expect_error(resp, "not found");
+    }
+
+    #[tokio::test]
+    async fn connect_happy_path_appends_to_pipeline_connections() {
+        let state = make_app_state();
+        let session = fresh_session(&state, "admin").await;
+        let resp = dispatch(&state, &Permissions::admin(), "admin", connect_payload(&session.id))
+            .await
+            .expect("response");
+        assert!(matches!(resp, ResponsePayload::Success));
+        let (count, from, to) = {
+            let pipeline = session.pipeline.lock().await;
+            let conn = &pipeline.connections[0];
+            (pipeline.connections.len(), conn.from_node.clone(), conn.to_node.clone())
+        };
+        assert_eq!(count, 1);
+        assert_eq!(from, "a");
+        assert_eq!(to, "b");
+    }
+
+    #[tokio::test]
+    async fn disconnect_denied_for_viewer() {
+        let state = make_app_state();
+        let resp = dispatch(&state, &viewer_perms(), "viewer", disconnect_payload("s")).await;
+        expect_error(resp, "cannot modify sessions");
+    }
+
+    #[tokio::test]
+    async fn disconnect_happy_path_removes_matching_connection() {
+        let state = make_app_state();
+        let session = fresh_session(&state, "admin").await;
+        let _ =
+            dispatch(&state, &Permissions::admin(), "admin", connect_payload(&session.id)).await;
+        let resp =
+            dispatch(&state, &Permissions::admin(), "admin", disconnect_payload(&session.id))
+                .await
+                .expect("response");
+        assert!(matches!(resp, ResponsePayload::Success));
+        let connections_empty = {
+            let pipeline = session.pipeline.lock().await;
+            pipeline.connections.is_empty()
+        };
+        assert!(connections_empty, "expected connection removed");
+    }
+
+    fn tune_payload(session_id: &str, async_variant: bool) -> RequestPayload {
+        let msg = NodeControlMessage::UpdateParams(json!({ "gain": 0.5 }));
+        if async_variant {
+            RequestPayload::TuneNodeAsync {
+                session_id: session_id.to_string(),
+                node_id: "n".into(),
+                message: msg,
+            }
+        } else {
+            RequestPayload::TuneNode {
+                session_id: session_id.to_string(),
+                node_id: "n".into(),
+                message: msg,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn tune_node_sync_denied_for_viewer() {
+        let state = make_app_state();
+        let resp = dispatch(&state, &viewer_perms(), "viewer", tune_payload("s", false)).await;
+        expect_error(resp, "cannot tune nodes");
+    }
+
+    #[tokio::test]
+    async fn tune_node_sync_session_not_found_returns_error() {
+        let state = make_app_state();
+        let resp =
+            dispatch(&state, &Permissions::admin(), "admin", tune_payload("missing", false)).await;
+        expect_error(resp, "not found");
+    }
+
+    #[tokio::test]
+    async fn tune_node_sync_happy_path_returns_success() {
+        let state = make_app_state();
+        let session = fresh_session(&state, "admin").await;
+        {
+            let mut pipeline = session.pipeline.lock().await;
+            pipeline.nodes.insert(
+                "n".to_string(),
+                streamkit_api::Node {
+                    kind: "core::passthrough".to_string(),
+                    params: None,
+                    state: None,
+                },
+            );
+        }
+        let resp =
+            dispatch(&state, &Permissions::admin(), "admin", tune_payload(&session.id, false))
+                .await
+                .expect("response");
+        assert!(matches!(resp, ResponsePayload::Success), "got {resp:?}");
+    }
+
+    #[tokio::test]
+    async fn tune_node_async_fire_and_forget_returns_no_response_and_broadcasts() {
+        let state = make_app_state();
+        let mut events = state.event_tx.subscribe();
+        let session = fresh_session(&state, "admin").await;
+        {
+            let mut pipeline = session.pipeline.lock().await;
+            pipeline.nodes.insert(
+                "n".to_string(),
+                streamkit_api::Node {
+                    kind: "core::passthrough".to_string(),
+                    params: None,
+                    state: None,
+                },
+            );
+        }
+        let resp =
+            dispatch(&state, &Permissions::admin(), "admin", tune_payload(&session.id, true)).await;
+        assert!(resp.is_none(), "fire-and-forget must not produce a ResponsePayload, got {resp:?}");
+
+        // tune_session_node_inner broadcasts NodeParamsChanged from the
+        // durable-model path (apps/skit/src/server/sessions.rs:718) before
+        // the engine round-trip, so the broadcast is observable even when
+        // the engine actor has no matching node registered.
+        let mut saw_params_changed = false;
+        for _ in 0..5 {
+            match tokio::time::timeout(std::time::Duration::from_millis(300), events.recv()).await {
+                Ok(Ok(ev)) => {
+                    if matches!(
+                        ev.event.payload,
+                        EventPayload::NodeParamsChanged { session_id: ref sid, node_id: ref nid, .. }
+                        if *sid == session.id && nid == "n"
+                    ) {
+                        saw_params_changed = true;
+                        break;
+                    }
+                },
+                _ => break,
+            }
+        }
+        assert!(saw_params_changed, "expected NodeParamsChanged broadcast event");
+    }
+
+    #[tokio::test]
+    async fn get_pipeline_denied_for_role_without_list_sessions() {
+        let state = make_app_state();
+        let mut perms = Permissions::viewer();
+        perms.list_sessions = false;
+        let resp = dispatch(
+            &state,
+            &perms,
+            "viewer",
+            RequestPayload::GetPipeline { session_id: "s".into() },
+        )
+        .await;
+        expect_error(resp, "cannot view pipelines");
+    }
+
+    #[tokio::test]
+    async fn get_pipeline_session_not_found_returns_error() {
+        let state = make_app_state();
+        let resp = dispatch(
+            &state,
+            &Permissions::admin(),
+            "admin",
+            RequestPayload::GetPipeline { session_id: "missing".into() },
+        )
+        .await;
+        expect_error(resp, "not found");
+    }
+
+    #[tokio::test]
+    async fn get_pipeline_happy_path_returns_current_nodes() {
+        let state = make_app_state();
+        let session = fresh_session(&state, "admin").await;
+        {
+            let mut pipeline = session.pipeline.lock().await;
+            pipeline.nodes.insert(
+                "n".to_string(),
+                streamkit_api::Node {
+                    kind: "core::passthrough".to_string(),
+                    params: None,
+                    state: None,
+                },
+            );
+        }
+        let resp = dispatch(
+            &state,
+            &Permissions::admin(),
+            "admin",
+            RequestPayload::GetPipeline { session_id: session.id.clone() },
+        )
+        .await
+        .expect("response");
+        match resp {
+            ResponsePayload::Pipeline { pipeline } => {
+                assert!(pipeline.nodes.contains_key("n"));
+            },
+            other => panic!("expected Pipeline, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn validate_batch_denied_for_viewer() {
+        let state = make_app_state();
+        let resp = dispatch(
+            &state,
+            &viewer_perms(),
+            "viewer",
+            RequestPayload::ValidateBatch { session_id: "s".into(), operations: vec![] },
+        )
+        .await;
+        expect_error(resp, "cannot modify sessions");
+    }
+
+    #[tokio::test]
+    async fn validate_batch_session_not_found_returns_error() {
+        let state = make_app_state();
+        let resp = dispatch(
+            &state,
+            &Permissions::admin(),
+            "admin",
+            RequestPayload::ValidateBatch { session_id: "missing".into(), operations: vec![] },
+        )
+        .await;
+        expect_error(resp, "not found");
+    }
+
+    #[tokio::test]
+    async fn validate_batch_returns_per_op_errors_for_mixed_valid_and_invalid() {
+        let state = make_app_state();
+        let session = fresh_session(&state, "admin").await;
+        // valid AddNode + invalid AddNode (oneshot-only kind in a dynamic session).
+        let operations = vec![
+            BatchOperation::AddNode {
+                node_id: "alpha".into(),
+                kind: "core::passthrough".into(),
+                params: None,
+            },
+            BatchOperation::AddNode {
+                node_id: "beta".into(),
+                kind: "streamkit::http_input".into(),
+                params: None,
+            },
+        ];
+        let resp = dispatch(
+            &state,
+            &Permissions::admin(),
+            "admin",
+            RequestPayload::ValidateBatch { session_id: session.id.clone(), operations },
+        )
+        .await
+        .expect("response");
+        match resp {
+            ResponsePayload::ValidationResult { errors } => {
+                // exactly one error -- the oneshot-only kind.
+                assert_eq!(errors.len(), 1, "got {errors:?}");
+                assert_eq!(errors[0].node_id.as_deref(), Some("beta"));
+                assert!(errors[0].message.contains("oneshot-only"));
+            },
+            other => panic!("expected ValidationResult, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_batch_denied_for_viewer() {
+        let state = make_app_state();
+        let resp = dispatch(
+            &state,
+            &viewer_perms(),
+            "viewer",
+            RequestPayload::ApplyBatch { session_id: "s".into(), operations: vec![] },
+        )
+        .await;
+        expect_error(resp, "cannot modify sessions");
+    }
+
+    #[tokio::test]
+    async fn apply_batch_propagates_validation_failure_as_error() {
+        let state = make_app_state();
+        let session = fresh_session(&state, "admin").await;
+        let resp = dispatch(
+            &state,
+            &Permissions::admin(),
+            "admin",
+            RequestPayload::ApplyBatch {
+                session_id: session.id.clone(),
+                operations: vec![BatchOperation::AddNode {
+                    node_id: "x".into(),
+                    kind: "streamkit::http_input".into(),
+                    params: None,
+                }],
+            },
+        )
+        .await;
+        // Pre-validation error: oneshot-only kind rejected before any
+        // engine work happens.
+        expect_error(resp, "oneshot-only");
+    }
+
+    #[tokio::test]
+    async fn apply_batch_happy_path_returns_batch_applied_and_mutates_pipeline() {
+        let state = make_app_state();
+        let session = fresh_session(&state, "admin").await;
+        let resp = dispatch(
+            &state,
+            &Permissions::admin(),
+            "admin",
+            RequestPayload::ApplyBatch {
+                session_id: session.id.clone(),
+                operations: vec![
+                    BatchOperation::AddNode {
+                        node_id: "p1".into(),
+                        kind: "core::passthrough".into(),
+                        params: None,
+                    },
+                    BatchOperation::AddNode {
+                        node_id: "p2".into(),
+                        kind: "core::passthrough".into(),
+                        params: None,
+                    },
+                    BatchOperation::Connect {
+                        from_node: "p1".into(),
+                        from_pin: "out".into(),
+                        to_node: "p2".into(),
+                        to_pin: "in".into(),
+                        mode: ConnectionMode::Reliable,
+                    },
+                ],
+            },
+        )
+        .await
+        .expect("response");
+        match resp {
+            ResponsePayload::BatchApplied { success, errors } => {
+                assert!(success, "expected success=true, got errors {errors:?}");
+                assert!(errors.is_empty());
+            },
+            other => panic!("expected BatchApplied, got {other:?}"),
+        }
+        let (has_p1, has_p2, conn_count) = {
+            let pipeline = session.pipeline.lock().await;
+            (
+                pipeline.nodes.contains_key("p1"),
+                pipeline.nodes.contains_key("p2"),
+                pipeline.connections.len(),
+            )
+        };
+        assert!(has_p1);
+        assert!(has_p2);
+        assert_eq!(conn_count, 1);
+    }
 }

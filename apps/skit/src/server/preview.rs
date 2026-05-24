@@ -1463,3 +1463,983 @@ mod tests {
         assert!(!taps[0].is_video);
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Panics ARE the assertions
+mod inject_teardown_tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::session::{PreviewState, Session, TapPoint};
+    use crate::state::BroadcastEvent;
+    use std::time::SystemTime;
+    use streamkit_engine::Engine;
+    use tokio::sync::broadcast;
+
+    async fn fresh_session() -> (Session, broadcast::Receiver<BroadcastEvent>) {
+        let engine = Engine::without_plugins();
+        let config = Config::default();
+        // 1024 absorbs telemetry/state bursts from the engine actor's
+        // forwarders without lagging the test receiver.  The previous
+        // buffer of 16 was small enough that an unrelated state/stats
+        // event burst between `inject_preview_subgraph` and
+        // `drain_node_added_kinds` could push earlier `NodeAdded`
+        // payloads off the back of the queue, producing false-negative
+        // assertions like "engine never confirmed video::vp9::encoder".
+        let (tx, rx) = broadcast::channel(1024);
+        let session = Session::create(
+            &engine,
+            &config,
+            Some("preview-inject-test".to_string()),
+            tx,
+            Some("test-role".to_string()),
+        )
+        .await
+        .expect("Session::create on a fresh engine should succeed");
+        (session, rx)
+    }
+
+    fn tap(node: &str, pin: &str, is_encoded: bool, is_audio: bool, is_video: bool) -> TapPoint {
+        TapPoint { node: node.to_string(), pin: pin.to_string(), is_encoded, is_audio, is_video }
+    }
+
+    async fn seed_pipeline_node(session: &Session, node_id: &str, kind: &str) {
+        let mut pipeline = session.pipeline.lock().await;
+        pipeline.nodes.insert(
+            node_id.to_string(),
+            streamkit_api::Node { kind: kind.to_string(), params: None, state: None },
+        );
+    }
+
+    fn empty_pipeline() -> streamkit_api::Pipeline {
+        streamkit_api::Pipeline::default()
+    }
+
+    #[tokio::test]
+    async fn inject_returns_err_when_tap_node_missing_in_pipeline() {
+        let (session, _rx) = fresh_session().await;
+        let taps = vec![tap("ghost", "out", true, false, true)];
+
+        let err = inject_preview_subgraph(&session, "pv1", &taps, "/gw/path", &empty_pipeline())
+            .await
+            .unwrap_err();
+        assert!(err.contains("Tap node 'ghost' not found"), "unexpected error: {err}");
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn inject_returns_err_when_tap_points_have_no_media() {
+        let (session, _rx) = fresh_session().await;
+        let mut pipeline = empty_pipeline();
+        pipeline.nodes.insert(
+            "src".to_string(),
+            streamkit_api::Node { kind: "custom".to_string(), params: None, state: None },
+        );
+        let taps = vec![tap("src", "out", false, false, false)];
+
+        let err = inject_preview_subgraph(&session, "pv1", &taps, "/gw/path", &pipeline)
+            .await
+            .unwrap_err();
+        assert!(err.contains("do not produce audio or video"), "unexpected error: {err}");
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn inject_encoded_audio_only_creates_peer_and_single_connection() {
+        let (session, _rx) = fresh_session().await;
+        let mut pipeline = empty_pipeline();
+        pipeline.nodes.insert(
+            "aenc".to_string(),
+            streamkit_api::Node {
+                kind: "audio::opus::encoder".to_string(),
+                params: None,
+                state: None,
+            },
+        );
+        let taps = vec![tap("aenc", "out", true, true, false)];
+
+        let (nodes, conns, has_audio, has_video) =
+            inject_preview_subgraph(&session, "pv1", &taps, "/gw/pv1", &pipeline)
+                .await
+                .expect("inject should succeed for encoded audio");
+
+        assert!(has_audio);
+        assert!(!has_video);
+
+        assert_eq!(nodes.len(), 1, "only the moq peer should be injected for encoded audio");
+        assert_eq!(nodes[0].0, "_preview_pv1_peer");
+        assert_eq!(nodes[0].1, "transport::moq::peer");
+
+        assert_eq!(conns.len(), 1);
+        let (from_node, from_pin, to_node, to_pin, mode) = &conns[0];
+        assert_eq!(from_node, "aenc");
+        assert_eq!(from_pin, "out");
+        assert_eq!(to_node, "_preview_pv1_peer");
+        assert_eq!(to_pin, "in");
+        assert!(matches!(*mode, streamkit_core::control::ConnectionMode::BestEffort));
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn inject_encoded_audio_and_video_routes_video_to_in_1() {
+        let (session, _rx) = fresh_session().await;
+        let mut pipeline = empty_pipeline();
+        pipeline.nodes.insert(
+            "aenc".to_string(),
+            streamkit_api::Node {
+                kind: "audio::opus::encoder".to_string(),
+                params: None,
+                state: None,
+            },
+        );
+        pipeline.nodes.insert(
+            "venc".to_string(),
+            streamkit_api::Node {
+                kind: "video::vp9::encoder".to_string(),
+                params: None,
+                state: None,
+            },
+        );
+        let taps =
+            vec![tap("aenc", "out", true, true, false), tap("venc", "out", true, false, true)];
+
+        let (nodes, conns, has_audio, has_video) =
+            inject_preview_subgraph(&session, "pv1", &taps, "/gw/pv1", &pipeline)
+                .await
+                .expect("inject should succeed");
+
+        assert!(has_audio && has_video);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].1, "transport::moq::peer");
+
+        let audio_conn =
+            conns.iter().find(|(f, _, _, _, _)| f == "aenc").expect("audio connection present");
+        assert_eq!(audio_conn.3, "in");
+
+        let video_conn =
+            conns.iter().find(|(f, _, _, _, _)| f == "venc").expect("video connection present");
+        assert_eq!(video_conn.3, "in_1");
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn inject_raw_video_creates_pixconv_and_vp9_encoder() {
+        let (session, _rx) = fresh_session().await;
+        let mut pipeline = empty_pipeline();
+        pipeline.nodes.insert(
+            "src".to_string(),
+            streamkit_api::Node { kind: "video::source".to_string(), params: None, state: None },
+        );
+        let taps = vec![tap("src", "out", false, false, true)];
+
+        let (nodes, conns, has_audio, has_video) =
+            inject_preview_subgraph(&session, "pv2", &taps, "/gw/pv2", &pipeline)
+                .await
+                .expect("inject should succeed for raw video");
+
+        assert!(!has_audio && has_video);
+        assert_eq!(nodes.len(), 3);
+
+        let kinds: Vec<&str> = nodes.iter().map(|(_, k)| k.as_str()).collect();
+        assert!(kinds.contains(&"video::pixel_convert"));
+        // BUG (tracked in #480): bookkeeping records the unqualified kind
+        // `vp9::encoder` while `add_vp9_encoder_node` actually asks the
+        // engine for `video::vp9::encoder`.  The raw-audio path is
+        // internally consistent (`audio::opus::encoder` on both sides) —
+        // only VP9 is wrong.  This assertion pins the current behavior.
+        assert!(kinds.contains(&"vp9::encoder"));
+        assert!(kinds.contains(&"transport::moq::peer"));
+
+        let ids: Vec<&str> = nodes.iter().map(|(i, _)| i.as_str()).collect();
+        assert!(ids.contains(&"_preview_pv2_pixconv"));
+        assert!(ids.contains(&"_preview_pv2_vp9enc"));
+        assert!(ids.contains(&"_preview_pv2_peer"));
+
+        // tap → pixconv (best-effort) → vp9enc (reliable) → peer (reliable)
+        assert_eq!(conns.len(), 3);
+
+        let tap_to_pixconv = conns
+            .iter()
+            .find(|(f, _, t, _, _)| f == "src" && t == "_preview_pv2_pixconv")
+            .expect("tap→pixconv connection present");
+        assert!(matches!(tap_to_pixconv.4, streamkit_core::control::ConnectionMode::BestEffort));
+
+        let pixconv_to_vp9 = conns
+            .iter()
+            .find(|(f, _, t, _, _)| f == "_preview_pv2_pixconv" && t == "_preview_pv2_vp9enc")
+            .expect("pixconv→vp9 connection present");
+        assert!(matches!(pixconv_to_vp9.4, streamkit_core::control::ConnectionMode::Reliable));
+
+        let vp9_to_peer = conns
+            .iter()
+            .find(|(f, _, t, _, _)| f == "_preview_pv2_vp9enc" && t == "_preview_pv2_peer")
+            .expect("vp9→peer connection present");
+        assert!(matches!(vp9_to_peer.4, streamkit_core::control::ConnectionMode::Reliable));
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn inject_raw_audio_creates_opus_encoder_chain() {
+        let (session, _rx) = fresh_session().await;
+        let mut pipeline = empty_pipeline();
+        pipeline.nodes.insert(
+            "src".to_string(),
+            streamkit_api::Node { kind: "audio::source".to_string(), params: None, state: None },
+        );
+        let taps = vec![tap("src", "out", false, true, false)];
+
+        let (nodes, conns, has_audio, has_video) =
+            inject_preview_subgraph(&session, "pv3", &taps, "/gw/pv3", &pipeline)
+                .await
+                .expect("inject should succeed for raw audio");
+
+        assert!(has_audio && !has_video);
+        assert_eq!(nodes.len(), 2);
+
+        let kinds: Vec<&str> = nodes.iter().map(|(_, k)| k.as_str()).collect();
+        assert!(kinds.contains(&"audio::opus::encoder"));
+        assert!(kinds.contains(&"transport::moq::peer"));
+
+        assert_eq!(conns.len(), 2);
+        let tap_to_opus = conns
+            .iter()
+            .find(|(f, _, t, _, _)| f == "src" && t == "_preview_pv3_opusenc")
+            .expect("tap→opusenc connection present");
+        assert!(matches!(tap_to_opus.4, streamkit_core::control::ConnectionMode::BestEffort));
+
+        let opus_to_peer = conns
+            .iter()
+            .find(|(f, _, t, _, _)| f == "_preview_pv3_opusenc" && t == "_preview_pv3_peer")
+            .expect("opusenc→peer connection present");
+        assert!(matches!(opus_to_peer.4, streamkit_core::control::ConnectionMode::Reliable));
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn teardown_preview_removes_nodes_and_connections_from_pipeline_model() {
+        let (session, _rx) = fresh_session().await;
+        seed_pipeline_node(&session, "src", "audio::source").await;
+
+        let taps = vec![tap("src", "out", false, true, false)];
+        let (nodes, conns, has_audio, has_video) = {
+            let pipeline = session.pipeline.lock().await.clone();
+            inject_preview_subgraph(&session, "pv4", &taps, "/gw/pv4", &pipeline).await.unwrap()
+        };
+
+        {
+            let mut pipeline = session.pipeline.lock().await;
+            for (id, kind) in &nodes {
+                pipeline.nodes.insert(
+                    id.clone(),
+                    streamkit_api::Node { kind: kind.clone(), params: None, state: None },
+                );
+            }
+            for (f, fp, t, tp, mode) in &conns {
+                pipeline.connections.push(streamkit_api::Connection {
+                    from_node: f.clone(),
+                    from_pin: fp.clone(),
+                    to_node: t.clone(),
+                    to_pin: tp.clone(),
+                    mode: *mode,
+                });
+            }
+        }
+
+        let state = PreviewState {
+            preview_id: "pv4".to_string(),
+            tap_points: taps,
+            injected_nodes: nodes.clone(),
+            injected_connections: conns.clone(),
+            gateway_path: "/gw/pv4".to_string(),
+            has_audio,
+            has_video,
+            created_at: SystemTime::now(),
+        };
+
+        teardown_preview(&session, &state).await.expect("teardown should succeed");
+
+        let pipeline = session.pipeline.lock().await;
+        for (id, _) in &nodes {
+            assert!(!pipeline.nodes.contains_key(id), "node {id} should be removed");
+        }
+        assert!(
+            pipeline.connections.is_empty(),
+            "all preview connections should be removed, got: {:?}",
+            pipeline.connections
+        );
+        drop(pipeline);
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn teardown_all_previews_clears_pipeline_connections_but_keeps_preview_map() {
+        // Pins TWO surprising contracts of teardown_all_previews:
+        //   1. it leaves `session.previews` intact (the map is NOT drained),
+        //   2. it DOES remove preview connections from `session.pipeline`.
+        //
+        // To make assertion (2) meaningful we must populate
+        // `session.pipeline.connections` first — `inject_preview_subgraph`
+        // only fills the returned bookkeeping vector, not the pipeline
+        // model (the handler at start_preview_handler is what normally
+        // mirrors them back).  Without this seeding the connections list
+        // is empty before AND after teardown, and assertion (2) would
+        // pass even if teardown_preview's pipeline cleanup branch were
+        // deleted entirely.
+        let (session, _rx) = fresh_session().await;
+        seed_pipeline_node(&session, "src", "audio::source").await;
+
+        let mut seeded = Vec::new();
+        for i in 0..MAX_PREVIEWS_PER_SESSION {
+            let preview_id = format!("p{i}");
+            let taps = vec![tap("src", "out", true, true, false)];
+            let pipeline = session.pipeline.lock().await.clone();
+            let (nodes, conns, ha, hv) =
+                inject_preview_subgraph(&session, &preview_id, &taps, "/gw", &pipeline)
+                    .await
+                    .unwrap();
+
+            {
+                let mut pip = session.pipeline.lock().await;
+                for (node_id, kind) in &nodes {
+                    pip.nodes.insert(
+                        node_id.clone(),
+                        streamkit_api::Node { kind: kind.clone(), params: None, state: None },
+                    );
+                }
+                for (fn_, fp, tn, tp, mode) in &conns {
+                    pip.connections.push(streamkit_api::Connection {
+                        from_node: fn_.clone(),
+                        from_pin: fp.clone(),
+                        to_node: tn.clone(),
+                        to_pin: tp.clone(),
+                        mode: *mode,
+                    });
+                }
+            }
+
+            seeded.push((nodes.clone(), conns.clone()));
+
+            session
+                .add_preview(PreviewState {
+                    preview_id: preview_id.clone(),
+                    tap_points: taps,
+                    injected_nodes: nodes,
+                    injected_connections: conns,
+                    gateway_path: format!("/gw/{preview_id}"),
+                    has_audio: ha,
+                    has_video: hv,
+                    created_at: SystemTime::now(),
+                })
+                .await
+                .unwrap();
+        }
+        assert_eq!(session.preview_count().await, MAX_PREVIEWS_PER_SESSION);
+
+        let pip = session.pipeline.lock().await;
+        assert!(
+            !pip.connections.is_empty(),
+            "precondition: pipeline.connections must be populated before teardown_all_previews so the cleanup assertion is meaningful"
+        );
+        assert!(
+            seeded.iter().any(|(nodes, _)| nodes.iter().any(|(id, _)| pip.nodes.contains_key(id))),
+            "precondition: at least one preview node must be present in the pipeline model"
+        );
+        drop(pip);
+
+        teardown_all_previews(&session).await;
+
+        assert_eq!(
+            session.preview_count().await,
+            MAX_PREVIEWS_PER_SESSION,
+            "teardown_all_previews leaves the preview map intact by design"
+        );
+
+        let pipeline = session.pipeline.lock().await;
+        assert!(
+            pipeline.connections.is_empty(),
+            "teardown_all_previews must remove every preview connection from the pipeline model, got: {:?}",
+            pipeline.connections
+        );
+        for (nodes, _) in &seeded {
+            for (id, _) in nodes {
+                assert!(
+                    !pipeline.nodes.contains_key(id),
+                    "preview node {id} should have been removed from pipeline.nodes"
+                );
+            }
+        }
+        drop(pipeline);
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    /// Wait until every kind in `expected_kinds` has been observed in a
+    /// `NodeAdded` event from `rx`, returning the ordered list of
+    /// observed kinds.  Exits as soon as the expectation is satisfied,
+    /// so a tight inner loop on success runs in milliseconds; the
+    /// `max_wait` budget is intentionally generous to absorb CI
+    /// scheduling jitter.
+    ///
+    /// Panics on `RecvError::Lagged` with a diagnostic message: the
+    /// engine emits NodeAdded only after successfully constructing the
+    /// node, so silently dropping lagged events would turn a real
+    /// regression into a confusing "engine never confirmed kind X"
+    /// assertion failure.  Lagging means the channel buffer in
+    /// `fresh_session` is too small — fix that, don't paper over it.
+    async fn drain_node_added_kinds(
+        rx: &mut broadcast::Receiver<BroadcastEvent>,
+        expected_kinds: &[&str],
+        max_wait: std::time::Duration,
+    ) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut still_expected: std::collections::HashSet<String> =
+            expected_kinds.iter().map(|s| (*s).to_string()).collect();
+        let deadline = tokio::time::Instant::now() + max_wait;
+        loop {
+            if still_expected.is_empty() {
+                return out;
+            }
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return out;
+            }
+            match tokio::time::timeout(remaining, rx.recv()).await {
+                Ok(Ok(evt)) => {
+                    if let streamkit_api::EventPayload::NodeAdded { kind, .. } = &evt.event.payload
+                    {
+                        still_expected.remove(kind);
+                        out.push(kind.clone());
+                    }
+                },
+                Ok(Err(broadcast::error::RecvError::Lagged(n))) => {
+                    panic!(
+                        "NodeAdded receiver lagged by {n} events; broadcast buffer in fresh_session is too small. Observed so far: {out:?}"
+                    );
+                },
+                Ok(Err(broadcast::error::RecvError::Closed)) | Err(_) => return out,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn inject_raw_video_engine_receives_video_qualified_vp9_kind() {
+        // Pins what the ENGINE actually received — not just the
+        // bookkeeping vector.  add_vp9_encoder_node sends
+        // `video::vp9::encoder` to the engine; if a future change starts
+        // sending an unqualified `vp9::encoder` (mirroring the
+        // bookkeeping bug pinned by #480), the engine would fail to
+        // construct the node and NodeAdded for that kind would never
+        // arrive.  Same idea for opus and the moq peer.
+        //
+        // This complements `inject_raw_video_creates_pixconv_and_vp9_encoder`
+        // (which only inspects bookkeeping) by asserting on the
+        // engine-confirmed event stream.
+        let (session, mut rx) = fresh_session().await;
+        let mut pipeline = empty_pipeline();
+        pipeline.nodes.insert(
+            "src".to_string(),
+            streamkit_api::Node { kind: "video::source".to_string(), params: None, state: None },
+        );
+        let taps = vec![tap("src", "out", false, false, true)];
+
+        inject_preview_subgraph(&session, "engcheck", &taps, "/gw/engcheck", &pipeline)
+            .await
+            .expect("inject should succeed for raw video");
+
+        let expected = ["video::pixel_convert", "video::vp9::encoder", "transport::moq::peer"];
+        let kinds =
+            drain_node_added_kinds(&mut rx, &expected, std::time::Duration::from_secs(30)).await;
+
+        for want in expected {
+            assert!(
+                kinds.iter().any(|k| k == want),
+                "engine never confirmed {want} (sibling of #480?); got kinds: {kinds:?}"
+            );
+        }
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn inject_raw_audio_engine_receives_audio_qualified_opus_kind() {
+        // Companion to the VP9 test above: asserts the OPUS path's
+        // engine-side kind matches what add_opus_encoder_node sends
+        // (`audio::opus::encoder`).  If add_opus_encoder_node ever
+        // diverges from its bookkeeping (the failure mode #480 fixes
+        // would have prevented in the first place), the engine never
+        // confirms construction and the assertion fires.
+        let (session, mut rx) = fresh_session().await;
+        let mut pipeline = empty_pipeline();
+        pipeline.nodes.insert(
+            "src".to_string(),
+            streamkit_api::Node { kind: "audio::source".to_string(), params: None, state: None },
+        );
+        let taps = vec![tap("src", "out", false, true, false)];
+
+        inject_preview_subgraph(&session, "opuscheck", &taps, "/gw/opuscheck", &pipeline)
+            .await
+            .expect("inject should succeed for raw audio");
+
+        let expected = ["audio::opus::encoder", "transport::moq::peer"];
+        let kinds =
+            drain_node_added_kinds(&mut rx, &expected, std::time::Duration::from_secs(30)).await;
+
+        for want in expected {
+            assert!(
+                kinds.iter().any(|k| k == want),
+                "engine never confirmed {want}; got kinds: {kinds:?}"
+            );
+        }
+
+        let _ = session.shutdown_and_wait().await;
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Panics ARE the assertions
+mod handler_tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::permissions::Permissions;
+    use crate::session::{PreviewState, Session, TapPoint};
+    use axum::body::{to_bytes, Body};
+    use axum::extract::Request as AxumRequest;
+    use axum::http::{HeaderName, HeaderValue};
+    use axum::http::{Method, Request, StatusCode};
+    use axum::middleware::{from_fn, Next};
+    use axum::response::Response as AxumResponse;
+    use axum::routing::{delete, post};
+    use axum::Router;
+    use serde_json::json;
+    use std::time::SystemTime;
+    use tower::ServiceExt;
+
+    // See the matching block in plugins.rs::handler_tests for rationale.
+    const TEST_ROLE_HEADER: &str = "x-test-sk-role";
+    const TEST_ROLE_VALUE: &str = "test-role";
+
+    async fn inject_test_role(mut req: AxumRequest, next: Next) -> AxumResponse {
+        req.headers_mut().insert(
+            HeaderName::from_static(TEST_ROLE_HEADER),
+            HeaderValue::from_static(TEST_ROLE_VALUE),
+        );
+        next.run(req).await
+    }
+
+    fn admin_permissions() -> Permissions {
+        let mut p = Permissions::admin();
+        p.list_sessions = true;
+        p.modify_sessions = true;
+        p.access_all_sessions = true;
+        p
+    }
+
+    /// `(state, _tmp)` — the caller must keep the TempDir alive for the
+    /// lifetime of the test so the temp `.plugins/` directory survives
+    /// every request.  Without this override the plugin manager init in
+    /// `create_app_state` calls `create_dir_all(".plugins/...")` against
+    /// the test process's CWD, leaving a `.plugins/` directory at the
+    /// workspace root and racing with parallel tests that share CWD.
+    fn make_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut cfg = Config::default();
+        cfg.plugins.directory = tmp.path().to_string_lossy().into_owned();
+        cfg.permissions.default_role = "preview-admin".to_string();
+        cfg.permissions.role_header = Some(TEST_ROLE_HEADER.to_string());
+        cfg.permissions.roles.insert("preview-admin".to_string(), admin_permissions());
+        (crate::server::create_app_state(cfg, None), tmp)
+    }
+
+    async fn install_session(state: &Arc<AppState>, name: &str) -> Session {
+        let event_tx = state.event_tx.clone();
+        let session =
+            Session::create(&state.engine, &state.config, Some(name.to_string()), event_tx, None)
+                .await
+                .expect("Session::create succeeds");
+        state.session_manager.lock().await.add_session(session.clone()).expect("insert session");
+        session
+    }
+
+    fn build_router(state: Arc<AppState>) -> Router {
+        Router::new()
+            .route(
+                "/api/v1/sessions/{session_id}/preview",
+                post(start_preview_handler).get(list_previews_handler),
+            )
+            .route(
+                "/api/v1/sessions/{session_id}/preview/{preview_id}",
+                delete(stop_preview_handler),
+            )
+            .layer(from_fn(inject_test_role))
+            .with_state(state)
+    }
+
+    async fn read_body(resp: axum::response::Response) -> (StatusCode, String) {
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    fn post_json(uri: &str, body: &serde_json::Value) -> Request<Body> {
+        Request::builder()
+            .method(Method::POST)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn start_preview_returns_404_for_unknown_session() {
+        // Precondition: this module is gated on `feature = "moq"`
+        // (server/mod.rs), and `create_app_state` under that feature
+        // always sets `app_state.moq_gateway = Some(...)`.  The handler's
+        // earlier `moq_gateway.is_none()` 503 branch is therefore
+        // unreachable here — we always hit the session-lookup 404.
+        // If the gateway ever becomes opt-in, this assertion will need a
+        // setup step that explicitly enables it.
+        let (state, _tmp) = make_admin_state();
+        let router = build_router(state);
+
+        let req = post_json("/api/v1/sessions/missing/preview", &json!({}));
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body.contains("missing"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn start_preview_returns_400_when_tap_node_not_in_pipeline() {
+        let (state, _tmp) = make_admin_state();
+        let session = install_session(&state, "alpha").await;
+        let router = build_router(Arc::clone(&state));
+
+        let req = post_json(
+            "/api/v1/sessions/alpha/preview",
+            &json!({ "tap_node": "ghost", "tap_pin": "out" }),
+        );
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("Tap node 'ghost' not found"), "body: {body}");
+
+        // The error message is shared between the handler's pre-check
+        // (preview.rs:751-756) and inject_preview_subgraph's own check.
+        // A failure-mode-distinguishing assertion: after a pre-check
+        // rejection, NO preview nodes can have been added to the
+        // session pipeline.  If a future refactor accidentally lets
+        // inject_preview_subgraph run before the handler short-circuits,
+        // it would push partial state through the engine and that
+        // state would be observable on session.pipeline.
+        let pip = session.pipeline.lock().await;
+        assert!(
+            !pip.nodes.keys().any(|k| k.starts_with("_preview_")),
+            "pre-check failure must not leak any _preview_ nodes into the pipeline, got: {:?}",
+            pip.nodes.keys().collect::<Vec<_>>()
+        );
+        drop(pip);
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn start_preview_returns_400_when_tap_pin_not_on_node() {
+        // Pins the pin-validation pre-check at preview.rs:761-765,
+        // which produces a UNIQUE error message that distinguishes it
+        // from the tap_node and inject_preview_subgraph checks.
+        let (state, _tmp) = make_admin_state();
+        let session = install_session(&state, "alpha").await;
+
+        // Seed a real node whose kind is registered with the engine, so
+        // the registry lookup finds a definition and the pin check
+        // actually runs (instead of warning + skipping).
+        // `video::colorbars` is registered by streamkit-nodes and has
+        // a single `out` output pin (crates/nodes/src/video/colorbars.rs).
+        {
+            let mut pip = session.pipeline.lock().await;
+            pip.nodes.insert(
+                "src".to_string(),
+                streamkit_api::Node {
+                    kind: "video::colorbars".to_string(),
+                    params: None,
+                    state: None,
+                },
+            );
+        }
+
+        let router = build_router(Arc::clone(&state));
+        let req = post_json(
+            "/api/v1/sessions/alpha/preview",
+            &json!({ "tap_node": "src", "tap_pin": "this-pin-does-not-exist" }),
+        );
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.contains("Pin 'this-pin-does-not-exist' not found on node 'src'"),
+            "body: {body}"
+        );
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn start_preview_returns_400_when_tap_pin_provided_without_tap_node() {
+        let (state, _tmp) = make_admin_state();
+        let session = install_session(&state, "alpha").await;
+        let router = build_router(Arc::clone(&state));
+
+        let req = post_json("/api/v1/sessions/alpha/preview", &json!({ "tap_pin": "out" }));
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("tap_pin requires tap_node"), "body: {body}");
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn start_preview_returns_409_when_preview_limit_reached() {
+        let (state, _tmp) = make_admin_state();
+        let session = install_session(&state, "alpha").await;
+
+        for i in 0..MAX_PREVIEWS_PER_SESSION {
+            let preview_id = format!("seed{i}");
+            session
+                .add_preview(PreviewState {
+                    preview_id: preview_id.clone(),
+                    tap_points: vec![TapPoint {
+                        node: "src".into(),
+                        pin: "out".into(),
+                        is_encoded: true,
+                        is_audio: true,
+                        is_video: false,
+                    }],
+                    injected_nodes: vec![],
+                    injected_connections: vec![],
+                    gateway_path: format!("/gw/{preview_id}"),
+                    has_audio: true,
+                    has_video: false,
+                    created_at: SystemTime::now(),
+                })
+                .await
+                .unwrap();
+        }
+
+        let router = build_router(Arc::clone(&state));
+        let req = post_json("/api/v1/sessions/alpha/preview", &json!({}));
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(body.contains("Maximum"), "body: {body}");
+        assert!(body.contains(&MAX_PREVIEWS_PER_SESSION.to_string()), "body: {body}");
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn list_previews_returns_404_for_unknown_session() {
+        let (state, _tmp) = make_admin_state();
+        let router = build_router(state);
+
+        let req =
+            Request::builder().uri("/api/v1/sessions/missing/preview").body(Body::empty()).unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, _) = read_body(resp).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn list_previews_returns_seeded_previews_in_order() {
+        let (state, _tmp) = make_admin_state();
+        let session = install_session(&state, "alpha").await;
+
+        let earlier = SystemTime::now();
+        let later = earlier + std::time::Duration::from_secs(10);
+
+        session
+            .add_preview(PreviewState {
+                preview_id: "old".into(),
+                tap_points: vec![TapPoint {
+                    node: "src".into(),
+                    pin: "out".into(),
+                    is_encoded: true,
+                    is_audio: true,
+                    is_video: false,
+                }],
+                injected_nodes: vec![],
+                injected_connections: vec![],
+                gateway_path: "/gw/old".into(),
+                has_audio: true,
+                has_video: false,
+                created_at: earlier,
+            })
+            .await
+            .unwrap();
+        session
+            .add_preview(PreviewState {
+                preview_id: "new".into(),
+                tap_points: vec![TapPoint {
+                    node: "src".into(),
+                    pin: "out".into(),
+                    is_encoded: true,
+                    is_audio: false,
+                    is_video: true,
+                }],
+                injected_nodes: vec![],
+                injected_connections: vec![],
+                gateway_path: "/gw/new".into(),
+                has_audio: false,
+                has_video: true,
+                created_at: later,
+            })
+            .await
+            .unwrap();
+
+        let router = build_router(Arc::clone(&state));
+        let req =
+            Request::builder().uri("/api/v1/sessions/alpha/preview").body(Body::empty()).unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let items = parsed.as_array().expect("array");
+        assert_eq!(items.len(), 2);
+        let ids: Vec<&str> = items.iter().map(|p| p["preview_id"].as_str().unwrap()).collect();
+        assert!(ids.contains(&"old") && ids.contains(&"new"));
+
+        // Each entry exposes the documented per-tap media classification.
+        for item in items {
+            let taps = item["tap_points"].as_array().expect("tap_points array");
+            for t in taps {
+                let media = t["media"].as_str().unwrap();
+                assert!(matches!(media, "audio" | "video" | "audio+video"));
+            }
+        }
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn stop_preview_returns_404_for_unknown_session() {
+        let (state, _tmp) = make_admin_state();
+        let router = build_router(state);
+
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .uri("/api/v1/sessions/missing/preview/anything")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        // Pin the source of the 404 to the session-lookup branch in
+        // stop_preview_handler.  The literal phrase comes from the
+        // `format!("Session '{session_id}' not found")` site in
+        // preview.rs; matching the full prefix — not just the word
+        // "missing" which is common English — ensures an unrelated 404
+        // (route fall-through, a future generic 404 page, a different
+        // ownership branch) cannot satisfy this assertion.
+        assert!(body.contains("Session 'missing' not found"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn stop_preview_returns_404_for_unknown_preview_id() {
+        let (state, _tmp) = make_admin_state();
+        let session = install_session(&state, "alpha").await;
+        let router = build_router(Arc::clone(&state));
+
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .uri("/api/v1/sessions/alpha/preview/ghost")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body.contains("ghost"), "body: {body}");
+
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn stop_preview_removes_preview_and_clears_pipeline_model() {
+        let (state, _tmp) = make_admin_state();
+        let session = install_session(&state, "alpha").await;
+
+        // Seed an injected node + connection so teardown has something
+        // observable to remove from the pipeline model.
+        {
+            let mut pipeline = session.pipeline.lock().await;
+            pipeline.nodes.insert(
+                "_preview_pv_peer".into(),
+                streamkit_api::Node {
+                    kind: "transport::moq::peer".into(),
+                    params: None,
+                    state: None,
+                },
+            );
+            pipeline.connections.push(streamkit_api::Connection {
+                from_node: "src".into(),
+                from_pin: "out".into(),
+                to_node: "_preview_pv_peer".into(),
+                to_pin: "in".into(),
+                mode: streamkit_core::control::ConnectionMode::BestEffort,
+            });
+        }
+
+        session
+            .add_preview(PreviewState {
+                preview_id: "pv".into(),
+                tap_points: vec![TapPoint {
+                    node: "src".into(),
+                    pin: "out".into(),
+                    is_encoded: true,
+                    is_audio: true,
+                    is_video: false,
+                }],
+                injected_nodes: vec![("_preview_pv_peer".into(), "transport::moq::peer".into())],
+                injected_connections: vec![(
+                    "src".into(),
+                    "out".into(),
+                    "_preview_pv_peer".into(),
+                    "in".into(),
+                    streamkit_core::control::ConnectionMode::BestEffort,
+                )],
+                gateway_path: "/gw/pv".into(),
+                has_audio: true,
+                has_video: false,
+                created_at: SystemTime::now(),
+            })
+            .await
+            .unwrap();
+
+        let router = build_router(Arc::clone(&state));
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .uri("/api/v1/sessions/alpha/preview/pv")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, body) = read_body(resp).await;
+        assert_eq!(status, StatusCode::OK);
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["preview_id"], "pv");
+
+        assert!(session.remove_preview("pv").await.is_none());
+
+        let pipeline = session.pipeline.lock().await;
+        assert!(!pipeline.nodes.contains_key("_preview_pv_peer"));
+        assert!(pipeline.connections.is_empty());
+        drop(pipeline);
+
+        let _ = session.shutdown_and_wait().await;
+    }
+}

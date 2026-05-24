@@ -459,4 +459,154 @@ mod tests {
         assert_eq!(inputs.len(), 1, "closed input must be removed");
         assert_eq!(inputs[0].0, "live");
     }
+
+    use crate::{PluginRuntime, PluginRuntimeConfig};
+    use streamkit_core::{types::PacketType as CorePacketType, ProcessorNode};
+
+    // Compile the trivial component against the SAME engine the wrapper
+    // is constructed with. wasmtime rejects cross-engine Component +
+    // Engine pairs at instantiation time with an opaque error, so reusing
+    // one engine throughout keeps these helpers safe to extend with
+    // happy-path lifecycle tests later.
+    fn empty_component(engine: &wasmtime::Engine) -> wasmtime::component::Component {
+        wasmtime::component::Component::new(engine, b"(component)")
+            .expect("trivial WAT component must compile")
+    }
+
+    fn runtime_parts() -> (wasmtime::Engine, Arc<wasmtime::component::Linker<crate::HostState>>) {
+        // Borrow the linker/engine the production code uses so the wrapper's
+        // construction path matches what the host sets up at runtime.
+        let runtime = PluginRuntime::new(PluginRuntimeConfig::default())
+            .expect("default runtime config must initialize");
+        let engine = runtime.engine_for_test();
+        let linker = runtime.linker_for_test();
+        (engine, linker)
+    }
+
+    fn metadata_with_pins(
+        inputs: Vec<wit_types::InputPin>,
+        outputs: Vec<wit_types::OutputPin>,
+    ) -> wit_types::NodeMetadata {
+        wit_types::NodeMetadata {
+            kind: "test-node".to_string(),
+            inputs,
+            outputs,
+            param_schema: String::new(),
+            categories: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn new_stores_constructor_arguments_and_input_output_pins_round_trip() {
+        let (engine, linker) = runtime_parts();
+        let metadata = metadata_with_pins(
+            vec![
+                wit_types::InputPin {
+                    name: "audio_in".to_string(),
+                    accepts_types: vec![wit_types::PacketType::RawAudio(wit_types::AudioFormat {
+                        sample_rate: 48_000,
+                        channels: 2,
+                        sample_format: wit_types::SampleFormat::Float32,
+                    })],
+                },
+                wit_types::InputPin {
+                    name: "text_in".to_string(),
+                    accepts_types: vec![wit_types::PacketType::Text, wit_types::PacketType::Any],
+                },
+            ],
+            vec![wit_types::OutputPin {
+                name: "out".to_string(),
+                produces_type: wit_types::PacketType::Binary,
+            }],
+        );
+
+        let component = empty_component(&engine);
+        let wrapper = WasmNodeWrapper::new(
+            component,
+            metadata,
+            Some(serde_json::json!({"gain": 0.5})),
+            engine,
+            linker,
+            32 * 1024 * 1024,
+        );
+
+        let inputs = wrapper.input_pins();
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(inputs[0].name, "audio_in");
+        assert_eq!(inputs[0].accepts_types.len(), 1);
+        assert!(matches!(inputs[0].accepts_types[0], CorePacketType::RawAudio(_)));
+        assert_eq!(inputs[0].cardinality, streamkit_core::PinCardinality::One);
+
+        assert_eq!(inputs[1].name, "text_in");
+        assert_eq!(inputs[1].accepts_types.len(), 2);
+        assert!(matches!(inputs[1].accepts_types[0], CorePacketType::Text));
+        assert!(matches!(inputs[1].accepts_types[1], CorePacketType::Any));
+
+        let outputs = wrapper.output_pins();
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].name, "out");
+        assert!(matches!(outputs[0].produces_type, CorePacketType::Binary));
+        assert_eq!(outputs[0].cardinality, streamkit_core::PinCardinality::Broadcast);
+    }
+
+    #[test]
+    fn pins_methods_return_empty_vectors_for_metadata_without_pins() {
+        let (engine, linker) = runtime_parts();
+        let component = empty_component(&engine);
+        let wrapper = WasmNodeWrapper::new(
+            component,
+            metadata_with_pins(Vec::new(), Vec::new()),
+            None,
+            engine,
+            linker,
+            8 * 1024 * 1024,
+        );
+        assert!(wrapper.input_pins().is_empty());
+        assert!(wrapper.output_pins().is_empty());
+    }
+
+    #[test]
+    fn input_pins_preserves_multiple_accepts_types_per_pin_in_declared_order() {
+        let (engine, linker) = runtime_parts();
+        let pin = wit_types::InputPin {
+            name: "multi".to_string(),
+            accepts_types: vec![
+                wit_types::PacketType::RawAudio(wit_types::AudioFormat {
+                    sample_rate: 16_000,
+                    channels: 1,
+                    sample_format: wit_types::SampleFormat::S16Le,
+                }),
+                wit_types::PacketType::OpusAudio,
+                wit_types::PacketType::Custom("plugin::custom/x@1".to_string()),
+            ],
+        };
+        let component = empty_component(&engine);
+        let wrapper = WasmNodeWrapper::new(
+            component,
+            metadata_with_pins(vec![pin], Vec::new()),
+            None,
+            engine,
+            linker,
+            16 * 1024 * 1024,
+        );
+
+        let inputs = wrapper.input_pins();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].accepts_types.len(), 3);
+        match &inputs[0].accepts_types[0] {
+            CorePacketType::RawAudio(fmt) => {
+                assert_eq!(fmt.sample_rate, 16_000);
+                assert_eq!(fmt.channels, 1);
+                assert_eq!(fmt.sample_format, streamkit_core::types::SampleFormat::S16Le);
+            },
+            other => panic!("expected RawAudio first, got {other:?}"),
+        }
+        assert!(matches!(inputs[0].accepts_types[1], CorePacketType::EncodedAudio(_)));
+        match &inputs[0].accepts_types[2] {
+            CorePacketType::Custom { type_id } => {
+                assert_eq!(type_id, "plugin::custom/x@1");
+            },
+            other => panic!("expected Custom variant, got {other:?}"),
+        }
+    }
 }
