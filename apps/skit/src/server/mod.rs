@@ -556,9 +556,9 @@ mod helper_tests {
         assert_eq!(normalize_base_path(Some("")), None);
         assert_eq!(normalize_base_path(Some("   ")), None);
 
-        // Note: "/" survives as Some("/") because trim_end_matches('/') strips the leading
-        // slash too, leaving an empty string that is re-prefixed by the final format! call.
-        // The result is still a no-op base_path, so this is acceptable.
+        // BUG(#485): "/" should normalise to None but instead returns Some("/").
+        // Downstream this produces <base href="//"> which browsers interpret as
+        // protocol-relative, breaking all relative asset URLs.
         assert_eq!(normalize_base_path(Some("/")).as_deref(), Some("/"));
 
         assert_eq!(normalize_base_path(Some("/foo")).as_deref(), Some("/foo"));
@@ -616,6 +616,12 @@ mod helper_tests {
     fn build_hash_returns_non_empty_string() {
         let h = build_hash();
         assert!(!h.is_empty());
+        // build.rs sets SKIT_BUILD_HASH from git; verify we get either a
+        // commit hash (hex, 7-40 chars) or the "unknown" fallback.
+        assert!(
+            h == "unknown" || (h.len() >= 7 && h.chars().all(|c| c.is_ascii_hexdigit())),
+            "unexpected build_hash value: {h:?}"
+        );
     }
 }
 
@@ -636,7 +642,7 @@ mod app_integration_tests {
     }
 
     async fn read_body(body: Body) -> Vec<u8> {
-        to_bytes(body, 1024 * 1024).await.unwrap().to_vec()
+        to_bytes(body, 16 * 1024 * 1024).await.unwrap().to_vec()
     }
 
     async fn read_json(body: Body) -> serde_json::Value {
@@ -725,8 +731,10 @@ mod app_integration_tests {
         let mut config = default_config();
         // Use a trusted role header so the test is deterministic regardless of $SK_ROLE.
         config.permissions.role_header = Some("x-test-role".to_string());
-        let viewer_perms = crate::permissions::Permissions::viewer();
-        config.permissions.roles.insert("viewer".to_string(), viewer_perms);
+        config
+            .permissions
+            .roles
+            .insert("viewer".to_string(), crate::permissions::Permissions::viewer());
 
         let (app, _state) = create_app(config, None);
         let resp = app
@@ -822,14 +830,19 @@ mod app_integration_tests {
         let (app, _state) = create_app(default_config(), None);
         let resp =
             app.oneshot(Request::builder().uri("/").body(Body::empty()).unwrap()).await.unwrap();
-        // If `ui/dist/index.html` was not built before tests, the handler returns 500.
-        // In a normal test run (and CI) the asset is embedded.
-        if resp.status() == StatusCode::OK {
-            let body = read_body(resp.into_body()).await;
-            let html = String::from_utf8(body).unwrap();
+        let status = resp.status();
+        let body = read_body(resp.into_body()).await;
+        let html = String::from_utf8(body).unwrap();
+        if status == StatusCode::OK {
             assert!(html.contains("<base href=\"/\">"), "expected base injection in: {html}");
         } else {
-            assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            // ui/dist not built — 500 is expected; verify the handler didn't
+            // return some other status by accident.
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+            assert!(
+                html.contains("index.html") || html.contains("not found") || html.is_empty(),
+                "unexpected 500 body: {html}"
+            );
         }
     }
 
@@ -840,8 +853,17 @@ mod app_integration_tests {
             .oneshot(Request::builder().uri("/some/unknown/spa/route").body(Body::empty()).unwrap())
             .await
             .unwrap();
-        // OK (index.html fallback) or 500 if assets aren't embedded.
-        assert!(matches!(resp.status(), StatusCode::OK | StatusCode::INTERNAL_SERVER_ERROR));
+        let status = resp.status();
+        let body = read_body(resp.into_body()).await;
+        let html = String::from_utf8(body).unwrap();
+        if status == StatusCode::OK {
+            assert!(
+                html.contains("<base href=\"/\">"),
+                "SPA fallback should serve index.html with base tag, got: {html}"
+            );
+        } else {
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        }
     }
 
     #[tokio::test]
@@ -957,16 +979,16 @@ mod app_integration_tests {
         );
         let (app, _state) = create_app(config, Some(auth));
 
-        // The auth subrouter exists; we don't care about the specific response code,
-        // only that it isn't the 401 the auth_guard would emit.
         let resp = app
             .oneshot(Request::builder().uri("/api/v1/auth/me").body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_ne!(
-            resp.status(),
-            StatusCode::UNAUTHORIZED,
-            "auth subrouter must not be gated by auth_guard_middleware"
+        let status = resp.status();
+        // The auth subrouter must be reachable without a token (login flow).
+        // 200 or 404 are fine; 401 means auth_guard incorrectly intercepted.
+        assert!(
+            status == StatusCode::OK || status == StatusCode::NOT_FOUND,
+            "expected OK or NOT_FOUND from auth subrouter, got {status}"
         );
     }
 
@@ -1042,6 +1064,32 @@ mod app_integration_tests {
     }
 
     #[tokio::test]
+    async fn origin_guard_allows_mutating_request_with_non_utf8_origin() {
+        // BUG(#494): non-UTF-8 Origin bytes bypass origin_guard entirely because
+        // `to_str().ok()` returns None and the request falls through as if no
+        // Origin were present. This test documents the current (buggy) behavior.
+        let (app, _state) = create_app(default_config(), None);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/validate")
+                    .header("content-type", "application/json")
+                    .header(
+                        header::ORIGIN,
+                        axum::http::HeaderValue::from_bytes(b"https://evil\x80.example.com")
+                            .unwrap(),
+                    )
+                    .body(Body::from("{\"yaml\":\"nodes: {}\"}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Should be FORBIDDEN but currently passes through (see #494).
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn read_registry_returns_guard() {
         let state = create_app_state(default_config(), None);
         let count = {
@@ -1066,8 +1114,9 @@ mod app_integration_tests {
     }
 
     #[tokio::test]
-    async fn app_error_into_response_maps_each_variant() {
+    async fn app_error_into_response_maps_variants() {
         use axum::response::IntoResponse;
+        use streamkit_core::error::StreamKitError;
 
         let bad = super::AppError::BadRequest("nope".to_string()).into_response();
         assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
@@ -1083,6 +1132,15 @@ mod app_integration_tests {
             serde_saphyr::from_str::<serde_json::Value>("::: not yaml :::").unwrap_err();
         let resp = super::AppError::Serde(serde_err).into_response();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let engine =
+            super::AppError::Engine(StreamKitError::Runtime("boom".to_string())).into_response();
+        assert_eq!(engine.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = String::from_utf8(read_body(engine.into_body()).await).unwrap();
+        assert!(body.contains("Pipeline execution error"), "got: {body}");
+
+        // MultipartError's constructor is crate-private (wraps multer::Error),
+        // so AppError::Multipart cannot be exercised here.
     }
 
     #[tokio::test]
@@ -1094,11 +1152,15 @@ mod app_integration_tests {
             .oneshot(Request::builder().uri("/admin/").body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        let status = resp.status();
         let body = read_body(resp.into_body()).await;
         let html = String::from_utf8(body).unwrap();
-        // index.html was rewritten with the configured base path.
-        assert!(html.contains("<base href=\"/admin/\">"), "missing base tag in: {html}");
+        if status == StatusCode::OK {
+            assert!(html.contains("<base href=\"/admin/\">"), "missing base tag in: {html}");
+        } else {
+            // ui/dist not built — tolerate 500 like sibling tests.
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        }
     }
 }
 

@@ -1330,7 +1330,7 @@ mod helper_tests {
     #[test]
     fn validate_file_reader_paths_rejects_invalid_path() {
         let pipe = pipeline_from(
-            "nodes:\n  reader:\n    kind: core::file_reader\n    params:\n      path: /etc/passwd\n",
+            "nodes:\n  reader:\n    kind: core::file_reader\n    params:\n      path: /nonexistent/not-allowed/file.txt\n",
         );
         let err = validate_file_reader_paths(&pipe, &dummy_security_config()).unwrap_err();
         match err {
@@ -1645,6 +1645,9 @@ nodes:
         let response =
             validate_pipeline_yaml(&state, &perms, yaml, Some(PipelineMode::Oneshot)).unwrap();
         assert!(response.valid, "expected valid: {:?}", response.errors);
+        let graph = response.graph.expect("graph should be populated for valid pipeline");
+        assert_eq!(graph.nodes.len(), 2);
+        assert_eq!(graph.connections.len(), 1);
     }
 
     #[tokio::test]
@@ -1652,12 +1655,14 @@ nodes:
         let state = make_state();
         let perms = crate::permissions::Permissions::admin();
 
+        // Use a path that's always outside allowed directories regardless of
+        // whether it exists on the test host (avoids /etc/passwd portability).
         let yaml = "\
 nodes:
   reader:
     kind: core::file_reader
     params:
-      path: /etc/passwd
+      path: /nonexistent/not-allowed/file.txt
   output:
     kind: streamkit::http_output
     needs: reader
@@ -1681,20 +1686,30 @@ mod handler_tests {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
+    // This router exercises validate_pipeline_handler in isolation (no
+    // auth_guard or origin_guard middleware). Full middleware coverage is
+    // provided by the integration tests in mod.rs.
     fn router(state: Arc<AppState>) -> axum::Router {
         axum::Router::new()
             .route("/api/v1/validate", axum::routing::post(validate_pipeline_handler))
             .with_state(state)
     }
 
+    fn default_config() -> crate::config::Config {
+        let mut config = crate::config::Config::default();
+        // Pin a role header so tests are hermetic regardless of $SK_ROLE.
+        config.permissions.role_header = Some("x-test-role".to_string());
+        config
+    }
+
     async fn read_json(body: Body) -> serde_json::Value {
-        let bytes = to_bytes(body, 1024 * 1024).await.unwrap();
+        let bytes = to_bytes(body, 16 * 1024 * 1024).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
     }
 
     #[tokio::test]
     async fn validate_handler_returns_diagnostics_for_invalid_yaml() {
-        let state = crate::server::create_app_state(crate::config::Config::default(), None);
+        let state = crate::server::create_app_state(default_config(), None);
         let app = router(state);
 
         let body = serde_json::json!({ "yaml": "::: not yaml :::" }).to_string();
@@ -1717,7 +1732,7 @@ mod handler_tests {
 
     #[tokio::test]
     async fn validate_handler_returns_200_for_valid_pipeline() {
-        let state = crate::server::create_app_state(crate::config::Config::default(), None);
+        let state = crate::server::create_app_state(default_config(), None);
         let app = router(state);
 
         let yaml = "\
@@ -1747,12 +1762,13 @@ nodes:
 
     #[tokio::test]
     async fn validate_handler_rejects_callers_without_create_sessions() {
-        // Use a trusted role header so the test is deterministic regardless of $SK_ROLE.
-        let mut config = crate::config::Config::default();
-        config.permissions.role_header = Some("x-test-role".to_string());
-        let mut limited = crate::permissions::Permissions::viewer();
-        limited.create_sessions = false;
-        config.permissions.roles.insert("limited".to_string(), limited);
+        let mut config = default_config();
+        // Permissions::viewer() already has create_sessions=false; using it
+        // directly exercises the real viewer defaults.
+        config
+            .permissions
+            .roles
+            .insert("limited".to_string(), crate::permissions::Permissions::viewer());
 
         let state = crate::server::create_app_state(config, None);
         let app = router(state);
