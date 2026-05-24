@@ -1,12 +1,12 @@
-<!--
-SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+---
+name: testing-compositor-ui
+description: >-
+  Testing the video compositor node UI in StreamKit. Use when writing or
+  running browser-based tests for the compositor canvas, text/image overlays,
+  layer configuration, or bounding-box behaviour in the Design view.
+license: MPL-2.0
+---
 
-SPDX-License-Identifier: MPL-2.0
--->
-
-# Testing the Video Compositor UI
-
-## Overview
 The video compositor node (`video::compositor`) has a visual canvas in the Design view where layers (input video, text overlays, image overlays) can be positioned, resized, and configured.
 
 ## Setup

@@ -1,12 +1,13 @@
-<!--
-SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+---
+name: testing-convert-stream-views
+description: >-
+  Testing the Convert and Stream views end-to-end in StreamKit. Use when
+  writing or running browser-based tests for oneshot pipelines (TTS,
+  transcription, file conversion) or dynamic MoQ stream pipelines, including
+  marketplace plugin installation and YAML-driven UI controls.
+license: MPL-2.0
+---
 
-SPDX-License-Identifier: MPL-2.0
--->
-
-# Testing Convert & Stream Views End-to-End
-
-## Overview
 The Convert view (`/convert`) handles oneshot pipelines (file conversion, TTS, transcription) and the Stream view (`/stream`) handles dynamic MoQ pipelines. Both derive their UI controls from the declarative `client` section in pipeline YAML files.
 
 ## Setup

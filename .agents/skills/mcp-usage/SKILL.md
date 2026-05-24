@@ -1,12 +1,12 @@
-<!--
-SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+---
+name: mcp-usage
+description: >-
+  Using StreamKit's embedded MCP server to interact with the control plane.
+  Use when designing, deploying, debugging, or mutating pipelines via MCP
+  tools, prompts, and resources — instead of writing REST/WebSocket code.
+license: MPL-2.0
+---
 
-SPDX-License-Identifier: MPL-2.0
--->
-
-# Using StreamKit's MCP Server
-
-## Overview
 StreamKit has an embedded MCP server that exposes the full control plane.
 Agents with MCP client support (like Devin) can interact with StreamKit
 directly via MCP instead of writing REST/WebSocket code.
