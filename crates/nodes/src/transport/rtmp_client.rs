@@ -2593,8 +2593,10 @@ mod tests {
         assert_eq!(conn.state(), RtmpConnectionState::PublishPending);
         conn.advance_send_buf(conn.send_buf().len());
 
-        // Server sends onStatus with NetStream.Publish.BadName (contains "Error"
-        // variant path) — should NOT transition to Publishing.
+        // Server sends onStatus with NetStream.Publish.BadName.
+        // Current production code only treats codes containing "Error",
+        // "Failed", or "Rejected" as terminal, so BadName falls through
+        // to the catch-all arm and the connection stays PublishPending.
         let mut status_payload = Vec::new();
         amf0_encode(&Amf0Value::String("onStatus".to_string()), &mut status_payload).unwrap();
         amf0_encode(&Amf0Value::Number(0.0), &mut status_payload).unwrap();
@@ -2611,6 +2613,7 @@ mod tests {
         let status_msg = server_encode(&mut srv_enc, 4, MSG_COMMAND_AMF0, 1, status_payload);
         conn.feed_recv_buf(&status_msg).unwrap();
 
+        assert_eq!(conn.state(), RtmpConnectionState::PublishPending);
         assert_ne!(conn.state(), RtmpConnectionState::Publishing);
     }
 
@@ -2675,7 +2678,6 @@ mod tests {
         let mut wire = Vec::new();
         enc.encode_message(&msg, &mut wire);
 
-        // Verify the basic header uses the 2-byte form.
         assert_eq!(wire[0] & 0x3F, 0, "csid field should be 0 for 2-byte form");
 
         let mut dec = ChunkDecoder::new();
@@ -2700,7 +2702,6 @@ mod tests {
         let mut wire = Vec::new();
         enc.encode_message(&msg, &mut wire);
 
-        // Verify the basic header uses the 3-byte form.
         assert_eq!(wire[0] & 0x3F, 1, "csid field should be 1 for 3-byte form");
 
         let mut dec = ChunkDecoder::new();
