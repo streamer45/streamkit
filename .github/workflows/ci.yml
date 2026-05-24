@@ -135,6 +135,8 @@ jobs:
           for attempt in $(seq 1 $max_attempts); do
             echo "::group::Attempt $attempt/$max_attempts"
 
+            # Uses commit *statuses* API — if Codecov migrates to check
+            # runs, this query will return nothing and the timeout will fire.
             codecov=$(gh api "/repos/$REPO/commits/$SHA/status" \
               --jq '[.statuses[] | select(.context | startswith("codecov/"))]')
             count=$(echo "$codecov" | jq 'length')
