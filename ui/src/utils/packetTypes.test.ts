@@ -221,7 +221,6 @@ describe('formatPacketType', () => {
   });
 
   it('does not render wildcard when template placeholder omits |*', () => {
-    // Register a type whose template uses plain {width} (no |*) for a field with wildcard_value
     setPacketTypeRegistry([
       ...DEFAULT_METAS,
       {
@@ -238,8 +237,6 @@ describe('formatPacketType', () => {
         },
       },
     ]);
-    // width=null matches wildcard_value but placeholder lacks |* — render literally
-    // height=null matches wildcard_value and placeholder has |* — render as *
     const result = formatPacketType({
       TestNoStar: { width: null, height: null },
     } as unknown as PacketType);
@@ -247,8 +244,6 @@ describe('formatPacketType', () => {
   });
 
   it('renders wildcard only for |* placeholders, not plain ones', () => {
-    // sample_rate=0 matches wildcard via {sample_rate|*}, but sample_format uses
-    // {sample_format} (no |*) so even a wildcard_value match renders literally
     const result = formatPacketType({
       RawAudio: { sample_rate: 0, channels: 2, sample_format: 'F32' },
     });
