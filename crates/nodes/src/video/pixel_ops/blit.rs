@@ -1305,3 +1305,132 @@ pub fn scale_blit_rgba_rotated(
         }
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn make_rgba(w: u32, h: u32, fill: [u8; 4]) -> Vec<u8> {
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        for px in buf.chunks_exact_mut(4) {
+            px.copy_from_slice(&fill);
+        }
+        buf
+    }
+
+    #[test]
+    fn identity_blit_full_opacity_copies_pixels() {
+        let w = 4u32;
+        let h = 4u32;
+        let src = make_rgba(w, h, [255, 0, 0, 255]); // red, opaque
+        let mut dst = make_rgba(w, h, [0, 0, 255, 255]); // blue, opaque
+
+        let rect = BlitRect { x: 0, y: 0, width: w, height: h };
+        scale_blit_rgba(&mut dst, w, h, &src, w, h, &rect, 1.0, true, false, false, None, false);
+
+        for px in dst.chunks_exact(4) {
+            assert_eq!(px, &[255, 0, 0, 255], "dst should be overwritten with red");
+        }
+    }
+
+    #[test]
+    fn zero_opacity_leaves_dst_unchanged() {
+        let w = 4u32;
+        let h = 4u32;
+        let src = make_rgba(w, h, [255, 0, 0, 255]);
+        let mut dst = make_rgba(w, h, [0, 0, 255, 255]);
+        let original = dst.clone();
+
+        let rect = BlitRect { x: 0, y: 0, width: w, height: h };
+        scale_blit_rgba(&mut dst, w, h, &src, w, h, &rect, 0.0, false, false, false, None, false);
+
+        assert_eq!(dst, original, "dst should be unchanged at zero opacity");
+    }
+
+    #[test]
+    fn mirror_horizontal_flips_columns() {
+        let w = 4u32;
+        let h = 2u32;
+        // First column red, rest green.
+        let mut src = make_rgba(w, h, [0, 255, 0, 255]);
+        for row in 0..h as usize {
+            let off = row * w as usize * 4;
+            src[off] = 255;
+            src[off + 1] = 0;
+            src[off + 2] = 0;
+            src[off + 3] = 255;
+        }
+        let mut dst = vec![0u8; (w * h * 4) as usize];
+
+        let rect = BlitRect { x: 0, y: 0, width: w, height: h };
+        scale_blit_rgba(&mut dst, w, h, &src, w, h, &rect, 1.0, true, true, false, None, false);
+
+        // After horizontal mirror, the last column should be red.
+        for row in 0..h as usize {
+            let last_col_off = row * w as usize * 4 + (w as usize - 1) * 4;
+            assert_eq!(dst[last_col_off], 255, "last column R should be 255 after h-mirror");
+            assert_eq!(dst[last_col_off + 1], 0);
+            assert_eq!(dst[last_col_off + 2], 0);
+        }
+    }
+
+    #[test]
+    fn mirror_vertical_flips_rows() {
+        let w = 2u32;
+        let h = 4u32;
+        // Top row white, rest black.
+        let mut src = make_rgba(w, h, [0, 0, 0, 255]);
+        for col in 0..w as usize {
+            let off = col * 4;
+            src[off] = 255;
+            src[off + 1] = 255;
+            src[off + 2] = 255;
+        }
+        let mut dst = vec![0u8; (w * h * 4) as usize];
+
+        let rect = BlitRect { x: 0, y: 0, width: w, height: h };
+        scale_blit_rgba(&mut dst, w, h, &src, w, h, &rect, 1.0, true, false, true, None, false);
+
+        // After vertical mirror, the bottom row should be white.
+        let bottom_row_start = (h as usize - 1) * w as usize * 4;
+        for col in 0..w as usize {
+            let off = bottom_row_start + col * 4;
+            assert_eq!(dst[off], 255);
+            assert_eq!(dst[off + 1], 255);
+            assert_eq!(dst[off + 2], 255);
+        }
+    }
+
+    #[test]
+    fn blit_with_offset_clips_correctly() {
+        let w = 4u32;
+        let h = 4u32;
+        let src = make_rgba(2, 2, [255, 0, 0, 255]);
+        let mut dst = make_rgba(w, h, [0, 0, 0, 255]);
+
+        let rect = BlitRect { x: 2, y: 2, width: 2, height: 2 };
+        scale_blit_rgba(&mut dst, w, h, &src, 2, 2, &rect, 1.0, true, false, false, None, false);
+
+        // Pixel at (2,2) should be red.
+        let off = (2 * w as usize + 2) * 4;
+        assert_eq!(&dst[off..off + 4], &[255, 0, 0, 255]);
+
+        // Pixel at (0,0) should be unchanged black.
+        assert_eq!(&dst[0..4], &[0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn zero_size_src_is_noop() {
+        let w = 4u32;
+        let h = 4u32;
+        let src: Vec<u8> = vec![];
+        let mut dst = make_rgba(w, h, [0, 0, 255, 255]);
+        let original = dst.clone();
+
+        let rect = BlitRect { x: 0, y: 0, width: 0, height: 0 };
+        scale_blit_rgba(&mut dst, w, h, &src, 0, 0, &rect, 1.0, false, false, false, None, false);
+
+        assert_eq!(dst, original);
+    }
+}
