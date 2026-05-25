@@ -175,9 +175,9 @@ jobs:
           android: true
           dotnet: true
           haskell: true
-          large-packages: false
+          large-packages: true
           docker-images: true
-          swap-storage: false
+          swap-storage: true
 
       - uses: actions/checkout@v5
 
