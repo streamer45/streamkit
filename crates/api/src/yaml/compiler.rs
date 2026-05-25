@@ -221,6 +221,15 @@ fn compile_dag(
             let mut params = def.params;
 
             if def.kind == "audio::mixer" && mode != EngineMode::Dynamic {
+                if let Some(ref p) = params {
+                    if !p.is_object() {
+                        return Err(format!(
+                            "audio::mixer params must be an object, got {}",
+                            value_type_name(p),
+                        ));
+                    }
+                }
+
                 if let Some(count) = incoming_counts.get(&name) {
                     if *count > 1 {
                         if let Some(serde_json::Value::Object(ref mut map)) = params {
@@ -246,9 +255,9 @@ fn compile_dag(
                 }
             }
 
-            (name, Node { kind: def.kind, params, state: None })
+            Ok((name, Node { kind: def.kind, params, state: None }))
         })
-        .collect();
+        .collect::<Result<IndexMap<_, _>, _>>()?;
 
     Ok(Pipeline {
         name,
@@ -260,6 +269,17 @@ fn compile_dag(
         view_data: None,
         runtime_schemas: None,
     })
+}
+
+fn value_type_name(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "bool",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
 }
 
 #[cfg(test)]
@@ -335,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    fn compile_dag_oneshot_audio_mixer_skips_inject_when_params_is_non_object() {
+    fn compile_dag_oneshot_audio_mixer_rejects_non_object_params() {
         let mixer = UserNode {
             kind: "audio::mixer".to_string(),
             params: Some(serde_json::Value::String("scalar".into())),
@@ -346,8 +366,12 @@ mod tests {
             ("b", user_node("core::source", Needs::None)),
             ("mixer", mixer),
         ]);
-        let compiled = compile(dag_pipeline(nodes, EngineMode::OneShot)).expect("compile");
-        let mixer = compiled.nodes.get("mixer").expect("mixer present");
-        assert_eq!(mixer.params.as_ref().and_then(serde_json::Value::as_str), Some("scalar"));
+        let err = compile(dag_pipeline(nodes, EngineMode::OneShot))
+            .expect_err("non-object params should be rejected");
+        assert!(
+            err.contains("audio::mixer params must be an object"),
+            "error should mention the requirement: {err}",
+        );
+        assert!(err.contains("string"), "error should mention the actual type: {err}");
     }
 }
