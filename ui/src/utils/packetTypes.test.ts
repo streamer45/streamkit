@@ -220,6 +220,48 @@ describe('formatPacketType', () => {
     ).toBe('Raw Video (*x*, Rgba8)');
   });
 
+  it('does not render wildcard when template placeholder omits |*', () => {
+    // Register a type whose template uses plain {width} (no |*) for a field with wildcard_value
+    setPacketTypeRegistry([
+      ...DEFAULT_METAS,
+      {
+        id: 'TestNoStar',
+        label: 'Test',
+        color: '#000',
+        display_template: 'Test ({width}x{height|*})',
+        compatibility: {
+          kind: 'structfieldwildcard',
+          fields: [
+            { name: 'width', wildcard_value: null },
+            { name: 'height', wildcard_value: null },
+          ],
+        },
+      },
+    ]);
+    // width=null matches wildcard_value but placeholder lacks |* — render literally
+    // height=null matches wildcard_value and placeholder has |* — render as *
+    const result = formatPacketType({
+      TestNoStar: { width: null, height: null },
+    } as unknown as PacketType);
+    expect(result).toBe('Test (nullx*)');
+  });
+
+  it('renders wildcard only for |* placeholders, not plain ones', () => {
+    // sample_rate=0 matches wildcard via {sample_rate|*}, but sample_format uses
+    // {sample_format} (no |*) so even a wildcard_value match renders literally
+    const result = formatPacketType({
+      RawAudio: { sample_rate: 0, channels: 2, sample_format: 'F32' },
+    });
+    expect(result).toBe('Raw Audio (*Hz, 2ch, F32)');
+  });
+
+  it('renders actual value for |* placeholder when value does not match wildcard', () => {
+    const result = formatPacketType({
+      RawAudio: { sample_rate: 44100, channels: 2, sample_format: 'F32' },
+    });
+    expect(result).toBe('Raw Audio (44100Hz, 2ch, F32)');
+  });
+
   it('renders the Custom template with the supplied type_id', () => {
     expect(formatPacketType({ Custom: { type_id: 'my.custom.type' } })).toBe(
       'Custom (my.custom.type)'

@@ -36,7 +36,7 @@ function formatWithTemplate(
     let isWildcard = false;
     if (compat && compat.kind === 'structfieldwildcard') {
       const rule = compat.fields.find((f) => f.name === field);
-      if (rule && 'wildcard_value' in rule) {
+      if (rule && 'wildcard_value' in rule && _m.includes('|*')) {
         isWildcard = deepEqual(value, rule.wildcard_value);
       }
     }
