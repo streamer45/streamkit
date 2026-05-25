@@ -360,3 +360,222 @@ impl ProcessorNode for AudioPacerNode {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Tests use unwrap/expect for concise assertions.
+mod tests {
+    use super::*;
+    use streamkit_core::types::AudioFrame;
+
+    #[test]
+    fn audio_duration_mono() {
+        let frame = AudioFrame::new(48000, 1, vec![0.0; 960]);
+        let dur = AudioPacerNode::calculate_audio_duration(&frame);
+        let expected_ms = 20.0;
+        let actual_ms = dur.as_secs_f64() * 1000.0;
+        assert!(
+            (actual_ms - expected_ms).abs() < 0.1,
+            "expected ~{expected_ms}ms, got {actual_ms}ms"
+        );
+    }
+
+    #[test]
+    fn audio_duration_stereo() {
+        let frame = AudioFrame::new(48000, 2, vec![0.0; 1920]);
+        let dur = AudioPacerNode::calculate_audio_duration(&frame);
+        let expected_ms = 20.0;
+        let actual_ms = dur.as_secs_f64() * 1000.0;
+        assert!((actual_ms - expected_ms).abs() < 0.1);
+    }
+
+    #[test]
+    fn audio_duration_different_sample_rate() {
+        let frame = AudioFrame::new(16000, 1, vec![0.0; 16000]);
+        let dur = AudioPacerNode::calculate_audio_duration(&frame);
+        let expected_ms = 1000.0;
+        let actual_ms = dur.as_secs_f64() * 1000.0;
+        assert!((actual_ms - expected_ms).abs() < 0.1);
+    }
+
+    #[test]
+    fn silence_frame_20ms_mono() {
+        let frame = AudioPacerNode::create_silence_frame(48000, 1);
+        assert_eq!(frame.sample_rate, 48000);
+        assert_eq!(frame.channels, 1);
+        assert_eq!(frame.samples.len(), 960); // 48000 * 0.020
+        assert!(frame.samples.iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn silence_frame_20ms_stereo() {
+        let frame = AudioPacerNode::create_silence_frame(48000, 2);
+        assert_eq!(frame.channels, 2);
+        assert_eq!(frame.samples.len(), 1920); // 48000 * 0.020 * 2
+        assert!(frame.samples.iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn silence_frame_16k_mono() {
+        let frame = AudioPacerNode::create_silence_frame(16000, 1);
+        assert_eq!(frame.samples.len(), 320); // 16000 * 0.020
+    }
+
+    #[test]
+    fn cached_silence_miss_creates_and_caches() {
+        let mut cached: Option<AudioFrame> = None;
+        let frame = AudioPacerNode::get_cached_silence(&mut cached, 48000, 2);
+        assert_eq!(frame.sample_rate, 48000);
+        assert_eq!(frame.channels, 2);
+        assert!(cached.is_some());
+    }
+
+    #[test]
+    fn cached_silence_hit_returns_clone() {
+        let mut cached: Option<AudioFrame> = None;
+        let first = AudioPacerNode::get_cached_silence(&mut cached, 48000, 2);
+        let second = AudioPacerNode::get_cached_silence(&mut cached, 48000, 2);
+        assert_eq!(first.samples.len(), second.samples.len());
+        assert_eq!(first.sample_rate, second.sample_rate);
+    }
+
+    #[test]
+    fn cached_silence_miss_on_format_change() {
+        let mut cached: Option<AudioFrame> = None;
+        AudioPacerNode::get_cached_silence(&mut cached, 48000, 2);
+        let new_frame = AudioPacerNode::get_cached_silence(&mut cached, 16000, 1);
+        assert_eq!(new_frame.sample_rate, 16000);
+        assert_eq!(new_frame.channels, 1);
+        let cached_frame = cached.unwrap();
+        assert_eq!(cached_frame.sample_rate, 16000);
+    }
+
+    #[test]
+    fn speed_2x_halves_duration() {
+        let node = AudioPacerNode {
+            speed: 2.0,
+            buffer_size: 32,
+            generate_silence: true,
+            initial_format: None,
+        };
+        let dur = Duration::from_millis(20);
+        let adjusted = node.adjust_for_speed(dur);
+        assert_eq!(adjusted, Duration::from_millis(10));
+    }
+
+    #[test]
+    fn speed_1x_unchanged() {
+        let node = AudioPacerNode {
+            speed: 1.0,
+            buffer_size: 32,
+            generate_silence: true,
+            initial_format: None,
+        };
+        let dur = Duration::from_millis(20);
+        let adjusted = node.adjust_for_speed(dur);
+        assert_eq!(adjusted, Duration::from_millis(20));
+    }
+
+    #[test]
+    fn speed_half_doubles_duration() {
+        let node = AudioPacerNode {
+            speed: 0.5,
+            buffer_size: 32,
+            generate_silence: true,
+            initial_format: None,
+        };
+        let dur = Duration::from_millis(20);
+        let adjusted = node.adjust_for_speed(dur);
+        let target = Duration::from_millis(40);
+        let diff = adjusted.abs_diff(target);
+        assert!(diff < Duration::from_micros(100), "expected ~40ms, got {adjusted:?}");
+    }
+
+    #[test]
+    fn factory_default_config_succeeds() {
+        let factory = AudioPacerNode::factory();
+        assert!(factory(None).is_ok());
+    }
+
+    #[test]
+    fn factory_valid_config_succeeds() {
+        let factory = AudioPacerNode::factory();
+        let params = serde_json::json!({
+            "speed": 1.5,
+            "buffer_size": 16,
+            "generate_silence": false
+        });
+        assert!(factory(Some(&params)).is_ok());
+    }
+
+    #[test]
+    fn factory_speed_zero_rejected() {
+        let factory = AudioPacerNode::factory();
+        let params = serde_json::json!({ "speed": 0.0 });
+        let err = factory(Some(&params)).err().expect("should fail");
+        assert!(err.to_string().contains("Speed"));
+    }
+
+    #[test]
+    fn factory_speed_negative_rejected() {
+        let factory = AudioPacerNode::factory();
+        let params = serde_json::json!({ "speed": -1.0 });
+        let err = factory(Some(&params)).err().expect("should fail");
+        assert!(err.to_string().contains("Speed"));
+    }
+
+    #[test]
+    fn factory_buffer_size_zero_rejected() {
+        let factory = AudioPacerNode::factory();
+        let params = serde_json::json!({ "buffer_size": 0 });
+        let err = factory(Some(&params)).err().expect("should fail");
+        assert!(err.to_string().contains("Buffer size"));
+    }
+
+    #[test]
+    fn factory_initial_format_only_sample_rate_rejected() {
+        let factory = AudioPacerNode::factory();
+        let params = serde_json::json!({ "initial_sample_rate": 48000 });
+        let err = factory(Some(&params)).err().expect("should fail");
+        assert!(err.to_string().contains("together"));
+    }
+
+    #[test]
+    fn factory_initial_format_only_channels_rejected() {
+        let factory = AudioPacerNode::factory();
+        let params = serde_json::json!({ "initial_channels": 2 });
+        let err = factory(Some(&params)).err().expect("should fail");
+        assert!(err.to_string().contains("together"));
+    }
+
+    #[test]
+    fn factory_initial_sample_rate_zero_rejected() {
+        let factory = AudioPacerNode::factory();
+        let params = serde_json::json!({
+            "initial_sample_rate": 0,
+            "initial_channels": 2
+        });
+        let err = factory(Some(&params)).err().expect("should fail");
+        assert!(err.to_string().contains("initial_sample_rate"));
+    }
+
+    #[test]
+    fn factory_initial_channels_zero_rejected() {
+        let factory = AudioPacerNode::factory();
+        let params = serde_json::json!({
+            "initial_sample_rate": 48000,
+            "initial_channels": 0
+        });
+        let err = factory(Some(&params)).err().expect("should fail");
+        assert!(err.to_string().contains("initial_channels"));
+    }
+
+    #[test]
+    fn factory_valid_initial_format() {
+        let factory = AudioPacerNode::factory();
+        let params = serde_json::json!({
+            "initial_sample_rate": 48000,
+            "initial_channels": 2
+        });
+        assert!(factory(Some(&params)).is_ok());
+    }
+}
