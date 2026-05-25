@@ -91,10 +91,7 @@ impl TelemetryOutNode {
         }
 
         self.config.event_type_filter.iter().any(|pattern| {
-            if pattern.ends_with(".*") {
-                let prefix = &pattern[..pattern.len() - 2];
-                event_type.starts_with(prefix)
-            } else if pattern.ends_with('*') {
+            if pattern.ends_with('*') {
                 let prefix = &pattern[..pattern.len() - 1];
                 event_type.starts_with(prefix)
             } else {
@@ -348,6 +345,7 @@ mod tests {
         let node = TelemetryOutNode::new(Some(params)).unwrap();
         assert!(node.matches_event_type_filter("vad.speech_start"));
         assert!(node.matches_event_type_filter("vad.speech_end"));
+        assert!(!node.matches_event_type_filter("vad_something"));
         assert!(!node.matches_event_type_filter("stt.result"));
     }
 
