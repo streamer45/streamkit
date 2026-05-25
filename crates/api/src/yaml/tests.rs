@@ -844,7 +844,7 @@ fn test_lint_missing_gateway() {
 }
 
 #[test]
-fn test_lint_publish_no_media() {
+fn test_lint_empty_tracks() {
     let mut c = dynamic_client();
     c.publish = Some(PublishConfig { broadcast: "x".into(), tracks: vec![] });
     let warnings = lint_client_section(&c, EngineMode::Dynamic);
