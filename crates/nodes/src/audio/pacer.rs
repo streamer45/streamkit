@@ -362,12 +362,7 @@ impl ProcessorNode for AudioPacerNode {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)] // Tests use unwrap/expect for concise assertions; fixed-size numeric casts are safe in test constants.
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Tests use unwrap/expect for concise assertions.
 mod tests {
     use super::*;
     use streamkit_core::types::AudioFrame;
