@@ -2647,15 +2647,7 @@ mod tests {
     fn amf0_decode_ecma_array_unsupported() {
         // AMF0 EcmaArray (type marker 0x08) is not supported by this
         // minimal codec.  Verify it produces a descriptive error.
-        let mut buf = Vec::new();
-        buf.push(0x08); // EcmaArray marker
-        buf.extend_from_slice(&4u32.to_be_bytes()); // associative-count
-                                                    // key-value pair: "key" → Number(1.0)
-        buf.extend_from_slice(&2u16.to_be_bytes());
-        buf.extend_from_slice(b"ab");
-        buf.push(AMF0_NUMBER);
-        buf.extend_from_slice(&1.0f64.to_be_bytes());
-        buf.extend_from_slice(&AMF0_OBJECT_END);
+        let buf = [0x08u8];
 
         let err = amf0_decode(&buf).unwrap_err();
         assert!(

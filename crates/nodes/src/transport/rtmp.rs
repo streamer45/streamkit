@@ -1538,7 +1538,6 @@ mod tests {
         assert!(result.sps_list.is_empty());
         assert!(result.pps_list.is_empty());
 
-        // All three NALs (SEI, AUD, IDR) should appear in video_data.
         let avcc = &result.video_data;
         let mut nal_types = Vec::new();
         let mut offset = 0;
