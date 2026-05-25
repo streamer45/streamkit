@@ -700,3 +700,190 @@ pub fn rgba8_to_nv12_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
         }
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use streamkit_core::types::{PixelFormat, VideoLayout};
+
+    const TOLERANCE: i16 = 2;
+
+    fn assert_rgba_close(actual: &[u8], expected: [u8; 4], label: &str) {
+        for (i, ch) in ["R", "G", "B", "A"].iter().enumerate() {
+            let diff = (i16::from(actual[i]) - i16::from(expected[i])).abs();
+            assert!(
+                diff <= TOLERANCE,
+                "{label} {ch}: expected {} ±{TOLERANCE}, got {} (diff {diff})",
+                expected[i],
+                actual[i],
+            );
+        }
+    }
+
+    fn make_solid_rgba(w: u32, h: u32, rgba: [u8; 4]) -> Vec<u8> {
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        for px in buf.chunks_exact_mut(4) {
+            px.copy_from_slice(&rgba);
+        }
+        buf
+    }
+
+    // --- I420 round-trip tests ---
+
+    #[test]
+    fn i420_round_trip_white() {
+        let (w, h) = (4, 4);
+        let rgba_in = make_solid_rgba(w, h, [255, 255, 255, 255]);
+        let layout = VideoLayout::packed(w, h, PixelFormat::I420);
+        let mut yuv = vec![0u8; layout.total_bytes()];
+        rgba8_to_i420_buf(&rgba_in, w, h, &mut yuv);
+
+        let mut rgba_out = vec![0u8; (w * h * 4) as usize];
+        i420_to_rgba8_buf(&yuv, w, h, &mut rgba_out);
+
+        for px in rgba_out.chunks_exact(4) {
+            assert_rgba_close(px, [255, 255, 255, 255], "white");
+        }
+    }
+
+    #[test]
+    fn i420_round_trip_black() {
+        let (w, h) = (4, 4);
+        let rgba_in = make_solid_rgba(w, h, [0, 0, 0, 255]);
+        let layout = VideoLayout::packed(w, h, PixelFormat::I420);
+        let mut yuv = vec![0u8; layout.total_bytes()];
+        rgba8_to_i420_buf(&rgba_in, w, h, &mut yuv);
+
+        let mut rgba_out = vec![0u8; (w * h * 4) as usize];
+        i420_to_rgba8_buf(&yuv, w, h, &mut rgba_out);
+
+        for px in rgba_out.chunks_exact(4) {
+            assert_rgba_close(px, [0, 0, 0, 255], "black");
+        }
+    }
+
+    #[test]
+    fn i420_round_trip_red() {
+        let (w, h) = (4, 4);
+        let rgba_in = make_solid_rgba(w, h, [255, 0, 0, 255]);
+        let layout = VideoLayout::packed(w, h, PixelFormat::I420);
+        let mut yuv = vec![0u8; layout.total_bytes()];
+        rgba8_to_i420_buf(&rgba_in, w, h, &mut yuv);
+
+        let mut rgba_out = vec![0u8; (w * h * 4) as usize];
+        i420_to_rgba8_buf(&yuv, w, h, &mut rgba_out);
+
+        for px in rgba_out.chunks_exact(4) {
+            assert_rgba_close(px, [255, 0, 0, 255], "red");
+        }
+    }
+
+    #[test]
+    fn i420_alpha_always_255() {
+        let (w, h) = (4, 4);
+        let rgba_in = make_solid_rgba(w, h, [100, 150, 200, 255]);
+        let layout = VideoLayout::packed(w, h, PixelFormat::I420);
+        let mut yuv = vec![0u8; layout.total_bytes()];
+        rgba8_to_i420_buf(&rgba_in, w, h, &mut yuv);
+
+        let mut rgba_out = vec![0u8; (w * h * 4) as usize];
+        i420_to_rgba8_buf(&yuv, w, h, &mut rgba_out);
+
+        for px in rgba_out.chunks_exact(4) {
+            assert_eq!(px[3], 255, "alpha should always be 255");
+        }
+    }
+
+    // --- NV12 round-trip tests ---
+
+    #[test]
+    fn nv12_round_trip_white() {
+        let (w, h) = (4, 4);
+        let rgba_in = make_solid_rgba(w, h, [255, 255, 255, 255]);
+        let layout = VideoLayout::packed(w, h, PixelFormat::Nv12);
+        let mut yuv = vec![0u8; layout.total_bytes()];
+        rgba8_to_nv12_buf(&rgba_in, w, h, &mut yuv);
+
+        let mut rgba_out = vec![0u8; (w * h * 4) as usize];
+        nv12_to_rgba8_buf(&yuv, w, h, &mut rgba_out);
+
+        for px in rgba_out.chunks_exact(4) {
+            assert_rgba_close(px, [255, 255, 255, 255], "white");
+        }
+    }
+
+    #[test]
+    fn nv12_round_trip_black() {
+        let (w, h) = (4, 4);
+        let rgba_in = make_solid_rgba(w, h, [0, 0, 0, 255]);
+        let layout = VideoLayout::packed(w, h, PixelFormat::Nv12);
+        let mut yuv = vec![0u8; layout.total_bytes()];
+        rgba8_to_nv12_buf(&rgba_in, w, h, &mut yuv);
+
+        let mut rgba_out = vec![0u8; (w * h * 4) as usize];
+        nv12_to_rgba8_buf(&yuv, w, h, &mut rgba_out);
+
+        for px in rgba_out.chunks_exact(4) {
+            assert_rgba_close(px, [0, 0, 0, 255], "black");
+        }
+    }
+
+    #[test]
+    fn nv12_round_trip_red() {
+        let (w, h) = (4, 4);
+        let rgba_in = make_solid_rgba(w, h, [255, 0, 0, 255]);
+        let layout = VideoLayout::packed(w, h, PixelFormat::Nv12);
+        let mut yuv = vec![0u8; layout.total_bytes()];
+        rgba8_to_nv12_buf(&rgba_in, w, h, &mut yuv);
+
+        let mut rgba_out = vec![0u8; (w * h * 4) as usize];
+        nv12_to_rgba8_buf(&yuv, w, h, &mut rgba_out);
+
+        for px in rgba_out.chunks_exact(4) {
+            assert_rgba_close(px, [255, 0, 0, 255], "red");
+        }
+    }
+
+    #[test]
+    fn nv12_alpha_always_255() {
+        let (w, h) = (4, 4);
+        let rgba_in = make_solid_rgba(w, h, [50, 100, 200, 255]);
+        let layout = VideoLayout::packed(w, h, PixelFormat::Nv12);
+        let mut yuv = vec![0u8; layout.total_bytes()];
+        rgba8_to_nv12_buf(&rgba_in, w, h, &mut yuv);
+
+        let mut rgba_out = vec![0u8; (w * h * 4) as usize];
+        nv12_to_rgba8_buf(&yuv, w, h, &mut rgba_out);
+
+        for px in rgba_out.chunks_exact(4) {
+            assert_eq!(px[3], 255, "alpha should always be 255");
+        }
+    }
+
+    #[test]
+    fn i420_and_nv12_produce_same_rgba_for_same_input() {
+        let (w, h) = (8, 8);
+        let rgba_in = make_solid_rgba(w, h, [128, 64, 200, 255]);
+
+        let i420_layout = VideoLayout::packed(w, h, PixelFormat::I420);
+        let mut i420_buf = vec![0u8; i420_layout.total_bytes()];
+        rgba8_to_i420_buf(&rgba_in, w, h, &mut i420_buf);
+        let mut rgba_from_i420 = vec![0u8; (w * h * 4) as usize];
+        i420_to_rgba8_buf(&i420_buf, w, h, &mut rgba_from_i420);
+
+        let nv12_layout = VideoLayout::packed(w, h, PixelFormat::Nv12);
+        let mut nv12_buf = vec![0u8; nv12_layout.total_bytes()];
+        rgba8_to_nv12_buf(&rgba_in, w, h, &mut nv12_buf);
+        let mut rgba_from_nv12 = vec![0u8; (w * h * 4) as usize];
+        nv12_to_rgba8_buf(&nv12_buf, w, h, &mut rgba_from_nv12);
+
+        for (i, (a, b)) in rgba_from_i420.iter().zip(rgba_from_nv12.iter()).enumerate() {
+            let diff = (i16::from(*a) - i16::from(*b)).abs();
+            assert!(
+                diff <= TOLERANCE,
+                "I420 vs NV12 mismatch at byte {i}: {a} vs {b} (diff {diff})"
+            );
+        }
+    }
+}

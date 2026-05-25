@@ -930,4 +930,71 @@ mod tests {
         let vp9: MoqPushConfig = serde_json::from_str(r#"{"video_codec": "vp9"}"#).unwrap();
         assert_eq!(vp9.video_codec, Some(VideoCodec::Vp9));
     }
+
+    #[test]
+    fn moq_push_config_all_defaults() {
+        let config: super::MoqPushConfig = serde_json::from_str("{}").unwrap();
+        assert!(config.url.is_empty());
+        assert!(config.jwt.is_none());
+        assert!(config.broadcast.is_empty());
+        assert_eq!(config.channels, 2);
+        assert!(config.audio.is_none());
+        assert!(config.video.is_none());
+        assert!(config.video_codec.is_none());
+        assert!(config.audio_codec.is_none());
+        assert_eq!(config.group_duration_ms, 40);
+        assert_eq!(config.initial_delay_ms, 0);
+    }
+
+    #[test]
+    fn is_video_pin_empty_string() {
+        assert!(!is_video_pin(""));
+    }
+
+    #[test]
+    fn is_video_pin_slashes_only() {
+        assert!(!is_video_pin("/"));
+        assert!(!is_video_pin("///"));
+    }
+
+    #[test]
+    fn is_video_pin_prefix_is_case_sensitive() {
+        assert!(!is_video_pin("Video/hd"));
+        assert!(!is_video_pin("VIDEO/hd"));
+    }
+
+    #[test]
+    fn track_name_from_pin_empty_string() {
+        assert_eq!(track_name_from_pin(""), "audio/");
+    }
+
+    #[test]
+    fn track_name_from_pin_slashes_only() {
+        assert_eq!(track_name_from_pin("/"), "audio//");
+        assert_eq!(track_name_from_pin("video/"), "video/");
+        assert_eq!(track_name_from_pin("audio/"), "audio/");
+    }
+
+    #[test]
+    fn moq_push_config_full_deserialization() {
+        let json = r#"{
+            "url": "https://relay.example.com",
+            "jwt": "tok123",
+            "broadcast": "my-stream",
+            "channels": 1,
+            "audio": true,
+            "video": false,
+            "group_duration_ms": 100,
+            "initial_delay_ms": 50
+        }"#;
+        let config: super::MoqPushConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.url, "https://relay.example.com");
+        assert_eq!(config.jwt.as_deref(), Some("tok123"));
+        assert_eq!(config.broadcast, "my-stream");
+        assert_eq!(config.channels, 1);
+        assert_eq!(config.audio, Some(true));
+        assert_eq!(config.video, Some(false));
+        assert_eq!(config.group_duration_ms, 100);
+        assert_eq!(config.initial_delay_ms, 50);
+    }
 }
