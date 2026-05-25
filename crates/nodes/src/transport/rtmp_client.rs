@@ -1517,9 +1517,13 @@ impl RtmpPublishClientConnection {
                 self.events.push_back(RtmpConnectionEvent::DisconnectedByPeer { reason: desc });
                 self.set_state(RtmpConnectionState::Disconnecting);
             },
-            _ => {
-                // Other status codes (e.g. NetStream.Play.Start) — ignore.
+            _ if self.state == RtmpConnectionState::PublishPending => {
+                let desc =
+                    extract_info_description(payload).unwrap_or_else(|| code_str.to_string());
+                self.events.push_back(RtmpConnectionEvent::DisconnectedByPeer { reason: desc });
+                self.set_state(RtmpConnectionState::Disconnecting);
             },
+            _ => {},
         }
     }
 
@@ -2323,6 +2327,80 @@ mod tests {
         (conn, srv_enc)
     }
 
+    fn drive_to_publish_pending() -> (RtmpPublishClientConnection, ChunkEncoder) {
+        let url = RtmpUrl::parse("rtmp://x.rtmp.youtube.com/live2/stream-key").unwrap();
+        let mut conn = RtmpPublishClientConnection::new(url);
+
+        let c0c1 = conn.send_buf().to_vec();
+        conn.advance_send_buf(c0c1.len());
+
+        let mut s0s1s2 = Vec::with_capacity(1 + HANDSHAKE_SIZE * 2);
+        s0s1s2.push(0x03);
+        s0s1s2.extend_from_slice(&vec![0xBB; HANDSHAKE_SIZE]);
+        s0s1s2.extend_from_slice(&c0c1[1..=HANDSHAKE_SIZE]);
+        conn.feed_recv_buf(&s0s1s2).unwrap();
+        conn.advance_send_buf(conn.send_buf().len());
+
+        let mut srv_enc = ChunkEncoder::new();
+
+        let win_ack = server_encode(
+            &mut srv_enc,
+            2,
+            MSG_WIN_ACK_SIZE,
+            0,
+            2_500_000u32.to_be_bytes().to_vec(),
+        );
+        let mut set_bw_payload = 59_768_832u32.to_be_bytes().to_vec();
+        set_bw_payload.push(2);
+        let set_bw = server_encode(&mut srv_enc, 2, MSG_SET_PEER_BANDWIDTH, 0, set_bw_payload);
+        let mut server_msg = Vec::new();
+        server_msg.extend_from_slice(&win_ack);
+        server_msg.extend_from_slice(&set_bw);
+        conn.feed_recv_buf(&server_msg).unwrap();
+        conn.advance_send_buf(conn.send_buf().len());
+
+        // connect _result
+        let mut result_payload = Vec::new();
+        amf0_encode(&Amf0Value::String("_result".to_string()), &mut result_payload).unwrap();
+        amf0_encode(&Amf0Value::Number(1.0), &mut result_payload).unwrap();
+        amf0_encode(
+            &Amf0Value::Object(vec![
+                ("fmsVer".to_string(), Amf0Value::String("FMS/3,5,7,7009".to_string())),
+                ("capabilities".to_string(), Amf0Value::Number(31.0)),
+            ]),
+            &mut result_payload,
+        )
+        .unwrap();
+        amf0_encode(
+            &Amf0Value::Object(vec![
+                ("level".to_string(), Amf0Value::String("status".to_string())),
+                (
+                    "code".to_string(),
+                    Amf0Value::String("NetConnection.Connect.Success".to_string()),
+                ),
+                ("description".to_string(), Amf0Value::String("Connection succeeded".to_string())),
+            ]),
+            &mut result_payload,
+        )
+        .unwrap();
+        let result_msg = server_encode(&mut srv_enc, 3, MSG_COMMAND_AMF0, 0, result_payload);
+        conn.feed_recv_buf(&result_msg).unwrap();
+        conn.advance_send_buf(conn.send_buf().len());
+
+        // createStream _result
+        let mut cs_payload = Vec::new();
+        amf0_encode(&Amf0Value::String("_result".to_string()), &mut cs_payload).unwrap();
+        amf0_encode(&Amf0Value::Number(2.0), &mut cs_payload).unwrap();
+        amf0_encode(&Amf0Value::Null, &mut cs_payload).unwrap();
+        amf0_encode(&Amf0Value::Number(1.0), &mut cs_payload).unwrap();
+        let cs_msg = server_encode(&mut srv_enc, 3, MSG_COMMAND_AMF0, 0, cs_payload);
+        conn.feed_recv_buf(&cs_msg).unwrap();
+        conn.advance_send_buf(conn.send_buf().len());
+
+        assert_eq!(conn.state(), RtmpConnectionState::PublishPending);
+        (conn, srv_enc)
+    }
+
     /// Build an RTMP chunk from scratch using our encoder, simulating
     /// a server sending a message. Returns the raw bytes ready to feed into
     /// a client connection's `feed_recv_buf`.
@@ -2546,7 +2624,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_on_status_bad_name_does_not_publish() {
+    fn handle_on_status_bad_name_rejects_publish() {
         let url = RtmpUrl::parse("rtmp://127.0.0.1/live/key").unwrap();
         let mut conn = RtmpPublishClientConnection::new(url);
 
@@ -2594,9 +2672,6 @@ mod tests {
         conn.advance_send_buf(conn.send_buf().len());
 
         // Server sends onStatus with NetStream.Publish.BadName.
-        // Current production code only treats codes containing "Error",
-        // "Failed", or "Rejected" as terminal, so BadName falls through
-        // to the catch-all arm and the connection stays PublishPending.
         let mut status_payload = Vec::new();
         amf0_encode(&Amf0Value::String("onStatus".to_string()), &mut status_payload).unwrap();
         amf0_encode(&Amf0Value::Number(0.0), &mut status_payload).unwrap();
@@ -2613,8 +2688,61 @@ mod tests {
         let status_msg = server_encode(&mut srv_enc, 4, MSG_COMMAND_AMF0, 1, status_payload);
         conn.feed_recv_buf(&status_msg).unwrap();
 
-        assert_eq!(conn.state(), RtmpConnectionState::PublishPending);
-        assert_ne!(conn.state(), RtmpConnectionState::Publishing);
+        assert_eq!(conn.state(), RtmpConnectionState::Disconnecting);
+
+        let mut found_disconnect = false;
+        while let Some(evt) = conn.next_event() {
+            if let RtmpConnectionEvent::DisconnectedByPeer { reason } = evt {
+                assert!(reason.contains("Bad stream name"));
+                found_disconnect = true;
+            }
+        }
+        assert!(found_disconnect, "expected DisconnectedByPeer event");
+    }
+
+    #[test]
+    fn handle_on_status_unknown_code_rejects_while_publish_pending() {
+        let (mut conn, mut srv_enc) = drive_to_publish_pending();
+
+        let mut status_payload = Vec::new();
+        amf0_encode(&Amf0Value::String("onStatus".to_string()), &mut status_payload).unwrap();
+        amf0_encode(&Amf0Value::Number(0.0), &mut status_payload).unwrap();
+        amf0_encode(&Amf0Value::Null, &mut status_payload).unwrap();
+        amf0_encode(
+            &Amf0Value::Object(vec![
+                ("level".to_string(), Amf0Value::String("status".to_string())),
+                ("code".to_string(), Amf0Value::String("NetStream.Publish.Denied".to_string())),
+                ("description".to_string(), Amf0Value::String("Not allowed".to_string())),
+            ]),
+            &mut status_payload,
+        )
+        .unwrap();
+        let status_msg = server_encode(&mut srv_enc, 4, MSG_COMMAND_AMF0, 1, status_payload);
+        conn.feed_recv_buf(&status_msg).unwrap();
+
+        assert_eq!(conn.state(), RtmpConnectionState::Disconnecting);
+    }
+
+    #[test]
+    fn handle_on_status_non_start_ignored_when_already_publishing() {
+        let (mut conn, mut srv_enc) = drive_to_publishing();
+
+        let mut status_payload = Vec::new();
+        amf0_encode(&Amf0Value::String("onStatus".to_string()), &mut status_payload).unwrap();
+        amf0_encode(&Amf0Value::Number(0.0), &mut status_payload).unwrap();
+        amf0_encode(&Amf0Value::Null, &mut status_payload).unwrap();
+        amf0_encode(
+            &Amf0Value::Object(vec![
+                ("level".to_string(), Amf0Value::String("status".to_string())),
+                ("code".to_string(), Amf0Value::String("NetStream.Play.Start".to_string())),
+            ]),
+            &mut status_payload,
+        )
+        .unwrap();
+        let status_msg = server_encode(&mut srv_enc, 4, MSG_COMMAND_AMF0, 1, status_payload);
+        conn.feed_recv_buf(&status_msg).unwrap();
+
+        assert_eq!(conn.state(), RtmpConnectionState::Publishing);
     }
 
     #[test]
