@@ -41,8 +41,6 @@ runs:
         docker-images: true
         swap-storage: false
 
-    - uses: actions/checkout@v5
-
     - name: Setup Bun
       if: inputs.skip-ui-build != 'true'
       uses: oven-sh/setup-bun@v2

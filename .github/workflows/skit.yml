@@ -13,6 +13,8 @@ jobs:
     name: Lint (fmt + clippy)
     runs-on: ubuntu-22.04
     steps:
+      - uses: actions/checkout@v5
+
       - uses: ./.github/actions/setup-skit
         with:
           rust-cache-key: skit-lint
@@ -47,6 +49,8 @@ jobs:
     name: Test
     runs-on: ubuntu-22.04
     steps:
+      - uses: actions/checkout@v5
+
       - uses: ./.github/actions/setup-skit
         with:
           rust-cache-key: skit-test
@@ -80,6 +84,8 @@ jobs:
       # avoid the "sccache not installed" failure and unnecessary indirection.
       RUSTC_WRAPPER: ""
     steps:
+      - uses: actions/checkout@v5
+
       - uses: ./.github/actions/setup-skit
         with:
           rust-cache-key: skit-coverage
@@ -128,6 +134,8 @@ jobs:
     if: github.event.pull_request == null || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: self-hosted
     steps:
+      - uses: actions/checkout@v5
+
       - uses: ./.github/actions/setup-skit
         with:
           rust-cache-key: skit-gpu
@@ -164,6 +172,8 @@ jobs:
     name: Build
     runs-on: ubuntu-22.04
     steps:
+      - uses: actions/checkout@v5
+
       - uses: ./.github/actions/setup-skit
         with:
           rust-cache-key: skit-build
