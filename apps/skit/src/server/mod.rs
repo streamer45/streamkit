@@ -1735,6 +1735,10 @@ pub fn create_app_state(
         config.permissions.role_header = Some(BUILTIN_AUTH_ROLE_HEADER.to_string());
     }
 
+    let asset_root = config.asset_root.clone().unwrap_or_else(|| {
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
+
     Arc::new(AppState {
         engine,
         session_manager: Arc::new(tokio::sync::Mutex::new(SessionManager::default())),
@@ -1745,6 +1749,7 @@ pub fn create_app_state(
         auth,
         shutdown_tracker: crate::state::ShutdownTracker::default(),
         plugin_asset_registry,
+        asset_root,
         #[cfg(feature = "moq")]
         moq_gateway,
         mse_gateway,

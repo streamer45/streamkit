@@ -387,7 +387,10 @@ async fn list_handler(
 
     let mut all_assets = Vec::new();
 
-    match scan_directory(&asset_type.system_dir, true, &perms, &asset_type).await {
+    let system_dir = app_state.asset_root.join(&asset_type.system_dir);
+    let user_dir = app_state.asset_root.join(&asset_type.user_dir);
+
+    match scan_directory(&system_dir, true, &perms, &asset_type).await {
         Ok(assets) => all_assets.extend(assets),
         Err(e) => {
             error!("Failed to scan system dir for {}: {}", type_id, e);
@@ -395,7 +398,7 @@ async fn list_handler(
         },
     }
 
-    match scan_directory(&asset_type.user_dir, false, &perms, &asset_type).await {
+    match scan_directory(&user_dir, false, &perms, &asset_type).await {
         Ok(assets) => all_assets.extend(assets),
         Err(e) => {
             error!("Failed to scan user dir for {}: {}", type_id, e);
@@ -449,19 +452,20 @@ async fn upload_handler(
     };
 
     // Ensure user directory exists.
-    if let Err(e) = fs::create_dir_all(&asset_type.user_dir).await {
+    let user_dir = app_state.asset_root.join(&asset_type.user_dir);
+    if let Err(e) = fs::create_dir_all(&user_dir).await {
         return PluginAssetError::IoError(format!("Failed to create directory: {e}"))
             .into_response();
     }
 
-    let file_path = asset_type.user_dir.join(&filename);
+    let file_path = user_dir.join(&filename);
 
     // Defense-in-depth: verify the user directory (which now exists after
     // create_dir_all) canonicalizes to where we expect.  We cannot
     // canonicalize `file_path` itself because the file doesn't exist yet.
     // Instead we canonicalize the parent and check the filename is safe.
     {
-        let canonical_dir = match asset_type.user_dir.canonicalize() {
+        let canonical_dir = match user_dir.canonicalize() {
             Ok(d) => d,
             Err(e) => {
                 return PluginAssetError::IoError(format!("Failed to resolve directory: {e}"))
@@ -530,12 +534,13 @@ async fn delete_handler(
             .into_response();
     }
 
-    let file_path = asset_type.user_dir.join(&id);
+    let user_dir = app_state.asset_root.join(&asset_type.user_dir);
+    let file_path = user_dir.join(&id);
 
     // Verify the file is inside the user directory (path traversal protection).
     // Also returns NotFound if the file doesn't exist (avoids TOCTOU with a
     // separate exists() check).
-    if let Err(e) = validate_file_in_directory(&file_path, &asset_type.user_dir) {
+    if let Err(e) = validate_file_in_directory(&file_path, &user_dir) {
         return e.into_response();
     }
 
@@ -574,7 +579,11 @@ async fn serve_handler(
         return (StatusCode::NOT_FOUND, format!("Unknown asset type: {type_id}")).into_response();
     };
 
-    let dir = if scope == "system" { &asset_type.system_dir } else { &asset_type.user_dir };
+    let dir = if scope == "system" {
+        app_state.asset_root.join(&asset_type.system_dir)
+    } else {
+        app_state.asset_root.join(&asset_type.user_dir)
+    };
     let file_path = dir.join(&id);
 
     let base = asset_type.system_dir.parent().unwrap_or(&asset_type.system_dir);
@@ -595,7 +604,7 @@ async fn serve_handler(
 
     // Canonical path validation — also returns NotFound if the file doesn't
     // exist, avoiding a TOCTOU race with a separate exists() check.
-    if let Err(e) = validate_file_in_directory(&file_path, dir) {
+    if let Err(e) = validate_file_in_directory(&file_path, &dir) {
         return e.into_response();
     }
 
@@ -661,11 +670,12 @@ async fn update_handler(
         Err(e) => return e.into_response(),
     };
 
-    let file_path = asset_type.user_dir.join(&id);
+    let user_dir = app_state.asset_root.join(&asset_type.user_dir);
+    let file_path = user_dir.join(&id);
 
     // Canonical path validation — also returns NotFound if the file doesn't
     // exist, avoiding a TOCTOU race with a separate exists() check.
-    if let Err(e) = validate_file_in_directory(&file_path, &asset_type.user_dir) {
+    if let Err(e) = validate_file_in_directory(&file_path, &user_dir) {
         return e.into_response();
     }
 

@@ -990,6 +990,13 @@ pub struct Config {
 
     #[serde(default)]
     pub mcp: McpConfig,
+
+    /// Root directory for sample assets (`samples/audio`, `samples/images`,
+    /// `samples/fonts`, and plugin asset directories).  When `None` (the
+    /// default), the process working directory is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub asset_root: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug)]
