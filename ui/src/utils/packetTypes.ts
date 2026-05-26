@@ -31,12 +31,12 @@ function formatWithTemplate(
   payload: Record<string, unknown> | undefined,
   compat?: Compatibility
 ): string {
-  return template.replace(/\{(\w+)(\|\*)?\}/g, (_m, field: string) => {
+  return template.replace(/\{(\w+)(\|\*)?\}/g, (_m, field: string, star?: string) => {
     const value = (payload as Record<string, unknown> | undefined)?.[field];
     let isWildcard = false;
-    if (compat && compat.kind === 'structfieldwildcard') {
+    if (compat && compat.kind === 'structfieldwildcard' && star) {
       const rule = compat.fields.find((f) => f.name === field);
-      if (rule && 'wildcard_value' in rule && _m.includes('|*')) {
+      if (rule && 'wildcard_value' in rule) {
         isWildcard = deepEqual(value, rule.wildcard_value);
       }
     }

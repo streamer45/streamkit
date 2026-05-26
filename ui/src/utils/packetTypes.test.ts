@@ -243,18 +243,12 @@ describe('formatPacketType', () => {
     expect(result).toBe('Test (nullx*)');
   });
 
-  it('renders wildcard only for |* placeholders, not plain ones', () => {
-    const result = formatPacketType({
-      RawAudio: { sample_rate: 0, channels: 2, sample_format: 'F32' },
-    });
-    expect(result).toBe('Raw Audio (*Hz, 2ch, F32)');
-  });
-
-  it('renders actual value for |* placeholder when value does not match wildcard', () => {
-    const result = formatPacketType({
-      RawAudio: { sample_rate: 44100, channels: 2, sample_format: 'F32' },
-    });
-    expect(result).toBe('Raw Audio (44100Hz, 2ch, F32)');
+  it('renders literal value for plain placeholder even when it matches wildcard_value', () => {
+    expect(
+      formatPacketType({
+        RawVideo: { width: 1920, height: 1080, pixel_format: null },
+      } as unknown as PacketType)
+    ).toBe('Raw Video (1920x1080, null)');
   });
 
   it('renders the Custom template with the supplied type_id', () => {
