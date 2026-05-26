@@ -220,16 +220,18 @@ fn compile_dag(
         .map(|(name, def)| {
             let mut params = def.params;
 
-            if def.kind == "audio::mixer" && mode != EngineMode::Dynamic {
+            if def.kind == "audio::mixer" {
                 if let Some(ref p) = params {
                     if !p.is_object() {
                         return Err(format!(
-                            "audio::mixer params must be an object, got {}",
+                            "audio::mixer node '{name}' params must be an object, got {}",
                             value_type_name(p),
                         ));
                     }
                 }
+            }
 
+            if def.kind == "audio::mixer" && mode != EngineMode::Dynamic {
                 if let Some(count) = incoming_counts.get(&name) {
                     if *count > 1 {
                         if let Some(serde_json::Value::Object(ref mut map)) = params {
@@ -355,7 +357,7 @@ mod tests {
     }
 
     #[test]
-    fn compile_dag_oneshot_audio_mixer_rejects_non_object_params() {
+    fn compile_dag_audio_mixer_rejects_non_object_params() {
         let mixer = UserNode {
             kind: "audio::mixer".to_string(),
             params: Some(serde_json::Value::String("scalar".into())),
@@ -369,9 +371,26 @@ mod tests {
         let err = compile(dag_pipeline(nodes, EngineMode::OneShot))
             .expect_err("non-object params should be rejected");
         assert!(
-            err.contains("audio::mixer params must be an object"),
-            "error should mention the requirement: {err}",
+            err.contains("audio::mixer node 'mixer' params must be an object"),
+            "error should mention the node name and requirement: {err}",
         );
         assert!(err.contains("string"), "error should mention the actual type: {err}");
+    }
+
+    #[test]
+    fn compile_dag_dynamic_audio_mixer_also_rejects_non_object_params() {
+        let mixer = UserNode {
+            kind: "audio::mixer".to_string(),
+            params: Some(serde_json::Value::Number(42.into())),
+            needs: mixer_needs(),
+        };
+        let nodes = dag_nodes(vec![
+            ("a", user_node("core::source", Needs::None)),
+            ("b", user_node("core::source", Needs::None)),
+            ("mixer", mixer),
+        ]);
+        let err = compile(dag_pipeline(nodes, EngineMode::Dynamic))
+            .expect_err("non-object params should be rejected even in dynamic mode");
+        assert!(err.contains("number"), "error should mention the actual type: {err}");
     }
 }
