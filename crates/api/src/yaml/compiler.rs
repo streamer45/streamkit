@@ -229,29 +229,29 @@ fn compile_dag(
                         ));
                     }
                 }
-            }
 
-            if def.kind == "audio::mixer" && mode != EngineMode::Dynamic {
-                if let Some(count) = incoming_counts.get(&name) {
-                    if *count > 1 {
-                        if let Some(serde_json::Value::Object(ref mut map)) = params {
-                            let should_inject = matches!(
-                                map.get("num_inputs"),
-                                Some(serde_json::Value::Null) | None
-                            );
-                            if should_inject {
+                if mode != EngineMode::Dynamic {
+                    if let Some(count) = incoming_counts.get(&name) {
+                        if *count > 1 {
+                            if let Some(serde_json::Value::Object(ref mut map)) = params {
+                                let should_inject = matches!(
+                                    map.get("num_inputs"),
+                                    Some(serde_json::Value::Null) | None
+                                );
+                                if should_inject {
+                                    map.insert(
+                                        "num_inputs".to_string(),
+                                        serde_json::Value::Number((*count).into()),
+                                    );
+                                }
+                            } else if params.is_none() {
+                                let mut map = serde_json::Map::new();
                                 map.insert(
                                     "num_inputs".to_string(),
                                     serde_json::Value::Number((*count).into()),
                                 );
+                                params = Some(serde_json::Value::Object(map));
                             }
-                        } else if params.is_none() {
-                            let mut map = serde_json::Map::new();
-                            map.insert(
-                                "num_inputs".to_string(),
-                                serde_json::Value::Number((*count).into()),
-                            );
-                            params = Some(serde_json::Value::Object(map));
                         }
                     }
                 }
@@ -392,5 +392,22 @@ mod tests {
         let err = compile(dag_pipeline(nodes, EngineMode::Dynamic))
             .expect_err("non-object params should be rejected even in dynamic mode");
         assert!(err.contains("number"), "error should mention the actual type: {err}");
+    }
+
+    #[test]
+    fn compile_dag_audio_mixer_rejects_null_params() {
+        let mixer = UserNode {
+            kind: "audio::mixer".to_string(),
+            params: Some(serde_json::Value::Null),
+            needs: mixer_needs(),
+        };
+        let nodes = dag_nodes(vec![
+            ("a", user_node("core::source", Needs::None)),
+            ("b", user_node("core::source", Needs::None)),
+            ("mixer", mixer),
+        ]);
+        let err = compile(dag_pipeline(nodes, EngineMode::OneShot))
+            .expect_err("null params should be rejected");
+        assert!(err.contains("got null"), "error should mention null type: {err}");
     }
 }
