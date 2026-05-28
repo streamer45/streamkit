@@ -165,23 +165,46 @@ impl ProcessorNode for ColorBarsNode {
                         Vec::new()
                     })
                 },
-                |path| match std::fs::read(asset_root.join(path)) {
-                    Ok(bytes) => {
-                        tracing::info!("draw_time: loaded custom font from {path}");
-                        bytes
-                    },
-                    Err(e) => {
-                        tracing::warn!(
-                            "draw_time: failed to read custom font '{path}': {e}, \
-                             falling back to default system monospace font"
-                        );
-                        crate::video::fonts::load_default_mono_font(&asset_root).unwrap_or_else(
-                            |e2| {
-                                tracing::warn!("draw_time: {e2}, text overlay will be unavailable");
-                                Vec::new()
-                            },
+                |path| {
+                    let font_path = std::path::Path::new(path);
+                    if font_path.components().any(|c| {
+                        matches!(
+                            c,
+                            std::path::Component::ParentDir
+                                | std::path::Component::RootDir
+                                | std::path::Component::Prefix(_)
                         )
-                    },
+                    }) {
+                        tracing::warn!(
+                            "draw_time_font_path must be relative without '..': {path}, \
+                             falling back to default"
+                        );
+                        return crate::video::fonts::load_default_mono_font(&asset_root)
+                            .unwrap_or_else(|e| {
+                                tracing::warn!("draw_time: {e}, text overlay will be unavailable");
+                                Vec::new()
+                            });
+                    }
+                    match std::fs::read(asset_root.join(font_path)) {
+                        Ok(bytes) => {
+                            tracing::info!("draw_time: loaded custom font from {path}");
+                            bytes
+                        },
+                        Err(e) => {
+                            tracing::warn!(
+                                "draw_time: failed to read custom font '{path}': {e}, \
+                                 falling back to default system monospace font"
+                            );
+                            crate::video::fonts::load_default_mono_font(&asset_root).unwrap_or_else(
+                                |e2| {
+                                    tracing::warn!(
+                                        "draw_time: {e2}, text overlay will be unavailable"
+                                    );
+                                    Vec::new()
+                                },
+                            )
+                        },
+                    }
                 },
             );
 

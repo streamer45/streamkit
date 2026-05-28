@@ -65,9 +65,16 @@ impl ProcessorNode for FileReadNode {
         state_helpers::emit_initializing(&context.state_tx, &node_name);
 
         let config_path = std::path::Path::new(&self.config.path);
-        if config_path.components().any(|c| c == std::path::Component::ParentDir) {
+        if config_path.components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        }) {
             return Err(StreamKitError::Runtime(format!(
-                "file_reader path must not contain '..': {}",
+                "file_reader path must be relative without '..': {}",
                 self.config.path
             )));
         }
@@ -239,12 +246,12 @@ mod tests {
             pipeline_mode: streamkit_core::PipelineMode::Dynamic,
             view_data_tx: None,
             engine_control_tx: None,
-            asset_root: crate::test_utils::test_asset_root(),
+            asset_root: temp_dir.path().to_path_buf(),
         };
 
-        // Create and run node
+        // Create and run node — use relative path so it resolves under asset_root
         let config = FileReadConfig {
-            path: file_path.to_str().unwrap().to_string(),
+            path: "test.bin".to_string(),
             chunk_size: 10, // Small chunks for testing
         };
         let node = Box::new(FileReadNode { config });

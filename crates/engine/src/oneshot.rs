@@ -101,8 +101,13 @@ pub struct OneshotEngineConfig {
 }
 
 impl OneshotEngineConfig {
-    pub fn new(asset_root: std::path::PathBuf) -> Self {
-        Self { asset_root, ..Self::default() }
+    pub const fn new(asset_root: std::path::PathBuf) -> Self {
+        Self {
+            packet_batch_size: DEFAULT_BATCH_SIZE,
+            media_channel_capacity: DEFAULT_ONESHOT_MEDIA_CAPACITY,
+            io_channel_capacity: DEFAULT_ONESHOT_IO_CAPACITY,
+            asset_root,
+        }
     }
 }
 

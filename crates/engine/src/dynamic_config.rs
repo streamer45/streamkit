@@ -22,8 +22,14 @@ pub struct DynamicEngineConfig {
 }
 
 impl DynamicEngineConfig {
-    pub fn new(asset_root: std::path::PathBuf) -> Self {
-        Self { asset_root, ..Self::default() }
+    pub const fn new(asset_root: std::path::PathBuf) -> Self {
+        Self {
+            packet_batch_size: DEFAULT_BATCH_SIZE,
+            session_id: None,
+            node_input_capacity: None,
+            pin_distributor_capacity: None,
+            asset_root,
+        }
     }
 }
 

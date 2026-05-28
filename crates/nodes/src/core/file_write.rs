@@ -62,9 +62,16 @@ impl ProcessorNode for FileWriteNode {
         state_helpers::emit_initializing(&context.state_tx, &node_name);
 
         let config_path = std::path::Path::new(&self.config.path);
-        if config_path.components().any(|c| c == std::path::Component::ParentDir) {
+        if config_path.components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        }) {
             return Err(StreamKitError::Runtime(format!(
-                "file_writer path must not contain '..': {}",
+                "file_writer path must be relative without '..': {}",
                 self.config.path
             )));
         }
@@ -207,14 +214,12 @@ mod tests {
             pipeline_mode: streamkit_core::PipelineMode::Dynamic,
             view_data_tx: None,
             engine_control_tx: None,
-            asset_root: crate::test_utils::test_asset_root(),
+            asset_root: temp_dir.path().to_path_buf(),
         };
 
-        // Create and run node
-        let config = FileWriteConfig {
-            path: file_path.to_str().unwrap().to_string(),
-            chunk_size: default_chunk_size(),
-        };
+        // Create and run node — use relative path so it resolves under asset_root
+        let config =
+            FileWriteConfig { path: "output.bin".to_string(), chunk_size: default_chunk_size() };
         let node = Box::new(FileWriteNode { config });
 
         let node_handle = tokio::spawn(async move { node.run(context).await });
@@ -293,12 +298,12 @@ mod tests {
             pipeline_mode: streamkit_core::PipelineMode::Dynamic,
             view_data_tx: None,
             engine_control_tx: None,
-            asset_root: crate::test_utils::test_asset_root(),
+            asset_root: temp_dir.path().to_path_buf(),
         };
 
         // Create and run node with small chunk size for testing
         let config = FileWriteConfig {
-            path: file_path.to_str().unwrap().to_string(),
+            path: "chunked_output.bin".to_string(),
             chunk_size: 20, // Small chunks for testing
         };
         let node = Box::new(FileWriteNode { config });

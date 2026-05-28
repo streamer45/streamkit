@@ -1743,19 +1743,17 @@ pub fn create_app_state(
         )
     });
     if asset_root_explicit && !asset_root.exists() {
-        tracing::error!(
-            asset_root = %asset_root.display(),
-            "configured asset_root does not exist — \
-             fix the path in skit.toml or create the directory"
+        panic!(
+            "configured asset_root '{}' does not exist — \
+             fix the path in skit.toml or create the directory",
+            asset_root.display()
         );
-        std::process::exit(1);
     } else if !asset_root_explicit && !asset_root.exists() {
         std::fs::create_dir_all(&asset_root).unwrap_or_else(|e| {
-            tracing::error!(
-                asset_root = %asset_root.display(),
-                "default asset_root does not exist and could not be created: {e}"
+            panic!(
+                "default asset_root '{}' does not exist and could not be created: {e}",
+                asset_root.display()
             );
-            std::process::exit(1);
         });
     }
     tracing::info!(asset_root = %asset_root.display(), "Asset root resolved");
