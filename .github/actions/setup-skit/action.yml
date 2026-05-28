@@ -7,12 +7,20 @@ description: Common setup prelude for StreamKit CI jobs
 
 inputs:
   rust-cache-key:
-    description: "Shared key for sccache and rust-cache"
+    description: "Key for sccache cache (per-job)"
     required: true
+  rust-cache-shared-key:
+    description: "Shared key for Swatinem/rust-cache (jobs that compile similar artifacts can share a key)"
+    required: false
+    default: ""
   rust-cache-workspaces:
     description: "Rust cache workspaces mapping (e.g. '. -> target/coverage')"
     required: false
     default: ""
+  rust-cache-save-if:
+    description: "Condition for saving the rust-cache (default: only on main)"
+    required: false
+    default: "${{ github.ref == 'refs/heads/main' }}"
   rust-components:
     description: "Extra Rust toolchain components (e.g. 'llvm-tools-preview')"
     required: false
@@ -21,8 +29,16 @@ inputs:
     description: "Skip Bun setup and UI build"
     required: false
     default: "false"
+  skip-sccache:
+    description: "Skip sccache setup and cache (for jobs that set RUSTC_WRAPPER='')"
+    required: false
+    default: "false"
   runs-on-self-hosted:
     description: "Skip free-disk and apt steps (for self-hosted runners)"
+    required: false
+    default: "false"
+  free-disk-aggressive:
+    description: "Also remove large packages and swap (needed for coverage)"
     required: false
     default: "false"
 
@@ -37,9 +53,9 @@ runs:
         android: true
         dotnet: true
         haskell: true
-        large-packages: false
+        large-packages: ${{ inputs.free-disk-aggressive == 'true' }}
         docker-images: true
-        swap-storage: false
+        swap-storage: ${{ inputs.free-disk-aggressive == 'true' }}
 
     - name: Setup Bun
       if: inputs.skip-ui-build != 'true'
@@ -67,7 +83,7 @@ runs:
         components: ${{ inputs.rust-components }}
 
     - name: Restore sccache cache
-      if: inputs.runs-on-self-hosted != 'true'
+      if: inputs.skip-sccache != 'true' && inputs.runs-on-self-hosted != 'true'
       uses: actions/cache/restore@v4
       with:
         path: ~/.cache/sccache
@@ -75,11 +91,13 @@ runs:
         restore-keys: |
           sccache-${{ inputs.rust-cache-key }}-${{ runner.os }}-
 
-    - uses: mozilla-actions/sccache-action@v0.0.9
+    - name: Start sccache
+      if: inputs.skip-sccache != 'true'
+      uses: mozilla-actions/sccache-action@v0.0.9
 
     - uses: Swatinem/rust-cache@v2
       with:
-        shared-key: ${{ inputs.rust-cache-key }}
+        shared-key: ${{ inputs.rust-cache-shared-key || inputs.rust-cache-key }}
         workspaces: ${{ inputs.rust-cache-workspaces }}
-        save-if: ${{ github.ref == 'refs/heads/main' }}
+        save-if: ${{ inputs.rust-cache-save-if }}
         cache-on-failure: true
