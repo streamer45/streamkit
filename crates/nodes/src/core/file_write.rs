@@ -62,14 +62,7 @@ impl ProcessorNode for FileWriteNode {
         state_helpers::emit_initializing(&context.state_tx, &node_name);
 
         let config_path = std::path::Path::new(&self.config.path);
-        if config_path.components().any(|c| {
-            matches!(
-                c,
-                std::path::Component::ParentDir
-                    | std::path::Component::RootDir
-                    | std::path::Component::Prefix(_)
-            )
-        }) {
+        if streamkit_core::path_helpers::has_path_traversal(config_path) {
             return Err(StreamKitError::Runtime(format!(
                 "file_writer path must be relative without '..': {}",
                 self.config.path

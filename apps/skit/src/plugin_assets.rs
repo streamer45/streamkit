@@ -117,15 +117,7 @@ impl PluginAssetRegistry {
             // Reject system_dir with path-traversal or absolute path components.
             if let Some(ref dir) = spec.system_dir {
                 let path = std::path::Path::new(dir);
-                let has_traversal = path.components().any(|c| {
-                    matches!(
-                        c,
-                        std::path::Component::ParentDir
-                            | std::path::Component::RootDir
-                            | std::path::Component::Prefix(_)
-                    )
-                });
-                if has_traversal {
+                if streamkit_core::path_helpers::has_path_traversal(path) {
                     warn!(
                         type_id = %spec.type_id,
                         plugin_id = %plugin_id,

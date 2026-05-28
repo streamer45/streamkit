@@ -167,14 +167,7 @@ impl ProcessorNode for ColorBarsNode {
                 },
                 |path| {
                     let font_path = std::path::Path::new(path);
-                    if font_path.components().any(|c| {
-                        matches!(
-                            c,
-                            std::path::Component::ParentDir
-                                | std::path::Component::RootDir
-                                | std::path::Component::Prefix(_)
-                        )
-                    }) {
+                    if streamkit_core::path_helpers::has_path_traversal(font_path) {
                         tracing::warn!(
                             "draw_time_font_path must be relative without '..': {path}, \
                              falling back to default"
