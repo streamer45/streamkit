@@ -118,6 +118,9 @@ pub struct AppState {
     pub auth: Arc<AuthState>,
     pub shutdown_tracker: ShutdownTracker,
     pub plugin_asset_registry: PluginAssetRegistry,
+    /// Root directory for sample assets.  All `samples/` paths are resolved
+    /// relative to this directory instead of the process working directory.
+    pub asset_root: std::path::PathBuf,
     #[cfg(feature = "moq")]
     pub moq_gateway: Option<Arc<MoqGateway>>,
     pub mse_gateway: Arc<MseGateway>,

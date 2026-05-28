@@ -429,6 +429,7 @@ impl ProcessorNode for CompositorNode {
     #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
     async fn run(mut self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
         let node_name = context.output_sender.node_name().to_string();
+        let asset_root = context.asset_root.clone();
         state_helpers::emit_initializing(&context.state_tx, &node_name);
 
         tracing::info!(
@@ -448,7 +449,7 @@ impl ProcessorNode for CompositorNode {
                 tracing::warn!("Failed to decode image overlay '{}': {}", img_cfg.id, e);
                 continue;
             }
-            let bytes = match tokio::fs::read(&img_cfg.asset_path).await {
+            let bytes = match tokio::fs::read(asset_root.join(&img_cfg.asset_path)).await {
                 Ok(b) => b,
                 Err(e) => {
                     tracing::warn!("Failed to read image asset '{}': {}", img_cfg.asset_path, e);
@@ -483,6 +484,7 @@ impl ProcessorNode for CompositorNode {
                 txt_cfg,
                 self.limits.max_canvas_dimension,
                 self.limits.max_text_length,
+                &asset_root,
             )));
         }
 
@@ -805,6 +807,7 @@ impl ProcessorNode for CompositorNode {
                                 &mut text_overlays,
                                 params.clone(),
                                 &mut stats_tracker,
+                                &asset_root,
                             );
                             Self::send_resize_hints(&old_config, &self.config, &slots);
                             layer_configs_dirty = true;
@@ -1190,6 +1193,7 @@ impl CompositorNode {
         new_config: &CompositorConfig,
         old_overlays: &Arc<[Arc<DecodedOverlay>]>,
         limits: &GlobalCompositorConfig,
+        asset_root: &std::path::Path,
     ) -> Vec<Arc<DecodedOverlay>> {
         let mut cache: HashMap<&str, Arc<DecodedOverlay>> = HashMap::new();
         for decoded in old_overlays.iter() {
@@ -1261,7 +1265,7 @@ impl CompositorNode {
                 tracing::warn!("Image overlay decode failed: {e}");
                 continue;
             }
-            let bytes = match std::fs::read(&img_cfg.asset_path) {
+            let bytes = match std::fs::read(asset_root.join(&img_cfg.asset_path)) {
                 Ok(b) => b,
                 Err(e) => {
                     tracing::warn!("Failed to read image asset '{}': {}", img_cfg.asset_path, e);
@@ -1291,6 +1295,7 @@ impl CompositorNode {
         text_overlays: &mut Arc<[Arc<DecodedOverlay>]>,
         mut params: serde_json::Value,
         stats_tracker: &mut NodeStatsTracker,
+        asset_root: &std::path::Path,
     ) {
         // Strip transient sync metadata (`_sender`, `_rev`) before
         // deserializing.  The metadata has already been read by the
@@ -1320,6 +1325,7 @@ impl CompositorNode {
                             &new_config,
                             image_overlays,
                             limits,
+                            asset_root,
                         );
                         *image_overlays = Arc::from(new_image_overlays);
 
@@ -1342,6 +1348,7 @@ impl CompositorNode {
                                     txt_cfg,
                                     limits.max_canvas_dimension,
                                     limits.max_text_length,
+                                    asset_root,
                                 ))
                             })
                             .collect();

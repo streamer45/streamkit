@@ -70,6 +70,7 @@ fn source_node_context() -> (
         pipeline_mode: PipelineMode::Oneshot,
         view_data_tx: None,
         engine_control_tx: None,
+        asset_root: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
     };
     (ctx, state_rx, control_tx, routed_rx)
 }

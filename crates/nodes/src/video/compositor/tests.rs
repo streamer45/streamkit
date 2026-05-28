@@ -286,7 +286,7 @@ fn test_rasterize_text_overlay_produces_pixels() {
         font_name: None,
         word_wrap: false,
     };
-    let overlay = rasterize_text_overlay(&cfg, 7680, 10_000);
+    let overlay = rasterize_text_overlay(&cfg, 7680, 10_000, std::path::Path::new("."));
     // Bitmap is sized to the measured text extent, not the config rect.
     assert!(overlay.width > 0, "rasterized width must be positive");
     assert!(overlay.height > 0, "rasterized height must be positive");
@@ -2224,10 +2224,12 @@ fn test_text_overlay_cache_reuses_arc_on_unchanged_config() {
         CompositorConfig { text_overlays: vec![txt_cfg.clone()], ..Default::default() };
 
     // Initial rasterize.
+    let asset_root = std::path::Path::new(".");
     let initial = Arc::new(rasterize_text_overlay(
         &txt_cfg,
         limits.max_canvas_dimension,
         limits.max_text_length,
+        asset_root,
     ));
     let mut text_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(vec![initial]);
     let mut image_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(vec![]);
@@ -2251,6 +2253,7 @@ fn test_text_overlay_cache_reuses_arc_on_unchanged_config() {
         &mut text_overlays,
         params,
         &mut stats,
+        asset_root,
     );
     assert_eq!(
         Arc::as_ptr(&text_overlays[0]),
@@ -2275,6 +2278,7 @@ fn test_text_overlay_cache_reuses_arc_on_unchanged_config() {
         &mut text_overlays,
         params,
         &mut stats,
+        asset_root,
     );
     assert_ne!(
         Arc::as_ptr(&text_overlays[0]),
@@ -2348,15 +2352,18 @@ fn test_text_overlay_cache_handles_length_changes() {
         text_overlays: vec![txt_a.clone(), txt_b.clone()],
         ..Default::default()
     };
+    let asset_root = std::path::Path::new(".");
     let initial_a = Arc::new(rasterize_text_overlay(
         &txt_a,
         limits.max_canvas_dimension,
         limits.max_text_length,
+        asset_root,
     ));
     let initial_b = Arc::new(rasterize_text_overlay(
         &txt_b,
         limits.max_canvas_dimension,
         limits.max_text_length,
+        asset_root,
     ));
     let mut text_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(vec![initial_a, initial_b]);
     let mut image_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(vec![]);
@@ -2377,6 +2384,7 @@ fn test_text_overlay_cache_handles_length_changes() {
         &mut text_overlays,
         params,
         &mut stats,
+        asset_root,
     );
     assert_eq!(text_overlays.len(), 1, "Should have 1 overlay after shrink");
     assert_eq!(
@@ -2406,6 +2414,7 @@ fn test_text_overlay_cache_handles_length_changes() {
         &mut text_overlays,
         params,
         &mut stats,
+        asset_root,
     );
     assert_eq!(text_overlays.len(), 3, "Should have 3 overlays after grow");
     assert_eq!(
@@ -2497,6 +2506,7 @@ async fn test_compositor_output_format_runtime_change() {
         pipeline_mode: streamkit_core::node::PipelineMode::Dynamic,
         view_data_tx: None,
         engine_control_tx: None,
+        asset_root: crate::test_utils::test_asset_root(),
     };
 
     // Start with no output_format (RGBA8).
@@ -2833,6 +2843,7 @@ fn test_rebuild_svg_rerasterizes_on_resize() {
         &new_config,
         &old_overlays,
         &config::GlobalCompositorConfig::default(),
+        std::path::Path::new("."),
     );
 
     assert_eq!(rebuilt.len(), 1);
@@ -2860,6 +2871,7 @@ fn test_rebuild_svg_reuses_bitmap_when_unchanged() {
         &config_with_overlay,
         &old_overlays,
         &config::GlobalCompositorConfig::default(),
+        std::path::Path::new("."),
     );
 
     assert_eq!(rebuilt.len(), 1);
@@ -2902,6 +2914,7 @@ fn test_update_params_ignores_transient_sync_metadata() {
         &mut text_overlays,
         params,
         &mut stats,
+        std::path::Path::new("."),
     );
 
     // Config should have been updated despite the extra metadata fields.
@@ -2935,6 +2948,7 @@ fn test_update_params_rejects_truly_unknown_fields() {
         &mut text_overlays,
         params,
         &mut stats,
+        std::path::Path::new("."),
     );
 
     // Config should NOT have been updated — deserialization should fail.

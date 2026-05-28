@@ -41,13 +41,13 @@ async fn test_backpressure_no_deadlock() {
         .with_max_level(tracing::Level::DEBUG)
         .try_init();
 
-    let output_path = "/tmp/backpressure_test_output1.bin";
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|parent| parent.parent())
         .expect("streamkit-engine should live under workspace_root/crates/engine");
-    let sample_file = repo_root.join("samples/audio/system/speech_10m.opus");
-    let sample_file = sample_file.to_string_lossy();
+    let sample_file = "samples/audio/system/speech_10m.opus";
+    let output_path = "target/test-output/backpressure_output.bin";
+    std::fs::create_dir_all(repo_root.join("target/test-output")).expect("create test output dir");
 
     let engine = Engine::without_plugins();
     let config = DynamicEngineConfig {
@@ -55,6 +55,7 @@ async fn test_backpressure_no_deadlock() {
         session_id: Some("test-backpressure".to_string()),
         node_input_capacity: None,
         pin_distributor_capacity: None,
+        asset_root: repo_root.to_path_buf(),
     };
     let handle = engine.start_dynamic_actor(config);
 
