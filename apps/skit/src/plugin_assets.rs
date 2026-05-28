@@ -1533,6 +1533,13 @@ mod handler_tests {
         crate::server::create_app_state(config, None)
     }
 
+    fn make_state_with_asset_root(root: std::path::PathBuf) -> Arc<AppState> {
+        let mut config = Config::default();
+        config.auth.mode = AuthMode::Disabled;
+        config.asset_root = Some(root);
+        crate::server::create_app_state(config, None)
+    }
+
     fn make_viewer_state() -> Arc<AppState> {
         let mut config = Config::default();
         config.auth.mode = AuthMode::Disabled;
@@ -2720,5 +2727,57 @@ mod handler_tests {
         // Missing all required fields — should fail to parse and return None.
         std::fs::write(tmp.path().join("plugin.yml"), "not a manifest").unwrap();
         assert!(read_local_plugin_manifest(&library).is_none());
+    }
+
+    /// Exercises the `asset_root.join(relative_system_dir)` path that
+    /// `register()` produces.  Previous tests used absolute `system_dir`
+    /// values which short-circuit `Path::join`.
+    #[tokio::test]
+    async fn upload_with_relative_system_dir_uses_asset_root() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state_with_asset_root(tmp.path().to_path_buf());
+
+        // Use register() which produces *relative* system_dir/user_dir
+        // (e.g. "samples/models/system").
+        state
+            .plugin_asset_registry
+            .register(
+                "test-plugin",
+                "plugin::native::test-plugin",
+                &[PluginAssetSpec {
+                    type_id: "models".to_string(),
+                    label: "Models".to_string(),
+                    extensions: vec!["bin".to_string()],
+                    max_size_bytes: 4096,
+                    content_type: AssetContentType::Binary,
+                    system_dir: None,
+                    icon_hint: None,
+                    node_param: None,
+                }],
+            )
+            .await;
+
+        // Create the dirs under the asset_root that handlers will resolve.
+        let user_dir = tmp.path().join("samples/models/user");
+        std::fs::create_dir_all(&user_dir).unwrap();
+
+        let boundary = "----boundary";
+        let body = build_multipart_body(boundary, "file", Some("test.bin"), b"model-data");
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(multipart_request(
+                Method::POST,
+                "/api/v1/assets/plugin/models",
+                boundary,
+                body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // Verify the file landed under asset_root, not under CWD.
+        let uploaded = user_dir.join("test.bin");
+        assert!(uploaded.exists(), "file should exist under asset_root");
+        assert_eq!(std::fs::read(&uploaded).unwrap(), b"model-data");
     }
 }

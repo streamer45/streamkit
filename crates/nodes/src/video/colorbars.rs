@@ -138,6 +138,7 @@ impl ProcessorNode for ColorBarsNode {
 
     async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
         let node_name = context.output_sender.node_name().to_string();
+        let asset_root = context.asset_root.clone();
         state_helpers::emit_initializing(&context.state_tx, &node_name);
 
         let width = self.config.width;
@@ -159,12 +160,12 @@ impl ProcessorNode for ColorBarsNode {
         let draw_time_font = if self.config.draw_time {
             let font_bytes = self.config.draw_time_font_path.as_ref().map_or_else(
                 || {
-                    crate::video::fonts::load_default_mono_font().unwrap_or_else(|e| {
+                    crate::video::fonts::load_default_mono_font(&asset_root).unwrap_or_else(|e| {
                         tracing::warn!("draw_time: {e}, text overlay will be unavailable");
                         Vec::new()
                     })
                 },
-                |path| match std::fs::read(path) {
+                |path| match std::fs::read(asset_root.join(path)) {
                     Ok(bytes) => {
                         tracing::info!("draw_time: loaded custom font from {path}");
                         bytes
@@ -174,10 +175,12 @@ impl ProcessorNode for ColorBarsNode {
                             "draw_time: failed to read custom font '{path}': {e}, \
                              falling back to default system monospace font"
                         );
-                        crate::video::fonts::load_default_mono_font().unwrap_or_else(|e2| {
-                            tracing::warn!("draw_time: {e2}, text overlay will be unavailable");
-                            Vec::new()
-                        })
+                        crate::video::fonts::load_default_mono_font(&asset_root).unwrap_or_else(
+                            |e2| {
+                                tracing::warn!("draw_time: {e2}, text overlay will be unavailable");
+                                Vec::new()
+                            },
+                        )
                     },
                 },
             );

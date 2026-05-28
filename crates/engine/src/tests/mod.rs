@@ -93,5 +93,6 @@ pub fn create_test_engine() -> crate::dynamic_actor::DynamicEngine {
         pending_tunes: Vec::new(),
         next_creation_id: 0,
         active_creations: std::collections::HashMap::new(),
+        asset_root: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
     }
 }

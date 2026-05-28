@@ -993,9 +993,10 @@ pub struct Config {
 
     /// Root directory for sample assets (`samples/audio`, `samples/images`,
     /// `samples/fonts`, and plugin asset directories).  When `None` (the
-    /// default), the process working directory is used.
+    /// default), the working directory at server startup is used.
+    /// A relative path is resolved against the startup working directory.
+    /// The value is snapshotted once at startup and not re-read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(skip)]
     pub asset_root: Option<std::path::PathBuf>,
 }
 

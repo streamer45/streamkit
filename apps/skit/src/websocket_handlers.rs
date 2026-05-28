@@ -191,6 +191,7 @@ async fn handle_create_session(
         name.clone(),
         app_state.event_tx.clone(),
         Some(role_name.to_string()),
+        Some(app_state.asset_root.clone()),
     )
     .await
     {
@@ -1229,6 +1230,7 @@ mod dispatcher_tests {
             Some(format!("ws-dispatch-test-{}", uuid::Uuid::new_v4())),
             state.event_tx.clone(),
             Some(role.to_string()),
+            Some(state.asset_root.clone()),
         )
         .await
         .expect("Session::create succeeded");
@@ -1248,7 +1250,7 @@ mod dispatcher_tests {
         let (tx, _rx) = broadcast::channel::<BroadcastEvent>(1);
         let engine = Engine::without_plugins();
         let config = Config::default();
-        Session::create(&engine, &config, Some("owned".into()), tx, role.map(str::to_owned))
+        Session::create(&engine, &config, Some("owned".into()), tx, role.map(str::to_owned), None)
             .await
             .expect("create test session")
     }

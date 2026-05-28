@@ -1471,6 +1471,7 @@ mod inject_teardown_tests {
             Some("preview-inject-test".to_string()),
             tx,
             Some("test-role".to_string()),
+            None,
         )
         .await
         .expect("Session::create on a fresh engine should succeed");
@@ -2022,10 +2023,16 @@ mod handler_tests {
 
     async fn install_session(state: &Arc<AppState>, name: &str) -> Session {
         let event_tx = state.event_tx.clone();
-        let session =
-            Session::create(&state.engine, &state.config, Some(name.to_string()), event_tx, None)
-                .await
-                .expect("Session::create succeeds");
+        let session = Session::create(
+            &state.engine,
+            &state.config,
+            Some(name.to_string()),
+            event_tx,
+            None,
+            Some(state.asset_root.clone()),
+        )
+        .await
+        .expect("Session::create succeeds");
         state.session_manager.lock().await.add_session(session.clone()).expect("insert session");
         session
     }

@@ -54,6 +54,7 @@ pub async fn wire_and_spawn_graph(
     cancellation_token: Option<tokio_util::sync::CancellationToken>,
     audio_pool: Option<Arc<AudioFramePool>>,
     video_pool: Option<Arc<VideoFramePool>>,
+    asset_root: std::path::PathBuf,
 ) -> Result<HashMap<String, LiveNode>, StreamKitError> {
     tracing::info!(
         "Graph builder starting with {} nodes and {} connections",
@@ -341,6 +342,7 @@ pub async fn wire_and_spawn_graph(
             pipeline_mode: streamkit_core::PipelineMode::Oneshot,
             view_data_tx: None,
             engine_control_tx: None,
+            asset_root: asset_root.clone(),
         };
 
         tracing::debug!("Starting task for node '{}'", name);

@@ -407,20 +407,25 @@ fn validate_font_asset_path(path: &str) -> Result<(), String> {
 ///
 /// Returning a boxed closure lets the caller skip file I/O entirely on a cache
 /// hit.
-fn resolve_font_source(config: &TextOverlayConfig) -> (FontKey, FontBytesLoader<'_>) {
+fn resolve_font_source<'a>(
+    config: &'a TextOverlayConfig,
+    asset_root: &'a std::path::Path,
+) -> (FontKey, FontBytesLoader<'a>) {
     if let Some(ref name) = config.font_name {
         // Check if it's a font asset path (samples/fonts/...).
         if name.starts_with("samples/fonts/") {
             if let Err(e) = validate_font_asset_path(name) {
                 tracing::warn!("{e}, falling back to default system font");
                 let key = FontKey(fonts::DEFAULT_FONT_PATH.to_owned());
-                let loader = || fonts::load_default_font();
+                let loader = move || fonts::load_default_font(asset_root);
                 return (key, Box::new(loader));
             }
             let key = FontKey(name.clone());
-            let path = name.clone();
+            let full_path = asset_root.join(name);
             let loader = move || {
-                std::fs::read(&path).map_err(|e| format!("Failed to read font asset '{path}': {e}"))
+                let display = full_path.display().to_string();
+                std::fs::read(&full_path)
+                    .map_err(|e| format!("Failed to read font asset '{display}': {e}"))
             };
             return (key, Box::new(loader));
         }
@@ -431,13 +436,13 @@ fn resolve_font_source(config: &TextOverlayConfig) -> (FontKey, FontBytesLoader<
              Use a font asset path like 'samples/fonts/system/Inter.ttf'."
         );
         let key = FontKey(fonts::DEFAULT_FONT_PATH.to_owned());
-        let loader = || fonts::load_default_font();
+        let loader = move || fonts::load_default_font(asset_root);
         return (key, Box::new(loader));
     }
 
     // Default: DejaVu Sans system font asset.
     let key = FontKey(fonts::DEFAULT_FONT_PATH.to_owned());
-    let loader = || fonts::load_default_font();
+    let loader = move || fonts::load_default_font(asset_root);
     (key, Box::new(loader))
 }
 
@@ -448,8 +453,11 @@ fn resolve_font_source(config: &TextOverlayConfig) -> (FontKey, FontBytesLoader<
 /// Parsed fonts are cached in [`FONT_CACHE`] keyed by the resolved source
 /// identity, so repeated calls for the same font are an `Arc::clone` rather
 /// than a fresh parse.
-fn load_font(config: &TextOverlayConfig) -> Result<Arc<fontdue::Font>, String> {
-    let (key, load_bytes) = resolve_font_source(config);
+fn load_font(
+    config: &TextOverlayConfig,
+    asset_root: &std::path::Path,
+) -> Result<Arc<fontdue::Font>, String> {
+    let (key, load_bytes) = resolve_font_source(config, asset_root);
 
     // Fast path: cache hit.  Lock scope limited to the lookup.
     if let Ok(cache) = FONT_CACHE.lock() {
@@ -500,9 +508,10 @@ pub fn rasterize_text_overlay(
     config: &TextOverlayConfig,
     max_dimension: u32,
     max_text_length: usize,
+    asset_root: &std::path::Path,
 ) -> DecodedOverlay {
     // Attempt to load the font; fall back to rectangle placeholders on error.
-    let font = match load_font(config) {
+    let font = match load_font(config, asset_root) {
         Ok(f) => Some(f),
         Err(e) => {
             tracing::warn!("Font loading failed, using placeholder rectangles: {e}");

@@ -55,6 +55,7 @@ async fn test_backpressure_no_deadlock() {
         session_id: Some("test-backpressure".to_string()),
         node_input_capacity: None,
         pin_distributor_capacity: None,
+        asset_root: Some(repo_root.to_path_buf()),
     };
     let handle = engine.start_dynamic_actor(config);
 

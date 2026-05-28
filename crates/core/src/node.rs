@@ -285,6 +285,10 @@ pub struct NodeContext {
     /// Only provided in dynamic pipelines.  `None` in oneshot/static
     /// pipelines where the graph is fixed at build time.
     pub engine_control_tx: Option<mpsc::Sender<crate::control::EngineControlMessage>>,
+    /// Root directory for resolving relative asset paths (`samples/images/`,
+    /// `samples/fonts/`, etc.).  Defaults to the process working directory
+    /// at server startup.
+    pub asset_root: std::path::PathBuf,
 }
 
 impl NodeContext {

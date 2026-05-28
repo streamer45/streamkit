@@ -1736,8 +1736,20 @@ pub fn create_app_state(
     }
 
     let asset_root = config.asset_root.clone().unwrap_or_else(|| {
-        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        std::env::current_dir().expect(
+            "failed to determine current working directory for asset_root; \
+             set [server].asset_root explicitly in skit.toml",
+        )
     });
+    if !asset_root.exists() {
+        std::fs::create_dir_all(&asset_root).unwrap_or_else(|e| {
+            panic!(
+                "asset_root '{}' does not exist and could not be created: {e}",
+                asset_root.display()
+            );
+        });
+    }
+    tracing::info!(asset_root = %asset_root.display(), "Asset root resolved");
 
     Arc::new(AppState {
         engine,

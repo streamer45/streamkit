@@ -74,6 +74,7 @@ async fn test_oneshot_rejects_fanout() {
         None,
         None,
         None,
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
     )
     .await
     else {

@@ -137,6 +137,7 @@ async fn wire(
         None,
         None,
         None,
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
     )
     .await
 }

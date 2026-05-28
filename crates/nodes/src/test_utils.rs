@@ -39,6 +39,7 @@ pub fn create_test_context(
         pipeline_mode: streamkit_core::node::PipelineMode::Dynamic,
         view_data_tx: None,
         engine_control_tx: None,
+        asset_root: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
     };
 
     (context, mock_sender, state_rx)
@@ -79,6 +80,7 @@ pub fn create_test_context_with_pin_mgmt(
         pipeline_mode: streamkit_core::node::PipelineMode::Dynamic,
         view_data_tx: None,
         engine_control_tx: None,
+        asset_root: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
     };
 
     (context, mock_sender, state_rx, pin_mgmt_tx)
