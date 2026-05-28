@@ -50,10 +50,14 @@
 //!   FFI call within the batch still blocks the worker until it
 //!   returns; once it does, the deadline check fires and no further
 //!   hints are attempted.
-//! - **Detached workers**: `InstanceWorker::Drop` closes the channel
-//!   but does not join the thread (doing so on a tokio worker would
-//!   block the runtime).  A worker stuck in a long FFI call is
-//!   detached and will run to completion; a debug-level log is emitted.
+//! - **Worker shutdown**: `InstanceWorker::shutdown()` drops the
+//!   channel sender and joins the thread via `spawn_blocking`.
+//!   Both `run_source` and `run_processor` call `shutdown()` on
+//!   their clean-exit paths so the worker has fully exited before
+//!   the function returns.  On `?`-error paths (timeout, dead
+//!   worker) `Drop` is used instead — it closes the channel but
+//!   detaches the thread, which is safe because the worker holds
+//!   an `Arc<InstanceState>` keeping the plugin alive.
 //! - **One OS thread per instance**: each plugin instance consumes an
 //!   OS thread for its entire lifetime.  This is acceptable for the
 //!   expected instance counts but would not scale to thousands of
@@ -1631,6 +1635,8 @@ impl NativeNodeWrapper {
         for handle in &input_tasks {
             handle.abort();
         }
+
+        worker.shutdown().await;
 
         loop_result?;
 
