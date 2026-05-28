@@ -95,21 +95,6 @@ async fn await_state_matching<F: Fn(&NodeState) -> bool>(
     }
 }
 
-/// Briefly yield to let the detached worker thread drain its channel and
-/// run `InstanceState::drop` (which calls back into the loaded `.so` via
-/// `destroy_instance`) before the test subprocess starts unloading the
-/// dlopen'd library.
-///
-/// Under coverage instrumentation the first call into a freshly-loaded
-/// `.so` is noticeably slower, exposing a teardown race in
-/// `NativeNodeWrapper::run_source`: `run()` returns without joining or
-/// signalling the worker, so the detached worker can still be inside the
-/// `.so` when the subprocess exits.  Tracked as a follow-up issue (see
-/// the PR description).
-async fn drain_detached_worker() {
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-}
-
 #[tokio::test]
 async fn source_plugin_metadata_reports_is_source_after_probe() {
     let plugin = load_source_plugin();
@@ -187,7 +172,6 @@ async fn source_plugin_ticks_and_emits_then_completes_after_max_ticks() {
         run_result.is_ok(),
         "source plugin run loop must exit Ok after tick returns completion signal, got: {run_result:?}"
     );
-    drain_detached_worker().await;
 }
 
 #[tokio::test]
@@ -230,7 +214,6 @@ async fn source_plugin_tick_error_marks_node_failed_with_plugin_message() {
         run_result.is_err(),
         "source plugin run loop must return Err after tick error, got: {run_result:?}"
     );
-    drain_detached_worker().await;
 }
 
 #[tokio::test]
@@ -264,7 +247,6 @@ async fn source_plugin_shutdown_control_terminates_cleanly_before_max_ticks() {
         run_result.is_ok(),
         "shutdown control must produce Ok exit even mid-stream, got: {run_result:?}"
     );
-    drain_detached_worker().await;
 }
 
 #[tokio::test]
@@ -291,7 +273,6 @@ async fn source_plugin_shutdown_before_start_exits_cleanly() {
         run_result.is_ok(),
         "Shutdown received before Start must yield clean Ok exit, got: {run_result:?}"
     );
-    drain_detached_worker().await;
 }
 
 #[tokio::test]
@@ -318,7 +299,6 @@ async fn source_plugin_control_channel_close_before_start_exits_cleanly() {
         run_result.is_ok(),
         "control channel close before Start must yield clean Ok exit, got: {run_result:?}"
     );
-    drain_detached_worker().await;
 }
 
 /// Pins the host contract that an `UpdateParams` arriving in the
@@ -372,5 +352,4 @@ async fn source_plugin_update_params_before_start_is_accepted_without_failing_th
         run_result.is_ok(),
         "UpdateParams before Start must not fail the node, got: {run_result:?}"
     );
-    drain_detached_worker().await;
 }
