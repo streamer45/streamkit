@@ -2684,7 +2684,6 @@ mod tests {
     fn handle_on_status_empty_code_rejects_with_descriptive_reason() {
         let (mut conn, mut srv_enc) = drive_to_publish_pending();
 
-        // onStatus with no code field at all.
         let mut status_payload = Vec::new();
         amf0_encode(&Amf0Value::String("onStatus".to_string()), &mut status_payload).unwrap();
         amf0_encode(&Amf0Value::Number(0.0), &mut status_payload).unwrap();
