@@ -21,6 +21,14 @@ pub struct DynamicEngineConfig {
     pub asset_root: std::path::PathBuf,
 }
 
+impl DynamicEngineConfig {
+    pub fn new(asset_root: std::path::PathBuf) -> Self {
+        Self { asset_root, ..Self::default() }
+    }
+}
+
+/// Note: `Default` calls `std::env::current_dir()` to populate `asset_root`.
+/// Prefer [`DynamicEngineConfig::new`] when the asset root is known.
 impl Default for DynamicEngineConfig {
     fn default() -> Self {
         Self {

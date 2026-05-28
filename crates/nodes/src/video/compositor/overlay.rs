@@ -341,7 +341,7 @@ use crate::video::fonts;
 /// All fonts (system and user) are loaded from disk as assets under
 /// `samples/fonts/`.
 #[derive(Clone, Hash, Eq, PartialEq)]
-struct FontKey(String);
+struct FontKey(std::path::PathBuf);
 
 /// Maximum number of distinct fonts kept in [`FONT_CACHE`].
 ///
@@ -370,9 +370,8 @@ static FONT_CACHE: LazyLock<Mutex<HashMap<FontKey, Arc<fontdue::Font>>>> =
 /// subsequent re-upload with the same filename triggers a fresh parse
 /// instead of serving stale cached data.
 pub fn invalidate_font_cache_entry(path: &str, asset_root: &std::path::Path) {
-    let resolved = asset_root.join(path).display().to_string();
     if let Ok(mut cache) = FONT_CACHE.lock() {
-        cache.remove(&FontKey(resolved));
+        cache.remove(&FontKey(asset_root.join(path)));
     }
 }
 
@@ -417,12 +416,12 @@ fn resolve_font_source<'a>(
         if name.starts_with("samples/fonts/") {
             if let Err(e) = validate_font_asset_path(name) {
                 tracing::warn!("{e}, falling back to default system font");
-                let key = FontKey(asset_root.join(fonts::DEFAULT_FONT_PATH).display().to_string());
+                let key = FontKey(asset_root.join(fonts::DEFAULT_FONT_PATH));
                 let loader = move || fonts::load_default_font(asset_root);
                 return (key, Box::new(loader));
             }
             let full_path = asset_root.join(name);
-            let key = FontKey(full_path.display().to_string());
+            let key = FontKey(full_path.clone());
             let loader = move || {
                 let display = full_path.display().to_string();
                 std::fs::read(&full_path)
@@ -436,13 +435,13 @@ fn resolve_font_source<'a>(
             "Unknown font name '{name}', falling back to default system font (DejaVu Sans). \
              Use a font asset path like 'samples/fonts/system/Inter.ttf'."
         );
-        let key = FontKey(asset_root.join(fonts::DEFAULT_FONT_PATH).display().to_string());
+        let key = FontKey(asset_root.join(fonts::DEFAULT_FONT_PATH));
         let loader = move || fonts::load_default_font(asset_root);
         return (key, Box::new(loader));
     }
 
     // Default: DejaVu Sans system font asset.
-    let key = FontKey(asset_root.join(fonts::DEFAULT_FONT_PATH).display().to_string());
+    let key = FontKey(asset_root.join(fonts::DEFAULT_FONT_PATH));
     let loader = move || fonts::load_default_font(asset_root);
     (key, Box::new(loader))
 }

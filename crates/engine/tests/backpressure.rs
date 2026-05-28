@@ -46,8 +46,7 @@ async fn test_backpressure_no_deadlock() {
         .parent()
         .and_then(|parent| parent.parent())
         .expect("streamkit-engine should live under workspace_root/crates/engine");
-    let sample_file = repo_root.join("samples/audio/system/speech_10m.opus");
-    let sample_file = sample_file.to_string_lossy();
+    let sample_file = "samples/audio/system/speech_10m.opus";
 
     let engine = Engine::without_plugins();
     let config = DynamicEngineConfig {

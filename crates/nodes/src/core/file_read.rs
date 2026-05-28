@@ -64,7 +64,14 @@ impl ProcessorNode for FileReadNode {
         let node_name = context.output_sender.node_name().to_string();
         state_helpers::emit_initializing(&context.state_tx, &node_name);
 
-        let resolved_path = context.asset_root.join(&self.config.path);
+        let config_path = std::path::Path::new(&self.config.path);
+        if config_path.components().any(|c| c == std::path::Component::ParentDir) {
+            return Err(StreamKitError::Runtime(format!(
+                "file_reader path must not contain '..': {}",
+                self.config.path
+            )));
+        }
+        let resolved_path = context.asset_root.join(config_path);
         let mut file = tokio::fs::File::open(&resolved_path).await.map_err(|e| {
             StreamKitError::Runtime(format!(
                 "Failed to open file '{}': {e}",
