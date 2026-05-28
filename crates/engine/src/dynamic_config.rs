@@ -18,8 +18,7 @@ pub struct DynamicEngineConfig {
     /// Overrides `DEFAULT_PIN_DISTRIBUTOR_CAPACITY` when `Some`.
     pub pin_distributor_capacity: Option<usize>,
     /// Root directory for resolving relative asset paths in nodes.
-    /// Defaults to the process CWD at engine start when `None`.
-    pub asset_root: Option<std::path::PathBuf>,
+    pub asset_root: std::path::PathBuf,
 }
 
 impl Default for DynamicEngineConfig {
@@ -29,7 +28,7 @@ impl Default for DynamicEngineConfig {
             session_id: None,
             node_input_capacity: None,
             pin_distributor_capacity: None,
-            asset_root: None,
+            asset_root: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
         }
     }
 }

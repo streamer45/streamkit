@@ -279,7 +279,7 @@ impl Session {
         name: Option<String>,
         event_tx: broadcast::Sender<BroadcastEvent>,
         created_by: Option<String>,
-        asset_root: Option<std::path::PathBuf>,
+        asset_root: std::path::PathBuf,
     ) -> Result<Self, String> {
         let session_id = Uuid::new_v4().to_string();
         let name =

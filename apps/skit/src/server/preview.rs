@@ -1471,7 +1471,7 @@ mod inject_teardown_tests {
             Some("preview-inject-test".to_string()),
             tx,
             Some("test-role".to_string()),
-            None,
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
         )
         .await
         .expect("Session::create on a fresh engine should succeed");
@@ -2029,7 +2029,7 @@ mod handler_tests {
             Some(name.to_string()),
             event_tx,
             None,
-            Some(state.asset_root.clone()),
+            state.asset_root.clone(),
         )
         .await
         .expect("Session::create succeeds");

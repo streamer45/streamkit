@@ -3,10 +3,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use streamkit_core::node::{NodeContext, OutputRouting, OutputSender, RoutedPacketMessage};
 use streamkit_core::state::NodeStateUpdate;
 use streamkit_core::types::{Packet, PixelFormat, VideoFrame, VideoLayout};
 use tokio::sync::mpsc;
+
+pub fn test_asset_root() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
 
 #[allow(clippy::implicit_hasher)]
 pub fn create_test_context(
@@ -39,10 +44,21 @@ pub fn create_test_context(
         pipeline_mode: streamkit_core::node::PipelineMode::Dynamic,
         view_data_tx: None,
         engine_control_tx: None,
-        asset_root: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        asset_root: test_asset_root(),
     };
 
     (context, mock_sender, state_rx)
+}
+
+#[allow(clippy::implicit_hasher)]
+pub fn create_test_context_with_asset_root(
+    inputs: HashMap<String, mpsc::Receiver<streamkit_core::types::Packet>>,
+    batch_size: usize,
+    asset_root: PathBuf,
+) -> (NodeContext, MockOutputSender, mpsc::Receiver<NodeStateUpdate>) {
+    let (mut ctx, sender, rx) = create_test_context(inputs, batch_size);
+    ctx.asset_root = asset_root;
+    (ctx, sender, rx)
 }
 
 #[allow(clippy::implicit_hasher)]
@@ -80,7 +96,7 @@ pub fn create_test_context_with_pin_mgmt(
         pipeline_mode: streamkit_core::node::PipelineMode::Dynamic,
         view_data_tx: None,
         engine_control_tx: None,
-        asset_root: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        asset_root: test_asset_root(),
     };
 
     (context, mock_sender, state_rx, pin_mgmt_tx)

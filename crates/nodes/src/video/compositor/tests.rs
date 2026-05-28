@@ -2506,7 +2506,7 @@ async fn test_compositor_output_format_runtime_change() {
         pipeline_mode: streamkit_core::node::PipelineMode::Dynamic,
         view_data_tx: None,
         engine_control_tx: None,
-        asset_root: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        asset_root: crate::test_utils::test_asset_root(),
     };
 
     // Start with no output_format (RGBA8).

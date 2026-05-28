@@ -64,8 +64,12 @@ impl ProcessorNode for FileReadNode {
         let node_name = context.output_sender.node_name().to_string();
         state_helpers::emit_initializing(&context.state_tx, &node_name);
 
-        let mut file = tokio::fs::File::open(&self.config.path).await.map_err(|e| {
-            StreamKitError::Runtime(format!("Failed to open file '{}': {}", self.config.path, e))
+        let resolved_path = context.asset_root.join(&self.config.path);
+        let mut file = tokio::fs::File::open(&resolved_path).await.map_err(|e| {
+            StreamKitError::Runtime(format!(
+                "Failed to open file '{}': {e}",
+                resolved_path.display()
+            ))
         })?;
 
         tracing::info!(
@@ -228,7 +232,7 @@ mod tests {
             pipeline_mode: streamkit_core::PipelineMode::Dynamic,
             view_data_tx: None,
             engine_control_tx: None,
-            asset_root: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            asset_root: crate::test_utils::test_asset_root(),
         };
 
         // Create and run node

@@ -61,8 +61,20 @@ impl ProcessorNode for FileWriteNode {
         let node_name = context.output_sender.node_name().to_string();
         state_helpers::emit_initializing(&context.state_tx, &node_name);
 
-        let mut file = tokio::fs::File::create(&self.config.path).await.map_err(|e| {
-            StreamKitError::Runtime(format!("Failed to create file '{}': {}", self.config.path, e))
+        let resolved_path = context.asset_root.join(&self.config.path);
+        if let Some(parent) = resolved_path.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                StreamKitError::Runtime(format!(
+                    "Failed to create parent directory for '{}': {e}",
+                    resolved_path.display()
+                ))
+            })?;
+        }
+        let mut file = tokio::fs::File::create(&resolved_path).await.map_err(|e| {
+            StreamKitError::Runtime(format!(
+                "Failed to create file '{}': {e}",
+                resolved_path.display()
+            ))
         })?;
 
         tracing::info!(
@@ -196,7 +208,7 @@ mod tests {
             pipeline_mode: streamkit_core::PipelineMode::Dynamic,
             view_data_tx: None,
             engine_control_tx: None,
-            asset_root: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            asset_root: crate::test_utils::test_asset_root(),
         };
 
         // Create and run node
@@ -282,7 +294,7 @@ mod tests {
             pipeline_mode: streamkit_core::PipelineMode::Dynamic,
             view_data_tx: None,
             engine_control_tx: None,
-            asset_root: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            asset_root: crate::test_utils::test_asset_root(),
         };
 
         // Create and run node with small chunk size for testing

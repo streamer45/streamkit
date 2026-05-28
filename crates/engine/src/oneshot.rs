@@ -97,8 +97,7 @@ pub struct OneshotEngineConfig {
     pub media_channel_capacity: usize,
     pub io_channel_capacity: usize,
     /// Root directory for resolving relative asset paths in nodes.
-    /// Defaults to the process CWD when `None`.
-    pub asset_root: Option<std::path::PathBuf>,
+    pub asset_root: std::path::PathBuf,
 }
 
 impl Default for OneshotEngineConfig {
@@ -107,7 +106,7 @@ impl Default for OneshotEngineConfig {
             packet_batch_size: DEFAULT_BATCH_SIZE,
             media_channel_capacity: DEFAULT_ONESHOT_MEDIA_CAPACITY,
             io_channel_capacity: DEFAULT_ONESHOT_IO_CAPACITY,
-            asset_root: None,
+            asset_root: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
         }
     }
 }
@@ -425,9 +424,7 @@ impl Engine {
             Some(cancellation_token.clone()),
             Some(audio_pool),
             Some(video_pool),
-            config.asset_root.unwrap_or_else(|| {
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-            }),
+            config.asset_root,
         )
         .await?;
         tracing::info!("Pipeline graph successfully spawned");

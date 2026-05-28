@@ -751,7 +751,7 @@ mod tests {
             pipeline_mode: streamkit_core::PipelineMode::Dynamic,
             view_data_tx: None,
             engine_control_tx: None,
-            asset_root: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            asset_root: crate::test_utils::test_asset_root(),
         };
 
         // No credentials provided — should fail during init

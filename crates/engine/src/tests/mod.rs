@@ -31,6 +31,10 @@ mod pipeline_activation;
 #[cfg(feature = "dynamic")]
 mod upstream_hints;
 
+pub fn test_asset_root() -> std::path::PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+}
+
 /// Construct a minimal [`DynamicEngine`] for direct-construction tests,
 /// avoiding field-list drift across callers.
 #[cfg(feature = "dynamic")]
@@ -93,6 +97,6 @@ pub fn create_test_engine() -> crate::dynamic_actor::DynamicEngine {
         pending_tunes: Vec::new(),
         next_creation_id: 0,
         active_creations: std::collections::HashMap::new(),
-        asset_root: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        asset_root: test_asset_root(),
     }
 }

@@ -633,7 +633,7 @@ pub(super) async fn process_oneshot_pipeline_handler(
             io_channel_capacity: cfg
                 .io_channel_capacity
                 .unwrap_or(streamkit_engine::constants::DEFAULT_ONESHOT_IO_CAPACITY),
-            asset_root: Some(app_state.asset_root.clone()),
+            asset_root: app_state.asset_root.clone(),
         }
     };
 

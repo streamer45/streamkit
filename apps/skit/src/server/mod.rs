@@ -1735,13 +1735,21 @@ pub fn create_app_state(
         config.permissions.role_header = Some(BUILTIN_AUTH_ROLE_HEADER.to_string());
     }
 
+    let asset_root_explicit = config.asset_root.is_some();
     let asset_root = config.asset_root.clone().unwrap_or_else(|| {
         std::env::current_dir().expect(
             "failed to determine current working directory for asset_root; \
              set [server].asset_root explicitly in skit.toml",
         )
     });
-    if !asset_root.exists() {
+    if asset_root_explicit {
+        assert!(
+            asset_root.exists(),
+            "configured asset_root '{}' does not exist — \
+             fix the path in skit.toml or create the directory",
+            asset_root.display()
+        );
+    } else if !asset_root.exists() {
         std::fs::create_dir_all(&asset_root).unwrap_or_else(|e| {
             panic!(
                 "asset_root '{}' does not exist and could not be created: {e}",

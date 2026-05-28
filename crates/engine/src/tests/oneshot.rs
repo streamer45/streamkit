@@ -132,7 +132,7 @@ async fn linear_pipeline_runs_to_completion() {
         None,
         None,
         None,
-        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        super::test_asset_root(),
     )
     .await
     else {
@@ -200,7 +200,7 @@ async fn cancellation_token_stops_pipeline() {
         Some(token.clone()),
         None,
         None,
-        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        super::test_asset_root(),
     )
     .await
     else {
@@ -236,7 +236,7 @@ async fn failing_node_propagates_error() {
         None,
         None,
         None,
-        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        super::test_asset_root(),
     )
     .await
     else {

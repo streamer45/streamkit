@@ -1330,7 +1330,10 @@ pub async fn delete_font_asset_handler(
 
     // Invalidate the font cache entry so re-uploads with the same name get a fresh parse.
     let asset_path = format!("samples/fonts/user/{id}");
-    streamkit_nodes::video::compositor::overlay::invalidate_font_cache_entry(&asset_path);
+    streamkit_nodes::video::compositor::overlay::invalidate_font_cache_entry(
+        &asset_path,
+        &app_state.asset_root,
+    );
 
     info!("Deleted font asset: {}", id);
     StatusCode::NO_CONTENT.into_response()

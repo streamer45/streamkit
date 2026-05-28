@@ -174,9 +174,7 @@ impl Engine {
             video_pool: self.video_pool.clone(),
             node_input_capacity,
             pin_distributor_capacity,
-            asset_root: config.asset_root.unwrap_or_else(|| {
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-            }),
+            asset_root: config.asset_root,
             node_states: Arc::new(HashMap::new()),
             state_subscribers: Vec::new(),
             node_stats: Arc::new(HashMap::new()),
