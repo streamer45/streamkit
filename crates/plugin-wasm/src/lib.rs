@@ -74,6 +74,9 @@ impl PluginRuntime {
         let mut engine_config = Config::new();
         engine_config.wasm_component_model(true);
         engine_config.wasm_simd(config.enable_simd);
+        if !config.enable_simd {
+            engine_config.wasm_relaxed_simd(false);
+        }
         engine_config.wasm_threads(config.enable_threads);
 
         let engine = Engine::new(&engine_config)?;
@@ -295,19 +298,17 @@ pub fn namespaced_kind(kind: &str) -> Result<String, String> {
         return Ok(kind.to_string());
     }
 
-    // Validate: reject if contains namespace separator
-    if kind.contains("::") {
-        return Err(format!(
-            "Plugin kind '{kind}' contains '::' which is reserved for namespace prefixes. \
-             Plugin kinds must be simple names like 'gain', 'reverb', etc."
-        ));
-    }
-
-    // Validate: reject if uses reserved prefix
     if kind.starts_with(RESERVED_PREFIX) {
         return Err(format!(
             "Plugin kind '{kind}' uses reserved prefix '{RESERVED_PREFIX}'. \
              This prefix is reserved for built-in core nodes."
+        ));
+    }
+
+    if kind.contains("::") {
+        return Err(format!(
+            "Plugin kind '{kind}' contains '::' which is reserved for namespace prefixes. \
+             Plugin kinds must be simple names like 'gain', 'reverb', etc."
         ));
     }
 
@@ -394,23 +395,16 @@ mod tests {
     }
 
     #[test]
-    fn plugin_runtime_new_rejects_disabled_simd_due_to_relaxed_simd_default() {
-        // BUG (tracked in #469): PluginRuntimeConfig exposes `enable_simd: false`, but
-        // wasmtime enables the relaxed-simd proposal by default, which requires the base
-        // SIMD proposal. The resulting config error ("cannot disable the simd proposal but
-        // enable the relaxed simd proposal") means every `enable_simd: false` config —
-        // including the threads combination — fails initialization. Pin current (broken)
-        // behavior until fixed.
+    fn plugin_runtime_new_succeeds_with_simd_disabled() {
         for enable_threads in [false, true] {
             let cfg = PluginRuntimeConfig {
                 max_memory_bytes: 16 * 1024 * 1024,
                 enable_simd: false,
                 enable_threads,
             };
-            assert!(
-                PluginRuntime::new(cfg).is_err(),
-                "expected init to fail when enable_simd=false (enable_threads={enable_threads})"
-            );
+            PluginRuntime::new(cfg).unwrap_or_else(|e| {
+                panic!("enable_simd=false (enable_threads={enable_threads}) must succeed: {e}")
+            });
         }
     }
 
@@ -435,14 +429,7 @@ mod tests {
     #[test]
     fn namespaced_kind_rejects_reserved_core_prefix() {
         let err = namespaced_kind("core::audio").expect_err("must reject `core::` kinds");
-        // BUG (tracked in #470): the `core::` check is unreachable because any string
-        // containing `::` is already rejected by the namespace-separator guard. Pin the
-        // current behavior — the error message references the namespace-separator rule,
-        // not the reserved-prefix rule — so the test fails if the contract is revisited.
-        assert!(
-            err.contains("reserved for namespace prefixes"),
-            "expected namespace-separator error, got: {err}"
-        );
+        assert!(err.contains("reserved prefix"), "expected reserved-prefix error, got: {err}");
     }
 
     #[test]

@@ -412,17 +412,17 @@ pub fn namespaced_kind(original_kind: &str) -> Result<String> {
         return Ok(original_kind.to_string());
     }
 
-    if original_kind.contains("::") {
-        return Err(anyhow!(
-            "Plugin kind '{original_kind}' contains '::' which is reserved for namespace prefixes. \
-             Plugin kinds must be simple names like 'gain', 'reverb', etc."
-        ));
-    }
-
     if original_kind.starts_with(RESERVED_PREFIX) {
         return Err(anyhow!(
             "Plugin kind '{original_kind}' uses reserved prefix '{RESERVED_PREFIX}'. \
              This prefix is reserved for built-in core nodes."
+        ));
+    }
+
+    if original_kind.contains("::") {
+        return Err(anyhow!(
+            "Plugin kind '{original_kind}' contains '::' which is reserved for namespace prefixes. \
+             Plugin kinds must be simple names like 'gain', 'reverb', etc."
         ));
     }
 
@@ -462,7 +462,7 @@ mod tests {
     fn namespaced_kind_rejects_reserved_core_prefix() {
         let err = namespaced_kind("core::gain").expect_err("core:: is reserved");
         let msg = err.to_string();
-        assert!(msg.contains("core::"), "error mentions reserved prefix: {msg}");
+        assert!(msg.contains("reserved prefix"), "error mentions reserved prefix: {msg}");
     }
 
     #[test]
