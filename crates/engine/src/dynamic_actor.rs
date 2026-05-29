@@ -135,6 +135,7 @@ pub struct DynamicEngine {
     pub(super) node_input_capacity: usize,
     /// Buffer capacity for pin distributor channels
     pub(super) pin_distributor_capacity: usize,
+    pub(super) asset_root: std::path::PathBuf,
     /// Tracks the current state of each node in the pipeline.
     /// Wrapped in `Arc` so that query handlers can cheaply clone the snapshot
     /// instead of deep-copying the entire map.
@@ -667,6 +668,7 @@ impl DynamicEngine {
             pipeline_mode: streamkit_core::PipelineMode::Dynamic,
             view_data_tx: Some(channels.view_data.clone()),
             engine_control_tx: Some(self.engine_control_tx.clone()),
+            asset_root: self.asset_root.clone(),
         };
 
         let task_handle = tokio::spawn(node.run(context).instrument(tracing::info_span!(

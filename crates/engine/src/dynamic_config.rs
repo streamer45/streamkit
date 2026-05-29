@@ -17,8 +17,24 @@ pub struct DynamicEngineConfig {
     pub node_input_capacity: Option<usize>,
     /// Overrides `DEFAULT_PIN_DISTRIBUTOR_CAPACITY` when `Some`.
     pub pin_distributor_capacity: Option<usize>,
+    /// Root directory for resolving relative asset paths in nodes.
+    pub asset_root: std::path::PathBuf,
 }
 
+impl DynamicEngineConfig {
+    pub const fn new(asset_root: std::path::PathBuf) -> Self {
+        Self {
+            packet_batch_size: DEFAULT_BATCH_SIZE,
+            session_id: None,
+            node_input_capacity: None,
+            pin_distributor_capacity: None,
+            asset_root,
+        }
+    }
+}
+
+/// Note: `Default` calls `std::env::current_dir()` to populate `asset_root`.
+/// Prefer [`DynamicEngineConfig::new`] when the asset root is known.
 impl Default for DynamicEngineConfig {
     fn default() -> Self {
         Self {
@@ -26,6 +42,7 @@ impl Default for DynamicEngineConfig {
             session_id: None,
             node_input_capacity: None,
             pin_distributor_capacity: None,
+            asset_root: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
         }
     }
 }

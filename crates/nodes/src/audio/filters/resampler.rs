@@ -726,6 +726,7 @@ mod tests {
             pipeline_mode: streamkit_core::PipelineMode::Dynamic,
             view_data_tx: None,
             engine_control_tx: None,
+            asset_root: crate::test_utils::test_asset_root(),
         };
 
         let config = AudioResamplerConfig {
@@ -800,6 +801,7 @@ mod tests {
             pipeline_mode: streamkit_core::PipelineMode::Dynamic,
             view_data_tx: None,
             engine_control_tx: None,
+            asset_root: crate::test_utils::test_asset_root(),
         };
 
         let config = AudioResamplerConfig {
