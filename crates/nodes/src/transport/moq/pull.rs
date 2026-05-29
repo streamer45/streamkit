@@ -440,53 +440,6 @@ impl MoqPullNode {
         tracks
     }
 
-    /// Returns true if the track list contains both an audio and a video track.
-    fn has_audio_and_video(tracks: &[DiscoveredTrack]) -> bool {
-        tracks.iter().any(|dt| dt.audio_codec.is_some())
-            && tracks.iter().any(|dt| dt.video_codec.is_some())
-    }
-
-    /// After finding initial tracks, wait for catalog updates that might add more
-    /// (e.g. the browser's video encoder finishing after audio was already ready).
-    /// Returns as soon as both audio and video are present, or on timeout.
-    async fn settle_catalog(
-        catalog_consumer: &mut super::catalog_consumer::CatalogConsumer,
-        mut best: Vec<DiscoveredTrack>,
-    ) -> Vec<DiscoveredTrack> {
-        if Self::has_audio_and_video(&best) {
-            return best;
-        }
-
-        let settle_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-
-        loop {
-            let remaining = settle_deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-
-            match tokio::time::timeout(remaining, catalog_consumer.next()).await {
-                Ok(Ok(Some(updated))) => {
-                    let updated_tracks = Self::extract_tracks(&updated);
-                    if !updated_tracks.is_empty() {
-                        tracing::info!(
-                            prev = best.len(),
-                            now = updated_tracks.len(),
-                            "Catalog updated"
-                        );
-                        best = updated_tracks;
-                        if Self::has_audio_and_video(&best) {
-                            break;
-                        }
-                    }
-                },
-                _ => break,
-            }
-        }
-
-        best
-    }
-
     async fn parse_catalog(
         &self,
         catalog_consumer: &mut super::catalog_consumer::CatalogConsumer,
@@ -525,7 +478,7 @@ impl MoqPullNode {
             let tracks = Self::extract_tracks(&catalog);
 
             if !tracks.is_empty() {
-                return Ok(Self::settle_catalog(catalog_consumer, tracks).await);
+                return Ok(tracks);
             }
 
             if start.elapsed() >= catalog_timeout {
@@ -1274,30 +1227,6 @@ mod tests {
     }
 
     #[test]
-    fn test_has_audio_and_video_uses_codec_fields() {
-        let both = [
-            DiscoveredTrack {
-                track: moq_lite::Track { name: "x".to_string(), priority: 0 },
-                video_codec: None,
-                audio_codec: Some(AudioCodec::Opus),
-            },
-            DiscoveredTrack {
-                track: moq_lite::Track { name: "y".to_string(), priority: 0 },
-                video_codec: Some(VideoCodec::Av1),
-                audio_codec: None,
-            },
-        ];
-        assert!(MoqPullNode::has_audio_and_video(&both));
-
-        let audio_only = [DiscoveredTrack {
-            track: moq_lite::Track { name: "z".to_string(), priority: 0 },
-            video_codec: None,
-            audio_codec: Some(AudioCodec::Aac),
-        }];
-        assert!(!MoqPullNode::has_audio_and_video(&audio_only));
-    }
-
-    #[test]
     fn test_output_pins_for_tracks_uses_codec_not_name() {
         let tracks = [DiscoveredTrack {
             track: moq_lite::Track { name: "non-standard-name".to_string(), priority: 60 },
@@ -1423,5 +1352,57 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Regression: `parse_catalog` used to wait up to 5s (twice per session)
+    /// for a video track that never arrives on audio-only streams, stalling
+    /// startup of the audio relay. The first non-empty catalog is authoritative.
+    #[tokio::test]
+    async fn test_parse_catalog_audio_only_returns_promptly() {
+        let origin = moq_lite::Origin::random().produce();
+        let mut broadcast = origin.create_broadcast("test-broadcast").unwrap();
+        let track = hang::catalog::Catalog::default_track();
+        let mut producer = broadcast.create_track(track.clone()).unwrap();
+
+        let consumer = origin.consume();
+        let bc = consumer.get_broadcast("test-broadcast").unwrap();
+        let consumer_track = bc.subscribe_track(&track).unwrap();
+
+        let mut audio_renditions = std::collections::BTreeMap::new();
+        audio_renditions.insert(
+            "audio/data".to_string(),
+            hang::catalog::AudioConfig {
+                codec: super::super::constants::catalog_audio_codec(AudioCodec::Opus),
+                sample_rate: 48000,
+                channel_count: 2,
+                bitrate: Some(128_000),
+                description: None,
+                container: hang::catalog::Container::default(),
+                jitter: None,
+            },
+        );
+        let catalog = hang::catalog::Catalog {
+            audio: hang::catalog::Audio { renditions: audio_renditions },
+            ..Default::default()
+        };
+        let payload = catalog.to_string().unwrap();
+        let mut group = producer.append_group().unwrap();
+        group.write_frame(bytes::Bytes::from(payload)).unwrap();
+        group.finish().unwrap();
+
+        let node = MoqPullNode::new(MoqPullConfig::default());
+        let mut cc = super::super::catalog_consumer::CatalogConsumer::new(consumer_track);
+
+        let start = std::time::Instant::now();
+        let tracks = node.parse_catalog(&mut cc).await.unwrap();
+        let elapsed = start.elapsed();
+
+        assert_eq!(tracks.len(), 1);
+        assert!(tracks[0].audio_codec.is_some());
+        assert!(tracks.iter().all(|t| t.video_codec.is_none()));
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "audio-only catalog should parse without the old 5s settle wait, took {elapsed:?}"
+        );
     }
 }
