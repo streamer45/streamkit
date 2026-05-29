@@ -199,6 +199,16 @@ impl MoqPullNode {
         tracing::debug!(node = %node_name, "MoqPullNode pin-management task ended");
     }
 
+    /// Audio codec advertised by the stable `out` pin, fixed during
+    /// `initialize()`. Used to detect when a track's codec (possibly discovered
+    /// after init) differs from what downstream consumers were wired up for.
+    fn advertised_out_audio_codec(&self) -> Option<AudioCodec> {
+        self.output_pins.iter().find(|p| p.name == "out").and_then(|p| match &p.produces_type {
+            PacketType::EncodedAudio(fmt) => Some(fmt.codec),
+            _ => None,
+        })
+    }
+
     /// Route a track frame to its output pin. Statically advertised pins (set
     /// during `initialize()`) go through the engine's direct sender; pins
     /// created at runtime go through the [`DynamicOutputs`] channel registry.
@@ -788,14 +798,7 @@ impl MoqPullNode {
         // Warn when the catalog codec differs from the output pin set during
         // initialize(). This can happen when init fails to discover the catalog
         // (timeout) and the pin remains at the constructor's default codec.
-        let out_pin_codec =
-            self.output_pins.iter().find(|p| p.name == "out").and_then(|p| {
-                match &p.produces_type {
-                    PacketType::EncodedAudio(fmt) => Some(fmt.codec),
-                    _ => None,
-                }
-            });
-        if let Some(pin_codec) = out_pin_codec {
+        if let Some(pin_codec) = self.advertised_out_audio_codec() {
             if pin_codec != resolved_audio_codec {
                 tracing::warn!(
                     advertised = ?pin_codec,
@@ -995,6 +998,22 @@ impl MoqPullNode {
                                             tracing::info!(track = %dt.track.name, "MoqPullNode: subscribing to late audio track");
                                             if let Some(codec) = dt.audio_codec {
                                                 resolved_audio_codec = codec;
+                                                // The `out` pin's codec was fixed
+                                                // at init; a late track with a
+                                                // different codec feeds mislabeled
+                                                // bytes to consumers bound to `out`.
+                                                if let Some(pin_codec) =
+                                                    self.advertised_out_audio_codec()
+                                                {
+                                                    if pin_codec != codec {
+                                                        tracing::warn!(
+                                                            advertised = ?pin_codec,
+                                                            discovered = ?codec,
+                                                            track = %dt.track.name,
+                                                            "MoqPullNode: late audio track codec differs from the advertised `out` pin; downstream consumers may misdecode (pin was fixed at init before this track appeared)"
+                                                        );
+                                                    }
+                                                }
                                             }
                                             audio_track_pin_registered = self
                                                 .output_pins
