@@ -2188,4 +2188,29 @@ mod tests {
             "static pin routing must not touch the dynamic registry"
         );
     }
+
+    /// A pin not advertised at init (`pin_registered == false`) is routed
+    /// through the `DynamicOutputs` registry rather than the engine sender.
+    #[tokio::test]
+    async fn test_route_track_frame_dynamic_pin_uses_registry() {
+        let (mut ctx, mock, _state_rx) = crate::test_utils::create_test_context(HashMap::new(), 1);
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let (tx, mut rx) = mpsc::channel(1);
+        MoqPullNode::insert_dynamic_output(&dynamic_outputs, "video/data".to_string(), tx);
+
+        let outcome = MoqPullNode::route_track_frame(
+            &mut ctx,
+            &dynamic_outputs,
+            false,
+            "video/data",
+            Packet::Text(Arc::from("frame")),
+        )
+        .await;
+        assert!(matches!(outcome, RouteOutcome::Sent));
+        assert!(matches!(rx.recv().await, Some(Packet::Text(_))));
+        assert!(
+            mock.try_recv().await.is_none(),
+            "dynamic pin routing must not touch the engine output sender"
+        );
+    }
 }
