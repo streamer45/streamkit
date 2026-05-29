@@ -7,7 +7,7 @@ use bytes::Bytes;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::borrow::Cow;
-use std::io::{BufWriter, Cursor, Read as _, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Cursor, Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex};
 use streamkit_core::pins::PinManagementMessage;
 use streamkit_core::stats::NodeStatsTracker;
@@ -26,6 +26,7 @@ use webm::mux::{
 /// 20ms Opus frame.
 const DEFAULT_FRAME_DURATION_US: u64 = 20_000;
 
+use super::file_stream::{ChunkedFileReader, FILE_MODE_CHUNK_SIZE};
 use crate::video::{
     DEFAULT_VIDEO_FRAME_DURATION_US, VP9_BIT_DEPTH, VP9_CHROMA_SUBSAMPLING, VP9_LEVEL, VP9_PROFILE,
 };
@@ -296,9 +297,9 @@ impl Write for SharedPacketBuffer {
 /// anonymous temporary file on disk.  The temp file supports full seek so
 /// libwebm can back-patch segment sizes and cues as needed.
 ///
-/// At finalization the file contents are read back into a `Bytes` for the
-/// single downstream send.  This is a one-time, bounded operation — the
-/// file is deleted automatically when the struct is dropped.
+/// At finalization the file is streamed back downstream in bounded chunks (see
+/// [`ChunkedFileReader`]) so peak memory stays bounded regardless of output
+/// size.  The file is deleted automatically when the struct is dropped.
 struct FileBackedBuffer {
     inner: BufWriter<std::fs::File>,
 }
@@ -310,22 +311,10 @@ impl FileBackedBuffer {
         Ok(Self { inner: BufWriter::new(file) })
     }
 
-    /// Read the entire temp file contents as `Bytes`.
-    ///
-    /// This should only be called **once** after `segment.finalize()` — all
-    /// writes and seeks are complete at that point.
-    fn take_data(&mut self) -> std::io::Result<Option<Bytes>> {
+    /// Flush buffered writes and return the inner temp file for chunked read-back.
+    fn finalized_file(&mut self) -> std::io::Result<&mut std::fs::File> {
         self.inner.flush()?;
-        let file = self.inner.get_mut();
-        let len = file.stream_position()?;
-        if len == 0 {
-            return Ok(None);
-        }
-        file.seek(SeekFrom::Start(0))?;
-        let len_usize = usize::try_from(len).map_err(std::io::Error::other)?;
-        let mut buf = vec![0u8; len_usize];
-        file.read_exact(&mut buf)?;
-        Ok(Some(Bytes::from(buf)))
+        Ok(self.inner.get_mut())
     }
 }
 
@@ -358,16 +347,11 @@ enum MuxBuffer {
 }
 
 impl MuxBuffer {
-    fn take_data(&mut self) -> Option<Bytes> {
+    /// Live mode only: drain any bytes still buffered after `finalize()`.
+    fn take_live_data(&mut self) -> Option<Bytes> {
         match self {
             Self::Live(buf) => buf.take_data(),
-            Self::File(buf) => match buf.take_data() {
-                Ok(data) => data,
-                Err(e) => {
-                    tracing::error!("Failed to read temp file data: {e}");
-                    None
-                },
-            },
+            Self::File(_) => None,
         }
     }
 }
@@ -1290,28 +1274,7 @@ impl ProcessorNode for WebMMuxerNode {
             StreamKitError::Runtime(err_msg)
         })?;
         let mut mux_buffer = writer.into_inner();
-
-        if let Some(data) = mux_buffer.take_data() {
-            tracing::debug!("Writing final data, buffer size: {} bytes", data.len());
-            if context
-                .output_sender
-                .send(
-                    "out",
-                    Packet::Binary {
-                        data,
-                        content_type: Some(content_type_str.clone()),
-                        metadata: None,
-                    },
-                )
-                .await
-                .is_err()
-            {
-                tracing::debug!("Output channel closed during final flush");
-            } else {
-                stats_tracker.sent();
-            }
-            stats_tracker.force_send();
-        }
+        finalize_send(&mut context, &mut mux_buffer, &content_type_str, &mut stats_tracker).await?;
 
         state_helpers::emit_stopped(&context.state_tx, &node_name, "input_closed");
 
@@ -1578,6 +1541,82 @@ async fn write_frame(
 
     stats_tracker.maybe_send();
     Ok(stopped)
+}
+
+/// Streams the finalized muxer output to the `out` pin.
+///
+/// **Live** mode drains any bytes still buffered after `finalize()` as a single
+/// final packet.  **File** mode reads the on-disk temp file back in bounded
+/// chunks and emits one `Packet::Binary` per chunk, so peak memory stays bounded
+/// by [`FILE_MODE_CHUNK_SIZE`] regardless of output size.
+// `content_type` is borrowed because it is cloned per emitted packet.
+#[allow(clippy::ptr_arg)]
+async fn finalize_send(
+    context: &mut NodeContext,
+    mux_buffer: &mut MuxBuffer,
+    content_type: &Cow<'static, str>,
+    stats_tracker: &mut NodeStatsTracker,
+) -> Result<(), StreamKitError> {
+    let mut sent_any = false;
+    match mux_buffer {
+        MuxBuffer::Live(_) => {
+            if let Some(data) = mux_buffer.take_live_data() {
+                sent_any |= send_final_chunk(context, data, content_type, stats_tracker).await;
+            }
+        },
+        MuxBuffer::File(buf) => {
+            let file = buf.finalized_file().map_err(|e| {
+                StreamKitError::Runtime(format!("Failed to read back WebM file: {e}"))
+            })?;
+            if let Some(mut reader) =
+                ChunkedFileReader::new(file, FILE_MODE_CHUNK_SIZE).map_err(|e| {
+                    StreamKitError::Runtime(format!("Failed to read back WebM file: {e}"))
+                })?
+            {
+                while let Some(data) = reader.next_chunk().map_err(|e| {
+                    StreamKitError::Runtime(format!("Failed to read back WebM file: {e}"))
+                })? {
+                    if !send_final_chunk(context, data, content_type, stats_tracker).await {
+                        break;
+                    }
+                    sent_any = true;
+                }
+            }
+        },
+    }
+
+    if sent_any {
+        stats_tracker.force_send();
+    }
+    Ok(())
+}
+
+/// Sends a single finalized `Packet::Binary` chunk on the `out` pin.
+///
+/// Returns `false` if the output channel is closed.
+// `content_type` is borrowed because callers clone it for many packets.
+#[allow(clippy::ptr_arg)]
+async fn send_final_chunk(
+    context: &mut NodeContext,
+    data: Bytes,
+    content_type: &Cow<'static, str>,
+    stats_tracker: &mut NodeStatsTracker,
+) -> bool {
+    tracing::debug!("Writing final WebM data, chunk size: {} bytes", data.len());
+    if context
+        .output_sender
+        .send(
+            "out",
+            Packet::Binary { data, content_type: Some(content_type.clone()), metadata: None },
+        )
+        .await
+        .is_err()
+    {
+        tracing::debug!("Output channel closed during final flush");
+        return false;
+    }
+    stats_tracker.sent();
+    true
 }
 
 /// Flushes buffered WebM data to the output sender.

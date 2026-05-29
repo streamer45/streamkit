@@ -788,11 +788,13 @@ async fn test_webm_mux_vp9_auto_detect_dimensions() {
 }
 
 /// Test that WebM muxer works in File mode (seekable temp-file backed).
-/// File mode produces a single output packet after finalization with full
-/// duration and seeking info.
+/// File mode streams the finalized temp file back downstream in bounded chunks;
+/// the concatenated Binary packets form the full container with duration and
+/// seeking info, and no single packet exceeds the chunk size.
 #[cfg(feature = "vp9")]
 #[tokio::test]
 async fn test_webm_mux_file_mode() {
+    use super::file_stream::FILE_MODE_CHUNK_SIZE;
     use crate::test_utils::create_test_video_frame;
     use crate::video::vp9::{Vp9EncoderConfig, Vp9EncoderNode};
     use streamkit_core::types::{EncodedVideoFormat, PacketMetadata, PixelFormat, VideoCodec};
@@ -876,12 +878,17 @@ async fn test_webm_mux_file_mode() {
     mux_handle.await.unwrap().unwrap();
 
     let output_packets = mux_sender.get_packets_for_pin("out").await;
-    // File mode emits a single packet after finalization
+    // File mode streams the finalized temp file back in bounded chunks, so it
+    // may emit one or many Binary packets; the concatenation is the full file.
     assert!(!output_packets.is_empty(), "WebM File mode muxer produced no output");
 
     let mut webm_bytes = Vec::new();
     for packet in &output_packets {
         if let Packet::Binary { data, .. } = packet {
+            assert!(
+                data.len() <= FILE_MODE_CHUNK_SIZE,
+                "no finalized File-mode packet may exceed the chunk size"
+            );
             webm_bytes.extend_from_slice(data);
         }
     }

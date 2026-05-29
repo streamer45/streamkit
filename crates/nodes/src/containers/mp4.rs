@@ -29,7 +29,7 @@ use shiguredo_mp4::descriptors::{
 };
 use shiguredo_mp4::mux::{Fmp4SegmentMuxer, Mp4FileMuxer, Sample};
 use shiguredo_mp4::{FixedPointNumber, TrackKind, Uint};
-use std::io::{BufWriter, Read as _, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::num::NonZeroU32;
 use streamkit_core::pins::PinManagementMessage;
 use streamkit_core::stats::NodeStatsTracker;
@@ -42,6 +42,7 @@ use streamkit_core::{
     StreamKitError,
 };
 
+use super::file_stream::{ChunkedFileReader, FILE_MODE_CHUNK_SIZE};
 use crate::video::DEFAULT_VIDEO_FRAME_DURATION_US;
 
 /// Default video timescale (90 kHz — standard for MPEG transport streams / MP4).
@@ -461,19 +462,10 @@ impl FileBackedBuffer {
         Ok(Self { inner: BufWriter::new(file) })
     }
 
-    /// Read the entire temp file contents as `Bytes`.
-    fn take_data(&mut self) -> std::io::Result<Option<Bytes>> {
+    /// Flush buffered writes and return the inner temp file for chunked read-back.
+    fn finalized_file(&mut self) -> std::io::Result<&mut std::fs::File> {
         self.inner.flush()?;
-        let file = self.inner.get_mut();
-        let len = file.seek(SeekFrom::End(0))?;
-        if len == 0 {
-            return Ok(None);
-        }
-        file.seek(SeekFrom::Start(0))?;
-        let len_usize = usize::try_from(len).map_err(std::io::Error::other)?;
-        let mut buf = vec![0u8; len_usize];
-        file.read_exact(&mut buf)?;
-        Ok(Some(Bytes::from(buf)))
+        Ok(self.inner.get_mut())
     }
 
     /// Current write position in the file.
@@ -1757,25 +1749,41 @@ async fn finalize_file_mode(
             .map_err(|e| StreamKitError::Runtime(format!("Failed to patch MP4 temp file: {e}")))?;
     }
 
-    if let Some(data) = file_buf
-        .take_data()
-        .map_err(|e| StreamKitError::Runtime(format!("Failed to read back MP4 file: {e}")))?
-    {
-        tracing::info!("Sending finalized MP4 file ({} bytes)", data.len());
-        if context
-            .output_sender
-            .send(
-                "out",
-                Packet::Binary { data, content_type: Some(content_type.into()), metadata: None },
-            )
-            .await
-            .is_err()
+    let file = file_buf
+        .finalized_file()
+        .map_err(|e| StreamKitError::Runtime(format!("Failed to read back MP4 file: {e}")))?;
+    let reader = ChunkedFileReader::new(file, FILE_MODE_CHUNK_SIZE)
+        .map_err(|e| StreamKitError::Runtime(format!("Failed to read back MP4 file: {e}")))?;
+
+    if let Some(mut reader) = reader {
+        let mut sent_any = false;
+        while let Some(data) = reader
+            .next_chunk()
+            .map_err(|e| StreamKitError::Runtime(format!("Failed to read back MP4 file: {e}")))?
         {
-            tracing::debug!("Output channel closed during final send");
-        } else {
+            tracing::debug!("Sending finalized MP4 chunk ({} bytes)", data.len());
+            if context
+                .output_sender
+                .send(
+                    "out",
+                    Packet::Binary {
+                        data,
+                        content_type: Some(content_type.into()),
+                        metadata: None,
+                    },
+                )
+                .await
+                .is_err()
+            {
+                tracing::debug!("Output channel closed during final send");
+                break;
+            }
             stats_tracker.sent();
+            sent_any = true;
         }
-        stats_tracker.force_send();
+        if sent_any {
+            stats_tracker.force_send();
+        }
     }
 
     Ok(())
