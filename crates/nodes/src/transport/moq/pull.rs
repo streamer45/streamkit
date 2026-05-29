@@ -2115,6 +2115,19 @@ mod tests {
         assert_eq!(late.pin_name, "audio/data");
     }
 
+    #[test]
+    fn test_advertised_out_audio_codec_none_for_non_audio_out_pin() {
+        let mut node = MoqPullNode::new(MoqPullConfig::default());
+        let mut video_out = MoqPullNode::make_dynamic_output_pin("video/data", AudioCodec::Opus);
+        video_out.name = "out".to_string();
+        node.output_pins = vec![video_out];
+        assert_eq!(
+            node.advertised_out_audio_codec(),
+            None,
+            "a non-audio `out` pin has no advertised audio codec"
+        );
+    }
+
     #[tokio::test]
     async fn test_attach_late_video_av1_content_type() {
         let tb = broadcast_with_tracks(&["video/data"]);
