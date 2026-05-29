@@ -117,15 +117,7 @@ impl PluginAssetRegistry {
             // Reject system_dir with path-traversal or absolute path components.
             if let Some(ref dir) = spec.system_dir {
                 let path = std::path::Path::new(dir);
-                let has_traversal = path.components().any(|c| {
-                    matches!(
-                        c,
-                        std::path::Component::ParentDir
-                            | std::path::Component::RootDir
-                            | std::path::Component::Prefix(_)
-                    )
-                });
-                if has_traversal {
+                if streamkit_core::path_helpers::has_path_traversal(path) {
                     warn!(
                         type_id = %spec.type_id,
                         plugin_id = %plugin_id,
@@ -387,7 +379,10 @@ async fn list_handler(
 
     let mut all_assets = Vec::new();
 
-    match scan_directory(&asset_type.system_dir, true, &perms, &asset_type).await {
+    let system_dir = app_state.asset_root.join(&asset_type.system_dir);
+    let user_dir = app_state.asset_root.join(&asset_type.user_dir);
+
+    match scan_directory(&system_dir, true, &perms, &asset_type).await {
         Ok(assets) => all_assets.extend(assets),
         Err(e) => {
             error!("Failed to scan system dir for {}: {}", type_id, e);
@@ -395,7 +390,7 @@ async fn list_handler(
         },
     }
 
-    match scan_directory(&asset_type.user_dir, false, &perms, &asset_type).await {
+    match scan_directory(&user_dir, false, &perms, &asset_type).await {
         Ok(assets) => all_assets.extend(assets),
         Err(e) => {
             error!("Failed to scan user dir for {}: {}", type_id, e);
@@ -449,19 +444,20 @@ async fn upload_handler(
     };
 
     // Ensure user directory exists.
-    if let Err(e) = fs::create_dir_all(&asset_type.user_dir).await {
+    let user_dir = app_state.asset_root.join(&asset_type.user_dir);
+    if let Err(e) = fs::create_dir_all(&user_dir).await {
         return PluginAssetError::IoError(format!("Failed to create directory: {e}"))
             .into_response();
     }
 
-    let file_path = asset_type.user_dir.join(&filename);
+    let file_path = user_dir.join(&filename);
 
     // Defense-in-depth: verify the user directory (which now exists after
     // create_dir_all) canonicalizes to where we expect.  We cannot
     // canonicalize `file_path` itself because the file doesn't exist yet.
     // Instead we canonicalize the parent and check the filename is safe.
     {
-        let canonical_dir = match asset_type.user_dir.canonicalize() {
+        let canonical_dir = match user_dir.canonicalize() {
             Ok(d) => d,
             Err(e) => {
                 return PluginAssetError::IoError(format!("Failed to resolve directory: {e}"))
@@ -530,12 +526,13 @@ async fn delete_handler(
             .into_response();
     }
 
-    let file_path = asset_type.user_dir.join(&id);
+    let user_dir = app_state.asset_root.join(&asset_type.user_dir);
+    let file_path = user_dir.join(&id);
 
     // Verify the file is inside the user directory (path traversal protection).
     // Also returns NotFound if the file doesn't exist (avoids TOCTOU with a
     // separate exists() check).
-    if let Err(e) = validate_file_in_directory(&file_path, &asset_type.user_dir) {
+    if let Err(e) = validate_file_in_directory(&file_path, &user_dir) {
         return e.into_response();
     }
 
@@ -574,7 +571,11 @@ async fn serve_handler(
         return (StatusCode::NOT_FOUND, format!("Unknown asset type: {type_id}")).into_response();
     };
 
-    let dir = if scope == "system" { &asset_type.system_dir } else { &asset_type.user_dir };
+    let dir = if scope == "system" {
+        app_state.asset_root.join(&asset_type.system_dir)
+    } else {
+        app_state.asset_root.join(&asset_type.user_dir)
+    };
     let file_path = dir.join(&id);
 
     let base = asset_type.system_dir.parent().unwrap_or(&asset_type.system_dir);
@@ -595,7 +596,7 @@ async fn serve_handler(
 
     // Canonical path validation — also returns NotFound if the file doesn't
     // exist, avoiding a TOCTOU race with a separate exists() check.
-    if let Err(e) = validate_file_in_directory(&file_path, dir) {
+    if let Err(e) = validate_file_in_directory(&file_path, &dir) {
         return e.into_response();
     }
 
@@ -661,11 +662,12 @@ async fn update_handler(
         Err(e) => return e.into_response(),
     };
 
-    let file_path = asset_type.user_dir.join(&id);
+    let user_dir = app_state.asset_root.join(&asset_type.user_dir);
+    let file_path = user_dir.join(&id);
 
     // Canonical path validation — also returns NotFound if the file doesn't
     // exist, avoiding a TOCTOU race with a separate exists() check.
-    if let Err(e) = validate_file_in_directory(&file_path, &asset_type.user_dir) {
+    if let Err(e) = validate_file_in_directory(&file_path, &user_dir) {
         return e.into_response();
     }
 
@@ -1520,6 +1522,13 @@ mod handler_tests {
     fn make_state() -> Arc<AppState> {
         let mut config = Config::default();
         config.auth.mode = AuthMode::Disabled;
+        crate::server::create_app_state(config, None)
+    }
+
+    fn make_state_with_asset_root(root: std::path::PathBuf) -> Arc<AppState> {
+        let mut config = Config::default();
+        config.auth.mode = AuthMode::Disabled;
+        config.asset_root = Some(root);
         crate::server::create_app_state(config, None)
     }
 
@@ -2710,5 +2719,57 @@ mod handler_tests {
         // Missing all required fields — should fail to parse and return None.
         std::fs::write(tmp.path().join("plugin.yml"), "not a manifest").unwrap();
         assert!(read_local_plugin_manifest(&library).is_none());
+    }
+
+    /// Exercises the `asset_root.join(relative_system_dir)` path that
+    /// `register()` produces.  Previous tests used absolute `system_dir`
+    /// values which short-circuit `Path::join`.
+    #[tokio::test]
+    async fn upload_with_relative_system_dir_uses_asset_root() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state_with_asset_root(tmp.path().to_path_buf());
+
+        // Use register() which produces *relative* system_dir/user_dir
+        // (e.g. "samples/models/system").
+        state
+            .plugin_asset_registry
+            .register(
+                "test-plugin",
+                "plugin::native::test-plugin",
+                &[PluginAssetSpec {
+                    type_id: "models".to_string(),
+                    label: "Models".to_string(),
+                    extensions: vec!["bin".to_string()],
+                    max_size_bytes: 4096,
+                    content_type: AssetContentType::Binary,
+                    system_dir: None,
+                    icon_hint: None,
+                    node_param: None,
+                }],
+            )
+            .await;
+
+        // Create the dirs under the asset_root that handlers will resolve.
+        let user_dir = tmp.path().join("samples/models/user");
+        std::fs::create_dir_all(&user_dir).unwrap();
+
+        let boundary = "----boundary";
+        let body = build_multipart_body(boundary, "file", Some("test.bin"), b"model-data");
+        let app = plugin_assets_router().with_state(state);
+        let resp = app
+            .oneshot(multipart_request(
+                Method::POST,
+                "/api/v1/assets/plugin/models",
+                boundary,
+                body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // Verify the file landed under asset_root, not under CWD.
+        let uploaded = user_dir.join("test.bin");
+        assert!(uploaded.exists(), "file should exist under asset_root");
+        assert_eq!(std::fs::read(&uploaded).unwrap(), b"model-data");
     }
 }

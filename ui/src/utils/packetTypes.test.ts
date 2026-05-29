@@ -220,6 +220,37 @@ describe('formatPacketType', () => {
     ).toBe('Raw Video (*x*, Rgba8)');
   });
 
+  it('does not render wildcard when template placeholder omits |*', () => {
+    setPacketTypeRegistry([
+      ...DEFAULT_METAS,
+      {
+        id: 'TestNoStar',
+        label: 'Test',
+        color: '#000',
+        display_template: 'Test ({width}x{height|*})',
+        compatibility: {
+          kind: 'structfieldwildcard',
+          fields: [
+            { name: 'width', wildcard_value: null },
+            { name: 'height', wildcard_value: null },
+          ],
+        },
+      },
+    ]);
+    const result = formatPacketType({
+      TestNoStar: { width: null, height: null },
+    } as unknown as PacketType);
+    expect(result).toBe('Test (nullx*)');
+  });
+
+  it('renders literal value for plain placeholder even when it matches wildcard_value', () => {
+    expect(
+      formatPacketType({
+        RawVideo: { width: 1920, height: 1080, pixel_format: null },
+      } as unknown as PacketType)
+    ).toBe('Raw Video (1920x1080, null)');
+  });
+
   it('renders the Custom template with the supplied type_id', () => {
     expect(formatPacketType({ Custom: { type_id: 'my.custom.type' } })).toBe(
       'Custom (my.custom.type)'

@@ -74,7 +74,7 @@ pub use error::StreamKitError;
 pub use frame_pool::{
     AudioFramePool, FramePool, PooledFrameData, PooledSamples, PooledVideoData, VideoFramePool,
 };
-pub use helpers::{config_helpers, packet_helpers};
+pub use helpers::{config_helpers, packet_helpers, path_helpers};
 pub use hints::UpstreamHint;
 pub use node::{
     InitContext, NodeContext, OutputSendError, OutputSender, PipelineMode, ProcessorNode,

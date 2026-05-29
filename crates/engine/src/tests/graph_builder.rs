@@ -137,6 +137,7 @@ async fn wire(
         None,
         None,
         None,
+        super::test_asset_root(),
     )
     .await
 }
