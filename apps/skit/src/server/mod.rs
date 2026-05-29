@@ -1735,6 +1735,29 @@ pub fn create_app_state(
         config.permissions.role_header = Some(BUILTIN_AUTH_ROLE_HEADER.to_string());
     }
 
+    let asset_root_explicit = config.asset_root.is_some();
+    let asset_root = config.asset_root.clone().unwrap_or_else(|| {
+        std::env::current_dir().expect(
+            "failed to determine current working directory for asset_root; \
+             set [server].asset_root explicitly in skit.toml",
+        )
+    });
+    if asset_root_explicit && !asset_root.exists() {
+        panic!(
+            "configured asset_root '{}' does not exist — \
+             fix the path in skit.toml or create the directory",
+            asset_root.display()
+        );
+    } else if !asset_root_explicit && !asset_root.exists() {
+        std::fs::create_dir_all(&asset_root).unwrap_or_else(|e| {
+            panic!(
+                "default asset_root '{}' does not exist and could not be created: {e}",
+                asset_root.display()
+            );
+        });
+    }
+    tracing::info!(asset_root = %asset_root.display(), "Asset root resolved");
+
     Arc::new(AppState {
         engine,
         session_manager: Arc::new(tokio::sync::Mutex::new(SessionManager::default())),
@@ -1745,6 +1768,7 @@ pub fn create_app_state(
         auth,
         shutdown_tracker: crate::state::ShutdownTracker::default(),
         plugin_asset_registry,
+        asset_root,
         #[cfg(feature = "moq")]
         moq_gateway,
         mse_gateway,

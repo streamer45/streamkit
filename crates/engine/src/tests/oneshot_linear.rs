@@ -74,6 +74,7 @@ async fn test_oneshot_rejects_fanout() {
         None,
         None,
         None,
+        super::test_asset_root(),
     )
     .await
     else {

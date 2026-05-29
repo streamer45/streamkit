@@ -71,6 +71,24 @@ pub mod config_helpers {
     }
 }
 
+pub mod path_helpers {
+    use std::path::Path;
+
+    /// Returns `true` if `path` contains traversal or absolute components
+    /// (`..`, `/`, or a Windows drive prefix) that would escape `asset_root`
+    /// when used with [`Path::join`].
+    pub fn has_path_traversal(path: &Path) -> bool {
+        path.components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    }
+}
+
 pub mod packet_helpers {
     use super::Packet;
     use smallvec::SmallVec;
@@ -224,5 +242,27 @@ mod tests {
     fn default_batch_capacity_is_reasonable() {
         const { assert!(packet_helpers::DEFAULT_BATCH_CAPACITY >= 8) };
         const { assert!(packet_helpers::DEFAULT_BATCH_CAPACITY <= 128) };
+    }
+
+    #[test]
+    fn has_path_traversal_rejects_parent_dir() {
+        assert!(path_helpers::has_path_traversal(std::path::Path::new("../escape")));
+    }
+
+    #[test]
+    fn has_path_traversal_rejects_absolute() {
+        assert!(path_helpers::has_path_traversal(std::path::Path::new("/etc/passwd")));
+    }
+
+    #[test]
+    fn has_path_traversal_accepts_relative() {
+        assert!(!path_helpers::has_path_traversal(std::path::Path::new(
+            "samples/audio/user/clip.opus"
+        )));
+    }
+
+    #[test]
+    fn has_path_traversal_accepts_dotdot_substring() {
+        assert!(!path_helpers::has_path_traversal(std::path::Path::new("my..assets/file.txt")));
     }
 }

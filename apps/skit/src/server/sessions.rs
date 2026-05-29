@@ -369,6 +369,7 @@ pub async fn create_dynamic_session(
         name,
         app_state.event_tx.clone(),
         Some(role_name),
+        app_state.asset_root.clone(),
     )
     .await
     .map_err(|e| CreateSessionError::Internal(format!("Failed to create session: {e}")))?;
@@ -755,6 +756,7 @@ mod sessions_batch_tests {
             Some("batch-helpers-test".to_string()),
             tx,
             Some("test-role".to_string()),
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
         )
         .await
         .expect("Session::create on a fresh engine should succeed");
