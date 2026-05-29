@@ -29,8 +29,15 @@ pub struct ChunkedFileReader<'a> {
 impl<'a> ChunkedFileReader<'a> {
     /// Seek `file` back to the start and prepare to read it in chunks.
     ///
-    /// Returns `Ok(None)` when the file is empty.
+    /// Returns `Ok(None)` when the file is empty and `Err` when `chunk_size`
+    /// is zero (which would otherwise never make progress).
     pub fn new(file: &'a mut std::fs::File, chunk_size: usize) -> std::io::Result<Option<Self>> {
+        if chunk_size == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "chunk_size must be greater than zero",
+            ));
+        }
         let len = file.seek(SeekFrom::End(0))?;
         if len == 0 {
             return Ok(None);
@@ -54,6 +61,7 @@ impl<'a> ChunkedFileReader<'a> {
 }
 
 #[cfg(test)]
+// Tests use unwrap to fail loudly on setup/read errors.
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
@@ -94,6 +102,12 @@ mod tests {
         }
         let joined: Vec<u8> = chunks.iter().flat_map(|c| c.iter().copied()).collect();
         assert_eq!(joined, original, "concatenated chunks must be byte-identical to the input");
+    }
+
+    #[test]
+    fn zero_chunk_size_is_rejected() {
+        let mut file = temp_file_with(&[1, 2, 3]);
+        assert!(ChunkedFileReader::new(&mut file, 0).is_err());
     }
 
     #[test]
