@@ -907,6 +907,140 @@ async fn test_webm_mux_file_mode() {
     );
 }
 
+/// Test that MP4 muxer works in File mode (seekable temp-file backed) and
+/// that finalization streams the temp file back in bounded chunks: the output
+/// spans multiple `Packet::Binary` chunks, none exceeding the chunk size, and
+/// their concatenation is the full MP4 (starting with the `ftyp` box).
+#[cfg(all(feature = "mp4", feature = "openh264"))]
+#[tokio::test]
+async fn test_mp4_mux_file_mode_streams_multiple_chunks() {
+    use super::file_stream::FILE_MODE_CHUNK_SIZE;
+    use super::mp4::{Mp4MuxerConfig, Mp4MuxerNode, Mp4StreamingMode};
+    use crate::video::openh264::{OpenH264EncoderConfig, OpenH264EncoderNode};
+    use streamkit_core::types::{
+        EncodedVideoFormat, PacketMetadata, PixelFormat, VideoCodec, VideoFrame,
+    };
+
+    let width = 640u32;
+    let height = 480u32;
+    let frame_count = 12u64;
+
+    let (enc_input_tx, enc_input_rx) = mpsc::channel(64);
+    let mut enc_inputs = HashMap::new();
+    enc_inputs.insert("in".to_string(), enc_input_rx);
+
+    let (enc_context, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 64);
+    // High bitrate + every-frame keyframes so the textured frames below mux to
+    // well over one FILE_MODE_CHUNK_SIZE, exercising the chunked read-back.
+    let encoder_config =
+        OpenH264EncoderConfig { bitrate_kbps: 8_000, max_frame_rate: 30.0, gop_size: 1 };
+    let encoder = OpenH264EncoderNode::new(encoder_config).unwrap();
+    let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
+
+    assert_state_initializing(&mut enc_state_rx).await;
+    assert_state_running(&mut enc_state_rx).await;
+
+    // Textured luma (neutral chroma) with per-frame motion: compressible
+    // enough for the encoder to emit real bitstream, detailed enough that all
+    // keyframes together exceed several chunk sizes.
+    let w = usize::try_from(width).unwrap();
+    let h = usize::try_from(height).unwrap();
+    let chroma = (w / 2) * (h / 2);
+    let xb: Vec<u8> = (0..w).map(|x| u8::try_from(x.wrapping_mul(3) % 256).unwrap()).collect();
+    let yb: Vec<u8> = (0..h).map(|y| u8::try_from(y.wrapping_mul(5) % 256).unwrap()).collect();
+    for i in 0..frame_count {
+        let mut data = vec![128u8; w * h + 2 * chroma];
+        let shift = u8::try_from(i.wrapping_mul(11) % 256).unwrap();
+        for y in 0..h {
+            for x in 0..w {
+                data[y * w + x] = (xb[x] ^ yb[y]).wrapping_add(shift);
+            }
+        }
+        let mut frame = VideoFrame::new(width, height, PixelFormat::I420, data).unwrap();
+        frame.metadata = Some(PacketMetadata {
+            timestamp_us: Some(i * 33_333),
+            duration_us: Some(33_333),
+            sequence: Some(i),
+            keyframe: Some(true),
+        });
+        enc_input_tx.send(Packet::Video(frame)).await.unwrap();
+    }
+    drop(enc_input_tx);
+
+    assert_state_stopped(&mut enc_state_rx).await;
+    enc_handle.await.unwrap().unwrap();
+
+    let encoded_packets = enc_sender.get_packets_for_pin("out").await;
+    assert!(!encoded_packets.is_empty(), "OpenH264 encoder produced no packets");
+
+    let (mux_video_tx, mux_video_rx) = mpsc::channel(encoded_packets.len().max(1));
+    let mut mux_inputs = HashMap::new();
+    mux_inputs.insert("in".to_string(), mux_video_rx);
+
+    let (mut mux_context, mux_sender, mut mux_state_rx) = create_test_context(mux_inputs, 64);
+    mux_context.input_types.insert(
+        "in".to_string(),
+        PacketType::EncodedVideo(EncodedVideoFormat {
+            codec: VideoCodec::H264,
+            bitstream_format: None,
+            codec_private: None,
+            profile: None,
+            level: None,
+        }),
+    );
+
+    let mux_config = Mp4MuxerConfig {
+        mode: Mp4StreamingMode::File,
+        video_width: u16::try_from(width).unwrap(),
+        video_height: u16::try_from(height).unwrap(),
+        video_codec: Some(VideoCodec::H264),
+        ..Mp4MuxerConfig::default()
+    };
+    let muxer = Mp4MuxerNode::new(mux_config);
+    let mux_handle = tokio::spawn(async move { Box::new(muxer).run(mux_context).await });
+
+    assert_state_initializing(&mut mux_state_rx).await;
+    assert_state_running(&mut mux_state_rx).await;
+
+    for packet in encoded_packets {
+        mux_video_tx.send(packet).await.unwrap();
+    }
+    drop(mux_video_tx);
+
+    assert_state_stopped(&mut mux_state_rx).await;
+    mux_handle.await.unwrap().unwrap();
+
+    let output_packets = mux_sender.get_packets_for_pin("out").await;
+    let binary_packets: Vec<&Bytes> = output_packets
+        .iter()
+        .filter_map(|p| match p {
+            Packet::Binary { data, .. } => Some(data),
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        binary_packets.len() > 1,
+        "File-mode output exceeding one chunk must be emitted as multiple packets, got {}",
+        binary_packets.len()
+    );
+
+    let mut mp4_bytes = Vec::new();
+    for data in &binary_packets {
+        assert!(
+            data.len() <= FILE_MODE_CHUNK_SIZE,
+            "no finalized File-mode packet may exceed the chunk size"
+        );
+        mp4_bytes.extend_from_slice(data);
+    }
+
+    assert!(
+        mp4_bytes.len() > FILE_MODE_CHUNK_SIZE,
+        "test should produce more than one chunk worth of output"
+    );
+    assert_eq!(&mp4_bytes[4..8], b"ftyp", "MP4 File mode output must start with an ftyp box");
+}
+
 /// Test muxer behaviour when the first video packet is not a keyframe
 /// (e.g. truncated or non-keyframe VP9 data).
 #[tokio::test]
