@@ -552,6 +552,61 @@ describe('resolveOutputType', () => {
     });
   });
 
+  it('derives compositor pixel_format from the output_format param', () => {
+    const cases: Array<{ output_format: unknown; pixel_format: string }> = [
+      { output_format: 'nv12', pixel_format: 'Nv12' },
+      { output_format: 'NV12', pixel_format: 'Nv12' },
+      { output_format: 'i420', pixel_format: 'I420' },
+      { output_format: 'I420', pixel_format: 'I420' },
+      { output_format: undefined, pixel_format: 'Rgba8' },
+      { output_format: null, pixel_format: 'Rgba8' },
+      { output_format: 'something-else', pixel_format: 'Rgba8' },
+    ];
+
+    for (const { output_format, pixel_format } of cases) {
+      const compositor = makeNode('cmp', {
+        kind: 'video::compositor',
+        params: { width: 1280, height: 720, output_format },
+        outputs: [
+          {
+            name: 'out',
+            produces_type: { RawVideo: { width: null, height: null, pixel_format: 'Rgba8' } },
+          },
+        ],
+      });
+
+      expect(resolveOutputType(compositor, 'out', [compositor], [])).toEqual({
+        RawVideo: { width: 1280, height: 720, pixel_format },
+      });
+    }
+  });
+
+  it('allows a compositor(nv12)->encoder(Nv12) connection that previously failed', () => {
+    const compositor = makeNode('cmp', {
+      kind: 'video::compositor',
+      params: { width: 1280, height: 720, output_format: 'nv12' },
+      outputs: [
+        {
+          name: 'out',
+          produces_type: { RawVideo: { width: null, height: null, pixel_format: 'Rgba8' } },
+        },
+      ],
+    });
+
+    const encoderInput: PacketType = {
+      RawVideo: { width: null, height: null, pixel_format: 'Nv12' },
+    };
+
+    const outputType = resolveOutputType(compositor, 'out', [compositor], []);
+    expect(outputType).toEqual({
+      RawVideo: { width: 1280, height: 720, pixel_format: 'Nv12' },
+    });
+    expect(canConnect(outputType, [encoderInput])).toBe(true);
+    expect(
+      canConnect({ RawVideo: { width: null, height: null, pixel_format: 'Rgba8' } }, [encoderInput])
+    ).toBe(false);
+  });
+
   it('infers resampler RawAudio output from target_sample_rate', () => {
     const resampler = makeNode('rs', {
       kind: 'audio::resampler',
