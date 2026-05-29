@@ -1816,24 +1816,7 @@ mod tests {
     }
 
     fn audio_video_catalog() -> hang::catalog::Catalog {
-        let mut catalog = audio_only_catalog();
-        catalog.video.renditions.insert(
-            "video/data".to_string(),
-            hang::catalog::VideoConfig {
-                codec: super::super::constants::catalog_video_codec(VideoCodec::Vp9),
-                coded_width: None,
-                coded_height: None,
-                display_ratio_width: None,
-                display_ratio_height: None,
-                framerate: Some(30.0),
-                bitrate: None,
-                description: None,
-                optimize_for_latency: Some(true),
-                container: hang::catalog::Container::default(),
-                jitter: None,
-            },
-        );
-        catalog
+        video_catalog(VideoCodec::Vp9)
     }
 
     /// Regression: an incremental publisher that announces audio first and adds
