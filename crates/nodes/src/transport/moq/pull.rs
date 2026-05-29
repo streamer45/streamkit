@@ -2135,6 +2135,38 @@ mod tests {
         assert_eq!(content_type, H264_CONTENT_TYPE);
     }
 
+    /// A broadcast whose producers have been dropped: `subscribe_track` fails,
+    /// exercising the attach helpers' subscribe-error paths.
+    fn closed_broadcast(track_names: &[&str]) -> moq_lite::BroadcastConsumer {
+        let origin = moq_lite::Origin::random().produce();
+        let mut broadcast = origin.create_broadcast("test-broadcast").unwrap();
+        for name in track_names {
+            let _ = broadcast
+                .create_track(moq_lite::Track { name: (*name).to_string(), priority: 0 })
+                .unwrap();
+        }
+        let bc = origin.consume().get_broadcast("test-broadcast").unwrap();
+        drop(broadcast);
+        drop(origin);
+        bc
+    }
+
+    #[tokio::test]
+    async fn test_attach_late_audio_none_when_subscribe_fails() {
+        let bc = closed_broadcast(&["audio/data"]);
+        let node = MoqPullNode::new(MoqPullConfig::default());
+        let new_tracks = MoqPullNode::extract_tracks(&audio_only_catalog());
+        assert!(node.attach_late_audio(&bc, &new_tracks).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_attach_late_video_none_when_subscribe_fails() {
+        let bc = closed_broadcast(&["video/data"]);
+        let node = MoqPullNode::new(MoqPullConfig::default());
+        let new_tracks = MoqPullNode::extract_tracks(&audio_video_catalog());
+        assert!(node.attach_late_video(&bc, &new_tracks).is_none());
+    }
+
     /// A statically advertised pin routes through the engine's `output_sender`
     /// (not the `DynamicOutputs` registry) and reports `Sent` on success.
     #[tokio::test]
