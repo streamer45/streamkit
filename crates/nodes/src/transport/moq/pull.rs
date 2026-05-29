@@ -1794,6 +1794,27 @@ mod tests {
         }
     }
 
+    fn video_catalog(codec: VideoCodec) -> hang::catalog::Catalog {
+        let mut catalog = audio_only_catalog();
+        catalog.video.renditions.insert(
+            "video/data".to_string(),
+            hang::catalog::VideoConfig {
+                codec: super::super::constants::catalog_video_codec(codec),
+                coded_width: None,
+                coded_height: None,
+                display_ratio_width: None,
+                display_ratio_height: None,
+                framerate: Some(30.0),
+                bitrate: None,
+                description: None,
+                optimize_for_latency: Some(true),
+                container: hang::catalog::Container::default(),
+                jitter: None,
+            },
+        );
+        catalog
+    }
+
     fn audio_video_catalog() -> hang::catalog::Catalog {
         let mut catalog = audio_only_catalog();
         catalog.video.renditions.insert(
@@ -2073,6 +2094,70 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .contains_key("video/data"),
             "a closed channel should be evicted from the registry"
+        );
+    }
+
+    /// When the `out` pin was fixed to AAC at init but a late Opus track
+    /// attaches, the codec-mismatch branch must still subscribe (returning the
+    /// discovered codec) while warning that downstream consumers may misdecode.
+    #[tokio::test]
+    async fn test_attach_late_audio_reports_mismatch_codec() {
+        let tb = broadcast_with_tracks(&["audio/data"]);
+        let config =
+            MoqPullConfig { audio_codec: Some(AudioCodec::Aac), ..MoqPullConfig::default() };
+        let node = MoqPullNode::new(config);
+        let new_tracks = MoqPullNode::extract_tracks(&audio_only_catalog());
+
+        let (late, codec) =
+            node.attach_late_audio(&tb.consumer, &new_tracks).expect("audio track should attach");
+        assert_eq!(codec, AudioCodec::Opus, "discovered codec wins for the live subscription");
+        assert_eq!(node.advertised_out_audio_codec(), Some(AudioCodec::Aac));
+        assert_eq!(late.pin_name, "audio/data");
+    }
+
+    #[tokio::test]
+    async fn test_attach_late_video_av1_content_type() {
+        let tb = broadcast_with_tracks(&["video/data"]);
+        let node = MoqPullNode::new(MoqPullConfig::default());
+        let new_tracks = MoqPullNode::extract_tracks(&video_catalog(VideoCodec::Av1));
+        let (_late, content_type) =
+            node.attach_late_video(&tb.consumer, &new_tracks).expect("av1 track should attach");
+        assert_eq!(content_type, AV1_CONTENT_TYPE);
+    }
+
+    #[tokio::test]
+    async fn test_attach_late_video_h264_content_type() {
+        let tb = broadcast_with_tracks(&["video/data"]);
+        let node = MoqPullNode::new(MoqPullConfig::default());
+        let new_tracks = MoqPullNode::extract_tracks(&video_catalog(VideoCodec::H264));
+        let (_late, content_type) =
+            node.attach_late_video(&tb.consumer, &new_tracks).expect("h264 track should attach");
+        assert_eq!(content_type, H264_CONTENT_TYPE);
+    }
+
+    /// A statically advertised pin routes through the engine's `output_sender`
+    /// (not the `DynamicOutputs` registry) and reports `Sent` on success.
+    #[tokio::test]
+    async fn test_route_track_frame_static_pin_uses_output_sender() {
+        let (mut ctx, mock, _state_rx) = crate::test_utils::create_test_context(HashMap::new(), 1);
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+
+        let outcome = MoqPullNode::route_track_frame(
+            &mut ctx,
+            &dynamic_outputs,
+            true,
+            "out",
+            Packet::Text(Arc::from("frame")),
+        )
+        .await;
+        assert!(matches!(outcome, RouteOutcome::Sent));
+
+        let (_node, pin, packet) = mock.try_recv().await.expect("frame routed to output sender");
+        assert_eq!(pin, "out");
+        assert!(matches!(packet, Packet::Text(_)));
+        assert!(
+            dynamic_outputs.read().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty(),
+            "static pin routing must not touch the dynamic registry"
         );
     }
 }
