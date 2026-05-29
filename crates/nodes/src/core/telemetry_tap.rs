@@ -113,18 +113,7 @@ impl TelemetryTapNode {
     }
 
     fn matches_event_type_filter(&self, event_type: &str) -> bool {
-        if self.config.event_type_filter.is_empty() {
-            return true;
-        }
-
-        self.config.event_type_filter.iter().any(|pattern| {
-            if pattern.ends_with('*') {
-                let prefix = &pattern[..pattern.len() - 1];
-                event_type.starts_with(prefix)
-            } else {
-                event_type == pattern
-            }
-        })
+        super::glob_filter::matches_glob_filter(&self.config.event_type_filter, event_type)
     }
 
     /// Convert a TranscriptionData to telemetry event data.
