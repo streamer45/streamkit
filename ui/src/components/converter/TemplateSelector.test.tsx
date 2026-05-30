@@ -174,9 +174,9 @@ describe('TemplateSelector variant grouping', () => {
     expect(within(systemHeader).getByText('1')).toBeInTheDocument();
 
     expect(screen.getByRole('group', { name: /Colorbars variants/i })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'Colorbars (default)' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'H.264' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'VA-API H.264' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Colorbars' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'H.264 Colorbars' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'VA-API Colorbars' })).toBeInTheDocument();
   });
 
   it('selecting a variant loads that variant id', () => {
@@ -189,7 +189,7 @@ describe('TemplateSelector variant grouping', () => {
       />
     );
 
-    fireEvent.click(screen.getByRole('radio', { name: 'VA-API H.264' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'VA-API Colorbars' }));
     expect(onSelect).toHaveBeenCalledWith('d/vaapi-colorbars');
   });
 });

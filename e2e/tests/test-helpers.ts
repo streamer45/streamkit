@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import type { Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
 
 // Console error substrings that are always benign regardless of test context.
 // ResizeObserver loop errors are a Chromium quirk; WebSocket reconnect chatter
@@ -30,6 +30,22 @@ export interface ConsoleErrorCollector {
   stop(): void;
   /** Return only errors that don't match any benign pattern. */
   getUnexpected(extraBenignPatterns?: string[]): string[];
+}
+
+/**
+ * Selects a sample pipeline in the TemplateSelector by its full name, working
+ * for both ungrouped cards (clickable name text) and grouped scenarios where
+ * the sample is a variant pill whose accessible name is the full sample name.
+ */
+export async function selectPipelineTemplate(page: Page, name: string): Promise<void> {
+  const variantPill = page.getByRole('radio', { name, exact: true });
+  const flatCard = page.getByText(name, { exact: true });
+  await expect(variantPill.or(flatCard).first()).toBeVisible({ timeout: 10_000 });
+  if ((await variantPill.count()) > 0) {
+    await variantPill.first().click();
+  } else {
+    await flatCard.click();
+  }
 }
 
 /**

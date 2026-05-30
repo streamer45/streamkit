@@ -96,11 +96,7 @@ const ScenarioCard: React.FC<{ group: ScenarioGroup; selectedTemplateId: string 
       </TemplateContent>
       <VariantSelector role="group" aria-label={`${base.name} variants`}>
         {variants.map((variant) => (
-          <VariantOption
-            key={variant.id}
-            value={variant.id}
-            aria-label={variant.variant ?? `${base.name} (default)`}
-          >
+          <VariantOption key={variant.id} value={variant.id} aria-label={variant.name}>
             {variant.variant ?? 'Default'}
           </VariantOption>
         ))}
