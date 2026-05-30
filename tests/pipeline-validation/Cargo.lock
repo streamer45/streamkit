@@ -888,6 +888,7 @@ dependencies = [
  "ffprobe",
  "reqwest",
  "serde",
+ "serde_json",
  "tempfile",
  "toml",
 ]

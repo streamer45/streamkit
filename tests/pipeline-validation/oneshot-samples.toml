@@ -1,0 +1,354 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Expectations manifest for the official oneshot sample pipelines
+# (`samples/pipelines/oneshot/*.yml`), consumed by the `oneshot` test harness
+# (tests/pipeline-validation/tests/oneshot.rs).
+#
+# Each table key is a sample's file stem. Fields:
+#   output_extension  output suffix (e.g. ".webm"); also the ffprobe temp suffix
+#   output_kind       "media" (default, validated with ffprobe) or "json"
+#   container_format / codec_name / width / height / audio_codec / sample_rate /
+#                     channels   media expectations (output_kind = media)
+#   json_contains     substrings that must appear in the body (output_kind = json)
+#   requires_node     node kind that must be registered, else skip
+#   optional_node     true => skip-not-fail even under PIPELINE_REQUIRE_NODES=1
+#                     (nodes no CI job compiles: marketplace plugins, VA-API)
+#   requires_env      env vars that must be set, else skip (e.g. S3 creds)
+#   slow              true => only runs with PIPELINE_INCLUDE_SLOW=1
+#   inputs            multipart parts: { field, file = <repo-relative> | text = <literal> }
+#
+# Every oneshot YAML must have an entry here, or the harness fails so the new
+# sample gets triaged.
+
+# ---------------------------------------------------------------------------
+# Tier A — pure software, fast enough for the default CI job.
+# ---------------------------------------------------------------------------
+
+[double_volume]
+output_extension = ".ogg"
+container_format = "ogg"
+audio_codec = "opus"
+inputs = [{ field = "media", file = "samples/audio/system/sample.ogg" }]
+
+[dual_upload_mixing]
+output_extension = ".webm"
+container_format = "matroska,webm"
+audio_codec = "opus"
+inputs = [
+    { field = "track_a", file = "samples/audio/system/sample.ogg" },
+    { field = "track_b", file = "samples/audio/system/sample.ogg" },
+]
+
+[mp4_mux_audio]
+output_extension = ".mp4"
+container_format = "mov,mp4,m4a,3gp,3g2,mj2"
+audio_codec = "opus"
+inputs = [{ field = "media", file = "samples/audio/system/sample.ogg" }]
+
+[video_colorbars]
+output_extension = ".webm"
+container_format = "matroska,webm"
+codec_name = "vp9"
+width = 1280
+height = 720
+
+[openh264-encode-test]
+output_extension = ".mp4"
+container_format = "mov,mp4,m4a,3gp,3g2,mj2"
+codec_name = "h264"
+width = 640
+height = 480
+
+[mp4_mux_video]
+output_extension = ".mp4"
+container_format = "mov,mp4,m4a,3gp,3g2,mj2"
+codec_name = "av1"
+width = 640
+height = 480
+requires_node = "video::svt_av1::encoder"
+
+# ---------------------------------------------------------------------------
+# Tier A — heavyweight showcase pipelines (realtime pacers / slow SW AV1).
+# Opt in with PIPELINE_INCLUDE_SLOW=1.
+# ---------------------------------------------------------------------------
+
+[mixing]
+slow = true
+output_extension = ".webm"
+container_format = "matroska,webm"
+audio_codec = "opus"
+inputs = [{ field = "media", file = "samples/audio/system/sample.ogg" }]
+
+[video_compositor_demo]
+slow = true
+output_extension = ".webm"
+container_format = "matroska,webm"
+codec_name = "vp9"
+width = 1280
+height = 720
+
+[video_compositor_svg_overlay]
+slow = true
+output_extension = ".webm"
+container_format = "matroska,webm"
+codec_name = "vp9"
+width = 1280
+height = 720
+
+[video_av1_compositor_demo]
+slow = true
+output_extension = ".webm"
+container_format = "matroska,webm"
+codec_name = "av1"
+width = 1280
+height = 720
+requires_node = "video::av1::encoder"
+
+[video_svt_av1_compositor_demo]
+slow = true
+output_extension = ".webm"
+container_format = "matroska,webm"
+codec_name = "av1"
+width = 1280
+height = 720
+requires_node = "video::svt_av1::encoder"
+
+[video_dav1d_compositor_demo]
+slow = true
+output_extension = ".webm"
+container_format = "matroska,webm"
+codec_name = "av1"
+width = 1280
+height = 720
+requires_node = "video::dav1d::decoder"
+
+# ---------------------------------------------------------------------------
+# Tier B — marketplace plugins + models. optional_node = true so the GPU job
+# (PIPELINE_REQUIRE_NODES=1, no plugins) skips rather than fails. Run locally
+# after installing the plugin/model.
+# ---------------------------------------------------------------------------
+
+[aac_encode]
+output_extension = ".mp4"
+container_format = "mov,mp4,m4a,3gp,3g2,mj2"
+audio_codec = "aac"
+requires_node = "plugin::native::aac_encoder"
+optional_node = true
+inputs = [{ field = "media", file = "samples/audio/system/sample.ogg" }]
+
+[mp4_mux_aac_h264]
+output_extension = ".mp4"
+container_format = "mov,mp4,m4a,3gp,3g2,mj2"
+codec_name = "h264"
+audio_codec = "aac"
+requires_node = "plugin::native::aac_encoder"
+optional_node = true
+inputs = [{ field = "media", file = "samples/audio/system/sample.ogg" }]
+
+[kokoro-tts]
+output_extension = ".webm"
+container_format = "matroska,webm"
+audio_codec = "opus"
+requires_node = "plugin::native::kokoro"
+optional_node = true
+inputs = [{ field = "media", text = "Hello world. This is a StreamKit text to speech test." }]
+
+[matcha-tts]
+output_extension = ".webm"
+container_format = "matroska,webm"
+audio_codec = "opus"
+requires_node = "plugin::native::matcha"
+optional_node = true
+inputs = [{ field = "media", text = "Hello world. This is a StreamKit text to speech test." }]
+
+[piper-tts]
+output_extension = ".webm"
+container_format = "matroska,webm"
+audio_codec = "opus"
+requires_node = "plugin::native::piper"
+optional_node = true
+inputs = [{ field = "media", text = "Hello world. This is a StreamKit text to speech test." }]
+
+[pocket-tts]
+output_extension = ".webm"
+container_format = "matroska,webm"
+audio_codec = "opus"
+requires_node = "plugin::native::pocket-tts"
+optional_node = true
+inputs = [{ field = "media", text = "Hello world. This is a StreamKit text to speech test." }]
+
+[pocket-tts-voice-clone]
+output_extension = ".webm"
+container_format = "matroska,webm"
+audio_codec = "opus"
+requires_node = "plugin::native::pocket-tts"
+optional_node = true
+inputs = [{ field = "text", text = "Hello world. This is a StreamKit text to speech test." }]
+
+[supertonic-tts]
+output_extension = ".webm"
+container_format = "matroska,webm"
+audio_codec = "opus"
+requires_node = "plugin::native::supertonic"
+optional_node = true
+inputs = [{ field = "media", text = "Hello world. This is a StreamKit text to speech test." }]
+
+[useless-facts-tts]
+slow = true                                # fetches a remote fact over the network
+output_extension = ".webm"
+container_format = "matroska,webm"
+audio_codec = "opus"
+requires_node = "plugin::native::kokoro"
+optional_node = true
+
+[speech_to_text]
+output_extension = ".json"
+output_kind = "json"
+requires_node = "plugin::native::whisper"
+optional_node = true
+inputs = [{ field = "media", file = "samples/audio/system/sample.ogg" }]
+
+[sensevoice-stt]
+output_extension = ".json"
+output_kind = "json"
+requires_node = "plugin::native::sensevoice"
+optional_node = true
+inputs = [{ field = "media", file = "samples/audio/system/sample.ogg" }]
+
+[parakeet-stt]
+output_extension = ".json"
+output_kind = "json"
+requires_node = "plugin::native::parakeet"
+optional_node = true
+inputs = [{ field = "media", file = "samples/audio/system/sample.ogg" }]
+
+[vad-demo]
+output_extension = ".json"
+output_kind = "json"
+requires_node = "plugin::native::vad"
+optional_node = true
+inputs = [{ field = "media", file = "samples/audio/system/sample.ogg" }]
+
+[vad-filtered-stt]
+output_extension = ".json"
+output_kind = "json"
+requires_node = "plugin::native::whisper"
+optional_node = true
+inputs = [{ field = "media", file = "samples/audio/system/sample.ogg" }]
+
+[speech_to_text_translate]
+output_extension = ".webm"
+container_format = "matroska,webm"
+audio_codec = "opus"
+requires_node = "plugin::native::nllb"
+optional_node = true
+inputs = [{ field = "media", file = "samples/audio/system/sample.ogg" }]
+
+[speech_to_text_translate_helsinki]
+output_extension = ".webm"
+container_format = "matroska,webm"
+audio_codec = "opus"
+requires_node = "plugin::native::helsinki"
+optional_node = true
+inputs = [{ field = "media", file = "samples/audio/system/sample.ogg" }]
+
+[gain_filter_rust]
+output_extension = ".ogg"
+container_format = "ogg"
+audio_codec = "opus"
+requires_node = "plugin::wasm::gain_filter_rust"
+optional_node = true
+inputs = [{ field = "media", file = "samples/audio/system/sample.ogg" }]
+
+[video_slint_watermark]
+slow = true                                # 900-frame 720p render with per-frame overlay
+output_extension = ".webm"
+container_format = "matroska,webm"
+codec_name = "vp9"
+width = 1280
+height = 720
+requires_node = "plugin::native::slint"
+optional_node = true
+
+# ---------------------------------------------------------------------------
+# Tier C — hardware codecs. nvcodec / vulkan_video are compiled by the
+# pipeline-validation-gpu CI job, so they are NOT optional_node (a missing node
+# there is a real regression). VA-API is compiled by no CI job, so it is
+# optional_node = true.
+# ---------------------------------------------------------------------------
+
+[video_nv_av1_colorbars]
+output_extension = ".webm"
+container_format = "matroska,webm"
+codec_name = "av1"
+width = 1280
+height = 720
+requires_node = "video::nv::av1_encoder"
+
+[video_vulkan_video_h264_colorbars]
+output_extension = ".mp4"
+container_format = "mov,mp4,m4a,3gp,3g2,mj2"
+codec_name = "h264"
+width = 1280
+height = 720
+requires_node = "video::vulkan_video::h264_encoder"
+
+[video_vaapi_av1_colorbars]
+output_extension = ".webm"
+container_format = "matroska,webm"
+codec_name = "av1"
+width = 1280
+height = 720
+requires_node = "video::vaapi::av1_encoder"
+optional_node = true
+
+[video_vaapi_h264_colorbars]
+output_extension = ".mp4"
+container_format = "mov,mp4,m4a,3gp,3g2,mj2"
+codec_name = "h264"
+width = 1280
+height = 720
+requires_node = "video::vaapi::h264_encoder"
+optional_node = true
+
+# ---------------------------------------------------------------------------
+# External services — skipped unless their dependencies are present.
+# S3 samples gate on credentials; web samples gate on the Servo plugin.
+# ---------------------------------------------------------------------------
+
+[transcode_to_s3]
+output_extension = ".mp4"
+container_format = "mov,mp4,m4a,3gp,3g2,mj2"
+audio_codec = "opus"
+requires_env = ["SK_S3_ACCESS_KEY", "SK_S3_SECRET_KEY"]
+inputs = [{ field = "media", file = "samples/audio/system/sample.ogg" }]
+
+[tts_to_s3]
+output_extension = ".ogg"
+container_format = "ogg"
+audio_codec = "opus"
+requires_node = "plugin::native::kokoro"
+optional_node = true
+requires_env = ["SK_S3_ACCESS_KEY", "SK_S3_SECRET_KEY"]
+inputs = [{ field = "media", text = "This is a test of TTS to S3." }]
+
+[web_capture]
+output_extension = ".webm"
+container_format = "matroska,webm"
+codec_name = "vp9"
+width = 1280
+height = 720
+requires_node = "plugin::native::servo"
+optional_node = true
+
+[web_pip_compositor]
+slow = true                                # loads a remote WebGL page through Servo
+output_extension = ".mp4"
+container_format = "mov,mp4,m4a,3gp,3g2,mj2"
+codec_name = "h264"
+width = 1280
+height = 720
+requires_node = "plugin::native::servo"
+optional_node = true

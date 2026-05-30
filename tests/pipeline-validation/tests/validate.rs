@@ -21,43 +21,9 @@
 
 #![allow(clippy::disallowed_macros)] // Test binary — no logging crate available.
 
-use std::collections::HashSet;
 use std::path::Path;
-use std::sync::OnceLock;
 
-use pipeline_validation::{
-    get_available_nodes, get_base_url, run_pipeline, validate_output, Expected,
-};
-
-/// Lazily resolved base URL for the skit server.
-fn base_url() -> &'static str {
-    static URL: OnceLock<String> = OnceLock::new();
-    URL.get_or_init(get_base_url)
-}
-
-/// Lazily resolved set of available node kinds on the server.
-///
-/// When `PIPELINE_REQUIRE_NODES=1` is set, failure to query the schema
-/// endpoint panics instead of returning an empty set — this prevents
-/// a broken server from silently skipping all HW-codec tests.
-fn available_nodes() -> &'static HashSet<String> {
-    static NODES: OnceLock<HashSet<String>> = OnceLock::new();
-    NODES.get_or_init(|| {
-        get_available_nodes(base_url()).unwrap_or_else(|err| {
-            if std::env::var("PIPELINE_REQUIRE_NODES").as_deref() == Ok("1") {
-                panic!(
-                    "FATAL: Could not query available nodes: {err}\n  \
-                     PIPELINE_REQUIRE_NODES=1 requires a reachable server at {}",
-                    base_url()
-                );
-            }
-            eprintln!("WARNING: Could not query available nodes: {err}");
-            eprintln!("  HW codec tests will be skipped.");
-            eprintln!("  Is skit running at {}?", base_url());
-            HashSet::new()
-        })
-    })
-}
+use pipeline_validation::{available_nodes, base_url, run_pipeline, validate_output, Expected};
 
 /// The main test function called by `datatest-stable` for each `pipeline.yml`.
 ///
