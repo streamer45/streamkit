@@ -16,10 +16,26 @@ use streamkit_core::types::{
 };
 
 use super::constants::audio_codec_from_catalog;
+use std::collections::HashMap;
+use std::sync::Arc;
+use streamkit_core::pins::PinManagementMessage;
 use streamkit_core::{
     state_helpers, stats::NodeStatsTracker, InputPin, NodeContext, OutputPin, PinCardinality,
     ProcessorNode, StreamKitError,
 };
+use tokio::sync::mpsc;
+
+/// Output channels for dynamically created track pins.
+///
+/// When the catalog gains a track after `initialize()` (e.g. video added to
+/// an audio-only stream) and a downstream node connects to its pin, the engine
+/// creates the pin on demand and hands us the channel via
+/// [`PinManagementMessage::AddedOutputPin`]. Frame routing checks this map for
+/// pins that were not advertised at init. Mirrors `MoqPeerNode`'s registry.
+///
+/// Uses [`std::sync::RwLock`] rather than the async variant because the lock is
+/// never held across an `.await`.
+type DynamicOutputs = Arc<std::sync::RwLock<HashMap<String, mpsc::Sender<Packet>>>>;
 
 /// A catalog-discovered track with optional codec metadata.
 ///
@@ -104,6 +120,218 @@ impl MoqPullNode {
         }
         pins
     }
+
+    /// Pin definition for a track-named output pin created on demand. Names
+    /// containing a `video/` segment produce [`PacketType::EncodedVideo`]
+    /// (defaulting to VP9, like [`Self::output_pins_for_tracks`]); all others
+    /// produce Opus audio. The engine skips strict type validation for
+    /// dynamic-pin nodes, so the late catalog's actual codec governs decoding.
+    fn make_dynamic_output_pin(name: &str, audio_codec: AudioCodec) -> OutputPin {
+        let is_video = name.starts_with("video/") || name.contains("/video/");
+        let produces_type = if is_video {
+            PacketType::EncodedVideo(EncodedVideoFormat {
+                codec: VideoCodec::Vp9,
+                bitstream_format: None,
+                codec_private: None,
+                profile: None,
+                level: None,
+            })
+        } else {
+            PacketType::EncodedAudio(EncodedAudioFormat { codec: audio_codec, codec_private: None })
+        };
+        OutputPin { name: name.to_string(), produces_type, cardinality: PinCardinality::Broadcast }
+    }
+
+    fn insert_dynamic_output(
+        dynamic_outputs: &DynamicOutputs,
+        name: String,
+        channel: mpsc::Sender<Packet>,
+    ) {
+        dynamic_outputs
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(name, channel);
+    }
+
+    fn remove_dynamic_output(dynamic_outputs: &DynamicOutputs, name: &str) {
+        dynamic_outputs.write().unwrap_or_else(std::sync::PoisonError::into_inner).remove(name);
+    }
+
+    /// Drain runtime pin-management messages for the node's lifetime.
+    ///
+    /// Runs in its own task so dynamic output pins persist across reconnects
+    /// and are serviced even while [`Self::run_connection`] is between
+    /// connections. Only output pins are relevant — the pull node has no inputs.
+    async fn handle_pin_management(
+        mut pin_mgmt_rx: mpsc::Receiver<PinManagementMessage>,
+        dynamic_outputs: DynamicOutputs,
+        node_name: String,
+        audio_codec: AudioCodec,
+    ) {
+        while let Some(msg) = pin_mgmt_rx.recv().await {
+            match msg {
+                PinManagementMessage::RequestAddOutputPin { suggested_name, response_tx } => {
+                    let pin_name = suggested_name.unwrap_or_else(|| "out".to_string());
+                    tracing::info!(node = %node_name, pin = %pin_name, "MoqPullNode: creating dynamic output pin");
+                    let pin = Self::make_dynamic_output_pin(&pin_name, audio_codec);
+                    let _ = response_tx.send(Ok(pin));
+                },
+                PinManagementMessage::AddedOutputPin { pin, channel } => {
+                    tracing::info!(node = %node_name, pin = %pin.name, "MoqPullNode: activated dynamic output pin");
+                    Self::insert_dynamic_output(&dynamic_outputs, pin.name, channel);
+                },
+                PinManagementMessage::RemoveOutputPin { pin_name } => {
+                    tracing::info!(node = %node_name, pin = %pin_name, "MoqPullNode: removed dynamic output pin");
+                    Self::remove_dynamic_output(&dynamic_outputs, &pin_name);
+                },
+                PinManagementMessage::RequestAddInputPin { response_tx, .. } => {
+                    let _ = response_tx.send(Err(StreamKitError::Runtime(
+                        "MoqPullNode has no input pins".to_string(),
+                    )));
+                },
+                PinManagementMessage::AddedInputPin { .. }
+                | PinManagementMessage::RemoveInputPin { .. }
+                | PinManagementMessage::InputTypeResolved { .. }
+                | PinManagementMessage::OutputHintChannel { .. }
+                | PinManagementMessage::AttachHintSender { .. } => {},
+            }
+        }
+        tracing::debug!(node = %node_name, "MoqPullNode pin-management task ended");
+    }
+
+    /// Audio codec advertised by the stable `out` pin, fixed during
+    /// `initialize()`. Used to detect when a track's codec (possibly discovered
+    /// after init) differs from what downstream consumers were wired up for.
+    fn advertised_out_audio_codec(&self) -> Option<AudioCodec> {
+        self.output_pins.iter().find(|p| p.name == "out").and_then(|p| match &p.produces_type {
+            PacketType::EncodedAudio(fmt) => Some(fmt.codec),
+            _ => None,
+        })
+    }
+
+    /// Subscribe to the first audio track in `new_tracks` so a late-arriving
+    /// audio track (e.g. audio added after an initial video-only catalog) is
+    /// streamed mid-session. Returns the subscription and its codec, or `None`
+    /// if there is no audio track or the subscribe fails.
+    ///
+    /// Warns when the track's codec differs from the `out` pin advertised at
+    /// `initialize()`: that pin's type is fixed, so feeding it a different codec
+    /// would hand mislabeled bytes to downstream consumers bound to it.
+    fn attach_late_audio(
+        &self,
+        broadcast: &moq_lite::BroadcastConsumer,
+        new_tracks: &[DiscoveredTrack],
+    ) -> Option<(LateTrack, AudioCodec)> {
+        let dt = new_tracks.iter().find(|dt| dt.audio_codec.is_some())?;
+        let codec = dt.audio_codec?;
+        let consumer = match broadcast.subscribe_track(&dt.track) {
+            Ok(consumer) => consumer,
+            Err(e) => {
+                tracing::warn!(error = %e, track = %dt.track.name, "MoqPullNode: failed to subscribe to late audio track");
+                return None;
+            },
+        };
+        tracing::info!(track = %dt.track.name, "MoqPullNode: subscribing to late audio track");
+        if let Some(pin_codec) = self.advertised_out_audio_codec() {
+            if pin_codec != codec {
+                tracing::warn!(
+                    advertised = ?pin_codec,
+                    discovered = ?codec,
+                    track = %dt.track.name,
+                    "MoqPullNode: late audio track codec differs from the advertised `out` pin; downstream consumers may misdecode (pin was fixed at init before this track appeared)"
+                );
+            }
+        }
+        let pin_registered = self.output_pins.iter().any(|p| p.name == dt.track.name);
+        Some((
+            LateTrack {
+                track: dt.track.clone(),
+                consumer,
+                pin_name: dt.track.name.clone(),
+                pin_registered,
+            },
+            codec,
+        ))
+    }
+
+    /// Subscribe to the first video track in `new_tracks` so a late-arriving
+    /// video track (e.g. video added to an audio-only stream) is streamed
+    /// mid-session. Returns the subscription and its catalog content-type, or
+    /// `None` if there is no video track or the subscribe fails.
+    fn attach_late_video(
+        &self,
+        broadcast: &moq_lite::BroadcastConsumer,
+        new_tracks: &[DiscoveredTrack],
+    ) -> Option<(LateTrack, &'static str)> {
+        let dt = new_tracks.iter().find(|dt| dt.video_codec.is_some())?;
+        let consumer = match broadcast.subscribe_track(&dt.track) {
+            Ok(consumer) => consumer,
+            Err(e) => {
+                tracing::warn!(error = %e, track = %dt.track.name, "MoqPullNode: failed to subscribe to late video track");
+                return None;
+            },
+        };
+        tracing::info!(track = %dt.track.name, "MoqPullNode: subscribing to late video track");
+        let content_type = match dt.video_codec {
+            Some(VideoCodec::Av1) => AV1_CONTENT_TYPE,
+            Some(VideoCodec::H264) => H264_CONTENT_TYPE,
+            _ => VP9_CONTENT_TYPE,
+        };
+        let pin_registered = self.output_pins.iter().any(|p| p.name == dt.track.name);
+        Some((
+            LateTrack {
+                track: dt.track.clone(),
+                consumer,
+                pin_name: dt.track.name.clone(),
+                pin_registered,
+            },
+            content_type,
+        ))
+    }
+
+    /// Route a track frame to its output pin. Statically advertised pins (set
+    /// during `initialize()`) go through the engine's direct sender; pins
+    /// created at runtime go through the [`DynamicOutputs`] channel registry.
+    async fn route_track_frame(
+        context: &mut NodeContext,
+        dynamic_outputs: &DynamicOutputs,
+        pin_registered: bool,
+        pin_name: &str,
+        packet: Packet,
+    ) -> RouteOutcome {
+        if pin_registered {
+            return match context.output_sender.send(pin_name, packet).await {
+                Ok(()) => RouteOutcome::Sent,
+                Err(_) => RouteOutcome::Closed,
+            };
+        }
+        Self::route_to_dynamic_output(dynamic_outputs, pin_name, packet).await
+    }
+
+    /// Send a frame to a runtime-created pin's channel. Returns
+    /// [`RouteOutcome::NoConsumer`] when no pin is registered or its channel has
+    /// closed (in which case the stale entry is removed) — both are non-fatal,
+    /// so the node keeps running until a consumer (re)connects.
+    async fn route_to_dynamic_output(
+        dynamic_outputs: &DynamicOutputs,
+        pin_name: &str,
+        packet: Packet,
+    ) -> RouteOutcome {
+        let channel = dynamic_outputs
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(pin_name)
+            .cloned();
+        let Some(tx) = channel else {
+            return RouteOutcome::NoConsumer;
+        };
+        if tx.send(packet).await.is_ok() {
+            RouteOutcome::Sent
+        } else {
+            Self::remove_dynamic_output(dynamic_outputs, pin_name);
+            RouteOutcome::NoConsumer
+        }
+    }
 }
 
 #[async_trait]
@@ -114,6 +342,10 @@ impl ProcessorNode for MoqPullNode {
 
     fn output_pins(&self) -> Vec<OutputPin> {
         self.output_pins.clone()
+    }
+
+    fn supports_dynamic_pins(&self) -> bool {
+        true
     }
 
     async fn initialize(
@@ -176,10 +408,30 @@ impl ProcessorNode for MoqPullNode {
         );
         state_helpers::emit_running(&context.state_tx, &node_name);
 
+        // Dynamic output pin channels, serviced by a dedicated task so they
+        // survive reconnects. Populated when the engine creates a track-named
+        // pin (e.g. late video) that wasn't advertised at init.
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let pin_mgmt_task = context.pin_management_rx.take().map(|rx| {
+            let default_audio_codec = self.config.audio_codec.unwrap_or(AudioCodec::Opus);
+            tokio::spawn(Self::handle_pin_management(
+                rx,
+                dynamic_outputs.clone(),
+                node_name.clone(),
+                default_audio_codec,
+            ))
+        });
+
         let mut total_packet_count = 0;
         // Main reconnection loop - simple 1 second retry for all failures
         loop {
-            match Box::pin(self.run_connection(&mut context, &mut total_packet_count)).await {
+            match Box::pin(self.run_connection(
+                &mut context,
+                &dynamic_outputs,
+                &mut total_packet_count,
+            ))
+            .await
+            {
                 Ok(StreamEndReason::Natural) => {
                     tracing::info!(
                         "MoqPullNode finished successfully after {} total packets",
@@ -244,6 +496,10 @@ impl ProcessorNode for MoqPullNode {
             }
         }
 
+        if let Some(task) = pin_mgmt_task {
+            task.abort();
+        }
+
         state_helpers::emit_stopped(&context.state_tx, &node_name, "completed");
         Ok(())
     }
@@ -256,6 +512,26 @@ enum StreamEndReason {
     Natural,
     /// Stream ended unexpectedly and should trigger a reconnection attempt
     Reconnect,
+}
+
+/// Result of routing a track frame to an output pin.
+enum RouteOutcome {
+    /// Delivered to a connected pin.
+    Sent,
+    /// No connected consumer (dynamic pin not yet created, or it was removed).
+    /// The frame is dropped; the node keeps running.
+    NoConsumer,
+    /// The downstream channel for a statically advertised pin closed.
+    Closed,
+}
+
+/// A track subscribed mid-session by the catalog watch, plus the read-loop
+/// state the caller needs to start consuming it.
+struct LateTrack {
+    track: moq_lite::Track,
+    consumer: moq_lite::TrackConsumer,
+    pin_name: String,
+    pin_registered: bool,
 }
 
 /// Maximum consecutive `Cancel` errors before triggering a reconnect.
@@ -440,53 +716,6 @@ impl MoqPullNode {
         tracks
     }
 
-    /// Returns true if the track list contains both an audio and a video track.
-    fn has_audio_and_video(tracks: &[DiscoveredTrack]) -> bool {
-        tracks.iter().any(|dt| dt.audio_codec.is_some())
-            && tracks.iter().any(|dt| dt.video_codec.is_some())
-    }
-
-    /// After finding initial tracks, wait for catalog updates that might add more
-    /// (e.g. the browser's video encoder finishing after audio was already ready).
-    /// Returns as soon as both audio and video are present, or on timeout.
-    async fn settle_catalog(
-        catalog_consumer: &mut super::catalog_consumer::CatalogConsumer,
-        mut best: Vec<DiscoveredTrack>,
-    ) -> Vec<DiscoveredTrack> {
-        if Self::has_audio_and_video(&best) {
-            return best;
-        }
-
-        let settle_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-
-        loop {
-            let remaining = settle_deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-
-            match tokio::time::timeout(remaining, catalog_consumer.next()).await {
-                Ok(Ok(Some(updated))) => {
-                    let updated_tracks = Self::extract_tracks(&updated);
-                    if !updated_tracks.is_empty() {
-                        tracing::info!(
-                            prev = best.len(),
-                            now = updated_tracks.len(),
-                            "Catalog updated"
-                        );
-                        best = updated_tracks;
-                        if Self::has_audio_and_video(&best) {
-                            break;
-                        }
-                    }
-                },
-                _ => break,
-            }
-        }
-
-        best
-    }
-
     async fn parse_catalog(
         &self,
         catalog_consumer: &mut super::catalog_consumer::CatalogConsumer,
@@ -525,7 +754,7 @@ impl MoqPullNode {
             let tracks = Self::extract_tracks(&catalog);
 
             if !tracks.is_empty() {
-                return Ok(Self::settle_catalog(catalog_consumer, tracks).await);
+                return Ok(tracks);
             }
 
             if start.elapsed() >= catalog_timeout {
@@ -546,12 +775,22 @@ impl MoqPullNode {
     async fn run_connection(
         &self,
         context: &mut NodeContext,
+        dynamic_outputs: &DynamicOutputs,
         total_packet_count: &mut u32,
     ) -> Result<StreamEndReason, StreamKitError> {
         /// Which media kind produced a frame in the multiplexed select loop.
         enum ReadSource {
             Audio,
             Video,
+        }
+
+        /// One iteration of the multiplexed select loop: a track frame, or a
+        /// catalog update that may reveal a late-arriving track.
+        enum LoopEvent {
+            Frame(Result<Option<bytes::Bytes>, moq_lite::Error>, ReadSource),
+            // Boxed: a parsed catalog is far larger than a frame result, so an
+            // unboxed variant bloats every `LoopEvent` (clippy::large_enum_variant).
+            Catalog(Box<Result<Option<hang::catalog::Catalog>, hang::Error>>),
         }
 
         /// Cap re-subscribe attempts per track to prevent tight loops if a
@@ -652,7 +891,7 @@ impl MoqPullNode {
         let audio_track = discovered_tracks.iter().find(|dt| dt.audio_codec.is_some());
         let video_track = discovered_tracks.iter().find(|dt| dt.video_codec.is_some());
 
-        let resolved_audio_codec = audio_track
+        let mut resolved_audio_codec = audio_track
             .and_then(|dt| dt.audio_codec)
             .or(self.config.audio_codec)
             .unwrap_or(AudioCodec::Opus);
@@ -660,14 +899,7 @@ impl MoqPullNode {
         // Warn when the catalog codec differs from the output pin set during
         // initialize(). This can happen when init fails to discover the catalog
         // (timeout) and the pin remains at the constructor's default codec.
-        let out_pin_codec =
-            self.output_pins.iter().find(|p| p.name == "out").and_then(|p| {
-                match &p.produces_type {
-                    PacketType::EncodedAudio(fmt) => Some(fmt.codec),
-                    _ => None,
-                }
-            });
-        if let Some(pin_codec) = out_pin_codec {
+        if let Some(pin_codec) = self.advertised_out_audio_codec() {
             if pin_codec != resolved_audio_codec {
                 tracing::warn!(
                     advertised = ?pin_codec,
@@ -689,8 +921,9 @@ impl MoqPullNode {
             ));
         }
 
-        // Subscribe to audio track
-        let (mut audio_track_consumer, audio_track_pin_name, audio_track_pin_registered) =
+        // Subscribe to audio track. The owned `*_sub_track` carries the track
+        // for re-subscribe and lets the catalog watch attach a late track.
+        let (mut audio_track_consumer, mut audio_track_pin_name, mut audio_track_pin_registered) =
             if let Some(dt) = audio_track {
                 tracing::info!("subscribing to audio track: {}", dt.track.name);
                 let pin_name = dt.track.name.clone();
@@ -702,9 +935,10 @@ impl MoqPullNode {
             } else {
                 (None, None, false)
             };
+        let mut audio_sub_track: Option<moq_lite::Track> = audio_track.map(|dt| dt.track.clone());
 
         // Subscribe to video track
-        let (mut video_track_consumer, video_track_pin_name, video_track_pin_registered) =
+        let (mut video_track_consumer, mut video_track_pin_name, mut video_track_pin_registered) =
             if let Some(dt) = video_track {
                 tracing::info!("subscribing to video track: {}", dt.track.name);
                 let pin_name = dt.track.name.clone();
@@ -716,17 +950,24 @@ impl MoqPullNode {
             } else {
                 (None, None, false)
             };
+        let mut video_sub_track: Option<moq_lite::Track> = video_track.map(|dt| dt.track.clone());
 
         let mut audio_current_group: Option<moq_lite::GroupConsumer> = None;
         let mut video_current_group: Option<moq_lite::GroupConsumer> = None;
 
         // Resolve the video content_type from the discovered track's codec.
-        // Falls back to "video/vp9" if no codec info is available.
-        let video_content_type: &str = match video_track.and_then(|dt| dt.video_codec) {
+        // Falls back to "video/vp9" if no codec info is available. Reassigned
+        // when the catalog watch attaches a late video track.
+        let mut video_content_type: &str = match video_track.and_then(|dt| dt.video_codec) {
             Some(VideoCodec::Av1) => AV1_CONTENT_TYPE,
             Some(VideoCodec::H264) => H264_CONTENT_TYPE,
             _ => VP9_CONTENT_TYPE,
         };
+
+        // Keep watching the catalog after initial discovery so tracks that
+        // appear later (e.g. video added to an audio-only stream) are picked
+        // up mid-session. Disabled once the catalog track closes or errors.
+        let mut catalog_watch_active = true;
 
         let mut session_packet_count: u32 = 0;
         let mut last_audio_timestamp_us: Option<u64> = None;
@@ -781,54 +1022,119 @@ impl MoqPullNode {
                     None => std::future::pending().await,
                 }
             };
+            // Watch for late-arriving tracks. Pends forever once disabled so it
+            // never busy-loops after the catalog track closes.
+            let catalog_read = async {
+                if catalog_watch_active {
+                    catalog_consumer.next().await
+                } else {
+                    std::future::pending().await
+                }
+            };
+
+            let event: LoopEvent = if let Some(token) = &context.cancellation_token {
+                tokio::select! {
+                    () = token.cancelled() => {
+                        tracing::info!("MoQ pull cancelled after {} packets", session_packet_count);
+                        return Ok(StreamEndReason::Natural);
+                    }
+                    msg = context.control_rx.recv() => {
+                        match msg {
+                            Some(streamkit_core::control::NodeControlMessage::Shutdown) => {
+                                tracing::info!("MoQ pull received shutdown signal after {} packets", session_packet_count);
+                                return Ok(StreamEndReason::Natural);
+                            }
+                            Some(control_msg) => {
+                                tracing::debug!("MoQ pull received control message: {:?}", control_msg);
+                                continue;
+                            }
+                            None => {
+                                tracing::info!("MoQ pull control channel closed, shutting down after {} packets", session_packet_count);
+                                return Ok(StreamEndReason::Natural);
+                            }
+                        }
+                    }
+                    result = audio_read => LoopEvent::Frame(result, ReadSource::Audio),
+                    result = video_read => LoopEvent::Frame(result, ReadSource::Video),
+                    catalog = catalog_read => LoopEvent::Catalog(Box::new(catalog)),
+                }
+            } else {
+                tokio::select! {
+                    msg = context.control_rx.recv() => {
+                        match msg {
+                            Some(streamkit_core::control::NodeControlMessage::Shutdown) => {
+                                tracing::info!("MoQ pull received shutdown signal after {} packets", session_packet_count);
+                                return Ok(StreamEndReason::Natural);
+                            }
+                            Some(control_msg) => {
+                                tracing::debug!("MoQ pull received control message: {:?}", control_msg);
+                                continue;
+                            }
+                            None => {
+                                tracing::info!("MoQ pull control channel closed, shutting down after {} packets", session_packet_count);
+                                return Ok(StreamEndReason::Natural);
+                            }
+                        }
+                    }
+                    result = audio_read => LoopEvent::Frame(result, ReadSource::Audio),
+                    result = video_read => LoopEvent::Frame(result, ReadSource::Video),
+                    catalog = catalog_read => LoopEvent::Catalog(Box::new(catalog)),
+                }
+            };
 
             let (read_result, source): (Result<Option<bytes::Bytes>, moq_lite::Error>, ReadSource) =
-                if let Some(token) = &context.cancellation_token {
-                    tokio::select! {
-                        () = token.cancelled() => {
-                            tracing::info!("MoQ pull cancelled after {} packets", session_packet_count);
-                            return Ok(StreamEndReason::Natural);
-                        }
-                        msg = context.control_rx.recv() => {
-                            match msg {
-                                Some(streamkit_core::control::NodeControlMessage::Shutdown) => {
-                                    tracing::info!("MoQ pull received shutdown signal after {} packets", session_packet_count);
-                                    return Ok(StreamEndReason::Natural);
-                                }
-                                Some(control_msg) => {
-                                    tracing::debug!("MoQ pull received control message: {:?}", control_msg);
-                                    continue;
-                                }
-                                None => {
-                                    tracing::info!("MoQ pull control channel closed, shutting down after {} packets", session_packet_count);
-                                    return Ok(StreamEndReason::Natural);
-                                }
-                            }
-                        }
-                        result = audio_read => (result, ReadSource::Audio),
-                        result = video_read => (result, ReadSource::Video),
-                    }
-                } else {
-                    tokio::select! {
-                        msg = context.control_rx.recv() => {
-                            match msg {
-                                Some(streamkit_core::control::NodeControlMessage::Shutdown) => {
-                                    tracing::info!("MoQ pull received shutdown signal after {} packets", session_packet_count);
-                                    return Ok(StreamEndReason::Natural);
-                                }
-                                Some(control_msg) => {
-                                    tracing::debug!("MoQ pull received control message: {:?}", control_msg);
-                                    continue;
-                                }
-                                None => {
-                                    tracing::info!("MoQ pull control channel closed, shutting down after {} packets", session_packet_count);
-                                    return Ok(StreamEndReason::Natural);
+                match event {
+                    LoopEvent::Frame(result, source) => (result, source),
+                    LoopEvent::Catalog(boxed) => match *boxed {
+                        Ok(Some(catalog)) => {
+                            let new_tracks = Self::extract_tracks(&catalog);
+
+                            if audio_sub_track.is_none() {
+                                if let Some((late, codec)) =
+                                    self.attach_late_audio(&broadcast, &new_tracks)
+                                {
+                                    resolved_audio_codec = codec;
+                                    audio_track_pin_registered = late.pin_registered;
+                                    audio_track_pin_name = Some(late.pin_name);
+                                    audio_sub_track = Some(late.track);
+                                    audio_track_consumer = Some(late.consumer);
+                                    audio_current_group = None;
+                                    audio_is_first_in_group = true;
+                                    last_audio_timestamp_us = None;
+                                    audio_clock = MediaClock::new(0);
                                 }
                             }
-                        }
-                        result = audio_read => (result, ReadSource::Audio),
-                        result = video_read => (result, ReadSource::Video),
-                    }
+
+                            if video_sub_track.is_none() {
+                                if let Some((late, content_type)) =
+                                    self.attach_late_video(&broadcast, &new_tracks)
+                                {
+                                    video_content_type = content_type;
+                                    video_track_pin_registered = late.pin_registered;
+                                    video_track_pin_name = Some(late.pin_name);
+                                    video_sub_track = Some(late.track);
+                                    video_track_consumer = Some(late.consumer);
+                                    video_current_group = None;
+                                    video_is_first_in_group = true;
+                                    last_video_timestamp_us = None;
+                                    video_clock = MediaClock::new(0);
+                                }
+                            }
+                            continue;
+                        },
+                        Ok(None) => {
+                            tracing::debug!(
+                                "MoqPullNode: catalog track closed; stopping catalog watch"
+                            );
+                            catalog_watch_active = false;
+                            continue;
+                        },
+                        Err(e) => {
+                            tracing::debug!(error = %e, "MoqPullNode: catalog watch error; stopping catalog watch");
+                            catalog_watch_active = false;
+                            continue;
+                        },
+                    },
                 };
 
             match read_result {
@@ -926,16 +1232,19 @@ impl MoqPullNode {
                     match source {
                         ReadSource::Audio => {
                             let pin_name = audio_track_pin_name.as_deref().unwrap_or("out");
-                            if audio_track_pin_registered
-                                && pin_name != "out"
-                                && context
-                                    .output_sender
-                                    .send(pin_name, packet.clone())
-                                    .await
-                                    .is_err()
-                            {
-                                tracing::debug!("Audio output channel closed, stopping node");
-                                return Ok(StreamEndReason::Natural);
+                            if pin_name != "out" {
+                                let outcome = Self::route_track_frame(
+                                    context,
+                                    dynamic_outputs,
+                                    audio_track_pin_registered,
+                                    pin_name,
+                                    packet.clone(),
+                                )
+                                .await;
+                                if matches!(outcome, RouteOutcome::Closed) {
+                                    tracing::debug!("Audio output channel closed, stopping node");
+                                    return Ok(StreamEndReason::Natural);
+                                }
                             }
                             // Always send audio to the stable "out" pin
                             if context.output_sender.send("out", packet).await.is_err() {
@@ -945,17 +1254,29 @@ impl MoqPullNode {
                         },
                         ReadSource::Video => {
                             if let Some(pin_name) = video_track_pin_name.as_deref() {
-                                if video_track_pin_registered {
-                                    if context.output_sender.send(pin_name, packet).await.is_err() {
+                                let outcome = Self::route_track_frame(
+                                    context,
+                                    dynamic_outputs,
+                                    video_track_pin_registered,
+                                    pin_name,
+                                    packet,
+                                )
+                                .await;
+                                match outcome {
+                                    RouteOutcome::Sent => {},
+                                    RouteOutcome::NoConsumer => {
+                                        tracing::trace!(
+                                            "Video pin has no consumer, discarding packet"
+                                        );
+                                        stats_tracker.discarded();
+                                        continue;
+                                    },
+                                    RouteOutcome::Closed => {
                                         tracing::debug!(
                                             "Video output channel closed, stopping node"
                                         );
                                         return Ok(StreamEndReason::Natural);
-                                    }
-                                } else {
-                                    tracing::trace!("Video pin not registered, discarding packet");
-                                    stats_tracker.discarded();
-                                    continue;
+                                    },
                                 }
                             }
                         },
@@ -984,9 +1305,9 @@ impl MoqPullNode {
                             audio_clock = MediaClock::new(0);
 
                             if audio_resubscribe_attempts < MAX_RESUBSCRIBE_ATTEMPTS {
-                                if let Some(dt) = audio_track {
+                                if let Some(track) = audio_sub_track.as_ref() {
                                     audio_resubscribe_attempts += 1;
-                                    match broadcast.subscribe_track(&dt.track) {
+                                    match broadcast.subscribe_track(track) {
                                         Ok(new_consumer) => {
                                             tracing::info!(
                                                 attempt = audio_resubscribe_attempts,
@@ -1014,9 +1335,9 @@ impl MoqPullNode {
                             video_clock = MediaClock::new(0);
 
                             if video_resubscribe_attempts < MAX_RESUBSCRIBE_ATTEMPTS {
-                                if let Some(dt) = video_track {
+                                if let Some(track) = video_sub_track.as_ref() {
                                     video_resubscribe_attempts += 1;
-                                    match broadcast.subscribe_track(&dt.track) {
+                                    match broadcast.subscribe_track(track) {
                                         Ok(new_consumer) => {
                                             tracing::info!(
                                                 attempt = video_resubscribe_attempts,
@@ -1274,30 +1595,6 @@ mod tests {
     }
 
     #[test]
-    fn test_has_audio_and_video_uses_codec_fields() {
-        let both = [
-            DiscoveredTrack {
-                track: moq_lite::Track { name: "x".to_string(), priority: 0 },
-                video_codec: None,
-                audio_codec: Some(AudioCodec::Opus),
-            },
-            DiscoveredTrack {
-                track: moq_lite::Track { name: "y".to_string(), priority: 0 },
-                video_codec: Some(VideoCodec::Av1),
-                audio_codec: None,
-            },
-        ];
-        assert!(MoqPullNode::has_audio_and_video(&both));
-
-        let audio_only = [DiscoveredTrack {
-            track: moq_lite::Track { name: "z".to_string(), priority: 0 },
-            video_codec: None,
-            audio_codec: Some(AudioCodec::Aac),
-        }];
-        assert!(!MoqPullNode::has_audio_and_video(&audio_only));
-    }
-
-    #[test]
     fn test_output_pins_for_tracks_uses_codec_not_name() {
         let tracks = [DiscoveredTrack {
             track: moq_lite::Track { name: "non-standard-name".to_string(), priority: 60 },
@@ -1423,5 +1720,497 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Regression: `parse_catalog` used to wait up to 5s (twice per session)
+    /// for a video track that never arrives on audio-only streams, stalling
+    /// startup of the audio relay. The first non-empty catalog is authoritative.
+    #[tokio::test]
+    async fn test_parse_catalog_audio_only_returns_promptly() {
+        let origin = moq_lite::Origin::random().produce();
+        let mut broadcast = origin.create_broadcast("test-broadcast").unwrap();
+        let track = hang::catalog::Catalog::default_track();
+        let mut producer = broadcast.create_track(track.clone()).unwrap();
+
+        let consumer = origin.consume();
+        let bc = consumer.get_broadcast("test-broadcast").unwrap();
+        let consumer_track = bc.subscribe_track(&track).unwrap();
+
+        let mut audio_renditions = std::collections::BTreeMap::new();
+        audio_renditions.insert(
+            "audio/data".to_string(),
+            hang::catalog::AudioConfig {
+                codec: super::super::constants::catalog_audio_codec(AudioCodec::Opus),
+                sample_rate: 48000,
+                channel_count: 2,
+                bitrate: Some(128_000),
+                description: None,
+                container: hang::catalog::Container::default(),
+                jitter: None,
+            },
+        );
+        let catalog = hang::catalog::Catalog {
+            audio: hang::catalog::Audio { renditions: audio_renditions },
+            ..Default::default()
+        };
+        let payload = catalog.to_string().unwrap();
+        let mut group = producer.append_group().unwrap();
+        group.write_frame(bytes::Bytes::from(payload)).unwrap();
+        group.finish().unwrap();
+
+        let node = MoqPullNode::new(MoqPullConfig::default());
+        let mut cc = super::super::catalog_consumer::CatalogConsumer::new(consumer_track);
+
+        let start = std::time::Instant::now();
+        let tracks = node.parse_catalog(&mut cc).await.unwrap();
+        let elapsed = start.elapsed();
+
+        assert_eq!(tracks.len(), 1);
+        assert!(tracks[0].audio_codec.is_some());
+        assert!(tracks.iter().all(|t| t.video_codec.is_none()));
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "audio-only catalog should parse without the old 5s settle wait, took {elapsed:?}"
+        );
+    }
+
+    fn audio_only_catalog() -> hang::catalog::Catalog {
+        let mut audio_renditions = std::collections::BTreeMap::new();
+        audio_renditions.insert(
+            "audio/data".to_string(),
+            hang::catalog::AudioConfig {
+                codec: super::super::constants::catalog_audio_codec(AudioCodec::Opus),
+                sample_rate: 48000,
+                channel_count: 2,
+                bitrate: Some(128_000),
+                description: None,
+                container: hang::catalog::Container::default(),
+                jitter: None,
+            },
+        );
+        hang::catalog::Catalog {
+            audio: hang::catalog::Audio { renditions: audio_renditions },
+            ..Default::default()
+        }
+    }
+
+    fn video_catalog(codec: VideoCodec) -> hang::catalog::Catalog {
+        let mut catalog = audio_only_catalog();
+        catalog.video.renditions.insert(
+            "video/data".to_string(),
+            hang::catalog::VideoConfig {
+                codec: super::super::constants::catalog_video_codec(codec),
+                coded_width: None,
+                coded_height: None,
+                display_ratio_width: None,
+                display_ratio_height: None,
+                framerate: Some(30.0),
+                bitrate: None,
+                description: None,
+                optimize_for_latency: Some(true),
+                container: hang::catalog::Container::default(),
+                jitter: None,
+            },
+        );
+        catalog
+    }
+
+    fn audio_video_catalog() -> hang::catalog::Catalog {
+        video_catalog(VideoCodec::Vp9)
+    }
+
+    /// Regression: an incremental publisher that announces audio first and adds
+    /// video in a later catalog update used to lose the video track once
+    /// `settle_catalog` was removed (the pull node discovered once and never
+    /// re-watched). The first non-empty catalog must still return promptly with
+    /// just audio, while a subsequent update reveals the video track. The
+    /// catalog watch in `run_connection` subscribes to the late track.
+    #[tokio::test]
+    async fn test_catalog_watch_discovers_late_video_track() {
+        let origin = moq_lite::Origin::random().produce();
+        let mut broadcast = origin.create_broadcast("test-broadcast").unwrap();
+        let track = hang::catalog::Catalog::default_track();
+        let mut producer = broadcast.create_track(track.clone()).unwrap();
+
+        let consumer = origin.consume();
+        let bc = consumer.get_broadcast("test-broadcast").unwrap();
+        let consumer_track = bc.subscribe_track(&track).unwrap();
+        let mut cc = super::super::catalog_consumer::CatalogConsumer::new(consumer_track);
+
+        let write_catalog = |producer: &mut moq_lite::TrackProducer,
+                             catalog: &hang::catalog::Catalog| {
+            let payload = catalog.to_string().unwrap();
+            let mut group = producer.append_group().unwrap();
+            group.write_frame(bytes::Bytes::from(payload)).unwrap();
+            group.finish().unwrap();
+        };
+
+        // First update: audio only — initial discovery returns immediately.
+        write_catalog(&mut producer, &audio_only_catalog());
+        let node = MoqPullNode::new(MoqPullConfig::default());
+        let initial = node.parse_catalog(&mut cc).await.unwrap();
+        assert_eq!(initial.len(), 1, "first catalog should expose only audio");
+        assert!(initial[0].audio_codec.is_some());
+        assert!(initial.iter().all(|t| t.video_codec.is_none()));
+
+        // Second update: video added. The watch loop reads this from the same
+        // consumer and now sees both renditions.
+        write_catalog(&mut producer, &audio_video_catalog());
+        let updated = cc.next().await.unwrap().expect("second catalog frame");
+        let tracks = MoqPullNode::extract_tracks(&updated);
+        assert!(tracks.iter().any(|t| t.audio_codec.is_some()), "audio still present");
+        assert!(
+            tracks.iter().any(|t| t.video_codec == Some(VideoCodec::Vp9)),
+            "late video track should be discovered on the second catalog update"
+        );
+    }
+
+    /// The pull node must advertise dynamic-pin support so the engine routes
+    /// `RequestAddOutputPin` for tracks (e.g. late video) that weren't present
+    /// at `initialize()`.
+    #[test]
+    fn test_supports_dynamic_pins() {
+        let node = MoqPullNode::new(MoqPullConfig::default());
+        assert!(node.supports_dynamic_pins());
+    }
+
+    #[test]
+    fn test_make_dynamic_output_pin_video_vs_audio() {
+        let video = MoqPullNode::make_dynamic_output_pin("video/data", AudioCodec::Opus);
+        assert!(
+            matches!(&video.produces_type, PacketType::EncodedVideo(fmt) if fmt.codec == VideoCodec::Vp9),
+            "video-prefixed pin should produce EncodedVideo, got {:?}",
+            video.produces_type
+        );
+        let audio = MoqPullNode::make_dynamic_output_pin("audio/data", AudioCodec::Aac);
+        assert!(
+            matches!(&audio.produces_type, PacketType::EncodedAudio(fmt) if fmt.codec == AudioCodec::Aac),
+            "non-video pin should produce EncodedAudio, got {:?}",
+            audio.produces_type
+        );
+    }
+
+    /// `RequestAddOutputPin` is answered with a pin named after the request and
+    /// `AddedOutputPin` registers a channel that frame routing can later find.
+    #[tokio::test]
+    async fn test_pin_management_creates_and_registers_output_pin() {
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let (mgmt_tx, mgmt_rx) = mpsc::channel(8);
+        let task = tokio::spawn(MoqPullNode::handle_pin_management(
+            mgmt_rx,
+            dynamic_outputs.clone(),
+            "test-node".to_string(),
+            AudioCodec::Opus,
+        ));
+
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        mgmt_tx
+            .send(PinManagementMessage::RequestAddOutputPin {
+                suggested_name: Some("video/data".to_string()),
+                response_tx: resp_tx,
+            })
+            .await
+            .unwrap();
+        let pin = resp_rx.await.unwrap().unwrap();
+        assert_eq!(pin.name, "video/data");
+
+        let (data_tx, _data_rx) = mpsc::channel(8);
+        mgmt_tx
+            .send(PinManagementMessage::AddedOutputPin { pin: pin.clone(), channel: data_tx })
+            .await
+            .unwrap();
+
+        // A second round-trip flushes the FIFO queue, guaranteeing the
+        // AddedOutputPin above has been processed before we inspect the map.
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        mgmt_tx
+            .send(PinManagementMessage::RequestAddOutputPin {
+                suggested_name: Some("out".to_string()),
+                response_tx: ack_tx,
+            })
+            .await
+            .unwrap();
+        let _ = ack_rx.await.unwrap();
+
+        assert!(
+            dynamic_outputs
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains_key("video/data"),
+            "AddedOutputPin should register the channel in DynamicOutputs"
+        );
+
+        // RemoveOutputPin clears the registration.
+        mgmt_tx
+            .send(PinManagementMessage::RemoveOutputPin { pin_name: "video/data".to_string() })
+            .await
+            .unwrap();
+        let (ack2_tx, ack2_rx) = tokio::sync::oneshot::channel();
+        mgmt_tx
+            .send(PinManagementMessage::RequestAddOutputPin {
+                suggested_name: Some("out".to_string()),
+                response_tx: ack2_tx,
+            })
+            .await
+            .unwrap();
+        let _ = ack2_rx.await.unwrap();
+        assert!(
+            !dynamic_outputs
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains_key("video/data"),
+            "RemoveOutputPin should drop the channel from DynamicOutputs"
+        );
+
+        drop(mgmt_tx);
+        task.await.unwrap();
+    }
+
+    /// Keeps the producer handles alive for the lifetime of the test; dropping
+    /// them would close the broadcast and make `subscribe_track` fail.
+    struct TestBroadcast {
+        _origin: moq_lite::OriginProducer,
+        _broadcast: moq_lite::BroadcastProducer,
+        _tracks: Vec<moq_lite::TrackProducer>,
+        consumer: moq_lite::BroadcastConsumer,
+    }
+
+    fn broadcast_with_tracks(names: &[&str]) -> TestBroadcast {
+        let origin = moq_lite::Origin::random().produce();
+        let mut broadcast = origin.create_broadcast("test-broadcast").unwrap();
+        let tracks = names
+            .iter()
+            .map(|name| {
+                broadcast
+                    .create_track(moq_lite::Track { name: (*name).to_string(), priority: 0 })
+                    .unwrap()
+            })
+            .collect();
+        let consumer = origin.consume().get_broadcast("test-broadcast").unwrap();
+        TestBroadcast { _origin: origin, _broadcast: broadcast, _tracks: tracks, consumer }
+    }
+
+    #[tokio::test]
+    async fn test_attach_late_audio_subscribes_and_reports_pin() {
+        let tb = broadcast_with_tracks(&["audio/data"]);
+        let node = MoqPullNode::new(MoqPullConfig::default());
+        let new_tracks = MoqPullNode::extract_tracks(&audio_only_catalog());
+
+        let (late, codec) =
+            node.attach_late_audio(&tb.consumer, &new_tracks).expect("audio track should attach");
+        assert_eq!(late.pin_name, "audio/data");
+        assert_eq!(codec, AudioCodec::Opus);
+        assert!(!late.pin_registered, "audio/data is not a statically advertised pin");
+    }
+
+    #[tokio::test]
+    async fn test_attach_late_audio_none_without_audio_track() {
+        let tb = broadcast_with_tracks(&["video/data"]);
+        let node = MoqPullNode::new(MoqPullConfig::default());
+        let video_only = {
+            let mut c = audio_video_catalog();
+            c.audio.renditions.clear();
+            c
+        };
+        let new_tracks = MoqPullNode::extract_tracks(&video_only);
+        assert!(node.attach_late_audio(&tb.consumer, &new_tracks).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_attach_late_video_subscribes_and_reports_content_type() {
+        let tb = broadcast_with_tracks(&["video/data"]);
+        let node = MoqPullNode::new(MoqPullConfig::default());
+        let new_tracks = MoqPullNode::extract_tracks(&audio_video_catalog());
+
+        let (late, content_type) =
+            node.attach_late_video(&tb.consumer, &new_tracks).expect("video track should attach");
+        assert_eq!(late.pin_name, "video/data");
+        assert_eq!(content_type, VP9_CONTENT_TYPE);
+        assert!(!late.pin_registered);
+    }
+
+    #[tokio::test]
+    async fn test_route_to_dynamic_output_no_consumer() {
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let outcome = MoqPullNode::route_to_dynamic_output(
+            &dynamic_outputs,
+            "video/data",
+            Packet::Text(Arc::from("x")),
+        )
+        .await;
+        assert!(matches!(outcome, RouteOutcome::NoConsumer));
+    }
+
+    #[tokio::test]
+    async fn test_route_to_dynamic_output_sends_to_registered_channel() {
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let (tx, mut rx) = mpsc::channel(4);
+        MoqPullNode::insert_dynamic_output(&dynamic_outputs, "video/data".to_string(), tx);
+
+        let outcome = MoqPullNode::route_to_dynamic_output(
+            &dynamic_outputs,
+            "video/data",
+            Packet::Text(Arc::from("frame")),
+        )
+        .await;
+        assert!(matches!(outcome, RouteOutcome::Sent));
+        assert!(matches!(rx.recv().await, Some(Packet::Text(_))));
+    }
+
+    #[tokio::test]
+    async fn test_route_to_dynamic_output_closed_channel_is_removed() {
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let (tx, rx) = mpsc::channel(4);
+        MoqPullNode::insert_dynamic_output(&dynamic_outputs, "video/data".to_string(), tx);
+        drop(rx);
+
+        let outcome = MoqPullNode::route_to_dynamic_output(
+            &dynamic_outputs,
+            "video/data",
+            Packet::Text(Arc::from("x")),
+        )
+        .await;
+        assert!(matches!(outcome, RouteOutcome::NoConsumer));
+        assert!(
+            !dynamic_outputs
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains_key("video/data"),
+            "a closed channel should be evicted from the registry"
+        );
+    }
+
+    /// When the `out` pin was fixed to AAC at init but a late Opus track
+    /// attaches, the codec-mismatch branch must still subscribe (returning the
+    /// discovered codec) while warning that downstream consumers may misdecode.
+    #[tokio::test]
+    async fn test_attach_late_audio_reports_mismatch_codec() {
+        let tb = broadcast_with_tracks(&["audio/data"]);
+        let config =
+            MoqPullConfig { audio_codec: Some(AudioCodec::Aac), ..MoqPullConfig::default() };
+        let node = MoqPullNode::new(config);
+        let new_tracks = MoqPullNode::extract_tracks(&audio_only_catalog());
+
+        let (late, codec) =
+            node.attach_late_audio(&tb.consumer, &new_tracks).expect("audio track should attach");
+        assert_eq!(codec, AudioCodec::Opus, "discovered codec wins for the live subscription");
+        assert_eq!(node.advertised_out_audio_codec(), Some(AudioCodec::Aac));
+        assert_eq!(late.pin_name, "audio/data");
+    }
+
+    #[test]
+    fn test_advertised_out_audio_codec_none_for_non_audio_out_pin() {
+        let mut node = MoqPullNode::new(MoqPullConfig::default());
+        let mut video_out = MoqPullNode::make_dynamic_output_pin("video/data", AudioCodec::Opus);
+        video_out.name = "out".to_string();
+        node.output_pins = vec![video_out];
+        assert_eq!(
+            node.advertised_out_audio_codec(),
+            None,
+            "a non-audio `out` pin has no advertised audio codec"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_attach_late_video_av1_content_type() {
+        let tb = broadcast_with_tracks(&["video/data"]);
+        let node = MoqPullNode::new(MoqPullConfig::default());
+        let new_tracks = MoqPullNode::extract_tracks(&video_catalog(VideoCodec::Av1));
+        let (_late, content_type) =
+            node.attach_late_video(&tb.consumer, &new_tracks).expect("av1 track should attach");
+        assert_eq!(content_type, AV1_CONTENT_TYPE);
+    }
+
+    #[tokio::test]
+    async fn test_attach_late_video_h264_content_type() {
+        let tb = broadcast_with_tracks(&["video/data"]);
+        let node = MoqPullNode::new(MoqPullConfig::default());
+        let new_tracks = MoqPullNode::extract_tracks(&video_catalog(VideoCodec::H264));
+        let (_late, content_type) =
+            node.attach_late_video(&tb.consumer, &new_tracks).expect("h264 track should attach");
+        assert_eq!(content_type, H264_CONTENT_TYPE);
+    }
+
+    /// A broadcast whose producers have been dropped: `subscribe_track` fails,
+    /// exercising the attach helpers' subscribe-error paths.
+    fn closed_broadcast(track_names: &[&str]) -> moq_lite::BroadcastConsumer {
+        let origin = moq_lite::Origin::random().produce();
+        let mut broadcast = origin.create_broadcast("test-broadcast").unwrap();
+        for name in track_names {
+            let _ = broadcast
+                .create_track(moq_lite::Track { name: (*name).to_string(), priority: 0 })
+                .unwrap();
+        }
+        let bc = origin.consume().get_broadcast("test-broadcast").unwrap();
+        drop(broadcast);
+        drop(origin);
+        bc
+    }
+
+    #[tokio::test]
+    async fn test_attach_late_audio_none_when_subscribe_fails() {
+        let bc = closed_broadcast(&["audio/data"]);
+        let node = MoqPullNode::new(MoqPullConfig::default());
+        let new_tracks = MoqPullNode::extract_tracks(&audio_only_catalog());
+        assert!(node.attach_late_audio(&bc, &new_tracks).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_attach_late_video_none_when_subscribe_fails() {
+        let bc = closed_broadcast(&["video/data"]);
+        let node = MoqPullNode::new(MoqPullConfig::default());
+        let new_tracks = MoqPullNode::extract_tracks(&audio_video_catalog());
+        assert!(node.attach_late_video(&bc, &new_tracks).is_none());
+    }
+
+    /// A statically advertised pin routes through the engine's `output_sender`
+    /// (not the `DynamicOutputs` registry) and reports `Sent` on success.
+    #[tokio::test]
+    async fn test_route_track_frame_static_pin_uses_output_sender() {
+        let (mut ctx, mock, _state_rx) = crate::test_utils::create_test_context(HashMap::new(), 1);
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+
+        let outcome = MoqPullNode::route_track_frame(
+            &mut ctx,
+            &dynamic_outputs,
+            true,
+            "out",
+            Packet::Text(Arc::from("frame")),
+        )
+        .await;
+        assert!(matches!(outcome, RouteOutcome::Sent));
+
+        let (_node, pin, packet) = mock.try_recv().await.expect("frame routed to output sender");
+        assert_eq!(pin, "out");
+        assert!(matches!(packet, Packet::Text(_)));
+        assert!(
+            dynamic_outputs.read().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty(),
+            "static pin routing must not touch the dynamic registry"
+        );
+    }
+
+    /// A pin not advertised at init (`pin_registered == false`) is routed
+    /// through the `DynamicOutputs` registry rather than the engine sender.
+    #[tokio::test]
+    async fn test_route_track_frame_dynamic_pin_uses_registry() {
+        let (mut ctx, mock, _state_rx) = crate::test_utils::create_test_context(HashMap::new(), 1);
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let (tx, mut rx) = mpsc::channel(1);
+        MoqPullNode::insert_dynamic_output(&dynamic_outputs, "video/data".to_string(), tx);
+
+        let outcome = MoqPullNode::route_track_frame(
+            &mut ctx,
+            &dynamic_outputs,
+            false,
+            "video/data",
+            Packet::Text(Arc::from("frame")),
+        )
+        .await;
+        assert!(matches!(outcome, RouteOutcome::Sent));
+        assert!(matches!(rx.recv().await, Some(Packet::Text(_))));
+        assert!(
+            mock.try_recv().await.is_none(),
+            "dynamic pin routing must not touch the engine output sender"
+        );
     }
 }
