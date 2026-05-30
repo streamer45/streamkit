@@ -377,6 +377,8 @@ func (gw *gateway) proxyMultipart(w http.ResponseWriter, r *http.Request, endpoi
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	req.Close = true
+	// Lets the backend split oneshot_pipeline metrics by {tts,stt,other}.
+	req.Header.Set("X-StreamKit-Service", endpoint)
 	if gw.authToken != "" {
 		req.Header.Set("Authorization", "Bearer "+gw.authToken)
 	}
