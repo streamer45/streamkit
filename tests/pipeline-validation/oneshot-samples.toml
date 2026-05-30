@@ -13,6 +13,7 @@
 #                     channels   media expectations (output_kind = media)
 #   json_contains     substrings that must appear in the body (output_kind = json)
 #   requires_node     node kind that must be registered, else skip
+#   requires_nodes    additional node kinds that must be registered, else skip
 #   optional_node     true => skip-not-fail even under PIPELINE_REQUIRE_NODES=1
 #                     (nodes no CI job compiles: marketplace plugins, VA-API)
 #   requires_env      env vars that must be set, else skip (e.g. S3 creds)
@@ -22,9 +23,7 @@
 # Every oneshot YAML must have an entry here, or the harness fails so the new
 # sample gets triaged.
 
-# ---------------------------------------------------------------------------
-# Tier A — pure software, fast enough for the default CI job.
-# ---------------------------------------------------------------------------
+# Tier A: pure software, fast enough for the default CI job.
 
 [double_volume]
 output_extension = ".ogg"
@@ -69,10 +68,8 @@ width = 640
 height = 480
 requires_node = "video::svt_av1::encoder"
 
-# ---------------------------------------------------------------------------
-# Tier A — heavyweight showcase pipelines (realtime pacers / slow SW AV1).
+# Tier A: heavyweight showcase pipelines (realtime pacers / slow SW AV1).
 # Opt in with PIPELINE_INCLUDE_SLOW=1.
-# ---------------------------------------------------------------------------
 
 [mixing]
 slow = true
@@ -123,12 +120,11 @@ codec_name = "av1"
 width = 1280
 height = 720
 requires_node = "video::dav1d::decoder"
+requires_nodes = ["video::svt_av1::encoder"]
 
-# ---------------------------------------------------------------------------
-# Tier B — marketplace plugins + models. optional_node = true so the GPU job
+# Tier B: marketplace plugins + models. optional_node = true so the GPU job
 # (PIPELINE_REQUIRE_NODES=1, no plugins) skips rather than fails. Run locally
 # after installing the plugin/model.
-# ---------------------------------------------------------------------------
 
 [aac_encode]
 output_extension = ".mp4"
@@ -235,6 +231,7 @@ inputs = [{ field = "media", file = "samples/audio/system/sample.ogg" }]
 output_extension = ".json"
 output_kind = "json"
 requires_node = "plugin::native::whisper"
+requires_nodes = ["plugin::native::vad"]
 optional_node = true
 inputs = [{ field = "media", file = "samples/audio/system/sample.ogg" }]
 
@@ -243,6 +240,7 @@ output_extension = ".webm"
 container_format = "matroska,webm"
 audio_codec = "opus"
 requires_node = "plugin::native::nllb"
+requires_nodes = ["plugin::native::whisper", "plugin::native::piper"]
 optional_node = true
 inputs = [{ field = "media", file = "samples/audio/system/sample.ogg" }]
 
@@ -251,6 +249,7 @@ output_extension = ".webm"
 container_format = "matroska,webm"
 audio_codec = "opus"
 requires_node = "plugin::native::helsinki"
+requires_nodes = ["plugin::native::whisper", "plugin::native::piper"]
 optional_node = true
 inputs = [{ field = "media", file = "samples/audio/system/sample.ogg" }]
 
@@ -272,12 +271,10 @@ height = 720
 requires_node = "plugin::native::slint"
 optional_node = true
 
-# ---------------------------------------------------------------------------
-# Tier C — hardware codecs. nvcodec / vulkan_video are compiled by the
+# Tier C: hardware codecs. nvcodec / vulkan_video are compiled by the
 # pipeline-validation-gpu CI job, so they are NOT optional_node (a missing node
 # there is a real regression). VA-API is compiled by no CI job, so it is
 # optional_node = true.
-# ---------------------------------------------------------------------------
 
 [video_nv_av1_colorbars]
 output_extension = ".webm"
@@ -313,10 +310,8 @@ height = 720
 requires_node = "video::vaapi::h264_encoder"
 optional_node = true
 
-# ---------------------------------------------------------------------------
-# External services — skipped unless their dependencies are present.
+# External services: skipped unless their dependencies are present.
 # S3 samples gate on credentials; web samples gate on the Servo plugin.
-# ---------------------------------------------------------------------------
 
 [transcode_to_s3]
 output_extension = ".mp4"

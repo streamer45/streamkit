@@ -95,19 +95,20 @@ fn validate_oneshot(path: &Path, yaml: String) -> datatest_stable::Result<()> {
         return Ok(());
     }
 
-    // Skip (or fail) when the required node kind is not registered.
-    if let Some(ref required) = entry.requires_node {
-        if !available_nodes().contains(required.as_str()) {
-            if !entry.optional_node && env_flag("PIPELINE_REQUIRE_NODES") {
-                return Err(format!(
-                    "FAIL: '{stem}' requires node '{required}' which is not available \
-                     (PIPELINE_REQUIRE_NODES=1 — skipping is not allowed)"
-                )
-                .into());
-            }
-            eprintln!("SKIP: '{stem}' requires node '{required}' which is not available");
-            return Ok(());
+    // Skip (or fail) when any required node kind is not registered.
+    if let Some(missing) = entry
+        .required_nodes()
+        .find(|node| !available_nodes().contains(*node))
+    {
+        if !entry.optional_node && env_flag("PIPELINE_REQUIRE_NODES") {
+            return Err(format!(
+                "FAIL: '{stem}' requires node '{missing}' which is not available \
+                 (PIPELINE_REQUIRE_NODES=1 — skipping is not allowed)"
+            )
+            .into());
         }
+        eprintln!("SKIP: '{stem}' requires node '{missing}' which is not available");
+        return Ok(());
     }
 
     let parts = entry.parts(&repo_root())?;

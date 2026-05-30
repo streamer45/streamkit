@@ -428,7 +428,6 @@ pub struct OneshotEntry {
     #[serde(default)]
     pub output_kind: OutputKind,
 
-    // --- Media expectations (used when `output_kind = media`). ---
     pub container_format: Option<String>,
     pub codec_name: Option<String>,
     pub width: Option<u32>,
@@ -442,10 +441,13 @@ pub struct OneshotEntry {
     #[serde(default)]
     pub json_contains: Vec<String>,
 
-    // --- Skip controls. ---
     /// Node kind that must be registered for this sample to run.
     pub requires_node: Option<String>,
-    /// When `true`, a missing `requires_node` is always a skip — even under
+    /// Additional node kinds that must also be registered, for samples that
+    /// chain several plugins or codecs. Combined with `requires_node`.
+    #[serde(default)]
+    pub requires_nodes: Vec<String>,
+    /// When `true`, a missing required node is always a skip — even under
     /// `PIPELINE_REQUIRE_NODES=1`. Used for nodes that no CI job compiles
     /// (marketplace plugins, VA-API) so the GPU job does not fail on them.
     #[serde(default)]
@@ -487,6 +489,14 @@ impl OneshotEntry {
             .collect()
     }
 
+    /// All node kinds that must be registered for this sample to run.
+    pub fn required_nodes(&self) -> impl Iterator<Item = &str> {
+        self.requires_node
+            .as_deref()
+            .into_iter()
+            .chain(self.requires_nodes.iter().map(String::as_str))
+    }
+
     /// Build the [`Expected`] media metadata for `ffprobe` validation.
     pub fn media_expected(&self) -> Expected {
         Expected {
@@ -507,19 +517,25 @@ impl OneshotEntry {
 
 /// Validate a JSON / NDJSON response body.
 ///
-/// Checks the body is non-empty, that the first non-empty line parses as JSON,
-/// and that every string in `json_contains` appears somewhere in the body.
+/// Accepts either a single JSON document or newline-delimited JSON (one record
+/// per line, as emitted by the transcription/VAD samples). Every record must
+/// parse, and every string in `json_contains` must appear somewhere in the body.
 pub fn validate_json_output(output_path: &Path, json_contains: &[String]) -> Result<(), String> {
     let body = std::fs::read_to_string(output_path)
         .map_err(|e| format!("Failed to read JSON output {}: {e}", output_path.display()))?;
 
-    let first_line = body
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .ok_or("JSON output is empty")?;
+    if body.trim().is_empty() {
+        return Err("JSON output is empty".to_string());
+    }
 
-    serde_json::from_str::<serde_json::Value>(first_line)
-        .map_err(|e| format!("Output is not valid JSON: {e}\n  first line: {first_line}"))?;
+    // A single JSON document; otherwise treat the body as newline-delimited
+    // JSON and require every record to parse.
+    if serde_json::from_str::<serde_json::Value>(body.trim()).is_err() {
+        for line in body.lines().filter(|line| !line.trim().is_empty()) {
+            serde_json::from_str::<serde_json::Value>(line)
+                .map_err(|e| format!("Output line is not valid JSON: {e}\n  line: {line}"))?;
+        }
+    }
 
     for needle in json_contains {
         if !body.contains(needle.as_str()) {
