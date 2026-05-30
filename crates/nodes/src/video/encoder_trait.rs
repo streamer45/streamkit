@@ -241,7 +241,7 @@ pub async fn run_encoder<E: EncoderNodeRunner>(
         tracing::info!("{node_label} input stream closed");
     });
 
-    crate::codec_utils::codec_forward_loop_with_flush_timeout(
+    crate::codec_utils::codec_forward_loop(
         &mut context,
         &mut result_rx,
         &mut input_task,

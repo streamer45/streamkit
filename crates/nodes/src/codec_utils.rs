@@ -21,6 +21,8 @@ use tokio::sync::mpsc;
 /// instead of hanging forever. The timer resets on every result, so a
 /// healthy flush never trips it. `None` keeps the unbounded wait used by
 /// every other codec.
+// clippy::too_many_arguments: mirrors the shared codec-loop state handles;
+// grouping them into a struct would only obscure the single call site.
 #[allow(clippy::too_many_arguments)]
 async fn drain_codec_results<T: Send + 'static, F: Fn(T) -> Packet + Send + Sync>(
     result_rx: &mut mpsc::Receiver<Result<T, String>>,
@@ -99,33 +101,15 @@ async fn drain_codec_results<T: Send + 'static, F: Fn(T) -> Packet + Send + Sync
 
 /// Forward codec results downstream, draining the codec task on input close.
 ///
-/// Equivalent to [`codec_forward_loop_with_flush_timeout`] with no flush
-/// watchdog — the unbounded wait used by every codec that flushes promptly.
+/// `flush_idle_timeout` arms an idle watchdog on the post-input drain (see
+/// [`drain_codec_results`]); pass `None` for the unbounded wait used by every
+/// codec that flushes promptly, or `Some` for codecs whose flush goes through
+/// a blocking FFI boundary that can deadlock (e.g. SVT-AV1).
+// clippy::too_many_arguments: these are the codec loop's distinct state
+// handles (channels, task handles, metrics); bundling them into a struct
+// would only obscure the call sites.
 #[allow(clippy::too_many_arguments)]
 pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
-    context: &mut NodeContext,
-    result_rx: &mut mpsc::Receiver<Result<T, String>>,
-    input_task: &mut tokio::task::JoinHandle<()>,
-    codec_task: tokio::task::JoinHandle<()>,
-    codec_tx: mpsc::Sender<S>,
-    counter: &opentelemetry::metrics::Counter<u64>,
-    stats: &mut NodeStatsTracker,
-    to_packet: impl Fn(T) -> Packet + Send + Sync,
-    label: &str,
-) {
-    codec_forward_loop_with_flush_timeout(
-        context, result_rx, input_task, codec_task, codec_tx, counter, stats, to_packet, label,
-        None,
-    )
-    .await;
-}
-
-/// Like [`codec_forward_loop`], but arms an idle watchdog on the drain.
-///
-/// See [`drain_codec_results`]. Used by codecs whose flush goes through a
-/// blocking FFI boundary that can deadlock (e.g. SVT-AV1).
-#[allow(clippy::too_many_arguments)]
-pub async fn codec_forward_loop_with_flush_timeout<T: Send + 'static, S: Send>(
     context: &mut NodeContext,
     result_rx: &mut mpsc::Receiver<Result<T, String>>,
     input_task: &mut tokio::task::JoinHandle<()>,
@@ -225,7 +209,7 @@ pub async fn codec_forward_loop_with_flush_timeout<T: Send + 'static, S: Send>(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // tests should fail loudly on setup/assertion errors
 mod tests {
     use super::*;
     use crate::test_utils::create_test_context;
@@ -244,7 +228,12 @@ mod tests {
     /// completes, never closes its result channel) must be abandoned once the
     /// idle budget elapses — not awaited forever — while still forwarding the
     /// packets it produced before stalling.
-    #[tokio::test]
+    ///
+    /// Uses paused (virtual) time so the assertion is deterministic: the only
+    /// timers are the 200ms watchdog and the 5s guard, and tokio auto-advances
+    /// to the watchdog first. If the watchdog regressed, the guard would fire
+    /// instead and fail the test rather than hang.
+    #[tokio::test(start_paused = true)]
     async fn drain_abandons_stalled_codec_within_idle_budget() {
         let (mut ctx, mock_out, _state_rx) = create_test_context(HashMap::new(), 1);
         let mut stats = NodeStatsTracker::new("test".to_string(), ctx.stats_tx.clone());
@@ -275,10 +264,10 @@ mod tests {
         .await
         .expect("drain must return once the idle watchdog fires");
 
+        let elapsed = start.elapsed();
         assert!(
-            start.elapsed() < Duration::from_secs(2),
-            "watchdog should fire near the idle budget, took {:?}",
-            start.elapsed()
+            elapsed >= Duration::from_millis(200) && elapsed < Duration::from_secs(1),
+            "watchdog should fire at the idle budget, not the 5s guard; took {elapsed:?}"
         );
         assert!(
             matches!(mock_out.try_recv().await, Some((_, _, Packet::Binary { .. }))),

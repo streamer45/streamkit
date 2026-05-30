@@ -198,6 +198,7 @@ impl ProcessorNode for OpusDecoderNode {
             &mut stats_tracker,
             |packet| packet, // Already a Packet, pass through
             "OpusDecoderNode",
+            None,
         )
         .await;
 
@@ -427,6 +428,7 @@ impl ProcessorNode for OpusEncoderNode {
                 }),
             },
             "OpusEncoderNode",
+            None,
         )
         .await;
 
