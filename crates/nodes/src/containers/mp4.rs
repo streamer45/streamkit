@@ -29,8 +29,8 @@ use shiguredo_mp4::descriptors::{
 };
 use shiguredo_mp4::mux::{Fmp4SegmentMuxer, Mp4FileMuxer, Sample};
 use shiguredo_mp4::{FixedPointNumber, TrackKind, Uint};
-use std::io::{BufWriter, Read as _, Seek, SeekFrom, Write};
-use std::num::NonZeroU32;
+use std::io::{Seek, SeekFrom, Write};
+use std::num::{NonZeroU32, NonZeroUsize};
 use streamkit_core::pins::PinManagementMessage;
 use streamkit_core::stats::NodeStatsTracker;
 use streamkit_core::types::{
@@ -42,6 +42,7 @@ use streamkit_core::{
     StreamKitError,
 };
 
+use super::file_stream::{emit_file_in_chunks, resolve_finalize_chunk_size, FileBackedBuffer};
 use crate::video::DEFAULT_VIDEO_FRAME_DURATION_US;
 
 /// Default video timescale (90 kHz — standard for MPEG transport streams / MP4).
@@ -447,58 +448,6 @@ fn build_av01_sample_entry(width: u16, height: u16, codec_private: Option<&[u8]>
     })
 }
 
-/// A file-backed buffer for **File** mode MP4 muxing.
-///
-/// All writes go to an anonymous temporary file on disk so the muxer can
-/// seek/backpatch without accumulating the entire output in memory.
-struct FileBackedBuffer {
-    inner: BufWriter<std::fs::File>,
-}
-
-impl FileBackedBuffer {
-    fn new() -> std::io::Result<Self> {
-        let file = tempfile::tempfile()?;
-        Ok(Self { inner: BufWriter::new(file) })
-    }
-
-    /// Read the entire temp file contents as `Bytes`.
-    fn take_data(&mut self) -> std::io::Result<Option<Bytes>> {
-        self.inner.flush()?;
-        let file = self.inner.get_mut();
-        let len = file.seek(SeekFrom::End(0))?;
-        if len == 0 {
-            return Ok(None);
-        }
-        file.seek(SeekFrom::Start(0))?;
-        let len_usize = usize::try_from(len).map_err(std::io::Error::other)?;
-        let mut buf = vec![0u8; len_usize];
-        file.read_exact(&mut buf)?;
-        Ok(Some(Bytes::from(buf)))
-    }
-
-    /// Current write position in the file.
-    fn position(&mut self) -> std::io::Result<u64> {
-        self.inner.flush()?;
-        self.inner.get_mut().stream_position()
-    }
-}
-
-impl Write for FileBackedBuffer {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.inner.write(buf)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.flush()
-    }
-}
-
-impl Seek for FileBackedBuffer {
-    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
-        self.inner.seek(pos)
-    }
-}
-
 /// MP4 muxer streaming mode.
 #[derive(Deserialize, Debug, Default, Clone, Copy, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -555,6 +504,21 @@ pub struct Mp4MuxerConfig {
     /// input codec.
     #[serde(default)]
     pub video_codec: Option<VideoCodec>,
+
+    /// Size (in bytes) of each `Packet::Binary` chunk emitted when a File-mode
+    /// output is streamed downstream at finalization.  Larger values cut
+    /// per-packet overhead; smaller values lower peak memory and can be aligned
+    /// to a downstream sink's preferred unit (e.g. an object-store multipart
+    /// part size).  Defaults to 256 KiB when unset.
+    #[serde(default)]
+    pub finalize_chunk_size: Option<NonZeroUsize>,
+}
+
+impl Mp4MuxerConfig {
+    /// File-mode finalize chunk size, falling back to the shared default.
+    fn finalize_chunk_size(&self) -> usize {
+        resolve_finalize_chunk_size(self.finalize_chunk_size)
+    }
 }
 
 const fn default_num_inputs() -> u32 {
@@ -574,6 +538,7 @@ impl Default for Mp4MuxerConfig {
             num_inputs: default_num_inputs(),
             audio_codec: None,
             video_codec: None,
+            finalize_chunk_size: None,
         }
     }
 }
@@ -1601,6 +1566,7 @@ async fn run_file_mode(
         session.content_type,
         stats_tracker,
         session.node_name,
+        session.config.finalize_chunk_size(),
     )
     .await
 }
@@ -1741,6 +1707,7 @@ async fn finalize_file_mode(
     content_type: &'static str,
     stats_tracker: &mut NodeStatsTracker,
     node_name: &str,
+    chunk_size: usize,
 ) -> Result<(), StreamKitError> {
     let finalized = muxer.finalize().map_err(|e| {
         let msg = format!("Failed to finalize MP4: {e}");
@@ -1757,28 +1724,14 @@ async fn finalize_file_mode(
             .map_err(|e| StreamKitError::Runtime(format!("Failed to patch MP4 temp file: {e}")))?;
     }
 
-    if let Some(data) = file_buf
-        .take_data()
-        .map_err(|e| StreamKitError::Runtime(format!("Failed to read back MP4 file: {e}")))?
-    {
-        tracing::info!("Sending finalized MP4 file ({} bytes)", data.len());
-        if context
-            .output_sender
-            .send(
-                "out",
-                Packet::Binary { data, content_type: Some(content_type.into()), metadata: None },
-            )
-            .await
-            .is_err()
-        {
-            tracing::debug!("Output channel closed during final send");
-        } else {
-            stats_tracker.sent();
-        }
-        stats_tracker.force_send();
-    }
+    let file = file_buf.finalized_file().map_err(|e| {
+        let msg = format!("Failed to read back MP4 file: {e}");
+        state_helpers::emit_failed(&context.state_tx, node_name, &msg);
+        StreamKitError::Runtime(msg)
+    })?;
 
-    Ok(())
+    emit_file_in_chunks(context, file, chunk_size, content_type.into(), stats_tracker, node_name)
+        .await
 }
 
 /// Receive the next frame from audio/video inputs or the control channel.

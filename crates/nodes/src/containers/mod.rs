@@ -4,6 +4,7 @@
 
 use streamkit_core::NodeRegistry;
 
+mod file_stream;
 #[cfg(feature = "mp4")]
 pub mod mp4;
 pub mod ogg;

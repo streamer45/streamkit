@@ -227,6 +227,40 @@ pub fn create_test_video_packet(
     Packet::Video(create_test_video_frame(width, height, pixel_format, fill_value))
 }
 
+/// Build an I420 [`VideoFrame`] with a deterministic, animated texture in the
+/// luma plane (neutral chroma).
+///
+/// Unlike [`create_test_video_frame`]'s flat fill — which video encoders
+/// compress down to a handful of bytes — this pattern carries enough spatial
+/// detail to produce a realistically sized bitstream, and `shift` animates it
+/// across frames. Useful for tests that need encoded output large enough to
+/// exercise chunking/segmentation paths.
+///
+/// # Panics
+/// Panics if the width/height are invalid for an I420 frame.
+#[allow(clippy::expect_used)]
+pub fn create_textured_video_frame(width: u32, height: u32, shift: u8) -> VideoFrame {
+    let layout = VideoLayout::packed(width, height, PixelFormat::I420);
+    let mut data = vec![128u8; layout.total_bytes()];
+
+    let planes = layout.planes();
+    let y_plane = &planes[0];
+    let w = width as usize;
+    let h = height as usize;
+    let xb: Vec<u8> =
+        (0..w).map(|x| u8::try_from(x.wrapping_mul(3) % 256).expect("masked to a byte")).collect();
+    for row in 0..h {
+        let yb = u8::try_from(row.wrapping_mul(5) % 256).expect("masked to a byte");
+        let start = y_plane.offset + row * y_plane.stride;
+        for col in 0..w {
+            data[start + col] = (xb[col] ^ yb).wrapping_add(shift);
+        }
+    }
+
+    VideoFrame::new(width, height, PixelFormat::I420, data)
+        .expect("textured test video frame dimensions should be valid")
+}
+
 pub fn extract_audio_data(packet: &Packet) -> Option<&[f32]> {
     match packet {
         Packet::Audio(frame) => Some(&frame.samples),
