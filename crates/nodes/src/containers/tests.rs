@@ -794,10 +794,14 @@ async fn test_webm_mux_vp9_auto_detect_dimensions() {
 #[cfg(feature = "vp9")]
 #[tokio::test]
 async fn test_webm_mux_file_mode() {
-    use super::file_stream::FILE_MODE_CHUNK_SIZE;
     use crate::test_utils::create_test_video_frame;
     use crate::video::vp9::{Vp9EncoderConfig, Vp9EncoderNode};
+    use std::num::NonZeroUsize;
     use streamkit_core::types::{EncodedVideoFormat, PacketMetadata, PixelFormat, VideoCodec};
+
+    // A tiny chunk size so even this small muxed file splits into several
+    // bounded packets, exercising the real chunked read-back path.
+    let chunk_size = 64usize;
 
     let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
     let mut enc_inputs = HashMap::new();
@@ -861,6 +865,7 @@ async fn test_webm_mux_file_mode() {
         video_width: 64,
         video_height: 64,
         streaming_mode: WebMStreamingMode::File,
+        finalize_chunk_size: NonZeroUsize::new(chunk_size),
         ..WebMMuxerConfig::default()
     };
     let muxer = WebMMuxerNode::new(mux_config);
@@ -878,32 +883,42 @@ async fn test_webm_mux_file_mode() {
     mux_handle.await.unwrap().unwrap();
 
     let output_packets = mux_sender.get_packets_for_pin("out").await;
-    // File mode streams the finalized temp file back in bounded chunks, so it
-    // may emit one or many Binary packets; the concatenation is the full file.
-    assert!(!output_packets.is_empty(), "WebM File mode muxer produced no output");
+    let binary_packets: Vec<&Bytes> = output_packets
+        .iter()
+        .filter_map(|p| match p {
+            Packet::Binary { data, .. } => Some(data),
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        binary_packets.len() > 1,
+        "File-mode output exceeding one chunk must be emitted as multiple packets, got {}",
+        binary_packets.len()
+    );
 
     let mut webm_bytes = Vec::new();
-    for packet in &output_packets {
-        if let Packet::Binary { data, .. } = packet {
-            assert!(
-                data.len() <= FILE_MODE_CHUNK_SIZE,
-                "no finalized File-mode packet may exceed the chunk size"
-            );
-            webm_bytes.extend_from_slice(data);
-        }
+    for data in &binary_packets {
+        assert!(
+            data.len() <= chunk_size,
+            "no finalized File-mode packet may exceed the configured chunk size"
+        );
+        webm_bytes.extend_from_slice(data);
     }
 
-    assert!(webm_bytes.len() >= 4, "WebM File mode output too small");
+    assert!(
+        webm_bytes.len() > chunk_size,
+        "test should produce more than one chunk worth of output"
+    );
+    assert_eq!(
+        binary_packets.len(),
+        webm_bytes.len().div_ceil(chunk_size),
+        "File-mode must emit exactly ceil(total / configured chunk size) packets"
+    );
     assert_eq!(
         &webm_bytes[..4],
         &[0x1A, 0x45, 0xDF, 0xA3],
         "WebM File mode output does not start with EBML header"
-    );
-
-    println!(
-        "WebM File mode mux test passed: {} output packets, {} total bytes",
-        output_packets.len(),
-        webm_bytes.len()
     );
 }
 
