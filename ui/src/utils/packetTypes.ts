@@ -252,6 +252,9 @@ function inferCompositorOutputType(sourceNode: Node, sourceOutput: OutputPin): P
   };
 }
 
+// Mirrors the server's `parse_pixel_format` (crates/nodes/src/video/mod.rs).
+// `PixelFormat` is `#[non_exhaustive]`: any new variant must be added here too,
+// otherwise it falls back to Rgba8 and connection validation wrongly rejects it.
 function pixelFormatFromOutputFormat(outputFormat: unknown): PixelFormat {
   if (typeof outputFormat !== 'string') return 'Rgba8';
   switch (outputFormat.toLowerCase()) {
