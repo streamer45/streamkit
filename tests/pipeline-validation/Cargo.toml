@@ -19,10 +19,16 @@ name = "validate"
 path = "tests/validate.rs"
 harness = false
 
+[[test]]
+name = "oneshot"
+path = "tests/oneshot.rs"
+harness = false
+
 [dependencies]
 ffprobe = "0.4"
 reqwest = { version = "0.12", features = ["blocking", "multipart", "json"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = "0.8"
 tempfile = "3"
 
