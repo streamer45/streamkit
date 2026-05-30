@@ -85,11 +85,17 @@ Text to speech (returns Opus audio, piped straight to `ffplay`):
 curl -d 'Hello from StreamKit' https://tts.streamkit.dev | ffplay -nodisp -autoexit -
 ```
 
-Speech to text (send any Ogg/Opus file, get back newline-delimited JSON):
+Speech to text (record 5s from your mic with `ffmpeg`, get back JSON — no audio file needed):
 
 ```bash
-curl --data-binary @samples/audio/system/sample.ogg https://stt.streamkit.dev
+# macOS (CoreAudio); list inputs with: ffmpeg -f avfoundation -list_devices true -i ""
+ffmpeg -hide_banner -f avfoundation -i ":0" -t 5 -ac 1 -ar 48000 -c:a libopus -f ogg - | curl -s --data-binary @- -H 'Content-Type: audio/ogg' https://stt.streamkit.dev | jq
+
+# Linux (PulseAudio/PipeWire); use "-f alsa -i default" for ALSA
+ffmpeg -hide_banner -f pulse -i default -t 5 -ac 1 -ar 48000 -c:a libopus -f ogg - | curl -s --data-binary @- -H 'Content-Type: audio/ogg' https://stt.streamkit.dev | jq
 ```
+
+Drop `-t 5` to record until you stop `ffmpeg` with `q`.
 
 > [!NOTE]
 > `tts.streamkit.dev` and `stt.streamkit.dev` are a free, best-effort public demo with no SLA — they may be slow, rate-limited, or offline at any time, and usage is monitored for abuse. Don't send anything sensitive. To run your own, see [`examples/speech-gateway/`](examples/speech-gateway/).

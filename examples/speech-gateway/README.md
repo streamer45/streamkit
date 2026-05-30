@@ -12,9 +12,17 @@ Thin HTTP gateway that rewrites simple STT/TTS requests into the multipart onesh
 
 A free, best-effort public instance runs at `https://tts.streamkit.dev` and `https://stt.streamkit.dev`, so you can try the endpoints below without running anything:
 
+Text to speech (returns Opus audio, piped to `ffplay`):
+
 ```sh
 curl -d 'Hello from StreamKit' https://tts.streamkit.dev | ffplay -nodisp -autoexit -
-curl --data-binary @speech.ogg https://stt.streamkit.dev
+```
+
+Speech to text — record from your mic with `ffmpeg`, no audio file needed (use `STT_URL=https://stt.streamkit.dev ./stt.sh` for an interactive, cross-platform version):
+
+```sh
+# macOS; on Linux use "-f pulse -i default" (PulseAudio/PipeWire) or "-f alsa -i default"
+ffmpeg -hide_banner -f avfoundation -i ":0" -t 5 -ac 1 -ar 48000 -c:a libopus -f ogg - | curl -s --data-binary @- -H 'Content-Type: audio/ogg' https://stt.streamkit.dev | jq
 ```
 
 There is no SLA — it may be slow, rate-limited, or offline at any time, and usage is monitored for abuse. Don't send anything sensitive. Run your own (below) to remove those limits.
