@@ -30,6 +30,10 @@ const FRAGMENT_SAMPLE: SamplePipeline = {
   is_system: false,
   mode: 'oneshot',
   is_fragment: true,
+  group: null,
+  variant: null,
+  category: null,
+  tags: [],
 };
 
 beforeEach(() => {
