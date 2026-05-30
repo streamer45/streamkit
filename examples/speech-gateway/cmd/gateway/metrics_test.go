@@ -51,6 +51,20 @@ func TestInstrumentRecordsRejection(t *testing.T) {
 	}
 }
 
+func TestInstrumentUnwrittenResponseCountedAsClientClosed(t *testing.T) {
+	// Handler returns without writing, mirroring the context.Canceled path
+	// in handleSTT/handleTTS; it must not be counted as a 200.
+	h := instrument("stt", func(http.ResponseWriter, *http.Request) {})
+
+	rec := httptest.NewRecorder()
+	h(rec, httptest.NewRequest(http.MethodPost, "/stt", nil))
+
+	body := scrapeMetrics(t)
+	if !strings.Contains(body, `gateway_requests_total{code="499",endpoint="stt",method="POST"}`) {
+		t.Errorf("expected unwritten response to be counted as code=499; got:\n%s", body)
+	}
+}
+
 func scrapeMetrics(t *testing.T) string {
 	t.Helper()
 	rec := httptest.NewRecorder()

@@ -16,6 +16,10 @@ import (
 // Buckets span sub-100ms rejections up to multi-second STT/TTS synthesis.
 var latencyBuckets = []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30}
 
+// codeClientClosed mirrors nginx's 499: the handler returned without writing a
+// response, typically because the client disconnected mid-request.
+const codeClientClosed = 499
+
 var (
 	requestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "gateway_requests_total",
@@ -86,9 +90,13 @@ func instrument(endpoint string, next http.HandlerFunc) http.HandlerFunc {
 		start := time.Now()
 		next(rec, r)
 
+		code := rec.code
+		if !rec.wroteHeader {
+			code = codeClientClosed
+		}
 		requestDuration.WithLabelValues(endpoint).Observe(time.Since(start).Seconds())
-		requestsTotal.WithLabelValues(endpoint, r.Method, strconv.Itoa(rec.code)).Inc()
-		if reason := rejectionReason(rec.code); reason != "" {
+		requestsTotal.WithLabelValues(endpoint, r.Method, strconv.Itoa(code)).Inc()
+		if reason := rejectionReason(code); reason != "" {
 			rejectedTotal.WithLabelValues(endpoint, reason).Inc()
 		}
 	}
