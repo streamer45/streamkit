@@ -22,6 +22,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 const (
@@ -126,8 +128,11 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/stt", gw.handleSTT)
-	mux.HandleFunc("/tts", gw.handleTTS)
+	mux.HandleFunc("/stt", instrument("stt", gw.handleSTT))
+	mux.HandleFunc("/tts", instrument("tts", gw.handleTTS))
+	// /metrics is intentionally not gated by the concurrency semaphore so it
+	// stays scrapable while request slots are saturated.
+	mux.Handle("/metrics", promhttp.Handler())
 
 	server := &http.Server{
 		Addr:              cfg.listenAddr,
@@ -244,7 +249,7 @@ func (gw *gateway) handleSTT(w http.ResponseWriter, r *http.Request) {
 	defer release()
 	r.Body = http.MaxBytesReader(w, r.Body, gw.maxBodySize)
 	useBuffer := r.ContentLength > 0 && r.ContentLength <= gw.maxBodySize
-	if err := gw.proxyMultipart(w, r, sttPipelineYAML, "media", "audio/ogg", useBuffer); err != nil {
+	if err := gw.proxyMultipart(w, r, "stt", sttPipelineYAML, "media", "audio/ogg", useBuffer); err != nil {
 		log.Printf("stt error: %v", err)
 		if !errors.Is(err, context.Canceled) {
 			http.Error(w, "upstream error", http.StatusBadGateway)
@@ -315,7 +320,7 @@ func (gw *gateway) handleTTS(w http.ResponseWriter, r *http.Request) {
 	r.Body = io.NopCloser(bytes.NewReader(textBytes))
 
 	useBuffer := true // We've already buffered it
-	if err := gw.proxyMultipart(w, r, ttsPipelineYAML, "media", "text/plain", useBuffer); err != nil {
+	if err := gw.proxyMultipart(w, r, "tts", ttsPipelineYAML, "media", "text/plain", useBuffer); err != nil {
 		log.Printf("tts error: %v", err)
 		if !errors.Is(err, context.Canceled) {
 			http.Error(w, "upstream error", http.StatusBadGateway)
@@ -323,7 +328,7 @@ func (gw *gateway) handleTTS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (gw *gateway) proxyMultipart(w http.ResponseWriter, r *http.Request, pipelineYAML, mediaField, mediaContentType string, bufferBody bool) error {
+func (gw *gateway) proxyMultipart(w http.ResponseWriter, r *http.Request, endpoint, pipelineYAML, mediaField, mediaContentType string, bufferBody bool) error {
 	ctx := r.Context()
 
 	// Optionally buffer the request body for finite uploads (helps curl -T file).
@@ -376,6 +381,10 @@ func (gw *gateway) proxyMultipart(w http.ResponseWriter, r *http.Request, pipeli
 		req.Header.Set("Authorization", "Bearer "+gw.authToken)
 	}
 
+	upstreamStart := time.Now()
+	defer func() {
+		upstreamDuration.WithLabelValues(endpoint).Observe(time.Since(upstreamStart).Seconds())
+	}()
 	resp, err := gw.client.Do(req)
 	if err != nil {
 		log.Printf("call skit failed: %v", err)
