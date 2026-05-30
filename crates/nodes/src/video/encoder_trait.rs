@@ -164,6 +164,14 @@ pub trait EncoderNodeRunner: Send + 'static {
     /// (e.g. `"vp9_encode_duration"`).
     const DURATION_HISTOGRAM_NAME: &'static str;
 
+    /// Idle budget for the post-input-close flush. When set, the drain
+    /// abandons the blocking codec task if it stops delivering packets for
+    /// this long, rather than waiting forever. Only needed by encoders whose
+    /// flush goes through a blocking FFI boundary that can deadlock (SVT-AV1).
+    /// `None` (the default) keeps the unbounded wait used by every other
+    /// encoder, which flush promptly.
+    const EOS_FLUSH_IDLE_TIMEOUT: Option<std::time::Duration> = None;
+
     /// Spawn the blocking codec task.
     ///
     /// VP9 and AV1 delegate to [`spawn_standard_encode_task`].
@@ -233,7 +241,7 @@ pub async fn run_encoder<E: EncoderNodeRunner>(
         tracing::info!("{node_label} input stream closed");
     });
 
-    crate::codec_utils::codec_forward_loop(
+    crate::codec_utils::codec_forward_loop_with_flush_timeout(
         &mut context,
         &mut result_rx,
         &mut input_task,
@@ -247,6 +255,7 @@ pub async fn run_encoder<E: EncoderNodeRunner>(
             metadata: encoded.metadata,
         },
         E::NODE_LABEL,
+        E::EOS_FLUSH_IDLE_TIMEOUT,
     )
     .await;
 
