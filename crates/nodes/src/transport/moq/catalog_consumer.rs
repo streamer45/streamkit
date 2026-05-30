@@ -97,4 +97,57 @@ mod tests {
         let result = cc.next().await.expect("next should not error");
         assert!(result.is_some(), "should have received a catalog");
     }
+
+    fn write_catalog(producer: &mut moq_lite::TrackProducer, catalog: &hang::catalog::Catalog) {
+        let payload = serde_json::to_vec(catalog).expect("serialize catalog");
+        let mut group = producer.append_group().expect("append_group");
+        group.write_frame(bytes::Bytes::from(payload)).expect("write_frame");
+        group.finish().expect("finish group");
+    }
+
+    /// `MoqPullNode::run_connection` polls `next()` as one arm of a `select!`
+    /// that media frames win tens of times per second, so the future is created
+    /// and dropped repeatedly. This exercises that contention directly: poll and
+    /// drop `next()` ~100× with no new data, then confirm a late catalog written
+    /// afterwards is still observed (no buffered position is lost on cancel).
+    #[tokio::test]
+    async fn next_survives_repeated_cancellation() {
+        let (mut producer, consumer) = make_track_pair();
+        let mut cc = CatalogConsumer::new(consumer);
+
+        write_catalog(&mut producer, &hang::catalog::Catalog::default());
+        assert!(cc.next().await.expect("first next").is_some(), "first catalog");
+
+        for _ in 0..100 {
+            tokio::select! {
+                biased;
+                _ = cc.next() => panic!("no catalog update should be ready yet"),
+                () = tokio::task::yield_now() => {},
+            }
+        }
+
+        let mut updated = hang::catalog::Catalog::default();
+        updated.audio.renditions.insert(
+            "audio/data".to_string(),
+            hang::catalog::AudioConfig {
+                codec: super::super::constants::catalog_audio_codec(
+                    streamkit_core::types::AudioCodec::Opus,
+                ),
+                sample_rate: 48000,
+                channel_count: 2,
+                bitrate: Some(128_000),
+                description: None,
+                container: hang::catalog::Container::default(),
+                jitter: None,
+            },
+        );
+        write_catalog(&mut producer, &updated);
+
+        let result = cc.next().await.expect("late next").expect("late catalog after cancellation");
+        assert_eq!(
+            result.audio.renditions.len(),
+            1,
+            "late catalog update written during contention must still be delivered"
+        );
+    }
 }
