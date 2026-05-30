@@ -43,6 +43,20 @@ struct HttpInputBinding {
     required: bool,
 }
 
+/// Trusted header naming the service behind a oneshot request.
+const SERVICE_HEADER: &str = "X-StreamKit-Service";
+
+/// Map the service header to a bounded label so user-submitted pipeline names
+/// (arbitrary, high-cardinality) never reach metrics. Anything outside the
+/// allowlist — including a missing header — collapses to `other`.
+fn classify_service(header: Option<&str>) -> &'static str {
+    match header.map(|h| h.trim().to_ascii_lowercase()).as_deref() {
+        Some("tts") => "tts",
+        Some("stt") => "stt",
+        _ => "other",
+    }
+}
+
 /// Extract content-type header and multipart boundary from request headers.
 fn extract_multipart_boundary(headers: &HeaderMap) -> Result<String, AppError> {
     let ct_header = headers
@@ -399,6 +413,7 @@ fn build_streaming_response(
     pipeline_result: streamkit_engine::OneshotPipelineResult,
     start_time: Instant,
     duration_histogram: opentelemetry::metrics::Histogram<f64>,
+    service: &'static str,
 ) -> Response {
     tracing::debug!(
         "Creating streaming response with content type: {}",
@@ -406,7 +421,7 @@ fn build_streaming_response(
     );
 
     let stream = ReceiverStream::new(pipeline_result.data_stream).map(Ok::<_, Infallible>);
-    let stream = InstrumentedOneshotStream::new(stream, start_time, duration_histogram);
+    let stream = InstrumentedOneshotStream::new(stream, start_time, duration_histogram, service);
     let body = Body::from_stream(stream);
 
     let mut headers = HeaderMap::new();
@@ -436,6 +451,7 @@ struct InstrumentedOneshotStream<S> {
     start_time: Instant,
     recorded: bool,
     duration_histogram: opentelemetry::metrics::Histogram<f64>,
+    service: &'static str,
 }
 
 impl<S> InstrumentedOneshotStream<S> {
@@ -443,8 +459,9 @@ impl<S> InstrumentedOneshotStream<S> {
         inner: S,
         start_time: Instant,
         duration_histogram: opentelemetry::metrics::Histogram<f64>,
+        service: &'static str,
     ) -> Self {
-        Self { inner, start_time, recorded: false, duration_histogram }
+        Self { inner, start_time, recorded: false, duration_histogram, service }
     }
 
     fn record(&mut self, status: &'static str) {
@@ -452,7 +469,7 @@ impl<S> InstrumentedOneshotStream<S> {
             return;
         }
         self.recorded = true;
-        let labels = [KeyValue::new("status", status)];
+        let labels = [KeyValue::new("status", status), KeyValue::new("service", self.service)];
         self.duration_histogram.record(self.start_time.elapsed().as_secs_f64(), &labels);
     }
 }
@@ -492,6 +509,7 @@ pub(super) async fn process_oneshot_pipeline_handler(
     tracing::info!("Processing multipart request");
 
     let headers = req.headers().clone();
+    let service = classify_service(headers.get(SERVICE_HEADER).and_then(|v| v.to_str().ok()));
     let (role_name, perms) = crate::role_extractor::get_role_and_permissions(&headers, &app_state);
     if !perms.create_sessions {
         return Err(AppError::Forbidden(
@@ -652,7 +670,7 @@ pub(super) async fn process_oneshot_pipeline_handler(
             result
         },
         Err(e) => {
-            let labels = [KeyValue::new("status", "error")];
+            let labels = [KeyValue::new("status", "error"), KeyValue::new("service", service)];
             oneshot_duration_histogram.record(oneshot_start_time.elapsed().as_secs_f64(), &labels);
             cancel_token.cancel();
             return Err(e.into());
@@ -662,7 +680,7 @@ pub(super) async fn process_oneshot_pipeline_handler(
     match parse_done_rx.await {
         Ok(Ok(())) => {},
         Ok(Err(err)) => {
-            let labels = [KeyValue::new("status", "error")];
+            let labels = [KeyValue::new("status", "error"), KeyValue::new("service", service)];
             oneshot_duration_histogram.record(oneshot_start_time.elapsed().as_secs_f64(), &labels);
             cancel_token.cancel();
             return Err(err);
@@ -674,7 +692,12 @@ pub(super) async fn process_oneshot_pipeline_handler(
     }
     let _ = routing_task.await;
 
-    Ok(build_streaming_response(pipeline_result, oneshot_start_time, oneshot_duration_histogram))
+    Ok(build_streaming_response(
+        pipeline_result,
+        oneshot_start_time,
+        oneshot_duration_histogram,
+        service,
+    ))
 }
 
 #[cfg(test)]
@@ -765,6 +788,25 @@ mod tests {
         let msg = bad_request(err);
         assert!(msg.starts_with("Invalid multipart boundary"), "unexpected msg: {msg}");
         assert!(msg.to_lowercase().contains("multipart"), "msg should mention multipart: {msg}");
+    }
+
+    #[test]
+    fn classify_service_recognizes_allowlist() {
+        assert_eq!(classify_service(Some("tts")), "tts");
+        assert_eq!(classify_service(Some("stt")), "stt");
+    }
+
+    #[test]
+    fn classify_service_normalizes_case_and_whitespace() {
+        assert_eq!(classify_service(Some("  TTS  ")), "tts");
+        assert_eq!(classify_service(Some("Stt")), "stt");
+    }
+
+    #[test]
+    fn classify_service_unknown_and_absent_fall_back_to_other() {
+        assert_eq!(classify_service(Some("kokoro")), "other");
+        assert_eq!(classify_service(Some("")), "other");
+        assert_eq!(classify_service(None), "other");
     }
 
     #[test]
