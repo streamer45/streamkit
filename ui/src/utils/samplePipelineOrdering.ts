@@ -60,10 +60,15 @@ const SYNONYM_GROUPS: string[][] = [
   ['hevc', 'h265', 'h.265'],
 ];
 
+// A query term joins a synonym group on an exact match, or when it is a prefix
+// fragment of an entry (>=3 chars, so "transcrib" finds "transcribe"). The
+// reverse direction (entry being a substring of the term) is deliberately
+// excluded: short entries like "mic"/"cam" would otherwise pull whole groups
+// into unrelated queries ("dynamic" → microphone, "scam" → webcam).
 function expandTerm(term: string): string[] {
   const expanded = new Set<string>([term]);
   for (const group of SYNONYM_GROUPS) {
-    if (group.some((entry) => entry === term || entry.includes(term) || term.includes(entry))) {
+    if (group.some((entry) => entry === term || (term.length >= 3 && entry.includes(term)))) {
       for (const entry of group) expanded.add(entry);
     }
   }

@@ -33,19 +33,15 @@ export interface ConsoleErrorCollector {
 }
 
 /**
- * Selects a sample pipeline in the TemplateSelector by its full name, working
- * for both ungrouped cards (clickable name text) and grouped scenarios where
- * the sample is a variant pill whose accessible name is the full sample name.
+ * Selects a sample pipeline in the TemplateSelector by its full name. Both
+ * ungrouped cards and grouped scenario variant pills expose the radio with the
+ * sample name as its accessible name, so a single role-based lookup selects
+ * either one.
  */
 export async function selectPipelineTemplate(page: Page, name: string): Promise<void> {
-  const variantPill = page.getByRole('radio', { name, exact: true });
-  const flatCard = page.getByText(name, { exact: true });
-  await expect(variantPill.or(flatCard).first()).toBeVisible({ timeout: 10_000 });
-  if ((await variantPill.count()) > 0) {
-    await variantPill.first().click();
-  } else {
-    await flatCard.click();
-  }
+  const radio = page.getByRole('radio', { name, exact: true });
+  await expect(radio.first()).toBeVisible({ timeout: 10_000 });
+  await radio.first().click();
 }
 
 /**

@@ -256,7 +256,7 @@ export const extractTextConfigs = (schema: JsonSchema | undefined): TextConfig[]
 // Schema → ControlConfig conversion
 
 /** Derive a human-readable label: "clock_running" → "Clock Running". */
-function labelFromKey(key: string): string {
+export function labelFromKey(key: string): string {
   return key.replace(/[_-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 

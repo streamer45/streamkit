@@ -6,6 +6,7 @@ import React from 'react';
 
 import { RadioGroupRoot, RadioItem, RadioIndicator } from '@/components/ui/RadioGroup';
 import type { SamplePipeline } from '@/types/generated/api-types';
+import { labelFromKey } from '@/utils/jsonSchema';
 import type { SampleFacets, ScenarioGroup } from '@/utils/samplePipelineOrdering';
 import {
   collectSampleFacets,
@@ -43,18 +44,23 @@ import {
   VariantSelector,
 } from './TemplateSelector.styles';
 
-function formatTagLabel(tag: string): string {
-  return tag
-    .split('-')
-    .map((word) => (word ? word[0].toUpperCase() + word.slice(1) : word))
-    .join(' ');
-}
-
 interface TemplateSelectorProps {
   templates: SamplePipeline[];
   selectedTemplateId: string;
   onTemplateSelect: (templateId: string) => void;
 }
+
+const ScenarioHeader: React.FC<{ sample: SamplePipeline }> = ({ sample }) => (
+  <TemplateContent>
+    <TemplateHeader>
+      <TemplateName>{sample.name}</TemplateName>
+      <TemplateBadge variant={sample.is_system ? 'system' : 'user'}>
+        {sample.is_system ? 'System' : 'User'}
+      </TemplateBadge>
+    </TemplateHeader>
+    {sample.description && <TemplateDescription>{sample.description}</TemplateDescription>}
+  </TemplateContent>
+);
 
 const ScenarioCard: React.FC<{ group: ScenarioGroup; selectedTemplateId: string }> = ({
   group,
@@ -65,18 +71,10 @@ const ScenarioCard: React.FC<{ group: ScenarioGroup; selectedTemplateId: string 
   if (variants.length === 1) {
     return (
       <TemplateCard htmlFor={`template-${base.id}`}>
-        <RadioItem value={base.id} id={`template-${base.id}`}>
+        <RadioItem value={base.id} id={`template-${base.id}`} aria-label={base.name}>
           <RadioIndicator />
         </RadioItem>
-        <TemplateContent>
-          <TemplateHeader>
-            <TemplateName>{base.name}</TemplateName>
-            <TemplateBadge variant={base.is_system ? 'system' : 'user'}>
-              {base.is_system ? 'System' : 'User'}
-            </TemplateBadge>
-          </TemplateHeader>
-          {base.description && <TemplateDescription>{base.description}</TemplateDescription>}
-        </TemplateContent>
+        <ScenarioHeader sample={base} />
       </TemplateCard>
     );
   }
@@ -85,15 +83,7 @@ const ScenarioCard: React.FC<{ group: ScenarioGroup; selectedTemplateId: string 
 
   return (
     <GroupCard data-selected={selectedInGroup || undefined}>
-      <TemplateContent>
-        <TemplateHeader>
-          <TemplateName>{base.name}</TemplateName>
-          <TemplateBadge variant={base.is_system ? 'system' : 'user'}>
-            {base.is_system ? 'System' : 'User'}
-          </TemplateBadge>
-        </TemplateHeader>
-        {base.description && <TemplateDescription>{base.description}</TemplateDescription>}
-      </TemplateContent>
+      <ScenarioHeader sample={base} />
       <VariantSelector role="group" aria-label={`${base.name} variants`}>
         {variants.map((variant) => (
           <VariantOption key={variant.id} value={variant.id} aria-label={variant.name}>
@@ -106,9 +96,9 @@ const ScenarioCard: React.FC<{ group: ScenarioGroup; selectedTemplateId: string 
 };
 
 function toScenarioGroups(samples: SamplePipeline[]): ScenarioGroup[] {
-  return groupSamplePipelinesByScenario(samples)
-    .slice()
-    .sort((a, b) => compareSamplePipelinesByName(a.base, b.base));
+  return groupSamplePipelinesByScenario(samples).sort((a, b) =>
+    compareSamplePipelinesByName(a.base, b.base)
+  );
 }
 
 interface FacetFiltersProps {
@@ -159,7 +149,7 @@ const FacetFilters: React.FC<FacetFiltersProps> = ({
             aria-pressed={capabilityFilter === capability}
             onClick={() => onToggleCapability(capability)}
           >
-            {formatTagLabel(capability)}
+            {labelFromKey(capability)}
           </FacetChip>
         ))}
       </FacetRow>

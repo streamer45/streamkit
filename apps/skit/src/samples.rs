@@ -192,37 +192,15 @@ struct PipelineMetadata {
     mode: streamkit_api::EngineMode,
     explicit: crate::sample_discovery::ExplicitDiscovery,
     node_kinds: Vec<String>,
-    client_input: Option<String>,
-    client_output: Option<String>,
-}
-
-const fn input_type_str(input_type: streamkit_api::yaml::InputType) -> &'static str {
-    use streamkit_api::yaml::InputType;
-    match input_type {
-        InputType::FileUpload => "file_upload",
-        InputType::Text => "text",
-        InputType::Trigger => "trigger",
-        InputType::None => "none",
-    }
-}
-
-const fn output_type_str(output_type: streamkit_api::yaml::OutputType) -> &'static str {
-    use streamkit_api::yaml::OutputType;
-    match output_type {
-        OutputType::Transcription => "transcription",
-        OutputType::Json => "json",
-        OutputType::Audio => "audio",
-        OutputType::Video => "video",
-    }
+    client_input: Option<streamkit_api::yaml::InputType>,
+    client_output: Option<streamkit_api::yaml::OutputType>,
 }
 
 fn client_io_types(
     client: Option<&streamkit_api::yaml::ClientSection>,
-) -> (Option<String>, Option<String>) {
-    let input =
-        client.and_then(|c| c.input.as_ref()).map(|i| input_type_str(i.input_type).to_string());
-    let output =
-        client.and_then(|c| c.output.as_ref()).map(|o| output_type_str(o.output_type).to_string());
+) -> (Option<streamkit_api::yaml::InputType>, Option<streamkit_api::yaml::OutputType>) {
+    let input = client.and_then(|c| c.input.as_ref()).map(|i| i.input_type);
+    let output = client.and_then(|c| c.output.as_ref()).map(|o| o.output_type);
     (input, output)
 }
 
@@ -238,60 +216,63 @@ fn parse_pipeline_metadata(yaml: &str, path: &std::path::Path) -> PipelineMetada
         },
     };
 
-    let explicit = |group, variant, category, tags| crate::sample_discovery::ExplicitDiscovery {
-        group,
-        variant,
-        category,
-        tags,
-    };
+    // The Steps and Dag arms differ only in how node kinds are collected; the
+    // discovery fields are shared, so destructure them once here.
+    let (name, description, mode, group, variant, category, tags, node_kinds, client) =
+        match user_pipeline {
+            UserPipeline::Steps {
+                name,
+                description,
+                mode,
+                group,
+                variant,
+                category,
+                tags,
+                steps,
+                client,
+            } => (
+                name,
+                description,
+                mode,
+                group,
+                variant,
+                category,
+                tags,
+                steps.into_iter().map(|s| s.kind).collect::<Vec<String>>(),
+                client,
+            ),
+            UserPipeline::Dag {
+                name,
+                description,
+                mode,
+                group,
+                variant,
+                category,
+                tags,
+                nodes,
+                client,
+            } => (
+                name,
+                description,
+                mode,
+                group,
+                variant,
+                category,
+                tags,
+                nodes.into_values().map(|n| n.kind).collect::<Vec<String>>(),
+                client,
+            ),
+        };
 
-    match user_pipeline {
-        UserPipeline::Steps {
-            name,
-            description,
-            mode,
-            group,
-            variant,
-            category,
-            tags,
-            steps,
-            client,
-        } => {
-            let node_kinds = steps.into_iter().map(|s| s.kind).collect();
-            let (client_input, client_output) = client_io_types(client.as_ref());
-            PipelineMetadata {
-                name,
-                description,
-                mode,
-                explicit: explicit(group, variant, category, tags),
-                node_kinds,
-                client_input,
-                client_output,
-            }
-        },
-        UserPipeline::Dag {
-            name,
-            description,
-            mode,
-            group,
-            variant,
-            category,
-            tags,
-            nodes,
-            client,
-        } => {
-            let node_kinds = nodes.into_values().map(|n| n.kind).collect();
-            let (client_input, client_output) = client_io_types(client.as_ref());
-            PipelineMetadata {
-                name,
-                description,
-                mode,
-                explicit: explicit(group, variant, category, tags),
-                node_kinds,
-                client_input,
-                client_output,
-            }
-        },
+    let (client_input, client_output) = client_io_types(client.as_ref());
+    PipelineMetadata {
+        name,
+        description,
+        mode,
+        explicit: crate::sample_discovery::ExplicitDiscovery { group, variant, category, tags },
+        node_kinds,
+        client_input,
+        client_output,
     }
 }
 
@@ -340,8 +321,8 @@ async fn load_samples_from_dir(
                 let discovery = crate::sample_discovery::derive(
                     base_filename,
                     &meta.node_kinds,
-                    meta.client_input.as_deref(),
-                    meta.client_output.as_deref(),
+                    meta.client_input,
+                    meta.client_output,
                     meta.explicit,
                 );
 
@@ -472,8 +453,8 @@ pub async fn get_sample(
                 let discovery = crate::sample_discovery::derive(
                     filename_base,
                     &meta.node_kinds,
-                    meta.client_input.as_deref(),
-                    meta.client_output.as_deref(),
+                    meta.client_input,
+                    meta.client_output,
                     meta.explicit,
                 );
 
@@ -616,8 +597,8 @@ async fn save_sample(
     let discovery = crate::sample_discovery::derive(
         base_filename,
         &meta.node_kinds,
-        meta.client_input.as_deref(),
-        meta.client_output.as_deref(),
+        meta.client_input,
+        meta.client_output,
         meta.explicit,
     );
 

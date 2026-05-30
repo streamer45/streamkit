@@ -12,6 +12,8 @@
 //! node kinds, the client section, and the filename. Explicit YAML values
 //! always win; derived `tags` are unioned with any curated ones.
 
+use streamkit_api::yaml::{InputType, OutputType};
+
 /// Explicit discovery fields parsed from a sample's YAML (all optional).
 #[derive(Debug, Default, Clone)]
 pub struct ExplicitDiscovery {
@@ -107,7 +109,6 @@ fn group_and_variant_from_filename(filename_base: &str) -> (String, Option<Strin
         variant_parts.push((*lang).to_string());
     }
 
-    group_tokens.dedup();
     let group_key = if group_tokens.is_empty() {
         filename_base.to_lowercase().replace('_', "-")
     } else {
@@ -186,8 +187,8 @@ fn tags_for_kind(kind: &str) -> Vec<&'static str> {
 
 fn capability_tags(
     node_kinds: &[String],
-    client_input: Option<&str>,
-    client_output: Option<&str>,
+    client_input: Option<InputType>,
+    client_output: Option<OutputType>,
 ) -> Vec<String> {
     let mut tags: Vec<String> = Vec::new();
 
@@ -198,15 +199,15 @@ fn capability_tags(
     }
 
     match client_output {
-        Some("transcription") => tags.push("speech-to-text".to_string()),
-        Some("audio") => tags.push("audio-output".to_string()),
-        Some("video") => tags.push("video-output".to_string()),
-        _ => {},
+        Some(OutputType::Transcription) => tags.push("speech-to-text".to_string()),
+        Some(OutputType::Audio) => tags.push("audio-output".to_string()),
+        Some(OutputType::Video) => tags.push("video-output".to_string()),
+        Some(OutputType::Json) | None => {},
     }
     match client_input {
-        Some("file_upload") => tags.push("file-input".to_string()),
-        Some("text") => tags.push("text-input".to_string()),
-        _ => {},
+        Some(InputType::FileUpload) => tags.push("file-input".to_string()),
+        Some(InputType::Text) => tags.push("text-input".to_string()),
+        Some(InputType::Trigger | InputType::None) | None => {},
     }
 
     tags.sort_unstable();
@@ -241,8 +242,8 @@ fn category_from_tags(tags: &[String]) -> Option<String> {
 pub fn derive(
     filename_base: &str,
     node_kinds: &[String],
-    client_input: Option<&str>,
-    client_output: Option<&str>,
+    client_input: Option<InputType>,
+    client_output: Option<OutputType>,
     explicit: ExplicitDiscovery,
 ) -> Discovery {
     let (derived_group, derived_variant) = group_and_variant_from_filename(filename_base);
@@ -395,7 +396,7 @@ mod tests {
             "video_moq_vaapi_h264_colorbars",
             &kinds(&["video::vaapi::h264_encoder", "transport::moq::publisher"]),
             None,
-            Some("video"),
+            Some(OutputType::Video),
             ExplicitDiscovery {
                 group: Some("custom-group".to_string()),
                 variant: Some("Custom".to_string()),
@@ -418,7 +419,7 @@ mod tests {
             "video_moq_nv_av1_colorbars",
             &kinds(&["video::nv::av1_encoder", "transport::moq::publisher"]),
             None,
-            Some("video"),
+            Some(OutputType::Video),
             ExplicitDiscovery::default(),
         );
         assert_eq!(discovery.group.as_deref(), Some("video-moq-colorbars"));

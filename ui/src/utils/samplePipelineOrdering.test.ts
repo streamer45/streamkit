@@ -157,6 +157,17 @@ describe('matchesSamplePipelineQuery', () => {
     expect(matchesSamplePipelineQuery(tts, 'stt')).toBe(false);
   });
 
+  it('does not let a query that merely contains a short synonym leak in its group', () => {
+    const mic = makePipeline({ id: 'mic', name: 'Microphone Capture', tags: ['microphone'] });
+    const cam = makePipeline({ id: 'cam', name: 'Webcam PiP', tags: ['webcam'] });
+    // "dynamic" contains "mic" and "scam" contains "cam"; neither should expand
+    // the microphone/webcam synonym groups.
+    expect(matchesSamplePipelineQuery(mic, 'dynamic')).toBe(false);
+    expect(matchesSamplePipelineQuery(cam, 'scam')).toBe(false);
+    // Genuine prefixes still expand their group.
+    expect(matchesSamplePipelineQuery(cam, 'camera')).toBe(true);
+  });
+
   it('requires every query term to match (AND semantics)', () => {
     const sample = makePipeline({
       id: 'hw-encode',
