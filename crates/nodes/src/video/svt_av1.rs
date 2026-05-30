@@ -166,6 +166,14 @@ impl EncoderNodeRunner for SvtAv1EncoderNode {
     const PACKETS_COUNTER_NAME: &'static str = "svt_av1_encoder_packets_processed";
     const DURATION_HISTOGRAM_NAME: &'static str = "svt_av1_send_duration";
 
+    // SVT-AV1 flushes through a blocking two-thread FFI boundary
+    // (send_picture + get_packet). Under rare scheduling, the EOS flush can
+    // deadlock inside the library; bound it so the node finalizes instead of
+    // hanging until the request times out. A healthy flush completes in well
+    // under a second, so this generous idle budget never trips in practice.
+    const EOS_FLUSH_IDLE_TIMEOUT: Option<std::time::Duration> =
+        Some(std::time::Duration::from_secs(30));
+
     fn spawn_codec_task(
         self,
         mut encode_rx: mpsc::Receiver<(VideoFrame, Option<PacketMetadata>)>,

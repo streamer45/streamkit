@@ -278,6 +278,7 @@ impl ProcessorNode for PixelConvertNode {
             &mut stats_tracker,
             Packet::Video,
             "PixelConvertNode",
+            None,
         )
         .await;
 
