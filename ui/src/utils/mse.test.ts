@@ -4,7 +4,39 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { canUseMseForMimeType, normalizeMimeType } from './mse';
+import { canUseMseForMimeType, isFragmentedMp4, normalizeMimeType } from './mse';
+
+function mp4Box(type: string, body: Uint8Array): Uint8Array {
+  const out = new Uint8Array(8 + body.length);
+  new DataView(out.buffer).setUint32(0, out.length);
+  for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
+  out.set(body, 8);
+  return out;
+}
+
+function concatBytes(...parts: Uint8Array[]): Uint8Array {
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const p of parts) {
+    out.set(p, offset);
+    offset += p.length;
+  }
+  return out;
+}
+
+function streamOf(bytes: Uint8Array, chunkSize = bytes.length): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        controller.enqueue(bytes.slice(i, i + chunkSize));
+      }
+      controller.close();
+    },
+  });
+}
+
+const FTYP = mp4Box('ftyp', new TextEncoder().encode('isom'));
 
 describe('normalizeMimeType', () => {
   it('returns the input unchanged when it already includes a codecs= parameter', () => {
@@ -79,5 +111,45 @@ describe('canUseMseForMimeType', () => {
     // policy is ever tightened to "unknown support => false", this test must update.
     vi.stubGlobal('MediaSource', {});
     expect(canUseMseForMimeType('audio/mp4')).toBe(true);
+  });
+});
+
+describe('isFragmentedMp4', () => {
+  it('returns true when moov contains an mvex box (fragmented init segment)', async () => {
+    const moov = mp4Box(
+      'moov',
+      concatBytes(mp4Box('mvhd', new Uint8Array(8)), mp4Box('mvex', new Uint8Array(0)))
+    );
+    const bytes = concatBytes(FTYP, moov);
+    expect(await isFragmentedMp4(streamOf(bytes))).toBe(true);
+  });
+
+  it('returns true when a top-level moof box is present', async () => {
+    const bytes = concatBytes(FTYP, mp4Box('moof', new Uint8Array(16)));
+    expect(await isFragmentedMp4(streamOf(bytes))).toBe(true);
+  });
+
+  it('returns false for a regular moov+mdat file (unfragmented)', async () => {
+    const moov = mp4Box('moov', mp4Box('mvhd', new Uint8Array(8)));
+    const bytes = concatBytes(FTYP, moov, mp4Box('mdat', new Uint8Array(64)));
+    expect(await isFragmentedMp4(streamOf(bytes))).toBe(false);
+  });
+
+  it('returns false when mdat precedes moov (moov-at-end layout) without reading the mdat payload', async () => {
+    const bytes = concatBytes(FTYP, mp4Box('mdat', new Uint8Array(64)));
+    expect(await isFragmentedMp4(streamOf(bytes))).toBe(false);
+  });
+
+  it('classifies correctly when boxes are split across stream chunk boundaries', async () => {
+    const moov = mp4Box(
+      'moov',
+      concatBytes(mp4Box('mvhd', new Uint8Array(8)), mp4Box('mvex', new Uint8Array(0)))
+    );
+    const bytes = concatBytes(FTYP, moov);
+    expect(await isFragmentedMp4(streamOf(bytes, 3))).toBe(true);
+  });
+
+  it('returns false for a truncated/empty stream', async () => {
+    expect(await isFragmentedMp4(streamOf(new Uint8Array(0)))).toBe(false);
   });
 });

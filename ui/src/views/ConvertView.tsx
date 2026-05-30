@@ -893,9 +893,9 @@ const ConvertView: React.FC = () => {
     setConversionMessage('');
 
     try {
-      const webmPlayback = outputMode === 'playback' ? 'auto' : 'blob';
+      const playback = outputMode === 'playback' ? 'auto' : 'blob';
       const result = await convertFile(pipelineYaml, uploads, outputMode, controller.signal, {
-        webmPlayback,
+        playback,
       });
 
       if (result.success) {
@@ -1048,7 +1048,7 @@ const ConvertView: React.FC = () => {
 
     try {
       const result = await convertFile(pipelineYaml, uploads, 'playback', controller.signal, {
-        webmPlayback: 'blob',
+        playback: 'blob',
       });
 
       if (result.success) {
