@@ -1562,12 +1562,20 @@ async fn static_handler(
     }
 }
 
-async fn metrics_middleware(req: axum::http::Request<Body>, next: Next) -> Response {
+async fn metrics_middleware(
+    State(app_state): State<Arc<AppState>>,
+    req: axum::http::Request<Body>,
+    next: Next,
+) -> Response {
     let start = Instant::now();
     let method = req.method().clone();
     let path = req.extensions().get::<MatchedPath>().map_or_else(
         || req.uri().path().to_owned(),
         |matched_path| matched_path.as_str().to_owned(),
+    );
+    let configured_labels = crate::metrics_labels::resolve_request_labels(
+        &app_state.config.server.metrics.request_labels,
+        req.headers(),
     );
 
     let response = next.run(req).await;
@@ -1590,11 +1598,12 @@ async fn metrics_middleware(req: axum::http::Request<Body>, next: Next) -> Respo
         })
         .clone();
 
-    let labels = [
+    let mut labels = vec![
         KeyValue::new("http.method", method.to_string()),
         KeyValue::new("http.route", path),
         KeyValue::new("http.status_code", status),
     ];
+    labels.extend(configured_labels);
 
     counter.add(1, &labels);
     histogram.record(latency, &labels);
@@ -1958,7 +1967,7 @@ pub fn create_app(
                 .on_response(DefaultOnResponse::new().level(tracing::Level::DEBUG))
                 .on_failure(DefaultOnFailure::new().level(tracing::Level::WARN)),
         ))
-    .layer(middleware::from_fn(metrics_middleware))
+    .layer(middleware::from_fn_with_state(Arc::clone(&app_state), metrics_middleware))
     .layer(SetResponseHeaderLayer::if_not_present(
         header::X_CONTENT_TYPE_OPTIONS,
         header::HeaderValue::from_static("nosniff"),

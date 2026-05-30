@@ -231,6 +231,56 @@ impl Default for CorsConfig {
     }
 }
 
+fn default_label_fallback() -> String {
+    "other".to_string()
+}
+
+fn default_request_labels() -> Vec<RequestLabelConfig> {
+    // Ships the `service` dimension oneshot dashboards build against; operators
+    // can extend or replace it without a recompile.
+    vec![RequestLabelConfig {
+        name: "service".to_string(),
+        header: "X-StreamKit-Service".to_string(),
+        allowed: vec!["tts".to_string(), "stt".to_string()],
+        fallback: default_label_fallback(),
+    }]
+}
+
+/// A bounded metric label sourced from a trusted request header.
+///
+/// The header value is trimmed and lowercased, then matched against `allowed`;
+/// anything not in the allowlist (or a missing header) collapses to `fallback`,
+/// so client-supplied headers can never inflate metric cardinality.
+#[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
+pub struct RequestLabelConfig {
+    /// Metric label key (e.g. `service`).
+    pub name: String,
+    /// Trusted request header to read the value from (e.g. `X-StreamKit-Service`).
+    pub header: String,
+    /// Permitted values, matched case-insensitively after trimming.
+    #[serde(default)]
+    pub allowed: Vec<String>,
+    /// Value emitted when the header is absent or its value is not in `allowed`.
+    #[serde(default = "default_label_fallback")]
+    pub fallback: String,
+}
+
+/// Configuration for request-scoped metric labeling.
+#[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
+pub struct MetricsConfig {
+    /// Bounded labels attached to request metrics, each sourced from a trusted
+    /// request header. Applied to all HTTP request metrics and to oneshot
+    /// pipeline metrics.
+    #[serde(default = "default_request_labels")]
+    pub request_labels: Vec<RequestLabelConfig>,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self { request_labels: default_request_labels() }
+    }
+}
+
 /// Telemetry and observability configuration (OpenTelemetry, tokio-console).
 #[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
 pub struct TelemetryConfig {
@@ -322,6 +372,9 @@ pub struct ServerConfig {
     /// CORS configuration for cross-origin requests
     #[serde(default)]
     pub cors: CorsConfig,
+    /// Bounded request-metric labeling configuration.
+    #[serde(default)]
+    pub metrics: MetricsConfig,
     #[cfg(feature = "moq")]
     pub moq_address: Option<String>,
     /// TLS certificate for the MoQ WebTransport listener.
@@ -350,6 +403,7 @@ impl Default for ServerConfig {
             max_body_size: default_max_body_size(),
             base_path: None,
             cors: CorsConfig::default(),
+            metrics: MetricsConfig::default(),
             #[cfg(feature = "moq")]
             moq_address: None,
             #[cfg(feature = "moq")]
