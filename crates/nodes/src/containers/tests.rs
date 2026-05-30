@@ -799,9 +799,12 @@ async fn test_webm_mux_file_mode() {
     use std::num::NonZeroUsize;
     use streamkit_core::types::{EncodedVideoFormat, PacketMetadata, PixelFormat, VideoCodec};
 
-    // A tiny chunk size so even this small muxed file splits into several
-    // bounded packets, exercising the real chunked read-back path.
-    let chunk_size = 64usize;
+    // A small chunk size so this modest muxed file still splits into several
+    // bounded packets, exercising the real chunked read-back path. Kept large
+    // enough that the chunk count stays well under the output channel capacity
+    // (the test only drains after the muxer finishes, so unbounded chunking
+    // could otherwise deadlock on send).
+    let chunk_size = 256usize;
 
     let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
     let mut enc_inputs = HashMap::new();
