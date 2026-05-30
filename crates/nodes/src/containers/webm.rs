@@ -8,6 +8,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::io::{BufWriter, Cursor, Seek, SeekFrom, Write};
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use streamkit_core::pins::PinManagementMessage;
 use streamkit_core::stats::NodeStatsTracker;
@@ -434,10 +435,24 @@ pub struct WebMMuxerConfig {
     #[serde(default = "default_num_inputs")]
     #[schemars(range(min = 1, max = 2))]
     pub num_inputs: u32,
+    /// Size (in bytes) of each `Packet::Binary` chunk emitted when a File-mode
+    /// output is streamed downstream at finalization.  Larger values cut
+    /// per-packet overhead; smaller values lower peak memory and can be aligned
+    /// to a downstream sink's preferred unit (e.g. an object-store multipart
+    /// part size).  Defaults to 256 KiB when unset.
+    #[serde(default)]
+    pub finalize_chunk_size: Option<NonZeroUsize>,
 }
 
 const fn default_num_inputs() -> u32 {
     1
+}
+
+impl WebMMuxerConfig {
+    /// File-mode finalize chunk size, falling back to [`FILE_MODE_CHUNK_SIZE`].
+    fn finalize_chunk_size(&self) -> usize {
+        self.finalize_chunk_size.map_or(FILE_MODE_CHUNK_SIZE, NonZeroUsize::get)
+    }
 }
 
 impl Default for WebMMuxerConfig {
@@ -450,6 +465,7 @@ impl Default for WebMMuxerConfig {
             streaming_mode: WebMStreamingMode::default(),
             opus_preskip_samples: OPUS_PRESKIP_SAMPLES,
             num_inputs: default_num_inputs(),
+            finalize_chunk_size: None,
         }
     }
 }
@@ -1274,7 +1290,14 @@ impl ProcessorNode for WebMMuxerNode {
             StreamKitError::Runtime(err_msg)
         })?;
         let mut mux_buffer = writer.into_inner();
-        finalize_send(&mut context, &mut mux_buffer, &content_type_str, &mut stats_tracker).await?;
+        finalize_send(
+            &mut context,
+            &mut mux_buffer,
+            &content_type_str,
+            &mut stats_tracker,
+            self.config.finalize_chunk_size(),
+        )
+        .await?;
 
         state_helpers::emit_stopped(&context.state_tx, &node_name, "input_closed");
 
@@ -1556,6 +1579,7 @@ async fn finalize_send(
     mux_buffer: &mut MuxBuffer,
     content_type: &Cow<'static, str>,
     stats_tracker: &mut NodeStatsTracker,
+    chunk_size: usize,
 ) -> Result<(), StreamKitError> {
     let mut sent_any = false;
     match mux_buffer {
@@ -1568,11 +1592,9 @@ async fn finalize_send(
             let file = buf.finalized_file().map_err(|e| {
                 StreamKitError::Runtime(format!("Failed to read back WebM file: {e}"))
             })?;
-            if let Some(mut reader) =
-                ChunkedFileReader::new(file, FILE_MODE_CHUNK_SIZE).map_err(|e| {
-                    StreamKitError::Runtime(format!("Failed to read back WebM file: {e}"))
-                })?
-            {
+            if let Some(mut reader) = ChunkedFileReader::new(file, chunk_size).map_err(|e| {
+                StreamKitError::Runtime(format!("Failed to read back WebM file: {e}"))
+            })? {
                 while let Some(data) = reader.next_chunk().map_err(|e| {
                     StreamKitError::Runtime(format!("Failed to read back WebM file: {e}"))
                 })? {

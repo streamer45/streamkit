@@ -907,20 +907,22 @@ async fn test_webm_mux_file_mode() {
     );
 }
 
-/// Test that MP4 muxer works in File mode (seekable temp-file backed) and
-/// that finalization streams the temp file back in bounded chunks: the output
-/// spans multiple `Packet::Binary` chunks, none exceeding the chunk size, and
-/// their concatenation is the full MP4 (starting with the `ftyp` box).
+/// Test that MP4 File mode honours a configured `finalize_chunk_size`: the
+/// output is streamed back as multiple `Packet::Binary` chunks, none exceeding
+/// the configured size, the chunk count matches the configured size exactly,
+/// and their concatenation is the full MP4 (starting with the `ftyp` box).
 #[cfg(all(feature = "mp4", feature = "openh264"))]
 #[tokio::test]
 async fn test_mp4_mux_file_mode_streams_multiple_chunks() {
-    use super::file_stream::FILE_MODE_CHUNK_SIZE;
     use super::mp4::{Mp4MuxerConfig, Mp4MuxerNode, Mp4StreamingMode};
+    use crate::test_utils::create_textured_video_frame;
     use crate::video::openh264::{OpenH264EncoderConfig, OpenH264EncoderNode};
-    use streamkit_core::types::{
-        EncodedVideoFormat, PacketMetadata, PixelFormat, VideoCodec, VideoFrame,
-    };
+    use std::num::NonZeroUsize;
+    use streamkit_core::types::{EncodedVideoFormat, PacketMetadata, VideoCodec};
 
+    // A smaller-than-default chunk size to prove the override is wired through
+    // without needing to mux an unreasonably large file.
+    let chunk_size = 64 * 1024usize;
     let width = 640u32;
     let height = 480u32;
     let frame_count = 12u64;
@@ -931,7 +933,7 @@ async fn test_mp4_mux_file_mode_streams_multiple_chunks() {
 
     let (enc_context, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 64);
     // High bitrate + every-frame keyframes so the textured frames below mux to
-    // well over one FILE_MODE_CHUNK_SIZE, exercising the chunked read-back.
+    // well over one chunk, exercising the chunked read-back.
     let encoder_config =
         OpenH264EncoderConfig { bitrate_kbps: 8_000, max_frame_rate: 30.0, gop_size: 1 };
     let encoder = OpenH264EncoderNode::new(encoder_config).unwrap();
@@ -940,23 +942,9 @@ async fn test_mp4_mux_file_mode_streams_multiple_chunks() {
     assert_state_initializing(&mut enc_state_rx).await;
     assert_state_running(&mut enc_state_rx).await;
 
-    // Textured luma (neutral chroma) with per-frame motion: compressible
-    // enough for the encoder to emit real bitstream, detailed enough that all
-    // keyframes together exceed several chunk sizes.
-    let w = usize::try_from(width).unwrap();
-    let h = usize::try_from(height).unwrap();
-    let chroma = (w / 2) * (h / 2);
-    let xb: Vec<u8> = (0..w).map(|x| u8::try_from(x.wrapping_mul(3) % 256).unwrap()).collect();
-    let yb: Vec<u8> = (0..h).map(|y| u8::try_from(y.wrapping_mul(5) % 256).unwrap()).collect();
     for i in 0..frame_count {
-        let mut data = vec![128u8; w * h + 2 * chroma];
         let shift = u8::try_from(i.wrapping_mul(11) % 256).unwrap();
-        for y in 0..h {
-            for x in 0..w {
-                data[y * w + x] = (xb[x] ^ yb[y]).wrapping_add(shift);
-            }
-        }
-        let mut frame = VideoFrame::new(width, height, PixelFormat::I420, data).unwrap();
+        let mut frame = create_textured_video_frame(width, height, shift);
         frame.metadata = Some(PacketMetadata {
             timestamp_us: Some(i * 33_333),
             duration_us: Some(33_333),
@@ -994,6 +982,7 @@ async fn test_mp4_mux_file_mode_streams_multiple_chunks() {
         video_width: u16::try_from(width).unwrap(),
         video_height: u16::try_from(height).unwrap(),
         video_codec: Some(VideoCodec::H264),
+        finalize_chunk_size: NonZeroUsize::new(chunk_size),
         ..Mp4MuxerConfig::default()
     };
     let muxer = Mp4MuxerNode::new(mux_config);
@@ -1028,15 +1017,20 @@ async fn test_mp4_mux_file_mode_streams_multiple_chunks() {
     let mut mp4_bytes = Vec::new();
     for data in &binary_packets {
         assert!(
-            data.len() <= FILE_MODE_CHUNK_SIZE,
-            "no finalized File-mode packet may exceed the chunk size"
+            data.len() <= chunk_size,
+            "no finalized File-mode packet may exceed the configured chunk size"
         );
         mp4_bytes.extend_from_slice(data);
     }
 
     assert!(
-        mp4_bytes.len() > FILE_MODE_CHUNK_SIZE,
+        mp4_bytes.len() > chunk_size,
         "test should produce more than one chunk worth of output"
+    );
+    assert_eq!(
+        binary_packets.len(),
+        mp4_bytes.len().div_ceil(chunk_size),
+        "File-mode must emit exactly ceil(total / configured chunk size) packets"
     );
     assert_eq!(&mp4_bytes[4..8], b"ftyp", "MP4 File mode output must start with an ftyp box");
 }

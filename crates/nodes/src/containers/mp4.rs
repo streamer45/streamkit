@@ -30,7 +30,7 @@ use shiguredo_mp4::descriptors::{
 use shiguredo_mp4::mux::{Fmp4SegmentMuxer, Mp4FileMuxer, Sample};
 use shiguredo_mp4::{FixedPointNumber, TrackKind, Uint};
 use std::io::{BufWriter, Seek, SeekFrom, Write};
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroUsize};
 use streamkit_core::pins::PinManagementMessage;
 use streamkit_core::stats::NodeStatsTracker;
 use streamkit_core::types::{
@@ -547,6 +547,21 @@ pub struct Mp4MuxerConfig {
     /// input codec.
     #[serde(default)]
     pub video_codec: Option<VideoCodec>,
+
+    /// Size (in bytes) of each `Packet::Binary` chunk emitted when a File-mode
+    /// output is streamed downstream at finalization.  Larger values cut
+    /// per-packet overhead; smaller values lower peak memory and can be aligned
+    /// to a downstream sink's preferred unit (e.g. an object-store multipart
+    /// part size).  Defaults to 256 KiB when unset.
+    #[serde(default)]
+    pub finalize_chunk_size: Option<NonZeroUsize>,
+}
+
+impl Mp4MuxerConfig {
+    /// File-mode finalize chunk size, falling back to [`FILE_MODE_CHUNK_SIZE`].
+    fn finalize_chunk_size(&self) -> usize {
+        self.finalize_chunk_size.map_or(FILE_MODE_CHUNK_SIZE, NonZeroUsize::get)
+    }
 }
 
 const fn default_num_inputs() -> u32 {
@@ -566,6 +581,7 @@ impl Default for Mp4MuxerConfig {
             num_inputs: default_num_inputs(),
             audio_codec: None,
             video_codec: None,
+            finalize_chunk_size: None,
         }
     }
 }
@@ -1593,6 +1609,7 @@ async fn run_file_mode(
         session.content_type,
         stats_tracker,
         session.node_name,
+        session.config.finalize_chunk_size(),
     )
     .await
 }
@@ -1733,6 +1750,7 @@ async fn finalize_file_mode(
     content_type: &'static str,
     stats_tracker: &mut NodeStatsTracker,
     node_name: &str,
+    chunk_size: usize,
 ) -> Result<(), StreamKitError> {
     let finalized = muxer.finalize().map_err(|e| {
         let msg = format!("Failed to finalize MP4: {e}");
@@ -1752,7 +1770,7 @@ async fn finalize_file_mode(
     let file = file_buf
         .finalized_file()
         .map_err(|e| StreamKitError::Runtime(format!("Failed to read back MP4 file: {e}")))?;
-    let reader = ChunkedFileReader::new(file, FILE_MODE_CHUNK_SIZE)
+    let reader = ChunkedFileReader::new(file, chunk_size)
         .map_err(|e| StreamKitError::Runtime(format!("Failed to read back MP4 file: {e}")))?;
 
     if let Some(mut reader) = reader {
