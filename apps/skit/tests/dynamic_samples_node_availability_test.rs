@@ -14,6 +14,7 @@
 //! (`plugin::…`) or a codec behind a non-default cargo feature / dedicated
 //! hardware. Anything else (e.g. a typo) fails the test.
 
+// Test-fixture checks should fail fast with contextual assertion messages.
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::collections::BTreeSet;

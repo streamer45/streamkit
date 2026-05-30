@@ -178,6 +178,7 @@ fn test_sample_moq_aac_mixing_compiles() {
 /// *availability* (feature flags, plugins) is checked separately against a live
 /// registry, since the compiler is registry-agnostic.
 #[test]
+// Fixture-traversal unwraps should panic and identify the offending sample.
 #[allow(clippy::unwrap_used)]
 fn test_all_dynamic_samples_parse_and_compile() {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../samples/pipelines/dynamic");
