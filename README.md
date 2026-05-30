@@ -40,6 +40,7 @@ Define your pipeline once, run it how you need.
 
 - [Project status](#project-status)
 - [Use cases](#use-cases)
+- [Try it from your terminal](#try-it-from-your-terminal)
 - [Core concepts](#core-concepts)
 - [Quickstart (Docker)](#quickstart-docker)
 - [What's included](#whats-included)
@@ -73,6 +74,25 @@ If you try it and something feels off, please open an issue (or a small PR). For
 - **Audio processing** — Mixing, gain control, format conversion, and custom routing.
 - **Batch processing** — High-throughput file conversion or offline transcription using the Oneshot HTTP API.
 - **Your idea** — Add your own node or plugin and compose it into a pipeline
+
+## Try it from your terminal
+
+Want a glimpse of what StreamKit can do without installing anything? These commands hit a public instance of the [speech gateway example](examples/speech-gateway/) — a thin HTTP front-end over StreamKit oneshot pipelines (Kokoro TTS and Whisper STT).
+
+Text to speech (returns Opus audio, piped straight to `ffplay`):
+
+```bash
+curl -d 'Hello from StreamKit' https://tts.streamkit.dev | ffplay -nodisp -autoexit -
+```
+
+Speech to text (send any Ogg/Opus file, get back newline-delimited JSON):
+
+```bash
+curl --data-binary @samples/audio/system/sample.ogg https://stt.streamkit.dev
+```
+
+> [!NOTE]
+> `tts.streamkit.dev` and `stt.streamkit.dev` are a free, best-effort public demo with no SLA — they may be slow, rate-limited, or offline at any time, and usage is monitored for abuse. Don't send anything sensitive. To run your own, see [`examples/speech-gateway/`](examples/speech-gateway/).
 
 ## Core concepts
 

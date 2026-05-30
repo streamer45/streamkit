@@ -8,6 +8,17 @@ SPDX-License-Identifier: MPL-2.0
 
 Thin HTTP gateway that rewrites simple STT/TTS requests into the multipart oneshot format expected by a StreamKit backend.
 
+## Hosted instance
+
+A free, best-effort public instance runs at `https://tts.streamkit.dev` and `https://stt.streamkit.dev`, so you can try the endpoints below without running anything:
+
+```sh
+curl -d 'Hello from StreamKit' https://tts.streamkit.dev | ffplay -nodisp -autoexit -
+curl --data-binary @speech.ogg https://stt.streamkit.dev
+```
+
+There is no SLA — it may be slow, rate-limited, or offline at any time, and usage is monitored for abuse. Don't send anything sensitive. Run your own (below) to remove those limits.
+
 ## Prereqs
 
 - StreamKit server running locally (default assumed: `http://127.0.0.1:4545`).
@@ -16,7 +27,7 @@ Thin HTTP gateway that rewrites simple STT/TTS requests into the multipart onesh
 ## Run the gateway
 
 ```sh
-cd examples/streamkit-cli-gateway
+cd examples/speech-gateway
 go run ./cmd/gateway --listen :8080 --skit-url http://127.0.0.1:4545
 ```
 
