@@ -120,10 +120,10 @@ Text to speech (returns Opus audio, piped straight to `ffplay`):
 curl -d 'Hello from StreamKit' https://tts.streamkit.dev | ffplay -nodisp -autoexit -
 ```
 
-Speech to text (send any Ogg/Opus file, get back newline-delimited JSON):
+Speech to text — pipe the synthesized audio straight back into STT (no local file needed) and get back newline-delimited JSON:
 
 ```bash
-curl --data-binary @sample.ogg https://stt.streamkit.dev
+curl -sd 'StreamKit transcribes speech' https://tts.streamkit.dev | curl -s --data-binary @- https://stt.streamkit.dev
 ```
 
 > [!NOTE]
