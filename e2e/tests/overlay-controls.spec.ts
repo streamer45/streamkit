@@ -2,7 +2,10 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import { test, expect, request } from '@playwright/test';
+import * as fs from 'fs';
+import * as path from 'path';
+
+import { test, expect, request, type Page } from '@playwright/test';
 
 import { ensureLoggedIn, getAuthHeaders } from './auth-helpers';
 import { type ConsoleErrorCollector, createConsoleErrorCollector } from './test-helpers';
@@ -10,10 +13,31 @@ import { type ConsoleErrorCollector, createConsoleErrorCollector } from './test-
 /**
  * E2E tests for the declarative overlay controls feature.
  *
- * Uses the "Test: Overlay Controls" sample pipeline which includes all five
- * control types (toggle, text, number, button, select) and requires only core nodes
- * (video::colorbars → core::sink) — no plugins or MoQ gateway needed.
+ * Drives the `overlay-controls.yaml` fixture, which exercises all five control
+ * types (toggle, text, number, button, select) using only core nodes
+ * (`video::colorbars` → `core::sink`) — no plugins or MoQ gateway needed. The
+ * fixture is loaded directly into the Stream view's YAML editor rather than
+ * picked from the sample list: it's a test fixture, not a shipped sample.
  */
+const OVERLAY_CONTROLS_YAML = fs.readFileSync(
+  path.resolve(import.meta.dirname, '../fixtures/overlay-controls.yaml'),
+  'utf-8'
+);
+
+/**
+ * Replace the Stream view's pipeline YAML editor contents. The editor is
+ * CodeMirror (contenteditable), so we select-all and `insertText` the fixture
+ * as a single input event — avoiding per-keystroke autocomplete/auto-indent.
+ */
+async function loadPipelineYaml(page: Page, yaml: string): Promise<void> {
+  const editor = page.locator('.cm-content');
+  await expect(editor).toBeVisible({ timeout: 15_000 });
+  await editor.click();
+  await page.keyboard.press('ControlOrMeta+A');
+  await page.keyboard.press('Delete');
+  await page.keyboard.insertText(yaml);
+}
+
 test.describe('Stream View - Overlay Controls', () => {
   let collector: ConsoleErrorCollector;
   let sessionId: string | null = null;
@@ -49,11 +73,7 @@ test.describe('Stream View - Overlay Controls', () => {
     page,
   }) => {
     test.setTimeout(60_000);
-    const templateCard = page.getByText('Test: Overlay Controls', {
-      exact: true,
-    });
-    await expect(templateCard).toBeVisible({ timeout: 15_000 });
-    await templateCard.click();
+    await loadPipelineYaml(page, OVERLAY_CONTROLS_YAML);
     const createButton = page.getByRole('button', { name: /Create Session/i });
     await expect(createButton).toBeEnabled({ timeout: 5_000 });
     await createButton.click();
