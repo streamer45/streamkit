@@ -64,7 +64,7 @@ fn every_dynamic_sample_node_kind_is_available_or_known() {
     let dir = dynamic_samples_dir();
     let mut checked = 0usize;
     let mut failures = Vec::new();
-    let mut unverified_external: BTreeSet<String> = BTreeSet::new();
+    let mut seen_external: BTreeSet<String> = BTreeSet::new();
 
     for entry in std::fs::read_dir(&dir).expect("dynamic samples directory should exist") {
         let path = entry.expect("readable dir entry").path();
@@ -88,7 +88,7 @@ fn every_dynamic_sample_node_kind_is_available_or_known() {
                 continue;
             }
             if is_known_external(&kind) {
-                unverified_external.insert(kind);
+                seen_external.insert(kind);
                 continue;
             }
             failures.push(format!(
@@ -101,10 +101,14 @@ fn every_dynamic_sample_node_kind_is_available_or_known() {
     assert!(checked > 0, "expected to find dynamic sample files in {}", dir.display());
     assert!(failures.is_empty(), "node-availability check failed:\n{}", failures.join("\n"));
 
-    // Every shipped sample either uses default nodes or a recognized external
-    // kind; `unverified_external` records the latter for debugging context.
+    // Guard against the allowlist drifting out of sync with the samples: every
+    // feature-gated kind must still be exercised by at least one sample, so a
+    // stale entry left behind after a sample is removed fails the test.
+    let unreferenced: Vec<&str> =
+        FEATURE_GATED_KINDS.iter().copied().filter(|k| !seen_external.contains(*k)).collect();
     assert!(
-        unverified_external.iter().all(|k| is_known_external(k)),
-        "unexpected external kinds: {unverified_external:?}"
+        unreferenced.is_empty(),
+        "FEATURE_GATED_KINDS entries no longer referenced by any dynamic sample (remove them): \
+         {unreferenced:?}"
     );
 }

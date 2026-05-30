@@ -33,7 +33,8 @@ const OVERLAY_CONTROLS_YAML = fs.readFileSync(
  * pipeline), editing the YAML directly leaves the broadcast names from the
  * auto-selected first sample in place. The fixture has no MoQ transport, so we
  * clear those names; otherwise the post-create auto-connect would attempt a MoQ
- * session and surface a connection error.
+ * session and surface a connection error. The durable UI-side fix is tracked in
+ * https://github.com/streamer45/streamkit/issues/550.
  */
 async function loadPipelineYaml(page: Page, yaml: string): Promise<void> {
   const editor = page.locator('.cm-content');
