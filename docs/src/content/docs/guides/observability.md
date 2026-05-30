@@ -66,33 +66,6 @@ Import [`samples/grafana-dashboard.json`](https://github.com/streamer45/streamki
 
 ![Grafana Dashboard](/screenshots/grafana_dashboard.png)
 
-### Metric naming (OTLP → Prometheus)
-
-The OTLP→Prometheus exporter rewrites OTel names: dots become underscores, counters gain `_total`, histograms expand to `_bucket`/`_count`/`_sum`, and the unit is appended (`s` → `_seconds`, `By` → `_bytes`, `%` → `_percent`). So `plugin.call.duration` (unit `s`) is queried as `plugin_call_duration_seconds_bucket`, and the `plugin.kind` label becomes `plugin_kind`.
-
-### Plugin / ML inference metrics
-
-Native plugins (Whisper STT, Kokoro TTS, NLLB translation, …) are the hot path for hosted speech services, so their FFI calls are instrumented separately. All call metrics carry `plugin_kind` and `op` labels.
-
-| Metric | Type | Description |
-| --- | --- | --- |
-| `plugin_call_duration_seconds` | histogram | FFI call latency. Use `histogram_quantile` over `_bucket` grouped by `le, plugin_kind` for p50/p95/p99. |
-| `plugin_calls_total` | counter | FFI calls, by `plugin_kind`/`op`. |
-| `plugin_errors_total` | counter | FFI call errors. |
-| `plugin_timeouts_total` | counter | Caller-side timeouts (distinct from errors). |
-| `plugin_panics_total` | counter | FFI calls that panicked. |
-| `plugins_loaded` | gauge | Loaded plugins by `plugin_type` (`native`/`wasm`). |
-| `plugin_operations_total` | counter | Load/unload operations, by `operation`/`plugin_type`. |
-
-Overall failure rate per kind is `rate(plugin_errors_total) + rate(plugin_timeouts_total) + rate(plugin_panics_total)` — panics and timeouts are tracked apart from errors so they can be summed without double-counting. These power the dashboard's **Plugins / ML inference** row.
-
-### Monitoring oneshot speech services
-
-StreamKit's hosted speech endpoints (TTS/STT) run as oneshot pipelines, optionally behind the [`examples/speech-gateway`](https://github.com/streamer45/streamkit/tree/main/examples/speech-gateway) Go front-end.
-
-- **Gateway:** the gateway exposes its own Prometheus `/metrics` endpoint (scrape it directly; it does not go through OTLP). It emits `gateway_requests_total{endpoint,method,code}`, `gateway_request_duration_seconds{endpoint}`, `gateway_inflight_requests{endpoint}`, `gateway_upstream_duration_seconds{endpoint}` (time spent in StreamKit vs. total), and `gateway_rejected_total{endpoint,reason}`. Comparing upstream vs. total latency isolates gateway overhead from inference time. These power the **Speech Gateway** row.
-- **Per-service split:** `oneshot_pipeline_duration` carries a `service` label (`tts`/`stt`/`other`) so latency and error rate can be broken out per speech service without separate metrics. This powers the **Oneshot Speech Services** row.
-
 ## Traces (OTLP)
 
 Tracing export is controlled by:

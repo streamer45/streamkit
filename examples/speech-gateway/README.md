@@ -54,3 +54,17 @@ curl -H "Content-Type: text/plain" --data 'Hello from StreamKit' http://127.0.0.
 ```
 
 Response is `audio/ogg` (Opus mono).
+
+## Observability
+
+The gateway exposes a Prometheus `/metrics` endpoint (scrape it directly — it does not go through StreamKit's OTLP pipeline):
+
+| Metric | Type | Labels | Notes |
+| --- | --- | --- | --- |
+| `gateway_requests_total` | counter | `endpoint`, `method`, `code` | Request rate and status mix. |
+| `gateway_request_duration_seconds` | histogram | `endpoint` | End-to-end gateway latency. |
+| `gateway_upstream_duration_seconds` | histogram | `endpoint` | Time spent in StreamKit; gap vs. total is gateway overhead. |
+| `gateway_inflight_requests` | gauge | `endpoint` | Concurrent in-flight requests. |
+| `gateway_rejected_total` | counter | `endpoint`, `reason` | Rejections from `GATEWAY_MAX_CONCURRENCY` / `GATEWAY_MAX_BODY_BYTES` / `GATEWAY_MAX_TTS_TEXT_SIZE`. |
+
+A ready-made Grafana dashboard lives at [`grafana-dashboard.json`](./grafana-dashboard.json). It is self-contained: import it and pick the Prometheus datasource scraping both the gateway and the StreamKit backend. It includes the gateway metrics above, a per-service split of the backend's `oneshot_pipeline_duration` (via the `service` label: `tts`/`stt`/`other`), and the StreamKit native-plugin inference metrics (`plugin_call_duration_seconds`, `plugin_calls_total`, …) that back the STT/TTS models.
