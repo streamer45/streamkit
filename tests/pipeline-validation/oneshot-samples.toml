@@ -276,6 +276,9 @@ optional_node = true
 # there is a real regression). VA-API is compiled by no CI job, so it is
 # optional_node = true.
 
+# Paces 900 frames at real time (core::pacer, ~30s wall-clock). NVENC AV1 is
+# already covered cheaply by the samples/pipelines/test/nv_av1_colorbars fixture
+# (30 frames) in the GPU job, so gate this showcase run behind PIPELINE_INCLUDE_SLOW.
 [video_nv_av1_colorbars]
 output_extension = ".webm"
 container_format = "matroska,webm"
@@ -283,6 +286,7 @@ codec_name = "av1"
 width = 1280
 height = 720
 requires_node = "video::nv::av1_encoder"
+slow = true
 
 [video_vulkan_video_h264_colorbars]
 output_extension = ".mp4"

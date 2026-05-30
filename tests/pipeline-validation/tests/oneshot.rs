@@ -116,7 +116,7 @@ fn validate_oneshot(path: &Path, yaml: String) -> datatest_stable::Result<()> {
         .map_err(|e| format!("Pipeline '{stem}' failed: {e}"))?;
 
     match entry.output_kind {
-        OutputKind::Media => validate_output(output.path(), &entry.media_expected())
+        OutputKind::Media => validate_output(output.path(), &entry.media)
             .map_err(|e| format!("Validation failed for '{stem}': {e}"))?,
         OutputKind::Json => validate_json_output(output.path(), &entry.json_contains)
             .map_err(|e| format!("Validation failed for '{stem}': {e}"))?,

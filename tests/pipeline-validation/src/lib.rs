@@ -27,20 +27,16 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-/// Expected output metadata for a pipeline test case.
+/// `ffprobe`-checkable expectations about a pipeline's output media.
 ///
-/// Lives in a `.toml` sidecar file alongside each test pipeline YAML.
-#[derive(Debug, Deserialize)]
-pub struct Expected {
-    /// File extension for the output (e.g. ".webm", ".mp4", ".ogg").
-    pub output_extension: String,
-
-    /// Expected container format name from ffprobe (e.g. "matroska,webm", "mov,mp4,m4a,3gp,3g2,mj2").
-    pub container_format: String,
-
-    /// Optional: node kind that must be registered in the server for this test
-    /// to run. If the node is missing, the test is skipped (returns Ok).
-    pub requires_node: Option<String>,
+/// Shared by [`Expected`] (test fixtures) and [`OneshotEntry`] (official
+/// samples) via `#[serde(flatten)]`, so a new ffprobe check is added in one
+/// place and honoured by both harnesses.
+#[derive(Debug, Default, Deserialize)]
+pub struct MediaExpectations {
+    /// Expected container format name from ffprobe (e.g. "matroska,webm",
+    /// "mov,mp4,m4a,3gp,3g2,mj2"). When absent, the container check is skipped.
+    pub container_format: Option<String>,
 
     /// Expected video codec name as reported by ffprobe (e.g. "vp9", "h264", "av1").
     pub codec_name: Option<String>,
@@ -62,10 +58,26 @@ pub struct Expected {
 
     /// Expected number of audio channels (e.g. 2).
     pub channels: Option<u32>,
+}
+
+/// Expected output metadata for a pipeline test case.
+///
+/// Lives in a `.toml` sidecar file alongside each test pipeline YAML.
+#[derive(Debug, Deserialize)]
+pub struct Expected {
+    /// File extension for the output (e.g. ".webm", ".mp4", ".ogg").
+    pub output_extension: String,
+
+    /// Optional: node kind that must be registered in the server for this test
+    /// to run. If the node is missing, the test is skipped (returns Ok).
+    pub requires_node: Option<String>,
 
     /// Relative path (from the test directory) to an input file to upload.
     /// If set, the pipeline will be run with a file upload instead of no input.
     pub input_file: Option<String>,
+
+    #[serde(flatten)]
+    pub media: MediaExpectations,
 }
 
 /// Get the base URL for the skit server from environment.
@@ -271,7 +283,7 @@ pub fn run_pipeline_parts(
 ///
 /// Runs `ffprobe` against the output file and checks codec, resolution,
 /// container format, and audio properties against the [`Expected`] values.
-pub fn validate_output(output_path: &Path, expected: &Expected) -> Result<(), String> {
+pub fn validate_output(output_path: &Path, expected: &MediaExpectations) -> Result<(), String> {
     let file_size = std::fs::metadata(output_path)
         .map(|m| m.len())
         .unwrap_or(0);
@@ -283,15 +295,15 @@ pub fn validate_output(output_path: &Path, expected: &Expected) -> Result<(), St
         )
     })?;
 
-    // Check container format.
     let format_name = &probe.format.format_name;
-    if !format_name.contains(&expected.container_format)
-        && !expected.container_format.contains(format_name.as_str())
-    {
-        return Err(format!(
-            "Container mismatch: expected format containing '{}', got '{}'",
-            expected.container_format, format_name
-        ));
+    if let Some(ref expected_format) = expected.container_format {
+        if !format_name.contains(expected_format)
+            && !expected_format.contains(format_name.as_str())
+        {
+            return Err(format!(
+                "Container mismatch: expected format containing '{expected_format}', got '{format_name}'"
+            ));
+        }
     }
     if let Some(ref expected_codec) = expected.codec_name {
         let video = probe
@@ -416,7 +428,7 @@ pub struct InputSpec {
 /// Expected results and run configuration for one official oneshot sample.
 ///
 /// Loaded from the `[<sample-stem>]` table in `oneshot-samples.toml`. Reuses
-/// [`Expected`]'s media fields and adds skip controls (`requires_node`,
+/// [`MediaExpectations`] and adds skip controls (`requires_node`,
 /// `optional_node`, `requires_env`, `slow`), JSON validation, and multipart
 /// inputs.
 #[derive(Debug, Deserialize)]
@@ -428,14 +440,8 @@ pub struct OneshotEntry {
     #[serde(default)]
     pub output_kind: OutputKind,
 
-    pub container_format: Option<String>,
-    pub codec_name: Option<String>,
-    pub width: Option<u32>,
-    pub height: Option<u32>,
-    pub pix_fmt: Option<String>,
-    pub audio_codec: Option<String>,
-    pub sample_rate: Option<u32>,
-    pub channels: Option<u32>,
+    #[serde(flatten)]
+    pub media: MediaExpectations,
 
     /// Substrings that must appear in a JSON output (used when `output_kind = json`).
     #[serde(default)]
@@ -496,23 +502,6 @@ impl OneshotEntry {
             .into_iter()
             .chain(self.requires_nodes.iter().map(String::as_str))
     }
-
-    /// Build the [`Expected`] media metadata for `ffprobe` validation.
-    pub fn media_expected(&self) -> Expected {
-        Expected {
-            output_extension: self.output_extension.clone(),
-            container_format: self.container_format.clone().unwrap_or_default(),
-            requires_node: self.requires_node.clone(),
-            codec_name: self.codec_name.clone(),
-            width: self.width,
-            height: self.height,
-            pix_fmt: self.pix_fmt.clone(),
-            audio_codec: self.audio_codec.clone(),
-            sample_rate: self.sample_rate,
-            channels: self.channels,
-            input_file: None,
-        }
-    }
 }
 
 /// Validate a JSON / NDJSON response body.
@@ -544,5 +533,58 @@ pub fn validate_json_output(output_path: &Path, json_contains: &[String]) -> Res
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expected_flattens_media_fields() {
+        let expected: Expected = toml::from_str(
+            r#"
+            output_extension = ".webm"
+            requires_node = "video::vp9::encoder"
+            container_format = "matroska,webm"
+            codec_name = "vp9"
+            width = 1280
+            height = 720
+            sample_rate = 48000
+            channels = 2
+            "#,
+        )
+        .expect("Expected should deserialize flattened media fields");
+
+        assert_eq!(expected.output_extension, ".webm");
+        assert_eq!(expected.requires_node.as_deref(), Some("video::vp9::encoder"));
+        assert_eq!(expected.media.container_format.as_deref(), Some("matroska,webm"));
+        assert_eq!(expected.media.codec_name.as_deref(), Some("vp9"));
+        assert_eq!(expected.media.width, Some(1280));
+        assert_eq!(expected.media.height, Some(720));
+        assert_eq!(expected.media.sample_rate, Some(48000));
+        assert_eq!(expected.media.channels, Some(2));
+    }
+
+    #[test]
+    fn oneshot_entry_flattens_media_fields() {
+        let entry: OneshotEntry = toml::from_str(
+            r#"
+            output_extension = ".mp4"
+            container_format = "mov,mp4,m4a,3gp,3g2,mj2"
+            codec_name = "av1"
+            width = 1920
+            height = 1080
+            slow = true
+            requires_node = "video::nv::av1_encoder"
+            "#,
+        )
+        .expect("OneshotEntry should deserialize flattened media fields");
+
+        assert_eq!(entry.media.codec_name.as_deref(), Some("av1"));
+        assert_eq!(entry.media.width, Some(1920));
+        assert_eq!(entry.media.height, Some(1080));
+        assert!(entry.slow);
+        assert_eq!(entry.requires_node.as_deref(), Some("video::nv::av1_encoder"));
+    }
 }
 

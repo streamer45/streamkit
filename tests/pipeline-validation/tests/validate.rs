@@ -92,7 +92,7 @@ fn validate_pipeline(path: &Path, yaml: String) -> datatest_stable::Result<()> {
         .map_err(|e| format!("Pipeline '{test_name}' failed: {e}"))?;
 
     // Validate with ffprobe.
-    validate_output(output.path(), &expected)
+    validate_output(output.path(), &expected.media)
         .map_err(|e| format!("Validation failed for '{test_name}': {e}"))?;
 
     Ok(())
