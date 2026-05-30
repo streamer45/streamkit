@@ -5,6 +5,29 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 
 import { convertFile, getExtensionFromContentType } from './converter';
+import { FTYP, concatBytes, mp4Box, streamOf } from '../test/mp4Fixtures';
+
+const FRAGMENTED_MP4_HEAD = concatBytes(FTYP, mp4Box('moov', mp4Box('mvex', new Uint8Array(0))));
+const UNFRAGMENTED_MP4_HEAD = concatBytes(FTYP, mp4Box('mdat', new Uint8Array(32)));
+
+// Each clone() returns an independent stream rather than modelling real
+// Response.clone() tee semantics (one shared source). That is sufficient for
+// routing assertions but means these tests cannot exercise tee back-pressure;
+// the probe-error case below drives the body factory to a rejecting stream.
+function mp4Response(
+  bytes: Uint8Array,
+  contentType: string,
+  makeBody: () => ReadableStream<Uint8Array> = () => streamOf(bytes)
+): Response {
+  const blob = new Blob([], { type: contentType });
+  return {
+    ok: true,
+    headers: new Headers({ 'Content-Type': contentType }),
+    body: makeBody(),
+    clone: () => mp4Response(bytes, contentType, makeBody),
+    blob: vi.fn().mockResolvedValue(blob),
+  } as unknown as Response;
+}
 
 // Mock document if not defined (for download tests)
 if (typeof document === 'undefined') {
@@ -422,23 +445,14 @@ describe('converter service', () => {
   });
 
   describe('convertFile - MSE Streaming (MP4)', () => {
-    it('should handle MP4 streaming when MSE supports the type', async () => {
+    it('should use MSE streaming for fragmented MP4 (fMP4)', async () => {
       vi.stubGlobal('MediaSource', {
         isTypeSupported: vi.fn().mockReturnValue(true),
       });
 
-      const mockBody = new ReadableStream({
-        start(controller) {
-          controller.enqueue(new Uint8Array([0x00, 0x00, 0x00, 0x1c]));
-          controller.close();
-        },
-      });
-
-      (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
-        ok: true,
-        headers: new Headers({ 'Content-Type': 'video/mp4' }),
-        body: mockBody,
-      } as Response);
+      (fetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+        mp4Response(FRAGMENTED_MP4_HEAD, 'video/mp4')
+      );
 
       const result = await convertFile(MOCK_YAML, MOCK_UPLOAD, 'playback');
 
@@ -447,18 +461,30 @@ describe('converter service', () => {
       expect(result.contentType).toBe('video/mp4');
     });
 
+    it('should fall back to blob for unfragmented MP4 even when MSE supports the codec', async () => {
+      vi.stubGlobal('MediaSource', {
+        isTypeSupported: vi.fn().mockReturnValue(true),
+      });
+      global.URL.createObjectURL = vi.fn().mockReturnValue('blob:mp4-unfragmented');
+
+      (fetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+        mp4Response(UNFRAGMENTED_MP4_HEAD, 'audio/mp4; codecs="opus"')
+      );
+
+      const result = await convertFile(MOCK_YAML, MOCK_UPLOAD, 'playback');
+
+      expect(result.success).toBe(true);
+      expect(result.useStreaming).toBe(false);
+      expect(result.mediaUrl).toBe('blob:mp4-unfragmented');
+    });
+
     it('should fall back to blob for MP4 when MSE is unavailable', async () => {
       vi.stubGlobal('MediaSource', undefined);
-
-      const mockBlob = new Blob(['video data'], { type: 'video/mp4' });
       global.URL.createObjectURL = vi.fn().mockReturnValue('blob:mp4-url');
 
-      (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
-        ok: true,
-        headers: new Headers({ 'Content-Type': 'video/mp4' }),
-        body: new ReadableStream(),
-        blob: vi.fn().mockResolvedValue(mockBlob),
-      } as never);
+      (fetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+        mp4Response(FRAGMENTED_MP4_HEAD, 'video/mp4')
+      );
 
       const result = await convertFile(MOCK_YAML, MOCK_UPLOAD, 'playback');
 
@@ -466,10 +492,53 @@ describe('converter service', () => {
       expect(result.useStreaming).toBe(false);
       expect(result.mediaUrl).toBe('blob:mp4-url');
     });
+
+    it('should force blob playback for MP4 when playback strategy is "blob"', async () => {
+      vi.stubGlobal('MediaSource', {
+        isTypeSupported: vi.fn().mockReturnValue(true),
+      });
+      global.URL.createObjectURL = vi.fn().mockReturnValue('blob:mp4-forced');
+
+      (fetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+        mp4Response(FRAGMENTED_MP4_HEAD, 'audio/mp4; codecs="opus"')
+      );
+
+      const result = await convertFile(MOCK_YAML, MOCK_UPLOAD, 'playback', undefined, {
+        playback: 'blob',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.useStreaming).toBe(false);
+      expect(result.mediaUrl).toBe('blob:mp4-forced');
+    });
+
+    it('should fall back to blob when the fragmentation probe stream errors', async () => {
+      vi.stubGlobal('MediaSource', {
+        isTypeSupported: vi.fn().mockReturnValue(true),
+      });
+      global.URL.createObjectURL = vi.fn().mockReturnValue('blob:mp4-probe-error');
+
+      const rejectingBody = () =>
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.error(new Error('probe stream error'));
+          },
+        });
+
+      (fetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+        mp4Response(FRAGMENTED_MP4_HEAD, 'audio/mp4; codecs="opus"', rejectingBody)
+      );
+
+      const result = await convertFile(MOCK_YAML, MOCK_UPLOAD, 'playback');
+
+      expect(result.success).toBe(true);
+      expect(result.useStreaming).toBe(false);
+      expect(result.mediaUrl).toBe('blob:mp4-probe-error');
+    });
   });
 
   describe('convertFile - WebM blob strategy', () => {
-    it('should force blob playback when webmPlayback is "blob"', async () => {
+    it('should force blob playback when playback is "blob"', async () => {
       vi.stubGlobal('MediaSource', {
         isTypeSupported: vi.fn().mockReturnValue(true),
       });
@@ -485,7 +554,7 @@ describe('converter service', () => {
       } as never);
 
       const result = await convertFile(MOCK_YAML, MOCK_UPLOAD, 'playback', undefined, {
-        webmPlayback: 'blob',
+        playback: 'blob',
       });
 
       expect(result.success).toBe(true);

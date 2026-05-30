@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { getLogger } from '@/utils/logger';
-import { canUseMseForMimeType } from '@/utils/mse';
+import { canUseMseForMimeType, isFragmentedMp4 } from '@/utils/mse';
 
 import { fetchApi } from './base';
 
@@ -20,10 +20,10 @@ export interface ConversionResult {
 
 export type OutputMode = 'download' | 'playback';
 
-export type WebmPlaybackStrategy = 'auto' | 'mse' | 'blob';
+export type PlaybackStrategy = 'auto' | 'blob';
 
 export interface ConvertFileOptions {
-  webmPlayback?: WebmPlaybackStrategy;
+  playback?: PlaybackStrategy;
 }
 
 function createWrappedStream(
@@ -69,67 +69,79 @@ function createWrappedStream(
   });
 }
 
-function handleStreamingResponse(
+function streamingResult(
+  body: ReadableStream<Uint8Array>,
+  signal: AbortSignal | undefined,
+  label: string,
+  contentType: string
+): ConversionResult {
+  return {
+    success: true,
+    responseStream: createWrappedStream(body.getReader(), signal, label),
+    contentType,
+    useStreaming: true,
+  };
+}
+
+async function handleMp4Playback(
+  response: Response,
+  contentType: string,
+  strategy: PlaybackStrategy,
+  signal: AbortSignal | undefined
+): Promise<ConversionResult | null> {
+  if (!response.body || strategy === 'blob' || !canUseMseForMimeType(contentType)) {
+    logger.info('Falling back to blob playback for MP4 (MSE unavailable, unsupported, or forced)');
+    return null;
+  }
+
+  // MSE requires fragmented MP4; StreamKit's MP4 "file" mode emits a regular
+  // moov+mdat file that only plays natively via a blob URL. Inspect a clone of
+  // the stream so the original body stays intact for either path. A probe
+  // failure degrades to blob playback rather than failing the conversion.
+  let fragmented: boolean;
+  try {
+    const probeBody = response.clone().body;
+    fragmented = probeBody ? await isFragmentedMp4(probeBody) : false;
+  } catch (error) {
+    logger.info('MP4 fragmentation probe failed; falling back to blob playback', error);
+    return null;
+  }
+  if (!fragmented) {
+    logger.info('MP4 output is unfragmented; using blob playback (MSE requires fMP4)');
+    return null;
+  }
+
+  logger.info('Using MSE streaming for fragmented MP4 (fMP4) playback');
+  return streamingResult(response.body, signal, 'MP4', contentType);
+}
+
+async function handleStreamingResponse(
   response: Response,
   contentType: string,
   signal: AbortSignal | undefined,
   options: ConvertFileOptions | undefined
-): ConversionResult | null {
+): Promise<ConversionResult | null> {
   const isJSON = contentType.includes('application/json');
   const isWebM = contentType.includes('webm');
   const isMp4 = contentType.includes('video/mp4') || contentType.includes('audio/mp4');
+  const strategy: PlaybackStrategy = options?.playback ?? 'auto';
 
   if (isJSON && response.body) {
     logger.info('Using streaming for JSON output');
-    const reader = response.body.getReader();
-    const wrappedStream = createWrappedStream(reader, signal, 'JSON');
-
-    return {
-      success: true,
-      responseStream: wrappedStream,
-      contentType,
-      useStreaming: true,
-    };
+    return streamingResult(response.body, signal, 'JSON', contentType);
   }
 
   if (isWebM && response.body) {
-    const webmStrategy: WebmPlaybackStrategy = options?.webmPlayback ?? 'auto';
-    const allowWebmStreaming = webmStrategy !== 'blob';
-    const canStreamWebm = allowWebmStreaming && canUseMseForMimeType(contentType);
-
-    if (!canStreamWebm) {
+    if (strategy === 'blob' || !canUseMseForMimeType(contentType)) {
       logger.info('Falling back to blob playback for WebM (MSE unavailable or unsupported)');
       return null;
     }
-
     logger.info('Using MSE streaming for WebM playback');
-    const reader = response.body.getReader();
-    const wrappedStream = createWrappedStream(reader, signal, 'WebM');
-
-    return {
-      success: true,
-      responseStream: wrappedStream,
-      contentType,
-      useStreaming: true,
-    };
+    return streamingResult(response.body, signal, 'WebM', contentType);
   }
 
-  if (isMp4 && response.body) {
-    if (!canUseMseForMimeType(contentType)) {
-      logger.info('Falling back to blob playback for MP4 (MSE unavailable or unsupported)');
-      return null;
-    }
-
-    logger.info('Using MSE streaming for MP4 (fMP4) playback');
-    const reader = response.body.getReader();
-    const wrappedStream = createWrappedStream(reader, signal, 'MP4');
-
-    return {
-      success: true,
-      responseStream: wrappedStream,
-      contentType,
-      useStreaming: true,
-    };
+  if (isMp4) {
+    return handleMp4Playback(response, contentType, strategy, signal);
   }
 
   return null;
@@ -228,7 +240,7 @@ export async function convertFile(
     logger.info('Conversion successful, content type:', contentType);
 
     if (mode === 'playback') {
-      const streamingResult = handleStreamingResponse(response, contentType, signal, options);
+      const streamingResult = await handleStreamingResponse(response, contentType, signal, options);
       if (streamingResult) {
         return streamingResult;
       }
