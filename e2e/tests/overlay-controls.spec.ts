@@ -28,6 +28,12 @@ const OVERLAY_CONTROLS_YAML = fs.readFileSync(
  * Replace the Stream view's pipeline YAML editor contents. The editor is
  * CodeMirror (contenteditable), so we select-all and `insertText` the fixture
  * as a single input event — avoiding per-keystroke autocomplete/auto-indent.
+ *
+ * Unlike picking a sample from the list (which re-derives MoQ settings from the
+ * pipeline), editing the YAML directly leaves the broadcast names from the
+ * auto-selected first sample in place. The fixture has no MoQ transport, so we
+ * clear those names; otherwise the post-create auto-connect would attempt a MoQ
+ * session and surface a connection error.
  */
 async function loadPipelineYaml(page: Page, yaml: string): Promise<void> {
   const editor = page.locator('.cm-content');
@@ -36,6 +42,11 @@ async function loadPipelineYaml(page: Page, yaml: string): Promise<void> {
   await page.keyboard.press('ControlOrMeta+A');
   await page.keyboard.press('Delete');
   await page.keyboard.insertText(yaml);
+
+  for (const id of ['#input-broadcast', '#output-broadcast']) {
+    const input = page.locator(id);
+    if (await input.count()) await input.fill('');
+  }
 }
 
 test.describe('Stream View - Overlay Controls', () => {
