@@ -61,8 +61,11 @@ new check (e.g. `bit_rate`) is added there once and both suites honour it.
 | `slow = true` | skip unless `PIPELINE_INCLUDE_SLOW=1` |
 
 `PIPELINE_REQUIRE_NODES=1` (the GPU job) turns a missing **non-optional** node
-into a failure rather than a skip, so HW codecs the GPU runner builds
-(`nvcodec`, `vulkan_video`) are caught if they regress.
+into a failure rather than a skip, so a HW codec the GPU runner builds is caught
+if it regresses. Note `slow` is checked *before* the node check: because
+`video_nv_av1_colorbars` is `slow`, this suite only guards `vulkan_video` —
+`nvcodec`/NVENC-AV1 registration is guarded by the `nv_av1_colorbars` fixture in
+`tests/validate.rs` instead.
 
 ### When to mark a sample `slow`
 
