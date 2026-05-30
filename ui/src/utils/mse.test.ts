@@ -5,38 +5,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { canUseMseForMimeType, isFragmentedMp4, normalizeMimeType } from './mse';
-
-function mp4Box(type: string, body: Uint8Array): Uint8Array {
-  const out = new Uint8Array(8 + body.length);
-  new DataView(out.buffer).setUint32(0, out.length);
-  for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
-  out.set(body, 8);
-  return out;
-}
-
-function concatBytes(...parts: Uint8Array[]): Uint8Array {
-  const total = parts.reduce((n, p) => n + p.length, 0);
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const p of parts) {
-    out.set(p, offset);
-    offset += p.length;
-  }
-  return out;
-}
-
-function streamOf(bytes: Uint8Array, chunkSize = bytes.length): ReadableStream<Uint8Array> {
-  return new ReadableStream({
-    start(controller) {
-      for (let i = 0; i < bytes.length; i += chunkSize) {
-        controller.enqueue(bytes.slice(i, i + chunkSize));
-      }
-      controller.close();
-    },
-  });
-}
-
-const FTYP = mp4Box('ftyp', new TextEncoder().encode('isom'));
+import { FTYP, concatBytes, mp4Box, streamOf } from '../test/mp4Fixtures';
 
 describe('normalizeMimeType', () => {
   it('returns the input unchanged when it already includes a codecs= parameter', () => {
@@ -151,5 +120,29 @@ describe('isFragmentedMp4', () => {
 
   it('returns false for a truncated/empty stream', async () => {
     expect(await isFragmentedMp4(streamOf(new Uint8Array(0)))).toBe(false);
+  });
+
+  it('finds mvex after a large mvhd without buffering the whole moov body', async () => {
+    const moov = mp4Box(
+      'moov',
+      concatBytes(mp4Box('mvhd', new Uint8Array(4096)), mp4Box('mvex', new Uint8Array(0)))
+    );
+    const bytes = concatBytes(FTYP, moov);
+    expect(await isFragmentedMp4(streamOf(bytes, 256))).toBe(true);
+  });
+
+  it('fails closed (unfragmented) on a malformed box whose size is smaller than its header', async () => {
+    const malformed = new Uint8Array(8);
+    new DataView(malformed.buffer).setUint32(0, 4); // size 4 < 8-byte header
+    for (let i = 0; i < 4; i++) malformed[4 + i] = 'free'.charCodeAt(i);
+    const bytes = concatBytes(FTYP, malformed, mp4Box('moov', mp4Box('mvex', new Uint8Array(0))));
+    expect(await isFragmentedMp4(streamOf(bytes))).toBe(false);
+  });
+
+  it('fails closed (unfragmented) when fragment metadata appears after the box cap', async () => {
+    const padding: Uint8Array[] = [];
+    for (let i = 0; i < 70; i++) padding.push(mp4Box('free', new Uint8Array(0)));
+    const bytes = concatBytes(FTYP, ...padding, mp4Box('moof', new Uint8Array(16)));
+    expect(await isFragmentedMp4(streamOf(bytes))).toBe(false);
   });
 });

@@ -32,26 +32,6 @@ function readBoxType(bytes: Uint8Array, offset: number): string {
   );
 }
 
-function moovHasMvex(moovBody: Uint8Array): boolean {
-  let offset = 0;
-  while (offset + 8 <= moovBody.length) {
-    const view = new DataView(moovBody.buffer, moovBody.byteOffset + offset, 8);
-    let size = view.getUint32(0);
-    const type = readBoxType(moovBody, offset + 4);
-    if (type === 'mvex') {
-      return true;
-    }
-    if (size === 1) {
-      if (offset + 16 > moovBody.length) break;
-      const ext = new DataView(moovBody.buffer, moovBody.byteOffset + offset + 8, 8);
-      size = ext.getUint32(0) * 2 ** 32 + ext.getUint32(4);
-    }
-    if (size < 8) break;
-    offset += size;
-  }
-  return false;
-}
-
 /** Pull-based byte reader over a ReadableStream that supports reading exact
  *  counts and skipping ahead without buffering skipped bytes. */
 class StreamByteReader {
@@ -70,7 +50,7 @@ class StreamByteReader {
       this.done = true;
       return false;
     }
-    if (value) {
+    if (value && value.length > 0) {
       const merged = new Uint8Array(this.buffer.length + value.length);
       merged.set(this.buffer, 0);
       merged.set(value, this.buffer.length);
@@ -111,6 +91,53 @@ class StreamByteReader {
   }
 }
 
+interface BoxHeader {
+  type: string;
+  /** Total box size in bytes, including the header. */
+  size: number;
+  headerSize: number;
+}
+
+async function readBoxHeader(bytes: StreamByteReader): Promise<BoxHeader | null> {
+  const header = await bytes.read(8);
+  if (!header) return null;
+
+  const view = new DataView(header.buffer, header.byteOffset, 8);
+  let size = view.getUint32(0);
+  const type = readBoxType(header, 4);
+  let headerSize = 8;
+
+  if (size === 1) {
+    const ext = await bytes.read(8);
+    if (!ext) return null;
+    const extView = new DataView(ext.buffer, ext.byteOffset, 8);
+    size = extView.getUint32(0) * 2 ** 32 + extView.getUint32(4);
+    headerSize = 16;
+  }
+
+  return { type, size, headerSize };
+}
+
+/** Stream the direct children of a `moov` box, short-circuiting as soon as an
+ *  `mvex` child is seen. Only box headers are read; child payloads are skipped,
+ *  so this never buffers the (potentially multi-MB) sample tables. */
+async function moovContainsMvex(bytes: StreamByteReader, bodyLength: number): Promise<boolean> {
+  let remaining = bodyLength;
+  while (remaining >= 8) {
+    const box = await readBoxHeader(bytes);
+    if (!box) return false;
+    if (box.type === 'mvex') return true;
+    if (box.size < box.headerSize) return false;
+    if (!(await bytes.skip(box.size - box.headerSize))) return false;
+    remaining -= box.size;
+  }
+  return false;
+}
+
+// A valid StreamKit MP4 puts `ftyp`+`moov` (or `moof`/`styp`) first, so the
+// classification is decided within the first few boxes. The cap bounds the scan
+// for pathological inputs (e.g. many leading padding boxes), failing closed to
+// blob playback rather than reading unbounded data.
 const MAX_BOXES_BEFORE_MEDIA = 64;
 
 /**
@@ -126,31 +153,20 @@ export async function isFragmentedMp4(stream: ReadableStream<Uint8Array>): Promi
   const bytes = new StreamByteReader(stream);
   try {
     for (let i = 0; i < MAX_BOXES_BEFORE_MEDIA; i++) {
-      const header = await bytes.read(8);
-      if (!header) return false;
+      const box = await readBoxHeader(bytes);
+      if (!box) return false;
 
-      const view = new DataView(header.buffer, header.byteOffset, 8);
-      let size = view.getUint32(0);
-      const type = readBoxType(header, 4);
-      let headerSize = 8;
-
-      if (size === 1) {
-        const ext = await bytes.read(8);
-        if (!ext) return false;
-        const extView = new DataView(ext.buffer, ext.byteOffset, 8);
-        size = extView.getUint32(0) * 2 ** 32 + extView.getUint32(4);
-        headerSize = 16;
+      if (box.type === 'moof' || box.type === 'styp') return true;
+      if (box.type === 'mdat') return false;
+      if (box.size < box.headerSize) return false;
+      if (box.type === 'moov') {
+        // Must await here: the `finally` cancels the reader, so returning the
+        // pending promise directly would cancel the stream before moov's
+        // children are read.
+        const fragmented = await moovContainsMvex(bytes, box.size - box.headerSize);
+        return fragmented;
       }
-
-      if (type === 'moof' || type === 'styp') return true;
-      if (type === 'mdat') return false;
-      if (type === 'moov') {
-        const body = await bytes.read(size - headerSize);
-        if (!body) return false;
-        return moovHasMvex(body);
-      }
-      if (size === 0) return false;
-      if (!(await bytes.skip(size - headerSize))) return false;
+      if (!(await bytes.skip(box.size - box.headerSize))) return false;
     }
     return false;
   } finally {

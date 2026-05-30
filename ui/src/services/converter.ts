@@ -20,7 +20,7 @@ export interface ConversionResult {
 
 export type OutputMode = 'download' | 'playback';
 
-export type PlaybackStrategy = 'auto' | 'mse' | 'blob';
+export type PlaybackStrategy = 'auto' | 'blob';
 
 export interface ConvertFileOptions {
   playback?: PlaybackStrategy;
@@ -96,9 +96,16 @@ async function handleMp4Playback(
 
   // MSE requires fragmented MP4; StreamKit's MP4 "file" mode emits a regular
   // moov+mdat file that only plays natively via a blob URL. Inspect a clone of
-  // the stream so the original body stays intact for either path.
-  const probeBody = response.clone().body;
-  const fragmented = probeBody ? await isFragmentedMp4(probeBody) : false;
+  // the stream so the original body stays intact for either path. A probe
+  // failure degrades to blob playback rather than failing the conversion.
+  let fragmented: boolean;
+  try {
+    const probeBody = response.clone().body;
+    fragmented = probeBody ? await isFragmentedMp4(probeBody) : false;
+  } catch (error) {
+    logger.info('MP4 fragmentation probe failed; falling back to blob playback', error);
+    return null;
+  }
   if (!fragmented) {
     logger.info('MP4 output is unfragmented; using blob playback (MSE requires fMP4)');
     return null;

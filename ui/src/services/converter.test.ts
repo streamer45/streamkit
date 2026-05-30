@@ -5,46 +5,26 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 
 import { convertFile, getExtensionFromContentType } from './converter';
+import { FTYP, concatBytes, mp4Box, streamOf } from '../test/mp4Fixtures';
 
-function mp4Box(type: string, body: Uint8Array): Uint8Array {
-  const out = new Uint8Array(8 + body.length);
-  new DataView(out.buffer).setUint32(0, out.length);
-  for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
-  out.set(body, 8);
-  return out;
-}
-
-function concatBytes(...parts: Uint8Array[]): Uint8Array {
-  const total = parts.reduce((n, p) => n + p.length, 0);
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const p of parts) {
-    out.set(p, offset);
-    offset += p.length;
-  }
-  return out;
-}
-
-const FTYP = mp4Box('ftyp', new TextEncoder().encode('isom'));
 const FRAGMENTED_MP4_HEAD = concatBytes(FTYP, mp4Box('moov', mp4Box('mvex', new Uint8Array(0))));
 const UNFRAGMENTED_MP4_HEAD = concatBytes(FTYP, mp4Box('mdat', new Uint8Array(32)));
 
-function streamOf(bytes: Uint8Array): ReadableStream<Uint8Array> {
-  return new ReadableStream({
-    start(controller) {
-      controller.enqueue(bytes);
-      controller.close();
-    },
-  });
-}
-
-function mp4Response(bytes: Uint8Array, contentType: string): Response {
+// Each clone() returns an independent stream rather than modelling real
+// Response.clone() tee semantics (one shared source). That is sufficient for
+// routing assertions but means these tests cannot exercise tee back-pressure;
+// the probe-error case below drives the body factory to a rejecting stream.
+function mp4Response(
+  bytes: Uint8Array,
+  contentType: string,
+  makeBody: () => ReadableStream<Uint8Array> = () => streamOf(bytes)
+): Response {
   const blob = new Blob([], { type: contentType });
   return {
     ok: true,
     headers: new Headers({ 'Content-Type': contentType }),
-    body: streamOf(bytes),
-    clone: () => mp4Response(bytes, contentType),
+    body: makeBody(),
+    clone: () => mp4Response(bytes, contentType, makeBody),
     blob: vi.fn().mockResolvedValue(blob),
   } as unknown as Response;
 }
@@ -530,6 +510,30 @@ describe('converter service', () => {
       expect(result.success).toBe(true);
       expect(result.useStreaming).toBe(false);
       expect(result.mediaUrl).toBe('blob:mp4-forced');
+    });
+
+    it('should fall back to blob when the fragmentation probe stream errors', async () => {
+      vi.stubGlobal('MediaSource', {
+        isTypeSupported: vi.fn().mockReturnValue(true),
+      });
+      global.URL.createObjectURL = vi.fn().mockReturnValue('blob:mp4-probe-error');
+
+      const rejectingBody = () =>
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.error(new Error('probe stream error'));
+          },
+        });
+
+      (fetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+        mp4Response(FRAGMENTED_MP4_HEAD, 'audio/mp4; codecs="opus"', rejectingBody)
+      );
+
+      const result = await convertFile(MOCK_YAML, MOCK_UPLOAD, 'playback');
+
+      expect(result.success).toBe(true);
+      expect(result.useStreaming).toBe(false);
+      expect(result.mediaUrl).toBe('blob:mp4-probe-error');
     });
   });
 
