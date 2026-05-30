@@ -1,6 +1,9 @@
 name: Speech-to-Text (Whisper)
 description: Transcribes speech to text using Whisper
 mode: oneshot
+tags:
+  - transcription
+  - subtitles
 client:
   input:
     type: file_upload

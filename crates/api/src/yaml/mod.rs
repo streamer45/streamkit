@@ -269,6 +269,10 @@ pub struct ControlConfig {
     pub options: Option<Vec<SelectOption>>,
 }
 
+/// Optional top-level discovery fields are repeated across both `UserPipeline`
+/// arms (faceted search and variant grouping). They are overrides: when omitted
+/// the server derives best-effort values from node kinds, the client section,
+/// and filename patterns. See `apps/skit/src/sample_discovery.rs`.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum UserPipeline {
@@ -279,6 +283,14 @@ pub enum UserPipeline {
         description: Option<String>,
         #[serde(default)]
         mode: EngineMode,
+        #[serde(default)]
+        group: Option<String>,
+        #[serde(default)]
+        variant: Option<String>,
+        #[serde(default)]
+        category: Option<String>,
+        #[serde(default)]
+        tags: Vec<String>,
         steps: Vec<Step>,
         client: Option<ClientSection>,
     },
@@ -289,6 +301,14 @@ pub enum UserPipeline {
         description: Option<String>,
         #[serde(default)]
         mode: EngineMode,
+        #[serde(default)]
+        group: Option<String>,
+        #[serde(default)]
+        variant: Option<String>,
+        #[serde(default)]
+        category: Option<String>,
+        #[serde(default)]
+        tags: Vec<String>,
         nodes: IndexMap<String, UserNode>,
         client: Option<ClientSection>,
     },

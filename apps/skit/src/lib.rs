@@ -24,6 +24,7 @@ pub mod plugin_records;
 pub mod plugins;
 pub mod profiling;
 pub mod role_extractor;
+pub mod sample_discovery;
 pub mod samples;
 pub mod server;
 pub mod session;

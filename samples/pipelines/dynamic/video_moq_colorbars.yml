@@ -5,6 +5,12 @@
 name: Video Color Bars (MoQ Stream)
 description: Continuously generates SMPTE color bars and streams via MoQ
 mode: dynamic
+variant: Software
+category: Streaming
+tags:
+  - colorbars
+  - smpte
+  - test-pattern
 client:
   gateway_path: /moq/video
   watch:

@@ -373,7 +373,24 @@ export type SamplePipeline = { id: string, name: string, description: string, ya
 /**
  * Whether this is a reusable fragment (partial pipeline) vs a complete pipeline
  */
-is_fragment: boolean, };
+is_fragment: boolean, 
+/**
+ * Base-scenario key shared by variants; collapses near-duplicate samples
+ * into a single card with a variant selector in the UI.
+ */
+group: string | null, 
+/**
+ * Human label distinguishing this variant within its `group`.
+ */
+variant: string | null, 
+/**
+ * Top-level bucket used for faceted filtering.
+ */
+category: string | null, 
+/**
+ * Capability keywords powering fuzzy search and facet chips.
+ */
+tags: Array<string>, };
 
 export type SavePipelineRequest = { name: string, description: string, yaml: string, overwrite: boolean, 
 /**

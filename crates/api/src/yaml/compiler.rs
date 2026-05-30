@@ -8,10 +8,10 @@ use indexmap::IndexMap;
 
 pub fn compile(pipeline: UserPipeline) -> Result<Pipeline, String> {
     match pipeline {
-        UserPipeline::Steps { name, description, mode, steps, client } => {
+        UserPipeline::Steps { name, description, mode, steps, client, .. } => {
             Ok(compile_steps(name, description, mode, steps, client))
         },
-        UserPipeline::Dag { name, description, mode, nodes, client } => {
+        UserPipeline::Dag { name, description, mode, nodes, client, .. } => {
             compile_dag(name, description, mode, nodes, client)
         },
     }
@@ -296,7 +296,17 @@ mod tests {
     }
 
     fn dag_pipeline(nodes: IndexMap<String, UserNode>, mode: EngineMode) -> UserPipeline {
-        UserPipeline::Dag { name: None, description: None, mode, nodes, client: None }
+        UserPipeline::Dag {
+            name: None,
+            description: None,
+            mode,
+            group: None,
+            variant: None,
+            category: None,
+            tags: Vec::new(),
+            nodes,
+            client: None,
+        }
     }
 
     fn user_node(kind: &str, needs: Needs) -> UserNode {

@@ -2,230 +2,188 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import styled from '@emotion/styled';
 import React from 'react';
 
-import { RadioGroupRoot, RadioItem, RadioIndicator, RadioLabel } from '@/components/ui/RadioGroup';
+import { RadioGroupRoot, RadioItem, RadioIndicator } from '@/components/ui/RadioGroup';
 import type { SamplePipeline } from '@/types/generated/api-types';
+import type { SampleFacets, ScenarioGroup } from '@/utils/samplePipelineOrdering';
 import {
+  collectSampleFacets,
   compareSamplePipelinesByName,
+  groupSamplePipelinesByScenario,
   matchesSamplePipelineQuery,
+  sampleNeedsHardware,
 } from '@/utils/samplePipelineOrdering';
 
-const SelectorContainer = styled.div`
-  width: 100%;
-`;
+import {
+  Controls,
+  EmptyState,
+  FacetBar,
+  FacetChip,
+  FacetRow,
+  FacetRowLabel,
+  FilterButton,
+  FilterGroup,
+  GroupCard,
+  HiddenSelectionHint,
+  HintButton,
+  SearchInput,
+  Section,
+  SectionCount,
+  SectionHeader,
+  SelectorContainer,
+  TemplateBadge,
+  TemplateCard,
+  TemplateContent,
+  TemplateDescription,
+  TemplateGrid,
+  TemplateHeader,
+  TemplateName,
+  VariantOption,
+  VariantSelector,
+} from './TemplateSelector.styles';
 
-const Controls = styled.div`
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  margin-bottom: 12px;
-`;
-
-const SearchInput = styled.input`
-  flex: 1;
-  min-width: 220px;
-  padding: 10px 12px;
-  font-size: 14px;
-  background: var(--sk-bg);
-  color: var(--sk-text);
-  border: 1px solid var(--sk-border);
-  border-radius: 8px;
-  font-family: inherit;
-
-  &:focus {
-    outline: none;
-    border-color: var(--sk-primary);
-  }
-
-  &::placeholder {
-    color: var(--sk-text-muted);
-  }
-`;
-
-const FilterGroup = styled.div`
-  display: inline-flex;
-  border: 1px solid var(--sk-border);
-  border-radius: 8px;
-  overflow: hidden;
-  background: var(--sk-panel-bg);
-`;
-
-const FilterButton = styled.button<{ active?: boolean }>`
-  padding: 8px 12px;
-  font-size: 13px;
-  font-weight: 700;
-  border: none;
-  cursor: pointer;
-  transition: none;
-  background: ${(props) => (props.active ? 'var(--sk-primary)' : 'transparent')};
-  color: ${(props) => (props.active ? 'var(--sk-primary-contrast)' : 'var(--sk-text)')};
-
-  &:hover {
-    background: ${(props) => (props.active ? 'var(--sk-primary-hover)' : 'var(--sk-hover-bg)')};
-  }
-
-  &:focus-visible {
-    outline: 2px solid var(--sk-primary);
-    outline-offset: -2px;
-  }
-`;
-
-const HiddenSelectionHint = styled.div`
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
-  margin-bottom: 12px;
-  border: 1px solid var(--sk-border);
-  border-radius: 8px;
-  background: var(--sk-panel-bg);
-  color: var(--sk-text-muted);
-  font-size: 13px;
-`;
-
-const HintButton = styled.button`
-  border: none;
-  background: none;
-  color: var(--sk-primary);
-  font-weight: 700;
-  cursor: pointer;
-  padding: 0;
-
-  &:hover {
-    color: var(--sk-primary-hover);
-  }
-
-  &:focus-visible {
-    outline: 2px solid var(--sk-primary);
-    outline-offset: 2px;
-    border-radius: 4px;
-  }
-`;
-
-const Section = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-bottom: 18px;
-`;
-
-const SectionHeader = styled.div`
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  color: var(--sk-text-muted);
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-`;
-
-const SectionCount = styled.span`
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  text-transform: none;
-`;
-
-const EmptyState = styled.div`
-  padding: 16px;
-  border: 1px solid var(--sk-border);
-  border-radius: 8px;
-  background: var(--sk-panel-bg);
-  color: var(--sk-text-muted);
-  font-size: 14px;
-`;
-
-const TemplateGrid = styled.div`
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-  gap: 16px;
-`;
-
-const TemplateCard = styled(RadioLabel)`
-  padding: 20px;
-  background: var(--sk-panel-bg);
-  border: 2px solid var(--sk-border);
-  border-radius: 8px;
-  cursor: pointer;
-  text-align: left;
-  display: flex;
-  gap: 12px;
-  transition: none;
-  align-items: flex-start;
-
-  &:hover {
-    border-color: var(--sk-border-strong);
-    background: var(--sk-hover-bg);
-  }
-
-  &:has([data-state='checked']) {
-    background: var(--sk-primary);
-    color: var(--sk-primary-contrast);
-    border-color: var(--sk-primary);
-  }
-
-  &:has([data-state='checked']):hover {
-    background: var(--sk-primary-hover);
-    border-color: var(--sk-primary-hover);
-  }
-`;
-
-const TemplateContent = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  flex: 1;
-`;
-
-const TemplateHeader = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 8px;
-`;
-
-const TemplateName = styled.div`
-  font-weight: 600;
-  font-size: 16px;
-`;
-
-const TemplateBadge = styled.span<{ variant: 'system' | 'user' }>`
-  font-size: 11px;
-  font-weight: 700;
-  padding: 3px 10px;
-  border-radius: 4px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  white-space: nowrap;
-  background: ${(props) => (props.variant === 'system' ? '#4caf50' : '#2196f3')};
-  color: #ffffff;
-
-  /* Adjust for selected state - use high contrast */
-  [data-state='checked'] & {
-    background: rgba(0, 0, 0, 0.3);
-    color: #ffffff;
-    border: 1px solid rgba(255, 255, 255, 0.6);
-    padding: 2px 9px; /* Account for border */
-  }
-`;
-
-const TemplateDescription = styled.div`
-  font-size: 13px;
-  line-height: 1.4;
-  color: inherit;
-  opacity: 0.9;
-`;
+function formatTagLabel(tag: string): string {
+  return tag
+    .split('-')
+    .map((word) => (word ? word[0].toUpperCase() + word.slice(1) : word))
+    .join(' ');
+}
 
 interface TemplateSelectorProps {
   templates: SamplePipeline[];
   selectedTemplateId: string;
   onTemplateSelect: (templateId: string) => void;
 }
+
+const ScenarioCard: React.FC<{ group: ScenarioGroup; selectedTemplateId: string }> = ({
+  group,
+  selectedTemplateId,
+}) => {
+  const { base, variants } = group;
+
+  if (variants.length === 1) {
+    return (
+      <TemplateCard htmlFor={`template-${base.id}`}>
+        <RadioItem value={base.id} id={`template-${base.id}`}>
+          <RadioIndicator />
+        </RadioItem>
+        <TemplateContent>
+          <TemplateHeader>
+            <TemplateName>{base.name}</TemplateName>
+            <TemplateBadge variant={base.is_system ? 'system' : 'user'}>
+              {base.is_system ? 'System' : 'User'}
+            </TemplateBadge>
+          </TemplateHeader>
+          {base.description && <TemplateDescription>{base.description}</TemplateDescription>}
+        </TemplateContent>
+      </TemplateCard>
+    );
+  }
+
+  const selectedInGroup = variants.some((variant) => variant.id === selectedTemplateId);
+
+  return (
+    <GroupCard data-selected={selectedInGroup || undefined}>
+      <TemplateContent>
+        <TemplateHeader>
+          <TemplateName>{base.name}</TemplateName>
+          <TemplateBadge variant={base.is_system ? 'system' : 'user'}>
+            {base.is_system ? 'System' : 'User'}
+          </TemplateBadge>
+        </TemplateHeader>
+        {base.description && <TemplateDescription>{base.description}</TemplateDescription>}
+      </TemplateContent>
+      <VariantSelector role="group" aria-label={`${base.name} variants`}>
+        {variants.map((variant) => (
+          <VariantOption
+            key={variant.id}
+            value={variant.id}
+            aria-label={variant.variant ?? `${base.name} (default)`}
+          >
+            {variant.variant ?? 'Default'}
+          </VariantOption>
+        ))}
+      </VariantSelector>
+    </GroupCard>
+  );
+};
+
+function toScenarioGroups(samples: SamplePipeline[]): ScenarioGroup[] {
+  return groupSamplePipelinesByScenario(samples)
+    .slice()
+    .sort((a, b) => compareSamplePipelinesByName(a.base, b.base));
+}
+
+interface FacetFiltersProps {
+  facets: SampleFacets;
+  categoryFilter: string | null;
+  capabilityFilter: string | null;
+  hardwareOnly: boolean;
+  onToggleCategory: (category: string) => void;
+  onToggleCapability: (capability: string) => void;
+  onToggleHardware: () => void;
+}
+
+const FacetFilters: React.FC<FacetFiltersProps> = ({
+  facets,
+  categoryFilter,
+  capabilityFilter,
+  hardwareOnly,
+  onToggleCategory,
+  onToggleCapability,
+  onToggleHardware,
+}) => (
+  <FacetBar>
+    {facets.categories.length > 0 && (
+      <FacetRow role="group" aria-label="Filter by category">
+        <FacetRowLabel>Category</FacetRowLabel>
+        {facets.categories.map((category) => (
+          <FacetChip
+            key={category}
+            type="button"
+            active={categoryFilter === category}
+            aria-pressed={categoryFilter === category}
+            onClick={() => onToggleCategory(category)}
+          >
+            {category}
+          </FacetChip>
+        ))}
+      </FacetRow>
+    )}
+
+    {facets.capabilities.length > 0 && (
+      <FacetRow role="group" aria-label="Filter by capability">
+        <FacetRowLabel>Capability</FacetRowLabel>
+        {facets.capabilities.map((capability) => (
+          <FacetChip
+            key={capability}
+            type="button"
+            active={capabilityFilter === capability}
+            aria-pressed={capabilityFilter === capability}
+            onClick={() => onToggleCapability(capability)}
+          >
+            {formatTagLabel(capability)}
+          </FacetChip>
+        ))}
+      </FacetRow>
+    )}
+
+    {facets.hasHardware && (
+      <FacetRow role="group" aria-label="Filter by hardware requirements">
+        <FacetRowLabel>Requirements</FacetRowLabel>
+        <FacetChip
+          type="button"
+          active={hardwareOnly}
+          aria-pressed={hardwareOnly}
+          onClick={onToggleHardware}
+        >
+          Needs hardware
+        </FacetChip>
+      </FacetRow>
+    )}
+  </FacetBar>
+);
 
 export const TemplateSelector: React.FC<TemplateSelectorProps> = ({
   templates,
@@ -234,33 +192,58 @@ export const TemplateSelector: React.FC<TemplateSelectorProps> = ({
 }) => {
   const [query, setQuery] = React.useState('');
   const [originFilter, setOriginFilter] = React.useState<'all' | 'system' | 'user'>('all');
+  const [categoryFilter, setCategoryFilter] = React.useState<string | null>(null);
+  const [capabilityFilter, setCapabilityFilter] = React.useState<string | null>(null);
+  const [hardwareOnly, setHardwareOnly] = React.useState(false);
+
+  const facets = React.useMemo(() => collectSampleFacets(templates), [templates]);
+
+  const facetFiltersActive = React.useMemo(
+    () => Boolean(categoryFilter || capabilityFilter || hardwareOnly),
+    [categoryFilter, capabilityFilter, hardwareOnly]
+  );
 
   const resetFilters = React.useCallback(() => {
     setQuery('');
     setOriginFilter('all');
+    setCategoryFilter(null);
+    setCapabilityFilter(null);
+    setHardwareOnly(false);
   }, []);
+
+  const toggleCategory = React.useCallback(
+    (category: string) => setCategoryFilter((current) => (current === category ? null : category)),
+    []
+  );
+
+  const toggleCapability = React.useCallback(
+    (capability: string) =>
+      setCapabilityFilter((current) => (current === capability ? null : capability)),
+    []
+  );
+
+  const toggleHardware = React.useCallback(() => setHardwareOnly((current) => !current), []);
 
   const filteredTemplates = React.useMemo(() => {
     return templates.filter((template) => {
       if (originFilter === 'system' && !template.is_system) return false;
       if (originFilter === 'user' && template.is_system) return false;
+      if (categoryFilter && template.category !== categoryFilter) return false;
+      if (capabilityFilter && !(template.tags ?? []).includes(capabilityFilter)) return false;
+      if (hardwareOnly && !sampleNeedsHardware(template)) return false;
       return matchesSamplePipelineQuery(template, query);
     });
-  }, [templates, originFilter, query]);
+  }, [templates, originFilter, categoryFilter, capabilityFilter, hardwareOnly, query]);
 
-  const systemTemplates = React.useMemo(() => {
-    return filteredTemplates
-      .filter((template) => template.is_system)
-      .slice()
-      .sort(compareSamplePipelinesByName);
-  }, [filteredTemplates]);
+  const systemGroups = React.useMemo(
+    () => toScenarioGroups(filteredTemplates.filter((template) => template.is_system)),
+    [filteredTemplates]
+  );
 
-  const userTemplates = React.useMemo(() => {
-    return filteredTemplates
-      .filter((template) => !template.is_system)
-      .slice()
-      .sort(compareSamplePipelinesByName);
-  }, [filteredTemplates]);
+  const userGroups = React.useMemo(
+    () => toScenarioGroups(filteredTemplates.filter((template) => !template.is_system)),
+    [filteredTemplates]
+  );
 
   const selectedExists = React.useMemo(() => {
     return templates.some((template) => template.id === selectedTemplateId);
@@ -270,11 +253,21 @@ export const TemplateSelector: React.FC<TemplateSelectorProps> = ({
     return filteredTemplates.some((template) => template.id === selectedTemplateId);
   }, [filteredTemplates, selectedTemplateId]);
 
-  const showHiddenSelectionHint =
-    selectedTemplateId &&
-    selectedExists &&
-    !selectedVisible &&
-    (query.trim() || originFilter !== 'all');
+  const showHiddenSelectionHint = React.useMemo(
+    () =>
+      Boolean(
+        selectedTemplateId &&
+        selectedExists &&
+        !selectedVisible &&
+        (query.trim() || originFilter !== 'all' || facetFiltersActive)
+      ),
+    [selectedTemplateId, selectedExists, selectedVisible, query, originFilter, facetFiltersActive]
+  );
+
+  const showFacetBar = React.useMemo(
+    () => facets.categories.length > 0 || facets.capabilities.length > 0 || facets.hasHardware,
+    [facets]
+  );
 
   return (
     <SelectorContainer>
@@ -310,6 +303,18 @@ export const TemplateSelector: React.FC<TemplateSelectorProps> = ({
         </FilterGroup>
       </Controls>
 
+      {showFacetBar && (
+        <FacetFilters
+          facets={facets}
+          categoryFilter={categoryFilter}
+          capabilityFilter={capabilityFilter}
+          hardwareOnly={hardwareOnly}
+          onToggleCategory={toggleCategory}
+          onToggleCapability={toggleCapability}
+          onToggleHardware={toggleHardware}
+        />
+      )}
+
       {showHiddenSelectionHint && (
         <HiddenSelectionHint>
           <div>Selected template is hidden by your filters.</div>
@@ -324,59 +329,41 @@ export const TemplateSelector: React.FC<TemplateSelectorProps> = ({
         onValueChange={onTemplateSelect}
         aria-label="Pipeline template selection"
       >
-        {systemTemplates.length === 0 && userTemplates.length === 0 && (
+        {systemGroups.length === 0 && userGroups.length === 0 && (
           <EmptyState>No pipelines match your filters.</EmptyState>
         )}
 
-        {systemTemplates.length > 0 && (
+        {systemGroups.length > 0 && (
           <Section>
             <SectionHeader>
               <span>System Pipelines</span>
-              <SectionCount>{systemTemplates.length}</SectionCount>
+              <SectionCount>{systemGroups.length}</SectionCount>
             </SectionHeader>
             <TemplateGrid>
-              {systemTemplates.map((template) => (
-                <TemplateCard key={template.id} htmlFor={`template-${template.id}`}>
-                  <RadioItem value={template.id} id={`template-${template.id}`}>
-                    <RadioIndicator />
-                  </RadioItem>
-                  <TemplateContent>
-                    <TemplateHeader>
-                      <TemplateName>{template.name}</TemplateName>
-                      <TemplateBadge variant={template.is_system ? 'system' : 'user'}>
-                        {template.is_system ? 'System' : 'User'}
-                      </TemplateBadge>
-                    </TemplateHeader>
-                    <TemplateDescription>{template.description}</TemplateDescription>
-                  </TemplateContent>
-                </TemplateCard>
+              {systemGroups.map((group) => (
+                <ScenarioCard
+                  key={group.key}
+                  group={group}
+                  selectedTemplateId={selectedTemplateId}
+                />
               ))}
             </TemplateGrid>
           </Section>
         )}
 
-        {userTemplates.length > 0 && (
+        {userGroups.length > 0 && (
           <Section>
             <SectionHeader>
               <span>User Pipelines</span>
-              <SectionCount>{userTemplates.length}</SectionCount>
+              <SectionCount>{userGroups.length}</SectionCount>
             </SectionHeader>
             <TemplateGrid>
-              {userTemplates.map((template) => (
-                <TemplateCard key={template.id} htmlFor={`template-${template.id}`}>
-                  <RadioItem value={template.id} id={`template-${template.id}`}>
-                    <RadioIndicator />
-                  </RadioItem>
-                  <TemplateContent>
-                    <TemplateHeader>
-                      <TemplateName>{template.name}</TemplateName>
-                      <TemplateBadge variant={template.is_system ? 'system' : 'user'}>
-                        {template.is_system ? 'System' : 'User'}
-                      </TemplateBadge>
-                    </TemplateHeader>
-                    <TemplateDescription>{template.description}</TemplateDescription>
-                  </TemplateContent>
-                </TemplateCard>
+              {userGroups.map((group) => (
+                <ScenarioCard
+                  key={group.key}
+                  group={group}
+                  selectedTemplateId={selectedTemplateId}
+                />
               ))}
             </TemplateGrid>
           </Section>
