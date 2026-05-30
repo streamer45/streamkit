@@ -10,6 +10,7 @@ import type {
   PinCardinality,
   InputPin,
   OutputPin,
+  PixelFormat,
 } from '@/types/generated/api-types';
 import type { PacketType } from '@/types/types';
 import { deepEqual } from '@/utils/deepEqual';
@@ -246,9 +247,24 @@ function inferCompositorOutputType(sourceNode: Node, sourceOutput: OutputPin): P
     RawVideo: {
       width,
       height,
-      pixel_format: 'Rgba8',
+      pixel_format: pixelFormatFromOutputFormat(params.output_format),
     },
   };
+}
+
+// Mirrors the server's `parse_pixel_format` (crates/nodes/src/video/mod.rs).
+// `PixelFormat` is `#[non_exhaustive]`: any new variant must be added here too,
+// otherwise it falls back to Rgba8 and connection validation wrongly rejects it.
+function pixelFormatFromOutputFormat(outputFormat: unknown): PixelFormat {
+  if (typeof outputFormat !== 'string') return 'Rgba8';
+  switch (outputFormat.toLowerCase()) {
+    case 'nv12':
+      return 'Nv12';
+    case 'i420':
+      return 'I420';
+    default:
+      return 'Rgba8';
+  }
 }
 
 function inferResamplerOutputType(sourceNode: Node, sourceOutput: OutputPin): PacketType | null {
