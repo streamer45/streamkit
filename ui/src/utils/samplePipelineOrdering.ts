@@ -60,8 +60,8 @@ const SYNONYM_GROUPS: string[][] = [
   ['hevc', 'h265', 'h.265'],
 ];
 
-// A query term joins a synonym group on an exact match, or when it is a prefix
-// fragment of an entry (>=3 chars, so "transcrib" finds "transcribe"). The
+// A query term joins a synonym group on an exact match, or when it is a
+// substring of an entry (>=3 chars, so "transcrib" finds "transcribe"). The
 // reverse direction (entry being a substring of the term) is deliberately
 // excluded: short entries like "mic"/"cam" would otherwise pull whole groups
 // into unrelated queries ("dynamic" → microphone, "scam" → webcam).
