@@ -24,7 +24,13 @@ for i in $(seq 1 "$ROUNDS"); do
   text="StreamKit observability sample, round $i: the quick brown fox."
   if [ "$MODE" = "gateway" ]; then
     curl -fsS -o "$tmp/a.ogg" -d "$text" "$GATEWAY_URL/tts"
-    curl -fsS -o /dev/null --data-binary @"$tmp/a.ogg" -H 'Content-Type: audio/ogg' "$GATEWAY_URL/stt" || true
+    # The gateway's built-in STT pipeline targets a Whisper model the -demo
+    # image may not ship, so STT can return 5xx; surface it once, not per round.
+    code=$(curl -s -o /dev/null -w '%{http_code}' --data-binary @"$tmp/a.ogg" -H 'Content-Type: audio/ogg' "$GATEWAY_URL/stt")
+    case "$code" in
+      2*) ;;
+      *) [ -n "${stt_warned:-}" ] || { printf '\nnote: gateway STT -> HTTP %s; its built-in pipeline needs a Whisper model the demo image may not ship (see README / #553). TTS still populates the gateway row.\n' "$code"; stt_warned=1; } ;;
+    esac
   else
     printf '%s' "$text" > "$tmp/in.txt"
     # X-StreamKit-Service lets a service-label-aware skit (see PR #545) split
