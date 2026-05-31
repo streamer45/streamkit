@@ -76,6 +76,10 @@ allowed_origins = [
 # `fallback`. Disabled by default — uncomment to opt in. Declaring any label
 # sets the full list, so list every label you want here.
 #
+# The header is read before auth runs, so it must be set by a trusted upstream
+# (e.g. the gateway, which strips client-supplied copies) — don't point it at an
+# auth-injected header like `X-StreamKit-Role`.
+#
 # Example: distinguish hosted speech services on oneshot_pipeline.duration so
 # TTS / STT / other don't collapse into one series. The gateway sets
 # `X-StreamKit-Service` per endpoint.

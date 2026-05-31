@@ -504,18 +504,13 @@ pub(super) async fn process_oneshot_pipeline_handler(
     tracing::info!("Processing multipart request");
 
     let headers = req.headers().clone();
-    // Reuse labels already resolved by metrics_middleware; resolve directly only
-    // if this handler is exercised without that layer (e.g. unit tests).
-    let metric_labels =
-        req.extensions().get::<crate::metrics_labels::ResolvedRequestLabels>().map_or_else(
-            || {
-                crate::metrics_labels::resolve_request_labels(
-                    &app_state.config.server.metrics.request_labels,
-                    &headers,
-                )
-            },
-            |resolved| resolved.0.clone(),
-        );
+    // Reuse the labels resolved by metrics_middleware; absent only when no
+    // request labels are configured, in which case there are none to record.
+    let metric_labels = req
+        .extensions()
+        .get::<crate::metrics_labels::ResolvedRequestLabels>()
+        .map(|resolved| resolved.0.clone())
+        .unwrap_or_default();
     let (role_name, perms) = crate::role_extractor::get_role_and_permissions(&headers, &app_state);
     if !perms.create_sessions {
         return Err(AppError::Forbidden(

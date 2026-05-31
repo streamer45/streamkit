@@ -245,6 +245,11 @@ pub struct RequestLabelConfig {
     /// Metric label key (e.g. `service`).
     pub name: String,
     /// Trusted request header to read the value from (e.g. `X-StreamKit-Service`).
+    ///
+    /// Read before auth middleware runs, so point this at a header set by a
+    /// trusted upstream (e.g. the gateway, which strips client-supplied copies)
+    /// — not at an auth-injected header such as `X-StreamKit-Role`, whose
+    /// pre-auth value is client-controlled.
     pub header: String,
     /// Permitted values, matched case-insensitively after trimming.
     #[serde(default)]
@@ -287,6 +292,18 @@ fn is_valid_label_name(name: &str) -> bool {
 }
 
 impl MetricsConfig {
+    /// Normalize then validate — the single chokepoint that readies a metrics
+    /// config for use. Callers decide how to treat the error: `load()` rejects
+    /// the file, `create_app_state()` warns and disables the labels.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if validation fails after normalization.
+    pub fn prepare(&mut self) -> Result<(), String> {
+        self.normalize();
+        self.validate()
+    }
+
     /// Lowercase and trim every allowlist entry and each `fallback` so the
     /// per-request hot path only has to normalize the incoming header value and
     /// every emitted value shares one normalized space.
@@ -301,7 +318,7 @@ impl MetricsConfig {
 
     /// Reject label configs that would silently corrupt metrics: invalid names,
     /// names colliding (after Prometheus sanitization) with a built-in key or
-    /// each other, and empty allowlist entries.
+    /// each other, invalid/empty headers, and empty allowlist or fallback values.
     ///
     /// # Errors
     ///
@@ -330,9 +347,21 @@ impl MetricsConfig {
             if !seen.insert(key) {
                 return Err(format!("duplicate metrics request_label name '{}'", label.name));
             }
+            if axum::http::HeaderName::try_from(label.header.as_str()).is_err() {
+                return Err(format!(
+                    "metrics request_label '{}' has an invalid header '{}'",
+                    label.name, label.header
+                ));
+            }
             if label.allowed.iter().any(|v| v.trim().is_empty()) {
                 return Err(format!(
                     "metrics request_label '{}' has an empty allowed value",
+                    label.name
+                ));
+            }
+            if label.fallback.trim().is_empty() {
+                return Err(format!(
+                    "metrics request_label '{}' has an empty fallback value",
                     label.name
                 ));
             }
@@ -1145,12 +1174,11 @@ pub fn load(config_path: &str) -> Result<ConfigLoadResult, Box<figment::Error>> 
         figment.merge(Env::prefixed("SK_").split("__")).extract().map_err(Box::new)?;
 
     normalize_permissions_config(&mut config);
-    config.server.metrics.normalize();
 
     if let Err(e) = config.mcp.validate() {
         return Err(Box::new(figment::Error::from(e)));
     }
-    if let Err(e) = config.server.metrics.validate() {
+    if let Err(e) = config.server.metrics.prepare() {
         return Err(Box::new(figment::Error::from(e)));
     }
 
@@ -1624,6 +1652,52 @@ allowed_plugins = []
             }],
         };
         assert!(metrics.validate().is_err());
+    }
+
+    #[test]
+    fn metrics_validate_rejects_empty_or_invalid_header() {
+        let empty = RequestLabelConfig {
+            name: "service".to_string(),
+            header: String::new(),
+            allowed: vec!["tts".to_string()],
+            fallback: "other".to_string(),
+        };
+        assert!(MetricsConfig { request_labels: vec![empty] }.validate().is_err());
+        let bad = RequestLabelConfig {
+            name: "service".to_string(),
+            header: "bad header".to_string(),
+            allowed: vec!["tts".to_string()],
+            fallback: "other".to_string(),
+        };
+        assert!(MetricsConfig { request_labels: vec![bad] }.validate().is_err());
+    }
+
+    #[test]
+    fn metrics_validate_rejects_empty_fallback() {
+        let metrics = MetricsConfig {
+            request_labels: vec![RequestLabelConfig {
+                name: "service".to_string(),
+                header: "X-Test".to_string(),
+                allowed: vec!["tts".to_string()],
+                fallback: "  ".to_string(),
+            }],
+        };
+        assert!(metrics.validate().is_err());
+    }
+
+    #[test]
+    fn metrics_prepare_normalizes_then_validates() {
+        let mut metrics = MetricsConfig {
+            request_labels: vec![RequestLabelConfig {
+                name: "service".to_string(),
+                header: "X-StreamKit-Service".to_string(),
+                allowed: vec!["  TTS ".to_string()],
+                fallback: "Other".to_string(),
+            }],
+        };
+        assert!(metrics.prepare().is_ok());
+        assert_eq!(metrics.request_labels[0].allowed, vec!["tts".to_string()]);
+        assert_eq!(metrics.request_labels[0].fallback, "other");
     }
 
     #[test]

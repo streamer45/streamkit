@@ -1630,12 +1630,12 @@ pub fn create_app_state(
     mut config: Config,
     auth: Option<Arc<crate::auth::AuthState>>,
 ) -> Arc<AppState> {
-    // Normalize here (not only in config::load) so every AppState — tests,
-    // embedded/MCP callers — gets a normalized allowlist the resolver can match.
-    // load() hard-rejects invalid configs; this infallible path can only warn.
-    config.server.metrics.normalize();
-    if let Err(e) = config.server.metrics.validate() {
-        tracing::warn!("ignoring invalid metrics request_labels configuration: {e}");
+    // Prepare here (not only in config::load) so every AppState — tests,
+    // embedded/MCP callers — gets a normalized, validated metrics config. This
+    // path is infallible, so an invalid config is disabled rather than rejected.
+    if let Err(e) = config.server.metrics.prepare() {
+        tracing::warn!("disabling invalid metrics request_labels configuration: {e}");
+        config.server.metrics.request_labels.clear();
     }
 
     let (event_tx, _) = tokio::sync::broadcast::channel(128);
