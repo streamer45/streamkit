@@ -296,7 +296,7 @@ mod tests {
     /// Returns `None` if binding a local listener is not permitted (sandbox).
     #[allow(clippy::unwrap_used)]
     async fn start_mock_server() -> Option<String> {
-        #[allow(clippy::unwrap_used)]
+        #[allow(clippy::unwrap_used)] // building static test responses cannot fail
         async fn handle_test_bin(req: Request<Body>) -> Response {
             if req.method() == "HEAD" {
                 Response::builder()
@@ -313,7 +313,7 @@ mod tests {
             }
         }
 
-        #[allow(clippy::unwrap_used)]
+        #[allow(clippy::unwrap_used)] // building static test responses cannot fail
         async fn handle_chunked() -> Response {
             let chunks: Vec<Result<bytes::Bytes, std::io::Error>> = vec![
                 Ok(bytes::Bytes::from_static(b"chunk-one;")),
@@ -326,12 +326,12 @@ mod tests {
                 .unwrap()
         }
 
-        #[allow(clippy::unwrap_used)]
+        #[allow(clippy::unwrap_used)] // building static test responses cannot fail
         async fn handle_not_found() -> Response {
             Response::builder().status(StatusCode::NOT_FOUND).body(Body::empty()).unwrap()
         }
 
-        #[allow(clippy::unwrap_used)]
+        #[allow(clippy::unwrap_used)] // building static test responses cannot fail
         async fn handle_typed() -> Response {
             Response::builder()
                 .status(StatusCode::OK)
@@ -372,7 +372,7 @@ mod tests {
 
     /// Drive an `HttpPullNode` through its full lifecycle against `url` and
     /// collect the streamed packets plus the terminal node state.
-    #[allow(clippy::unwrap_used)]
+    #[allow(clippy::unwrap_used)] // the lifecycle channels are expected to deliver these messages in tests
     async fn drive_pull(url: String, chunk_size: usize) -> PullOutcome {
         let (mock_sender, mut packet_rx) = mpsc::channel::<RoutedPacketMessage>(32);
         let (control_tx, control_rx) = mpsc::channel(10);
@@ -407,7 +407,6 @@ mod tests {
         let node = Box::new(HttpPullNode { config: HttpPullConfig { url, chunk_size } });
         let node_handle = tokio::spawn(async move { node.run(context).await });
 
-        // Initializing -> Ready, then start.
         assert!(matches!(
             state_rx.recv().await.unwrap().state,
             streamkit_core::NodeState::Initializing

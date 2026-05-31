@@ -1061,7 +1061,7 @@ mod tests {
         assert!(!dynamic_inputs[0].is_video);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // mirrors the production handle_pin_management signature
     fn handle(
         msg: PinManagementMessage,
         broadcast: &mut moq_lite::BroadcastProducer,

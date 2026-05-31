@@ -214,7 +214,7 @@ pub fn register_moq_nodes(registry: &mut NodeRegistry) {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // tests assert on known-good fixtures; failures should surface loudly
 mod tests {
     use super::*;
 
