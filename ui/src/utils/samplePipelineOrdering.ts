@@ -172,6 +172,7 @@ const CAPABILITY_LABEL_OVERRIDES: Record<string, string> = {
   webm: 'WebM',
   vp9: 'VP9',
   av1: 'AV1',
+  vad: 'VAD',
 };
 
 export function formatCapabilityLabel(tag: string): string {

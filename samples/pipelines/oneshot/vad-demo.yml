@@ -7,7 +7,6 @@ description: Detects voice activity and outputs events as JSON
 mode: oneshot
 category: Voice Activity
 tags:
-  - vad
   - voice-activity-detection
 client:
   input:
