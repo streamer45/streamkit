@@ -887,9 +887,7 @@ mod tests {
 
     const BROADCAST: &str = "push-cov-test";
 
-    /// Build an in-process MoQ broadcast plus a catalog producer/consumer pair
-    /// so tests can drive the dynamic-pin helpers and observe the re-published
-    /// catalog without a network connection.
+    /// Uses in-process MoQ so dynamic-pin tests need no network relay.
     fn push_fixture() -> (
         moq_lite::OriginProducer,
         moq_lite::BroadcastProducer,

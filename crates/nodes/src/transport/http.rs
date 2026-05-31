@@ -284,16 +284,7 @@ mod tests {
 
     const MOCK_BODY: &[u8] = b"Hello, StreamKit! This is test data for HTTP pull.";
 
-    /// Spin up a local axum server exposing several routes used by the tests
-    /// and return its base URL (`http://127.0.0.1:<port>`).
-    ///
-    /// Routes:
-    /// - `/test.bin` — single 200 body (also answers HEAD with Content-Length)
-    /// - `/chunked` — 200 streamed as several separate chunks
-    /// - `/status/404` — 404 (non-2xx error path)
-    /// - `/typed` — 200 with a `Content-Type: text/plain` header
-    ///
-    /// Returns `None` if binding a local listener is not permitted (sandbox).
+    /// Returns `None` when sandboxed CI cannot bind a loopback listener.
     #[allow(clippy::unwrap_used)]
     async fn start_mock_server() -> Option<String> {
         #[allow(clippy::unwrap_used)] // building static test responses cannot fail
@@ -370,8 +361,6 @@ mod tests {
         result: Result<(), StreamKitError>,
     }
 
-    /// Drive an `HttpPullNode` through its full lifecycle against `url` and
-    /// collect the streamed packets plus the terminal node state.
     #[allow(clippy::unwrap_used)] // the lifecycle channels are expected to deliver these messages in tests
     async fn drive_pull(url: String, chunk_size: usize) -> PullOutcome {
         let (mock_sender, mut packet_rx) = mpsc::channel::<RoutedPacketMessage>(32);
