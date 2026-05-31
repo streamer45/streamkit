@@ -1483,6 +1483,21 @@ test-pipelines url filter='':
     @echo "Running headless pipeline validation tests against {{url}}..."
     @cd tests/pipeline-validation && PIPELINE_TEST_URL={{url}} cargo test --test validate {{ if filter != "" { "-- " + filter } else { "" } }}
 
+# Validate the official oneshot sample pipelines (samples/pipelines/oneshot/)
+# against a running skit server. Each sample's expectations live in
+# tests/pipeline-validation/oneshot-samples.toml.
+#
+# Heavyweight showcase samples (realtime pacers, software AV1) are skipped by
+# default; set PIPELINE_INCLUDE_SLOW=1 to include them (use --test-threads=1
+# and a larger PIPELINE_TIMEOUT_SECS to avoid timeouts under contention).
+#
+# Usage:
+#   just test-oneshot-samples http://localhost:4545
+#   just test-oneshot-samples http://localhost:4545 colorbars   # filter by name
+test-oneshot-samples url filter='':
+    @echo "Validating oneshot samples against {{url}}..."
+    @cd tests/pipeline-validation && PIPELINE_TEST_URL={{url}} cargo test --test oneshot {{ if filter != "" { "-- " + filter } else { "" } }}
+
 # Show E2E test report
 [working-directory: 'e2e']
 e2e-report:
