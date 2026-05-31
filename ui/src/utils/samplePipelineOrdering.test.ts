@@ -10,7 +10,6 @@ import {
   baseVariantLabel,
   collectSampleFacets,
   compareSamplePipelinesByName,
-  formatCapabilityLabel,
   groupSamplePipelinesByScenario,
   matchesSamplePipelineQuery,
   orderSamplePipelinesSystemFirst,
@@ -283,22 +282,6 @@ describe('collectSampleFacets', () => {
   it('reports no hardware when no hardware tags are present', () => {
     const facets = collectSampleFacets([makePipeline({ id: 'a', tags: ['mp4'] })]);
     expect(facets.hasHardware).toBe(false);
-  });
-});
-
-describe('formatCapabilityLabel', () => {
-  it('uses curated acronym casing for known tags', () => {
-    expect(formatCapabilityLabel('moq')).toBe('MoQ');
-    expect(formatCapabilityLabel('mp4')).toBe('MP4');
-    expect(formatCapabilityLabel('mse')).toBe('MSE');
-    expect(formatCapabilityLabel('rtmp')).toBe('RTMP');
-    expect(formatCapabilityLabel('webm')).toBe('WebM');
-    expect(formatCapabilityLabel('vad')).toBe('VAD');
-  });
-
-  it('falls back to title-casing for other tags', () => {
-    expect(formatCapabilityLabel('voice-activity-detection')).toBe('Voice Activity Detection');
-    expect(formatCapabilityLabel('colorbars')).toBe('Colorbars');
   });
 });
 

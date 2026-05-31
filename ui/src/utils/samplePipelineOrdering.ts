@@ -4,8 +4,6 @@
 
 import type { AudioCodec, SamplePipeline, VideoCodec } from '@/types/generated/api-types';
 
-import { labelFromKey } from './jsonSchema';
-
 let collator: Intl.Collator | null = null;
 
 function getCollator(): Intl.Collator {
@@ -214,22 +212,6 @@ function isFormatFacetTag(tag: string): boolean {
 
 export function sampleNeedsHardware(sample: SamplePipeline): boolean {
   return (sample.tags ?? []).some((tag) => tag.startsWith(HARDWARE_TAG_PREFIX));
-}
-
-// Acronyms / mixed-case names that the generic title-caser would mangle
-// ("Moq", "Mp4"). Anything not listed falls back to labelFromKey. Codec labels
-// live in the typed CODEC_LABELS maps above, not here.
-const CAPABILITY_LABEL_OVERRIDES: Record<string, string> = {
-  moq: 'MoQ',
-  mp4: 'MP4',
-  mse: 'MSE',
-  rtmp: 'RTMP',
-  webm: 'WebM',
-  vad: 'VAD',
-};
-
-export function formatCapabilityLabel(tag: string): string {
-  return CAPABILITY_LABEL_OVERRIDES[tag] ?? labelFromKey(tag);
 }
 
 /**

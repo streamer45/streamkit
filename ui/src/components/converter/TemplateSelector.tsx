@@ -6,13 +6,13 @@ import React from 'react';
 
 import { RadioGroupRoot, RadioItem, RadioIndicator } from '@/components/ui/RadioGroup';
 import type { SamplePipeline } from '@/types/generated/api-types';
+import { labelFromKey } from '@/utils/jsonSchema';
 import type { SampleFacets, ScenarioGroup } from '@/utils/samplePipelineOrdering';
 import {
   baseVariantLabel,
   collectSampleFacets,
   compareSamplePipelinesByName,
   expandQueryTerms,
-  formatCapabilityLabel,
   groupSamplePipelinesByScenario,
   matchesExpandedQuery,
   sampleNeedsHardware,
@@ -172,7 +172,7 @@ const FacetFilters: React.FC<FacetFiltersProps> = ({
             aria-pressed={capabilityFilter === capability}
             onClick={() => onToggleCapability(capability)}
           >
-            {formatCapabilityLabel(capability)}
+            {labelFromKey(capability)}
           </FacetChip>
         ))}
       </FacetRow>

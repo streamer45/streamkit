@@ -22,22 +22,20 @@ use streamkit_core::types::{AudioCodec, VideoCodec};
 /// match against [`VideoCodec::as_c_name`] rather than re-spelling codec strings
 /// — adding a codec variant is then a single edit on the enum.
 fn video_codec_for_kind(kind: &str) -> Option<VideoCodec> {
-    let k = kind.to_lowercase();
-    if !k.contains("encoder") {
+    if !kind.contains("encoder") {
         return None;
     }
     [VideoCodec::Vp9, VideoCodec::H264, VideoCodec::Av1]
         .into_iter()
-        .find(|codec| k.contains(codec.as_c_name()))
+        .find(|codec| kind.contains(codec.as_c_name()))
 }
 
 /// Output codec an audio encoder node produces, or `None` for non-encoder kinds.
 fn audio_codec_for_kind(kind: &str) -> Option<AudioCodec> {
-    let k = kind.to_lowercase();
-    if !k.contains("encoder") {
+    if !kind.contains("encoder") {
         return None;
     }
-    [AudioCodec::Opus, AudioCodec::Aac].into_iter().find(|codec| k.contains(codec.as_c_name()))
+    [AudioCodec::Opus, AudioCodec::Aac].into_iter().find(|codec| kind.contains(codec.as_c_name()))
 }
 
 /// Discovery metadata for a sample. Used both for the explicit values parsed
@@ -146,8 +144,7 @@ fn group_and_variant_from_filename(
     (group_key, variant)
 }
 
-fn tags_for_kind(kind: &str) -> Vec<&'static str> {
-    let k = kind.to_lowercase();
+fn tags_for_kind(k: &str) -> Vec<&'static str> {
     let mut tags: Vec<&'static str> = Vec::new();
 
     if k.contains("whisper") || k.contains("parakeet") || k.contains("sensevoice") {
@@ -219,14 +216,15 @@ fn capability_tags(
     let mut tags: Vec<String> = Vec::new();
 
     for kind in node_kinds {
-        for tag in tags_for_kind(kind) {
+        let kind = kind.to_lowercase();
+        for tag in tags_for_kind(&kind) {
             tags.push(tag.to_string());
         }
         // Output codec, surfaced as the variant axis (pills) and a search term
         // but excluded from the capability facets (see collectSampleFacets).
-        let codec = video_codec_for_kind(kind)
+        let codec = video_codec_for_kind(&kind)
             .map(VideoCodec::as_c_name)
-            .or_else(|| audio_codec_for_kind(kind).map(AudioCodec::as_c_name));
+            .or_else(|| audio_codec_for_kind(&kind).map(AudioCodec::as_c_name));
         if let Some(name) = codec {
             tags.push(format!("codec:{name}"));
         }
