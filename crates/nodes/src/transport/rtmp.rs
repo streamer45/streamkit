@@ -1559,16 +1559,12 @@ mod tests {
         assert!(nal_types.contains(&5), "IDR should be in video_data");
     }
 
-    //
-    // Packet-processing + connection-driving tests.
-    //
     // The production AMF0 / chunk encoders live in `rtmp_client.rs` and are
     // private to that module, so the helpers below reproduce just enough of
     // the server→client wire format to drive a real
     // `RtmpPublishClientConnection` (sans-IO) to the `Publishing` state from
     // this test module — mirroring `rtmp_client.rs`'s own
     // `drive_to_publishing` helper.
-
     const TEST_HANDSHAKE_SIZE: usize = 1536;
 
     fn amf0_string(buf: &mut Vec<u8>, s: &str) {
@@ -1728,7 +1724,6 @@ mod tests {
         NodeStatsTracker::new("test".to_string(), None)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn send_video(
         conn: &mut RtmpPublishClientConnection,
         pkt: &Packet,
