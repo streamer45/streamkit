@@ -5,6 +5,7 @@
 import styled from '@emotion/styled';
 import { load as loadYaml } from 'js-yaml';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import { AssetSelector } from '@/components/converter/AssetSelector';
 import { ConversionProgress } from '@/components/converter/ConversionProgress';
@@ -143,6 +144,32 @@ const EditorSection = styled.div`
 const ConvertButtonContainer = styled.div`
   display: flex;
   justify-content: center;
+`;
+
+const CustomizeActions = styled.div`
+  display: flex;
+  justify-content: flex-end;
+`;
+
+const OpenInDesignButton = styled.button`
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--sk-text);
+  background: var(--sk-panel-bg);
+  border: 1px solid var(--sk-border);
+  border-radius: 6px;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    border-color: var(--sk-primary);
+    color: var(--sk-primary);
+  }
+
+  &:disabled {
+    color: var(--sk-text-muted);
+    cursor: not-allowed;
+  }
 `;
 
 const ConvertButton = styled.button<{ disabled: boolean; isProcessing?: boolean }>`
@@ -755,6 +782,20 @@ const ConvertView: React.FC = () => {
     fetchSamples();
   }, [setSamples, setSamplesLoading, setSamplesError, setSelectedTemplateId, setPipelineYaml]);
 
+  const navigate = useNavigate();
+
+  const handleOpenInDesign = useCallback(() => {
+    if (!pipelineYaml.trim()) return;
+    const sample = samples.find((s) => s.id === selectedTemplateId);
+    navigate('/design', {
+      state: {
+        importYaml: pipelineYaml,
+        name: sample?.name ?? '',
+        description: sample?.description ?? '',
+      },
+    });
+  }, [navigate, pipelineYaml, samples, selectedTemplateId]);
+
   const handleTemplateSelect = (templateId: string) => {
     const sample = samples.find((s) => s.id === templateId);
     if (sample) {
@@ -1239,6 +1280,16 @@ const ConvertView: React.FC = () => {
                 onChange={setPipelineYaml}
                 nodeDefinitions={nodeDefinitions}
               />
+              <CustomizeActions>
+                <OpenInDesignButton
+                  type="button"
+                  onClick={handleOpenInDesign}
+                  disabled={!pipelineYaml.trim()}
+                  title="Open this pipeline in the visual Design editor"
+                >
+                  Open in Design view
+                </OpenInDesignButton>
+              </CustomizeActions>
             </EditorSection>
           </Section>
 
