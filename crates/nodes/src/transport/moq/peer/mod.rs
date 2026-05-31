@@ -2713,8 +2713,6 @@ mod tests {
         assert_eq!(vp9.video_codec, Some(VideoCodec::Vp9));
     }
 
-    // ===== Async actor/loop coverage =====
-    //
     // These tests drive the publisher and subscriber loops in-process using
     // `moq_lite::Origin::random().produce()` producer/consumer pairs — no
     // network or relay required. Frames carry a hang varint timestamp prefix,
@@ -2851,8 +2849,6 @@ mod tests {
             consumer,
         }
     }
-
-    // ---- process_publisher_frames / get_next_group / process_frame_from_group ----
 
     #[tokio::test]
     async fn process_publisher_frames_emits_video_packets_with_metadata() {
@@ -3038,8 +3034,6 @@ mod tests {
         assert!(matches!(g, Ok(None)));
     }
 
-    // ---- route_packet ----
-
     #[tokio::test]
     async fn route_packet_prefers_dynamic_channel() {
         let dynamic_outputs: DynamicOutputs = Arc::default();
@@ -3111,8 +3105,6 @@ mod tests {
 
         assert!(!MoqPeerNode::route_packet(pkt, "video/data", &mut sender, &dynamic_outputs).await);
     }
-
-    // ---- publisher_receive_loop (+ catalog watch, track spawning) ----
 
     #[tokio::test]
     async fn wait_for_broadcast_announcement_returns_none_on_shutdown() {
@@ -3245,8 +3237,6 @@ mod tests {
         assert!(events_rx.try_recv().is_err(), "no Connected event when the slot is unavailable");
     }
 
-    // ---- resolve_media_types ----
-
     #[tokio::test]
     async fn resolve_media_types_applies_already_resolved_state() {
         let (_tx, mut rx) =
@@ -3285,8 +3275,6 @@ mod tests {
         assert!(ok);
         assert!(media.has_audio && !media.has_video);
     }
-
-    // ---- setup_subscriber_broadcast / create_and_publish_catalog ----
 
     #[tokio::test]
     async fn setup_subscriber_broadcast_publishes_catalog_with_both_tracks() {
@@ -3348,8 +3336,6 @@ mod tests {
         assert_eq!(cat.audio.renditions.get("audio/data").unwrap().channel_count, 2);
         drop((bcast, catalog));
     }
-
-    // ---- run_subscriber_send_loop / handle_broadcast_recv ----
 
     #[tokio::test]
     async fn run_subscriber_send_loop_forwards_audio_and_video() {
@@ -3520,8 +3506,6 @@ mod tests {
         assert_eq!(count, 2, "both frames are counted even though the video frame is skipped");
         drop(publish);
     }
-
-    // ---- handle_pin_management / dynamic input forwarder ----
 
     #[tokio::test]
     async fn handle_pin_management_output_pin_lifecycle() {
