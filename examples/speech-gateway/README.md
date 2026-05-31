@@ -45,7 +45,12 @@ Transcribe from microphone (requires ffmpeg):
 
 Press Ctrl-C when done speaking. The script captures audio, sends it to the gateway, and displays the transcription.
 
-Response is NDJSON (one JSON object per line).
+Response is NDJSON (one JSON object per line). The gateway flattens the backend's
+tagged `Packet` envelope, so each line is the bare transcription object:
+
+```json
+{"text": "…", "segments": [ … ], "language": "en", "metadata": null}
+```
 
 ## TTS via curl (plain text)
 

@@ -5,6 +5,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -33,6 +34,20 @@ var knownMethods = map[string]struct{}{
 func methodLabel(method string) string {
 	if _, ok := knownMethods[method]; ok {
 		return method
+	}
+	return "other"
+}
+
+// codeLabel bounds the gateway_requests_total code label. The status forwarded
+// from the backend is otherwise attacker/backend-controlled (Go accepts any
+// 100-599), so non-canonical codes fold to their class (e.g. "5xx") to keep a
+// misbehaving backend from minting unbounded time series.
+func codeLabel(code int) string {
+	if code == codeClientClosed || http.StatusText(code) != "" {
+		return strconv.Itoa(code)
+	}
+	if code >= 100 && code < 600 {
+		return fmt.Sprintf("%dxx", code/100)
 	}
 	return "other"
 }
@@ -82,25 +97,23 @@ func recordRejection(endpoint string, reason rejectReason) {
 }
 
 // statusRecorder captures the response status code while preserving
-// http.Flusher so proxied responses keep streaming incrementally.
+// http.Flusher so proxied responses keep streaming incrementally. A zero code
+// means nothing was ever written (client closed before any response).
 type statusRecorder struct {
 	http.ResponseWriter
-	code        int
-	wroteHeader bool
+	code int
 }
 
 func (s *statusRecorder) WriteHeader(code int) {
-	if !s.wroteHeader {
+	if s.code == 0 {
 		s.code = code
-		s.wroteHeader = true
 	}
 	s.ResponseWriter.WriteHeader(code)
 }
 
 func (s *statusRecorder) Write(b []byte) (int, error) {
-	if !s.wroteHeader {
+	if s.code == 0 {
 		s.code = http.StatusOK
-		s.wroteHeader = true
 	}
 	return s.ResponseWriter.Write(b)
 }
@@ -111,13 +124,20 @@ func (s *statusRecorder) Flush() {
 	}
 }
 
+// Unwrap exposes the wrapped writer so helpers like http.MaxBytesReader can
+// reach the underlying *http.response (and its connection force-close on
+// overflow), which an embedded ResponseWriter interface does not promote.
+func (s *statusRecorder) Unwrap() http.ResponseWriter {
+	return s.ResponseWriter
+}
+
 // instrument records request count, latency, and the in-flight gauge per
 // endpoint. Recording runs in a defer so a panicking handler is still counted
 // (as 500) before the panic propagates to the server.
 func instrument(endpoint string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		inflightRequests.WithLabelValues(endpoint).Inc()
-		rec := &statusRecorder{ResponseWriter: w, code: http.StatusOK}
+		rec := &statusRecorder{ResponseWriter: w}
 		start := time.Now()
 
 		defer func() {
@@ -127,12 +147,12 @@ func instrument(endpoint string, next http.HandlerFunc) http.HandlerFunc {
 			switch {
 			case p != nil:
 				code = http.StatusInternalServerError
-			case !rec.wroteHeader:
+			case code == 0:
 				code = codeClientClosed
 			}
 
 			requestDuration.WithLabelValues(endpoint).Observe(time.Since(start).Seconds())
-			requestsTotal.WithLabelValues(endpoint, methodLabel(r.Method), strconv.Itoa(code)).Inc()
+			requestsTotal.WithLabelValues(endpoint, methodLabel(r.Method), codeLabel(code)).Inc()
 			inflightRequests.WithLabelValues(endpoint).Dec()
 
 			if p != nil {
