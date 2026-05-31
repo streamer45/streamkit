@@ -245,25 +245,20 @@ describe('collectSampleFacets', () => {
     expect(facets.hasHardware).toBe(true);
   });
 
-  it('drops capability tags already represented by a shown category', () => {
+  it('keeps tags as capabilities even when a same-named category is shown', () => {
+    // category is a single priority-picked bucket while tags are multi-valued,
+    // so a capability chip must survive as a cross-cutting filter (e.g. a
+    // sample bucketed as `Video Compositing` may still carry `video-encoding`).
     const facets = collectSampleFacets([
+      makePipeline({ id: 'a', category: 'Video Encoding', tags: ['video-encoding', 'vp9'] }),
       makePipeline({
-        id: 'a',
-        category: 'Video Encoding',
-        tags: ['video-encoding', 'moq', 'vp9'],
+        id: 'b',
+        category: 'Video Compositing',
+        tags: ['compositing', 'video-encoding'],
       }),
-      makePipeline({ id: 'b', category: 'Streaming', tags: ['moq'] }),
     ]);
-    // `video-encoding` and `moq` map to the shown `Video Encoding` / `Streaming`
-    // categories, so only the cross-cutting `vp9` capability remains.
-    expect(facets.categories).toEqual(['Streaming', 'Video Encoding']);
-    expect(facets.capabilities).toEqual(['vp9']);
-  });
-
-  it('keeps a category-source tag as a capability when its category is absent', () => {
-    const facets = collectSampleFacets([makePipeline({ id: 'a', tags: ['moq'] })]);
-    expect(facets.categories).toEqual([]);
-    expect(facets.capabilities).toEqual(['moq']);
+    expect(facets.categories).toEqual(['Video Compositing', 'Video Encoding']);
+    expect(facets.capabilities).toEqual(['compositing', 'video-encoding', 'vp9']);
   });
 
   it('reports no hardware when no hardware tags are present', () => {

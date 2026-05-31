@@ -77,10 +77,6 @@ export const FilterButton = styled.button<{ active?: boolean }>`
 `;
 
 export const HiddenSelectionHint = styled.div`
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
   padding: 10px 12px;
   margin-bottom: 12px;
   border: 1px solid var(--sk-border);
@@ -88,25 +84,6 @@ export const HiddenSelectionHint = styled.div`
   background: var(--sk-panel-bg);
   color: var(--sk-text-muted);
   font-size: 13px;
-`;
-
-export const HintButton = styled.button`
-  border: none;
-  background: none;
-  color: var(--sk-primary);
-  font-weight: 700;
-  cursor: pointer;
-  padding: 0;
-
-  &:hover {
-    color: var(--sk-primary-hover);
-  }
-
-  &:focus-visible {
-    outline: 2px solid var(--sk-primary);
-    outline-offset: 2px;
-    border-radius: 4px;
-  }
 `;
 
 export const Section = styled.div`
@@ -135,10 +112,6 @@ export const SectionCount = styled.span`
 `;
 
 export const EmptyState = styled.div`
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 10px;
   padding: 16px;
   border: 1px solid var(--sk-border);
   border-radius: 8px;

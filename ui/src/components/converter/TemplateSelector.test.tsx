@@ -99,14 +99,13 @@ describe('TemplateSelector', () => {
     expect(screen.getByText('Selected template is hidden by your filters.')).toBeInTheDocument();
   });
 
-  it('clears filters when hint button is clicked', () => {
+  it('clears filters via the persistent Clear all filters control', () => {
     render(<TemplateSelector {...defaultProps} selectedTemplateId="usr-1" />);
 
     const systemButton = screen.getByRole('button', { name: 'System' });
     fireEvent.click(systemButton);
 
-    const clearButton = screen.getByText('Clear filters');
-    fireEvent.click(clearButton);
+    fireEvent.click(screen.getByRole('button', { name: 'Clear all filters' }));
 
     expect(screen.getByText('Transcribe Audio')).toBeInTheDocument();
     expect(screen.getByText('My Custom Pipeline')).toBeInTheDocument();
@@ -231,7 +230,7 @@ describe('TemplateSelector facets', () => {
       />
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Needs hardware' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Needs GPU' }));
     expect(screen.getByText('VA-API Encode')).toBeInTheDocument();
     expect(screen.queryByText('Transcribe')).not.toBeInTheDocument();
   });

@@ -28,7 +28,6 @@ import {
   FilterGroup,
   GroupCard,
   HiddenSelectionHint,
-  HintButton,
   SearchInput,
   Section,
   SectionCount,
@@ -165,7 +164,7 @@ const FacetFilters: React.FC<FacetFiltersProps> = ({
           aria-pressed={hardwareOnly}
           onClick={onToggleHardware}
         >
-          Needs hardware
+          Needs GPU
         </FacetChip>
       </FacetRow>
     )}
@@ -313,12 +312,7 @@ export const TemplateSelector: React.FC<TemplateSelectorProps> = ({
       )}
 
       {showHiddenSelectionHint && (
-        <HiddenSelectionHint>
-          <div>Selected template is hidden by your filters.</div>
-          <HintButton type="button" onClick={resetFilters}>
-            Clear filters
-          </HintButton>
-        </HiddenSelectionHint>
+        <HiddenSelectionHint>Selected template is hidden by your filters.</HiddenSelectionHint>
       )}
 
       <RadioGroupRoot
@@ -327,14 +321,7 @@ export const TemplateSelector: React.FC<TemplateSelectorProps> = ({
         aria-label="Pipeline template selection"
       >
         {systemGroups.length === 0 && userGroups.length === 0 && (
-          <EmptyState>
-            <div>No pipelines match your filters.</div>
-            {anyFilterActive && (
-              <ClearAllButton type="button" onClick={resetFilters}>
-                Clear all filters
-              </ClearAllButton>
-            )}
-          </EmptyState>
+          <EmptyState>No pipelines match your filters.</EmptyState>
         )}
 
         {systemGroups.length > 0 && (
