@@ -102,6 +102,11 @@ jobs:
           cd tests/pipeline-validation
           PIPELINE_TEST_URL=http://127.0.0.1:4545 cargo test --test validate
 
+      - name: Validate official oneshot samples (SW codecs only)
+        run: |
+          cd tests/pipeline-validation
+          PIPELINE_TEST_URL=http://127.0.0.1:4545 cargo test --test oneshot
+
       - name: Save sccache cache
         if: always() && github.ref == 'refs/heads/main'
         uses: actions/cache/save@v4
@@ -202,6 +207,11 @@ jobs:
         run: |
           cd tests/pipeline-validation
           PIPELINE_REQUIRE_NODES=1 PIPELINE_TEST_URL=http://127.0.0.1:4546 cargo test --test validate -- --test-threads=1
+
+      - name: Validate official oneshot samples (all codecs including GPU)
+        run: |
+          cd tests/pipeline-validation
+          PIPELINE_REQUIRE_NODES=1 PIPELINE_TEST_URL=http://127.0.0.1:4546 cargo test --test oneshot -- --test-threads=1
 
       - name: Show skit server logs
         if: always()
