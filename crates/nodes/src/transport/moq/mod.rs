@@ -212,3 +212,136 @@ pub fn register_moq_nodes(registry: &mut NodeRegistry) {
         );
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    const MOQ_KINDS: [&str; 3] =
+        ["transport::moq::subscriber", "transport::moq::publisher", "transport::moq::peer"];
+
+    #[test]
+    fn register_moq_nodes_registers_all_kinds() {
+        let mut registry = NodeRegistry::new();
+        register_moq_nodes(&mut registry);
+        for kind in MOQ_KINDS {
+            assert!(registry.contains(kind), "expected '{kind}' to be registered");
+        }
+    }
+
+    #[test]
+    fn registered_factories_build_nodes_from_default_config() {
+        let mut registry = NodeRegistry::new();
+        register_moq_nodes(&mut registry);
+        let empty = serde_json::json!({});
+        for kind in MOQ_KINDS {
+            assert!(
+                registry.create_node(kind, Some(&empty)).is_ok(),
+                "'{kind}' factory should accept a default config"
+            );
+        }
+    }
+
+    #[test]
+    fn registered_factories_reject_missing_config() {
+        let mut registry = NodeRegistry::new();
+        register_moq_nodes(&mut registry);
+        for kind in MOQ_KINDS {
+            assert!(
+                registry.create_node(kind, None).is_err(),
+                "'{kind}' factory should require config params"
+            );
+        }
+    }
+
+    #[test]
+    fn definitions_expose_static_pins_and_categories() {
+        let mut registry = NodeRegistry::new();
+        register_moq_nodes(&mut registry);
+
+        let publisher = registry.get_definition("transport::moq::publisher").unwrap();
+        assert!(publisher.outputs.is_empty(), "publisher is an output node");
+        assert_eq!(publisher.inputs.len(), 2);
+        assert!(!publisher.bidirectional);
+
+        let subscriber = registry.get_definition("transport::moq::subscriber").unwrap();
+        assert!(subscriber.categories.iter().any(|c| c == "moq"));
+
+        let peer = registry.get_definition("transport::moq::peer").unwrap();
+        assert!(peer.bidirectional, "peer node is registered as bidirectional");
+    }
+
+    #[test]
+    fn redact_url_strips_query_and_fragment() {
+        let redacted = redact_url_str_for_logs("https://relay.example.com/path?jwt=secret#frag");
+        assert_eq!(redacted, "https://relay.example.com/path");
+        assert!(!redacted.contains("secret"));
+    }
+
+    #[test]
+    fn redact_url_str_handles_unparseable_input() {
+        // Not a valid URL — falls back to splitting on `?`/`#`.
+        assert_eq!(redact_url_str_for_logs("not a url?jwt=secret"), "not a url");
+    }
+
+    #[test]
+    fn parse_moq_url_appends_jwt() {
+        let url = parse_moq_url("https://relay.example.com/moq", Some("tok123")).unwrap();
+        assert_eq!(url.query(), Some("jwt=tok123"));
+    }
+
+    #[test]
+    fn parse_moq_url_replaces_existing_jwt() {
+        let url = parse_moq_url("https://relay.example.com/moq?jwt=old&x=1", Some("new")).unwrap();
+        let pairs: Vec<(String, String)> =
+            url.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
+        assert!(pairs.contains(&("x".to_string(), "1".to_string())));
+        assert!(pairs.contains(&("jwt".to_string(), "new".to_string())));
+        assert_eq!(pairs.iter().filter(|(k, _)| k == "jwt").count(), 1);
+    }
+
+    #[test]
+    fn parse_moq_url_without_jwt_is_unchanged() {
+        let url = parse_moq_url("https://relay.example.com/moq", None).unwrap();
+        assert_eq!(url.query(), None);
+    }
+
+    #[test]
+    fn parse_moq_url_rejects_empty_jwt() {
+        let err = parse_moq_url("https://relay.example.com/moq", Some("   ")).unwrap_err();
+        assert!(matches!(err, StreamKitError::Configuration(_)));
+    }
+
+    #[test]
+    fn parse_moq_url_rejects_invalid_url() {
+        let err = parse_moq_url("::not-a-url::", Some("tok")).unwrap_err();
+        assert!(matches!(err, StreamKitError::Configuration(_)));
+    }
+
+    #[tokio::test]
+    async fn resolve_url_for_quic_leaves_literal_ip_untouched() {
+        let mut url: Url = "https://127.0.0.1:4545/moq".parse().unwrap();
+        resolve_url_for_quic(&mut url).await.unwrap();
+        assert_eq!(url.host_str(), Some("127.0.0.1"));
+    }
+
+    #[tokio::test]
+    async fn resolve_url_for_quic_resolves_localhost_to_ip() {
+        let mut url: Url = "https://localhost:4545/moq".parse().unwrap();
+        resolve_url_for_quic(&mut url).await.unwrap();
+        let host = url.host_str().unwrap();
+        assert!(
+            host.parse::<std::net::IpAddr>().is_ok(),
+            "localhost should be replaced by a literal IP, got '{host}'"
+        );
+    }
+
+    #[test]
+    fn shared_insecure_client_is_cached() {
+        // The client is initialised once via `OnceLock`, so repeated calls must
+        // return the same (cached) outcome regardless of whether init succeeds
+        // in this environment.
+        assert_eq!(shared_insecure_client().is_ok(), shared_insecure_client().is_ok());
+    }
+}

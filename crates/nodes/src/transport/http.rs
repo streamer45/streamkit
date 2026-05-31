@@ -282,28 +282,69 @@ mod tests {
         assert_eq!(node.output_pins()[0].produces_type, PacketType::Binary);
     }
 
-    #[allow(clippy::unwrap_used)]
-    async fn start_mock_server(_test_data: &'static [u8]) -> Option<String> {
-        #[allow(clippy::unwrap_used)]
-        async fn handle_request(req: Request<Body>) -> Response {
-            let test_data: &'static [u8] = b"Hello, StreamKit! This is test data for HTTP pull.";
+    const MOCK_BODY: &[u8] = b"Hello, StreamKit! This is test data for HTTP pull.";
 
+    /// Spin up a local axum server exposing several routes used by the tests
+    /// and return its base URL (`http://127.0.0.1:<port>`).
+    ///
+    /// Routes:
+    /// - `/test.bin` — single 200 body (also answers HEAD with Content-Length)
+    /// - `/chunked` — 200 streamed as several separate chunks
+    /// - `/status/404` — 404 (non-2xx error path)
+    /// - `/typed` — 200 with a `Content-Type: text/plain` header
+    ///
+    /// Returns `None` if binding a local listener is not permitted (sandbox).
+    #[allow(clippy::unwrap_used)]
+    async fn start_mock_server() -> Option<String> {
+        #[allow(clippy::unwrap_used)]
+        async fn handle_test_bin(req: Request<Body>) -> Response {
             if req.method() == "HEAD" {
                 Response::builder()
                     .status(StatusCode::OK)
-                    .header(header::CONTENT_LENGTH, test_data.len())
+                    .header(header::CONTENT_LENGTH, MOCK_BODY.len())
                     .body(Body::empty())
                     .unwrap()
             } else {
                 Response::builder()
                     .status(StatusCode::OK)
-                    .header(header::CONTENT_LENGTH, test_data.len())
-                    .body(Body::from(test_data.to_vec()))
+                    .header(header::CONTENT_LENGTH, MOCK_BODY.len())
+                    .body(Body::from(MOCK_BODY.to_vec()))
                     .unwrap()
             }
         }
 
-        let app = Router::new().route("/test.bin", get(handle_request).head(handle_request));
+        #[allow(clippy::unwrap_used)]
+        async fn handle_chunked() -> Response {
+            let chunks: Vec<Result<bytes::Bytes, std::io::Error>> = vec![
+                Ok(bytes::Bytes::from_static(b"chunk-one;")),
+                Ok(bytes::Bytes::from_static(b"chunk-two;")),
+                Ok(bytes::Bytes::from_static(b"chunk-three")),
+            ];
+            Response::builder()
+                .status(StatusCode::OK)
+                .body(Body::from_stream(futures_util::stream::iter(chunks)))
+                .unwrap()
+        }
+
+        #[allow(clippy::unwrap_used)]
+        async fn handle_not_found() -> Response {
+            Response::builder().status(StatusCode::NOT_FOUND).body(Body::empty()).unwrap()
+        }
+
+        #[allow(clippy::unwrap_used)]
+        async fn handle_typed() -> Response {
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/plain")
+                .body(Body::from(MOCK_BODY.to_vec()))
+                .unwrap()
+        }
+
+        let app = Router::new()
+            .route("/test.bin", get(handle_test_bin).head(handle_test_bin))
+            .route("/chunked", get(handle_chunked))
+            .route("/status/404", get(handle_not_found))
+            .route("/typed", get(handle_typed));
 
         let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
             Ok(listener) => listener,
@@ -319,18 +360,85 @@ mod tests {
         // Give server time to start
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-        Some(format!("http://{addr}/test.bin"))
+        Some(format!("http://{addr}"))
+    }
+
+    struct PullOutcome {
+        data: Vec<u8>,
+        content_types: Vec<Option<std::borrow::Cow<'static, str>>>,
+        final_state: streamkit_core::NodeState,
+        result: Result<(), StreamKitError>,
+    }
+
+    /// Drive an `HttpPullNode` through its full lifecycle against `url` and
+    /// collect the streamed packets plus the terminal node state.
+    #[allow(clippy::unwrap_used)]
+    async fn drive_pull(url: String, chunk_size: usize) -> PullOutcome {
+        let (mock_sender, mut packet_rx) = mpsc::channel::<RoutedPacketMessage>(32);
+        let (control_tx, control_rx) = mpsc::channel(10);
+        let (state_tx, mut state_rx) = mpsc::channel(10);
+        let (stats_tx, _stats_rx) = mpsc::channel::<NodeStatsUpdate>(10);
+
+        let output_sender = streamkit_core::OutputSender::new(
+            "test_http_pull".to_string(),
+            streamkit_core::node::OutputRouting::Routed(mock_sender),
+        );
+
+        let context = NodeContext {
+            inputs: HashMap::new(),
+            input_types: HashMap::new(),
+            control_rx,
+            output_sender,
+            batch_size: 32,
+            state_tx,
+            stats_tx: Some(stats_tx),
+            telemetry_tx: None,
+            session_id: None,
+            cancellation_token: None,
+            pin_management_rx: None,
+            audio_pool: None,
+            video_pool: None,
+            pipeline_mode: streamkit_core::PipelineMode::Dynamic,
+            view_data_tx: None,
+            engine_control_tx: None,
+            asset_root: crate::test_utils::test_asset_root(),
+        };
+
+        let node = Box::new(HttpPullNode { config: HttpPullConfig { url, chunk_size } });
+        let node_handle = tokio::spawn(async move { node.run(context).await });
+
+        // Initializing -> Ready, then start.
+        assert!(matches!(
+            state_rx.recv().await.unwrap().state,
+            streamkit_core::NodeState::Initializing
+        ));
+        assert!(matches!(state_rx.recv().await.unwrap().state, streamkit_core::NodeState::Ready));
+        control_tx.send(streamkit_core::control::NodeControlMessage::Start).await.unwrap();
+        assert!(matches!(state_rx.recv().await.unwrap().state, streamkit_core::NodeState::Running));
+
+        let mut data = Vec::new();
+        let mut content_types = Vec::new();
+        while let Some((_node, _pin, packet)) = packet_rx.recv().await {
+            if let Packet::Binary { data: chunk, content_type, .. } = packet {
+                data.extend_from_slice(&chunk);
+                content_types.push(content_type);
+            }
+        }
+
+        let final_state = state_rx.recv().await.unwrap().state;
+        let result = node_handle.await.unwrap();
+
+        PullOutcome { data, content_types, final_state, result }
     }
 
     #[tokio::test]
     #[allow(clippy::unwrap_used)]
     async fn test_http_pull_streaming() {
-        let Some(url) =
-            start_mock_server(b"Hello, StreamKit! This is test data for HTTP pull.").await
-        else {
+        let Some(base) = start_mock_server().await else {
             tracing::warn!("Skipping test_http_pull_streaming: local TCP bind not permitted");
             return;
         };
+        let url = format!("{base}/test.bin");
 
         // Create test context
         let (mock_sender, mut packet_rx) = mpsc::channel::<RoutedPacketMessage>(10);
@@ -404,5 +512,61 @@ mod tests {
 
         // Verify data matches
         assert_eq!(collected_data, b"Hello, StreamKit! This is test data for HTTP pull.");
+    }
+
+    #[tokio::test]
+    async fn streams_reassembled_chunked_body() {
+        let Some(base) = start_mock_server().await else {
+            tracing::warn!(
+                "Skipping streams_reassembled_chunked_body: local TCP bind not permitted"
+            );
+            return;
+        };
+
+        // Small chunk_size forces the node to re-split the multiple network
+        // chunks into several output packets before reassembly.
+        let outcome = drive_pull(format!("{base}/chunked"), 4).await;
+
+        assert!(outcome.result.is_ok());
+        assert!(matches!(outcome.final_state, streamkit_core::NodeState::Stopped { .. }));
+        assert_eq!(outcome.data, b"chunk-one;chunk-two;chunk-three");
+        assert!(outcome.content_types.len() > 1, "small chunk_size should yield multiple packets");
+    }
+
+    #[tokio::test]
+    async fn non_success_status_fails_node() {
+        let Some(base) = start_mock_server().await else {
+            tracing::warn!("Skipping non_success_status_fails_node: local TCP bind not permitted");
+            return;
+        };
+
+        let outcome = drive_pull(format!("{base}/status/404"), 1024).await;
+
+        assert!(outcome.data.is_empty(), "no body should be streamed on a 404");
+        match outcome.result {
+            Err(StreamKitError::Runtime(msg)) => assert!(msg.contains("404")),
+            other => panic!("expected a Runtime error mentioning the status, got {other:?}"),
+        }
+        assert!(matches!(outcome.final_state, streamkit_core::NodeState::Failed { .. }));
+    }
+
+    /// `HttpPullNode` emits opaque `Binary` packets and intentionally does not
+    /// forward the upstream `Content-Type`; pin that behaviour so a future
+    /// change is a conscious one.
+    #[tokio::test]
+    async fn content_type_is_not_propagated() {
+        let Some(base) = start_mock_server().await else {
+            tracing::warn!("Skipping content_type_is_not_propagated: local TCP bind not permitted");
+            return;
+        };
+
+        let outcome = drive_pull(format!("{base}/typed"), 1024).await;
+
+        assert!(outcome.result.is_ok());
+        assert_eq!(outcome.data, MOCK_BODY);
+        assert!(
+            outcome.content_types.iter().all(Option::is_none),
+            "node should not propagate the server Content-Type"
+        );
     }
 }
