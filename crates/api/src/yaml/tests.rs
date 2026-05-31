@@ -172,6 +172,48 @@ fn test_sample_moq_aac_mixing_compiles() {
     );
 }
 
+/// Every shipped dynamic sample must parse and compile (structural validation:
+/// YAML schema, `needs` references, pin resolution, cycle rules). This guards
+/// against drift between the samples and the YAML/compiler contract — node
+/// *availability* (feature flags, plugins) is checked separately against a live
+/// registry, since the compiler is registry-agnostic.
+#[test]
+// Fixture-traversal unwraps should panic and identify the offending sample.
+#[allow(clippy::unwrap_used)]
+fn test_all_dynamic_samples_parse_and_compile() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../samples/pipelines/dynamic");
+    let mut checked = 0usize;
+    let mut failures = Vec::new();
+
+    for entry in std::fs::read_dir(dir).expect("dynamic samples directory should exist") {
+        let path = entry.unwrap().path();
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if ext != "yml" && ext != "yaml" {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let yaml = std::fs::read_to_string(&path).unwrap();
+        checked += 1;
+
+        match parse_yaml(&yaml) {
+            Ok(pipeline) => {
+                if let Err(e) = compile(pipeline) {
+                    failures.push(format!("{name}: compile failed: {e}"));
+                }
+            },
+            Err(e) => failures.push(format!("{name}: parse failed: {e}")),
+        }
+    }
+
+    assert!(checked > 0, "expected to find dynamic sample files in {dir}");
+    assert!(
+        failures.is_empty(),
+        "{} dynamic sample(s) failed to parse/compile:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
 #[test]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 fn test_multiple_inputs_numbered_pins() {

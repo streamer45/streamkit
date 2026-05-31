@@ -636,7 +636,7 @@
       ],
       "title": "Gateway Request Rate by Endpoint",
       "type": "timeseries",
-      "description": "Requests per second handled by the gateway, by endpoint (/stt, /tts)."
+      "description": "Requests per second handled by the gateway, by endpoint (tts/stt)."
     },
     {
       "datasource": {
@@ -1123,7 +1123,7 @@
       ],
       "title": "Gateway Rejections by Reason",
       "type": "timeseries",
-      "description": "Rejected requests per second by reason (e.g. concurrency limit, payload too large, text too long)."
+      "description": "Rejected requests per second by reason (bad_content_type, too_large, upstream_error)."
     },
     {
       "collapsed": false,
