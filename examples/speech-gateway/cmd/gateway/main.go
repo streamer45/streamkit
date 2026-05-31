@@ -242,7 +242,14 @@ func (gw *gateway) handleSTT(w http.ResponseWriter, r *http.Request) {
 	}()
 	if !strings.HasPrefix(ct, "audio/ogg") {
 		log.Printf("stt unsupported content type: %s", ct)
+		recordRejection("stt", reasonBadContentType)
 		http.Error(w, "Content-Type must be audio/ogg (Opus mono 48k)", http.StatusUnsupportedMediaType)
+		return
+	}
+	if r.ContentLength > gw.maxBodySize {
+		log.Printf("stt body too large: %d bytes (max: %d)", r.ContentLength, gw.maxBodySize)
+		recordRejection("stt", reasonTooLarge)
+		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		return
 	}
 	release := gw.acquire()
@@ -252,6 +259,7 @@ func (gw *gateway) handleSTT(w http.ResponseWriter, r *http.Request) {
 	if err := gw.proxyMultipart(w, r, "stt", sttPipelineYAML, "media", "audio/ogg", useBuffer); err != nil {
 		log.Printf("stt error: %v", err)
 		if !errors.Is(err, context.Canceled) {
+			recordRejection("stt", reasonUpstreamError)
 			http.Error(w, "upstream error", http.StatusBadGateway)
 		}
 	}
@@ -273,6 +281,7 @@ func (gw *gateway) handleTTS(w http.ResponseWriter, r *http.Request) {
 		_ = r.Body.Close()
 	}()
 	if !strings.HasPrefix(ct, "text/plain") {
+		recordRejection("tts", reasonBadContentType)
 		http.Error(w, "Content-Type must be text/plain", http.StatusUnsupportedMediaType)
 		return
 	}
@@ -303,6 +312,7 @@ func (gw *gateway) handleTTS(w http.ResponseWriter, r *http.Request) {
 		if n > 0 {
 			// There's more data, so we definitely exceeded the limit
 			log.Printf("tts text too large: >%d chars (max: %d)", runeCount, gw.maxTTSTextSize)
+			recordRejection("tts", reasonTooLarge)
 			http.Error(w, fmt.Sprintf("text too large: exceeds %d characters", gw.maxTTSTextSize), http.StatusRequestEntityTooLarge)
 			return
 		}
@@ -310,6 +320,7 @@ func (gw *gateway) handleTTS(w http.ResponseWriter, r *http.Request) {
 
 	if runeCount > gw.maxTTSTextSize {
 		log.Printf("tts text too large: %d chars (max: %d)", runeCount, gw.maxTTSTextSize)
+		recordRejection("tts", reasonTooLarge)
 		http.Error(w, fmt.Sprintf("text too large: %d characters (max: %d)", runeCount, gw.maxTTSTextSize), http.StatusRequestEntityTooLarge)
 		return
 	}
@@ -323,6 +334,7 @@ func (gw *gateway) handleTTS(w http.ResponseWriter, r *http.Request) {
 	if err := gw.proxyMultipart(w, r, "tts", ttsPipelineYAML, "media", "text/plain", useBuffer); err != nil {
 		log.Printf("tts error: %v", err)
 		if !errors.Is(err, context.Canceled) {
+			recordRejection("tts", reasonUpstreamError)
 			http.Error(w, "upstream error", http.StatusBadGateway)
 		}
 	}
@@ -383,11 +395,11 @@ func (gw *gateway) proxyMultipart(w http.ResponseWriter, r *http.Request, endpoi
 		req.Header.Set("Authorization", "Bearer "+gw.authToken)
 	}
 
+	// Measure backend latency to response headers only; streaming the body to
+	// the client happens below and would otherwise be attributed to the backend.
 	upstreamStart := time.Now()
-	defer func() {
-		upstreamDuration.WithLabelValues(endpoint).Observe(time.Since(upstreamStart).Seconds())
-	}()
 	resp, err := gw.client.Do(req)
+	upstreamDuration.WithLabelValues(endpoint).Observe(time.Since(upstreamStart).Seconds())
 	if err != nil {
 		log.Printf("call skit failed: %v", err)
 		return fmt.Errorf("call skit: %w", err)

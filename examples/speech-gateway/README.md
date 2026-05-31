@@ -63,15 +63,15 @@ when all request slots are in use. A public/hosted instance (e.g. behind
 `tts.streamkit.dev` / `stt.streamkit.dev`) may choose not to expose `/metrics`
 externally — scrape it from inside the trust boundary instead.
 
-Every metric carries an `endpoint` label whose value is exactly `tts` or `stt`.
+Every metric carries an `endpoint` label whose value is exactly `tts` or `stt`. The `method` label on `gateway_requests_total` is folded to `other` for any method outside `{GET,HEAD,POST,PUT}` to bound label cardinality.
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `gateway_requests_total` | counter | `endpoint`, `method`, `code` | Requests served, by HTTP method and status code. |
 | `gateway_request_duration_seconds` | histogram | `endpoint` | Total handler latency. |
-| `gateway_inflight_requests` | gauge | `endpoint` | Requests currently being handled. |
-| `gateway_upstream_duration_seconds` | histogram | `endpoint` | Time spent calling the skit backend `/api/v1/process`. |
-| `gateway_rejected_total` | counter | `endpoint`, `reason` | Rejected requests; `reason` ∈ `bad_content_type` (415), `too_large` (413), `upstream_error` (502). |
+| `gateway_inflight_requests` | gauge | `endpoint` | In-flight requests (received, not yet completed); includes time queued on the concurrency semaphore, so it can exceed `GATEWAY_MAX_CONCURRENCY`. |
+| `gateway_upstream_duration_seconds` | histogram | `endpoint` | Time to receive response headers from the skit backend `/api/v1/process` (excludes streaming the body to the client). |
+| `gateway_rejected_total` | counter | `endpoint`, `reason` | Gateway-side rejections, recorded at the rejection site (not inferred from forwarded status). `reason` ∈ `bad_content_type`, `too_large`, `upstream_error`. |
 
 Histogram buckets are tuned for multi-second STT/TTS workloads:
 `0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30` seconds.

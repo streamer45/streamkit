@@ -20,6 +20,23 @@ var latencyBuckets = []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30}
 // response, typically because the client disconnected mid-request.
 const codeClientClosed = 499
 
+// knownMethods bounds the gateway_requests_total method label; Go accepts any
+// RFC token as a method, so any other value folds to "other" to keep a client
+// from minting unbounded time series.
+var knownMethods = map[string]struct{}{
+	http.MethodGet:  {},
+	http.MethodHead: {},
+	http.MethodPost: {},
+	http.MethodPut:  {},
+}
+
+func methodLabel(method string) string {
+	if _, ok := knownMethods[method]; ok {
+		return method
+	}
+	return "other"
+}
+
 var (
 	requestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "gateway_requests_total",
@@ -34,12 +51,12 @@ var (
 
 	inflightRequests = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "gateway_inflight_requests",
-		Help: "In-flight speech-gateway requests by endpoint.",
+		Help: "In-flight requests by endpoint (received, not yet completed; includes time queued on the concurrency semaphore).",
 	}, []string{"endpoint"})
 
 	upstreamDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "gateway_upstream_duration_seconds",
-		Help:    "Time spent calling the skit backend /api/v1/process by endpoint.",
+		Help:    "Time to receive response headers from the skit backend /api/v1/process by endpoint (excludes streaming the body to the client).",
 		Buckets: latencyBuckets,
 	}, []string{"endpoint"})
 
@@ -48,6 +65,21 @@ var (
 		Help: "Rejected requests by endpoint and reason.",
 	}, []string{"endpoint", "reason"})
 )
+
+// rejectReason records a gateway-side rejection. Reasons are emitted explicitly
+// at each rejection site rather than inferred from the status code, so statuses
+// forwarded verbatim from the backend are not miscounted as gateway rejections.
+type rejectReason string
+
+const (
+	reasonBadContentType rejectReason = "bad_content_type"
+	reasonTooLarge       rejectReason = "too_large"
+	reasonUpstreamError  rejectReason = "upstream_error"
+)
+
+func recordRejection(endpoint string, reason rejectReason) {
+	rejectedTotal.WithLabelValues(endpoint, string(reason)).Inc()
+}
 
 // statusRecorder captures the response status code while preserving
 // http.Flusher so proxied responses keep streaming incrementally.
@@ -79,38 +111,35 @@ func (s *statusRecorder) Flush() {
 	}
 }
 
-// instrument records request count, latency, and in-flight gauge per endpoint,
-// and maps rejection status codes to gateway_rejected_total reasons.
+// instrument records request count, latency, and the in-flight gauge per
+// endpoint. Recording runs in a defer so a panicking handler is still counted
+// (as 500) before the panic propagates to the server.
 func instrument(endpoint string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		inflightRequests.WithLabelValues(endpoint).Inc()
-		defer inflightRequests.WithLabelValues(endpoint).Dec()
-
 		rec := &statusRecorder{ResponseWriter: w, code: http.StatusOK}
 		start := time.Now()
+
+		defer func() {
+			p := recover()
+
+			code := rec.code
+			switch {
+			case p != nil:
+				code = http.StatusInternalServerError
+			case !rec.wroteHeader:
+				code = codeClientClosed
+			}
+
+			requestDuration.WithLabelValues(endpoint).Observe(time.Since(start).Seconds())
+			requestsTotal.WithLabelValues(endpoint, methodLabel(r.Method), strconv.Itoa(code)).Inc()
+			inflightRequests.WithLabelValues(endpoint).Dec()
+
+			if p != nil {
+				panic(p)
+			}
+		}()
+
 		next(rec, r)
-
-		code := rec.code
-		if !rec.wroteHeader {
-			code = codeClientClosed
-		}
-		requestDuration.WithLabelValues(endpoint).Observe(time.Since(start).Seconds())
-		requestsTotal.WithLabelValues(endpoint, r.Method, strconv.Itoa(code)).Inc()
-		if reason := rejectionReason(code); reason != "" {
-			rejectedTotal.WithLabelValues(endpoint, reason).Inc()
-		}
-	}
-}
-
-func rejectionReason(code int) string {
-	switch code {
-	case http.StatusUnsupportedMediaType:
-		return "bad_content_type"
-	case http.StatusRequestEntityTooLarge:
-		return "too_large"
-	case http.StatusBadGateway:
-		return "upstream_error"
-	default:
-		return ""
 	}
 }

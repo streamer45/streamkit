@@ -13,22 +13,21 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-func TestRejectionReason(t *testing.T) {
-	cases := map[int]string{
-		http.StatusUnsupportedMediaType:  "bad_content_type",
-		http.StatusRequestEntityTooLarge: "too_large",
-		http.StatusBadGateway:            "upstream_error",
-		http.StatusOK:                    "",
-		http.StatusBadRequest:            "",
+func TestMethodLabel(t *testing.T) {
+	cases := map[string]string{
+		http.MethodPost: "POST",
+		http.MethodGet:  "GET",
+		"BREW":          "other",
+		"AAAA1":         "other",
 	}
-	for code, want := range cases {
-		if got := rejectionReason(code); got != want {
-			t.Errorf("rejectionReason(%d) = %q, want %q", code, got, want)
+	for method, want := range cases {
+		if got := methodLabel(method); got != want {
+			t.Errorf("methodLabel(%q) = %q, want %q", method, got, want)
 		}
 	}
 }
 
-func TestInstrumentRecordsRejection(t *testing.T) {
+func TestInstrumentRecordsRequest(t *testing.T) {
 	h := instrument("tts", func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "nope", http.StatusUnsupportedMediaType)
 	})
@@ -42,7 +41,6 @@ func TestInstrumentRecordsRejection(t *testing.T) {
 	body := scrapeMetrics(t)
 	for _, want := range []string{
 		`gateway_requests_total{code="415",endpoint="tts",method="POST"}`,
-		`gateway_rejected_total{endpoint="tts",reason="bad_content_type"}`,
 		`gateway_request_duration_seconds_bucket{endpoint="tts"`,
 	} {
 		if !strings.Contains(body, want) {
@@ -51,9 +49,8 @@ func TestInstrumentRecordsRejection(t *testing.T) {
 	}
 }
 
+// An unwritten response (the context.Canceled path) must not be counted as 200.
 func TestInstrumentUnwrittenResponseCountedAsClientClosed(t *testing.T) {
-	// Handler returns without writing, mirroring the context.Canceled path
-	// in handleSTT/handleTTS; it must not be counted as a 200.
 	h := instrument("stt", func(http.ResponseWriter, *http.Request) {})
 
 	rec := httptest.NewRecorder()
@@ -62,6 +59,53 @@ func TestInstrumentUnwrittenResponseCountedAsClientClosed(t *testing.T) {
 	body := scrapeMetrics(t)
 	if !strings.Contains(body, `gateway_requests_total{code="499",endpoint="stt",method="POST"}`) {
 		t.Errorf("expected unwritten response to be counted as code=499; got:\n%s", body)
+	}
+}
+
+// Attacker-controlled methods must fold to "other" to bound label cardinality.
+func TestInstrumentFoldsUnknownMethod(t *testing.T) {
+	h := instrument("stt", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "no", http.StatusMethodNotAllowed)
+	})
+
+	rec := httptest.NewRecorder()
+	h(rec, httptest.NewRequest("ZZZRANDOM", "/stt", nil))
+
+	body := scrapeMetrics(t)
+	if !strings.Contains(body, `gateway_requests_total{code="405",endpoint="stt",method="other"}`) {
+		t.Errorf("expected unknown method folded to \"other\"; got:\n%s", body)
+	}
+	if strings.Contains(body, `method="ZZZRANDOM"`) {
+		t.Error("raw attacker method leaked into metrics label")
+	}
+}
+
+func TestInstrumentPanicCountedAs500(t *testing.T) {
+	h := instrument("tts", func(http.ResponseWriter, *http.Request) {
+		panic("boom")
+	})
+
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("expected panic to propagate past instrument")
+			}
+		}()
+		h(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/tts", nil))
+	}()
+
+	body := scrapeMetrics(t)
+	if !strings.Contains(body, `gateway_requests_total{code="500",endpoint="tts",method="POST"}`) {
+		t.Errorf("expected panicking handler counted as code=500; got:\n%s", body)
+	}
+}
+
+func TestRecordRejection(t *testing.T) {
+	recordRejection("stt", reasonUpstreamError)
+
+	body := scrapeMetrics(t)
+	if !strings.Contains(body, `gateway_rejected_total{endpoint="stt",reason="upstream_error"}`) {
+		t.Errorf("expected recordRejection to emit gateway_rejected_total; got:\n%s", body)
 	}
 }
 
