@@ -6,6 +6,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -362,16 +363,18 @@ func (gw *gateway) proxyMultipart(w http.ResponseWriter, r *http.Request, endpoi
 	// Optionally buffer the request body for finite uploads (helps curl -T file).
 	var src io.Reader = r.Body
 	if bufferBody {
-		limited := io.LimitReader(r.Body, gw.maxBodySize+1)
-		buf, err := io.ReadAll(limited)
+		// r.Body is already MaxBytesReader-bounded by the handler, so an oversize
+		// read surfaces as *http.MaxBytesError rather than an unbounded buffer.
+		buf, err := io.ReadAll(r.Body)
 		if err != nil {
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				log.Printf("%s body too large", endpoint)
+				recordRejection(endpoint, reasonTooLarge)
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
 			gw.failUpstream(w, endpoint, fmt.Errorf("buffer request body: %w", err))
-			return
-		}
-		if int64(len(buf)) > gw.maxBodySize {
-			log.Printf("%s body too large: %d bytes (max: %d)", endpoint, len(buf), gw.maxBodySize)
-			recordRejection(endpoint, reasonTooLarge)
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
 		log.Printf("buffered upload (%d bytes) before forwarding", len(buf))
@@ -445,6 +448,13 @@ func (gw *gateway) proxyMultipart(w http.ResponseWriter, r *http.Request, endpoi
 
 	log.Printf("<- skit status=%d", resp.StatusCode)
 
+	// net/http panics in WriteHeader for codes outside [100,999]; a malformed
+	// upstream status line is a backend fault, handled before headers commit.
+	if resp.StatusCode < 100 || resp.StatusCode > 999 {
+		gw.failUpstream(w, endpoint, fmt.Errorf("invalid upstream status %d", resp.StatusCode))
+		return
+	}
+
 	copyHeaders(w.Header(), resp.Header)
 	// Avoid forwarding length/transfer headers so Go can stream-chunk the proxied body.
 	w.Header().Del("Content-Length")
@@ -464,18 +474,30 @@ func (gw *gateway) proxyMultipart(w http.ResponseWriter, r *http.Request, endpoi
 		return
 	}
 
-	// Structured (JSON) results — STT transcriptions — are small and arrive as
-	// an externally-tagged Packet enum ({"Transcription": {...}}); buffer and
-	// strip that wrapper. Audio (TTS) is non-JSON and keeps streaming.
+	// STT transcriptions arrive as newline-delimited, externally-tagged Packet
+	// JSON ({"Transcription": {...}}). Unwrap and flush each line as it arrives so
+	// streaming is preserved and memory stays bounded to a single line. Audio
+	// (TTS) is non-JSON and copied through unchanged.
 	if isJSONContentType(resp.Header.Get("Content-Type")) {
-		body, err := io.ReadAll(io.LimitReader(resp.Body, gw.maxBodySize+1))
-		if err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("%s read response error: %v", endpoint, err)
+		br := bufio.NewReader(resp.Body)
+		for {
+			line, err := br.ReadBytes('\n')
+			if len(line) > 0 {
+				if _, werr := w.Write(unwrapPacketJSON(line)); werr != nil {
+					log.Printf("%s write error: %v", endpoint, werr)
+					return
+				}
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+			if err != nil {
+				if !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
+					log.Printf("%s read response error: %v", endpoint, err)
+				}
+				return
+			}
 		}
-		if _, err := w.Write(unwrapPacketJSON(body)); err != nil {
-			log.Printf("%s write error: %v", endpoint, err)
-		}
-		return
 	}
 
 	target := w.(io.Writer)
@@ -529,27 +551,11 @@ func isJSONContentType(ct string) bool {
 	return strings.EqualFold(strings.TrimSpace(mediaType), "application/json")
 }
 
-// transcriptionSegment and transcriptionData mirror the StreamKit
-// core::types::Transcription{Segment,Data} shapes so the gateway can flatten the
-// externally-tagged Packet enum into the bare transcription object STT clients
-// expect. metadata is passed through verbatim to avoid coupling to its schema.
-type transcriptionSegment struct {
-	Text        string   `json:"text"`
-	StartTimeMS uint64   `json:"start_time_ms"`
-	EndTimeMS   uint64   `json:"end_time_ms"`
-	Confidence  *float64 `json:"confidence"`
-}
-
-type transcriptionData struct {
-	Text     string                 `json:"text"`
-	Segments []transcriptionSegment `json:"segments"`
-	Language *string                `json:"language"`
-	Metadata json.RawMessage        `json:"metadata"`
-}
-
-// packet is the subset of the StreamKit Packet enum the gateway flattens.
+// packet names the StreamKit Packet variant the gateway flattens. The inner
+// value is kept as RawMessage and forwarded verbatim, so the gateway strips only
+// the outer wrapper without coupling to the transcription schema.
 type packet struct {
-	Transcription *transcriptionData `json:"Transcription"`
+	Transcription json.RawMessage `json:"Transcription"`
 }
 
 // unwrapPacketJSON flattens the STT Packet enum ({"Transcription": {...}}) to the
@@ -573,14 +579,14 @@ func unwrapPacketJSON(body []byte) []byte {
 
 func unwrapTranscription(line []byte) ([]byte, bool) {
 	var pkt packet
-	if err := json.Unmarshal(line, &pkt); err != nil || pkt.Transcription == nil {
+	if err := json.Unmarshal(line, &pkt); err != nil {
 		return nil, false
 	}
-	out, err := json.Marshal(pkt.Transcription)
-	if err != nil {
+	inner := bytes.TrimSpace(pkt.Transcription)
+	if len(inner) == 0 || inner[0] != '{' {
 		return nil, false
 	}
-	return out, true
+	return inner, true
 }
 
 func copyHeaders(dst, src http.Header) {

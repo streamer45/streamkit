@@ -28,6 +28,11 @@ func TestUnwrapPacketJSON(t *testing.T) {
 			want: `{"text":"a","segments":[],"language":"en","metadata":null}` + "\n" + `{"text":"b","segments":[],"language":"en","metadata":null}`,
 		},
 		{
+			name: "forwards unknown inner fields verbatim",
+			in:   `{"Transcription":{"text":"hi","segments":[],"language":"en","metadata":null,"duration_ms":1234}}`,
+			want: `{"text":"hi","segments":[],"language":"en","metadata":null,"duration_ms":1234}`,
+		},
+		{
 			name: "leaves already-flat object unchanged",
 			in:   `{"text":"hi","segments":[]}`,
 			want: `{"text":"hi","segments":[]}`,

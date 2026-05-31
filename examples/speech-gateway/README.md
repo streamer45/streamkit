@@ -16,7 +16,7 @@ Thin HTTP gateway that rewrites simple STT/TTS requests into the multipart onesh
 ## Run the gateway
 
 ```sh
-cd examples/streamkit-cli-gateway
+cd examples/speech-gateway
 go run ./cmd/gateway --listen :8080 --skit-url http://127.0.0.1:4545
 ```
 
@@ -68,11 +68,11 @@ when all request slots are in use. A public/hosted instance (e.g. behind
 `tts.streamkit.dev` / `stt.streamkit.dev`) may choose not to expose `/metrics`
 externally — scrape it from inside the trust boundary instead.
 
-Every metric carries an `endpoint` label whose value is exactly `tts` or `stt`. The `method` label on `gateway_requests_total` is folded to `other` for any method outside `{GET,HEAD,POST,PUT}` to bound label cardinality.
+Every metric carries an `endpoint` label whose value is exactly `tts` or `stt`. To bound label cardinality on `gateway_requests_total`, the `method` label folds to `other` outside `{GET,HEAD,POST,PUT}`, and the `code` label keeps canonical HTTP statuses (and `499` for client-closed) but folds non-canonical backend codes to their class (e.g. `5xx`, or `other` outside `[100,599)`).
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `gateway_requests_total` | counter | `endpoint`, `method`, `code` | Requests served, by HTTP method and status code. |
+| `gateway_requests_total` | counter | `endpoint`, `method`, `code` | Requests served, by HTTP method and status-code class (see cardinality note above). |
 | `gateway_request_duration_seconds` | histogram | `endpoint` | Total handler latency. |
 | `gateway_inflight_requests` | gauge | `endpoint` | In-flight requests (received, not yet completed); includes time queued on the concurrency semaphore, so it can exceed `GATEWAY_MAX_CONCURRENCY`. |
 | `gateway_upstream_duration_seconds` | histogram | `endpoint` | Time to receive response headers from the skit backend `/api/v1/process` (excludes streaming the body to the client). |
