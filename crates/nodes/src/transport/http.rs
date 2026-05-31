@@ -285,7 +285,7 @@ mod tests {
     const MOCK_BODY: &[u8] = b"Hello, StreamKit! This is test data for HTTP pull.";
 
     /// Returns `None` when sandboxed CI cannot bind a loopback listener.
-    #[allow(clippy::unwrap_used)]
+    #[allow(clippy::unwrap_used)] // test server setup unwraps only known-good static responses and listener state
     async fn start_mock_server() -> Option<String> {
         #[allow(clippy::unwrap_used)] // building static test responses cannot fail
         async fn handle_test_bin(req: Request<Body>) -> Response {
