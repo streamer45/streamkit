@@ -226,7 +226,7 @@ test.describe('Stream View - Video MoQ Color Bars Pipeline', () => {
     }
 
     // Select the video colorbars MoQ template.
-    await selectPipelineTemplate(page, 'Video Color Bars (MoQ Stream)');
+    await selectPipelineTemplate(page, 'Video Color Bars (MoQ Stream)', 'VP9 (Software)');
 
     // Create session.
     const createButton = page.getByRole('button', { name: /Create Session/i });
@@ -364,7 +364,7 @@ test.describe('Stream View - Webcam PiP Pipeline', () => {
     }
 
     // Select the webcam PiP template.
-    await selectPipelineTemplate(page, 'Webcam PiP (MoQ Stream)');
+    await selectPipelineTemplate(page, 'Webcam PiP (MoQ Stream)', 'VP9');
 
     // Create session.
     const createButton = page.getByRole('button', { name: /Create Session/i });

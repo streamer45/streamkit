@@ -106,7 +106,7 @@ test.describe('Convert View - Audio Mixing Pipeline', () => {
   }) => {
     await expect(page.getByText('1. Select Pipeline Template')).toBeVisible();
 
-    await selectPipelineTemplate(page, 'Audio Mixing (Upload + Music Track)');
+    await selectPipelineTemplate(page, 'Audio Mixing (Upload + Music Track)', 'Upload + Music');
 
     await expect(page.locator('input[type="file"]').first()).toBeAttached();
     await page.locator('input[type="file"]').first().setInputFiles(sampleOggPath);
@@ -134,7 +134,7 @@ test.describe('Convert View - Audio Mixing Pipeline', () => {
   }) => {
     await expect(page.getByText('1. Select Pipeline Template')).toBeVisible();
 
-    await selectPipelineTemplate(page, 'Audio Mixing (Upload + Music Track)');
+    await selectPipelineTemplate(page, 'Audio Mixing (Upload + Music Track)', 'Upload + Music');
 
     const assetModeButton = page.getByRole('button', {
       name: /Select Existing Asset/i,
@@ -185,7 +185,7 @@ test.describe('Convert View - Video Color Bars Pipeline', () => {
 
     await expect(page.getByText('1. Select Pipeline Template')).toBeVisible();
 
-    await selectPipelineTemplate(page, 'Video Color Bars (VP9/WebM)');
+    await selectPipelineTemplate(page, 'Video Color Bars (VP9/WebM)', 'VP9 (Software)');
 
     // This is a no-input (generator) pipeline, so the button says "Generate".
     const generateButton = page.getByRole('button', { name: /Generate/i });

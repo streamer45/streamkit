@@ -33,13 +33,25 @@ export interface ConsoleErrorCollector {
 }
 
 /**
- * Selects a sample pipeline in the TemplateSelector by its full name. Both
- * ungrouped cards and grouped scenario variant pills expose the radio with the
- * sample name as its accessible name, so a single role-based lookup selects
- * either one.
+ * Selects a sample pipeline in the TemplateSelector.
+ *
+ * Ungrouped cards expose a single radio whose accessible name is the sample
+ * name. Grouped scenario cards expose one radio per variant whose accessible
+ * name is the variant label (which matches its visible text per WCAG 2.5.3);
+ * to disambiguate identically-labelled variants across groups, pass `variant`
+ * and the lookup is scoped to that card's `"<name> variants"` group.
  */
-export async function selectPipelineTemplate(page: Page, name: string): Promise<void> {
-  const radio = page.getByRole('radio', { name, exact: true });
+export async function selectPipelineTemplate(
+  page: Page,
+  name: string,
+  variant?: string
+): Promise<void> {
+  const radio = variant
+    ? page.getByRole('group', { name: `${name} variants` }).getByRole('radio', {
+        name: variant,
+        exact: true,
+      })
+    : page.getByRole('radio', { name, exact: true });
   await expect(radio.first()).toBeVisible({ timeout: 10_000 });
   await radio.first().click();
 }
