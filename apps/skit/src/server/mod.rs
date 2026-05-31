@@ -1573,13 +1573,16 @@ async fn metrics_middleware(
         || req.uri().path().to_owned(),
         |matched_path| matched_path.as_str().to_owned(),
     );
-    let configured_labels = crate::metrics_labels::resolve_request_labels(
-        &app_state.config.server.metrics.request_labels,
-        req.headers(),
-    );
-    // Let downstream handlers reuse the resolved labels instead of re-parsing headers.
-    req.extensions_mut()
-        .insert(crate::metrics_labels::ResolvedRequestLabels(configured_labels.clone()));
+    let configured_request_labels = &app_state.config.server.metrics.request_labels;
+    let configured_labels = if configured_request_labels.is_empty() {
+        Vec::new()
+    } else {
+        let resolved =
+            crate::metrics_labels::resolve_request_labels(configured_request_labels, req.headers());
+        // Let downstream handlers reuse the resolved labels instead of re-parsing headers.
+        req.extensions_mut().insert(crate::metrics_labels::ResolvedRequestLabels(resolved.clone()));
+        resolved
+    };
 
     let response = next.run(req).await;
 
@@ -1602,9 +1605,9 @@ async fn metrics_middleware(
         .clone();
 
     let mut labels = vec![
-        KeyValue::new("http.method", method.to_string()),
-        KeyValue::new("http.route", path),
-        KeyValue::new("http.status_code", status),
+        KeyValue::new(crate::metrics_labels::HTTP_METHOD_KEY, method.to_string()),
+        KeyValue::new(crate::metrics_labels::HTTP_ROUTE_KEY, path),
+        KeyValue::new(crate::metrics_labels::HTTP_STATUS_CODE_KEY, status),
     ];
     labels.extend(configured_labels);
 
@@ -1627,6 +1630,10 @@ pub fn create_app_state(
     mut config: Config,
     auth: Option<Arc<crate::auth::AuthState>>,
 ) -> Arc<AppState> {
+    // Normalize here (not only in config::load) so every AppState — tests,
+    // embedded/MCP callers — gets a normalized allowlist the resolver can match.
+    config.server.metrics.normalize();
+
     let (event_tx, _) = tokio::sync::broadcast::channel(128);
 
     let resource_policy = streamkit_core::ResourcePolicy {

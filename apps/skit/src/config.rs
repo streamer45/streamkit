@@ -236,8 +236,9 @@ fn default_label_fallback() -> String {
 }
 
 fn default_request_labels() -> Vec<RequestLabelConfig> {
-    // Ships the `service` dimension oneshot dashboards build against; operators
-    // can extend or replace it without a recompile.
+    // Ships the `service` dimension oneshot dashboards build against. Declaring
+    // any `request_labels` in config REPLACES this list wholesale (figment does
+    // not merge sequences), so re-list `service` to keep it alongside new ones.
     vec![RequestLabelConfig {
         name: "service".to_string(),
         header: "X-StreamKit-Service".to_string(),
@@ -281,40 +282,73 @@ impl Default for MetricsConfig {
     }
 }
 
-impl MetricsConfig {
-    /// Label keys emitted by built-in request instruments; configured labels
-    /// must not collide with these (a duplicate key makes Prometheus reject the
-    /// whole series on scrape).
-    const RESERVED_LABEL_NAMES: [&'static str; 4] =
-        ["status", "http.method", "http.route", "http.status_code"];
+/// Prometheus sanitizes any character outside `[a-zA-Z0-9_]` in a label key to
+/// `_`, so `http.method` and `http_method` collapse to the same series key. We
+/// compare sanitized keys to catch collisions that only appear after scrape.
+fn sanitize_label_key(name: &str) -> String {
+    name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect()
+}
 
-    /// Lowercase and trim every allowlist entry so the per-request hot path only
-    /// has to normalize the incoming header value.
-    fn normalize(&mut self) {
+/// A metric label name must be a non-empty identifier (dots allowed, per the
+/// OpenTelemetry convention used by the built-in keys) so it survives export.
+fn is_valid_label_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {},
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+}
+
+impl MetricsConfig {
+    /// Lowercase and trim every allowlist entry and each `fallback` so the
+    /// per-request hot path only has to normalize the incoming header value and
+    /// every emitted value shares one normalized space.
+    pub fn normalize(&mut self) {
         for label in &mut self.request_labels {
             for allowed in &mut label.allowed {
-                *allowed = allowed.trim().to_ascii_lowercase();
+                *allowed = crate::metrics_labels::normalize(allowed);
             }
+            label.fallback = crate::metrics_labels::normalize(&label.fallback);
         }
     }
 
-    /// Reject label names that collide with built-in metric keys or each other.
+    /// Reject label configs that would silently corrupt metrics: invalid names,
+    /// names colliding (after Prometheus sanitization) with a built-in key or
+    /// each other, and empty allowlist entries.
     ///
     /// # Errors
     ///
-    /// Returns an error if a configured label name is reserved by a built-in
-    /// metric or duplicates another configured label name.
+    /// Returns an error describing the first offending label.
     pub fn validate(&self) -> Result<(), String> {
+        let reserved: std::collections::HashSet<String> =
+            crate::metrics_labels::RESERVED_LABEL_KEYS
+                .iter()
+                .map(|k| sanitize_label_key(k))
+                .collect();
         let mut seen = std::collections::HashSet::new();
         for label in &self.request_labels {
-            if Self::RESERVED_LABEL_NAMES.contains(&label.name.as_str()) {
+            if !is_valid_label_name(&label.name) {
                 return Err(format!(
-                    "metrics request_label name '{}' is reserved by built-in metrics",
+                    "metrics request_label name '{}' is not a valid metric label name",
                     label.name
                 ));
             }
-            if !seen.insert(label.name.as_str()) {
+            let key = sanitize_label_key(&label.name);
+            if reserved.contains(&key) {
+                return Err(format!(
+                    "metrics request_label name '{}' collides with a built-in metric key",
+                    label.name
+                ));
+            }
+            if !seen.insert(key) {
                 return Err(format!("duplicate metrics request_label name '{}'", label.name));
+            }
+            if label.allowed.iter().any(|v| v.trim().is_empty()) {
+                return Err(format!(
+                    "metrics request_label '{}' has an empty allowed value",
+                    label.name
+                ));
             }
         }
         Ok(())
@@ -1570,6 +1604,49 @@ allowed_plugins = []
     #[test]
     fn metrics_validate_accepts_default() {
         assert!(MetricsConfig::default().validate().is_ok());
+    }
+
+    #[test]
+    fn metrics_validate_rejects_empty_or_invalid_label_name() {
+        assert!(MetricsConfig { request_labels: vec![request_label("")] }.validate().is_err());
+        assert!(MetricsConfig { request_labels: vec![request_label("   ")] }.validate().is_err());
+        assert!(MetricsConfig { request_labels: vec![request_label("1service")] }
+            .validate()
+            .is_err());
+    }
+
+    #[test]
+    fn metrics_validate_rejects_sanitized_reserved_collision() {
+        // `http_method` sanitizes to the same Prometheus key as `http.method`.
+        let metrics = MetricsConfig { request_labels: vec![request_label("http_method")] };
+        assert!(metrics.validate().is_err());
+    }
+
+    #[test]
+    fn metrics_validate_rejects_empty_allowed_value() {
+        let metrics = MetricsConfig {
+            request_labels: vec![RequestLabelConfig {
+                name: "service".to_string(),
+                header: "X-Test".to_string(),
+                allowed: vec!["tts".to_string(), " ".to_string()],
+                fallback: "other".to_string(),
+            }],
+        };
+        assert!(metrics.validate().is_err());
+    }
+
+    #[test]
+    fn metrics_normalize_lowercases_fallback() {
+        let mut metrics = MetricsConfig {
+            request_labels: vec![RequestLabelConfig {
+                name: "service".to_string(),
+                header: "X-Test".to_string(),
+                allowed: vec!["tts".to_string()],
+                fallback: " Other ".to_string(),
+            }],
+        };
+        metrics.normalize();
+        assert_eq!(metrics.request_labels[0].fallback, "other");
     }
 
     #[test]

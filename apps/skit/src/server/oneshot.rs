@@ -46,7 +46,7 @@ struct HttpInputBinding {
 /// Combine the per-request `status` with the resolved bounded labels.
 fn duration_labels(status: &'static str, extra: &[KeyValue]) -> Vec<KeyValue> {
     let mut labels = Vec::with_capacity(extra.len() + 1);
-    labels.push(KeyValue::new("status", status));
+    labels.push(KeyValue::new(crate::metrics_labels::STATUS_KEY, status));
     labels.extend_from_slice(extra);
     labels
 }
