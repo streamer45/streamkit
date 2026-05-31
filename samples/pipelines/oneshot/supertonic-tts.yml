@@ -1,5 +1,17 @@
 name: Text-to-Speech (Supertonic)
 description: Synthesizes speech from text using Supertonic (5 languages, 10 voice styles)
+group: text-to-speech
+variant: Supertonic
+category: Text to Speech
+tags:
+  - text-to-speech
+keywords:
+  - tts
+  - speech synthesis
+  - synthesize
+  - voice
+  - supertonic
+  - multilingual
 mode: oneshot
 client:
   input:

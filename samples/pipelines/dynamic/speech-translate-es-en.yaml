@@ -23,6 +23,23 @@
 
 name: Real-Time Speech Translation (Spanish → English)
 description: Real-time speech translation from Spanish to English via MoQ
+group: speech-translation-stream
+variant: NLLB (ES→EN)
+category: Speech Translation
+tags:
+  - streaming
+  - translation
+  - speech-to-text
+  - text-to-speech
+keywords:
+  - translate
+  - spanish
+  - english
+  - nllb
+  - whisper
+  - kokoro
+  - stt
+  - tts
 mode: dynamic
 client:
   gateway_path: /moq/speech-translate-es-en

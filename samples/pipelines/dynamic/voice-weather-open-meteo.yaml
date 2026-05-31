@@ -29,6 +29,20 @@
 
 name: Real-Time Voice Weather (Open-Meteo)
 description: Ask for the weather in a location (STT → Open-Meteo → TTS) via MoQ
+category: Voice Agent
+tags:
+  - streaming
+  - voice-agent
+  - speech-to-text
+  - text-to-speech
+keywords:
+  - voice agent
+  - weather
+  - open-meteo
+  - whisper
+  - kokoro
+  - stt
+  - tts
 mode: dynamic
 client:
   gateway_path: /moq/voice-weather-open-meteo

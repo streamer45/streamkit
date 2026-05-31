@@ -15,7 +15,7 @@ import {
   type OnConnectEnd,
 } from '@xyflow/react';
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useShallow } from 'zustand/shallow';
 
 import ConfirmModal from '@/components/ConfirmModal';
@@ -555,6 +555,9 @@ const DesignViewContent: React.FC = () => {
     regenerateYamlFromCanvas,
     getId,
   } = usePipeline();
+
+  const location = useLocation();
+  const handoffImportedRef = React.useRef(false);
 
   const cachesRef = React.useRef<Partial<Record<'oneshot' | 'dynamic', PipelineCanvasCache>>>({});
 
@@ -1329,6 +1332,18 @@ const DesignViewContent: React.FC = () => {
       handleCloseLoadSampleModal();
     }
   };
+
+  React.useEffect(() => {
+    const handoff = location.state as {
+      importYaml?: string;
+      name?: string;
+      description?: string;
+    } | null;
+    if (handoffImportedRef.current || !handoff?.importYaml || nodeDefinitions.length === 0) return;
+    handoffImportedRef.current = true;
+    handleLoadSample(handoff.importYaml, handoff.name ?? '', handoff.description ?? '');
+    navigate('.', { replace: true, state: null });
+  }, [location.state, nodeDefinitions, handleLoadSample, navigate]);
 
   const handleClearCanvas = React.useCallback(() => {
     setNodes([]);

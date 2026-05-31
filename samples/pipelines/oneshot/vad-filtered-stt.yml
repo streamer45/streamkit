@@ -4,6 +4,20 @@
 
 name: Speech-to-Text (Whisper, VAD-Filtered)
 description: Filters silence with VAD before transcribing with Whisper
+group: speech-to-text
+variant: Whisper (VAD-Filtered)
+category: Speech to Text
+tags:
+  - speech-to-text
+  - voice-activity-detection
+keywords:
+  - stt
+  - asr
+  - transcribe
+  - transcription
+  - whisper
+  - vad
+  - silence
 mode: oneshot
 client:
   input:

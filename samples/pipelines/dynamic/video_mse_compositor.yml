@@ -7,6 +7,16 @@ description: >
   Composites two colorbars sources and streams via HTTP/MSE only.
   No MoQ output — validates MSE endpoint in isolation.
   Access the stream at GET /mse/{session_id}/video
+category: Streaming
+tags:
+  - streaming
+  - compositing
+  - video-encoding
+keywords:
+  - mse
+  - compositor
+  - webm
+  - vp9
 mode: dynamic
 client:
   watch:

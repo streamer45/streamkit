@@ -15,6 +15,19 @@
 
 name: Video Compositor Demo (dav1d AV1)
 description: Composites two colorbars sources (main + PiP) with a text overlay and logo watermark, encodes to AV1 (SVT-AV1), decodes with C dav1d, re-encodes, and streams a WebM via http_output (30 seconds)
+group: video-compositor-oneshot
+variant: AV1 (dav1d decode)
+category: Video Compositing
+tags:
+  - compositing
+  - video-encoding
+keywords:
+  - compositor
+  - overlay
+  - watermark
+  - pip
+  - av1
+  - dav1d
 mode: oneshot
 client:
   input:

@@ -16,6 +16,24 @@ description: >
   picture-in-picture overlay (circle crop), loops microphone audio through
   a gain filter, re-encodes video as AV1 (SVT-AV1) at 1280x720, and streams
   both via MoQ.
+group: screen-cam-pip-stream
+variant: AV1 (SVT-AV1)
+category: Streaming
+tags:
+  - streaming
+  - compositing
+  - picture-in-picture
+  - screen-capture
+  - webcam
+  - video-encoding
+keywords:
+  - screen
+  - desktop
+  - camera
+  - webcam
+  - pip
+  - av1
+  - svt-av1
 mode: dynamic
 client:
   gateway_path: /moq/screenshare

@@ -1,5 +1,13 @@
 name: Volume Boost (2×)
 description: Boosts the volume of an uploaded Ogg/Opus file and returns Ogg/Opus
+category: Audio Processing
+tags:
+  - gain
+keywords:
+  - volume
+  - boost
+  - gain
+  - loud
 mode: oneshot
 client:
   input:

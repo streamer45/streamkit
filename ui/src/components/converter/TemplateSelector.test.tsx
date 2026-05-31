@@ -10,7 +10,7 @@ import type { SamplePipeline } from '@/types/generated/api-types';
 import { TemplateSelector } from './TemplateSelector';
 
 function makePipeline(overrides: Partial<SamplePipeline> = {}): SamplePipeline {
-  return {
+  const base: SamplePipeline = {
     id: 'tpl-1',
     name: 'Test Pipeline',
     description: 'A test pipeline',
@@ -18,8 +18,20 @@ function makePipeline(overrides: Partial<SamplePipeline> = {}): SamplePipeline {
     is_system: true,
     mode: 'oneshot',
     is_fragment: false,
+    group: null,
+    variant: null,
+    canonical: false,
+    category: null,
+    tags: [],
+    search_terms: [],
     ...overrides,
   };
+  if (!overrides.search_terms) {
+    base.search_terms = [base.name, base.description, base.category, ...base.tags]
+      .filter((t): t is string => Boolean(t))
+      .map((t) => t.toLowerCase());
+  }
+  return base;
 }
 
 const SYSTEM_TPL = makePipeline({ id: 'sys-1', name: 'Transcribe Audio', is_system: true });
@@ -95,14 +107,13 @@ describe('TemplateSelector', () => {
     expect(screen.getByText('Selected template is hidden by your filters.')).toBeInTheDocument();
   });
 
-  it('clears filters when hint button is clicked', () => {
+  it('clears filters via the persistent Clear all filters control', () => {
     render(<TemplateSelector {...defaultProps} selectedTemplateId="usr-1" />);
 
     const systemButton = screen.getByRole('button', { name: 'System' });
     fireEvent.click(systemButton);
 
-    const clearButton = screen.getByText('Clear filters');
-    fireEvent.click(clearButton);
+    fireEvent.click(screen.getByRole('button', { name: 'Clear all filters' }));
 
     expect(screen.getByText('Transcribe Audio')).toBeInTheDocument();
     expect(screen.getByText('My Custom Pipeline')).toBeInTheDocument();
@@ -135,5 +146,123 @@ describe('TemplateSelector', () => {
   it('renders filter group with accessible label', () => {
     render(<TemplateSelector {...defaultProps} />);
     expect(screen.getByRole('group', { name: 'Filter templates by origin' })).toBeInTheDocument();
+  });
+});
+
+describe('TemplateSelector variant grouping', () => {
+  const colorbars = makePipeline({
+    id: 'd/colorbars',
+    name: 'Colorbars',
+    group: 'video-moq-colorbars',
+    variant: 'Software',
+    canonical: true,
+  });
+  const h264 = makePipeline({
+    id: 'd/h264-colorbars',
+    name: 'H.264 Colorbars',
+    group: 'video-moq-colorbars',
+    variant: 'H.264',
+  });
+  const vaapi = makePipeline({
+    id: 'd/vaapi-colorbars',
+    name: 'VA-API Colorbars',
+    group: 'video-moq-colorbars',
+    variant: 'VA-API H.264',
+  });
+
+  it('collapses a variant family into a single card with a variant selector', () => {
+    render(
+      <TemplateSelector
+        templates={[colorbars, h264, vaapi]}
+        selectedTemplateId=""
+        onTemplateSelect={vi.fn()}
+      />
+    );
+
+    const systemHeader = screen.getByText('System Pipelines').closest('div')!;
+    expect(within(systemHeader).getByText('1')).toBeInTheDocument();
+
+    expect(screen.getByRole('group', { name: /Colorbars variants/i })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Software' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'H.264' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'VA-API H.264' })).toBeInTheDocument();
+  });
+
+  it('selecting a variant loads that variant id', () => {
+    const onSelect = vi.fn();
+    render(
+      <TemplateSelector
+        templates={[colorbars, h264, vaapi]}
+        selectedTemplateId=""
+        onTemplateSelect={onSelect}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('radio', { name: 'VA-API H.264' }));
+    expect(onSelect).toHaveBeenCalledWith('d/vaapi-colorbars');
+  });
+});
+
+describe('TemplateSelector facets', () => {
+  const encode = makePipeline({
+    id: 'd/encode',
+    name: 'VA-API Encode',
+    category: 'Video Encoding',
+    tags: ['video-encoding', 'hardware:vaapi'],
+  });
+  const transcribe = makePipeline({
+    id: 'o/transcribe',
+    name: 'Transcribe',
+    category: 'Speech to Text',
+    tags: ['speech-to-text'],
+  });
+
+  it('filters by category facet chip', () => {
+    render(
+      <TemplateSelector
+        templates={[encode, transcribe]}
+        selectedTemplateId=""
+        onTemplateSelect={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Speech to Text' }));
+    expect(screen.getByText('Transcribe')).toBeInTheDocument();
+    expect(screen.queryByText('VA-API Encode')).not.toBeInTheDocument();
+  });
+
+  it('filters to hardware-requiring samples via the requirements facet', () => {
+    render(
+      <TemplateSelector
+        templates={[encode, transcribe]}
+        selectedTemplateId=""
+        onTemplateSelect={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Needs GPU' }));
+    expect(screen.getByText('VA-API Encode')).toBeInTheDocument();
+    expect(screen.queryByText('Transcribe')).not.toBeInTheDocument();
+  });
+
+  it('hides facet chips that only exist outside the active origin filter', () => {
+    const userEncode = makePipeline({
+      id: 'u/encode',
+      name: 'My Encode',
+      is_system: false,
+      category: 'Video Encoding',
+      tags: ['video-encoding'],
+    });
+    render(
+      <TemplateSelector
+        templates={[encode, transcribe, userEncode]}
+        selectedTemplateId=""
+        onTemplateSelect={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole('button', { name: 'Speech to Text' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'User' }));
+    expect(screen.queryByRole('button', { name: 'Speech to Text' })).not.toBeInTheDocument();
   });
 });

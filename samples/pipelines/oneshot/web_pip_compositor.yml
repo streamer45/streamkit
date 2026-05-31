@@ -16,6 +16,19 @@
 
 name: Web PiP Compositor (H.264/MP4)
 description: Composites a Servo-rendered WebGL page as PiP over colorbars, encodes to H.264/MP4
+category: Web Capture
+tags:
+  - web-capture
+  - compositing
+  - picture-in-picture
+  - video-encoding
+keywords:
+  - servo
+  - web
+  - browser
+  - webgl
+  - pip
+  - h.264
 mode: oneshot
 client:
   input:

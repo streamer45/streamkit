@@ -7,20 +7,43 @@ import { describe, expect, it } from 'vitest';
 import type { SamplePipeline } from '@/types/generated/api-types';
 
 import {
+  collectSampleFacets,
   compareSamplePipelinesByName,
+  groupSamplePipelinesByScenario,
   matchesSamplePipelineQuery,
   orderSamplePipelinesSystemFirst,
+  sampleNeedsHardware,
 } from './samplePipelineOrdering';
 
+// Mirrors the backend `build_search_terms`: when a fixture does not supply an
+// explicit `search_terms`, derive one from the discovery fields so query tests
+// exercise the same document the server emits.
 function makePipeline(partial: Partial<SamplePipeline> & { id: string }): SamplePipeline {
+  const name = partial.name ?? '';
+  const description = partial.description ?? '';
+  const category = partial.category ?? null;
+  const group = partial.group ?? null;
+  const variant = partial.variant ?? null;
+  const tags = partial.tags ?? [];
+  const search_terms =
+    partial.search_terms ??
+    [name, description, category, group, variant, ...tags]
+      .filter((t): t is string => Boolean(t))
+      .map((t) => t.toLowerCase());
   return {
     id: partial.id,
-    name: partial.name ?? '',
-    description: partial.description ?? '',
+    name,
+    description,
     yaml: partial.yaml ?? '',
     is_system: partial.is_system ?? false,
     mode: partial.mode ?? 'dynamic',
     is_fragment: partial.is_fragment ?? false,
+    group,
+    variant,
+    canonical: partial.canonical ?? false,
+    category,
+    tags,
+    search_terms,
   };
 }
 
@@ -111,11 +134,11 @@ describe('matchesSamplePipelineQuery', () => {
     expect(matchesSamplePipelineQuery(pipeline, 'ffmpeg')).toBe(true);
   });
 
-  it('matches by id', () => {
+  it('matches a search term substring', () => {
     expect(matchesSamplePipelineQuery(pipeline, 'mp4')).toBe(true);
   });
 
-  it('returns false when the query is not a substring of any field', () => {
+  it('returns false when the query is not a substring of any search term', () => {
     expect(matchesSamplePipelineQuery(pipeline, 'flac')).toBe(false);
   });
 
@@ -124,8 +147,135 @@ describe('matchesSamplePipelineQuery', () => {
   });
 
   it('handles missing fields without throwing', () => {
-    const sparse = makePipeline({ id: 'x', name: '', description: '' });
+    const sparse = makePipeline({ id: 'x', name: 'x', description: '' });
     expect(matchesSamplePipelineQuery(sparse, 'x')).toBe(true);
     expect(matchesSamplePipelineQuery(sparse, 'absent')).toBe(false);
+  });
+
+  it('matches via tags and category', () => {
+    const sample = makePipeline({
+      id: 'whisper-transcribe',
+      name: 'Live Transcription',
+      category: 'Speech to Text',
+      tags: ['speech-to-text', 'voice-activity-detection'],
+    });
+    expect(matchesSamplePipelineQuery(sample, 'speech')).toBe(true);
+    expect(matchesSamplePipelineQuery(sample, 'voice activity')).toBe(true);
+  });
+
+  it('matches authored aliases baked into the resolved search document', () => {
+    // Aliases/synonyms (e.g. "stt") live in each sample's authored keywords,
+    // which the backend folds into search_terms; the UI does no expansion.
+    const stt = makePipeline({
+      id: 'stt',
+      name: 'Whisper',
+      search_terms: ['whisper', 'speech-to-text', 'stt', 'transcribe'],
+    });
+    expect(matchesSamplePipelineQuery(stt, 'stt')).toBe(true);
+    expect(matchesSamplePipelineQuery(stt, 'transcribe')).toBe(true);
+    expect(matchesSamplePipelineQuery(stt, 'tts')).toBe(false);
+  });
+
+  it('requires every query term to match (AND semantics)', () => {
+    const sample = makePipeline({
+      id: 'hw-encode',
+      name: 'VA-API H.264 Colorbars',
+      tags: ['video-encoding', 'hardware:vaapi'],
+    });
+    expect(matchesSamplePipelineQuery(sample, 'vaapi encoding')).toBe(true);
+    expect(matchesSamplePipelineQuery(sample, 'vaapi audio')).toBe(false);
+  });
+});
+
+describe('groupSamplePipelinesByScenario', () => {
+  const plain = makePipeline({
+    id: 'd/colorbars',
+    name: 'Colorbars',
+    group: 'video-moq-colorbars',
+    variant: 'Software',
+    canonical: true,
+  });
+  const h264 = makePipeline({
+    id: 'd/h264-colorbars',
+    name: 'H.264 Colorbars',
+    group: 'video-moq-colorbars',
+    variant: 'H.264',
+  });
+  const vaapi = makePipeline({
+    id: 'd/vaapi-colorbars',
+    name: 'VA-API Colorbars',
+    group: 'video-moq-colorbars',
+    variant: 'VA-API H.264',
+  });
+
+  it('collapses same-group samples into one entry with the canonical member first', () => {
+    const groups = groupSamplePipelinesByScenario([h264, plain, vaapi]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].key).toBe('video-moq-colorbars');
+    // The canonical member is the base and comes first.
+    expect(groups[0].base).toBe(plain);
+    expect(groups[0].variants[0]).toBe(plain);
+    expect(groups[0].variants.map((v) => v.variant)).toEqual(['Software', 'H.264', 'VA-API H.264']);
+  });
+
+  it('treats samples without a group as singletons keyed by id', () => {
+    const a = makePipeline({ id: 'oneshot/tts', name: 'TTS' });
+    const b = makePipeline({ id: 'oneshot/stt', name: 'STT' });
+    const groups = groupSamplePipelinesByScenario([a, b]);
+    expect(groups).toHaveLength(2);
+    expect(groups.map((g) => g.key)).toEqual(['oneshot/tts', 'oneshot/stt']);
+  });
+
+  it('returns groups in deterministic insertion order (callers re-sort for display)', () => {
+    const groups = groupSamplePipelinesByScenario([
+      makePipeline({ id: 'b', group: 'beta' }),
+      makePipeline({ id: 'a', group: 'alpha' }),
+      makePipeline({ id: 'b2', group: 'beta' }),
+    ]);
+    expect(groups.map((g) => g.key)).toEqual(['beta', 'alpha']);
+  });
+});
+
+describe('sampleNeedsHardware', () => {
+  it('detects hardware facet tags', () => {
+    expect(sampleNeedsHardware(makePipeline({ id: 'a', tags: ['hardware:vaapi'] }))).toBe(true);
+    expect(sampleNeedsHardware(makePipeline({ id: 'b', tags: ['video-encoding'] }))).toBe(false);
+  });
+});
+
+describe('collectSampleFacets', () => {
+  it('aggregates sorted categories and capabilities, excluding hardware tags', () => {
+    const facets = collectSampleFacets([
+      makePipeline({
+        id: 'a',
+        category: 'Video Encoding',
+        tags: ['hardware:vaapi', 'colorbars'],
+      }),
+      makePipeline({ id: 'b', category: 'Speech to Text', tags: ['transcription'] }),
+    ]);
+    expect(facets.categories).toEqual(['Speech to Text', 'Video Encoding']);
+    expect(facets.capabilities).toEqual(['colorbars', 'transcription']);
+    expect(facets.hasHardware).toBe(true);
+  });
+
+  it('keeps tags as capabilities even when a same-named category is shown', () => {
+    // category is a single bucket while tags are multi-valued, so a capability
+    // chip must survive as a cross-cutting filter (e.g. a sample bucketed as
+    // `Video Compositing` may still carry `video-encoding`).
+    const facets = collectSampleFacets([
+      makePipeline({ id: 'a', category: 'Video Encoding', tags: ['video-encoding'] }),
+      makePipeline({
+        id: 'b',
+        category: 'Video Compositing',
+        tags: ['compositing', 'video-encoding'],
+      }),
+    ]);
+    expect(facets.categories).toEqual(['Video Compositing', 'Video Encoding']);
+    expect(facets.capabilities).toEqual(['compositing', 'video-encoding']);
+  });
+
+  it('reports no hardware when no hardware tags are present', () => {
+    const facets = collectSampleFacets([makePipeline({ id: 'a', tags: ['transcription'] })]);
+    expect(facets.hasHardware).toBe(false);
   });
 });

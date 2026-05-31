@@ -19,6 +19,16 @@
 
 name: TTS to S3 (Kokoro)
 description: Synthesizes speech from text, uploads OGG audio to S3, and returns the result
+category: Text to Speech
+tags:
+  - text-to-speech
+  - archival
+keywords:
+  - tts
+  - s3
+  - object storage
+  - kokoro
+  - archive
 mode: oneshot
 client:
   input:

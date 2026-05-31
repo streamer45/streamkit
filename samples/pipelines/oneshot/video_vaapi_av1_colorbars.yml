@@ -13,6 +13,18 @@
 
 name: VA-API AV1 Encode (WebM Oneshot)
 description: Generates color bars, encodes to AV1 using VA-API HW encoder, and muxes into WebM (30 seconds)
+group: video-encoding-oneshot
+variant: AV1 (VA-API)
+category: Video Encoding
+tags:
+  - video-encoding
+  - "hardware:vaapi"
+keywords:
+  - colorbars
+  - av1
+  - vaapi
+  - gpu
+  - webm
 mode: oneshot
 client:
   input:

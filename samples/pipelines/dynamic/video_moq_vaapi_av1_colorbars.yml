@@ -10,6 +10,19 @@
 
 name: VA-API AV1 Color Bars (MoQ Stream)
 description: Continuously generates SMPTE color bars and streams via MoQ using VA-API AV1 HW encoder
+group: video-colorbars-stream
+variant: AV1 (VA-API)
+category: Streaming
+tags:
+  - streaming
+  - video-encoding
+  - "hardware:vaapi"
+keywords:
+  - colorbars
+  - smpte
+  - av1
+  - vaapi
+  - gpu
 mode: dynamic
 client:
   gateway_path: /moq/video

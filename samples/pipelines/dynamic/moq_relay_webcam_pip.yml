@@ -6,6 +6,19 @@ name: MoQ Relay Webcam PiP (Audio + Video)
 description: Subscribes audio+video from a MoQ relay, composites the webcam as PiP over colorbars, and republishes both tracks — validates multi-track relay pub/sub
 # NOTE: The publisher must already be streaming to the 'input' broadcast before
 # starting this pipeline, otherwise track discovery will miss the video/hd pin.
+category: Streaming
+tags:
+  - streaming
+  - relay
+  - compositing
+  - picture-in-picture
+  - webcam
+keywords:
+  - moq
+  - relay
+  - webcam
+  - camera
+  - pip
 mode: dynamic
 client:
   relay_url: http://127.0.0.1:4443

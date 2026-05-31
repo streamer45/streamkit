@@ -11,6 +11,20 @@ description: >
 # NOTE: The publisher (browser) must already be streaming to the 'screen-input'
 # and 'cam-input' broadcasts before starting this pipeline, otherwise track
 # discovery will miss the video/hd pins.
+category: Streaming
+tags:
+  - streaming
+  - relay
+  - compositing
+  - picture-in-picture
+  - screen-capture
+  - webcam
+keywords:
+  - moq
+  - relay
+  - screen
+  - camera
+  - pip
 mode: dynamic
 client:
   relay_url: http://127.0.0.1:4443

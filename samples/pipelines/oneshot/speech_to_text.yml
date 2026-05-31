@@ -1,5 +1,18 @@
 name: Speech-to-Text (Whisper)
 description: Transcribes speech to text using Whisper
+group: speech-to-text
+variant: Whisper
+canonical: true
+category: Speech to Text
+tags:
+  - speech-to-text
+  - subtitles
+keywords:
+  - stt
+  - asr
+  - transcribe
+  - transcription
+  - whisper
 mode: oneshot
 client:
   input:

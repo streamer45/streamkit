@@ -105,6 +105,15 @@ const LoadingMessage = styled.div`
   font-size: 14px;
 `;
 
+const HiddenSelectionMessage = styled.div`
+  padding: 24px 16px;
+  text-align: center;
+  font-size: 14px;
+  color: var(--sk-text-muted);
+  border: 1px dashed var(--sk-border);
+  border-radius: 8px;
+`;
+
 const ActiveSessionBadge = styled.div`
   display: inline-flex;
   align-items: center;
@@ -272,6 +281,7 @@ export const PipelineSelectionSection: React.FC<PipelineSelectionSectionProps> =
 }) => {
   const showEmptyState = !samplesLoading && samples.length === 0;
   const showTemplates = !samplesLoading && samples.length > 0;
+  const [selectionHidden, setSelectionHidden] = React.useState(false);
 
   return (
     <Section>
@@ -289,13 +299,21 @@ export const PipelineSelectionSection: React.FC<PipelineSelectionSectionProps> =
             templates={samples}
             selectedTemplateId={selectedTemplateId}
             onTemplateSelect={onTemplateSelect}
+            onSelectionHiddenChange={setSelectionHidden}
           />
 
-          <PipelineEditor
-            value={pipelineYaml}
-            onChange={onPipelineYamlChange}
-            nodeDefinitions={nodeDefinitions}
-          />
+          {selectionHidden ? (
+            <HiddenSelectionMessage>
+              The selected pipeline is hidden by the active filters. Clear the filters or pick a
+              pipeline to customize it.
+            </HiddenSelectionMessage>
+          ) : (
+            <PipelineEditor
+              value={pipelineYaml}
+              onChange={onPipelineYamlChange}
+              nodeDefinitions={nodeDefinitions}
+            />
+          )}
 
           <InputGroup>
             <Label htmlFor="session-name">Session Name (Optional)</Label>
@@ -325,7 +343,7 @@ export const PipelineSelectionSection: React.FC<PipelineSelectionSectionProps> =
             <Button
               variant="primary"
               onClick={onCreateSession}
-              disabled={sessionCreationStatus === 'creating' || !pipelineYaml}
+              disabled={sessionCreationStatus === 'creating' || !pipelineYaml || selectionHidden}
             >
               {sessionCreationStatus === 'creating' ? 'Creating Session...' : 'Create Session'}
             </Button>

@@ -183,24 +183,49 @@ fn has_yaml_extension(filename: &str) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml"))
 }
 
-/// Parse pipeline YAML and extract metadata (name, description, mode)
-fn parse_pipeline_metadata(
-    yaml: &str,
-    path: &std::path::Path,
-) -> (Option<String>, Option<String>, streamkit_api::EngineMode) {
-    streamkit_api::yaml::parse_yaml(yaml).map_or_else(
-        |e| {
+/// Metadata extracted from a pipeline YAML for listing, search, and discovery.
+#[derive(Default)]
+struct PipelineMetadata {
+    name: Option<String>,
+    description: Option<String>,
+    mode: streamkit_api::EngineMode,
+    explicit: crate::sample_discovery::Discovery,
+    node_kinds: Vec<String>,
+}
+
+/// Parse pipeline YAML and extract metadata used for listing and discovery.
+fn parse_pipeline_metadata(yaml: &str, path: &std::path::Path) -> PipelineMetadata {
+    use streamkit_api::yaml::UserPipeline;
+
+    let user_pipeline = match streamkit_api::yaml::parse_yaml(yaml) {
+        Ok(p) => p,
+        Err(e) => {
             warn!("Failed to parse pipeline metadata from {}: {}", path.display(), e);
-            (None, None, streamkit_api::EngineMode::default())
+            return PipelineMetadata::default();
         },
-        |user_pipeline| {
-            use streamkit_api::yaml::UserPipeline;
-            match user_pipeline {
-                UserPipeline::Steps { name, description, mode, .. }
-                | UserPipeline::Dag { name, description, mode, .. } => (name, description, mode),
-            }
+    };
+
+    let node_kinds: Vec<String> = match &user_pipeline {
+        UserPipeline::Steps { steps, .. } => steps.iter().map(|s| s.kind.clone()).collect(),
+        UserPipeline::Dag { nodes, .. } => nodes.values().map(|n| n.kind.clone()).collect(),
+    };
+
+    let (UserPipeline::Steps { meta, .. } | UserPipeline::Dag { meta, .. }) = user_pipeline;
+
+    PipelineMetadata {
+        name: meta.name,
+        description: meta.description,
+        mode: meta.mode,
+        explicit: crate::sample_discovery::Discovery {
+            group: meta.group,
+            variant: meta.variant,
+            canonical: meta.canonical,
+            category: meta.category,
+            tags: meta.tags,
+            keywords: meta.keywords,
         },
-    )
+        node_kinds,
+    }
 }
 
 fn mode_to_string(mode: streamkit_api::EngineMode) -> String {
@@ -240,14 +265,22 @@ async fn load_samples_from_dir(
 
         match fs::read_to_string(&path).await {
             Ok(yaml) => {
-                let (name, description, mode) = parse_pipeline_metadata(&yaml, &path);
+                let meta = parse_pipeline_metadata(&yaml, &path);
 
                 let base_filename = filename.trim_end_matches(".yml").trim_end_matches(".yaml");
                 let id = format!("{subdir}/{base_filename}");
 
-                let name = name.unwrap_or_else(|| filename_to_name(filename));
-                let description = description.unwrap_or_default();
+                let name = meta.name.unwrap_or_else(|| filename_to_name(filename));
+                let description = meta.description.unwrap_or_default();
                 let is_fragment = name == filename_to_name(filename) && description.is_empty();
+
+                let search_terms = crate::sample_discovery::build_search_terms(
+                    &id,
+                    &name,
+                    &description,
+                    &meta.explicit,
+                    &meta.node_kinds,
+                );
 
                 samples.push(SamplePipeline {
                     id,
@@ -255,8 +288,14 @@ async fn load_samples_from_dir(
                     description,
                     yaml,
                     is_system,
-                    mode: mode_to_string(mode),
+                    mode: mode_to_string(meta.mode),
                     is_fragment,
+                    group: meta.explicit.group,
+                    variant: meta.explicit.variant,
+                    canonical: meta.explicit.canonical,
+                    category: meta.explicit.category,
+                    tags: meta.explicit.tags,
+                    search_terms,
                 });
             },
             Err(e) => {
@@ -362,11 +401,11 @@ pub async fn get_sample(
 
                 let yaml = fs::read_to_string(&path).await?;
 
-                let (name, description, mode) = parse_pipeline_metadata(&yaml, &path);
+                let meta = parse_pipeline_metadata(&yaml, &path);
+                let mode_str = mode_to_string(meta.mode);
 
-                let name = name.unwrap_or_else(|| filename_to_name(&filename));
-                let description = description.unwrap_or_default();
-                let mode_str = mode_to_string(mode);
+                let name = meta.name.unwrap_or_else(|| filename_to_name(&filename));
+                let description = meta.description.unwrap_or_default();
 
                 let relative_path =
                     path.strip_prefix(&base_path).unwrap_or(&path).to_string_lossy().to_string();
@@ -377,6 +416,14 @@ pub async fn get_sample(
                 let is_fragment = name == filename_to_name(&filename) && description.is_empty();
                 let full_id = format!("{subdir}/{filename_base}");
 
+                let search_terms = crate::sample_discovery::build_search_terms(
+                    &full_id,
+                    &name,
+                    &description,
+                    &meta.explicit,
+                    &meta.node_kinds,
+                );
+
                 return Ok(SamplePipeline {
                     id: full_id,
                     name,
@@ -385,6 +432,12 @@ pub async fn get_sample(
                     is_system,
                     mode: mode_str,
                     is_fragment,
+                    group: meta.explicit.group,
+                    variant: meta.explicit.variant,
+                    canonical: meta.explicit.canonical,
+                    category: meta.explicit.category,
+                    tags: meta.explicit.tags,
+                    search_terms,
                 });
             }
         }
@@ -494,8 +547,16 @@ async fn save_sample(
     // Always prefix user pipelines with "user/"
     let id = format!("user/{base_filename}");
 
-    let (_, _, mode) = parse_pipeline_metadata(&yaml_with_metadata, &path);
-    let mode_str = mode_to_string(mode);
+    let meta = parse_pipeline_metadata(&yaml_with_metadata, &path);
+    let mode_str = mode_to_string(meta.mode);
+
+    let search_terms = crate::sample_discovery::build_search_terms(
+        &id,
+        &request.name,
+        &request.description,
+        &meta.explicit,
+        &meta.node_kinds,
+    );
 
     Ok(SamplePipeline {
         id,
@@ -505,6 +566,12 @@ async fn save_sample(
         is_system: false,
         mode: mode_str,
         is_fragment: request.is_fragment,
+        group: meta.explicit.group,
+        variant: meta.explicit.variant,
+        canonical: meta.explicit.canonical,
+        category: meta.explicit.category,
+        tags: meta.explicit.tags,
+        search_terms,
     })
 }
 
@@ -836,11 +903,11 @@ nodes:
     needs: input
 ";
         let path = std::path::Path::new("test.yml");
-        let (name, description, mode) = parse_pipeline_metadata(yaml, path);
+        let meta = parse_pipeline_metadata(yaml, path);
 
-        assert_eq!(name.as_deref(), Some("My Sample"));
-        assert_eq!(description.as_deref(), Some("A nice description"));
-        assert_eq!(mode, EngineMode::OneShot);
+        assert_eq!(meta.name.as_deref(), Some("My Sample"));
+        assert_eq!(meta.description.as_deref(), Some("A nice description"));
+        assert_eq!(meta.mode, EngineMode::OneShot);
     }
 
     #[test]
@@ -854,11 +921,12 @@ steps:
   - kind: streamkit::http_output
 ";
         let path = std::path::Path::new("steps.yml");
-        let (name, description, mode) = parse_pipeline_metadata(yaml, path);
+        let meta = parse_pipeline_metadata(yaml, path);
 
-        assert_eq!(name.as_deref(), Some("Linear"));
-        assert_eq!(description.as_deref(), Some("Steps form"));
-        assert_eq!(mode, EngineMode::Dynamic);
+        assert_eq!(meta.name.as_deref(), Some("Linear"));
+        assert_eq!(meta.description.as_deref(), Some("Steps form"));
+        assert_eq!(meta.mode, EngineMode::Dynamic);
+        assert_eq!(meta.node_kinds, vec!["streamkit::http_input", "streamkit::http_output"]);
     }
 
     #[test]
@@ -871,12 +939,12 @@ nodes:
     kind: streamkit::http_input
 ";
         let path = std::path::Path::new("anon.yml");
-        let (name, description, mode) = parse_pipeline_metadata(yaml, path);
+        let meta = parse_pipeline_metadata(yaml, path);
 
-        assert!(name.is_none(), "expected no name, got {name:?}");
-        assert!(description.is_none(), "expected no description, got {description:?}");
-        assert_eq!(mode, EngineMode::default());
-        assert_eq!(mode, EngineMode::Dynamic, "Dynamic must be the documented default");
+        assert!(meta.name.is_none(), "expected no name, got {:?}", meta.name);
+        assert!(meta.description.is_none(), "expected no description, got {:?}", meta.description);
+        assert_eq!(meta.mode, EngineMode::default());
+        assert_eq!(meta.mode, EngineMode::Dynamic, "Dynamic must be the documented default");
     }
 
     #[test]
@@ -888,10 +956,10 @@ nodes:
     kind: streamkit::http_input
 ";
         let path = std::path::Path::new("no-mode.yml");
-        let (name, _, mode) = parse_pipeline_metadata(yaml, path);
+        let meta = parse_pipeline_metadata(yaml, path);
 
-        assert_eq!(name.as_deref(), Some("No mode"));
-        assert_eq!(mode, EngineMode::default());
+        assert_eq!(meta.name.as_deref(), Some("No mode"));
+        assert_eq!(meta.mode, EngineMode::default());
     }
 
     #[test]
@@ -902,11 +970,11 @@ nodes:
         // best-effort enrichment.
         let yaml = "this: is: not: valid: yaml: at: all: [";
         let path = std::path::Path::new("broken.yml");
-        let (name, description, mode) = parse_pipeline_metadata(yaml, path);
+        let meta = parse_pipeline_metadata(yaml, path);
 
-        assert!(name.is_none());
-        assert!(description.is_none());
-        assert_eq!(mode, EngineMode::default());
+        assert!(meta.name.is_none());
+        assert!(meta.description.is_none());
+        assert_eq!(meta.mode, EngineMode::default());
     }
 }
 

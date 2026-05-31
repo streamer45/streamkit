@@ -21,6 +21,15 @@ name: MoQ Broadcast + S3 Archive
 description: |
   Accepts Opus audio via MoQ, broadcasts back via MoQ for live monitoring,
   and simultaneously archives the stream to S3-compatible object storage.
+category: Streaming
+tags:
+  - streaming
+  - archival
+keywords:
+  - moq
+  - s3
+  - object storage
+  - archive
 mode: dynamic
 client:
   gateway_path: /moq/s3-archive

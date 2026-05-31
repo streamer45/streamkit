@@ -4,6 +4,18 @@
 
 name: Video Color Bars H.264 (MoQ Stream)
 description: Continuously generates SMPTE color bars with timer and streams via MoQ using OpenH264
+group: video-colorbars-stream
+variant: H.264 (OpenH264)
+category: Streaming
+tags:
+  - streaming
+  - video-encoding
+keywords:
+  - colorbars
+  - smpte
+  - test pattern
+  - h.264
+  - openh264
 mode: dynamic
 client:
   gateway_path: /moq/video

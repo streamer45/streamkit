@@ -10,6 +10,7 @@ import {
   MOQ_BENIGN_PATTERNS,
   createConsoleErrorCollector,
   installAudioContextTracker,
+  selectPipelineTemplate,
   verifyAudioContextActive,
   verifyCanvasRendering,
 } from './test-helpers';
@@ -37,11 +38,7 @@ test.describe('Stream View - Dynamic Pipeline', () => {
     const pipelineHeading = page.getByText('Pipeline Selection');
     await expect(pipelineHeading).toBeVisible({ timeout: 15_000 });
 
-    const templateCard = page.getByText('MoQ Peer Transcoder (Gateway)', {
-      exact: true,
-    });
-    await expect(templateCard).toBeVisible({ timeout: 10_000 });
-    await templateCard.click();
+    await selectPipelineTemplate(page, 'MoQ Peer Transcoder (Gateway)');
 
     const createButton = page.getByRole('button', { name: /Create Session/i });
     await expect(createButton).toBeEnabled({ timeout: 5_000 });
@@ -93,11 +90,7 @@ test.describe('Stream View - Dynamic Pipeline', () => {
       }
     }
 
-    const templateCard = page.getByText('MoQ Peer Transcoder (Gateway)', {
-      exact: true,
-    });
-    await expect(templateCard).toBeVisible({ timeout: 10_000 });
-    await templateCard.click();
+    await selectPipelineTemplate(page, 'MoQ Peer Transcoder (Gateway)');
 
     const createButton = page.getByRole('button', { name: /Create Session/i });
     await expect(createButton).toBeEnabled({ timeout: 5_000 });
@@ -233,11 +226,7 @@ test.describe('Stream View - Video MoQ Color Bars Pipeline', () => {
     }
 
     // Select the video colorbars MoQ template.
-    const templateCard = page.getByText('Video Color Bars (MoQ Stream)', {
-      exact: true,
-    });
-    await expect(templateCard).toBeVisible({ timeout: 10_000 });
-    await templateCard.click();
+    await selectPipelineTemplate(page, 'Video Color Bars (MoQ Stream)', 'VP9 (Software)');
 
     // Create session.
     const createButton = page.getByRole('button', { name: /Create Session/i });
@@ -375,11 +364,7 @@ test.describe('Stream View - Webcam PiP Pipeline', () => {
     }
 
     // Select the webcam PiP template.
-    const templateCard = page.getByText('Webcam PiP (MoQ Stream)', {
-      exact: true,
-    });
-    await expect(templateCard).toBeVisible({ timeout: 10_000 });
-    await templateCard.click();
+    await selectPipelineTemplate(page, 'Webcam PiP (MoQ Stream)', 'VP9');
 
     // Create session.
     const createButton = page.getByRole('button', { name: /Create Session/i });

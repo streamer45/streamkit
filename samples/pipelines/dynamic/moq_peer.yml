@@ -4,6 +4,14 @@
 
 name: MoQ Peer Transcoder (Gateway)
 description: Accepts a WebTransport client via transport::moq::peer, applies gain, and loops processed audio back to subscribers
+category: Streaming
+tags:
+  - streaming
+  - transcoding
+keywords:
+  - moq
+  - webtransport
+  - gateway
 mode: dynamic
 client:
   gateway_path: /moq

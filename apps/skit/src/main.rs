@@ -45,6 +45,7 @@ mod plugin_records;
 mod plugins;
 mod profiling;
 mod role_extractor;
+mod sample_discovery;
 mod samples;
 mod server;
 mod session;

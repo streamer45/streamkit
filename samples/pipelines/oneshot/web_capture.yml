@@ -12,6 +12,17 @@
 
 name: Web Page Capture (Servo)
 description: Renders a web page via the Servo engine and outputs a short VP9/WebM clip
+category: Web Capture
+tags:
+  - web-capture
+  - video-encoding
+keywords:
+  - servo
+  - web
+  - browser
+  - render
+  - vp9
+  - webm
 mode: oneshot
 client:
   input:

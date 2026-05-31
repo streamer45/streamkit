@@ -4,6 +4,14 @@
 
 name: Voice Activity Detection
 description: Detects voice activity and outputs events as JSON
+category: Voice Activity
+tags:
+  - voice-activity-detection
+keywords:
+  - vad
+  - voice activity
+  - silence
+  - speech detection
 mode: oneshot
 client:
   input:

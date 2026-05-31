@@ -17,6 +17,17 @@
 
 name: Transcode to S3 (Ogg → MP4)
 description: Transcodes uploaded Ogg/Opus audio to MP4, uploads to S3, and returns the result
+category: Audio Processing
+tags:
+  - transcoding
+  - archival
+  - muxing
+keywords:
+  - s3
+  - object storage
+  - transcode
+  - mp4
+  - archive
 mode: oneshot
 client:
   input:

@@ -4,6 +4,18 @@
 
 name: Video Color Bars (MoQ Stream)
 description: Continuously generates SMPTE color bars and streams via MoQ
+group: video-colorbars-stream
+variant: VP9 (Software)
+canonical: true
+category: Streaming
+tags:
+  - streaming
+  - video-encoding
+keywords:
+  - colorbars
+  - smpte
+  - test pattern
+  - vp9
 mode: dynamic
 client:
   gateway_path: /moq/video

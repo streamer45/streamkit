@@ -11,6 +11,21 @@
 
 name: Real-Time Voice Agent (OpenAI)
 description: Runs a MoQ voice agent using Whisper STT, OpenAI, and Kokoro TTS
+category: Voice Agent
+tags:
+  - streaming
+  - voice-agent
+  - speech-to-text
+  - text-to-speech
+keywords:
+  - voice agent
+  - openai
+  - llm
+  - whisper
+  - kokoro
+  - stt
+  - tts
+  - conversational
 mode: dynamic
 client:
   gateway_path: /moq/voice-agent-openai

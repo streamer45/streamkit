@@ -10,6 +10,19 @@
 
 name: Video Compositor Demo (AV1)
 description: Composites two colorbars sources (main + PiP) with a text overlay and logo watermark, encodes to AV1, and streams a WebM via http_output (30 seconds)
+group: video-compositor-oneshot
+variant: AV1 (rav1e)
+category: Video Compositing
+tags:
+  - compositing
+  - video-encoding
+keywords:
+  - compositor
+  - overlay
+  - watermark
+  - pip
+  - av1
+  - rav1e
 mode: oneshot
 client:
   input:

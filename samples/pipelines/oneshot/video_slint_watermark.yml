@@ -17,6 +17,16 @@
 
 name: Video Slint Watermark (Oneshot)
 description: Composites colorbars with a Slint watermark overlay, encodes to VP9, and streams a WebM via http_output
+category: Video Compositing
+tags:
+  - compositing
+  - video-encoding
+keywords:
+  - compositor
+  - slint
+  - watermark
+  - overlay
+  - graphics
 mode: oneshot
 client:
   input:

@@ -1,5 +1,13 @@
 name: Real-Time MoQ Transcoder
 description: Decodes a MoQ input broadcast, applies gain, and republishes to MoQ
+category: Streaming
+tags:
+  - streaming
+  - transcoding
+keywords:
+  - moq
+  - media over quic
+  - opus
 mode: dynamic
 client:
   gateway_path: /moq/transcoder

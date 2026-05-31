@@ -391,6 +391,27 @@ pub struct SamplePipeline {
     pub mode: String,
     #[serde(default)]
     pub is_fragment: bool,
+    /// Base-scenario key shared by variants; collapses near-duplicate samples
+    /// into a single card with a variant selector in the UI.
+    #[serde(default)]
+    pub group: Option<String>,
+    /// Human label distinguishing this variant within its `group`.
+    #[serde(default)]
+    pub variant: Option<String>,
+    /// Whether this member represents its `group` (supplies the card title and
+    /// description). Exactly one member of a multi-sample group sets this.
+    #[serde(default)]
+    pub canonical: bool,
+    /// Top-level bucket used for faceted filtering.
+    #[serde(default)]
+    pub category: Option<String>,
+    /// Facetable capability keywords powering the facet chips.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Resolved, lowercased search document (name, description, category,
+    /// tags, authored keywords, node kinds) the UI matches queries against.
+    #[serde(default)]
+    pub search_terms: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, TS)]

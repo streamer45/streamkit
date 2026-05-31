@@ -4,6 +4,17 @@
 
 name: Text-to-Speech (Pocket TTS Voice Clone)
 description: Synthesizes speech from text using Pocket TTS with a voice prompt WAV
+group: text-to-speech
+variant: Pocket TTS (Voice Clone)
+category: Text to Speech
+tags:
+  - text-to-speech
+keywords:
+  - tts
+  - speech synthesis
+  - voice clone
+  - pocket
+  - cloning
 mode: oneshot
 client:
   input:

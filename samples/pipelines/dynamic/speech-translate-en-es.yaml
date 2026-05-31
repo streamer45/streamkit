@@ -22,6 +22,24 @@
 
 name: Real-Time Speech Translation (English → Spanish)
 description: Real-time speech translation from English to Spanish via MoQ
+group: speech-translation-stream
+variant: NLLB (EN→ES)
+canonical: true
+category: Speech Translation
+tags:
+  - streaming
+  - translation
+  - speech-to-text
+  - text-to-speech
+keywords:
+  - translate
+  - english
+  - spanish
+  - nllb
+  - whisper
+  - piper
+  - stt
+  - tts
 mode: dynamic
 client:
   gateway_path: /moq/speech-translate-en-es

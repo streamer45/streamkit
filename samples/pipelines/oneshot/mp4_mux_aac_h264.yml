@@ -12,6 +12,17 @@
 
 name: MP4 Mux (AAC + H264)
 description: Muxes AAC-encoded audio with H.264 video into an MP4 container
+category: Video Encoding
+tags:
+  - video-encoding
+  - audio-encoding
+  - muxing
+keywords:
+  - mp4
+  - mux
+  - aac
+  - h.264
+  - container
 mode: oneshot
 client:
   input:

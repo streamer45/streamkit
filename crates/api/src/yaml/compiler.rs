@@ -8,11 +8,11 @@ use indexmap::IndexMap;
 
 pub fn compile(pipeline: UserPipeline) -> Result<Pipeline, String> {
     match pipeline {
-        UserPipeline::Steps { name, description, mode, steps, client } => {
-            Ok(compile_steps(name, description, mode, steps, client))
+        UserPipeline::Steps { meta, steps, client } => {
+            Ok(compile_steps(meta.name, meta.description, meta.mode, steps, client))
         },
-        UserPipeline::Dag { name, description, mode, nodes, client } => {
-            compile_dag(name, description, mode, nodes, client)
+        UserPipeline::Dag { meta, nodes, client } => {
+            compile_dag(meta.name, meta.description, meta.mode, nodes, client)
         },
     }
 }
@@ -287,7 +287,7 @@ fn value_type_name(v: &serde_json::Value) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::yaml::{Needs, NeedsDependency, UserNode, UserPipeline};
+    use crate::yaml::{Needs, NeedsDependency, PipelineMeta, UserNode, UserPipeline};
     use crate::EngineMode;
     use indexmap::IndexMap;
 
@@ -296,7 +296,11 @@ mod tests {
     }
 
     fn dag_pipeline(nodes: IndexMap<String, UserNode>, mode: EngineMode) -> UserPipeline {
-        UserPipeline::Dag { name: None, description: None, mode, nodes, client: None }
+        UserPipeline::Dag {
+            meta: PipelineMeta { mode, ..PipelineMeta::default() },
+            nodes,
+            client: None,
+        }
     }
 
     fn user_node(kind: &str, needs: Needs) -> UserNode {

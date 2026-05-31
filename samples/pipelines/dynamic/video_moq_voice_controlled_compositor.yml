@@ -57,6 +57,22 @@ description: >-
   speaking indicator are rendered via a separate Slint overlay.
   Three param_bridge nodes coordinate on two different target nodes
   (compositor + Slint subtitle).
+category: Streaming
+tags:
+  - streaming
+  - compositing
+  - webcam
+  - speech-to-text
+  - voice-activity-detection
+  - subtitles
+  - video-encoding
+keywords:
+  - voice control
+  - parakeet
+  - stt
+  - vad
+  - subtitles
+  - compositor
 mode: dynamic
 client:
   gateway_path: /moq/video

@@ -4,6 +4,17 @@
 
 name: Screen Share (MoQ Stream)
 description: Captures the user's screen, composites it with a text overlay, encodes as VP9 at 1920×1080, loops microphone audio through a gain filter, and streams both via MoQ
+category: Streaming
+tags:
+  - streaming
+  - compositing
+  - screen-capture
+  - video-encoding
+keywords:
+  - screen
+  - desktop
+  - screencast
+  - vp9
 mode: dynamic
 client:
   gateway_path: /moq/screen

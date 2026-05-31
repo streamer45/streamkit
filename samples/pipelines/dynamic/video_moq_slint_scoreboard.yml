@@ -31,6 +31,17 @@
 
 name: Video Slint Scoreboard + Lower Third (MoQ)
 description: Composites colorbars with Slint scoreboard and lower-third overlays, streams via MoQ with runtime property updates
+category: Streaming
+tags:
+  - streaming
+  - compositing
+  - video-encoding
+keywords:
+  - slint
+  - scoreboard
+  - lower third
+  - overlay
+  - graphics
 mode: dynamic
 client:
   gateway_path: /moq/video

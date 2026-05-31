@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import type { Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
 
 // Console error substrings that are always benign regardless of test context.
 // ResizeObserver loop errors are a Chromium quirk; WebSocket reconnect chatter
@@ -30,6 +30,30 @@ export interface ConsoleErrorCollector {
   stop(): void;
   /** Return only errors that don't match any benign pattern. */
   getUnexpected(extraBenignPatterns?: string[]): string[];
+}
+
+/**
+ * Selects a sample pipeline in the TemplateSelector.
+ *
+ * Ungrouped cards expose a single radio whose accessible name is the sample
+ * name. Grouped scenario cards expose one radio per variant whose accessible
+ * name is the variant label (which matches its visible text per WCAG 2.5.3);
+ * to disambiguate identically-labelled variants across groups, pass `variant`
+ * and the lookup is scoped to that card's `"<name> variants"` group.
+ */
+export async function selectPipelineTemplate(
+  page: Page,
+  name: string,
+  variant?: string
+): Promise<void> {
+  const radio = variant
+    ? page.getByRole('group', { name: `${name} variants` }).getByRole('radio', {
+        name: variant,
+        exact: true,
+      })
+    : page.getByRole('radio', { name, exact: true });
+  await expect(radio.first()).toBeVisible({ timeout: 10_000 });
+  await radio.first().click();
 }
 
 /**

@@ -10,6 +10,19 @@
 
 name: VA-API H.264 Color Bars (MoQ Stream)
 description: Continuously generates SMPTE color bars and streams via MoQ using VA-API H.264 HW encoder
+group: video-colorbars-stream
+variant: H.264 (VA-API)
+category: Streaming
+tags:
+  - streaming
+  - video-encoding
+  - "hardware:vaapi"
+keywords:
+  - colorbars
+  - smpte
+  - h.264
+  - vaapi
+  - gpu
 mode: dynamic
 client:
   gateway_path: /moq/video

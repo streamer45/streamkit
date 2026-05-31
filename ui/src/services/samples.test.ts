@@ -60,6 +60,12 @@ const SAMPLE: SamplePipeline = {
   is_system: false,
   mode: 'oneshot',
   is_fragment: false,
+  group: null,
+  variant: null,
+  canonical: false,
+  category: null,
+  tags: [],
+  search_terms: [],
 };
 
 beforeEach(() => {

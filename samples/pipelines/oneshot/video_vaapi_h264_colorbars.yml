@@ -13,6 +13,18 @@
 
 name: VA-API H.264 Encode (MP4 Oneshot)
 description: Generates color bars, encodes to H.264 using VA-API HW encoder, and muxes into MP4 (30 seconds)
+group: video-encoding-oneshot
+variant: H.264 (VA-API)
+category: Video Encoding
+tags:
+  - video-encoding
+  - "hardware:vaapi"
+keywords:
+  - colorbars
+  - h.264
+  - vaapi
+  - gpu
+  - mp4
 mode: oneshot
 client:
   input:

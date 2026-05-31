@@ -11,6 +11,7 @@ import { ensureLoggedIn, getAuthHeaders } from './auth-helpers';
 import {
   type ConsoleErrorCollector,
   createConsoleErrorCollector,
+  selectPipelineTemplate,
   verifyAudioPlayback,
   verifyVideoPlayback,
 } from './test-helpers';
@@ -105,11 +106,7 @@ test.describe('Convert View - Audio Mixing Pipeline', () => {
   }) => {
     await expect(page.getByText('1. Select Pipeline Template')).toBeVisible();
 
-    const templateCard = page.getByText('Audio Mixing (Upload + Music Track)', {
-      exact: true,
-    });
-    await expect(templateCard).toBeVisible({ timeout: 10_000 });
-    await templateCard.click();
+    await selectPipelineTemplate(page, 'Audio Mixing (Upload + Music Track)', 'Upload + Music');
 
     await expect(page.locator('input[type="file"]').first()).toBeAttached();
     await page.locator('input[type="file"]').first().setInputFiles(sampleOggPath);
@@ -137,11 +134,7 @@ test.describe('Convert View - Audio Mixing Pipeline', () => {
   }) => {
     await expect(page.getByText('1. Select Pipeline Template')).toBeVisible();
 
-    const templateCard = page.getByText('Audio Mixing (Upload + Music Track)', {
-      exact: true,
-    });
-    await expect(templateCard).toBeVisible({ timeout: 10_000 });
-    await templateCard.click();
+    await selectPipelineTemplate(page, 'Audio Mixing (Upload + Music Track)', 'Upload + Music');
 
     const assetModeButton = page.getByRole('button', {
       name: /Select Existing Asset/i,
@@ -192,11 +185,7 @@ test.describe('Convert View - Video Color Bars Pipeline', () => {
 
     await expect(page.getByText('1. Select Pipeline Template')).toBeVisible();
 
-    const templateCard = page.getByText('Video Color Bars (VP9/WebM)', {
-      exact: true,
-    });
-    await expect(templateCard).toBeVisible({ timeout: 10_000 });
-    await templateCard.click();
+    await selectPipelineTemplate(page, 'Video Color Bars (VP9/WebM)', 'VP9 (Software)');
 
     // This is a no-input (generator) pipeline, so the button says "Generate".
     const generateButton = page.getByRole('button', { name: /Generate/i });

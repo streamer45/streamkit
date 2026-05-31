@@ -16,6 +16,23 @@ description: >
   colorbars with a text overlay and logo watermark, re-encodes as AV1 (SVT-AV1)
   at 1280x720, muxes into WebM, and outputs via HTTP/MSE.
   Access the stream at GET /mse/{session_id}/video
+group: webcam-pip-mse
+variant: AV1 (SVT-AV1)
+category: Streaming
+tags:
+  - streaming
+  - compositing
+  - picture-in-picture
+  - webcam
+  - video-encoding
+keywords:
+  - mse
+  - webcam
+  - camera
+  - pip
+  - webm
+  - av1
+  - svt-av1
 mode: dynamic
 client:
   gateway_path: /moq/video-mse-av1-pip

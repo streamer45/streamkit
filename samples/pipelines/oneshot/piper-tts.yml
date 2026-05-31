@@ -4,6 +4,17 @@
 
 name: Text-to-Speech (Piper)
 description: Synthesizes speech from text using Piper
+group: text-to-speech
+variant: Piper
+category: Text to Speech
+tags:
+  - text-to-speech
+keywords:
+  - tts
+  - speech synthesis
+  - synthesize
+  - voice
+  - piper
 mode: oneshot
 client:
   input:
