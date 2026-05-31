@@ -1632,7 +1632,11 @@ pub fn create_app_state(
 ) -> Arc<AppState> {
     // Normalize here (not only in config::load) so every AppState — tests,
     // embedded/MCP callers — gets a normalized allowlist the resolver can match.
+    // load() hard-rejects invalid configs; this infallible path can only warn.
     config.server.metrics.normalize();
+    if let Err(e) = config.server.metrics.validate() {
+        tracing::warn!("ignoring invalid metrics request_labels configuration: {e}");
+    }
 
     let (event_tx, _) = tokio::sync::broadcast::channel(128);
 
