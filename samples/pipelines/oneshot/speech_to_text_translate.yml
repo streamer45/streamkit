@@ -4,6 +4,23 @@
 
 name: Speech Translation (English → Spanish)
 description: Translates English speech into Spanish speech
+group: speech-translation-oneshot
+variant: NLLB
+canonical: true
+category: Speech Translation
+tags:
+  - translation
+  - speech-to-text
+  - text-to-speech
+keywords:
+  - translate
+  - english
+  - spanish
+  - nllb
+  - whisper
+  - piper
+  - stt
+  - tts
 mode: oneshot
 client:
   input:

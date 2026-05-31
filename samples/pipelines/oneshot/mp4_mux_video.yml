@@ -9,6 +9,17 @@
 
 name: MP4 Mux (AV1 video, file mode)
 description: Encode colorbars to AV1 and mux into an MP4 file
+category: Video Encoding
+tags:
+  - video-encoding
+  - muxing
+keywords:
+  - mp4
+  - mux
+  - av1
+  - svt-av1
+  - video
+  - container
 mode: oneshot
 client:
   input:

@@ -1,5 +1,17 @@
 name: Speech-to-Text (SenseVoice)
 description: Transcribes speech in multiple languages using SenseVoice
+group: speech-to-text
+variant: SenseVoice
+category: Speech to Text
+tags:
+  - speech-to-text
+keywords:
+  - stt
+  - asr
+  - transcribe
+  - transcription
+  - sensevoice
+  - multilingual
 mode: oneshot
 client:
   input:

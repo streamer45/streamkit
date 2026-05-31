@@ -4,6 +4,19 @@
 
 name: Video Compositor (MoQ Stream)
 description: Composites two colorbars sources with the StreamKit logo watermark through the compositor node and streams via MoQ
+group: video-compositor-stream
+variant: VP9
+canonical: true
+category: Streaming
+tags:
+  - streaming
+  - compositing
+  - video-encoding
+keywords:
+  - compositor
+  - overlay
+  - watermark
+  - vp9
 mode: dynamic
 client:
   gateway_path: /moq/video

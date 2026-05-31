@@ -398,12 +398,20 @@ pub struct SamplePipeline {
     /// Human label distinguishing this variant within its `group`.
     #[serde(default)]
     pub variant: Option<String>,
+    /// Whether this member represents its `group` (supplies the card title and
+    /// description). Exactly one member of a multi-sample group sets this.
+    #[serde(default)]
+    pub canonical: bool,
     /// Top-level bucket used for faceted filtering.
     #[serde(default)]
     pub category: Option<String>,
-    /// Capability keywords powering fuzzy search and facet chips.
+    /// Facetable capability keywords powering the facet chips.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Resolved, lowercased search document (name, description, category,
+    /// tags, authored keywords, node kinds) the UI matches queries against.
+    #[serde(default)]
+    pub search_terms: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, TS)]

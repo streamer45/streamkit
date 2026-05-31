@@ -4,6 +4,17 @@
 
 name: Text-to-Speech (Matcha)
 description: Synthesizes speech from text using Matcha
+group: text-to-speech
+variant: Matcha
+category: Text to Speech
+tags:
+  - text-to-speech
+keywords:
+  - tts
+  - speech synthesis
+  - synthesize
+  - voice
+  - matcha
 mode: oneshot
 client:
   input:

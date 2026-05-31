@@ -304,6 +304,8 @@ mod tests {
             variant: None,
             category: None,
             tags: Vec::new(),
+            canonical: false,
+            keywords: Vec::new(),
             nodes,
             client: None,
         }

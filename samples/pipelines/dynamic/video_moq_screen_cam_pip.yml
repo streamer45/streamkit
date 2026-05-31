@@ -8,6 +8,24 @@ description: >
   picture-in-picture overlay, loops microphone audio, and streams via MoQ.
   Uses multi-broadcast subscription to receive screen and camera inputs on
   separate broadcasts with namespaced output pins.
+group: screen-cam-pip-stream
+variant: VP9
+canonical: true
+category: Streaming
+tags:
+  - streaming
+  - compositing
+  - picture-in-picture
+  - screen-capture
+  - webcam
+  - video-encoding
+keywords:
+  - screen
+  - desktop
+  - camera
+  - webcam
+  - pip
+  - vp9
 mode: dynamic
 client:
   gateway_path: /moq/screenshare

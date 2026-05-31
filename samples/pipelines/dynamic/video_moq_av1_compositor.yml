@@ -4,6 +4,19 @@
 
 name: Video Compositor – AV1 (MoQ Stream)
 description: Composites two colorbars sources with the StreamKit logo watermark, encodes as AV1 (rav1e) at 1280x720, and streams via MoQ
+group: video-compositor-stream
+variant: AV1 (rav1e)
+category: Streaming
+tags:
+  - streaming
+  - compositing
+  - video-encoding
+keywords:
+  - compositor
+  - overlay
+  - watermark
+  - av1
+  - rav1e
 mode: dynamic
 client:
   gateway_path: /moq/video

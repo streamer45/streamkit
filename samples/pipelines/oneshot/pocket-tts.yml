@@ -4,6 +4,17 @@
 
 name: Text-to-Speech (Pocket TTS)
 description: Synthesizes speech from text using Pocket TTS
+group: text-to-speech
+variant: Pocket TTS
+category: Text to Speech
+tags:
+  - text-to-speech
+keywords:
+  - tts
+  - speech synthesis
+  - synthesize
+  - voice
+  - pocket
 mode: oneshot
 client:
   input:

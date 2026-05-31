@@ -11,6 +11,20 @@
 
 name: NVENC AV1 Color Bars (MoQ Stream)
 description: Continuously generates SMPTE color bars and streams via MoQ using NVIDIA NVENC AV1 HW encoder
+group: video-colorbars-stream
+variant: AV1 (NVENC)
+category: Streaming
+tags:
+  - streaming
+  - video-encoding
+  - "hardware:nvidia"
+keywords:
+  - colorbars
+  - smpte
+  - av1
+  - nvenc
+  - nvidia
+  - gpu
 mode: dynamic
 client:
   gateway_path: /moq/video

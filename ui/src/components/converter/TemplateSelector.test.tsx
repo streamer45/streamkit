@@ -10,7 +10,7 @@ import type { SamplePipeline } from '@/types/generated/api-types';
 import { TemplateSelector } from './TemplateSelector';
 
 function makePipeline(overrides: Partial<SamplePipeline> = {}): SamplePipeline {
-  return {
+  const base: SamplePipeline = {
     id: 'tpl-1',
     name: 'Test Pipeline',
     description: 'A test pipeline',
@@ -20,10 +20,18 @@ function makePipeline(overrides: Partial<SamplePipeline> = {}): SamplePipeline {
     is_fragment: false,
     group: null,
     variant: null,
+    canonical: false,
     category: null,
     tags: [],
+    search_terms: [],
     ...overrides,
   };
+  if (!overrides.search_terms) {
+    base.search_terms = [base.name, base.description, base.category, ...base.tags]
+      .filter((t): t is string => Boolean(t))
+      .map((t) => t.toLowerCase());
+  }
+  return base;
 }
 
 const SYSTEM_TPL = makePipeline({ id: 'sys-1', name: 'Transcribe Audio', is_system: true });

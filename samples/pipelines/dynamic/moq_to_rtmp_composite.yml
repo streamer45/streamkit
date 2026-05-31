@@ -18,6 +18,19 @@ name: MoQ to RTMP (Composited)
 description: |
   Receives audio+video via MoQ peer, composites with PiP and logo overlay,
   re-encodes to H.264+AAC, and publishes to an RTMP endpoint (e.g. YouTube Live).
+category: Streaming
+tags:
+  - streaming
+  - compositing
+  - picture-in-picture
+  - audio-encoding
+keywords:
+  - moq
+  - rtmp
+  - youtube
+  - h.264
+  - aac
+  - composite
 mode: dynamic
 client:
   gateway_path: /moq/rtmp-out

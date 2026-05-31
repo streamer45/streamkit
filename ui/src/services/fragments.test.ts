@@ -32,8 +32,10 @@ const FRAGMENT_SAMPLE: SamplePipeline = {
   is_fragment: true,
   group: null,
   variant: null,
+  canonical: false,
   category: null,
   tags: [],
+  search_terms: [],
 };
 
 beforeEach(() => {

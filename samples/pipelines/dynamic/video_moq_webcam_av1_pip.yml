@@ -4,6 +4,21 @@
 
 name: Webcam PiP – AV1 Output (MoQ Stream)
 description: Composites the user's webcam as picture-in-picture over colorbars with a text overlay, loops audio through a gain filter, re-encodes video as AV1 (rav1e) at 1280x720, and streams both via MoQ
+group: webcam-pip-stream
+variant: AV1 (rav1e)
+category: Streaming
+tags:
+  - streaming
+  - compositing
+  - picture-in-picture
+  - webcam
+  - video-encoding
+keywords:
+  - webcam
+  - camera
+  - pip
+  - av1
+  - rav1e
 mode: dynamic
 client:
   gateway_path: /moq/video

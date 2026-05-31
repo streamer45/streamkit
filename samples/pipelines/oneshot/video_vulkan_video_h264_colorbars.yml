@@ -12,6 +12,18 @@
 
 name: Vulkan Video H.264 Encode (MP4 Oneshot)
 description: Generates color bars, encodes to H.264 using Vulkan Video HW encoder, and muxes into MP4 (30 seconds)
+group: video-encoding-oneshot
+variant: H.264 (Vulkan)
+category: Video Encoding
+tags:
+  - video-encoding
+  - "hardware:vulkan"
+keywords:
+  - colorbars
+  - h.264
+  - vulkan
+  - gpu
+  - mp4
 mode: oneshot
 client:
   input:

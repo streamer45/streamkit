@@ -4,6 +4,18 @@
 
 name: Video Color Bars (VP9/WebM)
 description: Generates SMPTE color bars, encodes to VP9, and outputs a WebM file (30 seconds)
+group: video-encoding-oneshot
+variant: VP9 (Software)
+canonical: true
+category: Video Encoding
+tags:
+  - video-encoding
+keywords:
+  - colorbars
+  - smpte
+  - test pattern
+  - vp9
+  - webm
 mode: oneshot
 client:
   input:

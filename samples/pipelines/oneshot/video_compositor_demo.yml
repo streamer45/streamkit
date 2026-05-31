@@ -16,6 +16,20 @@
 
 name: Video Compositor Demo
 description: Composites two colorbars sources (main + PiP) with a text overlay and the StreamKit logo watermark through the compositor node, encodes to VP9, and streams a WebM via http_output with real-time pacing (30 seconds)
+group: video-compositor-oneshot
+variant: VP9
+canonical: true
+category: Video Compositing
+tags:
+  - compositing
+  - video-encoding
+keywords:
+  - compositor
+  - overlay
+  - watermark
+  - pip
+  - vp9
+  - webm
 mode: oneshot
 client:
   input:

@@ -7,6 +7,23 @@ description: >
   Receives webcam and microphone via MoQ, composites webcam as PiP over
   colorbars, muxes audio + video into WebM, and outputs via HTTP/MSE only.
   Access the stream at GET /mse/{session_id}/video
+group: webcam-pip-mse
+variant: VP9
+canonical: true
+category: Streaming
+tags:
+  - streaming
+  - compositing
+  - picture-in-picture
+  - webcam
+  - video-encoding
+keywords:
+  - mse
+  - webcam
+  - camera
+  - pip
+  - webm
+  - vp9
 mode: dynamic
 client:
   gateway_path: /moq/video-mse-pip

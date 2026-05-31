@@ -1,5 +1,14 @@
 name: Gain Filter (Rust WASM)
 description: Applies a gain filter using the Rust WASM plugin
+category: Audio Processing
+tags:
+  - gain
+keywords:
+  - gain
+  - volume
+  - wasm
+  - rust
+  - plugin
 mode: oneshot
 client:
   input:

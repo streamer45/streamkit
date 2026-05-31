@@ -7,7 +7,6 @@ import { describe, expect, it } from 'vitest';
 import type { SamplePipeline } from '@/types/generated/api-types';
 
 import {
-  baseVariantLabel,
   collectSampleFacets,
   compareSamplePipelinesByName,
   groupSamplePipelinesByScenario,
@@ -16,19 +15,35 @@ import {
   sampleNeedsHardware,
 } from './samplePipelineOrdering';
 
+// Mirrors the backend `build_search_terms`: when a fixture does not supply an
+// explicit `search_terms`, derive one from the discovery fields so query tests
+// exercise the same document the server emits.
 function makePipeline(partial: Partial<SamplePipeline> & { id: string }): SamplePipeline {
+  const name = partial.name ?? '';
+  const description = partial.description ?? '';
+  const category = partial.category ?? null;
+  const group = partial.group ?? null;
+  const variant = partial.variant ?? null;
+  const tags = partial.tags ?? [];
+  const search_terms =
+    partial.search_terms ??
+    [name, description, category, group, variant, ...tags]
+      .filter((t): t is string => Boolean(t))
+      .map((t) => t.toLowerCase());
   return {
     id: partial.id,
-    name: partial.name ?? '',
-    description: partial.description ?? '',
+    name,
+    description,
     yaml: partial.yaml ?? '',
     is_system: partial.is_system ?? false,
     mode: partial.mode ?? 'dynamic',
     is_fragment: partial.is_fragment ?? false,
-    group: partial.group ?? null,
-    variant: partial.variant ?? null,
-    category: partial.category ?? null,
-    tags: partial.tags ?? [],
+    group,
+    variant,
+    canonical: partial.canonical ?? false,
+    category,
+    tags,
+    search_terms,
   };
 }
 
@@ -119,11 +134,11 @@ describe('matchesSamplePipelineQuery', () => {
     expect(matchesSamplePipelineQuery(pipeline, 'ffmpeg')).toBe(true);
   });
 
-  it('matches by id', () => {
+  it('matches a search term substring', () => {
     expect(matchesSamplePipelineQuery(pipeline, 'mp4')).toBe(true);
   });
 
-  it('returns false when the query is not a substring of any field', () => {
+  it('returns false when the query is not a substring of any search term', () => {
     expect(matchesSamplePipelineQuery(pipeline, 'flac')).toBe(false);
   });
 
@@ -132,7 +147,7 @@ describe('matchesSamplePipelineQuery', () => {
   });
 
   it('handles missing fields without throwing', () => {
-    const sparse = makePipeline({ id: 'x', name: '', description: '' });
+    const sparse = makePipeline({ id: 'x', name: 'x', description: '' });
     expect(matchesSamplePipelineQuery(sparse, 'x')).toBe(true);
     expect(matchesSamplePipelineQuery(sparse, 'absent')).toBe(false);
   });
@@ -148,38 +163,17 @@ describe('matchesSamplePipelineQuery', () => {
     expect(matchesSamplePipelineQuery(sample, 'voice activity')).toBe(true);
   });
 
-  it('expands synonyms so abbreviations find derived tags', () => {
-    const stt = makePipeline({ id: 'stt', name: 'Whisper', tags: ['speech-to-text'] });
-    const tts = makePipeline({ id: 'tts', name: 'Kokoro', tags: ['text-to-speech'] });
+  it('matches authored aliases baked into the resolved search document', () => {
+    // Aliases/synonyms (e.g. "stt") live in each sample's authored keywords,
+    // which the backend folds into search_terms; the UI does no expansion.
+    const stt = makePipeline({
+      id: 'stt',
+      name: 'Whisper',
+      search_terms: ['whisper', 'speech-to-text', 'stt', 'transcribe'],
+    });
     expect(matchesSamplePipelineQuery(stt, 'stt')).toBe(true);
     expect(matchesSamplePipelineQuery(stt, 'transcribe')).toBe(true);
-    expect(matchesSamplePipelineQuery(tts, 'tts')).toBe(true);
-    expect(matchesSamplePipelineQuery(tts, 'speech synthesis')).toBe(true);
-    expect(matchesSamplePipelineQuery(tts, 'stt')).toBe(false);
-  });
-
-  it('expands a whole-token prefix of a multi-word synonym', () => {
-    const tts = makePipeline({ id: 'tts', name: 'Kokoro', tags: ['text-to-speech'] });
-    expect(matchesSamplePipelineQuery(tts, 'synthesis')).toBe(true);
-  });
-
-  it('does not expand both video families from a shared token', () => {
-    // "video" is a token of the hyphenated derived tags video-encoding and
-    // video-decoding, but those are expansion targets only, so querying "video"
-    // must not pull a decoder pipeline in via the encode group's synonyms.
-    const decoder = makePipeline({ id: 'dec', name: 'AV1 Decode', tags: ['video-decoding'] });
-    expect(matchesSamplePipelineQuery(decoder, 'encoder')).toBe(false);
-  });
-
-  it('does not let a query that merely contains a short synonym leak in its group', () => {
-    const mic = makePipeline({ id: 'mic', name: 'Microphone Capture', tags: ['microphone'] });
-    const cam = makePipeline({ id: 'cam', name: 'Webcam PiP', tags: ['webcam'] });
-    // "dynamic" contains "mic" and "scam" contains "cam"; neither should expand
-    // the microphone/webcam synonym groups.
-    expect(matchesSamplePipelineQuery(mic, 'dynamic')).toBe(false);
-    expect(matchesSamplePipelineQuery(cam, 'scam')).toBe(false);
-    // Genuine prefixes still expand their group.
-    expect(matchesSamplePipelineQuery(cam, 'camera')).toBe(true);
+    expect(matchesSamplePipelineQuery(stt, 'tts')).toBe(false);
   });
 
   it('requires every query term to match (AND semantics)', () => {
@@ -188,7 +182,7 @@ describe('matchesSamplePipelineQuery', () => {
       name: 'VA-API H.264 Colorbars',
       tags: ['video-encoding', 'hardware:vaapi'],
     });
-    expect(matchesSamplePipelineQuery(sample, 'vaapi encode')).toBe(true);
+    expect(matchesSamplePipelineQuery(sample, 'vaapi encoding')).toBe(true);
     expect(matchesSamplePipelineQuery(sample, 'vaapi audio')).toBe(false);
   });
 });
@@ -198,6 +192,8 @@ describe('groupSamplePipelinesByScenario', () => {
     id: 'd/colorbars',
     name: 'Colorbars',
     group: 'video-moq-colorbars',
+    variant: 'Software',
+    canonical: true,
   });
   const h264 = makePipeline({
     id: 'd/h264-colorbars',
@@ -212,14 +208,14 @@ describe('groupSamplePipelinesByScenario', () => {
     variant: 'VA-API H.264',
   });
 
-  it('collapses same-group samples into one entry with sorted variants', () => {
+  it('collapses same-group samples into one entry with the canonical member first', () => {
     const groups = groupSamplePipelinesByScenario([h264, plain, vaapi]);
     expect(groups).toHaveLength(1);
     expect(groups[0].key).toBe('video-moq-colorbars');
-    // Canonical (no variant) is the base and comes first.
+    // The canonical member is the base and comes first.
     expect(groups[0].base).toBe(plain);
     expect(groups[0].variants[0]).toBe(plain);
-    expect(groups[0].variants.map((v) => v.variant)).toEqual([null, 'H.264', 'VA-API H.264']);
+    expect(groups[0].variants.map((v) => v.variant)).toEqual(['Software', 'H.264', 'VA-API H.264']);
   });
 
   it('treats samples without a group as singletons keyed by id', () => {
@@ -248,27 +244,26 @@ describe('sampleNeedsHardware', () => {
 });
 
 describe('collectSampleFacets', () => {
-  it('aggregates sorted categories and capabilities, excluding hardware and format tags', () => {
+  it('aggregates sorted categories and capabilities, excluding hardware tags', () => {
     const facets = collectSampleFacets([
       makePipeline({
         id: 'a',
         category: 'Video Encoding',
-        tags: ['hardware:vaapi', 'colorbars', 'codec:vp9'],
+        tags: ['hardware:vaapi', 'colorbars'],
       }),
-      makePipeline({ id: 'b', category: 'Speech to Text', tags: ['mp4'] }),
+      makePipeline({ id: 'b', category: 'Speech to Text', tags: ['transcription'] }),
     ]);
     expect(facets.categories).toEqual(['Speech to Text', 'Video Encoding']);
-    // codec:* and container/transport tags are the variant axis, not facets.
-    expect(facets.capabilities).toEqual(['colorbars']);
+    expect(facets.capabilities).toEqual(['colorbars', 'transcription']);
     expect(facets.hasHardware).toBe(true);
   });
 
   it('keeps tags as capabilities even when a same-named category is shown', () => {
-    // category is a single priority-picked bucket while tags are multi-valued,
-    // so a capability chip must survive as a cross-cutting filter (e.g. a
-    // sample bucketed as `Video Compositing` may still carry `video-encoding`).
+    // category is a single bucket while tags are multi-valued, so a capability
+    // chip must survive as a cross-cutting filter (e.g. a sample bucketed as
+    // `Video Compositing` may still carry `video-encoding`).
     const facets = collectSampleFacets([
-      makePipeline({ id: 'a', category: 'Video Encoding', tags: ['video-encoding', 'codec:vp9'] }),
+      makePipeline({ id: 'a', category: 'Video Encoding', tags: ['video-encoding'] }),
       makePipeline({
         id: 'b',
         category: 'Video Compositing',
@@ -280,25 +275,7 @@ describe('collectSampleFacets', () => {
   });
 
   it('reports no hardware when no hardware tags are present', () => {
-    const facets = collectSampleFacets([makePipeline({ id: 'a', tags: ['mp4'] })]);
+    const facets = collectSampleFacets([makePipeline({ id: 'a', tags: ['transcription'] })]);
     expect(facets.hasHardware).toBe(false);
-  });
-});
-
-describe('baseVariantLabel', () => {
-  it('derives the base label from the output codec tag', () => {
-    const colorbars = makePipeline({ id: 'cb', tags: ['codec:vp9', 'moq'] });
-    const mixer = makePipeline({ id: 'mix', tags: ['codec:opus', 'mixing'] });
-    expect(baseVariantLabel(colorbars)).toBe('VP9');
-    expect(baseVariantLabel(mixer)).toBe('Opus');
-  });
-
-  it('prefers the video codec when a sample carries both', () => {
-    const pip = makePipeline({ id: 'pip', tags: ['codec:opus', 'codec:h264'] });
-    expect(baseVariantLabel(pip)).toBe('H.264');
-  });
-
-  it('returns null when there is no codec tag to distinguish the base', () => {
-    expect(baseVariantLabel(makePipeline({ id: 'x', tags: ['mixing'] }))).toBeNull();
   });
 });

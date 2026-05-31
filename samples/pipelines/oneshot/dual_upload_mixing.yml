@@ -1,5 +1,16 @@
 name: Dual Upload Mixer
 description: Mix two uploaded Ogg/Opus tracks and return Opus/WebM
+group: audio-mixing
+variant: Two Uploads
+category: Audio Processing
+tags:
+  - mixing
+keywords:
+  - mix
+  - dual
+  - two tracks
+  - opus
+  - webm
 mode: oneshot
 client:
   input:

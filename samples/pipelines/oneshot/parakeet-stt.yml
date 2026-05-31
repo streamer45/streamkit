@@ -1,5 +1,17 @@
 name: Speech-to-Text (Parakeet TDT)
 description: Fast English speech transcription using NVIDIA Parakeet TDT (~10x faster than Whisper on CPU)
+group: speech-to-text
+variant: Parakeet TDT
+category: Speech to Text
+tags:
+  - speech-to-text
+keywords:
+  - stt
+  - asr
+  - transcribe
+  - transcription
+  - parakeet
+  - nvidia
 mode: oneshot
 client:
   input:

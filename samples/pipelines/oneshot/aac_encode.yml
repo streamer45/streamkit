@@ -12,6 +12,14 @@
 
 name: AAC Encode (audio-only, MP4)
 description: Decodes an uploaded Ogg/Opus file, encodes to AAC-LC, and muxes into MP4
+category: Audio Processing
+tags:
+  - audio-encoding
+keywords:
+  - aac
+  - encode
+  - mp4
+  - audio
 mode: oneshot
 client:
   input:

@@ -4,6 +4,15 @@
 
 name: Text-to-Speech (Useless Facts)
 description: Fetches a random fact and reads it out loud using Kokoro
+category: Text to Speech
+tags:
+  - text-to-speech
+keywords:
+  - tts
+  - facts
+  - script
+  - fetch
+  - kokoro
 mode: oneshot
 client:
   input:

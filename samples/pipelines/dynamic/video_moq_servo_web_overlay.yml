@@ -23,6 +23,18 @@
 
 name: Video Web Overlay (Servo + MoQ)
 description: Composites a Servo-rendered web page as PiP overlay on colorbars and streams via MoQ
+category: Streaming
+tags:
+  - streaming
+  - compositing
+  - web-capture
+  - video-encoding
+keywords:
+  - servo
+  - web
+  - browser
+  - overlay
+  - pip
 mode: dynamic
 client:
   gateway_path: /moq/video

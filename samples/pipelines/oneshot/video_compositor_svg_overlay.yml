@@ -10,6 +10,16 @@
 
 name: Video Compositor SVG Overlay Demo
 description: Composites colorbars with an SVG overlay (test_logo.svg), encodes to VP9, and streams a WebM via http_output (30 seconds)
+category: Video Compositing
+tags:
+  - compositing
+  - video-encoding
+keywords:
+  - compositor
+  - svg
+  - overlay
+  - vector
+  - vp9
 mode: oneshot
 client:
   input:

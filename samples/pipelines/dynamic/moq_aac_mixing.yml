@@ -18,6 +18,18 @@ name: Real-Time MoQ Mixing (AAC)
 description: |
   Accepts Opus audio via MoQ, mixes with a local music track,
   encodes to AAC, and broadcasts the mixed AAC stream to subscribers.
+group: moq-mixing
+variant: AAC
+category: Streaming
+tags:
+  - streaming
+  - mixing
+  - audio-encoding
+keywords:
+  - moq
+  - mix
+  - music
+  - aac
 mode: dynamic
 client:
   gateway_path: /moq/mixing-aac

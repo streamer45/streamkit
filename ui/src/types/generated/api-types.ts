@@ -384,13 +384,23 @@ group: string | null,
  */
 variant: string | null, 
 /**
+ * Whether this member represents its `group` (supplies the card title and
+ * description). Exactly one member of a multi-sample group sets this.
+ */
+canonical: boolean, 
+/**
  * Top-level bucket used for faceted filtering.
  */
 category: string | null, 
 /**
- * Capability keywords powering fuzzy search and facet chips.
+ * Facetable capability keywords powering the facet chips.
  */
-tags: Array<string>, };
+tags: Array<string>, 
+/**
+ * Resolved, lowercased search document (name, description, category,
+ * tags, authored keywords, node kinds) the UI matches queries against.
+ */
+search_terms: Array<string>, };
 
 export type SavePipelineRequest = { name: string, description: string, yaml: string, overwrite: boolean, 
 /**

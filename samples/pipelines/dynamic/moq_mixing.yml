@@ -1,5 +1,17 @@
 name: Real-Time MoQ Mixing (Mic + Music)
 description: Mixes a live MoQ input stream with a local music track and republishes to MoQ
+group: moq-mixing
+variant: Opus
+canonical: true
+category: Streaming
+tags:
+  - streaming
+  - mixing
+keywords:
+  - moq
+  - mix
+  - music
+  - opus
 mode: dynamic
 client:
   gateway_path: /moq/mixing

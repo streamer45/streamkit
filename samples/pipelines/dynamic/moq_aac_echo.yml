@@ -18,6 +18,15 @@ name: MoQ AAC Echo
 description: |
   Accepts Opus audio via MoQ peer, re-encodes to AAC, and
   broadcasts the AAC echo back to subscribers.
+category: Streaming
+tags:
+  - streaming
+  - transcoding
+  - audio-encoding
+keywords:
+  - moq
+  - aac
+  - echo
 mode: dynamic
 client:
   gateway_path: /moq/aac-echo

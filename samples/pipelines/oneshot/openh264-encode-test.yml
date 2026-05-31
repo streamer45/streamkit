@@ -8,6 +8,16 @@
 
 name: OpenH264 Encode Test (MP4)
 description: Generates color bars, encodes to H.264 using OpenH264, and muxes into MP4
+group: video-encoding-oneshot
+variant: H.264 (OpenH264)
+category: Video Encoding
+tags:
+  - video-encoding
+keywords:
+  - colorbars
+  - h.264
+  - openh264
+  - mp4
 mode: oneshot
 client:
   input:

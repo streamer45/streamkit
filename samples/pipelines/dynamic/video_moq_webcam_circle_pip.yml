@@ -4,6 +4,19 @@
 
 name: Webcam Circle PiP (MoQ Stream)
 description: Composites the user's webcam as a circular picture-in-picture overlay (Loom-style) over colorbars, loops audio through a gain filter, and streams both via MoQ
+category: Streaming
+tags:
+  - streaming
+  - compositing
+  - picture-in-picture
+  - webcam
+  - video-encoding
+keywords:
+  - webcam
+  - camera
+  - circle
+  - loom
+  - pip
 mode: dynamic
 client:
   gateway_path: /moq/video

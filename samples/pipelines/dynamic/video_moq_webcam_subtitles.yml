@@ -28,6 +28,22 @@ description: >-
   real-time Parakeet TDT transcription displayed as subtitles via a Slint
   overlay.  Demonstrates the param_bridge node for cross-node control
   messaging.  ~10x faster than Whisper on CPU.
+category: Streaming
+tags:
+  - streaming
+  - compositing
+  - picture-in-picture
+  - webcam
+  - speech-to-text
+  - subtitles
+  - video-encoding
+keywords:
+  - webcam
+  - subtitles
+  - captions
+  - parakeet
+  - stt
+  - transcription
 mode: dynamic
 client:
   gateway_path: /moq/video

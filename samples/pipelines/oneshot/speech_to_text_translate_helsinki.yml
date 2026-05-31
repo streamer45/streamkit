@@ -14,6 +14,21 @@
 
 name: Speech Translation (English → Spanish) - Helsinki
 description: Translates English speech into Spanish speech using Apache 2.0 licensed Helsinki OPUS-MT
+group: speech-translation-oneshot
+variant: Helsinki
+category: Speech Translation
+tags:
+  - translation
+  - speech-to-text
+  - text-to-speech
+keywords:
+  - translate
+  - english
+  - spanish
+  - helsinki
+  - opus-mt
+  - stt
+  - tts
 mode: oneshot
 client:
   input:

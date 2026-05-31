@@ -1,5 +1,16 @@
 name: Audio Mixing (Upload + Music Track)
 description: Mixes uploaded audio with a built-in music track and returns Opus/WebM
+group: audio-mixing
+variant: Upload + Music
+canonical: true
+category: Audio Processing
+tags:
+  - mixing
+keywords:
+  - mix
+  - music
+  - opus
+  - webm
 mode: oneshot
 client:
   input:

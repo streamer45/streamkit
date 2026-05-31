@@ -1,5 +1,17 @@
 name: Text-to-Speech (Kokoro)
 description: Synthesizes speech from text using Kokoro
+group: text-to-speech
+variant: Kokoro
+canonical: true
+category: Text to Speech
+tags:
+  - text-to-speech
+keywords:
+  - tts
+  - speech synthesis
+  - synthesize
+  - voice
+  - kokoro
 mode: oneshot
 client:
   input:

@@ -4,6 +4,21 @@
 
 name: Webcam PiP (MoQ Stream)
 description: Composites the user's webcam as picture-in-picture over colorbars with a text overlay, loops audio through a gain filter, and streams both via MoQ
+group: webcam-pip-stream
+variant: VP9
+canonical: true
+category: Streaming
+tags:
+  - streaming
+  - compositing
+  - picture-in-picture
+  - webcam
+  - video-encoding
+keywords:
+  - webcam
+  - camera
+  - pip
+  - vp9
 mode: dynamic
 client:
   gateway_path: /moq/video

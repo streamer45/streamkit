@@ -9,13 +9,12 @@ import type { SamplePipeline } from '@/types/generated/api-types';
 import { labelFromKey } from '@/utils/jsonSchema';
 import type { SampleFacets, ScenarioGroup } from '@/utils/samplePipelineOrdering';
 import {
-  baseVariantLabel,
   collectSampleFacets,
   compareSamplePipelinesByName,
-  expandQueryTerms,
   groupSamplePipelinesByScenario,
-  matchesExpandedQuery,
+  matchesQueryTokens,
   sampleNeedsHardware,
+  tokenizeQuery,
 } from '@/utils/samplePipelineOrdering';
 
 import {
@@ -89,7 +88,7 @@ const ScenarioCard: React.FC<{ group: ScenarioGroup; selectedTemplateId: string 
       <VariantSelector role="group" aria-label={`${base.name} variants`}>
         {variants.map((variant) => (
           <VariantOption key={variant.id} value={variant.id} aria-label={variant.name}>
-            {variant.variant ?? baseVariantLabel(variant) ?? 'Default'}
+            {variant.variant ?? variant.name}
           </VariantOption>
         ))}
       </VariantSelector>
@@ -231,7 +230,7 @@ export const TemplateSelector: React.FC<TemplateSelectorProps> = ({
 
   const toggleHardware = React.useCallback(() => setHardwareOnly((current) => !current), []);
 
-  const expandedQuery = React.useMemo(() => expandQueryTerms(query), [query]);
+  const queryTokens = React.useMemo(() => tokenizeQuery(query), [query]);
 
   const filteredTemplates = React.useMemo(() => {
     return templates.filter((template) => {
@@ -240,9 +239,9 @@ export const TemplateSelector: React.FC<TemplateSelectorProps> = ({
       if (categoryFilter && template.category !== categoryFilter) return false;
       if (capabilityFilter && !(template.tags ?? []).includes(capabilityFilter)) return false;
       if (hardwareOnly && !sampleNeedsHardware(template)) return false;
-      return matchesExpandedQuery(template, expandedQuery);
+      return matchesQueryTokens(template, queryTokens);
     });
-  }, [templates, originFilter, categoryFilter, capabilityFilter, hardwareOnly, expandedQuery]);
+  }, [templates, originFilter, categoryFilter, capabilityFilter, hardwareOnly, queryTokens]);
 
   const systemGroups = React.useMemo(
     () => toScenarioGroups(filteredTemplates.filter((template) => template.is_system)),

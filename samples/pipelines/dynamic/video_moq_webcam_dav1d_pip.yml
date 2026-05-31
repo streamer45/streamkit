@@ -12,6 +12,21 @@ description: >
   This is the same pipeline as video_moq_webcam_av1_pip.yml but uses the
   video::dav1d::decoder node, which handles corrupt/truncated AV1 data
   gracefully via negative error codes — it never panics.
+group: webcam-pip-stream
+variant: AV1 (dav1d decode)
+category: Streaming
+tags:
+  - streaming
+  - compositing
+  - picture-in-picture
+  - webcam
+  - video-encoding
+keywords:
+  - webcam
+  - camera
+  - pip
+  - av1
+  - dav1d
 mode: dynamic
 client:
   gateway_path: /moq/video

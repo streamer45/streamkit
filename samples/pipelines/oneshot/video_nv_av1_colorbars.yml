@@ -13,6 +13,19 @@
 
 name: NVENC AV1 Encode (WebM Oneshot)
 description: Generates color bars, encodes to AV1 using NVIDIA NVENC HW encoder, and muxes into WebM (30 seconds)
+group: video-encoding-oneshot
+variant: AV1 (NVENC)
+category: Video Encoding
+tags:
+  - video-encoding
+  - "hardware:nvidia"
+keywords:
+  - colorbars
+  - av1
+  - nvenc
+  - nvidia
+  - gpu
+  - webm
 mode: oneshot
 client:
   input:

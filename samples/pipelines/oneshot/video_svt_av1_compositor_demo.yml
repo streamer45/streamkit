@@ -12,6 +12,19 @@
 
 name: Video Compositor Demo (SVT-AV1)
 description: Composites two colorbars sources (main + PiP) with a text overlay and logo watermark, encodes to AV1 via SVT-AV1, and streams a WebM via http_output (30 seconds)
+group: video-compositor-oneshot
+variant: AV1 (SVT-AV1)
+category: Video Compositing
+tags:
+  - compositing
+  - video-encoding
+keywords:
+  - compositor
+  - overlay
+  - watermark
+  - pip
+  - av1
+  - svt-av1
 mode: oneshot
 client:
   input:

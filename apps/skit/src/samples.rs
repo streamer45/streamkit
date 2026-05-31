@@ -183,8 +183,7 @@ fn has_yaml_extension(filename: &str) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml"))
 }
 
-/// Metadata extracted from a pipeline YAML, including the raw inputs the
-/// discovery derivation needs (node kinds + client I/O types).
+/// Metadata extracted from a pipeline YAML for listing, search, and discovery.
 #[derive(Default)]
 struct PipelineMetadata {
     name: Option<String>,
@@ -192,16 +191,6 @@ struct PipelineMetadata {
     mode: streamkit_api::EngineMode,
     explicit: crate::sample_discovery::Discovery,
     node_kinds: Vec<String>,
-    client_input: Option<streamkit_api::yaml::InputType>,
-    client_output: Option<streamkit_api::yaml::OutputType>,
-}
-
-fn client_io_types(
-    client: Option<&streamkit_api::yaml::ClientSection>,
-) -> (Option<streamkit_api::yaml::InputType>, Option<streamkit_api::yaml::OutputType>) {
-    let input = client.and_then(|c| c.input.as_ref()).map(|i| i.input_type);
-    let output = client.and_then(|c| c.output.as_ref()).map(|o| o.output_type);
-    (input, output)
 }
 
 /// Parse pipeline YAML and extract metadata used for listing and discovery.
@@ -230,24 +219,38 @@ fn parse_pipeline_metadata(yaml: &str, path: &std::path::Path) -> PipelineMetada
         mode,
         group,
         variant,
+        canonical,
         category,
         tags,
-        client,
+        keywords,
         ..
     }
     | UserPipeline::Dag {
-        name, description, mode, group, variant, category, tags, client, ..
+        name,
+        description,
+        mode,
+        group,
+        variant,
+        canonical,
+        category,
+        tags,
+        keywords,
+        ..
     }) = user_pipeline;
 
-    let (client_input, client_output) = client_io_types(client.as_ref());
     PipelineMetadata {
         name,
         description,
         mode,
-        explicit: crate::sample_discovery::Discovery { group, variant, category, tags },
+        explicit: crate::sample_discovery::Discovery {
+            group,
+            variant,
+            canonical,
+            category,
+            tags,
+            keywords,
+        },
         node_kinds,
-        client_input,
-        client_output,
     }
 }
 
@@ -293,18 +296,16 @@ async fn load_samples_from_dir(
                 let base_filename = filename.trim_end_matches(".yml").trim_end_matches(".yaml");
                 let id = format!("{subdir}/{base_filename}");
 
-                let discovery = crate::sample_discovery::derive(
-                    base_filename,
-                    &meta.node_kinds,
-                    meta.client_input,
-                    meta.client_output,
-                    is_system,
-                    meta.explicit,
-                );
-
                 let name = meta.name.unwrap_or_else(|| filename_to_name(filename));
                 let description = meta.description.unwrap_or_default();
                 let is_fragment = name == filename_to_name(filename) && description.is_empty();
+
+                let search_terms = crate::sample_discovery::build_search_terms(
+                    &name,
+                    &description,
+                    &meta.explicit,
+                    &meta.node_kinds,
+                );
 
                 samples.push(SamplePipeline {
                     id,
@@ -314,10 +315,12 @@ async fn load_samples_from_dir(
                     is_system,
                     mode: mode_to_string(meta.mode),
                     is_fragment,
-                    group: discovery.group,
-                    variant: discovery.variant,
-                    category: discovery.category,
-                    tags: discovery.tags,
+                    group: meta.explicit.group,
+                    variant: meta.explicit.variant,
+                    canonical: meta.explicit.canonical,
+                    category: meta.explicit.category,
+                    tags: meta.explicit.tags,
+                    search_terms,
                 });
             },
             Err(e) => {
@@ -426,15 +429,6 @@ pub async fn get_sample(
                 let meta = parse_pipeline_metadata(&yaml, &path);
                 let mode_str = mode_to_string(meta.mode);
 
-                let discovery = crate::sample_discovery::derive(
-                    filename_base,
-                    &meta.node_kinds,
-                    meta.client_input,
-                    meta.client_output,
-                    is_system,
-                    meta.explicit,
-                );
-
                 let name = meta.name.unwrap_or_else(|| filename_to_name(&filename));
                 let description = meta.description.unwrap_or_default();
 
@@ -447,6 +441,13 @@ pub async fn get_sample(
                 let is_fragment = name == filename_to_name(&filename) && description.is_empty();
                 let full_id = format!("{subdir}/{filename_base}");
 
+                let search_terms = crate::sample_discovery::build_search_terms(
+                    &name,
+                    &description,
+                    &meta.explicit,
+                    &meta.node_kinds,
+                );
+
                 return Ok(SamplePipeline {
                     id: full_id,
                     name,
@@ -455,10 +456,12 @@ pub async fn get_sample(
                     is_system,
                     mode: mode_str,
                     is_fragment,
-                    group: discovery.group,
-                    variant: discovery.variant,
-                    category: discovery.category,
-                    tags: discovery.tags,
+                    group: meta.explicit.group,
+                    variant: meta.explicit.variant,
+                    canonical: meta.explicit.canonical,
+                    category: meta.explicit.category,
+                    tags: meta.explicit.tags,
+                    search_terms,
                 });
             }
         }
@@ -571,13 +574,11 @@ async fn save_sample(
     let meta = parse_pipeline_metadata(&yaml_with_metadata, &path);
     let mode_str = mode_to_string(meta.mode);
 
-    let discovery = crate::sample_discovery::derive(
-        base_filename,
+    let search_terms = crate::sample_discovery::build_search_terms(
+        &request.name,
+        &request.description,
+        &meta.explicit,
         &meta.node_kinds,
-        meta.client_input,
-        meta.client_output,
-        false,
-        meta.explicit,
     );
 
     Ok(SamplePipeline {
@@ -588,10 +589,12 @@ async fn save_sample(
         is_system: false,
         mode: mode_str,
         is_fragment: request.is_fragment,
-        group: discovery.group,
-        variant: discovery.variant,
-        category: discovery.category,
-        tags: discovery.tags,
+        group: meta.explicit.group,
+        variant: meta.explicit.variant,
+        canonical: meta.explicit.canonical,
+        category: meta.explicit.category,
+        tags: meta.explicit.tags,
+        search_terms,
     })
 }
 
