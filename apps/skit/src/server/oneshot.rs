@@ -504,10 +504,18 @@ pub(super) async fn process_oneshot_pipeline_handler(
     tracing::info!("Processing multipart request");
 
     let headers = req.headers().clone();
-    let metric_labels = crate::metrics_labels::resolve_request_labels(
-        &app_state.config.server.metrics.request_labels,
-        &headers,
-    );
+    // Reuse labels already resolved by metrics_middleware; resolve directly only
+    // if this handler is exercised without that layer (e.g. unit tests).
+    let metric_labels =
+        req.extensions().get::<crate::metrics_labels::ResolvedRequestLabels>().map_or_else(
+            || {
+                crate::metrics_labels::resolve_request_labels(
+                    &app_state.config.server.metrics.request_labels,
+                    &headers,
+                )
+            },
+            |resolved| resolved.0.clone(),
+        );
     let (role_name, perms) = crate::role_extractor::get_role_and_permissions(&headers, &app_state);
     if !perms.create_sessions {
         return Err(AppError::Forbidden(
@@ -684,6 +692,8 @@ pub(super) async fn process_oneshot_pipeline_handler(
             return Err(err);
         },
         Err(e) => {
+            let labels = duration_labels("error", &metric_labels);
+            oneshot_duration_histogram.record(oneshot_start_time.elapsed().as_secs_f64(), &labels);
             cancel_token.cancel();
             return Err(AppError::BadRequest(format!("Multipart routing task aborted: {e}")));
         },

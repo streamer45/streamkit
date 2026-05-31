@@ -281,6 +281,46 @@ impl Default for MetricsConfig {
     }
 }
 
+impl MetricsConfig {
+    /// Label keys emitted by built-in request instruments; configured labels
+    /// must not collide with these (a duplicate key makes Prometheus reject the
+    /// whole series on scrape).
+    const RESERVED_LABEL_NAMES: [&'static str; 4] =
+        ["status", "http.method", "http.route", "http.status_code"];
+
+    /// Lowercase and trim every allowlist entry so the per-request hot path only
+    /// has to normalize the incoming header value.
+    fn normalize(&mut self) {
+        for label in &mut self.request_labels {
+            for allowed in &mut label.allowed {
+                *allowed = allowed.trim().to_ascii_lowercase();
+            }
+        }
+    }
+
+    /// Reject label names that collide with built-in metric keys or each other.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a configured label name is reserved by a built-in
+    /// metric or duplicates another configured label name.
+    pub fn validate(&self) -> Result<(), String> {
+        let mut seen = std::collections::HashSet::new();
+        for label in &self.request_labels {
+            if Self::RESERVED_LABEL_NAMES.contains(&label.name.as_str()) {
+                return Err(format!(
+                    "metrics request_label name '{}' is reserved by built-in metrics",
+                    label.name
+                ));
+            }
+            if !seen.insert(label.name.as_str()) {
+                return Err(format!("duplicate metrics request_label name '{}'", label.name));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Telemetry and observability configuration (OpenTelemetry, tokio-console).
 #[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
 pub struct TelemetryConfig {
@@ -1085,8 +1125,12 @@ pub fn load(config_path: &str) -> Result<ConfigLoadResult, Box<figment::Error>> 
         figment.merge(Env::prefixed("SK_").split("__")).extract().map_err(Box::new)?;
 
     normalize_permissions_config(&mut config);
+    config.server.metrics.normalize();
 
     if let Err(e) = config.mcp.validate() {
+        return Err(Box::new(figment::Error::from(e)));
+    }
+    if let Err(e) = config.server.metrics.validate() {
         return Err(Box::new(figment::Error::from(e)));
     }
 
@@ -1496,6 +1540,64 @@ allowed_plugins = []
                 custom.allowed_samples,
                 vec!["oneshot/foo.yml".to_string(), "dynamic/bar.yml".to_string()]
             );
+            Ok(())
+        });
+    }
+
+    fn request_label(name: &str) -> RequestLabelConfig {
+        RequestLabelConfig {
+            name: name.to_string(),
+            header: "X-Test".to_string(),
+            allowed: vec![],
+            fallback: "other".to_string(),
+        }
+    }
+
+    #[test]
+    fn metrics_validate_rejects_reserved_label_name() {
+        let metrics = MetricsConfig { request_labels: vec![request_label("status")] };
+        assert!(metrics.validate().is_err());
+    }
+
+    #[test]
+    fn metrics_validate_rejects_duplicate_label_name() {
+        let metrics = MetricsConfig {
+            request_labels: vec![request_label("service"), request_label("service")],
+        };
+        assert!(metrics.validate().is_err());
+    }
+
+    #[test]
+    fn metrics_validate_accepts_default() {
+        assert!(MetricsConfig::default().validate().is_ok());
+    }
+
+    #[test]
+    fn metrics_normalize_lowercases_allowlist() {
+        let mut metrics = MetricsConfig {
+            request_labels: vec![RequestLabelConfig {
+                name: "service".to_string(),
+                header: "X-StreamKit-Service".to_string(),
+                allowed: vec!["  TTS ".to_string(), "Stt".to_string()],
+                fallback: "other".to_string(),
+            }],
+        };
+        metrics.normalize();
+        assert_eq!(metrics.request_labels[0].allowed, vec!["tts".to_string(), "stt".to_string()]);
+    }
+
+    #[test]
+    fn load_rejects_reserved_metrics_label_name() {
+        figment::Jail::expect_with(|jail| {
+            jail.create_file(
+                "skit.toml",
+                r#"[[server.metrics.request_labels]]
+name = "http.route"
+header = "X-StreamKit-Service"
+allowed = ["tts"]
+"#,
+            )?;
+            assert!(load("skit.toml").is_err(), "reserved label name must fail load");
             Ok(())
         });
     }

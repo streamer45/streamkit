@@ -12,15 +12,21 @@ use opentelemetry::KeyValue;
 
 use crate::config::RequestLabelConfig;
 
+/// Bounded request labels resolved once per request and stashed in request
+/// extensions so downstream handlers can reuse them without re-parsing headers.
+#[derive(Clone)]
+pub struct ResolvedRequestLabels(pub Vec<KeyValue>);
+
 fn normalize(value: &str) -> String {
     value.trim().to_ascii_lowercase()
 }
 
 /// Constrain a header value to an allowlist, falling back when it is absent or
-/// unrecognized. Matching is case-insensitive after trimming.
+/// unrecognized. The incoming value is normalized (trim + lowercase); `allowed`
+/// entries are expected to be pre-normalized at config load.
 fn classify(value: Option<&str>, allowed: &[String], fallback: &str) -> String {
     match value.map(normalize) {
-        Some(v) if allowed.iter().any(|a| normalize(a) == v) => v,
+        Some(v) if allowed.contains(&v) => v,
         _ => fallback.to_string(),
     }
 }

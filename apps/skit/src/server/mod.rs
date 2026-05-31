@@ -1564,7 +1564,7 @@ async fn static_handler(
 
 async fn metrics_middleware(
     State(app_state): State<Arc<AppState>>,
-    req: axum::http::Request<Body>,
+    mut req: axum::http::Request<Body>,
     next: Next,
 ) -> Response {
     let start = Instant::now();
@@ -1577,6 +1577,9 @@ async fn metrics_middleware(
         &app_state.config.server.metrics.request_labels,
         req.headers(),
     );
+    // Let downstream handlers reuse the resolved labels instead of re-parsing headers.
+    req.extensions_mut()
+        .insert(crate::metrics_labels::ResolvedRequestLabels(configured_labels.clone()));
 
     let response = next.run(req).await;
 
