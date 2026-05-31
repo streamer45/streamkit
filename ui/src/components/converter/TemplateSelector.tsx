@@ -6,17 +6,18 @@ import React from 'react';
 
 import { RadioGroupRoot, RadioItem, RadioIndicator } from '@/components/ui/RadioGroup';
 import type { SamplePipeline } from '@/types/generated/api-types';
-import { labelFromKey } from '@/utils/jsonSchema';
 import type { SampleFacets, ScenarioGroup } from '@/utils/samplePipelineOrdering';
 import {
   collectSampleFacets,
   compareSamplePipelinesByName,
+  formatCapabilityLabel,
   groupSamplePipelinesByScenario,
   matchesSamplePipelineQuery,
   sampleNeedsHardware,
 } from '@/utils/samplePipelineOrdering';
 
 import {
+  ClearAllButton,
   Controls,
   EmptyState,
   FacetBar,
@@ -87,7 +88,7 @@ const ScenarioCard: React.FC<{ group: ScenarioGroup; selectedTemplateId: string 
       <VariantSelector role="group" aria-label={`${base.name} variants`}>
         {variants.map((variant) => (
           <VariantOption key={variant.id} value={variant.id} aria-label={variant.name}>
-            {variant.variant ?? 'Default'}
+            {variant.variant ?? 'Software'}
           </VariantOption>
         ))}
       </VariantSelector>
@@ -149,7 +150,7 @@ const FacetFilters: React.FC<FacetFiltersProps> = ({
             aria-pressed={capabilityFilter === capability}
             onClick={() => onToggleCapability(capability)}
           >
-            {labelFromKey(capability)}
+            {formatCapabilityLabel(capability)}
           </FacetChip>
         ))}
       </FacetRow>
@@ -187,6 +188,11 @@ export const TemplateSelector: React.FC<TemplateSelectorProps> = ({
   const facetFiltersActive = React.useMemo(
     () => Boolean(categoryFilter || capabilityFilter || hardwareOnly),
     [categoryFilter, capabilityFilter, hardwareOnly]
+  );
+
+  const anyFilterActive = React.useMemo(
+    () => Boolean(query.trim() || originFilter !== 'all' || facetFiltersActive),
+    [query, originFilter, facetFiltersActive]
   );
 
   const resetFilters = React.useCallback(() => {
@@ -287,6 +293,11 @@ export const TemplateSelector: React.FC<TemplateSelectorProps> = ({
             User
           </FilterButton>
         </FilterGroup>
+        {anyFilterActive && (
+          <ClearAllButton type="button" onClick={resetFilters}>
+            Clear all filters
+          </ClearAllButton>
+        )}
       </Controls>
 
       {showFacetBar && (
@@ -316,7 +327,14 @@ export const TemplateSelector: React.FC<TemplateSelectorProps> = ({
         aria-label="Pipeline template selection"
       >
         {systemGroups.length === 0 && userGroups.length === 0 && (
-          <EmptyState>No pipelines match your filters.</EmptyState>
+          <EmptyState>
+            <div>No pipelines match your filters.</div>
+            {anyFilterActive && (
+              <ClearAllButton type="button" onClick={resetFilters}>
+                Clear all filters
+              </ClearAllButton>
+            )}
+          </EmptyState>
         )}
 
         {systemGroups.length > 0 && (

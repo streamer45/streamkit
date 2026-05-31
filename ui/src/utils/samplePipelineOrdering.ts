@@ -4,6 +4,8 @@
 
 import type { SamplePipeline } from '@/types/generated/api-types';
 
+import { labelFromKey } from './jsonSchema';
+
 let collator: Intl.Collator | null = null;
 
 function getCollator(): Intl.Collator {
@@ -160,6 +162,40 @@ export function sampleNeedsHardware(sample: SamplePipeline): boolean {
   return (sample.tags ?? []).some((tag) => tag.startsWith(HARDWARE_TAG_PREFIX));
 }
 
+// Acronyms / mixed-case names that the generic title-caser would mangle
+// ("Moq", "Mp4"). Anything not listed falls back to labelFromKey.
+const CAPABILITY_LABEL_OVERRIDES: Record<string, string> = {
+  moq: 'MoQ',
+  mp4: 'MP4',
+  mse: 'MSE',
+  rtmp: 'RTMP',
+  webm: 'WebM',
+  vp9: 'VP9',
+  av1: 'AV1',
+};
+
+export function formatCapabilityLabel(tag: string): string {
+  return CAPABILITY_LABEL_OVERRIDES[tag] ?? labelFromKey(tag);
+}
+
+// Tags that the server also collapses into a `category` bucket (mirrors the
+// priority list in apps/skit/src/sample_discovery.rs::category_from_tags). When
+// a tag's category is already shown as a Category chip, surfacing the same tag
+// again as a Capability chip is redundant, so we drop it from the capability
+// facet and let the broader Category chip cover it.
+const CATEGORY_SOURCE_TAGS: Record<string, string> = {
+  compositing: 'Video Compositing',
+  'video-encoding': 'Video Encoding',
+  translation: 'Translation',
+  'speech-to-text': 'Speech to Text',
+  'text-to-speech': 'Text to Speech',
+  'video-decoding': 'Video Processing',
+  moq: 'Streaming',
+  mse: 'Streaming',
+  rtmp: 'Streaming',
+  mixing: 'Audio Processing',
+};
+
 export interface SampleFacets {
   categories: string[];
   capabilities: string[];
@@ -180,6 +216,13 @@ export function collectSampleFacets(samples: SamplePipeline[]): SampleFacets {
       } else {
         capabilities.add(tag);
       }
+    }
+  }
+
+  for (const tag of [...capabilities]) {
+    const sourcedCategory = CATEGORY_SOURCE_TAGS[tag];
+    if (sourcedCategory && categories.has(sourcedCategory)) {
+      capabilities.delete(tag);
     }
   }
 

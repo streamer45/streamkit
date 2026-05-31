@@ -9,6 +9,7 @@ import type { SamplePipeline } from '@/types/generated/api-types';
 import {
   collectSampleFacets,
   compareSamplePipelinesByName,
+  formatCapabilityLabel,
   groupSamplePipelinesByScenario,
   matchesSamplePipelineQuery,
   orderSamplePipelinesSystemFirst,
@@ -236,20 +237,53 @@ describe('sampleNeedsHardware', () => {
 describe('collectSampleFacets', () => {
   it('aggregates sorted categories and capabilities, excluding hardware tags', () => {
     const facets = collectSampleFacets([
+      makePipeline({ id: 'a', category: 'Video Encoding', tags: ['hardware:vaapi', 'colorbars'] }),
+      makePipeline({ id: 'b', category: 'Speech to Text', tags: ['mp4'] }),
+    ]);
+    expect(facets.categories).toEqual(['Speech to Text', 'Video Encoding']);
+    expect(facets.capabilities).toEqual(['colorbars', 'mp4']);
+    expect(facets.hasHardware).toBe(true);
+  });
+
+  it('drops capability tags already represented by a shown category', () => {
+    const facets = collectSampleFacets([
       makePipeline({
         id: 'a',
         category: 'Video Encoding',
-        tags: ['video-encoding', 'hardware:vaapi'],
+        tags: ['video-encoding', 'moq', 'vp9'],
       }),
-      makePipeline({ id: 'b', category: 'Speech to Text', tags: ['speech-to-text'] }),
+      makePipeline({ id: 'b', category: 'Streaming', tags: ['moq'] }),
     ]);
-    expect(facets.categories).toEqual(['Speech to Text', 'Video Encoding']);
-    expect(facets.capabilities).toEqual(['speech-to-text', 'video-encoding']);
-    expect(facets.hasHardware).toBe(true);
+    // `video-encoding` and `moq` map to the shown `Video Encoding` / `Streaming`
+    // categories, so only the cross-cutting `vp9` capability remains.
+    expect(facets.categories).toEqual(['Streaming', 'Video Encoding']);
+    expect(facets.capabilities).toEqual(['vp9']);
+  });
+
+  it('keeps a category-source tag as a capability when its category is absent', () => {
+    const facets = collectSampleFacets([makePipeline({ id: 'a', tags: ['moq'] })]);
+    expect(facets.categories).toEqual([]);
+    expect(facets.capabilities).toEqual(['moq']);
   });
 
   it('reports no hardware when no hardware tags are present', () => {
     const facets = collectSampleFacets([makePipeline({ id: 'a', tags: ['mp4'] })]);
     expect(facets.hasHardware).toBe(false);
+  });
+});
+
+describe('formatCapabilityLabel', () => {
+  it('uses curated acronym casing for known tags', () => {
+    expect(formatCapabilityLabel('moq')).toBe('MoQ');
+    expect(formatCapabilityLabel('mp4')).toBe('MP4');
+    expect(formatCapabilityLabel('mse')).toBe('MSE');
+    expect(formatCapabilityLabel('rtmp')).toBe('RTMP');
+    expect(formatCapabilityLabel('webm')).toBe('WebM');
+    expect(formatCapabilityLabel('vp9')).toBe('VP9');
+  });
+
+  it('falls back to title-casing for other tags', () => {
+    expect(formatCapabilityLabel('voice-activity-detection')).toBe('Voice Activity Detection');
+    expect(formatCapabilityLabel('colorbars')).toBe('Colorbars');
   });
 });

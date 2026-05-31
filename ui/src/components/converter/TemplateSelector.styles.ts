@@ -135,6 +135,10 @@ export const SectionCount = styled.span`
 `;
 
 export const EmptyState = styled.div`
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
   padding: 16px;
   border: 1px solid var(--sk-border);
   border-radius: 8px;
@@ -246,11 +250,13 @@ export const FacetRowLabel = styled.span`
   margin-right: 4px;
 `;
 
+// Filter chips use a squared-off shape so they read as filters, distinct from
+// the fully-rounded variant pills (which are a selection control, not a filter).
 export const FacetChip = styled.button<{ active?: boolean }>`
   padding: 5px 12px;
   font-size: 13px;
   font-weight: 600;
-  border-radius: 999px;
+  border-radius: 6px;
   cursor: pointer;
   transition: none;
   background: ${(props) => (props.active ? 'var(--sk-primary)' : 'var(--sk-panel-bg)')};
@@ -281,8 +287,41 @@ export const GroupCard = styled.div`
   flex-direction: column;
   gap: 12px;
 
+  &:hover {
+    border-color: var(--sk-border-strong);
+    background: var(--sk-hover-bg);
+  }
+
   &[data-selected] {
     border-color: var(--sk-primary);
+    background: color-mix(in srgb, var(--sk-primary) 8%, var(--sk-panel-bg));
+    box-shadow: inset 0 0 0 1px var(--sk-primary);
+  }
+
+  &[data-selected]:hover {
+    background: color-mix(in srgb, var(--sk-primary) 14%, var(--sk-panel-bg));
+  }
+`;
+
+// Ghost button for clearing all active filters (facet bar + empty state).
+export const ClearAllButton = styled.button`
+  border: 1px solid var(--sk-border);
+  background: var(--sk-panel-bg);
+  color: var(--sk-primary);
+  font-size: 13px;
+  font-weight: 700;
+  padding: 5px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+
+  &:hover {
+    border-color: var(--sk-primary);
+    background: var(--sk-hover-bg);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--sk-primary);
+    outline-offset: 2px;
   }
 `;
 
