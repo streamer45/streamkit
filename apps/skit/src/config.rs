@@ -235,18 +235,6 @@ fn default_label_fallback() -> String {
     "other".to_string()
 }
 
-fn default_request_labels() -> Vec<RequestLabelConfig> {
-    // Ships the `service` dimension oneshot dashboards build against. Declaring
-    // any `request_labels` in config REPLACES this list wholesale (figment does
-    // not merge sequences), so re-list `service` to keep it alongside new ones.
-    vec![RequestLabelConfig {
-        name: "service".to_string(),
-        header: "X-StreamKit-Service".to_string(),
-        allowed: vec!["tts".to_string(), "stt".to_string()],
-        fallback: default_label_fallback(),
-    }]
-}
-
 /// A bounded metric label sourced from a trusted request header.
 ///
 /// The header value is trimmed and lowercased, then matched against `allowed`;
@@ -267,19 +255,17 @@ pub struct RequestLabelConfig {
 }
 
 /// Configuration for request-scoped metric labeling.
-#[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
+///
+/// Empty by default: no request metric gains a configured label unless an
+/// operator opts in. Declaring `request_labels` sets the full list (figment
+/// does not merge sequences). See the commented example in `samples/skit.toml`.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, JsonSchema)]
 pub struct MetricsConfig {
     /// Bounded labels attached to request metrics, each sourced from a trusted
     /// request header. Applied to all HTTP request metrics and to oneshot
     /// pipeline metrics.
-    #[serde(default = "default_request_labels")]
+    #[serde(default)]
     pub request_labels: Vec<RequestLabelConfig>,
-}
-
-impl Default for MetricsConfig {
-    fn default() -> Self {
-        Self { request_labels: default_request_labels() }
-    }
 }
 
 /// Prometheus sanitizes any character outside `[a-zA-Z0-9_]` in a label key to
@@ -1604,6 +1590,11 @@ allowed_plugins = []
     #[test]
     fn metrics_validate_accepts_default() {
         assert!(MetricsConfig::default().validate().is_ok());
+    }
+
+    #[test]
+    fn metrics_default_is_empty_opt_in() {
+        assert!(MetricsConfig::default().request_labels.is_empty());
     }
 
     #[test]

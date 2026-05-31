@@ -67,6 +67,24 @@ allowed_origins = [
 #     "http://localhost:*",  # Keep for development
 # ]
 
+# [server.metrics]
+# Bounded labels attached to request metrics (http.server.* and
+# oneshot_pipeline.duration), each sourced from a trusted request header.
+#
+# Cardinality is operator-bounded: the header value is trimmed + lowercased and
+# matched against `allowed`; anything else (or a missing header) collapses to
+# `fallback`. Disabled by default — uncomment to opt in. Declaring any label
+# sets the full list, so list every label you want here.
+#
+# Example: distinguish hosted speech services on oneshot_pipeline.duration so
+# TTS / STT / other don't collapse into one series. The gateway sets
+# `X-StreamKit-Service` per endpoint.
+# [[server.metrics.request_labels]]
+# name = "service"
+# header = "X-StreamKit-Service"
+# allowed = ["tts", "stt"]   # missing/unknown -> "other"
+# fallback = "other"
+
 [auth]
 # Built-in JWT authentication for:
 # - HTTP API + Web UI (cookie or Authorization header)
