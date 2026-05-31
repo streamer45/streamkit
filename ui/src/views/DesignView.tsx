@@ -558,17 +558,6 @@ const DesignViewContent: React.FC = () => {
 
   const location = useLocation();
   const handoffImportedRef = React.useRef(false);
-  React.useEffect(() => {
-    const handoff = location.state as {
-      importYaml?: string;
-      name?: string;
-      description?: string;
-    } | null;
-    if (handoffImportedRef.current || !handoff?.importYaml || nodeDefinitions.length === 0) return;
-    handoffImportedRef.current = true;
-    handleImportYaml(handoff.importYaml, handoff.description ?? '', handoff.name ?? '');
-    navigate('.', { replace: true, state: null });
-  }, [location.state, nodeDefinitions, handleImportYaml, navigate]);
 
   const cachesRef = React.useRef<Partial<Record<'oneshot' | 'dynamic', PipelineCanvasCache>>>({});
 
@@ -1343,6 +1332,18 @@ const DesignViewContent: React.FC = () => {
       handleCloseLoadSampleModal();
     }
   };
+
+  React.useEffect(() => {
+    const handoff = location.state as {
+      importYaml?: string;
+      name?: string;
+      description?: string;
+    } | null;
+    if (handoffImportedRef.current || !handoff?.importYaml || nodeDefinitions.length === 0) return;
+    handoffImportedRef.current = true;
+    handleLoadSample(handoff.importYaml, handoff.name ?? '', handoff.description ?? '');
+    navigate('.', { replace: true, state: null });
+  }, [location.state, nodeDefinitions, handleLoadSample, navigate]);
 
   const handleClearCanvas = React.useCallback(() => {
     setNodes([]);

@@ -34,11 +34,13 @@ fn push_term(terms: &mut Vec<String>, value: &str) {
 
 /// Builds the backend search document the UI matches queries against.
 ///
-/// Combines the human-facing fields with authored keywords and the pipeline's
-/// node kinds (with `::`/`_` separators flattened to spaces so individual
-/// segments like `whisper` or `vaapi` are matchable). Lowercased and
+/// Combines the human-facing fields with the sample id (so slug fragments like
+/// `vaapi_h264_colorbars` stay searchable), authored keywords, and the
+/// pipeline's node kinds (with `::`/`_` separators flattened to spaces so
+/// individual segments like `whisper` or `vaapi` are matchable). Lowercased and
 /// de-duplicated.
 pub fn build_search_terms(
+    id: &str,
     name: &str,
     description: &str,
     discovery: &Discovery,
@@ -46,6 +48,7 @@ pub fn build_search_terms(
 ) -> Vec<String> {
     let mut terms = Vec::new();
 
+    push_term(&mut terms, id);
     push_term(&mut terms, name);
     push_term(&mut terms, description);
     if let Some(category) = discovery.category.as_deref() {
@@ -89,6 +92,7 @@ mod tests {
             keywords: vec!["test pattern".to_string(), "smpte".to_string()],
         };
         let terms = build_search_terms(
+            "dynamic/video_moq_vaapi_h264_colorbars",
             "Video Color Bars (VA-API H.264)",
             "Encodes SMPTE color bars",
             &discovery,
@@ -99,6 +103,7 @@ mod tests {
         assert!(terms.contains(&"hardware:vaapi".to_string()));
         assert!(terms.contains(&"test pattern".to_string()));
         assert!(terms.contains(&"video vaapi h264 encoder".to_string()));
+        assert!(terms.contains(&"dynamic/video_moq_vaapi_h264_colorbars".to_string()));
     }
 
     #[test]
@@ -108,7 +113,7 @@ mod tests {
             tags: vec!["streaming".to_string()],
             ..Discovery::default()
         };
-        let terms = build_search_terms("Streaming", "STREAMING", &discovery, &[]);
+        let terms = build_search_terms("streaming", "Streaming", "STREAMING", &discovery, &[]);
 
         assert_eq!(terms.iter().filter(|t| *t == "streaming").count(), 1);
         assert!(terms.iter().all(|t| t == &t.to_lowercase()));
@@ -117,7 +122,7 @@ mod tests {
     #[test]
     fn search_terms_skip_absent_optional_fields() {
         let discovery = Discovery::default();
-        let terms = build_search_terms("Solo Sample", "", &discovery, &[]);
-        assert_eq!(terms, vec!["solo sample".to_string()]);
+        let terms = build_search_terms("oneshot/solo", "Solo Sample", "", &discovery, &[]);
+        assert_eq!(terms, vec!["oneshot/solo".to_string(), "solo sample".to_string()]);
     }
 }

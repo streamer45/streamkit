@@ -226,7 +226,7 @@ describe('groupSamplePipelinesByScenario', () => {
     expect(groups.map((g) => g.key)).toEqual(['oneshot/tts', 'oneshot/stt']);
   });
 
-  it('preserves first-appearance order of groups', () => {
+  it('returns groups in deterministic insertion order (callers re-sort for display)', () => {
     const groups = groupSamplePipelinesByScenario([
       makePipeline({ id: 'b', group: 'beta' }),
       makePipeline({ id: 'a', group: 'alpha' }),

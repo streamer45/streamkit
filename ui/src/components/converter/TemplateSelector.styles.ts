@@ -203,31 +203,36 @@ export const TemplateDescription = styled.div`
 export const FacetBar = styled.div`
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   margin-bottom: 16px;
+  padding: 10px 12px;
+  background: var(--sk-panel-bg);
+  border: 1px solid var(--sk-border);
+  border-radius: 8px;
 `;
 
 export const FacetRow = styled.div`
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: baseline;
+  gap: 6px;
   flex-wrap: wrap;
 `;
 
 export const FacetRowLabel = styled.span`
+  flex-shrink: 0;
+  width: 84px;
   color: var(--sk-text-muted);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  margin-right: 4px;
 `;
 
 // Filter chips use a squared-off shape so they read as filters, distinct from
 // the fully-rounded variant pills (which are a selection control, not a filter).
 export const FacetChip = styled.button<{ active?: boolean }>`
-  padding: 5px 12px;
-  font-size: 13px;
+  padding: 3px 8px;
+  font-size: 12px;
   font-weight: 600;
   border-radius: 6px;
   cursor: pointer;
@@ -276,7 +281,7 @@ export const GroupCard = styled.div`
   }
 `;
 
-// Ghost button for clearing all active filters (facet bar + empty state).
+// Ghost button for clearing all active filters; rendered once in the Controls row.
 export const ClearAllButton = styled.button`
   border: 1px solid var(--sk-border);
   background: var(--sk-panel-bg);

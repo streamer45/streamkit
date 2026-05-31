@@ -42,17 +42,25 @@ export function tokenizeQuery(query: string): string[] {
   return query.trim().toLowerCase().split(/\s+/).filter(Boolean);
 }
 
+/** Flattens a pipeline's backend-resolved `search_terms` into one searchable string. */
+export function buildSearchHaystack(pipeline: SamplePipeline): string {
+  return (pipeline.search_terms ?? []).join(' ');
+}
+
+/** Every token must be a substring of `haystack`; an empty token list matches everything. */
+export function haystackMatchesTokens(haystack: string, tokens: string[]): boolean {
+  if (tokens.length === 0) return true;
+  return tokens.every((token) => haystack.includes(token));
+}
+
 /**
- * Whether a pipeline matches a tokenized query. Every token must be a substring
- * of the backend-resolved `search_terms` document (name, description, category,
- * tags, authored keywords, node kinds). An empty token list matches everything.
- * Synonyms/aliases live in each sample's authored `keywords`, not in a
- * UI-side table, so the UI does no semantic expansion.
+ * Whether a pipeline matches a tokenized query, against the backend-resolved
+ * `search_terms` document (name, description, id, category, tags, authored
+ * keywords, node kinds). Synonyms/aliases live in each sample's authored
+ * `keywords`, not in a UI-side table, so the UI does no semantic expansion.
  */
 export function matchesQueryTokens(pipeline: SamplePipeline, tokens: string[]): boolean {
-  if (tokens.length === 0) return true;
-  const haystack = (pipeline.search_terms ?? []).join(' ');
-  return tokens.every((token) => haystack.includes(token));
+  return haystackMatchesTokens(buildSearchHaystack(pipeline), tokens);
 }
 
 /** Convenience wrapper that tokenizes `query` and matches a single pipeline. */
@@ -77,10 +85,9 @@ function variantSortKey(sample: SamplePipeline): string {
  * Collapses samples that share a `group` into a single entry with a variant
  * list, so near-duplicate cards (e.g. the colorbars codec/hardware family)
  * render once with a variant selector. Samples without a group are singletons.
- * Input order of first appearance is preserved.
+ * Group ordering is the caller's responsibility (the picker sorts by name).
  */
 export function groupSamplePipelinesByScenario(samples: SamplePipeline[]): ScenarioGroup[] {
-  const order: string[] = [];
   const byKey = new Map<string, SamplePipeline[]>();
 
   for (const sample of samples) {
@@ -90,12 +97,10 @@ export function groupSamplePipelinesByScenario(samples: SamplePipeline[]): Scena
       existing.push(sample);
     } else {
       byKey.set(key, [sample]);
-      order.push(key);
     }
   }
 
-  return order.map((key) => {
-    const members = byKey.get(key) ?? [];
+  return Array.from(byKey, ([key, members]) => {
     const variants = members.slice().sort((a, b) => {
       const aCanonical = a.canonical ? 0 : 1;
       const bCanonical = b.canonical ? 0 : 1;

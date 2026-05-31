@@ -269,55 +269,46 @@ pub struct ControlConfig {
     pub options: Option<Vec<SelectOption>>,
 }
 
-/// Top-level discovery metadata, repeated across both `UserPipeline` arms,
-/// powering the Convert/Stream pickers' variant grouping and faceted/fuzzy
-/// search. Bundled samples are required to author these explicitly (enforced by
-/// `apps/skit/tests/sample_discovery_metadata_test.rs`); there is no runtime
+/// Top-level pipeline metadata shared by both `UserPipeline` arms. The
+/// discovery fields (group/variant/canonical/category/tags/keywords) power the
+/// Convert/Stream pickers' variant grouping and faceted/fuzzy search; bundled
+/// samples are required to author them explicitly (enforced by
+/// `apps/skit/tests/sample_discovery_metadata_test.rs`) — there is no runtime
 /// derivation. See `apps/skit/src/sample_discovery.rs`.
+#[derive(Debug, Default, Deserialize)]
+pub struct PipelineMeta {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub mode: EngineMode,
+    #[serde(default)]
+    pub group: Option<String>,
+    #[serde(default)]
+    pub variant: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub canonical: bool,
+    #[serde(default)]
+    pub keywords: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum UserPipeline {
     Steps {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        description: Option<String>,
-        #[serde(default)]
-        mode: EngineMode,
-        #[serde(default)]
-        group: Option<String>,
-        #[serde(default)]
-        variant: Option<String>,
-        #[serde(default)]
-        category: Option<String>,
-        #[serde(default)]
-        tags: Vec<String>,
-        #[serde(default)]
-        canonical: bool,
-        #[serde(default)]
-        keywords: Vec<String>,
+        #[serde(flatten)]
+        meta: PipelineMeta,
         steps: Vec<Step>,
         client: Option<ClientSection>,
     },
     Dag {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        description: Option<String>,
-        #[serde(default)]
-        mode: EngineMode,
-        #[serde(default)]
-        group: Option<String>,
-        #[serde(default)]
-        variant: Option<String>,
-        #[serde(default)]
-        category: Option<String>,
-        #[serde(default)]
-        tags: Vec<String>,
-        #[serde(default)]
-        canonical: bool,
-        #[serde(default)]
-        keywords: Vec<String>,
+        #[serde(flatten)]
+        meta: PipelineMeta,
         nodes: IndexMap<String, UserNode>,
         client: Option<ClientSection>,
     },

@@ -205,50 +205,24 @@ fn parse_pipeline_metadata(yaml: &str, path: &std::path::Path) -> PipelineMetada
         },
     };
 
-    // The Steps and Dag arms differ only in how node kinds are collected, so
-    // pull those out first and bind the shared discovery fields with one
-    // irrefutable or-pattern.
     let node_kinds: Vec<String> = match &user_pipeline {
         UserPipeline::Steps { steps, .. } => steps.iter().map(|s| s.kind.clone()).collect(),
         UserPipeline::Dag { nodes, .. } => nodes.values().map(|n| n.kind.clone()).collect(),
     };
 
-    let (UserPipeline::Steps {
-        name,
-        description,
-        mode,
-        group,
-        variant,
-        canonical,
-        category,
-        tags,
-        keywords,
-        ..
-    }
-    | UserPipeline::Dag {
-        name,
-        description,
-        mode,
-        group,
-        variant,
-        canonical,
-        category,
-        tags,
-        keywords,
-        ..
-    }) = user_pipeline;
+    let (UserPipeline::Steps { meta, .. } | UserPipeline::Dag { meta, .. }) = user_pipeline;
 
     PipelineMetadata {
-        name,
-        description,
-        mode,
+        name: meta.name,
+        description: meta.description,
+        mode: meta.mode,
         explicit: crate::sample_discovery::Discovery {
-            group,
-            variant,
-            canonical,
-            category,
-            tags,
-            keywords,
+            group: meta.group,
+            variant: meta.variant,
+            canonical: meta.canonical,
+            category: meta.category,
+            tags: meta.tags,
+            keywords: meta.keywords,
         },
         node_kinds,
     }
@@ -301,6 +275,7 @@ async fn load_samples_from_dir(
                 let is_fragment = name == filename_to_name(filename) && description.is_empty();
 
                 let search_terms = crate::sample_discovery::build_search_terms(
+                    &id,
                     &name,
                     &description,
                     &meta.explicit,
@@ -442,6 +417,7 @@ pub async fn get_sample(
                 let full_id = format!("{subdir}/{filename_base}");
 
                 let search_terms = crate::sample_discovery::build_search_terms(
+                    &full_id,
                     &name,
                     &description,
                     &meta.explicit,
@@ -575,6 +551,7 @@ async fn save_sample(
     let mode_str = mode_to_string(meta.mode);
 
     let search_terms = crate::sample_discovery::build_search_terms(
+        &id,
         &request.name,
         &request.description,
         &meta.explicit,

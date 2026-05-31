@@ -9,10 +9,11 @@ import type { SamplePipeline } from '@/types/generated/api-types';
 import { labelFromKey } from '@/utils/jsonSchema';
 import type { SampleFacets, ScenarioGroup } from '@/utils/samplePipelineOrdering';
 import {
+  buildSearchHaystack,
   collectSampleFacets,
   compareSamplePipelinesByName,
   groupSamplePipelinesByScenario,
-  matchesQueryTokens,
+  haystackMatchesTokens,
   sampleNeedsHardware,
   tokenizeQuery,
 } from '@/utils/samplePipelineOrdering';
@@ -49,6 +50,7 @@ interface TemplateSelectorProps {
   templates: SamplePipeline[];
   selectedTemplateId: string;
   onTemplateSelect: (templateId: string) => void;
+  onSelectionHiddenChange?: (hidden: boolean) => void;
 }
 
 const ScenarioHeader: React.FC<{ sample: SamplePipeline }> = ({ sample }) => (
@@ -80,17 +82,20 @@ const ScenarioCard: React.FC<{ group: ScenarioGroup; selectedTemplateId: string 
     );
   }
 
-  const selectedInGroup = variants.some((variant) => variant.id === selectedTemplateId);
+  const selectedMember = variants.find((variant) => variant.id === selectedTemplateId);
 
   return (
-    <GroupCard data-selected={selectedInGroup || undefined}>
-      <ScenarioHeader sample={base} />
+    <GroupCard data-selected={selectedMember ? true : undefined}>
+      <ScenarioHeader sample={selectedMember ?? base} />
       <VariantSelector role="group" aria-label={`${base.name} variants`}>
-        {variants.map((variant) => (
-          <VariantOption key={variant.id} value={variant.id} aria-label={variant.name}>
-            {variant.variant ?? variant.name}
-          </VariantOption>
-        ))}
+        {variants.map((variant) => {
+          const variantLabel = variant.variant ?? variant.name;
+          return (
+            <VariantOption key={variant.id} value={variant.id} aria-label={variantLabel}>
+              {variantLabel}
+            </VariantOption>
+          );
+        })}
       </VariantSelector>
     </GroupCard>
   );
@@ -197,6 +202,7 @@ export const TemplateSelector: React.FC<TemplateSelectorProps> = ({
   templates,
   selectedTemplateId,
   onTemplateSelect,
+  onSelectionHiddenChange,
 }) => {
   const [query, setQuery] = React.useState('');
   const [originFilter, setOriginFilter] = React.useState<'all' | 'system' | 'user'>('all');
@@ -204,7 +210,28 @@ export const TemplateSelector: React.FC<TemplateSelectorProps> = ({
   const [capabilityFilter, setCapabilityFilter] = React.useState<string | null>(null);
   const [hardwareOnly, setHardwareOnly] = React.useState(false);
 
-  const facets = React.useMemo(() => collectSampleFacets(templates), [templates]);
+  const originFilteredTemplates = React.useMemo(
+    () =>
+      templates.filter((template) => {
+        if (originFilter === 'system' && !template.is_system) return false;
+        if (originFilter === 'user' && template.is_system) return false;
+        return true;
+      }),
+    [templates, originFilter]
+  );
+
+  const facets = React.useMemo(
+    () => collectSampleFacets(originFilteredTemplates),
+    [originFilteredTemplates]
+  );
+
+  const haystacks = React.useMemo(() => {
+    const map = new Map<string, string>();
+    for (const template of templates) {
+      map.set(template.id, buildSearchHaystack(template));
+    }
+    return map;
+  }, [templates]);
 
   const facetFiltersActive = Boolean(categoryFilter || capabilityFilter || hardwareOnly);
   const anyFilterActive = Boolean(query.trim() || originFilter !== 'all' || facetFiltersActive);
@@ -233,15 +260,20 @@ export const TemplateSelector: React.FC<TemplateSelectorProps> = ({
   const queryTokens = React.useMemo(() => tokenizeQuery(query), [query]);
 
   const filteredTemplates = React.useMemo(() => {
-    return templates.filter((template) => {
-      if (originFilter === 'system' && !template.is_system) return false;
-      if (originFilter === 'user' && template.is_system) return false;
+    return originFilteredTemplates.filter((template) => {
       if (categoryFilter && template.category !== categoryFilter) return false;
       if (capabilityFilter && !(template.tags ?? []).includes(capabilityFilter)) return false;
       if (hardwareOnly && !sampleNeedsHardware(template)) return false;
-      return matchesQueryTokens(template, queryTokens);
+      return haystackMatchesTokens(haystacks.get(template.id) ?? '', queryTokens);
     });
-  }, [templates, originFilter, categoryFilter, capabilityFilter, hardwareOnly, queryTokens]);
+  }, [
+    originFilteredTemplates,
+    categoryFilter,
+    capabilityFilter,
+    hardwareOnly,
+    haystacks,
+    queryTokens,
+  ]);
 
   const systemGroups = React.useMemo(
     () => toScenarioGroups(filteredTemplates.filter((template) => template.is_system)),
@@ -261,9 +293,13 @@ export const TemplateSelector: React.FC<TemplateSelectorProps> = ({
     return filteredTemplates.some((template) => template.id === selectedTemplateId);
   }, [filteredTemplates, selectedTemplateId]);
 
-  const showHiddenSelectionHint = Boolean(
-    selectedTemplateId && selectedExists && !selectedVisible && anyFilterActive
-  );
+  const selectionHidden = Boolean(selectedTemplateId && selectedExists && !selectedVisible);
+
+  React.useEffect(() => {
+    onSelectionHiddenChange?.(selectionHidden);
+  }, [selectionHidden, onSelectionHiddenChange]);
+
+  const showHiddenSelectionHint = selectionHidden && anyFilterActive;
 
   const showFacetBar =
     facets.categories.length > 0 || facets.capabilities.length > 0 || facets.hasHardware;

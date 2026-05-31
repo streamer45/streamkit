@@ -14,7 +14,7 @@
 // Test-fixture checks should fail fast with contextual assertion messages.
 #![allow(clippy::expect_used, clippy::panic)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use streamkit_api::yaml::{parse_yaml, UserPipeline};
@@ -62,10 +62,16 @@ fn read_samples() -> Vec<SampleMeta> {
             let pipeline =
                 parse_yaml(&yaml).unwrap_or_else(|e| panic!("{file}: parse failed: {e}"));
 
-            let (UserPipeline::Steps { group, variant, canonical, category, tags, .. }
-            | UserPipeline::Dag { group, variant, canonical, category, tags, .. }) = pipeline;
+            let (UserPipeline::Steps { meta, .. } | UserPipeline::Dag { meta, .. }) = pipeline;
 
-            samples.push(SampleMeta { file, group, variant, canonical, category, tags });
+            samples.push(SampleMeta {
+                file,
+                group: meta.group,
+                variant: meta.variant,
+                canonical: meta.canonical,
+                category: meta.category,
+                tags: meta.tags,
+            });
         }
     }
 
@@ -84,6 +90,8 @@ fn every_bundled_sample_has_required_discovery_metadata() {
         }
         if sample.tags.iter().all(|t| t.trim().is_empty()) {
             failures.push(format!("{}: missing required `tags`", sample.file));
+        } else if sample.tags.iter().any(|t| t.trim().is_empty()) {
+            failures.push(format!("{}: has a blank `tags` entry", sample.file));
         }
     }
 
@@ -136,12 +144,21 @@ fn grouped_samples_are_internally_consistent() {
             ));
         }
 
+        let mut seen_variants = BTreeSet::new();
         for member in members {
-            if member.variant.as_deref().is_none_or(|v| v.trim().is_empty()) {
-                failures.push(format!(
+            match member.variant.as_deref().map(str::trim) {
+                Some(variant) if !variant.is_empty() => {
+                    if !seen_variants.insert(variant.to_string()) {
+                        failures.push(format!(
+                            "group `{group}` has duplicate `variant: {variant}`; variant labels \
+                             must be unique within a group"
+                        ));
+                    }
+                },
+                _ => failures.push(format!(
                     "{}: member of multi-sample group `{group}` must set a `variant` label",
                     member.file
-                ));
+                )),
             }
         }
     }

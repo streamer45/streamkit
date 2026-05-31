@@ -154,6 +154,8 @@ describe('TemplateSelector variant grouping', () => {
     id: 'd/colorbars',
     name: 'Colorbars',
     group: 'video-moq-colorbars',
+    variant: 'Software',
+    canonical: true,
   });
   const h264 = makePipeline({
     id: 'd/h264-colorbars',
@@ -181,9 +183,9 @@ describe('TemplateSelector variant grouping', () => {
     expect(within(systemHeader).getByText('1')).toBeInTheDocument();
 
     expect(screen.getByRole('group', { name: /Colorbars variants/i })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'Colorbars' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'H.264 Colorbars' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'VA-API Colorbars' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Software' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'H.264' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'VA-API H.264' })).toBeInTheDocument();
   });
 
   it('selecting a variant loads that variant id', () => {
@@ -196,7 +198,7 @@ describe('TemplateSelector variant grouping', () => {
       />
     );
 
-    fireEvent.click(screen.getByRole('radio', { name: 'VA-API Colorbars' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'VA-API H.264' }));
     expect(onSelect).toHaveBeenCalledWith('d/vaapi-colorbars');
   });
 });
@@ -241,5 +243,26 @@ describe('TemplateSelector facets', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Needs GPU' }));
     expect(screen.getByText('VA-API Encode')).toBeInTheDocument();
     expect(screen.queryByText('Transcribe')).not.toBeInTheDocument();
+  });
+
+  it('hides facet chips that only exist outside the active origin filter', () => {
+    const userEncode = makePipeline({
+      id: 'u/encode',
+      name: 'My Encode',
+      is_system: false,
+      category: 'Video Encoding',
+      tags: ['video-encoding'],
+    });
+    render(
+      <TemplateSelector
+        templates={[encode, transcribe, userEncode]}
+        selectedTemplateId=""
+        onTemplateSelect={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole('button', { name: 'Speech to Text' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'User' }));
+    expect(screen.queryByRole('button', { name: 'Speech to Text' })).not.toBeInTheDocument();
   });
 });

@@ -151,6 +151,15 @@ const CustomizeActions = styled.div`
   justify-content: flex-end;
 `;
 
+const CustomizeHiddenHint = styled.div`
+  padding: 24px 16px;
+  text-align: center;
+  font-size: 14px;
+  color: var(--sk-text-muted);
+  border: 1px dashed var(--sk-border);
+  border-radius: 8px;
+`;
+
 const OpenInDesignButton = styled.button`
   padding: 8px 16px;
   font-size: 13px;
@@ -784,17 +793,25 @@ const ConvertView: React.FC = () => {
 
   const navigate = useNavigate();
 
+  const [selectionHidden, setSelectionHidden] = useState(false);
+
   const handleOpenInDesign = useCallback(() => {
     if (!pipelineYaml.trim()) return;
     const sample = samples.find((s) => s.id === selectedTemplateId);
+    const yamlName =
+      typeof parsedPipelineYaml?.name === 'string' ? parsedPipelineYaml.name : undefined;
+    const yamlDescription =
+      typeof parsedPipelineYaml?.description === 'string'
+        ? parsedPipelineYaml.description
+        : undefined;
     navigate('/design', {
       state: {
         importYaml: pipelineYaml,
-        name: sample?.name ?? '',
-        description: sample?.description ?? '',
+        name: yamlName ?? sample?.name ?? '',
+        description: yamlDescription ?? sample?.description ?? '',
       },
     });
-  }, [navigate, pipelineYaml, samples, selectedTemplateId]);
+  }, [navigate, pipelineYaml, parsedPipelineYaml, samples, selectedTemplateId]);
 
   const handleTemplateSelect = (templateId: string) => {
     const sample = samples.find((s) => s.id === templateId);
@@ -1268,29 +1285,37 @@ const ConvertView: React.FC = () => {
                 templates={samples}
                 selectedTemplateId={selectedTemplateId}
                 onTemplateSelect={handleTemplateSelect}
+                onSelectionHiddenChange={setSelectionHidden}
               />
             )}
           </Section>
 
           <Section>
             <SectionTitle>2. Customize Pipeline (Optional)</SectionTitle>
-            <EditorSection>
-              <PipelineEditor
-                value={pipelineYaml}
-                onChange={setPipelineYaml}
-                nodeDefinitions={nodeDefinitions}
-              />
-              <CustomizeActions>
-                <OpenInDesignButton
-                  type="button"
-                  onClick={handleOpenInDesign}
-                  disabled={!pipelineYaml.trim()}
-                  title="Open this pipeline in the visual Design editor"
-                >
-                  Open in Design view
-                </OpenInDesignButton>
-              </CustomizeActions>
-            </EditorSection>
+            {selectionHidden ? (
+              <CustomizeHiddenHint>
+                The selected pipeline is hidden by the active filters. Clear the filters or pick a
+                pipeline to customize it.
+              </CustomizeHiddenHint>
+            ) : (
+              <EditorSection>
+                <PipelineEditor
+                  value={pipelineYaml}
+                  onChange={setPipelineYaml}
+                  nodeDefinitions={nodeDefinitions}
+                />
+                <CustomizeActions>
+                  <OpenInDesignButton
+                    type="button"
+                    onClick={handleOpenInDesign}
+                    disabled={!pipelineYaml.trim()}
+                    title="Open this pipeline in the visual Design editor"
+                  >
+                    Open in Design view
+                  </OpenInDesignButton>
+                </CustomizeActions>
+              </EditorSection>
+            )}
           </Section>
 
           {!isNoInputPipeline && (
