@@ -18,9 +18,11 @@ steps:
       output_frame_size: 960
       target_sample_rate: 48000
   - kind: audio::opus::encoder
-  - kind: containers::webm::muxer
+  - kind: containers::ogg::muxer
     params:
       channels: 1
-      sample_rate: 48000
-      streaming_mode: live
+      codec: opus
+      chunk_size: 32768
   - kind: streamkit::http_output
+    params:
+      content_type: audio/ogg
