@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import type { SamplePipeline } from '@/types/generated/api-types';
+import type { AudioCodec, SamplePipeline, VideoCodec } from '@/types/generated/api-types';
 
 import { labelFromKey } from './jsonSchema';
 
@@ -62,19 +62,40 @@ const SYNONYM_GROUPS: string[][] = [
   ['hevc', 'h265', 'h.265'],
 ];
 
-// A query term joins a synonym group on an exact match, or when it is a
-// substring of an entry (>=3 chars, so "transcrib" finds "transcribe"). The
-// reverse direction (entry being a substring of the term) is deliberately
-// excluded: short entries like "mic"/"cam" would otherwise pull whole groups
-// into unrelated queries ("dynamic" → microphone, "scam" → webcam).
+// Whether a query term joins a synonym group via one of its entries. Exact
+// matches always count. Otherwise the term must be a >=3 char prefix of a whole
+// token of a non-hyphenated entry: this lets "transcrib" find "transcribe" and
+// "synthesis" find "speech synthesis", while keeping hyphenated derived tags
+// (`video-encoding`, `video-decoding`) as expansion targets only — so a shared
+// token like "video" no longer pulls both the encode and decode groups. The
+// reverse direction (entry being a substring of the term) is excluded too, so
+// "dynamic" never reaches "mic".
+function termJoinsEntry(entry: string, term: string): boolean {
+  if (entry === term) return true;
+  if (entry.includes('-')) return false;
+  return entry
+    .split(/\s+/)
+    .some((token) => token === term || (term.length >= 3 && token.startsWith(term)));
+}
+
 function expandTerm(term: string): string[] {
   const expanded = new Set<string>([term]);
   for (const group of SYNONYM_GROUPS) {
-    if (group.some((entry) => entry === term || (term.length >= 3 && entry.includes(term)))) {
+    if (group.some((entry) => termJoinsEntry(entry, term))) {
       for (const entry of group) expanded.add(entry);
     }
   }
   return [...expanded];
+}
+
+/**
+ * Expands a query into its per-term synonym candidate lists once, so callers
+ * filtering a list of pipelines do not re-scan the synonym groups per pipeline.
+ */
+export function expandQueryTerms(query: string): string[][] {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return [];
+  return normalizedQuery.split(/\s+/).filter(Boolean).map(expandTerm);
 }
 
 function searchableText(pipeline: SamplePipeline): string {
@@ -93,18 +114,20 @@ function searchableText(pipeline: SamplePipeline): string {
 }
 
 /**
- * Token + synonym match: every whitespace-separated query term must match the
+ * Whether a pipeline matches an already-expanded query (see `expandQueryTerms`).
+ * Every term must match — it or one of its synonyms being a substring of the
  * pipeline's searchable text (name, description, id, category, variant, group,
- * tags), where a term matches if it — or any of its synonyms — is a substring.
+ * tags). An empty term list matches everything.
  */
-export function matchesSamplePipelineQuery(pipeline: SamplePipeline, query: string): boolean {
-  const normalizedQuery = query.trim().toLowerCase();
-  if (!normalizedQuery) return true;
-
+export function matchesExpandedQuery(pipeline: SamplePipeline, expandedTerms: string[][]): boolean {
+  if (expandedTerms.length === 0) return true;
   const haystack = searchableText(pipeline);
-  const terms = normalizedQuery.split(/\s+/).filter(Boolean);
+  return expandedTerms.every((candidates) => candidates.some((c) => haystack.includes(c)));
+}
 
-  return terms.every((term) => expandTerm(term).some((candidate) => haystack.includes(candidate)));
+/** Convenience wrapper that expands `query` and matches a single pipeline. */
+export function matchesSamplePipelineQuery(pipeline: SamplePipeline, query: string): boolean {
+  return matchesExpandedQuery(pipeline, expandQueryTerms(query));
 }
 
 export interface ScenarioGroup {
@@ -157,26 +180,70 @@ export function groupSamplePipelinesByScenario(samples: SamplePipeline[]): Scena
 }
 
 const HARDWARE_TAG_PREFIX = 'hardware:';
+const CODEC_TAG_PREFIX = 'codec:';
+
+// Codec/container/transport tags are surfaced as the variant axis (pills) and
+// remain searchable, but are noise in the capability facets — codec is already
+// the pill dimension and the transport is implied by the Streaming category.
+const FORMAT_FACET_TAGS = new Set(['moq', 'mse', 'rtmp', 'mp4', 'webm']);
+
+// Display labels keyed on the generated codec enums, so adding a codec variant
+// in Rust is a TypeScript compile error here until a label is supplied (rather
+// than silently falling back to a mangled title-case like "H264").
+const VIDEO_CODEC_LABELS: Record<VideoCodec, string> = {
+  vp9: 'VP9',
+  h264: 'H.264',
+  av1: 'AV1',
+};
+const AUDIO_CODEC_LABELS: Record<AudioCodec, string> = {
+  opus: 'Opus',
+  aac: 'AAC',
+};
+const CODEC_LABELS: Record<string, string> = { ...VIDEO_CODEC_LABELS, ...AUDIO_CODEC_LABELS };
+
+// A group's no-variant base shows the codec its siblings vary on; video codecs
+// win over audio when a sample carries both (e.g. webcam PiP encodes both).
+const BASE_CODEC_PRIORITY: string[] = [
+  ...Object.keys(VIDEO_CODEC_LABELS),
+  ...Object.keys(AUDIO_CODEC_LABELS),
+];
+
+function isFormatFacetTag(tag: string): boolean {
+  return tag.startsWith(CODEC_TAG_PREFIX) || FORMAT_FACET_TAGS.has(tag);
+}
 
 export function sampleNeedsHardware(sample: SamplePipeline): boolean {
   return (sample.tags ?? []).some((tag) => tag.startsWith(HARDWARE_TAG_PREFIX));
 }
 
 // Acronyms / mixed-case names that the generic title-caser would mangle
-// ("Moq", "Mp4"). Anything not listed falls back to labelFromKey.
+// ("Moq", "Mp4"). Anything not listed falls back to labelFromKey. Codec labels
+// live in the typed CODEC_LABELS maps above, not here.
 const CAPABILITY_LABEL_OVERRIDES: Record<string, string> = {
   moq: 'MoQ',
   mp4: 'MP4',
   mse: 'MSE',
   rtmp: 'RTMP',
   webm: 'WebM',
-  vp9: 'VP9',
-  av1: 'AV1',
   vad: 'VAD',
 };
 
 export function formatCapabilityLabel(tag: string): string {
   return CAPABILITY_LABEL_OVERRIDES[tag] ?? labelFromKey(tag);
+}
+
+/**
+ * Pill label for a group's no-variant base, derived from its output codec tag
+ * (e.g. the software colorbars base reads `VP9`, the Opus mixer base `Opus`),
+ * rather than a hardcoded fallback that misreads non-encoding groups.
+ */
+export function baseVariantLabel(sample: SamplePipeline): string | null {
+  const codecs = (sample.tags ?? [])
+    .filter((tag) => tag.startsWith(CODEC_TAG_PREFIX))
+    .map((tag) => tag.slice(CODEC_TAG_PREFIX.length));
+  if (codecs.length === 0) return null;
+  const pick = BASE_CODEC_PRIORITY.find((codec) => codecs.includes(codec)) ?? codecs[0];
+  return CODEC_LABELS[pick] ?? pick.toUpperCase();
 }
 
 export interface SampleFacets {
@@ -196,7 +263,7 @@ export function collectSampleFacets(samples: SamplePipeline[]): SampleFacets {
     for (const tag of sample.tags ?? []) {
       if (tag.startsWith(HARDWARE_TAG_PREFIX)) {
         hasHardware = true;
-      } else {
+      } else if (!isFormatFacetTag(tag)) {
         capabilities.add(tag);
       }
     }

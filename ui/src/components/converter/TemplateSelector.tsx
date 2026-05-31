@@ -8,11 +8,13 @@ import { RadioGroupRoot, RadioItem, RadioIndicator } from '@/components/ui/Radio
 import type { SamplePipeline } from '@/types/generated/api-types';
 import type { SampleFacets, ScenarioGroup } from '@/utils/samplePipelineOrdering';
 import {
+  baseVariantLabel,
   collectSampleFacets,
   compareSamplePipelinesByName,
+  expandQueryTerms,
   formatCapabilityLabel,
   groupSamplePipelinesByScenario,
-  matchesSamplePipelineQuery,
+  matchesExpandedQuery,
   sampleNeedsHardware,
 } from '@/utils/samplePipelineOrdering';
 
@@ -87,7 +89,7 @@ const ScenarioCard: React.FC<{ group: ScenarioGroup; selectedTemplateId: string 
       <VariantSelector role="group" aria-label={`${base.name} variants`}>
         {variants.map((variant) => (
           <VariantOption key={variant.id} value={variant.id} aria-label={variant.name}>
-            {variant.variant ?? 'Software'}
+            {variant.variant ?? baseVariantLabel(variant) ?? 'Default'}
           </VariantOption>
         ))}
       </VariantSelector>
@@ -100,6 +102,27 @@ function toScenarioGroups(samples: SamplePipeline[]): ScenarioGroup[] {
     compareSamplePipelinesByName(a.base, b.base)
   );
 }
+
+const GroupSection: React.FC<{
+  title: string;
+  groups: ScenarioGroup[];
+  selectedTemplateId: string;
+}> = ({ title, groups, selectedTemplateId }) => {
+  if (groups.length === 0) return null;
+  return (
+    <Section>
+      <SectionHeader>
+        <span>{title}</span>
+        <SectionCount>{groups.length}</SectionCount>
+      </SectionHeader>
+      <TemplateGrid>
+        {groups.map((group) => (
+          <ScenarioCard key={group.key} group={group} selectedTemplateId={selectedTemplateId} />
+        ))}
+      </TemplateGrid>
+    </Section>
+  );
+};
 
 interface FacetFiltersProps {
   facets: SampleFacets;
@@ -184,15 +207,8 @@ export const TemplateSelector: React.FC<TemplateSelectorProps> = ({
 
   const facets = React.useMemo(() => collectSampleFacets(templates), [templates]);
 
-  const facetFiltersActive = React.useMemo(
-    () => Boolean(categoryFilter || capabilityFilter || hardwareOnly),
-    [categoryFilter, capabilityFilter, hardwareOnly]
-  );
-
-  const anyFilterActive = React.useMemo(
-    () => Boolean(query.trim() || originFilter !== 'all' || facetFiltersActive),
-    [query, originFilter, facetFiltersActive]
-  );
+  const facetFiltersActive = Boolean(categoryFilter || capabilityFilter || hardwareOnly);
+  const anyFilterActive = Boolean(query.trim() || originFilter !== 'all' || facetFiltersActive);
 
   const resetFilters = React.useCallback(() => {
     setQuery('');
@@ -215,6 +231,8 @@ export const TemplateSelector: React.FC<TemplateSelectorProps> = ({
 
   const toggleHardware = React.useCallback(() => setHardwareOnly((current) => !current), []);
 
+  const expandedQuery = React.useMemo(() => expandQueryTerms(query), [query]);
+
   const filteredTemplates = React.useMemo(() => {
     return templates.filter((template) => {
       if (originFilter === 'system' && !template.is_system) return false;
@@ -222,9 +240,9 @@ export const TemplateSelector: React.FC<TemplateSelectorProps> = ({
       if (categoryFilter && template.category !== categoryFilter) return false;
       if (capabilityFilter && !(template.tags ?? []).includes(capabilityFilter)) return false;
       if (hardwareOnly && !sampleNeedsHardware(template)) return false;
-      return matchesSamplePipelineQuery(template, query);
+      return matchesExpandedQuery(template, expandedQuery);
     });
-  }, [templates, originFilter, categoryFilter, capabilityFilter, hardwareOnly, query]);
+  }, [templates, originFilter, categoryFilter, capabilityFilter, hardwareOnly, expandedQuery]);
 
   const systemGroups = React.useMemo(
     () => toScenarioGroups(filteredTemplates.filter((template) => template.is_system)),
@@ -244,21 +262,12 @@ export const TemplateSelector: React.FC<TemplateSelectorProps> = ({
     return filteredTemplates.some((template) => template.id === selectedTemplateId);
   }, [filteredTemplates, selectedTemplateId]);
 
-  const showHiddenSelectionHint = React.useMemo(
-    () =>
-      Boolean(
-        selectedTemplateId &&
-        selectedExists &&
-        !selectedVisible &&
-        (query.trim() || originFilter !== 'all' || facetFiltersActive)
-      ),
-    [selectedTemplateId, selectedExists, selectedVisible, query, originFilter, facetFiltersActive]
+  const showHiddenSelectionHint = Boolean(
+    selectedTemplateId && selectedExists && !selectedVisible && anyFilterActive
   );
 
-  const showFacetBar = React.useMemo(
-    () => facets.categories.length > 0 || facets.capabilities.length > 0 || facets.hasHardware,
-    [facets]
-  );
+  const showFacetBar =
+    facets.categories.length > 0 || facets.capabilities.length > 0 || facets.hasHardware;
 
   return (
     <SelectorContainer>
@@ -324,41 +333,16 @@ export const TemplateSelector: React.FC<TemplateSelectorProps> = ({
           <EmptyState>No pipelines match your filters.</EmptyState>
         )}
 
-        {systemGroups.length > 0 && (
-          <Section>
-            <SectionHeader>
-              <span>System Pipelines</span>
-              <SectionCount>{systemGroups.length}</SectionCount>
-            </SectionHeader>
-            <TemplateGrid>
-              {systemGroups.map((group) => (
-                <ScenarioCard
-                  key={group.key}
-                  group={group}
-                  selectedTemplateId={selectedTemplateId}
-                />
-              ))}
-            </TemplateGrid>
-          </Section>
-        )}
-
-        {userGroups.length > 0 && (
-          <Section>
-            <SectionHeader>
-              <span>User Pipelines</span>
-              <SectionCount>{userGroups.length}</SectionCount>
-            </SectionHeader>
-            <TemplateGrid>
-              {userGroups.map((group) => (
-                <ScenarioCard
-                  key={group.key}
-                  group={group}
-                  selectedTemplateId={selectedTemplateId}
-                />
-              ))}
-            </TemplateGrid>
-          </Section>
-        )}
+        <GroupSection
+          title="System Pipelines"
+          groups={systemGroups}
+          selectedTemplateId={selectedTemplateId}
+        />
+        <GroupSection
+          title="User Pipelines"
+          groups={userGroups}
+          selectedTemplateId={selectedTemplateId}
+        />
       </RadioGroupRoot>
     </SelectorContainer>
   );

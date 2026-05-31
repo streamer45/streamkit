@@ -13,18 +13,37 @@
 //! always win; derived `tags` are unioned with any curated ones.
 
 use streamkit_api::yaml::{InputType, OutputType};
+use streamkit_core::types::{AudioCodec, VideoCodec};
 
-/// Explicit discovery fields parsed from a sample's YAML (all optional).
-#[derive(Debug, Default, Clone)]
-pub struct ExplicitDiscovery {
-    pub group: Option<String>,
-    pub variant: Option<String>,
-    pub category: Option<String>,
-    pub tags: Vec<String>,
+/// Output codec a video encoder node produces, or `None` for non-encoder kinds.
+///
+/// Node kinds embed the codec's canonical name (`video::vp9::encoder`,
+/// `video::vaapi::av1_encoder`, `video::vulkan_video::h264_encoder`, ...), so we
+/// match against [`VideoCodec::as_c_name`] rather than re-spelling codec strings
+/// — adding a codec variant is then a single edit on the enum.
+fn video_codec_for_kind(kind: &str) -> Option<VideoCodec> {
+    let k = kind.to_lowercase();
+    if !k.contains("encoder") {
+        return None;
+    }
+    [VideoCodec::Vp9, VideoCodec::H264, VideoCodec::Av1]
+        .into_iter()
+        .find(|codec| k.contains(codec.as_c_name()))
 }
 
-/// Resolved discovery metadata after merging explicit values with derivation.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+/// Output codec an audio encoder node produces, or `None` for non-encoder kinds.
+fn audio_codec_for_kind(kind: &str) -> Option<AudioCodec> {
+    let k = kind.to_lowercase();
+    if !k.contains("encoder") {
+        return None;
+    }
+    [AudioCodec::Opus, AudioCodec::Aac].into_iter().find(|codec| k.contains(codec.as_c_name()))
+}
+
+/// Discovery metadata for a sample. Used both for the explicit values parsed
+/// from a sample's YAML (all optional) and for the resolved values after
+/// merging those with the derived defaults.
+#[derive(Debug, Default, Clone)]
 pub struct Discovery {
     pub group: Option<String>,
     pub variant: Option<String>,
@@ -76,7 +95,14 @@ fn label_for(table: &[(&'static str, &'static str)], token: &str) -> Option<&'st
 
 /// Splits a filename base into its base-scenario group key and a variant label,
 /// stripping codec/hardware/language tokens that distinguish near-duplicates.
-fn group_and_variant_from_filename(filename_base: &str) -> (String, Option<String>) {
+///
+/// Language tokens are only honoured when `is_translation` is set; the two-letter
+/// codes (`de`, `it`, `pt`, ...) collide with common filename fragments, so
+/// outside a translation pipeline they stay part of the group key.
+fn group_and_variant_from_filename(
+    filename_base: &str,
+    is_translation: bool,
+) -> (String, Option<String>) {
     let mut normalized = filename_base.to_lowercase().replace('-', "_");
 
     let mut variant_parts: Vec<String> = Vec::new();
@@ -94,7 +120,7 @@ fn group_and_variant_from_filename(filename_base: &str) -> (String, Option<Strin
     let mut languages: Vec<&'static str> = Vec::new();
 
     for token in normalized.split('_').filter(|t| !t.is_empty()) {
-        if let Some(lang) = label_for(LANGUAGE_TOKENS, token) {
+        if let Some(lang) = is_translation.then(|| label_for(LANGUAGE_TOKENS, token)).flatten() {
             languages.push(lang);
         } else if let Some(label) = label_for(SINGLE_TOKENS, token) {
             variant_parts.push(label.to_string());
@@ -196,6 +222,14 @@ fn capability_tags(
         for tag in tags_for_kind(kind) {
             tags.push(tag.to_string());
         }
+        // Output codec, surfaced as the variant axis (pills) and a search term
+        // but excluded from the capability facets (see collectSampleFacets).
+        let codec = video_codec_for_kind(kind)
+            .map(VideoCodec::as_c_name)
+            .or_else(|| audio_codec_for_kind(kind).map(AudioCodec::as_c_name));
+        if let Some(name) = codec {
+            tags.push(format!("codec:{name}"));
+        }
     }
 
     match client_output {
@@ -239,14 +273,18 @@ fn category_from_tags(tags: &[String]) -> Option<String> {
 }
 
 /// Derives discovery metadata, with explicit YAML values taking precedence.
+///
+/// Grouping is only auto-derived for curated system samples; user pipelines
+/// group solely via an explicit `group`, so two unrelated saves whose names
+/// happen to share a group token are never silently collapsed into one card.
 pub fn derive(
     filename_base: &str,
     node_kinds: &[String],
     client_input: Option<InputType>,
     client_output: Option<OutputType>,
-    explicit: ExplicitDiscovery,
+    is_system: bool,
+    explicit: Discovery,
 ) -> Discovery {
-    let (derived_group, derived_variant) = group_and_variant_from_filename(filename_base);
     let derived_tags = capability_tags(node_kinds, client_input, client_output);
 
     let mut tags = explicit.tags;
@@ -258,10 +296,14 @@ pub fn derive(
     tags.sort_unstable();
     tags.dedup();
 
+    let is_translation = tags.iter().any(|t| t == "translation");
+    let (derived_group, derived_variant) =
+        group_and_variant_from_filename(filename_base, is_translation);
+
     let category = explicit.category.or_else(|| category_from_tags(&tags));
 
     Discovery {
-        group: explicit.group.or(Some(derived_group)),
+        group: explicit.group.or(if is_system { Some(derived_group) } else { None }),
         variant: explicit.variant.or(derived_variant),
         category,
         tags,
@@ -278,11 +320,13 @@ mod tests {
 
     #[test]
     fn colorbars_family_shares_a_group_with_distinct_variants() {
-        let (g_plain, v_plain) = group_and_variant_from_filename("video_moq_colorbars");
-        let (g_h264, v_h264) = group_and_variant_from_filename("video_moq_h264_colorbars");
-        let (g_vaapi, v_vaapi) = group_and_variant_from_filename("video_moq_vaapi_h264_colorbars");
-        let (g_nv, v_nv) = group_and_variant_from_filename("video_moq_nv_av1_colorbars");
-        let (g_vk, v_vk) = group_and_variant_from_filename("video_moq_vulkan_video_h264_colorbars");
+        let (g_plain, v_plain) = group_and_variant_from_filename("video_moq_colorbars", false);
+        let (g_h264, v_h264) = group_and_variant_from_filename("video_moq_h264_colorbars", false);
+        let (g_vaapi, v_vaapi) =
+            group_and_variant_from_filename("video_moq_vaapi_h264_colorbars", false);
+        let (g_nv, v_nv) = group_and_variant_from_filename("video_moq_nv_av1_colorbars", false);
+        let (g_vk, v_vk) =
+            group_and_variant_from_filename("video_moq_vulkan_video_h264_colorbars", false);
 
         assert_eq!(g_plain, "video-moq-colorbars");
         assert_eq!(g_h264, "video-moq-colorbars");
@@ -299,20 +343,23 @@ mod tests {
 
     #[test]
     fn svt_av1_compound_does_not_leak_into_group_key() {
-        let (group, variant) = group_and_variant_from_filename("video_svt_av1_compositor_demo");
+        let (group, variant) =
+            group_and_variant_from_filename("video_svt_av1_compositor_demo", false);
         assert_eq!(group, "video-compositor-demo");
         assert_eq!(variant.as_deref(), Some("SVT-AV1"));
 
-        let (plain_group, plain_variant) = group_and_variant_from_filename("video_compositor_demo");
+        let (plain_group, plain_variant) =
+            group_and_variant_from_filename("video_compositor_demo", false);
         assert_eq!(plain_group, "video-compositor-demo");
         assert_eq!(plain_variant, None);
     }
 
     #[test]
     fn language_pairs_become_directional_variants() {
-        let (g_en_es, v_en_es) = group_and_variant_from_filename("speech-translate-en-es");
-        let (g_es_en, v_es_en) = group_and_variant_from_filename("speech-translate-es-en");
-        let (g_hel, v_hel) = group_and_variant_from_filename("speech-translate-helsinki-en-es");
+        let (g_en_es, v_en_es) = group_and_variant_from_filename("speech-translate-en-es", true);
+        let (g_es_en, v_es_en) = group_and_variant_from_filename("speech-translate-es-en", true);
+        let (g_hel, v_hel) =
+            group_and_variant_from_filename("speech-translate-helsinki-en-es", true);
 
         assert_eq!(g_en_es, "speech-translate");
         assert_eq!(g_es_en, "speech-translate");
@@ -323,10 +370,34 @@ mod tests {
     }
 
     #[test]
+    fn language_tokens_are_ignored_outside_a_translation_context() {
+        let (group, variant) = group_and_variant_from_filename("video_de_interlace_demo", false);
+        assert_eq!(group, "video-de-interlace-demo");
+        assert_eq!(variant, None);
+    }
+
+    #[test]
+    fn user_pipelines_are_not_auto_grouped() {
+        let derive_for = |is_system| {
+            derive(
+                "encode_h264",
+                &kinds(&["video::openh264::encoder"]),
+                None,
+                Some(OutputType::Video),
+                is_system,
+                Discovery::default(),
+            )
+            .group
+        };
+        assert_eq!(derive_for(true).as_deref(), Some("encode"));
+        assert_eq!(derive_for(false), None);
+    }
+
+    #[test]
     fn unrelated_samples_do_not_collide() {
-        let (g_audio, _) = group_and_variant_from_filename("mp4_mux_audio");
-        let (g_video, _) = group_and_variant_from_filename("mp4_mux_video");
-        let (g_av, _) = group_and_variant_from_filename("mp4_mux_aac_h264");
+        let (g_audio, _) = group_and_variant_from_filename("mp4_mux_audio", false);
+        let (g_video, _) = group_and_variant_from_filename("mp4_mux_video", false);
+        let (g_av, _) = group_and_variant_from_filename("mp4_mux_aac_h264", false);
         assert_ne!(g_audio, g_video);
         assert_ne!(g_audio, g_av);
         assert_ne!(g_video, g_av);
@@ -374,6 +445,28 @@ mod tests {
     }
 
     #[test]
+    fn encoders_emit_the_output_codec_tag() {
+        // The no-token base of a grouped family (e.g. the software colorbars or
+        // the Opus mixer) carries no filename variant, so the UI labels its pill
+        // from this codec tag instead of a hardcoded fallback.
+        let vp9 = capability_tags(&kinds(&["video::vp9::encoder"]), None, None);
+        assert!(vp9.contains(&"codec:vp9".to_string()));
+
+        let opus = capability_tags(&kinds(&["audio::opus::encoder"]), None, None);
+        assert!(opus.contains(&"codec:opus".to_string()));
+
+        let h264 = capability_tags(&kinds(&["video::openh264::encoder"]), None, None);
+        assert!(h264.contains(&"codec:h264".to_string()));
+
+        let aac = capability_tags(&kinds(&["plugin::native::aac_encoder"]), None, None);
+        assert!(aac.contains(&"codec:aac".to_string()));
+
+        // Decoders are not the output codec.
+        let decoder = capability_tags(&kinds(&["audio::opus::decoder"]), None, None);
+        assert!(!decoder.iter().any(|t| t.starts_with("codec:")));
+    }
+
+    #[test]
     fn category_prefers_compositing_then_encoding() {
         assert_eq!(
             category_from_tags(&["compositing".into(), "video-encoding".into(), "moq".into()]),
@@ -397,7 +490,8 @@ mod tests {
             &kinds(&["video::vaapi::h264_encoder", "transport::moq::publisher"]),
             None,
             Some(OutputType::Video),
-            ExplicitDiscovery {
+            true,
+            Discovery {
                 group: Some("custom-group".to_string()),
                 variant: Some("Custom".to_string()),
                 category: Some("Demos".to_string()),
@@ -420,7 +514,8 @@ mod tests {
             &kinds(&["video::nv::av1_encoder", "transport::moq::publisher"]),
             None,
             Some(OutputType::Video),
-            ExplicitDiscovery::default(),
+            true,
+            Discovery::default(),
         );
         assert_eq!(discovery.group.as_deref(), Some("video-moq-colorbars"));
         assert_eq!(discovery.variant.as_deref(), Some("NVIDIA AV1"));

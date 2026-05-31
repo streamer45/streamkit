@@ -190,7 +190,7 @@ struct PipelineMetadata {
     name: Option<String>,
     description: Option<String>,
     mode: streamkit_api::EngineMode,
-    explicit: crate::sample_discovery::ExplicitDiscovery,
+    explicit: crate::sample_discovery::Discovery,
     node_kinds: Vec<String>,
     client_input: Option<streamkit_api::yaml::InputType>,
     client_output: Option<streamkit_api::yaml::OutputType>,
@@ -216,60 +216,35 @@ fn parse_pipeline_metadata(yaml: &str, path: &std::path::Path) -> PipelineMetada
         },
     };
 
-    // The Steps and Dag arms differ only in how node kinds are collected; the
-    // discovery fields are shared, so destructure them once here.
-    let (name, description, mode, group, variant, category, tags, node_kinds, client) =
-        match user_pipeline {
-            UserPipeline::Steps {
-                name,
-                description,
-                mode,
-                group,
-                variant,
-                category,
-                tags,
-                steps,
-                client,
-            } => (
-                name,
-                description,
-                mode,
-                group,
-                variant,
-                category,
-                tags,
-                steps.into_iter().map(|s| s.kind).collect::<Vec<String>>(),
-                client,
-            ),
-            UserPipeline::Dag {
-                name,
-                description,
-                mode,
-                group,
-                variant,
-                category,
-                tags,
-                nodes,
-                client,
-            } => (
-                name,
-                description,
-                mode,
-                group,
-                variant,
-                category,
-                tags,
-                nodes.into_values().map(|n| n.kind).collect::<Vec<String>>(),
-                client,
-            ),
-        };
+    // The Steps and Dag arms differ only in how node kinds are collected, so
+    // pull those out first and bind the shared discovery fields with one
+    // irrefutable or-pattern.
+    let node_kinds: Vec<String> = match &user_pipeline {
+        UserPipeline::Steps { steps, .. } => steps.iter().map(|s| s.kind.clone()).collect(),
+        UserPipeline::Dag { nodes, .. } => nodes.values().map(|n| n.kind.clone()).collect(),
+    };
+
+    let (UserPipeline::Steps {
+        name,
+        description,
+        mode,
+        group,
+        variant,
+        category,
+        tags,
+        client,
+        ..
+    }
+    | UserPipeline::Dag {
+        name, description, mode, group, variant, category, tags, client, ..
+    }) = user_pipeline;
 
     let (client_input, client_output) = client_io_types(client.as_ref());
     PipelineMetadata {
         name,
         description,
         mode,
-        explicit: crate::sample_discovery::ExplicitDiscovery { group, variant, category, tags },
+        explicit: crate::sample_discovery::Discovery { group, variant, category, tags },
         node_kinds,
         client_input,
         client_output,
@@ -323,6 +298,7 @@ async fn load_samples_from_dir(
                     &meta.node_kinds,
                     meta.client_input,
                     meta.client_output,
+                    is_system,
                     meta.explicit,
                 );
 
@@ -455,6 +431,7 @@ pub async fn get_sample(
                     &meta.node_kinds,
                     meta.client_input,
                     meta.client_output,
+                    is_system,
                     meta.explicit,
                 );
 
@@ -599,6 +576,7 @@ async fn save_sample(
         &meta.node_kinds,
         meta.client_input,
         meta.client_output,
+        false,
         meta.explicit,
     );
 

@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import type { SamplePipeline } from '@/types/generated/api-types';
 
 import {
+  baseVariantLabel,
   collectSampleFacets,
   compareSamplePipelinesByName,
   formatCapabilityLabel,
@@ -158,6 +159,19 @@ describe('matchesSamplePipelineQuery', () => {
     expect(matchesSamplePipelineQuery(tts, 'stt')).toBe(false);
   });
 
+  it('expands a whole-token prefix of a multi-word synonym', () => {
+    const tts = makePipeline({ id: 'tts', name: 'Kokoro', tags: ['text-to-speech'] });
+    expect(matchesSamplePipelineQuery(tts, 'synthesis')).toBe(true);
+  });
+
+  it('does not expand both video families from a shared token', () => {
+    // "video" is a token of the hyphenated derived tags video-encoding and
+    // video-decoding, but those are expansion targets only, so querying "video"
+    // must not pull a decoder pipeline in via the encode group's synonyms.
+    const decoder = makePipeline({ id: 'dec', name: 'AV1 Decode', tags: ['video-decoding'] });
+    expect(matchesSamplePipelineQuery(decoder, 'encoder')).toBe(false);
+  });
+
   it('does not let a query that merely contains a short synonym leak in its group', () => {
     const mic = makePipeline({ id: 'mic', name: 'Microphone Capture', tags: ['microphone'] });
     const cam = makePipeline({ id: 'cam', name: 'Webcam PiP', tags: ['webcam'] });
@@ -235,13 +249,18 @@ describe('sampleNeedsHardware', () => {
 });
 
 describe('collectSampleFacets', () => {
-  it('aggregates sorted categories and capabilities, excluding hardware tags', () => {
+  it('aggregates sorted categories and capabilities, excluding hardware and format tags', () => {
     const facets = collectSampleFacets([
-      makePipeline({ id: 'a', category: 'Video Encoding', tags: ['hardware:vaapi', 'colorbars'] }),
+      makePipeline({
+        id: 'a',
+        category: 'Video Encoding',
+        tags: ['hardware:vaapi', 'colorbars', 'codec:vp9'],
+      }),
       makePipeline({ id: 'b', category: 'Speech to Text', tags: ['mp4'] }),
     ]);
     expect(facets.categories).toEqual(['Speech to Text', 'Video Encoding']);
-    expect(facets.capabilities).toEqual(['colorbars', 'mp4']);
+    // codec:* and container/transport tags are the variant axis, not facets.
+    expect(facets.capabilities).toEqual(['colorbars']);
     expect(facets.hasHardware).toBe(true);
   });
 
@@ -250,7 +269,7 @@ describe('collectSampleFacets', () => {
     // so a capability chip must survive as a cross-cutting filter (e.g. a
     // sample bucketed as `Video Compositing` may still carry `video-encoding`).
     const facets = collectSampleFacets([
-      makePipeline({ id: 'a', category: 'Video Encoding', tags: ['video-encoding', 'vp9'] }),
+      makePipeline({ id: 'a', category: 'Video Encoding', tags: ['video-encoding', 'codec:vp9'] }),
       makePipeline({
         id: 'b',
         category: 'Video Compositing',
@@ -258,7 +277,7 @@ describe('collectSampleFacets', () => {
       }),
     ]);
     expect(facets.categories).toEqual(['Video Compositing', 'Video Encoding']);
-    expect(facets.capabilities).toEqual(['compositing', 'video-encoding', 'vp9']);
+    expect(facets.capabilities).toEqual(['compositing', 'video-encoding']);
   });
 
   it('reports no hardware when no hardware tags are present', () => {
@@ -274,11 +293,29 @@ describe('formatCapabilityLabel', () => {
     expect(formatCapabilityLabel('mse')).toBe('MSE');
     expect(formatCapabilityLabel('rtmp')).toBe('RTMP');
     expect(formatCapabilityLabel('webm')).toBe('WebM');
-    expect(formatCapabilityLabel('vp9')).toBe('VP9');
+    expect(formatCapabilityLabel('vad')).toBe('VAD');
   });
 
   it('falls back to title-casing for other tags', () => {
     expect(formatCapabilityLabel('voice-activity-detection')).toBe('Voice Activity Detection');
     expect(formatCapabilityLabel('colorbars')).toBe('Colorbars');
+  });
+});
+
+describe('baseVariantLabel', () => {
+  it('derives the base label from the output codec tag', () => {
+    const colorbars = makePipeline({ id: 'cb', tags: ['codec:vp9', 'moq'] });
+    const mixer = makePipeline({ id: 'mix', tags: ['codec:opus', 'mixing'] });
+    expect(baseVariantLabel(colorbars)).toBe('VP9');
+    expect(baseVariantLabel(mixer)).toBe('Opus');
+  });
+
+  it('prefers the video codec when a sample carries both', () => {
+    const pip = makePipeline({ id: 'pip', tags: ['codec:opus', 'codec:h264'] });
+    expect(baseVariantLabel(pip)).toBe('H.264');
+  });
+
+  it('returns null when there is no codec tag to distinguish the base', () => {
+    expect(baseVariantLabel(makePipeline({ id: 'x', tags: ['mixing'] }))).toBeNull();
   });
 });
