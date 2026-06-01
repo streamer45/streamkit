@@ -105,7 +105,8 @@ fallback = "unknown"
 |--------|:-------:|:-------:|
 | `oneshot_pipeline.duration` | ✓ | — (no pipeline-level duration metric) |
 | `node.execution.duration` | ✓ | — (oneshot graph builder only) |
-| node-scoped engine metrics (`node.packets.*`, `node.state`, `node.state_transitions`, `engine.nodes.active`, `pin_distributor.*`) | ✓ | ✓ |
+| `node.packets.*` | ✓ | ✓ |
+| `node.state`, `engine.node.state_transitions`, `engine.nodes.active`, `pin_distributor.*` | — | ✓ (dynamic-engine instruments) |
 
 `http.server.*` request metrics are **not** labeled — `service` is a pipeline property, so the breakdown lives on pipeline/node metrics, not on the HTTP layer.
 
