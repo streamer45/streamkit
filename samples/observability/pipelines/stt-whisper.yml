@@ -1,6 +1,8 @@
 name: stt
 description: Speech-to-Text (Whisper) for the observability sample
 mode: oneshot
+attributes:
+  service: stt
 steps:
   - kind: streamkit::http_input
   - kind: containers::ogg::demuxer

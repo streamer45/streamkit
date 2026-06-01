@@ -33,15 +33,14 @@ for i in $(seq 1 "$ROUNDS"); do
     esac
   else
     printf '%s' "$text" > "$tmp/in.txt"
-    # X-StreamKit-Service lets a service-label-aware skit (see PR #545) split
-    # oneshot metrics by {tts,stt}; older builds simply ignore the header.
+    # The pipelines declare `attributes: { service: tts|stt }`, which a
+    # service-label-aware skit (see README / observability guide) turns into a
+    # bounded `service` metric label; older builds simply ignore the field.
     curl -fsS -o "$tmp/a.ogg" \
-      -H 'X-StreamKit-Service: tts' \
       -F "config=<$HERE/pipelines/tts-kokoro.yml" \
       -F "media=@$tmp/in.txt;type=text/plain;filename=media" \
       "$SKIT_URL/api/v1/process"
     curl -fsS -o /dev/null \
-      -H 'X-StreamKit-Service: stt' \
       -F "config=<$HERE/pipelines/stt-whisper.yml" \
       -F "media=@$tmp/a.ogg;type=audio/ogg;filename=media" \
       "$SKIT_URL/api/v1/process" || true

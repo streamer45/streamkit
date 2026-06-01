@@ -1,6 +1,8 @@
 name: tts
 description: Text-to-Speech (Kokoro) for the observability sample
 mode: oneshot
+attributes:
+  service: tts
 steps:
   - kind: streamkit::http_input
   - kind: core::text_chunker

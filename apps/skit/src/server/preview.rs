@@ -1472,6 +1472,7 @@ mod inject_teardown_tests {
             tx,
             Some("test-role".to_string()),
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            streamkit_engine::ResolvedAttributes::default(),
         )
         .await
         .expect("Session::create on a fresh engine should succeed");
@@ -2030,6 +2031,7 @@ mod handler_tests {
             event_tx,
             None,
             state.asset_root.clone(),
+            streamkit_engine::ResolvedAttributes::default(),
         )
         .await
         .expect("Session::create succeeds");

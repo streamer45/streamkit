@@ -43,6 +43,14 @@ struct HttpInputBinding {
     required: bool,
 }
 
+/// Combine the per-request `status` with the resolved bounded labels.
+fn duration_labels(status: &'static str, extra: &[KeyValue]) -> Vec<KeyValue> {
+    let mut labels = Vec::with_capacity(extra.len() + 1);
+    labels.push(KeyValue::new(crate::metrics_labels::STATUS_KEY, status));
+    labels.extend_from_slice(extra);
+    labels
+}
+
 /// Extract content-type header and multipart boundary from request headers.
 fn extract_multipart_boundary(headers: &HeaderMap) -> Result<String, AppError> {
     let ct_header = headers
@@ -399,6 +407,7 @@ fn build_streaming_response(
     pipeline_result: streamkit_engine::OneshotPipelineResult,
     start_time: Instant,
     duration_histogram: opentelemetry::metrics::Histogram<f64>,
+    attributes: Arc<streamkit_engine::ResolvedAttributes>,
 ) -> Response {
     tracing::debug!(
         "Creating streaming response with content type: {}",
@@ -406,7 +415,7 @@ fn build_streaming_response(
     );
 
     let stream = ReceiverStream::new(pipeline_result.data_stream).map(Ok::<_, Infallible>);
-    let stream = InstrumentedOneshotStream::new(stream, start_time, duration_histogram);
+    let stream = InstrumentedOneshotStream::new(stream, start_time, duration_histogram, attributes);
     let body = Body::from_stream(stream);
 
     let mut headers = HeaderMap::new();
@@ -436,6 +445,7 @@ struct InstrumentedOneshotStream<S> {
     start_time: Instant,
     recorded: bool,
     duration_histogram: opentelemetry::metrics::Histogram<f64>,
+    attributes: Arc<streamkit_engine::ResolvedAttributes>,
 }
 
 impl<S> InstrumentedOneshotStream<S> {
@@ -443,8 +453,9 @@ impl<S> InstrumentedOneshotStream<S> {
         inner: S,
         start_time: Instant,
         duration_histogram: opentelemetry::metrics::Histogram<f64>,
+        attributes: Arc<streamkit_engine::ResolvedAttributes>,
     ) -> Self {
-        Self { inner, start_time, recorded: false, duration_histogram }
+        Self { inner, start_time, recorded: false, duration_histogram, attributes }
     }
 
     fn record(&mut self, status: &'static str) {
@@ -452,7 +463,7 @@ impl<S> InstrumentedOneshotStream<S> {
             return;
         }
         self.recorded = true;
-        let labels = [KeyValue::new("status", status)];
+        let labels = duration_labels(status, &self.attributes.pipeline);
         self.duration_histogram.record(self.start_time.elapsed().as_secs_f64(), &labels);
     }
 }
@@ -505,6 +516,8 @@ pub(super) async fn process_oneshot_pipeline_handler(
     let user_pipeline = parse_config_field(&mut multipart).await?;
 
     let pipeline_def: Pipeline = compile(user_pipeline)?;
+
+    let resolved_attributes = Arc::new(app_state.resolve_metric_attributes(&pipeline_def));
 
     let input_bindings = determine_http_input_bindings(&pipeline_def)?;
 
@@ -643,6 +656,7 @@ pub(super) async fn process_oneshot_pipeline_handler(
             pipeline_def,
             engine_inputs,
             Some(oneshot_config),
+            Arc::clone(&resolved_attributes),
             Some(cancel_token.clone()),
         )
         .await
@@ -652,7 +666,7 @@ pub(super) async fn process_oneshot_pipeline_handler(
             result
         },
         Err(e) => {
-            let labels = [KeyValue::new("status", "error")];
+            let labels = duration_labels("error", &resolved_attributes.pipeline);
             oneshot_duration_histogram.record(oneshot_start_time.elapsed().as_secs_f64(), &labels);
             cancel_token.cancel();
             return Err(e.into());
@@ -662,19 +676,26 @@ pub(super) async fn process_oneshot_pipeline_handler(
     match parse_done_rx.await {
         Ok(Ok(())) => {},
         Ok(Err(err)) => {
-            let labels = [KeyValue::new("status", "error")];
+            let labels = duration_labels("error", &resolved_attributes.pipeline);
             oneshot_duration_histogram.record(oneshot_start_time.elapsed().as_secs_f64(), &labels);
             cancel_token.cancel();
             return Err(err);
         },
         Err(e) => {
+            let labels = duration_labels("error", &resolved_attributes.pipeline);
+            oneshot_duration_histogram.record(oneshot_start_time.elapsed().as_secs_f64(), &labels);
             cancel_token.cancel();
             return Err(AppError::BadRequest(format!("Multipart routing task aborted: {e}")));
         },
     }
     let _ = routing_task.await;
 
-    Ok(build_streaming_response(pipeline_result, oneshot_start_time, oneshot_duration_histogram))
+    Ok(build_streaming_response(
+        pipeline_result,
+        oneshot_start_time,
+        oneshot_duration_histogram,
+        resolved_attributes,
+    ))
 }
 
 #[cfg(test)]

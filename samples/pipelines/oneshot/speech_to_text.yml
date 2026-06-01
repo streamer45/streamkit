@@ -1,6 +1,8 @@
 name: Speech-to-Text (Whisper)
 description: Transcribes speech to text using Whisper
 mode: oneshot
+attributes:
+  service: stt
 client:
   input:
     type: file_upload

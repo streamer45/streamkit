@@ -85,6 +85,14 @@ These are the sharp edges worth knowing when wiring this up yourself:
 - **Model names must match.** Pipelines reference model files by path; the file
   must actually be present in the image/`models/` dir. The pipelines under
   `pipelines/` use the model names the `-demo` image actually ships.
+- **Per-service oneshot panels (`by Service`) need a newer skit.** The oneshot
+  pipelines declare `attributes: { service: tts|stt }`, which a service-label-
+  aware skit turns into a bounded `service` metric label (operator opts in via
+  `[server.metrics.attributes.service]` in `skit.toml`). The pinned
+  `v0.5.0-demo` image predates this, so the dashboards' `by Service` panels stay
+  "No data" until a newer `-demo` image is published — everything else
+  populates. See the [observability guide](../../docs/src/content/docs/guides/observability.md)
+  for the attribute mechanism.
 - **Local auth override.** skit refuses to start unauthenticated on a
   non-loopback bind unless you opt in. This stack sets
   `SK_AUTH__MODE=disabled` + `SK_PERMISSIONS__ALLOW_INSECURE_NO_AUTH=true`.

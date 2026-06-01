@@ -14,6 +14,7 @@ pub mod marketplace_installer;
 pub mod marketplace_security;
 #[cfg(feature = "mcp")]
 pub mod mcp;
+pub mod metrics_labels;
 #[cfg(feature = "moq")]
 pub mod moq_gateway;
 pub mod mse_gateway;

@@ -1591,9 +1591,9 @@ async fn metrics_middleware(req: axum::http::Request<Body>, next: Next) -> Respo
         .clone();
 
     let labels = [
-        KeyValue::new("http.method", method.to_string()),
-        KeyValue::new("http.route", path),
-        KeyValue::new("http.status_code", status),
+        KeyValue::new(crate::metrics_labels::HTTP_METHOD_KEY, method.to_string()),
+        KeyValue::new(crate::metrics_labels::HTTP_ROUTE_KEY, path),
+        KeyValue::new(crate::metrics_labels::HTTP_STATUS_CODE_KEY, status),
     ];
 
     counter.add(1, &labels);
@@ -1615,6 +1615,14 @@ pub fn create_app_state(
     mut config: Config,
     auth: Option<Arc<crate::auth::AuthState>>,
 ) -> Arc<AppState> {
+    // Prepare here (not only in config::load) so every AppState — tests,
+    // embedded/MCP callers — gets a normalized, validated metrics config. This
+    // path is infallible, so an invalid config is disabled rather than rejected.
+    if let Err(e) = config.server.metrics.prepare() {
+        tracing::warn!("disabling invalid metrics attributes configuration: {e}");
+        config.server.metrics.attributes.clear();
+    }
+
     let (event_tx, _) = tokio::sync::broadcast::channel(128);
 
     let resource_policy = streamkit_core::ResourcePolicy {

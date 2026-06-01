@@ -55,8 +55,9 @@ Key name/label facts:
 - Plugin metrics: `plugin_call_duration_seconds_*` (unit suffix present),
   `plugin_calls_total`; labels `plugin_kind`, `op`.
 - `oneshot_pipeline_duration_*` has **no** `_seconds` suffix (no unit set);
-  labels `status`, and `service` only when an `X-StreamKit-Service` header is
-  forwarded by a service-label-aware skit.
+  labels `status`, and `service` only when the pipeline declares
+  `attributes: { service: ... }` and a service-label-aware skit has the matching
+  `[server.metrics.attributes.service]` policy enabled.
 - Gateway: `gateway_requests_total{endpoint,code}`,
   `gateway_request_duration_seconds`, `gateway_rejected_total{reason}` (only
   appears after a 413/415/502 actually occurs).
@@ -66,7 +67,8 @@ Key name/label facts:
 - Plugin failure panels (`plugin_errors_total` etc.) — counters don't exist
   until a failure happens.
 - Oneshot "by Service" panels — empty unless the skit build emits the `service`
-  label.
+  label (pipeline `attributes` + enabled `[server.metrics.attributes.service]`
+  policy; the pinned `v0.5.0-demo` predates this).
 - Video / MoQ / codec panels — only populate when you run those pipelines.
 
 ## Gotchas (most-common causes of empty dashboards)
