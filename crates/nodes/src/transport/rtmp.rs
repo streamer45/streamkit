@@ -1753,6 +1753,9 @@ mod tests {
 
     const MSG_TYPE_AUDIO: u8 = 8;
     const MSG_TYPE_VIDEO: u8 = 9;
+    /// Outbound chunk size the client announces during connect (see
+    /// `RtmpPublishClientConnection::LOCAL_CHUNK_SIZE`).
+    const CLIENT_CHUNK_SIZE: usize = 4096;
 
     /// Decode the client's outbound `send_buf` into `(msg_type_id, payload)`
     /// pairs. Media payloads in these tests are far below the negotiated
@@ -1787,6 +1790,15 @@ mod tests {
                 },
                 _ => *prev.get(&csid).unwrap(), // fmt=3 reuses the prior length/type
             };
+            // This decoder reads `len` contiguous bytes as one chunk; it does
+            // not skip interior fmt=3 continuation headers. Guard the
+            // single-chunk precondition so a future larger payload trips here
+            // instead of silently misparsing.
+            assert!(
+                len <= CLIENT_CHUNK_SIZE,
+                "decoder assumes single-chunk messages; payload ({len}) exceeds the negotiated \
+                 {CLIENT_CHUNK_SIZE}-byte chunk size"
+            );
             let payload = buf[pos..pos + len].to_vec();
             pos += len;
             prev.insert(csid, (len, ty));
