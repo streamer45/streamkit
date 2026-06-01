@@ -75,6 +75,7 @@ async fn test_oneshot_rejects_fanout() {
         None,
         None,
         super::test_asset_root(),
+        std::sync::Arc::new(crate::ResolvedAttributes::default()),
     )
     .await
     else {

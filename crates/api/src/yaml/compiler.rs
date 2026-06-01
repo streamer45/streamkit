@@ -8,11 +8,11 @@ use indexmap::IndexMap;
 
 pub fn compile(pipeline: UserPipeline) -> Result<Pipeline, String> {
     match pipeline {
-        UserPipeline::Steps { name, description, mode, steps, client } => {
-            Ok(compile_steps(name, description, mode, steps, client))
+        UserPipeline::Steps { name, description, mode, attributes, steps, client } => {
+            Ok(compile_steps(name, description, mode, attributes, steps, client))
         },
-        UserPipeline::Dag { name, description, mode, nodes, client } => {
-            compile_dag(name, description, mode, nodes, client)
+        UserPipeline::Dag { name, description, mode, attributes, nodes, client } => {
+            compile_dag(name, description, mode, attributes, nodes, client)
         },
     }
 }
@@ -21,6 +21,7 @@ fn compile_steps(
     name: Option<String>,
     description: Option<String>,
     mode: EngineMode,
+    attributes: Option<std::collections::BTreeMap<String, String>>,
     steps: Vec<Step>,
     client: Option<ClientSection>,
 ) -> Pipeline {
@@ -47,6 +48,7 @@ fn compile_steps(
         name,
         description,
         mode,
+        attributes,
         client,
         nodes,
         connections,
@@ -152,6 +154,7 @@ fn compile_dag(
     name: Option<String>,
     description: Option<String>,
     mode: EngineMode,
+    attributes: Option<std::collections::BTreeMap<String, String>>,
     user_nodes: IndexMap<String, UserNode>,
     client: Option<ClientSection>,
 ) -> Result<Pipeline, String> {
@@ -265,6 +268,7 @@ fn compile_dag(
         name,
         description,
         mode,
+        attributes,
         client,
         nodes,
         connections,
@@ -296,7 +300,14 @@ mod tests {
     }
 
     fn dag_pipeline(nodes: IndexMap<String, UserNode>, mode: EngineMode) -> UserPipeline {
-        UserPipeline::Dag { name: None, description: None, mode, nodes, client: None }
+        UserPipeline::Dag {
+            name: None,
+            description: None,
+            mode,
+            attributes: None,
+            nodes,
+            client: None,
+        }
     }
 
     fn user_node(kind: &str, needs: Needs) -> UserNode {

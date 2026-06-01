@@ -133,6 +133,7 @@ async fn linear_pipeline_runs_to_completion() {
         None,
         None,
         super::test_asset_root(),
+        std::sync::Arc::new(crate::ResolvedAttributes::default()),
     )
     .await
     else {
@@ -201,6 +202,7 @@ async fn cancellation_token_stops_pipeline() {
         None,
         None,
         super::test_asset_root(),
+        std::sync::Arc::new(crate::ResolvedAttributes::default()),
     )
     .await
     else {
@@ -237,6 +239,7 @@ async fn failing_node_propagates_error() {
         None,
         None,
         super::test_asset_root(),
+        std::sync::Arc::new(crate::ResolvedAttributes::default()),
     )
     .await
     else {
@@ -492,6 +495,7 @@ async fn run_oneshot_pipeline_generator_round_trip() {
         name: Some("gen-roundtrip".to_string()),
         description: None,
         mode: EngineMode::OneShot,
+        attributes: None,
         client: None,
         nodes,
         connections: vec![Connection {
@@ -512,6 +516,7 @@ async fn run_oneshot_pipeline_generator_round_trip() {
             definition,
             inputs,
             Some(OneshotEngineConfig::default()),
+            std::sync::Arc::new(crate::ResolvedAttributes::default()),
             Some(cancel),
         )
         .await
@@ -549,6 +554,7 @@ async fn run_oneshot_pipeline_propagates_validation_error() {
         name: None,
         description: None,
         mode: EngineMode::OneShot,
+        attributes: None,
         client: None,
         nodes,
         connections: Vec::new(),
@@ -562,6 +568,7 @@ async fn run_oneshot_pipeline_propagates_validation_error() {
             definition,
             inputs,
             Some(OneshotEngineConfig::default()),
+            std::sync::Arc::new(crate::ResolvedAttributes::default()),
             Some(tokio_util::sync::CancellationToken::new()),
         )
         .await;
@@ -611,6 +618,7 @@ async fn run_oneshot_pipeline_drives_metrics_recorder() {
         name: None,
         description: None,
         mode: EngineMode::OneShot,
+        attributes: None,
         client: None,
         nodes,
         connections: vec![Connection {
@@ -630,6 +638,7 @@ async fn run_oneshot_pipeline_drives_metrics_recorder() {
             definition,
             inputs,
             Some(OneshotEngineConfig::default()),
+            std::sync::Arc::new(crate::ResolvedAttributes::default()),
             Some(tokio_util::sync::CancellationToken::new()),
         )
         .await
@@ -671,6 +680,7 @@ async fn run_oneshot_pipeline_missing_http_output_node_errors() {
         name: None,
         description: None,
         mode: EngineMode::OneShot,
+        attributes: None,
         client: None,
         nodes,
         connections: Vec::new(),
@@ -683,6 +693,7 @@ async fn run_oneshot_pipeline_missing_http_output_node_errors() {
             definition,
             inputs,
             Some(OneshotEngineConfig::default()),
+            std::sync::Arc::new(crate::ResolvedAttributes::default()),
             Some(tokio_util::sync::CancellationToken::new()),
         )
         .await;
@@ -725,6 +736,7 @@ async fn run_oneshot_pipeline_unconnected_http_output_errors() {
         name: None,
         description: None,
         mode: EngineMode::OneShot,
+        attributes: None,
         client: None,
         nodes,
         connections: Vec::new(),
@@ -737,6 +749,7 @@ async fn run_oneshot_pipeline_unconnected_http_output_errors() {
             definition,
             inputs,
             Some(OneshotEngineConfig::default()),
+            std::sync::Arc::new(crate::ResolvedAttributes::default()),
             Some(tokio_util::sync::CancellationToken::new()),
         )
         .await;
