@@ -1851,15 +1851,15 @@ impl DynamicEngine {
 
                 futures::future::join_all(shutdown_futures).await;
 
-                for (node_id, state) in self.node_states.as_ref() {
-                    let node_id_kv = self.node_metric_labels.get(node_id.as_str()).map_or_else(
-                        || KeyValue::new("node_id", node_id.clone()),
-                        |c| c.node_id_kv.clone(),
-                    );
-                    self.node_state_gauge.record(
-                        0,
-                        &[node_id_kv, KeyValue::new("state", Self::node_state_name(state))],
-                    );
+                let zero_labels: Vec<_> = self
+                    .node_states
+                    .iter()
+                    .map(|(node_id, state)| {
+                        self.node_state_labels(node_id, Self::node_state_name(state))
+                    })
+                    .collect();
+                for labels in &zero_labels {
+                    self.node_state_gauge.record(0, labels);
                 }
                 Arc::make_mut(&mut self.node_states).clear();
                 Arc::make_mut(&mut self.node_stats).clear();
