@@ -1488,14 +1488,19 @@ impl DynamicEngine {
     /// Build the label set for a node's state metrics: `[node_id, state]` plus
     /// the node's bounded pipeline attributes. Single chokepoint so every
     /// node-scoped metric (state gauge, state transitions) carries the same
-    /// attributes as the packet counters.
+    /// attributes as the packet counters. When the per-node cache is gone (e.g.
+    /// a failed node whose labels were removed but whose state lingers until
+    /// the user removes it), the attributes are rebuilt from the session set so
+    /// the zeroing datapoint still matches the earlier attributed series.
     fn node_state_labels(&self, node_id: &str, state_name: &'static str) -> Vec<KeyValue> {
         self.node_metric_labels.get(node_id).map_or_else(
             || {
-                vec![
-                    KeyValue::new("node_id", node_id.to_owned()),
-                    KeyValue::new("state", state_name),
-                ]
+                let attrs = self.node_attributes.for_node(node_id);
+                let mut labels = Vec::with_capacity(2 + attrs.len());
+                labels.push(KeyValue::new("node_id", node_id.to_owned()));
+                labels.push(KeyValue::new("state", state_name));
+                labels.extend(attrs);
+                labels
             },
             |c| {
                 let mut labels = Vec::with_capacity(2 + c.attrs.len());

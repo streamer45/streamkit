@@ -219,3 +219,39 @@ async fn dynamic_node_state_transitions_carry_pipeline_attribute() {
         "node state transitions for {node_id} should carry service=stt, got {attrs:?}"
     );
 }
+
+#[cfg(feature = "dynamic")]
+#[tokio::test]
+async fn dynamic_node_state_carries_attribute_without_cached_labels() {
+    use graph_builder::LiveNode;
+    use streamkit_core::state::{NodeState, NodeStateUpdate};
+
+    let h = harness();
+    let mut engine = super::create_test_engine();
+    let node_id = "metric-attr-dynamic-state-uncached-node";
+
+    engine.node_attributes = std::sync::Arc::new(crate::ResolvedAttributes {
+        pipeline: vec![KeyValue::new("service", "stt")],
+        per_node: HashMap::new(),
+    });
+
+    let (control_tx, _control_rx) = tokio::sync::mpsc::channel(8);
+    let task_handle = tokio::spawn(async { Ok(()) });
+    engine.live_nodes.insert(node_id.to_string(), LiveNode { control_tx, task_handle });
+
+    engine.handle_state_update(&NodeStateUpdate {
+        node_id: node_id.to_string(),
+        state: NodeState::Failed { reason: "test".to_string() },
+        timestamp: std::time::SystemTime::now(),
+    });
+
+    h.provider.force_flush().expect("force_flush should succeed");
+    let metrics = h.exporter.get_finished_metrics().expect("metrics should be exported");
+    let points = data_point_attributes(&metrics, "test.transitions");
+    let attrs = point_for_node(&points, node_id);
+
+    assert!(
+        attrs.contains(&("service".to_string(), "stt".to_string())),
+        "uncached node state for {node_id} should still carry service=stt, got {attrs:?}"
+    );
+}
