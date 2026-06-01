@@ -353,6 +353,12 @@ state: NodeState | null, };
 
 export type Pipeline = { name: string | null, description: string | null, mode: EngineMode, 
 /**
+ * Declarative key/value attributes describing the pipeline as a whole
+ * (e.g. `service: tts`). Telemetry-neutral; the server uses them, bounded
+ * by operator policy, to label pipeline and node metrics.
+ */
+attributes?: Record<string, string> | null, 
+/**
  * Declarative UI metadata — forwarded unchanged from `UserPipeline`,
  * ignored by the engine for execution.
  */

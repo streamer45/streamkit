@@ -356,6 +356,13 @@ pub struct Pipeline {
     pub description: Option<String>,
     #[serde(default)]
     pub mode: EngineMode,
+    /// Declarative key/value attributes describing the pipeline as a whole
+    /// (e.g. `service: tts`). Telemetry-neutral; the server uses them, bounded
+    /// by operator policy, to label pipeline and node metrics.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    #[ts(type = "Record<string, string> | null")]
+    pub attributes: Option<std::collections::BTreeMap<String, String>>,
     /// Declarative UI metadata; ignored by the engine.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
@@ -751,6 +758,7 @@ mod tests {
             name: Some("demo".into()),
             description: None,
             mode: EngineMode::OneShot,
+            attributes: None,
             client: None,
             nodes,
             connections: vec![Connection {

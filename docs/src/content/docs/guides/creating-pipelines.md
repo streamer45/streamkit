@@ -76,6 +76,20 @@ Notes:
 - If a node has a single dependency, it connects to `in`. If it has multiple dependencies, they connect to `in_0`, `in_1`, ... in the same order as the `needs` list.
 - For pin cardinality (including dynamic pin families) and passthrough type inference rules, see [Pins & Type Inference](/reference/pins-and-types/).
 
+## Pipeline Attributes
+
+Alongside `name`, `description`, and `mode`, a pipeline may declare an optional top-level `attributes` map. These are operator-bounded labels that the server attaches to the pipeline's metrics, letting you break dashboards down by use case:
+
+```yaml
+name: Speech-to-Text
+mode: oneshot
+attributes:
+  service: stt
+steps: ...
+```
+
+`attributes` is optional and only takes effect for keys the operator has allow-listed in `skit.toml`; see [Observability → Metric attributes](/guides/observability/#metric-attributes) for the policy and cardinality rules.
+
 ## Connection Modes
 
 Connections between nodes support two modes that control backpressure behavior:

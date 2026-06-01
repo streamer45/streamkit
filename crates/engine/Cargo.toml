@@ -67,6 +67,7 @@ futures = { workspace = true }
 bytes = { workspace = true }
 streamkit-api = { workspace = true }
 indexmap = { workspace = true }
+opentelemetry_sdk = { version = "0.31.0", features = ["testing"] }
 
 [[bench]]
 name = "compositor_pipeline"
