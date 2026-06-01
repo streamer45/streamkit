@@ -87,6 +87,19 @@ curl http://127.0.0.1:8080/metrics
 
 ### Grafana dashboard
 
-A ready-made dashboard lives at [`grafana-dashboard.json`](./grafana-dashboard.json). It is self-contained: import it and pick the Prometheus datasource scraping both the gateway and the StreamKit backend. Alongside the gateway metrics above, it includes a per-service split of the backend's `oneshot_pipeline_duration` (via the `service` label: `tts`/`stt`/`other`) and the StreamKit native-plugin inference metrics (`plugin_call_duration_seconds`, `plugin_calls_total`, …) that back the STT/TTS models.
+A ready-made dashboard lives at [`grafana-dashboard.json`](./grafana-dashboard.json). It is self-contained but draws from **two metric sources**, so point Grafana at a Prometheus that sees both:
+
+- **Gateway metrics** (`gateway_*`): Prometheus **scrapes** the gateway's `/metrics` endpoint directly.
+- **Backend metrics** (`oneshot_pipeline_duration`, `plugin_call_duration_seconds`, `plugin_calls_total`, …): skit does **not** expose a `/metrics` scrape endpoint — it **pushes** via OTLP. Run an OTLP collector (e.g. the OpenTelemetry Collector with a `prometheus` exporter, or a Prometheus OTLP receiver) and have Grafana's Prometheus read from there.
+
+The dashboard's **Oneshot Speech Services** row splits `oneshot_pipeline_duration` by a `service` label (`tts`/`stt`). That label is sourced from each pipeline's `attributes: {service: ...}` block — the gateway's embedded STT/TTS pipelines declare it — and is only emitted when the operator allowlists the dimension in `skit.toml`:
+
+```toml
+[server.metrics.attributes.service]
+values   = ["tts", "stt"]
+fallback = "other"
+```
+
+Without that config the backend rows stay empty (the `service` label is dropped). See the [observability guide](https://github.com/streamer45/streamkit/blob/main/docs/src/content/docs/guides/observability.md) for details.
 
 To run the gateway, Prometheus, and Grafana together locally, see [`samples/observability`](../../samples/observability).
