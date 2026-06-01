@@ -1137,7 +1137,7 @@
       "panels": [],
       "title": "Oneshot Speech Services",
       "type": "row",
-      "description": "Per-service split of oneshot pipeline metrics via the `service` label (tts/stt/other)."
+      "description": "Per-service split of oneshot pipeline metrics via the `service` label (tts/stt). The label is sourced from each pipeline's `attributes: {service: ...}` and only emitted when the operator allowlists it under [server.metrics.attributes.service] in skit.toml; the gateway's STT/TTS pipelines declare it."
     },
     {
       "datasource": {
@@ -1232,7 +1232,7 @@
       ],
       "title": "Oneshot Latency p95 by Service",
       "type": "timeseries",
-      "description": "p95 oneshot pipeline duration by service (tts/stt/other)."
+      "description": "p95 oneshot pipeline duration by service (tts/stt; `other` is the configured fallback for unlisted values)."
     },
     {
       "datasource": {
@@ -1319,15 +1319,26 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "100 * sum(rate(oneshot_pipeline_duration_count{status=\"error\"}[5m])) by (service) / clamp_min(sum(rate(oneshot_pipeline_duration_count{status=~\"ok|error\"}[5m])) by (service), 1e-9)",
-          "legendFormat": "{{service}}",
+          "expr": "100 * sum(rate(oneshot_pipeline_duration_count{status=\"error\"}[5m])) by (service) / clamp_min(sum(rate(oneshot_pipeline_duration_count[5m])) by (service), 1e-9)",
+          "legendFormat": "error {{service}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "100 * sum(rate(oneshot_pipeline_duration_count{status=\"incomplete\"}[5m])) by (service) / clamp_min(sum(rate(oneshot_pipeline_duration_count[5m])) by (service), 1e-9)",
+          "legendFormat": "incomplete {{service}}",
+          "range": true,
+          "refId": "B"
         }
       ],
-      "title": "Oneshot Error Rate by Service",
+      "title": "Oneshot Error & Incomplete Rate by Service",
       "type": "timeseries",
-      "description": "Percentage of oneshot pipelines ending in error, by service."
+      "description": "Share of oneshot pipelines ending in error vs incomplete, by service, over all runs. Denominator is all statuses (ok+error+incomplete). 'incomplete' is recorded when the response stream is dropped before completion (client disconnect or a mid-stream failure), so a rising incomplete rate can mask server-side failures that never reach the 'error' status."
     }
   ],
   "refresh": "10s",
