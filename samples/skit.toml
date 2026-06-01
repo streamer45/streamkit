@@ -71,7 +71,8 @@ allowed_origins = [
 # Bounded labels attached to pipeline and node metrics, sourced from a
 # pipeline's declared `attributes`. Coverage by mode:
 #   - oneshot only: oneshot_pipeline.duration, node.execution.duration
-#   - both modes:   node.packets.*, node.state, node.state_transitions
+#   - both modes:   all node-scoped engine metrics (node.packets.*, node.state,
+#                   node.state_transitions, engine.nodes.active, pin_distributor.*)
 # (dynamic mode emits no pipeline-level duration metric.)
 #
 # Each entry below is one dimension keyed by attribute name. Cardinality is

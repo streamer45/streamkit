@@ -66,18 +66,21 @@ fn classify(value: &str, policy: &MetricsAttributePolicy) -> String {
 /// Produces bounded metric key-values. Keys absent from the policy are dropped.
 /// The declared key is normalized (trim + lowercase) before lookup so it matches
 /// the same way declared values do; policy keys are validated lowercase at load.
+/// Declared keys that collide after normalization (e.g. `Service` and `service`)
+/// are collapsed to one entry so a measurement never carries duplicate keys.
 pub fn resolve_attributes(
     declared: Option<&BTreeMap<String, String>>,
     policy: &BTreeMap<String, MetricsAttributePolicy>,
 ) -> ResolvedAttributes {
-    let pipeline = declared
+    let resolved: BTreeMap<String, String> = declared
         .into_iter()
         .flatten()
         .filter_map(|(key, value)| {
             let key = normalize(key);
-            policy.get(&key).map(|p| KeyValue::new(key, classify(value, p)))
+            policy.get(&key).map(|p| (key, classify(value, p)))
         })
         .collect();
+    let pipeline = resolved.into_iter().map(|(k, v)| KeyValue::new(k, v)).collect();
     ResolvedAttributes { pipeline, per_node: std::collections::HashMap::new() }
 }
 
@@ -181,5 +184,15 @@ mod tests {
         assert_eq!(resolved.pipeline.len(), 1);
         assert_eq!(resolved.pipeline[0].key.as_str(), "service");
         assert_eq!(resolved.pipeline[0].value.as_str(), "tts");
+    }
+
+    #[test]
+    fn resolve_collapses_keys_colliding_after_normalization() {
+        let resolved = resolve_attributes(
+            Some(&declared(&[("Service", "tts"), ("service", "stt")])),
+            &service_policy(&["tts", "stt"]),
+        );
+        assert_eq!(resolved.pipeline.len(), 1, "duplicate keys must collapse to one entry");
+        assert_eq!(resolved.pipeline[0].key.as_str(), "service");
     }
 }
