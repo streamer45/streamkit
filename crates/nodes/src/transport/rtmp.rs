@@ -1582,11 +1582,12 @@ mod tests {
         buf.push(0x05);
     }
 
-    /// Append an AMF0 object with `level`/`code`/`description` fields — the
-    /// shape RTMP servers use for `onStatus` and `connect` `_result` info.
-    fn amf0_status_object(buf: &mut Vec<u8>, code: &str) {
+    /// AMF0 object whose key/value pairs are all strings, e.g. the
+    /// `level`/`code`/`description` info object servers send in `onStatus`
+    /// and `connect` `_result`.
+    fn amf0_string_object(buf: &mut Vec<u8>, fields: &[(&str, &str)]) {
         buf.push(0x03); // object marker
-        for (key, val) in [("level", "status"), ("code", code), ("description", "ok")] {
+        for (key, val) in fields {
             buf.extend_from_slice(&u16::try_from(key.len()).unwrap().to_be_bytes());
             buf.extend_from_slice(key.as_bytes());
             amf0_string(buf, val);
@@ -1594,11 +1595,23 @@ mod tests {
         buf.extend_from_slice(&[0x00, 0x00, 0x09]); // object-end marker
     }
 
+    fn amf0_status_object(buf: &mut Vec<u8>, code: &str) {
+        amf0_status_object_with_desc(buf, code, "ok");
+    }
+
+    fn amf0_status_object_with_desc(buf: &mut Vec<u8>, code: &str, description: &str) {
+        amf0_string_object(
+            buf,
+            &[("level", "status"), ("code", code), ("description", description)],
+        );
+    }
+
     /// Encode one server→client RTMP message as a fmt=0 chunk, splitting
     /// payloads larger than 128 bytes into fmt=3 continuation chunks (the
     /// client decoder uses the 128-byte default until told otherwise).
     fn server_chunk(csid: u8, msg_type_id: u8, stream_id: u32, payload: &[u8]) -> Vec<u8> {
         const CHUNK: usize = 128;
+        debug_assert!(csid < 64, "server_chunk only emits the 1-byte basic header (csid < 64)");
         let mut out = Vec::new();
         out.push(csid); // fmt=0 (top two bits zero) + csid in the low six bits
         out.extend_from_slice(&[0, 0, 0]); // timestamp
@@ -1639,10 +1652,13 @@ mod tests {
         set_bw.push(2); // limit type = dynamic
         out.extend_from_slice(&server_chunk(2, 6, 0, &set_bw));
 
+        // A real connect `_result` carries two AMF0 objects after the
+        // transaction id: a `properties` object then the `info` status object
+        // (no Null in between, unlike `createStream`'s result below).
         let mut connect_result = Vec::new();
         amf0_string(&mut connect_result, "_result");
         amf0_number(&mut connect_result, 1.0);
-        amf0_null(&mut connect_result);
+        amf0_string_object(&mut connect_result, &[("fmsVer", "FMS/3,5,7,7009"), ("mode", "1")]);
         amf0_status_object(&mut connect_result, "NetConnection.Connect.Success");
         out.extend_from_slice(&server_chunk(3, 20, 0, &connect_result));
 
@@ -1703,6 +1719,17 @@ mod tests {
         vec![0x00, 0x00, 0x00, 0x01, 0x41, 0x9A, 0x12] // non-IDR slice (type 1)
     }
 
+    /// An interframe access unit that *also* repeats SPS/PPS (some encoders
+    /// emit parameter sets on every frame). The keyframe guard must still
+    /// suppress the AVC sequence header here.
+    fn interframe_with_params_annexb() -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xC0, 0x1F]); // SPS
+        data.extend_from_slice(&[0x00, 0x00, 0x01, 0x68, 0xCE, 0x38, 0x80]); // PPS
+        data.extend_from_slice(&interframe_annexb());
+        data
+    }
+
     fn binary_packet(data: &[u8], keyframe: Option<bool>) -> Packet {
         Packet::Binary {
             data: bytes::Bytes::copy_from_slice(data),
@@ -1722,6 +1749,73 @@ mod tests {
 
     fn test_stats() -> NodeStatsTracker {
         NodeStatsTracker::new("test".to_string(), None)
+    }
+
+    const MSG_TYPE_AUDIO: u8 = 8;
+    const MSG_TYPE_VIDEO: u8 = 9;
+
+    /// Decode the client's outbound `send_buf` into `(msg_type_id, payload)`
+    /// pairs. Media payloads in these tests are far below the negotiated
+    /// 4096-byte chunk size, so every message is a single chunk; only the
+    /// per-csid length/type carried by fmt=2/3 headers needs tracking.
+    fn decode_outbound_messages(buf: &[u8]) -> Vec<(u8, Vec<u8>)> {
+        fn be24(b: &[u8]) -> usize {
+            (usize::from(b[0]) << 16) | (usize::from(b[1]) << 8) | usize::from(b[2])
+        }
+        let mut prev: std::collections::HashMap<u8, (usize, u8)> = std::collections::HashMap::new();
+        let mut msgs = Vec::new();
+        let mut pos = 0;
+        while pos < buf.len() {
+            let fmt = buf[pos] >> 6;
+            let csid = buf[pos] & 0x3F;
+            assert!(csid >= 2, "extended (2-/3-byte) csid headers are not produced by these tests");
+            pos += 1;
+            let (len, ty) = match fmt {
+                0 => {
+                    let v = (be24(&buf[pos + 3..]), buf[pos + 6]);
+                    pos += 11;
+                    v
+                },
+                1 => {
+                    let v = (be24(&buf[pos + 3..]), buf[pos + 6]);
+                    pos += 7;
+                    v
+                },
+                2 => {
+                    pos += 3;
+                    *prev.get(&csid).unwrap() // fmt=2 reuses the prior length/type
+                },
+                _ => *prev.get(&csid).unwrap(), // fmt=3 reuses the prior length/type
+            };
+            let payload = buf[pos..pos + len].to_vec();
+            pos += len;
+            prev.insert(csid, (len, ty));
+            msgs.push((ty, payload));
+        }
+        msgs
+    }
+
+    /// `(frame_type, avc_packet_type)` for each emitted FLV video message.
+    /// frame_type: 1 = keyframe, 2 = interframe. avc_packet_type: 0 = AVC
+    /// sequence header, 1 = NAL unit.
+    fn video_tags(buf: &[u8]) -> Vec<(u8, u8)> {
+        decode_outbound_messages(buf)
+            .into_iter()
+            .filter(|(ty, _)| *ty == MSG_TYPE_VIDEO)
+            .map(|(_, p)| (p[0] >> 4, p[1]))
+            .collect()
+    }
+
+    /// `channelConfiguration` decoded from the AAC `AudioSpecificConfig` in
+    /// the audio sequence-header message (AAC packet type 0), if one was sent.
+    fn aac_seq_header_channels(buf: &[u8]) -> Option<u8> {
+        decode_outbound_messages(buf)
+            .into_iter()
+            .filter(|(ty, _)| *ty == MSG_TYPE_AUDIO)
+            .find(|(_, p)| p.get(1) == Some(&0))
+            // FLV audio header(1) + AAC packet type(1) then the 2-byte ASC;
+            // channelConfiguration is bits 3..=6 of the second ASC byte.
+            .map(|(_, p)| (p[3] >> 3) & 0x0F)
     }
 
     fn send_video(
@@ -1771,17 +1865,25 @@ mod tests {
 
     #[test]
     fn process_video_interframe_sends_without_seq_header() {
-        // A keyframe primes the connection; the following interframe should
-        // still enqueue data but without an AVC sequence header.
+        // A keyframe emits seq-header + NAL; the following interframe repeats
+        // SPS/PPS but must emit only its own NAL unit — the keyframe guard
+        // suppresses a second AVC sequence header.
         let mut conn = drive_to_publishing();
         let mut count = 0u64;
         send_video(&mut conn, &binary_packet(&keyframe_annexb(), Some(true)), &mut count).unwrap();
-        conn.advance_send_buf(conn.send_buf().len());
+        send_video(
+            &mut conn,
+            &binary_packet(&interframe_with_params_annexb(), Some(false)),
+            &mut count,
+        )
+        .unwrap();
 
-        send_video(&mut conn, &binary_packet(&interframe_annexb(), Some(false)), &mut count)
-            .unwrap();
         assert_eq!(count, 2);
-        assert!(!conn.send_buf().is_empty(), "interframe should enqueue a NAL unit");
+        assert_eq!(
+            video_tags(conn.send_buf()),
+            [(1, 0), (1, 1), (2, 1)],
+            "keyframe emits seq-header + NAL; interframe emits only its NAL, no seq header"
+        );
     }
 
     #[test]
@@ -1796,7 +1898,11 @@ mod tests {
 
         send_video(&mut conn, &binary_packet(&params_only, Some(true)), &mut count).unwrap();
         assert_eq!(count, 1);
-        assert!(!conn.send_buf().is_empty(), "sequence header should still be sent");
+        assert_eq!(
+            video_tags(conn.send_buf()),
+            [(1, 0)],
+            "params-only access unit must emit only the AVC sequence header, no NAL-unit frame"
+        );
     }
 
     #[test]
@@ -1892,7 +1998,11 @@ mod tests {
 
         assert!(seq_sent);
         assert_eq!(count, 1);
-        assert!(!conn.send_buf().is_empty());
+        assert_eq!(
+            aac_seq_header_channels(conn.send_buf()),
+            Some(1),
+            "mono config must encode channelConfiguration=1 in the AudioSpecificConfig"
+        );
     }
 
     #[test]
@@ -1946,6 +2056,29 @@ mod tests {
         conn.feed_recv_buf(&server_chunk(4, 20, 1, &on_status)).unwrap();
 
         assert!(drain_events(&mut conn, "test"), "a failed onStatus should report a disconnect");
+        assert_eq!(conn.state(), RtmpConnectionState::Disconnecting);
+    }
+
+    #[test]
+    fn server_chunk_reassembles_multichunk_message() {
+        // An onStatus whose payload exceeds the 128-byte chunk size forces
+        // server_chunk down its fmt=3 continuation path; the client must
+        // reassemble all chunks to parse the command end-to-end.
+        let mut conn = drive_to_publishing();
+        let mut on_status = Vec::new();
+        amf0_string(&mut on_status, "onStatus");
+        amf0_number(&mut on_status, 0.0);
+        amf0_null(&mut on_status);
+        amf0_status_object_with_desc(&mut on_status, "NetStream.Publish.Failed", &"x".repeat(200));
+        assert!(on_status.len() > 128, "payload must exceed one chunk to exercise continuation");
+
+        let wire = server_chunk(4, 20, 1, &on_status);
+        // fmt=0 basic+message header (12 bytes) + payload + one fmt=3 basic
+        // header (1 byte) per extra chunk.
+        assert_eq!(wire.len(), 12 + on_status.len() + (on_status.len() - 1) / 128);
+
+        conn.feed_recv_buf(&wire).unwrap();
+        assert!(drain_events(&mut conn, "test"), "reassembled onStatus should report a disconnect");
         assert_eq!(conn.state(), RtmpConnectionState::Disconnecting);
     }
 
