@@ -248,7 +248,10 @@ pub struct MetricsAttributePolicy {
     /// trimming. Empty (or absent) ⇒ passthrough.
     #[serde(default, rename = "values")]
     pub allowed: Vec<String>,
-    /// Value emitted when the declared value is absent, empty, or not allowed.
+    /// Value emitted when a *declared* value is empty or outside the allowlist.
+    ///
+    /// A dimension a pipeline never declares emits no label at all (the
+    /// declared-only contract), so this never applies to absent dimensions.
     #[serde(default = "default_label_fallback")]
     pub fallback: String,
 }
