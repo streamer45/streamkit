@@ -826,10 +826,8 @@ mod sessions_batch_tests {
 
         let mut attributes = std::collections::BTreeMap::new();
         attributes.insert("service".to_string(), "tts".to_string());
-        let engine_pipeline = streamkit_api::Pipeline {
-            attributes: Some(attributes.clone()),
-            ..Default::default()
-        };
+        let engine_pipeline =
+            streamkit_api::Pipeline { attributes: Some(attributes.clone()), ..Default::default() };
 
         populate_session_pipeline(&session, &engine_pipeline).await;
 
