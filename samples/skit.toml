@@ -68,26 +68,29 @@ allowed_origins = [
 # ]
 
 # [server.metrics]
-# Bounded labels attached to request metrics (http.server.* and
-# oneshot_pipeline.duration), each sourced from a trusted request header.
+# Bounded labels attached to pipeline and node metrics
+# (oneshot_pipeline.duration, node.execution.duration, node.packets.*) in both
+# oneshot and dynamic modes, sourced from a pipeline's declared `attributes`.
 #
-# Cardinality is operator-bounded: the header value is trimmed + lowercased and
-# matched against `allowed`; anything else (or a missing header) collapses to
-# `fallback`. Disabled by default — uncomment to opt in. Declaring any label
-# sets the full list, so list every label you want here.
+# Each entry below is one dimension keyed by attribute name. Cardinality is
+# operator-bounded: a pipeline's declared value is trimmed + lowercased and
+# matched against `values`; anything else (or an empty value) collapses to
+# `fallback`. A declared attribute whose key is absent here is dropped, so a
+# user-submitted pipeline can never inflate metric cardinality.
 #
-# The header is read before auth runs, so it must be set by a trusted upstream
-# (e.g. the gateway, which strips client-supplied copies) — don't point it at an
-# auth-injected header like `X-StreamKit-Role`.
+# Disabled by default — uncomment to opt in.
 #
-# Example: distinguish hosted speech services on oneshot_pipeline.duration so
-# TTS / STT / other don't collapse into one series. The gateway sets
-# `X-StreamKit-Service` per endpoint.
-# [[server.metrics.request_labels]]
-# name = "service"
-# header = "X-StreamKit-Service"
-# allowed = ["tts", "stt"]   # missing/unknown -> "other"
+# Example: distinguish hosted speech services so TTS / STT / other don't
+# collapse into one series. The pipeline declares `attributes: { service: tts }`.
+# [server.metrics.attributes.service]
+# values   = ["tts", "stt"]   # unknown/empty -> "other"
 # fallback = "other"
+#
+# Omit `values` to make a dimension passthrough — any non-empty declared value
+# is emitted as-is (the operator opts into that cardinality), e.g. for a future
+# high-card dimension like `tenant`:
+# [server.metrics.attributes.tenant]
+# fallback = "unknown"
 
 [auth]
 # Built-in JWT authentication for:

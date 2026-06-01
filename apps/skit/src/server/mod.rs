@@ -1562,27 +1562,13 @@ async fn static_handler(
     }
 }
 
-async fn metrics_middleware(
-    State(app_state): State<Arc<AppState>>,
-    mut req: axum::http::Request<Body>,
-    next: Next,
-) -> Response {
+async fn metrics_middleware(req: axum::http::Request<Body>, next: Next) -> Response {
     let start = Instant::now();
     let method = req.method().clone();
     let path = req.extensions().get::<MatchedPath>().map_or_else(
         || req.uri().path().to_owned(),
         |matched_path| matched_path.as_str().to_owned(),
     );
-    let configured_request_labels = &app_state.config.server.metrics.request_labels;
-    let configured_labels = if configured_request_labels.is_empty() {
-        Vec::new()
-    } else {
-        let resolved =
-            crate::metrics_labels::resolve_request_labels(configured_request_labels, req.headers());
-        // Let downstream handlers reuse the resolved labels instead of re-parsing headers.
-        req.extensions_mut().insert(crate::metrics_labels::ResolvedRequestLabels(resolved.clone()));
-        resolved
-    };
 
     let response = next.run(req).await;
 
@@ -1604,12 +1590,11 @@ async fn metrics_middleware(
         })
         .clone();
 
-    let mut labels = vec![
+    let labels = [
         KeyValue::new(crate::metrics_labels::HTTP_METHOD_KEY, method.to_string()),
         KeyValue::new(crate::metrics_labels::HTTP_ROUTE_KEY, path),
         KeyValue::new(crate::metrics_labels::HTTP_STATUS_CODE_KEY, status),
     ];
-    labels.extend(configured_labels);
 
     counter.add(1, &labels);
     histogram.record(latency, &labels);
@@ -1634,8 +1619,8 @@ pub fn create_app_state(
     // embedded/MCP callers — gets a normalized, validated metrics config. This
     // path is infallible, so an invalid config is disabled rather than rejected.
     if let Err(e) = config.server.metrics.prepare() {
-        tracing::warn!("disabling invalid metrics request_labels configuration: {e}");
-        config.server.metrics.request_labels.clear();
+        tracing::warn!("disabling invalid metrics attributes configuration: {e}");
+        config.server.metrics.attributes.clear();
     }
 
     let (event_tx, _) = tokio::sync::broadcast::channel(128);
@@ -1981,7 +1966,7 @@ pub fn create_app(
                 .on_response(DefaultOnResponse::new().level(tracing::Level::DEBUG))
                 .on_failure(DefaultOnFailure::new().level(tracing::Level::WARN)),
         ))
-    .layer(middleware::from_fn_with_state(Arc::clone(&app_state), metrics_middleware))
+    .layer(middleware::from_fn(metrics_middleware))
     .layer(SetResponseHeaderLayer::if_not_present(
         header::X_CONTENT_TYPE_OPTIONS,
         header::HeaderValue::from_static("nosniff"),

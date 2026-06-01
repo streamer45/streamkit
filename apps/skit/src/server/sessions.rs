@@ -363,6 +363,11 @@ pub async fn create_dynamic_session(
         ));
     }
 
+    let resolved_attributes = crate::metrics_labels::resolve_attributes(
+        engine_pipeline.attributes.as_ref(),
+        &app_state.config.server.metrics.attributes,
+    );
+
     let session = crate::session::Session::create(
         &app_state.engine,
         &app_state.config,
@@ -370,6 +375,7 @@ pub async fn create_dynamic_session(
         app_state.event_tx.clone(),
         Some(role_name),
         app_state.asset_root.clone(),
+        resolved_attributes,
     )
     .await
     .map_err(|e| CreateSessionError::Internal(format!("Failed to create session: {e}")))?;
@@ -757,6 +763,7 @@ mod sessions_batch_tests {
             tx,
             Some("test-role".to_string()),
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            streamkit_engine::ResolvedAttributes::default(),
         )
         .await
         .expect("Session::create on a fresh engine should succeed");

@@ -22,6 +22,7 @@ mod dynamic_handle;
 mod dynamic_initialize;
 mod engine_construction;
 mod graph_builder;
+mod metric_attributes;
 mod oneshot;
 mod oneshot_linear;
 #[cfg(feature = "dynamic")]
@@ -66,6 +67,7 @@ pub fn create_test_engine() -> crate::dynamic_actor::DynamicEngine {
         connections: HashMap::new(),
         node_kinds: HashMap::new(),
         node_metric_labels: HashMap::new(),
+        node_attributes: std::sync::Arc::new(crate::ResolvedAttributes::default()),
         batch_size: 32,
         session_id: None,
         audio_pool: std::sync::Arc::new(streamkit_core::FramePool::<f32>::audio_default()),

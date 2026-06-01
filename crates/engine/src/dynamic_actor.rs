@@ -43,8 +43,9 @@ pub struct NodePinMetadata {
 /// reused on every stats/state update to avoid per-update `String` allocations.
 #[derive(Clone)]
 pub struct NodeMetricLabels {
-    /// `[node_id, node_kind]` — used by stats counters.
-    pub(crate) stats: [KeyValue; 2],
+    /// `[node_id, node_kind]` plus any bounded pipeline attributes — used by
+    /// stats counters.
+    pub(crate) stats: Vec<KeyValue>,
     /// Standalone `node_id` label — combined with a varying `state` label.
     pub(crate) node_id_kv: KeyValue,
 }
@@ -124,6 +125,8 @@ pub struct DynamicEngine {
     pub(super) node_kinds: HashMap<String, String>,
     /// Pre-built OTel metric labels per node, allocated once on node creation.
     pub(super) node_metric_labels: HashMap<String, NodeMetricLabels>,
+    /// Bounded metric attributes merged into this session's node metrics.
+    pub(super) node_attributes: Arc<crate::ResolvedAttributes>,
     pub(super) batch_size: usize,
     /// Session ID for gateway registration (if applicable)
     pub(super) session_id: Option<String>,
@@ -519,10 +522,12 @@ impl DynamicEngine {
                 "Missing cached metric labels for live node; using fallback"
             );
             let node_kind = self.node_kinds.get(&update.node_id).map_or("unknown", String::as_str);
-            fallback = [
+            let mut labels = vec![
                 KeyValue::new("node_id", update.node_id.clone()),
                 KeyValue::new("node_kind", node_kind.to_string()),
             ];
+            labels.extend(self.node_attributes.for_node(&update.node_id));
+            fallback = labels;
             &fallback
         };
 
@@ -1603,13 +1608,15 @@ impl DynamicEngine {
                 self.active_creations.insert(node_id.clone(), creation_id);
 
                 self.node_kinds.insert(node_id.clone(), kind.clone());
+                let mut stats = vec![
+                    KeyValue::new("node_id", node_id.clone()),
+                    KeyValue::new("node_kind", kind.clone()),
+                ];
+                stats.extend(self.node_attributes.for_node(&node_id));
                 self.node_metric_labels.insert(
                     node_id.clone(),
                     NodeMetricLabels {
-                        stats: [
-                            KeyValue::new("node_id", node_id.clone()),
-                            KeyValue::new("node_kind", kind.clone()),
-                        ],
+                        stats,
                         node_id_kv: KeyValue::new("node_id", node_id.clone()),
                     },
                 );

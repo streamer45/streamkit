@@ -235,6 +235,7 @@ fn build_pipeline(width: u32, height: u32, fps: u32, frame_count: u32) -> stream
         name: Some("Compositor Benchmark".to_string()),
         description: Some(format!("Benchmark: {width}×{height} @ {fps} fps, {frame_count} frames")),
         mode: EngineMode::OneShot,
+        attributes: None,
         nodes,
         connections,
         view_data: None,
@@ -272,6 +273,7 @@ async fn run_once(
             definition,
             vec![], // no HTTP inputs — generator mode
             None,   // default config
+            streamkit_engine::ResolvedAttributes::default(),
             None,   // no cancellation
         )
         .await

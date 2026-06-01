@@ -2,125 +2,160 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! Resolve bounded metric labels from trusted request headers.
+//! Resolve bounded metric attributes from a pipeline's declared `attributes`.
 //!
-//! The values are constrained to operator-configured allowlists so
-//! client-supplied headers can never inflate metric cardinality.
+//! The pipeline declares key/value attributes; the operator config governs
+//! which keys are allowed and how each is bounded, so a user-submitted pipeline
+//! can never inflate metric cardinality.
 
-use axum::http::HeaderMap;
+use std::collections::BTreeMap;
+
 use opentelemetry::KeyValue;
+use streamkit_engine::ResolvedAttributes;
 
-use crate::config::RequestLabelConfig;
+use crate::config::MetricsAttributePolicy;
 
-/// Label keys emitted by the built-in request instruments (HTTP middleware and
-/// oneshot histogram). Configured request labels must not collide with these,
+/// Label keys emitted by the built-in engine instruments (node metrics and
+/// oneshot histogram). Configured attribute keys must not collide with these,
 /// even after Prometheus sanitizes the key.
 pub const STATUS_KEY: &str = "status";
+pub const NODE_ID_KEY: &str = "node_id";
+pub const NODE_KIND_KEY: &str = "node_kind";
 pub const HTTP_METHOD_KEY: &str = "http.method";
 pub const HTTP_ROUTE_KEY: &str = "http.route";
 pub const HTTP_STATUS_CODE_KEY: &str = "http.status_code";
 
 /// Single source of truth for the built-in keys, referenced both at the emit
 /// sites and by config validation so the reserved set cannot drift.
-pub const RESERVED_LABEL_KEYS: [&str; 4] =
-    [STATUS_KEY, HTTP_METHOD_KEY, HTTP_ROUTE_KEY, HTTP_STATUS_CODE_KEY];
+pub const RESERVED_LABEL_KEYS: [&str; 6] =
+    [STATUS_KEY, NODE_ID_KEY, NODE_KIND_KEY, HTTP_METHOD_KEY, HTTP_ROUTE_KEY, HTTP_STATUS_CODE_KEY];
 
-/// Bounded request labels resolved once per request and stashed in request
-/// extensions so downstream handlers can reuse them without re-parsing headers.
-#[derive(Clone)]
-pub struct ResolvedRequestLabels(pub Vec<KeyValue>);
-
-/// Canonical normalization for label values and allowlist entries: trim and
-/// ASCII-lowercase. Shared so the per-request path and config load stay in step.
+/// Canonical normalization for attribute values and policy entries: trim and
+/// ASCII-lowercase. Shared so resolution and config load stay in step.
 pub fn normalize(value: &str) -> String {
     value.trim().to_ascii_lowercase()
 }
 
-/// Constrain a header value to an allowlist, falling back when it is absent or
-/// unrecognized. The incoming value is normalized (trim + lowercase); `allowed`
-/// entries are expected to be pre-normalized at config load. An empty value
-/// never matches, so a stray empty allowlist entry can't emit an empty label.
-fn classify(value: Option<&str>, allowed: &[String], fallback: &str) -> String {
-    match value.map(normalize) {
-        Some(v) if !v.is_empty() && allowed.contains(&v) => v,
-        _ => fallback.to_string(),
+/// Constrain a declared value against its policy. An empty normalized value
+/// (or one outside an `allowed` allowlist) collapses to `fallback`, so a label
+/// can never be emitted empty. `allowed` entries are pre-normalized at config
+/// load; passthrough policies (`allowed` empty) accept any non-empty value.
+fn classify(value: &str, policy: &MetricsAttributePolicy) -> String {
+    let v = normalize(value);
+    if v.is_empty() {
+        return policy.fallback.clone();
+    }
+    if policy.is_passthrough() || policy.allowed.contains(&v) {
+        v
+    } else {
+        policy.fallback.clone()
     }
 }
 
-/// Resolve configured request labels into bounded metric key-values.
-pub fn resolve_request_labels(labels: &[RequestLabelConfig], headers: &HeaderMap) -> Vec<KeyValue> {
-    labels
-        .iter()
-        .map(|label| {
-            let value = headers.get(label.header.as_str()).and_then(|v| v.to_str().ok());
-            KeyValue::new(label.name.clone(), classify(value, &label.allowed, &label.fallback))
+/// Resolve a pipeline's declared attributes against the operator policy into
+/// bounded metric key-values. Keys absent from the policy are dropped.
+pub fn resolve_attributes(
+    declared: Option<&BTreeMap<String, String>>,
+    policy: &BTreeMap<String, MetricsAttributePolicy>,
+) -> ResolvedAttributes {
+    let pipeline = declared
+        .into_iter()
+        .flatten()
+        .filter_map(|(key, value)| {
+            policy.get(key).map(|p| KeyValue::new(key.clone(), classify(value, p)))
         })
-        .collect()
+        .collect();
+    ResolvedAttributes { pipeline, per_node: std::collections::HashMap::new() }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::HeaderValue;
 
-    fn label(name: &str, header: &str, allowed: &[&str]) -> RequestLabelConfig {
-        RequestLabelConfig {
-            name: name.to_string(),
-            header: header.to_string(),
+    fn policy(allowed: &[&str]) -> MetricsAttributePolicy {
+        MetricsAttributePolicy {
             allowed: allowed.iter().map(|s| (*s).to_string()).collect(),
             fallback: "other".to_string(),
         }
     }
 
+    fn declared(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs.iter().map(|(k, v)| ((*k).to_string(), (*v).to_string())).collect()
+    }
+
+    fn service_policy(allowed: &[&str]) -> BTreeMap<String, MetricsAttributePolicy> {
+        let mut map = BTreeMap::new();
+        map.insert("service".to_string(), policy(allowed));
+        map
+    }
+
     #[test]
     fn classify_allows_listed_values() {
-        let allowed = vec!["tts".to_string(), "stt".to_string()];
-        assert_eq!(classify(Some("tts"), &allowed, "other"), "tts");
-        assert_eq!(classify(Some("stt"), &allowed, "other"), "stt");
+        let p = policy(&["tts", "stt"]);
+        assert_eq!(classify("tts", &p), "tts");
+        assert_eq!(classify("stt", &p), "stt");
     }
 
     #[test]
     fn classify_normalizes_case_and_whitespace() {
-        let allowed = vec!["tts".to_string()];
-        assert_eq!(classify(Some("  TTS  "), &allowed, "other"), "tts");
+        let p = policy(&["tts"]);
+        assert_eq!(classify("  TTS  ", &p), "tts");
     }
 
     #[test]
-    fn classify_unknown_empty_and_absent_fall_back() {
-        let allowed = vec!["tts".to_string()];
-        assert_eq!(classify(Some("kokoro"), &allowed, "other"), "other");
-        assert_eq!(classify(Some(""), &allowed, "other"), "other");
-        assert_eq!(classify(None, &allowed, "other"), "other");
+    fn classify_unknown_and_empty_fall_back() {
+        let p = policy(&["tts"]);
+        assert_eq!(classify("kokoro", &p), "other");
+        assert_eq!(classify("", &p), "other");
+        assert_eq!(classify("   ", &p), "other");
     }
 
     #[test]
-    fn classify_empty_allowlist_always_falls_back() {
-        assert_eq!(classify(Some("tts"), &[], "other"), "other");
+    fn classify_passthrough_accepts_any_nonempty() {
+        let p = policy(&[]);
+        assert_eq!(classify("tenant-42", &p), "tenant-42");
+        assert_eq!(classify("", &p), "other");
     }
 
     #[test]
-    fn classify_empty_allowlist_entry_never_emits_empty_value() {
-        let allowed = vec![String::new()];
-        assert_eq!(classify(Some(""), &allowed, "other"), "other");
-        assert_eq!(classify(Some("   "), &allowed, "other"), "other");
+    fn resolve_emits_one_keyvalue_per_allowed_declared_attribute() {
+        let resolved = resolve_attributes(
+            Some(&declared(&[("service", "STT")])),
+            &service_policy(&["tts", "stt"]),
+        );
+        assert_eq!(resolved.pipeline.len(), 1);
+        assert_eq!(resolved.pipeline[0].key.as_str(), "service");
+        assert_eq!(resolved.pipeline[0].value.as_str(), "stt");
     }
 
     #[test]
-    fn resolve_emits_one_keyvalue_per_label() {
-        let labels = vec![label("service", "X-StreamKit-Service", &["tts", "stt"])];
-        let mut headers = HeaderMap::new();
-        headers.insert("X-StreamKit-Service", HeaderValue::from_static("STT"));
-
-        let resolved = resolve_request_labels(&labels, &headers);
-        assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].key.as_str(), "service");
-        assert_eq!(resolved[0].value.as_str(), "stt");
+    fn resolve_clamps_value_outside_allowlist_to_fallback() {
+        let resolved = resolve_attributes(
+            Some(&declared(&[("service", "kokoro")])),
+            &service_policy(&["tts", "stt"]),
+        );
+        assert_eq!(resolved.pipeline[0].value.as_str(), "other");
     }
 
     #[test]
-    fn resolve_falls_back_when_header_missing() {
-        let labels = vec![label("service", "X-StreamKit-Service", &["tts", "stt"])];
-        let resolved = resolve_request_labels(&labels, &HeaderMap::new());
-        assert_eq!(resolved[0].value.as_str(), "other");
+    fn resolve_drops_keys_absent_from_policy() {
+        let resolved = resolve_attributes(
+            Some(&declared(&[("service", "tts"), ("tenant", "acme")])),
+            &service_policy(&["tts"]),
+        );
+        assert_eq!(resolved.pipeline.len(), 1);
+        assert_eq!(resolved.pipeline[0].key.as_str(), "service");
+    }
+
+    #[test]
+    fn resolve_without_attributes_is_empty() {
+        let resolved = resolve_attributes(None, &service_policy(&["tts"]));
+        assert!(resolved.pipeline.is_empty());
+    }
+
+    #[test]
+    fn resolve_with_empty_policy_emits_nothing() {
+        let resolved = resolve_attributes(Some(&declared(&[("service", "tts")])), &BTreeMap::new());
+        assert!(resolved.pipeline.is_empty());
     }
 }

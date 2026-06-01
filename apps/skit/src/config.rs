@@ -7,7 +7,7 @@ use figment::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use tracing::Level;
 
 use crate::permissions::PermissionsConfig;
@@ -235,42 +235,44 @@ fn default_label_fallback() -> String {
     "other".to_string()
 }
 
-/// A bounded metric label sourced from a trusted request header.
+/// Per-dimension cardinality policy for a pipeline-declared attribute.
 ///
-/// The header value is trimmed and lowercased, then matched against `allowed`;
-/// anything not in the allowlist (or a missing header) collapses to `fallback`,
-/// so client-supplied headers can never inflate metric cardinality.
+/// The declared value is trimmed and lowercased, then matched against `values`;
+/// anything not in the allowlist (or an empty value) collapses to `fallback`,
+/// so a user-submitted pipeline can never inflate metric cardinality. Omitting
+/// `values` makes the dimension passthrough — any non-empty declared value is
+/// emitted as-is (the operator opts into that cardinality).
 #[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
-pub struct RequestLabelConfig {
-    /// Metric label key (e.g. `service`).
-    pub name: String,
-    /// Trusted request header to read the value from (e.g. `X-StreamKit-Service`).
-    ///
-    /// Read before auth middleware runs, so point this at a header set by a
-    /// trusted upstream (e.g. the gateway, which strips client-supplied copies)
-    /// — not at an auth-injected header such as `X-StreamKit-Role`, whose
-    /// pre-auth value is client-controlled.
-    pub header: String,
-    /// Permitted values, matched case-insensitively after trimming.
-    #[serde(default)]
+pub struct MetricsAttributePolicy {
+    /// Permitted values (the allowlist), matched case-insensitively after
+    /// trimming. Empty (or absent) ⇒ passthrough.
+    #[serde(default, rename = "values")]
     pub allowed: Vec<String>,
-    /// Value emitted when the header is absent or its value is not in `allowed`.
+    /// Value emitted when the declared value is absent, empty, or not allowed.
     #[serde(default = "default_label_fallback")]
     pub fallback: String,
 }
 
-/// Configuration for request-scoped metric labeling.
+impl MetricsAttributePolicy {
+    /// A policy with no allowlist accepts any non-empty value.
+    #[must_use]
+    pub const fn is_passthrough(&self) -> bool {
+        self.allowed.is_empty()
+    }
+}
+
+/// Configuration for pipeline-attribute metric labeling.
 ///
-/// Empty by default: no request metric gains a configured label unless an
-/// operator opts in. Declaring `request_labels` sets the full list (figment
-/// does not merge sequences). See the commented example in `samples/skit.toml`.
+/// Empty by default: no metric gains a configured label unless an operator
+/// opts in by declaring a dimension under `[server.metrics.attributes.<dim>]`.
+/// A pipeline-declared attribute whose key is absent from this map is dropped.
+/// See the commented example in `samples/skit.toml`.
 #[derive(Deserialize, Serialize, Debug, Clone, Default, JsonSchema)]
 pub struct MetricsConfig {
-    /// Bounded labels attached to request metrics, each sourced from a trusted
-    /// request header. Applied to all HTTP request metrics and to oneshot
-    /// pipeline metrics.
+    /// Per-dimension policy keyed by attribute name (e.g. `service`). Applied to
+    /// pipeline and node metrics in both oneshot and dynamic modes.
     #[serde(default)]
-    pub request_labels: Vec<RequestLabelConfig>,
+    pub attributes: BTreeMap<String, MetricsAttributePolicy>,
 }
 
 /// Prometheus sanitizes any character outside `[a-zA-Z0-9_]` in a label key to
@@ -304,25 +306,25 @@ impl MetricsConfig {
         self.validate()
     }
 
-    /// Lowercase and trim every allowlist entry and each `fallback` so the
-    /// per-request hot path only has to normalize the incoming header value and
-    /// every emitted value shares one normalized space.
+    /// Lowercase and trim every allowlist entry and each `fallback` so
+    /// resolution only has to normalize the declared value and every emitted
+    /// value shares one normalized space.
     pub fn normalize(&mut self) {
-        for label in &mut self.request_labels {
-            for allowed in &mut label.allowed {
+        for policy in self.attributes.values_mut() {
+            for allowed in &mut policy.allowed {
                 *allowed = crate::metrics_labels::normalize(allowed);
             }
-            label.fallback = crate::metrics_labels::normalize(&label.fallback);
+            policy.fallback = crate::metrics_labels::normalize(&policy.fallback);
         }
     }
 
-    /// Reject label configs that would silently corrupt metrics: invalid names,
-    /// names colliding (after Prometheus sanitization) with a built-in key or
-    /// each other, invalid/empty headers, and empty allowlist or fallback values.
+    /// Reject attribute policies that would silently corrupt metrics: invalid
+    /// dimension names, names colliding (after Prometheus sanitization) with a
+    /// built-in key or each other, and empty allowlist or fallback values.
     ///
     /// # Errors
     ///
-    /// Returns an error describing the first offending label.
+    /// Returns an error describing the first offending dimension.
     pub fn validate(&self) -> Result<(), String> {
         let reserved: std::collections::HashSet<String> =
             crate::metrics_labels::RESERVED_LABEL_KEYS
@@ -330,40 +332,28 @@ impl MetricsConfig {
                 .map(|k| sanitize_label_key(k))
                 .collect();
         let mut seen = std::collections::HashSet::new();
-        for label in &self.request_labels {
-            if !is_valid_label_name(&label.name) {
+        for (name, policy) in &self.attributes {
+            if !is_valid_label_name(name) {
                 return Err(format!(
-                    "metrics request_label name '{}' is not a valid metric label name",
-                    label.name
+                    "metrics attribute name '{name}' is not a valid metric label name"
                 ));
             }
-            let key = sanitize_label_key(&label.name);
+            let key = sanitize_label_key(name);
             if reserved.contains(&key) {
                 return Err(format!(
-                    "metrics request_label name '{}' collides with a built-in metric key",
-                    label.name
+                    "metrics attribute name '{name}' collides with a built-in metric key"
                 ));
             }
             if !seen.insert(key) {
-                return Err(format!("duplicate metrics request_label name '{}'", label.name));
-            }
-            if axum::http::HeaderName::try_from(label.header.as_str()).is_err() {
                 return Err(format!(
-                    "metrics request_label '{}' has an invalid header '{}'",
-                    label.name, label.header
+                    "metrics attribute name '{name}' collides with another after sanitization"
                 ));
             }
-            if label.allowed.iter().any(|v| v.trim().is_empty()) {
-                return Err(format!(
-                    "metrics request_label '{}' has an empty allowed value",
-                    label.name
-                ));
+            if policy.allowed.iter().any(|v| v.trim().is_empty()) {
+                return Err(format!("metrics attribute '{name}' has an empty allowed value"));
             }
-            if label.fallback.trim().is_empty() {
-                return Err(format!(
-                    "metrics request_label '{}' has an empty fallback value",
-                    label.name
-                ));
+            if policy.fallback.trim().is_empty() {
+                return Err(format!("metrics attribute '{name}' has an empty fallback value"));
             }
         }
         Ok(())
@@ -1592,27 +1582,29 @@ allowed_plugins = []
         });
     }
 
-    fn request_label(name: &str) -> RequestLabelConfig {
-        RequestLabelConfig {
-            name: name.to_string(),
-            header: "X-Test".to_string(),
-            allowed: vec![],
-            fallback: "other".to_string(),
+    fn attr_policy(allowed: &[&str], fallback: &str) -> MetricsAttributePolicy {
+        MetricsAttributePolicy {
+            allowed: allowed.iter().map(|s| (*s).to_string()).collect(),
+            fallback: fallback.to_string(),
         }
+    }
+
+    fn metrics_with(name: &str, policy: MetricsAttributePolicy) -> MetricsConfig {
+        let mut attributes = BTreeMap::new();
+        attributes.insert(name.to_string(), policy);
+        MetricsConfig { attributes }
     }
 
     #[test]
     fn metrics_validate_rejects_reserved_label_name() {
-        let metrics = MetricsConfig { request_labels: vec![request_label("status")] };
+        let metrics = metrics_with("status", attr_policy(&[], "other"));
         assert!(metrics.validate().is_err());
     }
 
     #[test]
-    fn metrics_validate_rejects_duplicate_label_name() {
-        let metrics = MetricsConfig {
-            request_labels: vec![request_label("service"), request_label("service")],
-        };
-        assert!(metrics.validate().is_err());
+    fn metrics_validate_rejects_reserved_node_label_name() {
+        assert!(metrics_with("node_id", attr_policy(&[], "other")).validate().is_err());
+        assert!(metrics_with("node_kind", attr_policy(&[], "other")).validate().is_err());
     }
 
     #[test]
@@ -1622,110 +1614,59 @@ allowed_plugins = []
 
     #[test]
     fn metrics_default_is_empty_opt_in() {
-        assert!(MetricsConfig::default().request_labels.is_empty());
+        assert!(MetricsConfig::default().attributes.is_empty());
     }
 
     #[test]
     fn metrics_validate_rejects_empty_or_invalid_label_name() {
-        assert!(MetricsConfig { request_labels: vec![request_label("")] }.validate().is_err());
-        assert!(MetricsConfig { request_labels: vec![request_label("   ")] }.validate().is_err());
-        assert!(MetricsConfig { request_labels: vec![request_label("1service")] }
-            .validate()
-            .is_err());
+        assert!(metrics_with("", attr_policy(&[], "other")).validate().is_err());
+        assert!(metrics_with("   ", attr_policy(&[], "other")).validate().is_err());
+        assert!(metrics_with("1service", attr_policy(&[], "other")).validate().is_err());
     }
 
     #[test]
     fn metrics_validate_rejects_sanitized_reserved_collision() {
         // `http_method` sanitizes to the same Prometheus key as `http.method`.
-        let metrics = MetricsConfig { request_labels: vec![request_label("http_method")] };
+        let metrics = metrics_with("http_method", attr_policy(&[], "other"));
         assert!(metrics.validate().is_err());
     }
 
     #[test]
     fn metrics_validate_rejects_empty_allowed_value() {
-        let metrics = MetricsConfig {
-            request_labels: vec![RequestLabelConfig {
-                name: "service".to_string(),
-                header: "X-Test".to_string(),
-                allowed: vec!["tts".to_string(), " ".to_string()],
-                fallback: "other".to_string(),
-            }],
-        };
+        let metrics = metrics_with("service", attr_policy(&["tts", " "], "other"));
         assert!(metrics.validate().is_err());
-    }
-
-    #[test]
-    fn metrics_validate_rejects_empty_or_invalid_header() {
-        let empty = RequestLabelConfig {
-            name: "service".to_string(),
-            header: String::new(),
-            allowed: vec!["tts".to_string()],
-            fallback: "other".to_string(),
-        };
-        assert!(MetricsConfig { request_labels: vec![empty] }.validate().is_err());
-        let bad = RequestLabelConfig {
-            name: "service".to_string(),
-            header: "bad header".to_string(),
-            allowed: vec!["tts".to_string()],
-            fallback: "other".to_string(),
-        };
-        assert!(MetricsConfig { request_labels: vec![bad] }.validate().is_err());
     }
 
     #[test]
     fn metrics_validate_rejects_empty_fallback() {
-        let metrics = MetricsConfig {
-            request_labels: vec![RequestLabelConfig {
-                name: "service".to_string(),
-                header: "X-Test".to_string(),
-                allowed: vec!["tts".to_string()],
-                fallback: "  ".to_string(),
-            }],
-        };
+        let metrics = metrics_with("service", attr_policy(&["tts"], "  "));
         assert!(metrics.validate().is_err());
     }
 
     #[test]
+    fn metrics_validate_accepts_passthrough_dimension() {
+        let metrics = metrics_with("tenant", attr_policy(&[], "other"));
+        assert!(metrics.validate().is_ok());
+        assert!(metrics.attributes["tenant"].is_passthrough());
+    }
+
+    #[test]
     fn metrics_prepare_normalizes_then_validates() {
-        let mut metrics = MetricsConfig {
-            request_labels: vec![RequestLabelConfig {
-                name: "service".to_string(),
-                header: "X-StreamKit-Service".to_string(),
-                allowed: vec!["  TTS ".to_string()],
-                fallback: "Other".to_string(),
-            }],
-        };
+        let mut metrics = metrics_with("service", attr_policy(&["  TTS "], "Other"));
         assert!(metrics.prepare().is_ok());
-        assert_eq!(metrics.request_labels[0].allowed, vec!["tts".to_string()]);
-        assert_eq!(metrics.request_labels[0].fallback, "other");
+        assert_eq!(metrics.attributes["service"].allowed, vec!["tts".to_string()]);
+        assert_eq!(metrics.attributes["service"].fallback, "other");
     }
 
     #[test]
-    fn metrics_normalize_lowercases_fallback() {
-        let mut metrics = MetricsConfig {
-            request_labels: vec![RequestLabelConfig {
-                name: "service".to_string(),
-                header: "X-Test".to_string(),
-                allowed: vec!["tts".to_string()],
-                fallback: " Other ".to_string(),
-            }],
-        };
+    fn metrics_normalize_lowercases_allowlist_and_fallback() {
+        let mut metrics = metrics_with("service", attr_policy(&["  TTS ", "Stt"], " Other "));
         metrics.normalize();
-        assert_eq!(metrics.request_labels[0].fallback, "other");
-    }
-
-    #[test]
-    fn metrics_normalize_lowercases_allowlist() {
-        let mut metrics = MetricsConfig {
-            request_labels: vec![RequestLabelConfig {
-                name: "service".to_string(),
-                header: "X-StreamKit-Service".to_string(),
-                allowed: vec!["  TTS ".to_string(), "Stt".to_string()],
-                fallback: "other".to_string(),
-            }],
-        };
-        metrics.normalize();
-        assert_eq!(metrics.request_labels[0].allowed, vec!["tts".to_string(), "stt".to_string()]);
+        assert_eq!(
+            metrics.attributes["service"].allowed,
+            vec!["tts".to_string(), "stt".to_string()]
+        );
+        assert_eq!(metrics.attributes["service"].fallback, "other");
     }
 
     #[test]
@@ -1733,10 +1674,8 @@ allowed_plugins = []
         figment::Jail::expect_with(|jail| {
             jail.create_file(
                 "skit.toml",
-                r#"[[server.metrics.request_labels]]
-name = "http.route"
-header = "X-StreamKit-Service"
-allowed = ["tts"]
+                r#"[server.metrics.attributes."http.route"]
+values = ["tts"]
 "#,
             )?;
             assert!(load("skit.toml").is_err(), "reserved label name must fail load");
