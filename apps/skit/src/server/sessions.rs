@@ -49,6 +49,7 @@ pub async fn populate_session_pipeline(
     pipeline.description.clone_from(&engine_pipeline.description);
     pipeline.mode = engine_pipeline.mode;
     pipeline.client.clone_from(&engine_pipeline.client);
+    pipeline.attributes.clone_from(&engine_pipeline.attributes);
 
     for (node_id, node_spec) in &engine_pipeline.nodes {
         pipeline.nodes.insert(
@@ -363,10 +364,7 @@ pub async fn create_dynamic_session(
         ));
     }
 
-    let resolved_attributes = crate::metrics_labels::resolve_attributes(
-        engine_pipeline.attributes.as_ref(),
-        &app_state.config.server.metrics.attributes,
-    );
+    let resolved_attributes = app_state.resolve_metric_attributes(&engine_pipeline);
 
     let session = crate::session::Session::create(
         &app_state.engine,
@@ -820,6 +818,29 @@ mod sessions_batch_tests {
             node_id.to_string(),
             streamkit_api::Node { kind: kind.to_string(), params: None, state: None },
         );
+    }
+
+    #[tokio::test]
+    async fn populate_session_pipeline_preserves_attributes() {
+        let (session, _rx) = fresh_session().await;
+
+        let mut attributes = std::collections::BTreeMap::new();
+        attributes.insert("service".to_string(), "tts".to_string());
+        let engine_pipeline = streamkit_api::Pipeline {
+            attributes: Some(attributes.clone()),
+            ..Default::default()
+        };
+
+        populate_session_pipeline(&session, &engine_pipeline).await;
+
+        let pipeline = session.pipeline.lock().await;
+        assert_eq!(
+            pipeline.attributes.as_ref(),
+            Some(&attributes),
+            "session snapshot must round-trip the submitted attributes"
+        );
+        drop(pipeline);
+        let _ = session.shutdown_and_wait().await;
     }
 
     #[tokio::test]

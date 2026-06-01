@@ -48,6 +48,10 @@ pub struct NodeMetricLabels {
     pub(crate) stats: Vec<KeyValue>,
     /// Standalone `node_id` label — combined with a varying `state` label.
     pub(crate) node_id_kv: KeyValue,
+    /// Bounded pipeline attributes for this node, resolved once at creation.
+    /// Extended onto every node-scoped label set (state, transitions) so all of
+    /// a node's metrics carry the same attributes from one chokepoint.
+    pub(crate) attrs: Vec<KeyValue>,
 }
 
 /// Bundle of broadcast channel senders shared by the engine actor loop.
@@ -425,23 +429,18 @@ impl DynamicEngine {
         );
 
         let state_name = Self::node_state_name(&update.state);
-        let node_id_kv = self.node_metric_labels.get(&update.node_id).map_or_else(
-            || KeyValue::new("node_id", update.node_id.clone()),
-            |c| c.node_id_kv.clone(),
-        );
         self.node_state_transitions_counter
-            .add(1, &[node_id_kv.clone(), KeyValue::new("state", state_name)]);
+            .add(1, &self.node_state_labels(&update.node_id, state_name));
 
         // One-hot gauge: zero-out previous state, set new state to 1.
-        let prev_state = self.node_states.get(&update.node_id);
-        if let Some(prev_state) = prev_state {
+        if let Some(prev_state) = self.node_states.get(&update.node_id) {
             let prev_state_name = Self::node_state_name(prev_state);
             if prev_state_name != state_name {
                 self.node_state_gauge
-                    .record(0, &[node_id_kv.clone(), KeyValue::new("state", prev_state_name)]);
+                    .record(0, &self.node_state_labels(&update.node_id, prev_state_name));
             }
         }
-        self.node_state_gauge.record(1, &[node_id_kv, KeyValue::new("state", state_name)]);
+        self.node_state_gauge.record(1, &self.node_state_labels(&update.node_id, state_name));
 
         Arc::make_mut(&mut self.node_states).insert(update.node_id.clone(), update.state.clone());
 
@@ -631,8 +630,13 @@ impl DynamicEngine {
             let (data_tx, data_rx) = mpsc::channel(self.pin_distributor_capacity);
             let (config_tx, config_rx) = mpsc::channel(CONTROL_CAPACITY);
 
-            let distributor =
-                PinDistributorActor::new(data_rx, config_rx, node_id.to_string(), pin.name.clone());
+            let distributor = PinDistributorActor::new(
+                data_rx,
+                config_rx,
+                node_id.to_string(),
+                pin.name.clone(),
+                self.node_attributes.for_node(node_id),
+            );
             tokio::spawn(distributor.run());
 
             self.pin_distributors.insert((node_id.to_string(), pin.name.clone()), config_tx);
@@ -684,7 +688,8 @@ impl DynamicEngine {
         )));
         self.live_nodes
             .insert(node_id.to_string(), graph_builder::LiveNode { control_tx, task_handle });
-        self.nodes_active_gauge.record(self.live_nodes.len() as u64, &[]);
+        self.nodes_active_gauge
+            .record(self.live_nodes.len() as u64, &self.node_attributes.pipeline);
         Ok(())
     }
 
@@ -1015,8 +1020,13 @@ impl DynamicEngine {
             let (data_tx, data_rx) = mpsc::channel(self.pin_distributor_capacity);
             let (cfg_tx, cfg_rx) = mpsc::channel(CONTROL_CAPACITY);
 
-            let distributor =
-                PinDistributorActor::new(data_rx, cfg_rx, from_node.clone(), pin.name.clone());
+            let distributor = PinDistributorActor::new(
+                data_rx,
+                cfg_rx,
+                from_node.clone(),
+                pin.name.clone(),
+                self.node_attributes.for_node(&from_node),
+            );
             tokio::spawn(distributor.run());
 
             self.pin_distributors.insert((from_node.clone(), pin.name.clone()), cfg_tx.clone());
@@ -1389,7 +1399,8 @@ impl DynamicEngine {
         self.connections.retain(|(to, _), (from, _)| to != node_id && from != node_id);
         self.node_kinds.remove(node_id);
         self.node_metric_labels.remove(node_id);
-        self.nodes_active_gauge.record(self.live_nodes.len() as u64, &[]);
+        self.nodes_active_gauge
+            .record(self.live_nodes.len() as u64, &self.node_attributes.pipeline);
     }
 
     /// Handles a completed background node creation.
@@ -1474,39 +1485,51 @@ impl DynamicEngine {
         }
     }
 
+    /// Build the label set for a node's state metrics: `[node_id, state]` plus
+    /// the node's bounded pipeline attributes. Single chokepoint so every
+    /// node-scoped metric (state gauge, state transitions) carries the same
+    /// attributes as the packet counters.
+    fn node_state_labels(&self, node_id: &str, state_name: &'static str) -> Vec<KeyValue> {
+        self.node_metric_labels.get(node_id).map_or_else(
+            || {
+                vec![
+                    KeyValue::new("node_id", node_id.to_owned()),
+                    KeyValue::new("state", state_name),
+                ]
+            },
+            |c| {
+                let mut labels = Vec::with_capacity(2 + c.attrs.len());
+                labels.push(c.node_id_kv.clone());
+                labels.push(KeyValue::new("state", state_name));
+                labels.extend(c.attrs.iter().cloned());
+                labels
+            },
+        )
+    }
+
     /// Zero-out the gauge for a specific state (one-hot pattern helper).
     fn zero_state_gauge(&self, node_id: &str, state: &NodeState) {
         let state_name = Self::node_state_name(state);
-        let node_id_kv = self
-            .node_metric_labels
-            .get(node_id)
-            .map_or_else(|| KeyValue::new("node_id", node_id.to_owned()), |c| c.node_id_kv.clone());
-        self.node_state_gauge.record(0, &[node_id_kv, KeyValue::new("state", state_name)]);
+        self.node_state_gauge.record(0, &self.node_state_labels(node_id, state_name));
     }
 
     /// Broadcast a state update to all subscribers. Reads the previous state
     /// before inserting so one-hot gauge zeroing is correct.
     fn broadcast_state_update(&mut self, node_id: &str, new_state: NodeState) {
         let state_name = Self::node_state_name(&new_state);
-        let node_id_kv = self
-            .node_metric_labels
-            .get(node_id)
-            .map_or_else(|| KeyValue::new("node_id", node_id.to_owned()), |c| c.node_id_kv.clone());
-        self.node_state_transitions_counter
-            .add(1, &[node_id_kv.clone(), KeyValue::new("state", state_name)]);
+        self.node_state_transitions_counter.add(1, &self.node_state_labels(node_id, state_name));
 
         if let Some(prev_state) = self.node_states.get(node_id) {
             let prev_state_name = Self::node_state_name(prev_state);
             if prev_state_name != state_name {
-                self.node_state_gauge
-                    .record(0, &[node_id_kv.clone(), KeyValue::new("state", prev_state_name)]);
+                self.node_state_gauge.record(0, &self.node_state_labels(node_id, prev_state_name));
             }
         }
 
         // Insert the new state AFTER reading the previous one.
         Arc::make_mut(&mut self.node_states).insert(node_id.to_owned(), new_state.clone());
 
-        self.node_state_gauge.record(1, &[node_id_kv, KeyValue::new("state", state_name)]);
+        self.node_state_gauge.record(1, &self.node_state_labels(node_id, state_name));
 
         let update = NodeStateUpdate::new(node_id.to_owned(), new_state);
         self.state_subscribers.retain(|subscriber| match subscriber.try_send(update.clone()) {
@@ -1608,16 +1631,18 @@ impl DynamicEngine {
                 self.active_creations.insert(node_id.clone(), creation_id);
 
                 self.node_kinds.insert(node_id.clone(), kind.clone());
+                let attrs = self.node_attributes.for_node(&node_id);
                 let mut stats = vec![
                     KeyValue::new("node_id", node_id.clone()),
                     KeyValue::new("node_kind", kind.clone()),
                 ];
-                stats.extend(self.node_attributes.for_node(&node_id));
+                stats.extend(attrs.iter().cloned());
                 self.node_metric_labels.insert(
                     node_id.clone(),
                     NodeMetricLabels {
                         stats,
                         node_id_kv: KeyValue::new("node_id", node_id.clone()),
+                        attrs,
                     },
                 );
 
@@ -1839,7 +1864,7 @@ impl DynamicEngine {
                 Arc::make_mut(&mut self.node_states).clear();
                 Arc::make_mut(&mut self.node_stats).clear();
                 Arc::make_mut(&mut self.node_view_data).clear();
-                self.nodes_active_gauge.record(0, &[]);
+                self.nodes_active_gauge.record(0, &self.node_attributes.pipeline);
 
                 tracing::info!("All nodes shut down successfully");
                 return false; // Signal to shut down the engine

@@ -92,7 +92,7 @@ async fn run_oneshot_with_empty_registry_fails_to_build_pipeline() {
             definition,
             inputs,
             Some(OneshotEngineConfig::default()),
-            crate::ResolvedAttributes::default(),
+            std::sync::Arc::new(crate::ResolvedAttributes::default()),
             None,
         )
         .await;

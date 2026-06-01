@@ -164,7 +164,7 @@ impl Engine {
         definition: Pipeline,
         inputs: Vec<OneshotInput<S>>,
         config: Option<OneshotEngineConfig>,
-        attributes: crate::ResolvedAttributes,
+        attributes: std::sync::Arc<crate::ResolvedAttributes>,
         cancellation_token: Option<CancellationToken>,
     ) -> Result<OneshotPipelineResult, StreamKitError>
     where
@@ -421,7 +421,6 @@ impl Engine {
         let node_kinds: HashMap<String, String> =
             definition.nodes.iter().map(|(name, def)| (name.clone(), def.kind.clone())).collect();
         let node_kinds_for_metrics = node_kinds.clone();
-        let attributes = std::sync::Arc::new(attributes);
 
         let audio_pool = self.audio_pool.clone();
         let video_pool = self.video_pool.clone();
@@ -531,16 +530,21 @@ fn spawn_oneshot_metrics_recorder(
 
     tokio::spawn(async move {
         let mut prev_stats: HashMap<String, NodeStats> = HashMap::new();
+        // Built once per node on first sight, then reused for every update —
+        // mirrors the dynamic actor's `NodeMetricLabels` caching.
+        let mut label_cache: HashMap<String, Vec<KeyValue>> = HashMap::new();
 
         while let Some(update) = stats_rx.recv().await {
-            let node_kind =
-                node_kinds.get(&update.node_id).map_or("unknown", std::string::String::as_str);
-
-            let mut labels = vec![
-                KeyValue::new("node_id", update.node_id.clone()),
-                KeyValue::new("node_kind", node_kind.to_string()),
-            ];
-            labels.extend(attributes.for_node(&update.node_id));
+            let labels = label_cache.entry(update.node_id.clone()).or_insert_with(|| {
+                let node_kind =
+                    node_kinds.get(&update.node_id).map_or("unknown", std::string::String::as_str);
+                let mut labels = vec![
+                    KeyValue::new("node_id", update.node_id.clone()),
+                    KeyValue::new("node_kind", node_kind.to_string()),
+                ];
+                labels.extend(attributes.for_node(&update.node_id));
+                labels
+            });
             let labels = labels.as_slice();
 
             let prev = prev_stats.get(&update.node_id);

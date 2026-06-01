@@ -15,20 +15,29 @@ use streamkit_engine::ResolvedAttributes;
 
 use crate::config::MetricsAttributePolicy;
 
-/// Label keys emitted by the built-in engine instruments (node metrics and
-/// oneshot histogram). Configured attribute keys must not collide with these,
-/// even after Prometheus sanitizes the key.
+/// Label keys emitted by the engine's node/pipeline instruments.
+///
+/// Attributes are merged onto exactly these metrics' label sets, so a configured
+/// attribute key must not collide with one of these (even after Prometheus
+/// sanitizes it).
 pub const STATUS_KEY: &str = "status";
 pub const NODE_ID_KEY: &str = "node_id";
 pub const NODE_KIND_KEY: &str = "node_kind";
+pub const STATE_KEY: &str = "state";
+pub const PIN_NAME_KEY: &str = "pin_name";
+
+/// Label keys emitted by the HTTP request-metrics middleware. Attributes are
+/// never merged onto `http.server.*`, so these are not reserved against
+/// attribute keys.
 pub const HTTP_METHOD_KEY: &str = "http.method";
 pub const HTTP_ROUTE_KEY: &str = "http.route";
 pub const HTTP_STATUS_CODE_KEY: &str = "http.status_code";
 
-/// Single source of truth for the built-in keys, referenced both at the emit
-/// sites and by config validation so the reserved set cannot drift.
-pub const RESERVED_LABEL_KEYS: [&str; 6] =
-    [STATUS_KEY, NODE_ID_KEY, NODE_KIND_KEY, HTTP_METHOD_KEY, HTTP_ROUTE_KEY, HTTP_STATUS_CODE_KEY];
+/// Single source of truth for the built-in node/pipeline metric keys,
+/// referenced both at the emit sites and by config validation so the reserved
+/// set cannot drift.
+pub const RESERVED_LABEL_KEYS: [&str; 5] =
+    [STATUS_KEY, NODE_ID_KEY, NODE_KIND_KEY, STATE_KEY, PIN_NAME_KEY];
 
 /// Canonical normalization for attribute values and policy entries: trim and
 /// ASCII-lowercase. Shared so resolution and config load stay in step.
@@ -52,8 +61,11 @@ fn classify(value: &str, policy: &MetricsAttributePolicy) -> String {
     }
 }
 
-/// Resolve a pipeline's declared attributes against the operator policy into
-/// bounded metric key-values. Keys absent from the policy are dropped.
+/// Resolve a pipeline's declared attributes against the operator policy.
+///
+/// Produces bounded metric key-values. Keys absent from the policy are dropped.
+/// The declared key is normalized (trim + lowercase) before lookup so it matches
+/// the same way declared values do; policy keys are validated lowercase at load.
 pub fn resolve_attributes(
     declared: Option<&BTreeMap<String, String>>,
     policy: &BTreeMap<String, MetricsAttributePolicy>,
@@ -62,7 +74,8 @@ pub fn resolve_attributes(
         .into_iter()
         .flatten()
         .filter_map(|(key, value)| {
-            policy.get(key).map(|p| KeyValue::new(key.clone(), classify(value, p)))
+            let key = normalize(key);
+            policy.get(&key).map(|p| KeyValue::new(key, classify(value, p)))
         })
         .collect();
     ResolvedAttributes { pipeline, per_node: std::collections::HashMap::new() }
@@ -157,5 +170,16 @@ mod tests {
     fn resolve_with_empty_policy_emits_nothing() {
         let resolved = resolve_attributes(Some(&declared(&[("service", "tts")])), &BTreeMap::new());
         assert!(resolved.pipeline.is_empty());
+    }
+
+    #[test]
+    fn resolve_matches_declared_key_case_insensitively() {
+        let resolved = resolve_attributes(
+            Some(&declared(&[("Service", "TTS")])),
+            &service_policy(&["tts", "stt"]),
+        );
+        assert_eq!(resolved.pipeline.len(), 1);
+        assert_eq!(resolved.pipeline[0].key.as_str(), "service");
+        assert_eq!(resolved.pipeline[0].value.as_str(), "tts");
     }
 }

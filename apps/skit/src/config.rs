@@ -338,6 +338,12 @@ impl MetricsConfig {
                     "metrics attribute name '{name}' is not a valid metric label name"
                 ));
             }
+            if *name != crate::metrics_labels::normalize(name) {
+                return Err(format!(
+                    "metrics attribute name '{name}' must be lowercase and trimmed; \
+                     declared values are case-folded, so the dimension key must be too"
+                ));
+            }
             let key = sanitize_label_key(name);
             if reserved.contains(&key) {
                 return Err(format!(
@@ -451,7 +457,7 @@ pub struct ServerConfig {
     /// CORS configuration for cross-origin requests
     #[serde(default)]
     pub cors: CorsConfig,
-    /// Bounded request-metric labeling configuration.
+    /// Bounded pipeline-attribute metric labeling configuration.
     #[serde(default)]
     pub metrics: MetricsConfig,
     #[cfg(feature = "moq")]
@@ -1605,6 +1611,13 @@ allowed_plugins = []
     fn metrics_validate_rejects_reserved_node_label_name() {
         assert!(metrics_with("node_id", attr_policy(&[], "other")).validate().is_err());
         assert!(metrics_with("node_kind", attr_policy(&[], "other")).validate().is_err());
+        assert!(metrics_with("state", attr_policy(&[], "other")).validate().is_err());
+        assert!(metrics_with("pin_name", attr_policy(&[], "other")).validate().is_err());
+    }
+
+    #[test]
+    fn metrics_validate_rejects_non_lowercase_dimension_name() {
+        assert!(metrics_with("Service", attr_policy(&["tts"], "other")).validate().is_err());
     }
 
     #[test]
@@ -1626,8 +1639,8 @@ allowed_plugins = []
 
     #[test]
     fn metrics_validate_rejects_sanitized_reserved_collision() {
-        // `http_method` sanitizes to the same Prometheus key as `http.method`.
-        let metrics = metrics_with("http_method", attr_policy(&[], "other"));
+        // `node.id` sanitizes to the same Prometheus key as the built-in `node_id`.
+        let metrics = metrics_with("node.id", attr_policy(&[], "other"));
         assert!(metrics.validate().is_err());
     }
 
@@ -1674,7 +1687,7 @@ allowed_plugins = []
         figment::Jail::expect_with(|jail| {
             jail.create_file(
                 "skit.toml",
-                r#"[server.metrics.attributes."http.route"]
+                r#"[server.metrics.attributes.state]
 values = ["tts"]
 "#,
             )?;

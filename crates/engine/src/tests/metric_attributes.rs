@@ -4,7 +4,7 @@
 
 //! End-to-end checks that resolved pipeline attributes reach the labels of the
 //! metrics the engine emits, in both oneshot (`node.execution.duration`) and
-//! dynamic (`node.packets.*`) modes.
+//! dynamic (`node.packets.*`, `node.state` transitions) modes.
 
 // Reason: tests use `.expect(...)` to surface helpful panic messages.
 #![allow(clippy::expect_used)]
@@ -174,5 +174,48 @@ async fn dynamic_node_packets_carry_pipeline_attribute() {
     assert!(
         attrs.contains(&("service".to_string(), "stt".to_string())),
         "node packets counter for {node_id} should carry service=stt, got {attrs:?}"
+    );
+}
+
+#[cfg(feature = "dynamic")]
+#[tokio::test]
+async fn dynamic_node_state_transitions_carry_pipeline_attribute() {
+    use crate::dynamic_actor::NodeMetricLabels;
+    use graph_builder::LiveNode;
+    use streamkit_core::state::{NodeState, NodeStateUpdate};
+
+    let h = harness();
+    let mut engine = super::create_test_engine();
+    let node_id = "metric-attr-dynamic-state-node";
+
+    let (control_tx, _control_rx) = tokio::sync::mpsc::channel(8);
+    let task_handle = tokio::spawn(async { Ok(()) });
+    engine.live_nodes.insert(node_id.to_string(), LiveNode { control_tx, task_handle });
+    engine.node_metric_labels.insert(
+        node_id.to_string(),
+        NodeMetricLabels {
+            stats: vec![
+                KeyValue::new("node_id", node_id.to_string()),
+                KeyValue::new("node_kind", "test::node".to_string()),
+            ],
+            node_id_kv: KeyValue::new("node_id", node_id.to_string()),
+            attrs: vec![KeyValue::new("service", "stt")],
+        },
+    );
+
+    engine.handle_state_update(&NodeStateUpdate {
+        node_id: node_id.to_string(),
+        state: NodeState::Running,
+        timestamp: std::time::SystemTime::now(),
+    });
+
+    h.provider.force_flush().expect("force_flush should succeed");
+    let metrics = h.exporter.get_finished_metrics().expect("metrics should be exported");
+    let points = data_point_attributes(&metrics, "test.transitions");
+    let attrs = point_for_node(&points, node_id);
+
+    assert!(
+        attrs.contains(&("service".to_string(), "stt".to_string())),
+        "node state transitions for {node_id} should carry service=stt, got {attrs:?}"
     );
 }

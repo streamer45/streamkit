@@ -516,7 +516,7 @@ async fn run_oneshot_pipeline_generator_round_trip() {
             definition,
             inputs,
             Some(OneshotEngineConfig::default()),
-            crate::ResolvedAttributes::default(),
+            std::sync::Arc::new(crate::ResolvedAttributes::default()),
             Some(cancel),
         )
         .await
@@ -568,7 +568,7 @@ async fn run_oneshot_pipeline_propagates_validation_error() {
             definition,
             inputs,
             Some(OneshotEngineConfig::default()),
-            crate::ResolvedAttributes::default(),
+            std::sync::Arc::new(crate::ResolvedAttributes::default()),
             Some(tokio_util::sync::CancellationToken::new()),
         )
         .await;
@@ -638,7 +638,7 @@ async fn run_oneshot_pipeline_drives_metrics_recorder() {
             definition,
             inputs,
             Some(OneshotEngineConfig::default()),
-            crate::ResolvedAttributes::default(),
+            std::sync::Arc::new(crate::ResolvedAttributes::default()),
             Some(tokio_util::sync::CancellationToken::new()),
         )
         .await
@@ -693,7 +693,7 @@ async fn run_oneshot_pipeline_missing_http_output_node_errors() {
             definition,
             inputs,
             Some(OneshotEngineConfig::default()),
-            crate::ResolvedAttributes::default(),
+            std::sync::Arc::new(crate::ResolvedAttributes::default()),
             Some(tokio_util::sync::CancellationToken::new()),
         )
         .await;
@@ -749,7 +749,7 @@ async fn run_oneshot_pipeline_unconnected_http_output_errors() {
             definition,
             inputs,
             Some(OneshotEngineConfig::default()),
-            crate::ResolvedAttributes::default(),
+            std::sync::Arc::new(crate::ResolvedAttributes::default()),
             Some(tokio_util::sync::CancellationToken::new()),
         )
         .await;

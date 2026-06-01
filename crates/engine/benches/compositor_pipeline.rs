@@ -273,7 +273,7 @@ async fn run_once(
             definition,
             vec![], // no HTTP inputs — generator mode
             None,   // default config
-            streamkit_engine::ResolvedAttributes::default(),
+            std::sync::Arc::new(streamkit_engine::ResolvedAttributes::default()),
             None,   // no cancellation
         )
         .await

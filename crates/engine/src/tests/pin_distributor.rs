@@ -47,8 +47,13 @@ async fn pin_distributor_fanout_delivers_to_all_outputs() {
     let (data_tx, data_rx) = mpsc::channel(8);
     let (config_tx, config_rx) = mpsc::channel(8);
 
-    let actor =
-        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor = PinDistributorActor::new(
+        data_rx,
+        config_rx,
+        "node_a".to_string(),
+        "out".to_string(),
+        Vec::new(),
+    );
     let actor_handle = tokio::spawn(actor.run());
 
     let (out1_tx, mut out1_rx) = mpsc::channel(8);
@@ -128,8 +133,13 @@ async fn pin_distributor_removes_closed_outputs() {
     let (data_tx, data_rx) = mpsc::channel(8);
     let (config_tx, config_rx) = mpsc::channel(8);
 
-    let actor =
-        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor = PinDistributorActor::new(
+        data_rx,
+        config_rx,
+        "node_a".to_string(),
+        "out".to_string(),
+        Vec::new(),
+    );
     let actor_handle =
         tokio::spawn(actor.run().with_subscriber(tracing::Dispatch::new(subscriber)));
 
@@ -226,8 +236,13 @@ async fn broadcast_distributes_to_three_outputs() {
     let (data_tx, data_rx) = mpsc::channel(8);
     let (config_tx, config_rx) = mpsc::channel(8);
 
-    let actor =
-        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor = PinDistributorActor::new(
+        data_rx,
+        config_rx,
+        "node_a".to_string(),
+        "out".to_string(),
+        Vec::new(),
+    );
     let actor_handle = tokio::spawn(actor.run());
 
     let mut receivers = Vec::new();
@@ -279,8 +294,13 @@ async fn dynamic_pin_add_and_remove() {
     let (data_tx, data_rx) = mpsc::channel(8);
     let (config_tx, config_rx) = mpsc::channel(8);
 
-    let actor =
-        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor = PinDistributorActor::new(
+        data_rx,
+        config_rx,
+        "node_a".to_string(),
+        "out".to_string(),
+        Vec::new(),
+    );
     let actor_handle = tokio::spawn(actor.run());
 
     let (tx1, mut rx1) = mpsc::channel(8);
@@ -363,8 +383,13 @@ async fn best_effort_drops_when_full() {
     let (data_tx, data_rx) = mpsc::channel(8);
     let (config_tx, config_rx) = mpsc::channel(8);
 
-    let actor =
-        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor = PinDistributorActor::new(
+        data_rx,
+        config_rx,
+        "node_a".to_string(),
+        "out".to_string(),
+        Vec::new(),
+    );
     let actor_handle = tokio::spawn(actor.run());
 
     let (tx, mut rx) = mpsc::channel(1);
@@ -423,8 +448,13 @@ async fn shutdown_message_stops_actor() {
     let (data_tx, data_rx) = mpsc::channel(8);
     let (config_tx, config_rx) = mpsc::channel(8);
 
-    let actor =
-        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor = PinDistributorActor::new(
+        data_rx,
+        config_rx,
+        "node_a".to_string(),
+        "out".to_string(),
+        Vec::new(),
+    );
     let actor_handle = tokio::spawn(actor.run());
 
     if let Err(e) = config_tx.send(PinConfigMsg::Shutdown).await {
@@ -442,8 +472,13 @@ async fn single_reliable_blocks_on_full_until_consumer_drains() {
     let (data_tx, data_rx) = mpsc::channel(8);
     let (config_tx, config_rx) = mpsc::channel(8);
 
-    let actor =
-        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor = PinDistributorActor::new(
+        data_rx,
+        config_rx,
+        "node_a".to_string(),
+        "out".to_string(),
+        Vec::new(),
+    );
     let actor_handle = tokio::spawn(actor.run());
 
     let (slow_tx, mut slow_rx) = mpsc::channel(1);
@@ -505,8 +540,13 @@ async fn single_best_effort_collapses_to_latest_when_consumer_idle() {
     let (data_tx, data_rx) = mpsc::channel(16);
     let (config_tx, config_rx) = mpsc::channel(8);
 
-    let actor =
-        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor = PinDistributorActor::new(
+        data_rx,
+        config_rx,
+        "node_a".to_string(),
+        "out".to_string(),
+        Vec::new(),
+    );
     let actor_handle = tokio::spawn(actor.run());
 
     let (slow_tx, mut slow_rx) = mpsc::channel(1);
@@ -569,8 +609,13 @@ async fn remove_unknown_connection_is_silent_noop() {
     let (data_tx, data_rx) = mpsc::channel(8);
     let (config_tx, config_rx) = mpsc::channel(8);
 
-    let actor =
-        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor = PinDistributorActor::new(
+        data_rx,
+        config_rx,
+        "node_a".to_string(),
+        "out".to_string(),
+        Vec::new(),
+    );
     let actor_handle = tokio::spawn(actor.run());
 
     let unknown = ConnectionId::new(
@@ -623,8 +668,13 @@ async fn packet_with_no_outputs_is_dropped_without_panic() {
     let (data_tx, data_rx) = mpsc::channel(8);
     let (config_tx, config_rx) = mpsc::channel(8);
 
-    let actor =
-        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor = PinDistributorActor::new(
+        data_rx,
+        config_rx,
+        "node_a".to_string(),
+        "out".to_string(),
+        Vec::new(),
+    );
     let actor_handle = tokio::spawn(actor.run());
 
     if let Err(e) = data_tx.send(Packet::Text("orphan".into())).await {
@@ -656,8 +706,13 @@ async fn distribute_packet_handles_all_packet_variants() {
 
     let (data_tx, data_rx) = mpsc::channel(16);
     let (config_tx, config_rx) = mpsc::channel(8);
-    let actor =
-        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor = PinDistributorActor::new(
+        data_rx,
+        config_rx,
+        "node_a".to_string(),
+        "out".to_string(),
+        Vec::new(),
+    );
     let actor_handle = tokio::spawn(actor.run());
 
     let (out_tx, mut out_rx) = mpsc::channel(16);
@@ -742,8 +797,13 @@ async fn distribute_packet_handles_all_packet_variants() {
 async fn multi_output_reliable_drops_closed_consumer() {
     let (data_tx, data_rx) = mpsc::channel(8);
     let (config_tx, config_rx) = mpsc::channel(8);
-    let actor =
-        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor = PinDistributorActor::new(
+        data_rx,
+        config_rx,
+        "node_a".to_string(),
+        "out".to_string(),
+        Vec::new(),
+    );
     let actor_handle = tokio::spawn(actor.run());
 
     let (alive_tx, mut alive_rx) = mpsc::channel(8);
@@ -797,8 +857,13 @@ async fn multi_output_reliable_drops_closed_consumer() {
 async fn multi_output_best_effort_collapses_to_latest_when_slow() {
     let (data_tx, data_rx) = mpsc::channel(16);
     let (config_tx, config_rx) = mpsc::channel(8);
-    let actor =
-        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor = PinDistributorActor::new(
+        data_rx,
+        config_rx,
+        "node_a".to_string(),
+        "out".to_string(),
+        Vec::new(),
+    );
     let actor_handle = tokio::spawn(actor.run());
 
     let (slow_tx, mut slow_rx) = mpsc::channel(1);
@@ -886,8 +951,13 @@ async fn multi_output_best_effort_collapses_to_latest_when_slow() {
 async fn best_effort_flush_then_steady_state_delivers_new_packets() {
     let (data_tx, data_rx) = mpsc::channel(16);
     let (config_tx, config_rx) = mpsc::channel(8);
-    let actor =
-        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor = PinDistributorActor::new(
+        data_rx,
+        config_rx,
+        "node_a".to_string(),
+        "out".to_string(),
+        Vec::new(),
+    );
     let actor_handle = tokio::spawn(actor.run());
 
     let (tx, mut rx) = mpsc::channel(1);
@@ -954,8 +1024,13 @@ async fn best_effort_flush_then_steady_state_delivers_new_packets() {
 async fn best_effort_flush_removes_connection_when_receiver_dropped() {
     let (data_tx, data_rx) = mpsc::channel(16);
     let (config_tx, config_rx) = mpsc::channel(8);
-    let actor =
-        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor = PinDistributorActor::new(
+        data_rx,
+        config_rx,
+        "node_a".to_string(),
+        "out".to_string(),
+        Vec::new(),
+    );
     let actor_handle = tokio::spawn(actor.run());
 
     let (slow_tx, slow_rx) = mpsc::channel(1);
@@ -1031,8 +1106,13 @@ async fn best_effort_flush_removes_connection_when_receiver_dropped() {
 async fn best_effort_actor_exits_with_pending_flush_when_inputs_close() {
     let (data_tx, data_rx) = mpsc::channel(16);
     let (config_tx, config_rx) = mpsc::channel(8);
-    let actor =
-        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor = PinDistributorActor::new(
+        data_rx,
+        config_rx,
+        "node_a".to_string(),
+        "out".to_string(),
+        Vec::new(),
+    );
     let actor_handle = tokio::spawn(actor.run());
 
     // Keep slow_rx alive so the reservation never resolves; the only way
@@ -1077,8 +1157,13 @@ async fn best_effort_actor_exits_with_pending_flush_when_inputs_close() {
 async fn best_effort_flush_does_not_misroute_after_remove_then_readd() {
     let (data_tx, data_rx) = mpsc::channel(16);
     let (config_tx, config_rx) = mpsc::channel(8);
-    let actor =
-        PinDistributorActor::new(data_rx, config_rx, "node_a".to_string(), "out".to_string());
+    let actor = PinDistributorActor::new(
+        data_rx,
+        config_rx,
+        "node_a".to_string(),
+        "out".to_string(),
+        Vec::new(),
+    );
     let actor_handle = tokio::spawn(actor.run());
 
     let id = ConnectionId::new(

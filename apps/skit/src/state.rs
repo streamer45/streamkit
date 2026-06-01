@@ -126,6 +126,23 @@ pub struct AppState {
     pub mse_gateway: Arc<MseGateway>,
 }
 
+impl AppState {
+    /// Resolve a pipeline's declared `attributes` against the operator policy.
+    ///
+    /// The single owner of the `pipeline attributes + server.metrics policy`
+    /// pairing so the oneshot and dynamic-session boundaries can't drift.
+    #[must_use]
+    pub fn resolve_metric_attributes(
+        &self,
+        pipeline: &streamkit_api::Pipeline,
+    ) -> streamkit_engine::ResolvedAttributes {
+        crate::metrics_labels::resolve_attributes(
+            pipeline.attributes.as_ref(),
+            &self.config.server.metrics.attributes,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

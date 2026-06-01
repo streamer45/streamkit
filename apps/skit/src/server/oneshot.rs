@@ -407,7 +407,7 @@ fn build_streaming_response(
     pipeline_result: streamkit_engine::OneshotPipelineResult,
     start_time: Instant,
     duration_histogram: opentelemetry::metrics::Histogram<f64>,
-    metric_labels: Vec<KeyValue>,
+    attributes: Arc<streamkit_engine::ResolvedAttributes>,
 ) -> Response {
     tracing::debug!(
         "Creating streaming response with content type: {}",
@@ -415,8 +415,7 @@ fn build_streaming_response(
     );
 
     let stream = ReceiverStream::new(pipeline_result.data_stream).map(Ok::<_, Infallible>);
-    let stream =
-        InstrumentedOneshotStream::new(stream, start_time, duration_histogram, metric_labels);
+    let stream = InstrumentedOneshotStream::new(stream, start_time, duration_histogram, attributes);
     let body = Body::from_stream(stream);
 
     let mut headers = HeaderMap::new();
@@ -446,7 +445,7 @@ struct InstrumentedOneshotStream<S> {
     start_time: Instant,
     recorded: bool,
     duration_histogram: opentelemetry::metrics::Histogram<f64>,
-    metric_labels: Vec<KeyValue>,
+    attributes: Arc<streamkit_engine::ResolvedAttributes>,
 }
 
 impl<S> InstrumentedOneshotStream<S> {
@@ -454,9 +453,9 @@ impl<S> InstrumentedOneshotStream<S> {
         inner: S,
         start_time: Instant,
         duration_histogram: opentelemetry::metrics::Histogram<f64>,
-        metric_labels: Vec<KeyValue>,
+        attributes: Arc<streamkit_engine::ResolvedAttributes>,
     ) -> Self {
-        Self { inner, start_time, recorded: false, duration_histogram, metric_labels }
+        Self { inner, start_time, recorded: false, duration_histogram, attributes }
     }
 
     fn record(&mut self, status: &'static str) {
@@ -464,7 +463,7 @@ impl<S> InstrumentedOneshotStream<S> {
             return;
         }
         self.recorded = true;
-        let labels = duration_labels(status, &self.metric_labels);
+        let labels = duration_labels(status, &self.attributes.pipeline);
         self.duration_histogram.record(self.start_time.elapsed().as_secs_f64(), &labels);
     }
 }
@@ -518,11 +517,7 @@ pub(super) async fn process_oneshot_pipeline_handler(
 
     let pipeline_def: Pipeline = compile(user_pipeline)?;
 
-    let resolved_attributes = crate::metrics_labels::resolve_attributes(
-        pipeline_def.attributes.as_ref(),
-        &app_state.config.server.metrics.attributes,
-    );
-    let metric_labels = resolved_attributes.pipeline.clone();
+    let resolved_attributes = Arc::new(app_state.resolve_metric_attributes(&pipeline_def));
 
     let input_bindings = determine_http_input_bindings(&pipeline_def)?;
 
@@ -661,7 +656,7 @@ pub(super) async fn process_oneshot_pipeline_handler(
             pipeline_def,
             engine_inputs,
             Some(oneshot_config),
-            resolved_attributes,
+            Arc::clone(&resolved_attributes),
             Some(cancel_token.clone()),
         )
         .await
@@ -671,7 +666,7 @@ pub(super) async fn process_oneshot_pipeline_handler(
             result
         },
         Err(e) => {
-            let labels = duration_labels("error", &metric_labels);
+            let labels = duration_labels("error", &resolved_attributes.pipeline);
             oneshot_duration_histogram.record(oneshot_start_time.elapsed().as_secs_f64(), &labels);
             cancel_token.cancel();
             return Err(e.into());
@@ -681,13 +676,13 @@ pub(super) async fn process_oneshot_pipeline_handler(
     match parse_done_rx.await {
         Ok(Ok(())) => {},
         Ok(Err(err)) => {
-            let labels = duration_labels("error", &metric_labels);
+            let labels = duration_labels("error", &resolved_attributes.pipeline);
             oneshot_duration_histogram.record(oneshot_start_time.elapsed().as_secs_f64(), &labels);
             cancel_token.cancel();
             return Err(err);
         },
         Err(e) => {
-            let labels = duration_labels("error", &metric_labels);
+            let labels = duration_labels("error", &resolved_attributes.pipeline);
             oneshot_duration_histogram.record(oneshot_start_time.elapsed().as_secs_f64(), &labels);
             cancel_token.cancel();
             return Err(AppError::BadRequest(format!("Multipart routing task aborted: {e}")));
@@ -699,7 +694,7 @@ pub(super) async fn process_oneshot_pipeline_handler(
         pipeline_result,
         oneshot_start_time,
         oneshot_duration_histogram,
-        metric_labels,
+        resolved_attributes,
     ))
 }
 

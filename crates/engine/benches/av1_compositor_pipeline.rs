@@ -315,7 +315,7 @@ async fn run_once(engine: &Engine, args: &BenchArgs) -> IterResult {
             definition,
             vec![], // no HTTP inputs — generator mode
             None,   // default config
-            streamkit_engine::ResolvedAttributes::default(),
+            std::sync::Arc::new(streamkit_engine::ResolvedAttributes::default()),
             None,   // no cancellation
         )
         .await
