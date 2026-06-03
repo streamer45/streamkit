@@ -6237,6 +6237,7 @@ dependencies = [
  "futures",
  "indexmap 2.14.0",
  "opentelemetry",
+ "opentelemetry_sdk",
  "serde",
  "serde-saphyr",
  "serde_json",

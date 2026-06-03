@@ -192,6 +192,7 @@ async fn handle_create_session(
         app_state.event_tx.clone(),
         Some(role_name.to_string()),
         app_state.asset_root.clone(),
+        streamkit_engine::ResolvedAttributes::default(),
     )
     .await
     {
@@ -1231,6 +1232,7 @@ mod dispatcher_tests {
             state.event_tx.clone(),
             Some(role.to_string()),
             state.asset_root.clone(),
+            streamkit_engine::ResolvedAttributes::default(),
         )
         .await
         .expect("Session::create succeeded");
@@ -1257,6 +1259,7 @@ mod dispatcher_tests {
             tx,
             role.map(str::to_owned),
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            streamkit_engine::ResolvedAttributes::default(),
         )
         .await
         .expect("create test session")

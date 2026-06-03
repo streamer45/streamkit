@@ -279,6 +279,8 @@ pub enum UserPipeline {
         description: Option<String>,
         #[serde(default)]
         mode: EngineMode,
+        #[serde(default)]
+        attributes: Option<std::collections::BTreeMap<String, String>>,
         steps: Vec<Step>,
         client: Option<ClientSection>,
     },
@@ -289,6 +291,8 @@ pub enum UserPipeline {
         description: Option<String>,
         #[serde(default)]
         mode: EngineMode,
+        #[serde(default)]
+        attributes: Option<std::collections::BTreeMap<String, String>>,
         nodes: IndexMap<String, UserNode>,
         client: Option<ClientSection>,
     },
