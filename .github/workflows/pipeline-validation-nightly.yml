@@ -60,12 +60,6 @@ jobs:
 
       - uses: mozilla-actions/sccache-action@v0.0.9
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: skit-e2e
-          save-if: false
-          cache-on-failure: true
-
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm cmake ninja-build yasm meson ffmpeg
 
@@ -82,11 +76,14 @@ jobs:
           sudo ldconfig
 
       - name: Build skit
-        run: cargo build -p streamkit-server --bin skit --features "svt_av1 dav1d_static"
+        # Release build: software AV1 (rav1e) encodes ~16x faster than realtime
+        # here, so the realtime-paced showcase samples finish near their content
+        # duration instead of blowing past the harness's request timeout.
+        run: cargo build -p streamkit-server --bin skit --release --features "svt_av1 dav1d_static"
 
       - name: Start skit server
         run: |
-          SK_SERVER__ADDRESS=127.0.0.1:4545 ./target/debug/skit &
+          SK_SERVER__ADDRESS=127.0.0.1:4545 ./target/release/skit &
           HEALTHY=0
           for i in $(seq 1 30); do
             if curl -sf http://127.0.0.1:4545/healthz > /dev/null 2>&1; then
