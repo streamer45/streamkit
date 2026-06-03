@@ -1,6 +1,8 @@
 name: Text-to-Speech (Supertonic)
 description: Synthesizes speech from text using Supertonic (5 languages, 10 voice styles)
 mode: oneshot
+attributes:
+  service: tts
 client:
   input:
     type: text

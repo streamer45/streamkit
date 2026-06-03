@@ -78,7 +78,8 @@ pub struct PinDistributorActor {
     queue_depth_gauge: opentelemetry::metrics::Gauge<u64>,
     queue_depth_bytes_gauge: opentelemetry::metrics::Gauge<u64>,
     queue_depth_seconds_gauge: opentelemetry::metrics::Gauge<f64>,
-    metric_labels: [opentelemetry::KeyValue; 2],
+    /// `[node_id, pin_name]` plus the node's bounded pipeline attributes.
+    metric_labels: Vec<opentelemetry::KeyValue>,
     avg_packet_size_bytes: f64,
     avg_packet_duration_s: f64,
 }
@@ -118,6 +119,7 @@ impl PinDistributorActor {
         config_rx: mpsc::Receiver<PinConfigMsg>,
         node_id: String,
         pin_name: String,
+        attributes: Vec<opentelemetry::KeyValue>,
     ) -> Self {
         use opentelemetry::KeyValue;
 
@@ -160,10 +162,11 @@ impl PinDistributorActor {
             )
             .build();
 
-        let metric_labels = [
+        let mut metric_labels = vec![
             KeyValue::new("node_id", node_id.clone()),
             KeyValue::new("pin_name", pin_name.clone()),
         ];
+        metric_labels.extend(attributes);
         outputs_active_gauge.record(0, &metric_labels);
 
         Self {

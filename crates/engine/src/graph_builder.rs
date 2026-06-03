@@ -55,6 +55,7 @@ pub async fn wire_and_spawn_graph(
     audio_pool: Option<Arc<AudioFramePool>>,
     video_pool: Option<Arc<VideoFramePool>>,
     asset_root: std::path::PathBuf,
+    node_attributes: Arc<crate::ResolvedAttributes>,
 ) -> Result<HashMap<String, LiveNode>, StreamKitError> {
     tracing::info!(
         "Graph builder starting with {} nodes and {} connections",
@@ -348,6 +349,7 @@ pub async fn wire_and_spawn_graph(
         tracing::debug!("Starting task for node '{}'", name);
         let kind = node_kinds.get(&name).cloned().unwrap_or_else(|| "unknown".to_string());
 
+        let node_metric_attrs = node_attributes.for_node(&name);
         let name_for_span = name.clone();
         let kind_for_span = kind.clone();
         let name_for_hashmap = name.clone();
@@ -382,11 +384,12 @@ pub async fn wire_and_spawn_graph(
                     .build();
                 let status = if result.is_ok() { "ok" } else { "error" };
 
-                let labels = [
+                let mut labels = vec![
                     KeyValue::new("node_id", name.clone()),
                     KeyValue::new("node_kind", kind.clone()),
                     KeyValue::new("status", status),
                 ];
+                labels.extend(node_metric_attrs.iter().cloned());
                 histogram.record(duration.as_secs_f64(), &labels);
 
                 let final_state = match &result {

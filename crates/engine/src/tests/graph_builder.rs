@@ -138,6 +138,7 @@ async fn wire(
         None,
         None,
         super::test_asset_root(),
+        std::sync::Arc::new(crate::ResolvedAttributes::default()),
     )
     .await
 }

@@ -67,6 +67,35 @@ allowed_origins = [
 #     "http://localhost:*",  # Keep for development
 # ]
 
+# [server.metrics]
+# Bounded labels attached to pipeline and node metrics, sourced from a
+# pipeline's declared `attributes`. Coverage by mode:
+#   - oneshot only: oneshot_pipeline.duration, node.execution.duration
+#   - both modes:   node.packets.*
+#   - dynamic only: node.state, engine.node.state_transitions,
+#                   engine.nodes.active, pin_distributor.*
+# (dynamic mode emits no pipeline-level duration metric.)
+#
+# Each entry below is one dimension keyed by attribute name. Cardinality is
+# operator-bounded: a pipeline's declared value is trimmed + lowercased and
+# matched against `values`; anything else (or an empty value) collapses to
+# `fallback`. A declared attribute whose key is absent here is dropped, so a
+# user-submitted pipeline can never inflate metric cardinality.
+#
+# Disabled by default — uncomment to opt in.
+#
+# Example: distinguish hosted speech services so TTS / STT / other don't
+# collapse into one series. The pipeline declares `attributes: { service: tts }`.
+# [server.metrics.attributes.service]
+# values   = ["tts", "stt"]   # unknown/empty -> "other"
+# fallback = "other"
+#
+# Omit `values` to make a dimension passthrough — any non-empty declared value
+# is emitted as-is (the operator opts into that cardinality), e.g. for a future
+# high-card dimension like `tenant`:
+# [server.metrics.attributes.tenant]
+# fallback = "unknown"
+
 [auth]
 # Built-in JWT authentication for:
 # - HTTP API + Web UI (cookie or Authorization header)

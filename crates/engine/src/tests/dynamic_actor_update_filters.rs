@@ -54,11 +54,12 @@ fn add_live_node(
     engine.node_metric_labels.insert(
         name.to_string(),
         NodeMetricLabels {
-            stats: [
+            stats: vec![
                 KeyValue::new("node_id", name.to_string()),
                 KeyValue::new("node_kind", "test::node".to_string()),
             ],
             node_id_kv: KeyValue::new("node_id", name.to_string()),
+            attrs: Vec::new(),
         },
     );
     std::sync::Arc::make_mut(&mut engine.node_states).insert(name.to_string(), state);
