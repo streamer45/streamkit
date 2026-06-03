@@ -66,6 +66,50 @@ Import [`samples/grafana-dashboard.json`](https://github.com/streamer45/streamki
 
 ![Grafana Dashboard](/screenshots/grafana_dashboard.png)
 
+### Metric attributes
+
+Pipelines can carry **bounded labels** on their metrics so you can break dashboards down by use case (e.g. `service=tts` vs `service=stt`) instead of collapsing every pipeline into one series.
+
+A pipeline declares its own attributes in the definition:
+
+```yaml
+name: Speech-to-Text
+mode: oneshot
+attributes:
+  service: stt
+nodes: ...
+```
+
+`attributes` is a workload property — it describes *which* pipeline is running, not who called it — so the same value flows to both oneshot and dynamic runs.
+
+The operator decides which attributes are allowed and how each is bounded, under `[server.metrics.attributes.<dimension>]` in `skit.toml`:
+
+```toml
+[server.metrics.attributes.service]
+values   = ["tts", "stt"]   # enum allowlist; unknown/empty values clamp to `fallback`
+fallback = "other"
+
+# Omit `values` for a passthrough dimension — any non-empty declared value is
+# emitted as-is (the operator opts into that cardinality), e.g. for `tenant`:
+[server.metrics.attributes.tenant]
+fallback = "unknown"
+```
+
+**Cardinality is operator-bounded.** A declared attribute whose key has **no** policy entry is dropped, never emitted — so a user-submitted oneshot pipeline can't inflate metric cardinality. With `values`, the declared value is trimmed + lowercased and matched against the allowlist; anything else (or an empty value) collapses to `fallback`.
+
+**Declared-only contract.** If a pipeline omits a configured dimension, **no** label is emitted for it (rather than stamping `fallback` onto every pipeline). In PromQL the catch-all is still aggregated — `sum by (service)` groups the undeclared runs as `{service=""}` — so you keep uniform aggregation without forcing the label onto pipelines that never declared it.
+
+**Coverage by mode:**
+
+| Metric | Oneshot | Dynamic |
+|--------|:-------:|:-------:|
+| `oneshot_pipeline.duration` | ✓ | — (no pipeline-level duration metric) |
+| `node.execution.duration` | ✓ | — (oneshot graph builder only) |
+| `node.packets.*` | ✓ | ✓ |
+| `node.state`, `engine.node.state_transitions`, `engine.nodes.active`, `pin_distributor.*` | — | ✓ (dynamic-engine instruments) |
+
+`http.server.*` request metrics are **not** labeled — `service` is a pipeline property, so the breakdown lives on pipeline/node metrics, not on the HTTP layer.
+
 ## Traces (OTLP)
 
 Tracing export is controlled by:

@@ -283,6 +283,7 @@ fn build_pipeline(args: &BenchArgs) -> streamkit_api::Pipeline {
             args.width, args.height, args.fps, args.frame_count, args.speed
         )),
         mode: EngineMode::OneShot,
+        attributes: None,
         nodes,
         connections,
         view_data: None,
@@ -314,6 +315,7 @@ async fn run_once(engine: &Engine, args: &BenchArgs) -> IterResult {
             definition,
             vec![], // no HTTP inputs — generator mode
             None,   // default config
+            std::sync::Arc::new(streamkit_engine::ResolvedAttributes::default()),
             None,   // no cancellation
         )
         .await
