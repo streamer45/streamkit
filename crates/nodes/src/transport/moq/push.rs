@@ -917,6 +917,16 @@ mod tests {
         }
     }
 
+    // A bounded await so a moq-lite regression that stops delivering frames fails
+    // fast instead of hanging the whole test binary.
+    async fn next_catalog(consumer: &mut CatalogConsumer) -> hang::catalog::Catalog {
+        tokio::time::timeout(std::time::Duration::from_secs(5), consumer.next())
+            .await
+            .expect("catalog frame should arrive before the timeout")
+            .expect("catalog stream should stay open")
+            .expect("a catalog frame")
+    }
+
     #[test]
     fn insert_catalog_rendition_audio_uses_channels_and_codec() {
         let mut catalog = hang::catalog::Catalog::default();
@@ -995,7 +1005,7 @@ mod tests {
 
         assert!(MoqPushNode::republish_catalog(&catalog, &mut catalog_producer));
 
-        let published = catalog_consumer.next().await.expect("next").expect("a catalog");
+        let published = next_catalog(&mut catalog_consumer).await;
         assert!(published.audio.renditions.contains_key("audio/extra"));
     }
 
@@ -1029,34 +1039,58 @@ mod tests {
         tx.send(crate::test_utils::create_test_binary_packet(vec![1, 2, 3])).await.unwrap();
         assert!(dynamic_inputs[0].receiver.try_recv().is_ok());
 
-        let published = catalog_consumer.next().await.expect("next").expect("a catalog");
+        let published = next_catalog(&mut catalog_consumer).await;
         assert!(published.video.renditions.contains_key("video/cam"));
     }
 
+    // A second activation for a pin name that already has a live MoQ track is a
+    // no-op: `BroadcastProducer::create_track` rejects the duplicate track name
+    // while the first producer is alive, so `activate_dynamic_input` returns
+    // before reaching the in-function duplicate-replace branch. The first input
+    // is left untouched and the second channel is dropped. (Follow-up: that
+    // replace branch is therefore unreachable while the old producer is retained.)
     #[tokio::test]
-    async fn activate_dynamic_input_replaces_duplicate_pin_name() {
+    async fn activate_dynamic_input_duplicate_pin_name_is_noop() {
         let (_origin, mut broadcast, mut catalog_producer, _catalog_consumer) = push_fixture();
         let mut catalog = hang::catalog::Catalog::default();
         let mut dynamic_inputs: Vec<DynamicInputState> = Vec::new();
 
-        for _ in 0..2 {
-            let (_tx, rx) = tokio::sync::mpsc::channel::<Packet>(4);
-            MoqPushNode::activate_dynamic_input(
-                &dynamic_pin("audio/extra"),
-                rx,
-                &mut broadcast,
-                &mut dynamic_inputs,
-                0,
-                &mut catalog,
-                &mut catalog_producer,
-                2,
-                VideoCodec::Vp9,
-                AudioCodec::Opus,
-            );
-        }
+        let (first_tx, first_rx) = tokio::sync::mpsc::channel::<Packet>(4);
+        MoqPushNode::activate_dynamic_input(
+            &dynamic_pin("audio/extra"),
+            first_rx,
+            &mut broadcast,
+            &mut dynamic_inputs,
+            0,
+            &mut catalog,
+            &mut catalog_producer,
+            2,
+            VideoCodec::Vp9,
+            AudioCodec::Opus,
+        );
 
-        assert_eq!(dynamic_inputs.len(), 1, "duplicate pin name should replace, not append");
+        let (second_tx, second_rx) = tokio::sync::mpsc::channel::<Packet>(4);
+        MoqPushNode::activate_dynamic_input(
+            &dynamic_pin("audio/extra"),
+            second_rx,
+            &mut broadcast,
+            &mut dynamic_inputs,
+            0,
+            &mut catalog,
+            &mut catalog_producer,
+            2,
+            VideoCodec::Vp9,
+            AudioCodec::Opus,
+        );
+
+        assert_eq!(
+            dynamic_inputs.len(),
+            1,
+            "duplicate track name is rejected, so no entry is appended"
+        );
         assert!(!dynamic_inputs[0].is_video);
+        assert!(!first_tx.is_closed(), "the original input must stay registered");
+        assert!(second_tx.is_closed(), "the duplicate activation's receiver must be dropped");
     }
 
     #[allow(clippy::too_many_arguments)] // mirrors the production handle_pin_management signature
@@ -1099,6 +1133,10 @@ mod tests {
         );
         let pin = response_rx.await.unwrap().unwrap();
         assert_eq!(pin.name, "audio/extra");
+        // Pin the production-built pin shape so it can't silently drift from the
+        // accepted-types / cardinality convention the rest of the module assumes.
+        assert_eq!(pin.accepts_types, super::moq_accepted_media_types());
+        assert_eq!(pin.cardinality, PinCardinality::One);
 
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
         handle(

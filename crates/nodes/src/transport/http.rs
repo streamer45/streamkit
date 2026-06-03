@@ -348,9 +348,8 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
 
-        // Give server time to start
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
+        // No startup wait needed: the listener is already bound, so the kernel
+        // queues connections until `axum::serve` accepts them.
         Some(format!("http://{addr}"))
     }
 
@@ -420,86 +419,18 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::unwrap_used)]
     async fn test_http_pull_streaming() {
         let Some(base) = start_mock_server().await else {
             tracing::warn!("Skipping test_http_pull_streaming: local TCP bind not permitted");
             return;
         };
-        let url = format!("{base}/test.bin");
 
-        // Create test context
-        let (mock_sender, mut packet_rx) = mpsc::channel::<RoutedPacketMessage>(10);
-        let (control_tx, control_rx) = mpsc::channel(10);
-        let (state_tx, mut state_rx) = mpsc::channel(10);
-        let (stats_tx, _stats_rx) = mpsc::channel::<NodeStatsUpdate>(10);
+        // Small chunk_size exercises the range-request re-splitting path.
+        let outcome = drive_pull(format!("{base}/test.bin"), 10).await;
 
-        let output_sender = streamkit_core::OutputSender::new(
-            "test_http_pull".to_string(),
-            streamkit_core::node::OutputRouting::Routed(mock_sender),
-        );
-
-        let context = NodeContext {
-            inputs: HashMap::new(),
-            input_types: HashMap::new(),
-            control_rx,
-            output_sender,
-            batch_size: 32,
-            state_tx,
-            stats_tx: Some(stats_tx),
-            telemetry_tx: None,
-            session_id: None,
-            cancellation_token: None,
-            pin_management_rx: None, // Test contexts don't support dynamic pins
-            audio_pool: None,
-            video_pool: None,
-            pipeline_mode: streamkit_core::PipelineMode::Dynamic,
-            view_data_tx: None,
-            engine_control_tx: None,
-            asset_root: crate::test_utils::test_asset_root(),
-        };
-
-        // Create and run node with small chunk size for testing
-        let config = HttpPullConfig {
-            url: url.clone(),
-            chunk_size: 10, // Small chunks to test range requests
-        };
-        let node = Box::new(HttpPullNode { config });
-
-        let node_handle = tokio::spawn(async move { node.run(context).await });
-
-        // Wait for initializing state
-        let state = state_rx.recv().await.unwrap();
-        assert!(matches!(state.state, streamkit_core::NodeState::Initializing));
-
-        // Wait for ready state
-        let state = state_rx.recv().await.unwrap();
-        assert!(matches!(state.state, streamkit_core::NodeState::Ready));
-
-        // Send start signal
-        control_tx.send(streamkit_core::control::NodeControlMessage::Start).await.unwrap();
-
-        // Wait for running state
-        let state = state_rx.recv().await.unwrap();
-        assert!(matches!(state.state, streamkit_core::NodeState::Running));
-
-        // Collect all packets
-        let mut collected_data = Vec::new();
-        while let Some((_node, _pin, packet)) = packet_rx.recv().await {
-            if let Packet::Binary { data, .. } = packet {
-                collected_data.extend_from_slice(&data);
-            }
-        }
-
-        // Wait for stopped state
-        let state = state_rx.recv().await.unwrap();
-        assert!(matches!(state.state, streamkit_core::NodeState::Stopped { .. }));
-
-        // Wait for node to complete
-        node_handle.await.unwrap().unwrap();
-
-        // Verify data matches
-        assert_eq!(collected_data, b"Hello, StreamKit! This is test data for HTTP pull.");
+        assert!(outcome.result.is_ok());
+        assert!(matches!(outcome.final_state, streamkit_core::NodeState::Stopped { .. }));
+        assert_eq!(outcome.data, MOCK_BODY);
     }
 
     #[tokio::test]
