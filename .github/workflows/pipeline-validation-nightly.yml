@@ -60,12 +60,6 @@ jobs:
 
       - uses: mozilla-actions/sccache-action@v0.0.9
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: skit-e2e
-          save-if: false
-          cache-on-failure: true
-
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm cmake ninja-build yasm meson ffmpeg
 
