@@ -2757,6 +2757,49 @@ mod tests {
         }
     }
 
+    fn audio_frame(data: &'static [u8]) -> BroadcastFrame {
+        BroadcastFrame {
+            data: bytes::Bytes::from_static(data),
+            duration_us: Some(20_000),
+            kind: MediaKind::Audio,
+            keyframe: false,
+        }
+    }
+
+    fn video_frame(data: &'static [u8], keyframe: bool) -> BroadcastFrame {
+        BroadcastFrame {
+            data: bytes::Bytes::from_static(data),
+            duration_us: None,
+            kind: MediaKind::Video,
+            keyframe,
+        }
+    }
+
+    /// Drive `run_subscriber_send_loop` with the fixed test parameters
+    /// (group duration 40ms, no initial delay, Opus), returning the frame count.
+    async fn drive_send_loop(
+        audio: &mut Option<crate::transport::moq::ordered_producer::OrderedProducer>,
+        video: &mut Option<crate::transport::moq::ordered_producer::OrderedProducer>,
+        rx: broadcast::Receiver<BroadcastFrame>,
+        shutdown_rx: &mut broadcast::Receiver<()>,
+        stats_tx: &mpsc::Sender<NodeStatsDelta>,
+    ) -> u64 {
+        MoqPeerNode::run_subscriber_send_loop(
+            audio,
+            video,
+            rx,
+            shutdown_rx,
+            40,
+            0,
+            "node".to_string(),
+            "output".to_string(),
+            stats_tx,
+            AudioCodec::Opus,
+        )
+        .await
+        .unwrap()
+    }
+
     struct SingleTrackFixture {
         _origin: moq_lite::OriginProducer,
         _broadcast: moq_lite::BroadcastProducer,
@@ -2788,57 +2831,21 @@ mod tests {
         let consumer = origin.consume();
         let mut broadcast = origin.create_broadcast("input").unwrap();
 
-        let mut catalog_producer =
-            broadcast.create_track(hang::catalog::Catalog::default_track()).unwrap();
+        let audio_track = moq_lite::Track { name: "audio/data".to_string(), priority: 2 };
+        let video_track = moq_lite::Track { name: "video/data".to_string(), priority: 2 };
+        let audio = broadcast.create_track(audio_track.clone()).unwrap();
+        let video = broadcast.create_track(video_track.clone()).unwrap();
 
-        let mut audio_renditions = std::collections::BTreeMap::new();
-        audio_renditions.insert(
-            "audio/data".to_string(),
-            hang::catalog::AudioConfig {
-                codec: catalog_audio_codec(AudioCodec::Opus),
-                sample_rate: 48000,
-                channel_count: 1,
-                bitrate: Some(64_000),
-                description: None,
-                container: hang::catalog::Container::default(),
-                jitter: None,
-            },
-        );
-        let mut video_renditions = std::collections::BTreeMap::new();
-        video_renditions.insert(
-            "video/data".to_string(),
-            hang::catalog::VideoConfig {
-                codec: catalog_video_codec(VideoCodec::Vp9),
-                coded_width: Some(640),
-                coded_height: Some(480),
-                display_ratio_width: None,
-                display_ratio_height: None,
-                framerate: Some(30.0),
-                bitrate: None,
-                description: None,
-                optimize_for_latency: Some(true),
-                container: hang::catalog::Container::default(),
-                jitter: None,
-            },
-        );
-        let catalog = hang::catalog::Catalog {
-            audio: hang::catalog::Audio { renditions: audio_renditions },
-            video: hang::catalog::Video {
-                renditions: video_renditions,
-                display: None,
-                rotation: None,
-                flip: None,
-            },
-            ..Default::default()
-        };
-        catalog_producer.write_frame(bytes::Bytes::from(catalog.to_string().unwrap())).unwrap();
-
-        let audio = broadcast
-            .create_track(moq_lite::Track { name: "audio/data".to_string(), priority: 2 })
-            .unwrap();
-        let video = broadcast
-            .create_track(moq_lite::Track { name: "video/data".to_string(), priority: 2 })
-            .unwrap();
+        let catalog_producer = MoqPeerNode::create_and_publish_catalog(
+            &mut broadcast,
+            Some(&audio_track),
+            Some(&video_track),
+            640,
+            480,
+            VideoCodec::Vp9,
+            AudioCodec::Opus,
+        )
+        .unwrap();
 
         PublisherBroadcastFixture {
             _origin: origin,
@@ -3345,46 +3352,15 @@ mod tests {
             MoqPeerNode::setup_subscriber_broadcast(&publish, "output", &media).unwrap();
 
         let (tx, rx) = broadcast::channel::<BroadcastFrame>(16);
-        tx.send(BroadcastFrame {
-            data: bytes::Bytes::from_static(b"a0"),
-            duration_us: Some(20_000),
-            kind: MediaKind::Audio,
-            keyframe: false,
-        })
-        .unwrap();
-        tx.send(BroadcastFrame {
-            data: bytes::Bytes::from_static(b"v0"),
-            duration_us: None,
-            kind: MediaKind::Video,
-            keyframe: true,
-        })
-        .unwrap();
-        tx.send(BroadcastFrame {
-            data: bytes::Bytes::from_static(b"a1"),
-            duration_us: Some(20_000),
-            kind: MediaKind::Audio,
-            keyframe: false,
-        })
-        .unwrap();
+        tx.send(audio_frame(b"a0")).unwrap();
+        tx.send(video_frame(b"v0", true)).unwrap();
+        tx.send(audio_frame(b"a1")).unwrap();
         drop(tx);
 
         let (stats_tx, _stats_rx) = mpsc::channel::<NodeStatsDelta>(256);
         let (_shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
 
-        let count = MoqPeerNode::run_subscriber_send_loop(
-            &mut audio,
-            &mut video,
-            rx,
-            &mut shutdown_rx,
-            40,
-            0,
-            "node".to_string(),
-            "output".to_string(),
-            &stats_tx,
-            AudioCodec::Opus,
-        )
-        .await
-        .unwrap();
+        let count = drive_send_loop(&mut audio, &mut video, rx, &mut shutdown_rx, &stats_tx).await;
         assert_eq!(count, 3);
         drop(publish);
     }
@@ -3398,35 +3374,19 @@ mod tests {
 
         let (tx, rx) = broadcast::channel::<BroadcastFrame>(2);
         for _ in 0..6 {
-            let _ = tx.send(BroadcastFrame {
-                data: bytes::Bytes::from_static(b"a"),
-                duration_us: Some(20_000),
-                kind: MediaKind::Audio,
-                keyframe: false,
-            });
+            let _ = tx.send(audio_frame(b"a"));
         }
         drop(tx);
 
         let (stats_tx, mut stats_rx) = mpsc::channel::<NodeStatsDelta>(256);
         let (_shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
 
-        let count = MoqPeerNode::run_subscriber_send_loop(
-            &mut audio,
-            &mut video,
-            rx,
-            &mut shutdown_rx,
-            40,
-            0,
-            "node".to_string(),
-            "output".to_string(),
-            &stats_tx,
-            AudioCodec::Opus,
-        )
-        .await
-        .unwrap();
+        let count = drive_send_loop(&mut audio, &mut video, rx, &mut shutdown_rx, &stats_tx).await;
         let stats = drain_stats(&mut stats_rx);
-        assert!(stats.discarded >= 1, "lagged frames should be counted as discarded");
-        assert!(count <= 2);
+        // capacity 2 + 6 sends before any recv yields exactly Lagged(4), then the
+        // 2 buffered frames are delivered.
+        assert_eq!(stats.discarded, 4, "lagged frames should be counted as discarded");
+        assert_eq!(count, 2);
         drop(publish);
     }
 
@@ -3443,20 +3403,7 @@ mod tests {
         let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
         shutdown_tx.send(()).unwrap();
 
-        let count = MoqPeerNode::run_subscriber_send_loop(
-            &mut audio,
-            &mut video,
-            rx,
-            &mut shutdown_rx,
-            40,
-            0,
-            "node".to_string(),
-            "output".to_string(),
-            &stats_tx,
-            AudioCodec::Opus,
-        )
-        .await
-        .unwrap();
+        let count = drive_send_loop(&mut audio, &mut video, rx, &mut shutdown_rx, &stats_tx).await;
         assert_eq!(count, 0);
         drop(publish);
     }
@@ -3470,39 +3417,14 @@ mod tests {
         assert!(video.is_none());
 
         let (tx, rx) = broadcast::channel::<BroadcastFrame>(8);
-        tx.send(BroadcastFrame {
-            data: bytes::Bytes::from_static(b"v"),
-            duration_us: None,
-            kind: MediaKind::Video,
-            keyframe: true,
-        })
-        .unwrap();
-        tx.send(BroadcastFrame {
-            data: bytes::Bytes::from_static(b"a"),
-            duration_us: Some(20_000),
-            kind: MediaKind::Audio,
-            keyframe: false,
-        })
-        .unwrap();
+        tx.send(video_frame(b"v", true)).unwrap();
+        tx.send(audio_frame(b"a")).unwrap();
         drop(tx);
 
         let (stats_tx, _stats_rx) = mpsc::channel::<NodeStatsDelta>(16);
         let (_shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
 
-        let count = MoqPeerNode::run_subscriber_send_loop(
-            &mut audio,
-            &mut video,
-            rx,
-            &mut shutdown_rx,
-            40,
-            0,
-            "node".to_string(),
-            "output".to_string(),
-            &stats_tx,
-            AudioCodec::Opus,
-        )
-        .await
-        .unwrap();
+        let count = drive_send_loop(&mut audio, &mut video, rx, &mut shutdown_rx, &stats_tx).await;
         assert_eq!(count, 2, "both frames are counted even though the video frame is skipped");
         drop(publish);
     }
@@ -3652,7 +3574,8 @@ mod tests {
         assert_eq!(frame.kind, MediaKind::Audio);
         assert_eq!(&frame.data[..], b"opus");
         let stats = drain_stats(&mut stats_rx);
-        assert!(stats.received >= 1 && stats.sent >= 1);
+        assert_eq!(stats.received, 1);
+        assert_eq!(stats.sent, 1);
 
         shutdown_tx.send(()).unwrap();
     }
