@@ -879,7 +879,353 @@ impl MoqPushNode {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::{is_video_pin, track_name_from_pin};
+    use super::{is_video_pin, track_name_from_pin, DynamicInputState, MoqPushNode};
+    use crate::transport::moq::catalog_consumer::CatalogConsumer;
+    use streamkit_core::pins::PinManagementMessage;
+    use streamkit_core::types::{AudioCodec, Packet, PacketType, VideoCodec};
+    use streamkit_core::{InputPin, PinCardinality, StreamKitError};
+
+    const BROADCAST: &str = "push-cov-test";
+
+    /// Uses in-process MoQ so dynamic-pin tests need no network relay.
+    fn push_fixture() -> (
+        moq_lite::OriginProducer,
+        moq_lite::BroadcastProducer,
+        moq_lite::TrackProducer,
+        CatalogConsumer,
+    ) {
+        let origin = moq_lite::Origin::random().produce();
+        let mut broadcast = origin.create_broadcast(BROADCAST).expect("create_broadcast");
+        let catalog_producer = broadcast
+            .create_track(hang::catalog::Catalog::default_track())
+            .expect("create catalog track");
+
+        let consumer = origin.consume();
+        let bc = consumer.get_broadcast(BROADCAST).expect("get_broadcast");
+        let catalog_track = bc
+            .subscribe_track(&hang::catalog::Catalog::default_track())
+            .expect("subscribe catalog track");
+
+        (origin, broadcast, catalog_producer, CatalogConsumer::new(catalog_track))
+    }
+
+    fn dynamic_pin(name: &str) -> InputPin {
+        InputPin {
+            name: name.to_string(),
+            accepts_types: super::moq_accepted_media_types(),
+            cardinality: PinCardinality::One,
+        }
+    }
+
+    // A bounded await so a moq-lite regression that stops delivering frames fails
+    // fast instead of hanging the whole test binary.
+    async fn next_catalog(consumer: &mut CatalogConsumer) -> hang::catalog::Catalog {
+        tokio::time::timeout(std::time::Duration::from_secs(5), consumer.next())
+            .await
+            .expect("catalog frame should arrive before the timeout")
+            .expect("catalog stream should stay open")
+            .expect("a catalog frame")
+    }
+
+    #[test]
+    fn insert_catalog_rendition_audio_uses_channels_and_codec() {
+        let mut catalog = hang::catalog::Catalog::default();
+        MoqPushNode::insert_catalog_rendition(
+            &mut catalog,
+            "audio/extra",
+            false,
+            1,
+            VideoCodec::Vp9,
+            AudioCodec::Opus,
+        );
+
+        let rendition = catalog.audio.renditions.get("audio/extra").expect("audio rendition");
+        assert_eq!(rendition.channel_count, 1);
+        assert!(matches!(rendition.codec, hang::catalog::AudioCodec::Opus));
+        assert!(catalog.video.renditions.is_empty());
+    }
+
+    #[test]
+    fn insert_catalog_rendition_video_uses_codec() {
+        let mut catalog = hang::catalog::Catalog::default();
+        MoqPushNode::insert_catalog_rendition(
+            &mut catalog,
+            "video/hd",
+            true,
+            2,
+            VideoCodec::Av1,
+            AudioCodec::Opus,
+        );
+
+        let rendition = catalog.video.renditions.get("video/hd").expect("video rendition");
+        assert!(matches!(rendition.codec, hang::catalog::VideoCodec::AV1(_)));
+        assert!(catalog.audio.renditions.is_empty());
+    }
+
+    #[test]
+    fn remove_catalog_rendition_clears_both_maps() {
+        let mut catalog = hang::catalog::Catalog::default();
+        MoqPushNode::insert_catalog_rendition(
+            &mut catalog,
+            "audio/extra",
+            false,
+            2,
+            VideoCodec::Vp9,
+            AudioCodec::Opus,
+        );
+        MoqPushNode::insert_catalog_rendition(
+            &mut catalog,
+            "video/hd",
+            true,
+            2,
+            VideoCodec::Vp9,
+            AudioCodec::Opus,
+        );
+
+        MoqPushNode::remove_catalog_rendition(&mut catalog, "audio/extra");
+        MoqPushNode::remove_catalog_rendition(&mut catalog, "video/hd");
+
+        assert!(catalog.audio.renditions.is_empty());
+        assert!(catalog.video.renditions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn republish_catalog_writes_observable_frame() {
+        let (_origin, _broadcast, mut catalog_producer, mut catalog_consumer) = push_fixture();
+
+        let mut catalog = hang::catalog::Catalog::default();
+        MoqPushNode::insert_catalog_rendition(
+            &mut catalog,
+            "audio/extra",
+            false,
+            2,
+            VideoCodec::Vp9,
+            AudioCodec::Opus,
+        );
+
+        assert!(MoqPushNode::republish_catalog(&catalog, &mut catalog_producer));
+
+        let published = next_catalog(&mut catalog_consumer).await;
+        assert!(published.audio.renditions.contains_key("audio/extra"));
+    }
+
+    #[tokio::test]
+    async fn activate_dynamic_input_registers_track_and_keeps_channel() {
+        let (_origin, mut broadcast, mut catalog_producer, mut catalog_consumer) = push_fixture();
+        let mut catalog = hang::catalog::Catalog::default();
+        let mut dynamic_inputs: Vec<DynamicInputState> = Vec::new();
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<Packet>(4);
+        MoqPushNode::activate_dynamic_input(
+            &dynamic_pin("video/cam"),
+            rx,
+            &mut broadcast,
+            &mut dynamic_inputs,
+            0,
+            &mut catalog,
+            &mut catalog_producer,
+            2,
+            VideoCodec::Vp9,
+            AudioCodec::Opus,
+        );
+
+        assert_eq!(dynamic_inputs.len(), 1);
+        assert_eq!(dynamic_inputs[0].pin_name, "video/cam");
+        assert!(dynamic_inputs[0].is_video);
+        assert!(catalog.video.renditions.contains_key("video/cam"));
+
+        // The channel passed in must be retained, not dropped.
+        assert!(!tx.is_closed(), "receiver should be kept alive in DynamicInputState");
+        tx.send(crate::test_utils::create_test_binary_packet(vec![1, 2, 3])).await.unwrap();
+        assert!(dynamic_inputs[0].receiver.try_recv().is_ok());
+
+        let published = next_catalog(&mut catalog_consumer).await;
+        assert!(published.video.renditions.contains_key("video/cam"));
+    }
+
+    // A second activation for a pin name that already has a live MoQ track is a
+    // no-op: `BroadcastProducer::create_track` rejects the duplicate track name
+    // while the first producer is alive, so `activate_dynamic_input` returns
+    // before reaching the in-function duplicate-replace branch. The first input
+    // is left untouched and the second channel is dropped. (Follow-up: that
+    // replace branch is therefore unreachable while the old producer is retained.)
+    #[tokio::test]
+    async fn activate_dynamic_input_duplicate_pin_name_is_noop() {
+        let (_origin, mut broadcast, mut catalog_producer, _catalog_consumer) = push_fixture();
+        let mut catalog = hang::catalog::Catalog::default();
+        let mut dynamic_inputs: Vec<DynamicInputState> = Vec::new();
+
+        let (first_tx, first_rx) = tokio::sync::mpsc::channel::<Packet>(4);
+        MoqPushNode::activate_dynamic_input(
+            &dynamic_pin("audio/extra"),
+            first_rx,
+            &mut broadcast,
+            &mut dynamic_inputs,
+            0,
+            &mut catalog,
+            &mut catalog_producer,
+            2,
+            VideoCodec::Vp9,
+            AudioCodec::Opus,
+        );
+
+        let (second_tx, second_rx) = tokio::sync::mpsc::channel::<Packet>(4);
+        MoqPushNode::activate_dynamic_input(
+            &dynamic_pin("audio/extra"),
+            second_rx,
+            &mut broadcast,
+            &mut dynamic_inputs,
+            0,
+            &mut catalog,
+            &mut catalog_producer,
+            2,
+            VideoCodec::Vp9,
+            AudioCodec::Opus,
+        );
+
+        assert_eq!(
+            dynamic_inputs.len(),
+            1,
+            "duplicate track name is rejected, so no entry is appended"
+        );
+        assert!(!dynamic_inputs[0].is_video);
+        assert!(!first_tx.is_closed(), "the original input must stay registered");
+        assert!(second_tx.is_closed(), "the duplicate activation's receiver must be dropped");
+    }
+
+    #[allow(clippy::too_many_arguments)] // mirrors the production handle_pin_management signature
+    fn handle(
+        msg: PinManagementMessage,
+        broadcast: &mut moq_lite::BroadcastProducer,
+        dynamic_inputs: &mut Vec<DynamicInputState>,
+        catalog: &mut hang::catalog::Catalog,
+        catalog_producer: &mut moq_lite::TrackProducer,
+    ) {
+        MoqPushNode::handle_pin_management(
+            msg,
+            broadcast,
+            dynamic_inputs,
+            0,
+            catalog,
+            catalog_producer,
+            2,
+            VideoCodec::Vp9,
+            AudioCodec::Opus,
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_pin_management_request_add_input_pin() {
+        let (_origin, mut broadcast, mut catalog_producer, _cc) = push_fixture();
+        let mut catalog = hang::catalog::Catalog::default();
+        let mut dynamic_inputs = Vec::new();
+
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        handle(
+            PinManagementMessage::RequestAddInputPin {
+                suggested_name: Some("audio/extra".to_string()),
+                response_tx,
+            },
+            &mut broadcast,
+            &mut dynamic_inputs,
+            &mut catalog,
+            &mut catalog_producer,
+        );
+        let pin = response_rx.await.unwrap().unwrap();
+        assert_eq!(pin.name, "audio/extra");
+        // Pin the production-built pin shape so it can't silently drift from the
+        // accepted-types / cardinality convention the rest of the module assumes.
+        assert_eq!(pin.accepts_types, super::moq_accepted_media_types());
+        assert_eq!(pin.cardinality, PinCardinality::One);
+
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        handle(
+            PinManagementMessage::RequestAddInputPin { suggested_name: None, response_tx },
+            &mut broadcast,
+            &mut dynamic_inputs,
+            &mut catalog,
+            &mut catalog_producer,
+        );
+        assert_eq!(response_rx.await.unwrap().unwrap().name, "dynamic_in");
+    }
+
+    #[tokio::test]
+    async fn handle_pin_management_added_then_removed_input_pin() {
+        let (_origin, mut broadcast, mut catalog_producer, _cc) = push_fixture();
+        let mut catalog = hang::catalog::Catalog::default();
+        let mut dynamic_inputs = Vec::new();
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<Packet>(4);
+        handle(
+            PinManagementMessage::AddedInputPin {
+                pin: dynamic_pin("video/cam"),
+                channel: rx,
+                hint_tx: None,
+            },
+            &mut broadcast,
+            &mut dynamic_inputs,
+            &mut catalog,
+            &mut catalog_producer,
+        );
+        assert_eq!(dynamic_inputs.len(), 1);
+        assert!(catalog.video.renditions.contains_key("video/cam"));
+        assert!(!tx.is_closed());
+
+        handle(
+            PinManagementMessage::RemoveInputPin { pin_name: "video/cam".to_string() },
+            &mut broadcast,
+            &mut dynamic_inputs,
+            &mut catalog,
+            &mut catalog_producer,
+        );
+        assert!(dynamic_inputs.is_empty());
+        assert!(catalog.video.renditions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn handle_pin_management_rejects_output_pin_requests() {
+        let (_origin, mut broadcast, mut catalog_producer, _cc) = push_fixture();
+        let mut catalog = hang::catalog::Catalog::default();
+        let mut dynamic_inputs = Vec::new();
+
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        handle(
+            PinManagementMessage::RequestAddOutputPin { suggested_name: None, response_tx },
+            &mut broadcast,
+            &mut dynamic_inputs,
+            &mut catalog,
+            &mut catalog_producer,
+        );
+        let result = response_rx.await.unwrap();
+        assert!(matches!(result, Err(StreamKitError::Configuration(_))));
+    }
+
+    #[tokio::test]
+    async fn handle_pin_management_ignores_unrelated_messages() {
+        let (_origin, mut broadcast, mut catalog_producer, _cc) = push_fixture();
+        let mut catalog = hang::catalog::Catalog::default();
+        let mut dynamic_inputs = Vec::new();
+
+        handle(
+            PinManagementMessage::RemoveOutputPin { pin_name: "out".to_string() },
+            &mut broadcast,
+            &mut dynamic_inputs,
+            &mut catalog,
+            &mut catalog_producer,
+        );
+        handle(
+            PinManagementMessage::InputTypeResolved {
+                pin_name: "in".to_string(),
+                packet_type: PacketType::Binary,
+            },
+            &mut broadcast,
+            &mut dynamic_inputs,
+            &mut catalog,
+            &mut catalog_producer,
+        );
+
+        assert!(dynamic_inputs.is_empty());
+    }
 
     /// Regression: `is_video` was previously determined by checking
     /// `pin.accepts_types` for `EncodedVideo`, but since all dynamic pins
