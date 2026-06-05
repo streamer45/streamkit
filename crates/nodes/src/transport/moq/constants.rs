@@ -288,4 +288,68 @@ mod tests {
         let input_types = std::collections::HashMap::new();
         assert_eq!(resolve_audio_codec(None, &input_types), AudioCodec::Opus);
     }
+
+    #[test]
+    fn catalog_audio_codec_opus_produces_opus() {
+        assert!(matches!(catalog_audio_codec(AudioCodec::Opus), hang::catalog::AudioCodec::Opus));
+    }
+
+    #[test]
+    fn catalog_audio_codec_aac_produces_lc_profile() {
+        match catalog_audio_codec(AudioCodec::Aac) {
+            hang::catalog::AudioCodec::AAC(aac) => {
+                assert_eq!(aac.profile, 2, "AAC catalog entry must advertise AAC-LC (profile 2)");
+            },
+            other => panic!("expected AAC catalog codec, got {other:?}"),
+        }
+    }
+
+    /// `catalog_audio_codec` and `audio_codec_from_catalog` must round-trip the
+    /// codecs MoQ actually supports, otherwise published renditions would be
+    /// dropped when re-parsed by a subscriber.
+    #[test]
+    fn audio_codec_catalog_round_trips() {
+        for codec in [AudioCodec::Opus, AudioCodec::Aac] {
+            let catalog = catalog_audio_codec(codec);
+            assert_eq!(audio_codec_from_catalog(&catalog), Some(codec));
+        }
+    }
+
+    #[test]
+    fn moq_accepted_media_types_lists_expected_codecs() {
+        let types = moq_accepted_media_types();
+
+        let audio_codecs: Vec<AudioCodec> = types
+            .iter()
+            .filter_map(|t| match t {
+                PacketType::EncodedAudio(fmt) => Some(fmt.codec),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(audio_codecs, vec![AudioCodec::Opus, AudioCodec::Aac]);
+
+        let video_codecs: Vec<VideoCodec> = types
+            .iter()
+            .filter_map(|t| match t {
+                PacketType::EncodedVideo(fmt) => Some(fmt.codec),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(video_codecs, vec![VideoCodec::Vp9, VideoCodec::Av1, VideoCodec::H264]);
+    }
+
+    #[test]
+    fn packet_duration_us_filters_missing_and_zero() {
+        let metadata = |duration_us| PacketMetadata {
+            timestamp_us: None,
+            duration_us,
+            sequence: None,
+            keyframe: None,
+        };
+
+        assert_eq!(packet_duration_us(Some(&metadata(Some(960)))), Some(960));
+        assert_eq!(packet_duration_us(Some(&metadata(Some(0)))), None);
+        assert_eq!(packet_duration_us(Some(&metadata(None))), None);
+        assert_eq!(packet_duration_us(None), None);
+    }
 }
