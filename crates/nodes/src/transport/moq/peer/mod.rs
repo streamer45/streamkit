@@ -2712,4 +2712,871 @@ mod tests {
         let vp9: MoqPeerConfig = serde_json::from_str(r#"{"video_codec": "vp9"}"#).unwrap();
         assert_eq!(vp9.video_codec, Some(VideoCodec::Vp9));
     }
+
+    // These tests drive the publisher and subscriber loops in-process using
+    // `moq_lite::Origin::random().produce()` producer/consumer pairs — no
+    // network or relay required. Frames carry a hang varint timestamp prefix,
+    // matching the wire format the loops decode.
+
+    fn ts_payload(timestamp_us: u64, data: &[u8]) -> bytes::Bytes {
+        let mut buf = bytes::BytesMut::new();
+        hang::container::Timestamp::from_micros(timestamp_us).unwrap().encode(&mut buf).unwrap();
+        buf.extend_from_slice(data);
+        buf.freeze()
+    }
+
+    fn write_group(producer: &mut moq_lite::TrackProducer, frames: &[(u64, &[u8])]) {
+        let mut group = producer.append_group().unwrap();
+        for (ts, data) in frames {
+            group.write_frame(ts_payload(*ts, data)).unwrap();
+        }
+        group.finish().unwrap();
+    }
+
+    fn drain_stats(rx: &mut mpsc::Receiver<NodeStatsDelta>) -> NodeStatsDelta {
+        let mut total = NodeStatsDelta::default();
+        while let Ok(d) = rx.try_recv() {
+            total.received += d.received;
+            total.sent += d.sent;
+            total.discarded += d.discarded;
+            total.errored += d.errored;
+        }
+        total
+    }
+
+    fn sub_media(has_audio: bool, has_video: bool) -> SubscriberMediaConfig {
+        SubscriberMediaConfig {
+            has_video,
+            has_audio,
+            video_width: 640,
+            video_height: 480,
+            output_group_duration_ms: 40,
+            output_initial_delay_ms: 0,
+            video_codec: VideoCodec::Vp9,
+            audio_codec: AudioCodec::Opus,
+        }
+    }
+
+    fn audio_frame(data: &'static [u8]) -> BroadcastFrame {
+        BroadcastFrame {
+            data: bytes::Bytes::from_static(data),
+            duration_us: Some(20_000),
+            kind: MediaKind::Audio,
+            keyframe: false,
+        }
+    }
+
+    fn video_frame(data: &'static [u8], keyframe: bool) -> BroadcastFrame {
+        BroadcastFrame {
+            data: bytes::Bytes::from_static(data),
+            duration_us: None,
+            kind: MediaKind::Video,
+            keyframe,
+        }
+    }
+
+    /// Drive `run_subscriber_send_loop` with the fixed test parameters
+    /// (group duration 40ms, no initial delay, Opus), returning the frame count.
+    async fn drive_send_loop(
+        audio: &mut Option<crate::transport::moq::ordered_producer::OrderedProducer>,
+        video: &mut Option<crate::transport::moq::ordered_producer::OrderedProducer>,
+        rx: broadcast::Receiver<BroadcastFrame>,
+        shutdown_rx: &mut broadcast::Receiver<()>,
+        stats_tx: &mpsc::Sender<NodeStatsDelta>,
+    ) -> u64 {
+        MoqPeerNode::run_subscriber_send_loop(
+            audio,
+            video,
+            rx,
+            shutdown_rx,
+            40,
+            0,
+            "node".to_string(),
+            "output".to_string(),
+            stats_tx,
+            AudioCodec::Opus,
+        )
+        .await
+        .unwrap()
+    }
+
+    struct SingleTrackFixture {
+        _origin: moq_lite::OriginProducer,
+        _broadcast: moq_lite::BroadcastProducer,
+        producer: moq_lite::TrackProducer,
+        consumer: moq_lite::TrackConsumer,
+    }
+
+    fn make_single_track(track_name: &str) -> SingleTrackFixture {
+        let origin = moq_lite::Origin::random().produce();
+        let mut broadcast = origin.create_broadcast("input").unwrap();
+        let track = moq_lite::Track { name: track_name.to_string(), priority: 2 };
+        let producer = broadcast.create_track(track.clone()).unwrap();
+        let consumer =
+            origin.consume().get_broadcast("input").unwrap().subscribe_track(&track).unwrap();
+        SingleTrackFixture { _origin: origin, _broadcast: broadcast, producer, consumer }
+    }
+
+    struct PublisherBroadcastFixture {
+        _origin: moq_lite::OriginProducer,
+        _broadcast: moq_lite::BroadcastProducer,
+        _catalog: moq_lite::TrackProducer,
+        audio: moq_lite::TrackProducer,
+        video: moq_lite::TrackProducer,
+        consumer: moq_lite::OriginConsumer,
+    }
+
+    fn make_publisher_broadcast() -> PublisherBroadcastFixture {
+        let origin = moq_lite::Origin::random().produce();
+        let consumer = origin.consume();
+        let mut broadcast = origin.create_broadcast("input").unwrap();
+
+        let audio_track = moq_lite::Track { name: "audio/data".to_string(), priority: 2 };
+        let video_track = moq_lite::Track { name: "video/data".to_string(), priority: 2 };
+        let audio = broadcast.create_track(audio_track.clone()).unwrap();
+        let video = broadcast.create_track(video_track.clone()).unwrap();
+
+        let catalog_producer = MoqPeerNode::create_and_publish_catalog(
+            &mut broadcast,
+            Some(&audio_track),
+            Some(&video_track),
+            640,
+            480,
+            VideoCodec::Vp9,
+            AudioCodec::Opus,
+        )
+        .unwrap();
+
+        PublisherBroadcastFixture {
+            _origin: origin,
+            _broadcast: broadcast,
+            _catalog: catalog_producer,
+            audio,
+            video,
+            consumer,
+        }
+    }
+
+    #[tokio::test]
+    async fn process_publisher_frames_emits_video_packets_with_metadata() {
+        let mut fx = make_single_track("video/data");
+        write_group(&mut fx.producer, &[(1000, b"key0"), (2000, b"delta1")]);
+        write_group(&mut fx.producer, &[(3000, b"key1")]);
+        fx.producer.finish().unwrap();
+
+        let mock = crate::test_utils::MockOutputSender::new();
+        let sender = mock.to_output_sender("test_node".to_string());
+        let (stats_tx, mut stats_rx) = mpsc::channel::<NodeStatsDelta>(256);
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let (_shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
+
+        let exit = MoqPeerNode::process_publisher_frames(
+            fx.consumer,
+            sender,
+            "video/data",
+            true,
+            &mut shutdown_rx,
+            &stats_tx,
+            &dynamic_outputs,
+            VideoCodec::Vp9,
+        )
+        .await;
+        assert!(matches!(exit, TrackExit::Finished));
+
+        let packets = mock.get_packets_for_pin("video/data").await;
+        assert_eq!(packets.len(), 3);
+
+        let metas: Vec<_> = packets
+            .iter()
+            .map(|p| match p {
+                Packet::Binary { content_type, metadata, .. } => {
+                    (content_type.clone(), metadata.clone().unwrap())
+                },
+                other => panic!("expected binary packet, got {other:?}"),
+            })
+            .collect();
+
+        // Base timestamp (1000us) is subtracted from every frame.
+        assert_eq!(metas[0].1.timestamp_us, Some(0));
+        assert_eq!(metas[0].1.keyframe, Some(true));
+        assert_eq!(metas[1].1.timestamp_us, Some(1000));
+        assert_eq!(metas[1].1.keyframe, Some(false));
+        // First frame of the second group is a fresh keyframe boundary.
+        assert_eq!(metas[2].1.timestamp_us, Some(2000));
+        assert_eq!(metas[2].1.keyframe, Some(true));
+        for (ct, _) in &metas {
+            assert_eq!(ct.as_deref(), Some(VP9_CONTENT_TYPE));
+        }
+
+        let stats = drain_stats(&mut stats_rx);
+        assert_eq!(stats.received, 3);
+        assert_eq!(stats.sent, 3);
+    }
+
+    #[tokio::test]
+    async fn process_publisher_frames_audio_has_no_content_type() {
+        let mut fx = make_single_track("audio/data");
+        write_group(&mut fx.producer, &[(0, b"opus0")]);
+        fx.producer.finish().unwrap();
+
+        let mock = crate::test_utils::MockOutputSender::new();
+        let sender = mock.to_output_sender("test_node".to_string());
+        let (stats_tx, _stats_rx) = mpsc::channel::<NodeStatsDelta>(256);
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let (_shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
+
+        let exit = MoqPeerNode::process_publisher_frames(
+            fx.consumer,
+            sender,
+            "audio/data",
+            false,
+            &mut shutdown_rx,
+            &stats_tx,
+            &dynamic_outputs,
+            VideoCodec::Vp9,
+        )
+        .await;
+        assert!(matches!(exit, TrackExit::Finished));
+
+        let packets = mock.get_packets_for_pin("audio/data").await;
+        assert_eq!(packets.len(), 1);
+        match &packets[0] {
+            Packet::Binary { content_type, .. } => assert!(content_type.is_none()),
+            other => panic!("expected binary packet, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn process_publisher_frames_discards_undecodable_frame() {
+        let mut fx = make_single_track("audio/data");
+        let mut group = fx.producer.append_group().unwrap();
+        // Empty payload has no varint timestamp — decode fails (DecodeError::Short).
+        group.write_frame(bytes::Bytes::new()).unwrap();
+        group.write_frame(ts_payload(0, b"ok")).unwrap();
+        group.finish().unwrap();
+        fx.producer.finish().unwrap();
+
+        let mock = crate::test_utils::MockOutputSender::new();
+        let sender = mock.to_output_sender("test_node".to_string());
+        let (stats_tx, mut stats_rx) = mpsc::channel::<NodeStatsDelta>(256);
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let (_shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
+
+        let exit = MoqPeerNode::process_publisher_frames(
+            fx.consumer,
+            sender,
+            "audio/data",
+            false,
+            &mut shutdown_rx,
+            &stats_tx,
+            &dynamic_outputs,
+            VideoCodec::Vp9,
+        )
+        .await;
+        assert!(matches!(exit, TrackExit::Finished));
+
+        let packets = mock.get_packets_for_pin("audio/data").await;
+        assert_eq!(packets.len(), 1, "the decodable frame should still be emitted");
+        let stats = drain_stats(&mut stats_rx);
+        assert_eq!(stats.discarded, 1);
+    }
+
+    #[tokio::test]
+    async fn process_publisher_frames_routes_to_dynamic_output() {
+        let mut fx = make_single_track("audio/data");
+        write_group(&mut fx.producer, &[(0, b"opus0"), (20_000, b"opus1")]);
+        fx.producer.finish().unwrap();
+
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let (dyn_tx, mut dyn_rx) = mpsc::channel::<Packet>(8);
+        dynamic_outputs.write().unwrap().insert("audio/data".to_string(), dyn_tx);
+
+        let mock = crate::test_utils::MockOutputSender::new();
+        let sender = mock.to_output_sender("test_node".to_string());
+        let (stats_tx, _stats_rx) = mpsc::channel::<NodeStatsDelta>(256);
+        let (_shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
+
+        let exit = MoqPeerNode::process_publisher_frames(
+            fx.consumer,
+            sender,
+            "audio/data",
+            false,
+            &mut shutdown_rx,
+            &stats_tx,
+            &dynamic_outputs,
+            VideoCodec::Vp9,
+        )
+        .await;
+        assert!(matches!(exit, TrackExit::Finished));
+
+        let mut dyn_count = 0;
+        while dyn_rx.try_recv().is_ok() {
+            dyn_count += 1;
+        }
+        assert_eq!(dyn_count, 2, "frames should go to the dynamic channel");
+        assert!(mock.try_recv().await.is_none(), "static sender should be bypassed");
+    }
+
+    #[tokio::test]
+    async fn get_next_group_returns_group_then_finished() {
+        let mut fx = make_single_track("video/data");
+        write_group(&mut fx.producer, &[(0, b"a")]);
+        fx.producer.finish().unwrap();
+        let (_shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
+
+        let g1 =
+            MoqPeerNode::get_next_group(&mut fx.consumer, &mut shutdown_rx, "video/data").await;
+        assert!(matches!(g1, Ok(Some(_))));
+        let g2 =
+            MoqPeerNode::get_next_group(&mut fx.consumer, &mut shutdown_rx, "video/data").await;
+        assert!(matches!(g2, Ok(None)), "stream ended → Ok(None)");
+    }
+
+    #[tokio::test]
+    async fn get_next_group_returns_none_on_shutdown() {
+        let mut fx = make_single_track("video/data");
+        let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
+        shutdown_tx.send(()).unwrap();
+        let g = MoqPeerNode::get_next_group(&mut fx.consumer, &mut shutdown_rx, "video/data").await;
+        assert!(matches!(g, Ok(None)));
+    }
+
+    #[tokio::test]
+    async fn route_packet_prefers_dynamic_channel() {
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let (dtx, mut drx) = mpsc::channel::<Packet>(4);
+        dynamic_outputs.write().unwrap().insert("audio/data".to_string(), dtx);
+
+        let mock = crate::test_utils::MockOutputSender::new();
+        let mut sender = mock.to_output_sender("test_node".to_string());
+        let pkt = Packet::Binary {
+            data: bytes::Bytes::from_static(b"x"),
+            content_type: None,
+            metadata: None,
+        };
+
+        assert!(MoqPeerNode::route_packet(pkt, "audio/data", &mut sender, &dynamic_outputs).await);
+        assert!(drx.try_recv().is_ok());
+        assert!(mock.try_recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn route_packet_removes_closed_dynamic_entry() {
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let (dtx, drx) = mpsc::channel::<Packet>(4);
+        dynamic_outputs.write().unwrap().insert("audio/data".to_string(), dtx);
+        drop(drx);
+
+        let mock = crate::test_utils::MockOutputSender::new();
+        let mut sender = mock.to_output_sender("test_node".to_string());
+        let pkt = Packet::Binary {
+            data: bytes::Bytes::from_static(b"x"),
+            content_type: None,
+            metadata: None,
+        };
+
+        assert!(MoqPeerNode::route_packet(pkt, "audio/data", &mut sender, &dynamic_outputs).await);
+        assert!(
+            !dynamic_outputs.read().unwrap().contains_key("audio/data"),
+            "stale dynamic entry should be removed"
+        );
+    }
+
+    #[tokio::test]
+    async fn route_packet_falls_through_to_static_sender() {
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let mock = crate::test_utils::MockOutputSender::new();
+        let mut sender = mock.to_output_sender("test_node".to_string());
+        let pkt = Packet::Binary {
+            data: bytes::Bytes::from_static(b"y"),
+            content_type: None,
+            metadata: None,
+        };
+
+        assert!(MoqPeerNode::route_packet(pkt, "video/data", &mut sender, &dynamic_outputs).await);
+        let pkts = mock.get_packets_for_pin("video/data").await;
+        assert_eq!(pkts.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn route_packet_returns_false_on_closed_static_channel() {
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let mock = crate::test_utils::MockOutputSender::new();
+        let mut sender = mock.to_output_sender("test_node".to_string());
+        drop(mock);
+        let pkt = Packet::Binary {
+            data: bytes::Bytes::from_static(b"z"),
+            content_type: None,
+            metadata: None,
+        };
+
+        assert!(!MoqPeerNode::route_packet(pkt, "video/data", &mut sender, &dynamic_outputs).await);
+    }
+
+    #[tokio::test]
+    async fn wait_for_broadcast_announcement_returns_none_on_shutdown() {
+        let origin = moq_lite::Origin::random().produce();
+        let consumer = origin.consume();
+        let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
+        shutdown_tx.send(()).unwrap();
+        let res = MoqPeerNode::wait_for_broadcast_announcement(consumer, "input", &mut shutdown_rx)
+            .await
+            .unwrap();
+        assert!(res.is_none());
+    }
+
+    #[tokio::test]
+    async fn publisher_receive_loop_routes_catalog_tracks_to_pins() {
+        let mut fx = make_publisher_broadcast();
+        write_group(&mut fx.audio, &[(0, b"a0"), (20_000, b"a1")]);
+        fx.audio.finish().unwrap();
+        write_group(&mut fx.video, &[(0, b"v0")]);
+        fx.video.finish().unwrap();
+
+        let mock = crate::test_utils::MockOutputSender::new();
+        let sender = mock.to_output_sender("test_node".to_string());
+        let (stats_tx, _stats_rx) = mpsc::channel::<NodeStatsDelta>(256);
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let (_shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            MoqPeerNode::publisher_receive_loop(
+                fx.consumer,
+                "input".to_string(),
+                sender,
+                &mut shutdown_rx,
+                stats_tx,
+                dynamic_outputs,
+                VideoCodec::Vp9,
+            ),
+        )
+        .await
+        .expect("publisher_receive_loop should not hang");
+        assert!(result.is_ok());
+
+        let all = mock.collect_packets().await;
+        let audio = all.iter().filter(|(_, pin, _)| pin == "audio/data").count();
+        let video = all.iter().filter(|(_, pin, _)| pin == "video/data").count();
+        assert_eq!(audio, 2);
+        assert_eq!(video, 1);
+        let video_pkt = all.iter().find(|(_, pin, _)| pin == "video/data").unwrap();
+        match &video_pkt.2 {
+            Packet::Binary { content_type, .. } => {
+                assert_eq!(content_type.as_deref(), Some(VP9_CONTENT_TYPE));
+            },
+            other => panic!("expected binary packet, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn publisher_receive_loop_with_slot_processes_and_emits_events() {
+        let mut fx = make_publisher_broadcast();
+        write_group(&mut fx.audio, &[(0, b"a0")]);
+        fx.audio.finish().unwrap();
+        fx.video.finish().unwrap();
+
+        let mock = crate::test_utils::MockOutputSender::new();
+        let sender = mock.to_output_sender("test_node".to_string());
+        let (stats_tx, _stats_rx) = mpsc::channel::<NodeStatsDelta>(256);
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let slot = Arc::new(Semaphore::new(1));
+        let (_shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
+
+        let config = PublisherReceiveLoopWithSlotConfig {
+            subscribe: fx.consumer,
+            broadcast_name: "input".to_string(),
+            output_sender: sender,
+            publisher_slot: slot,
+            publisher_events: events_tx,
+            publisher_path: "peer-1".to_string(),
+            stats_delta_tx: stats_tx,
+            dynamic_outputs,
+            video_codec: VideoCodec::Vp9,
+        };
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            MoqPeerNode::publisher_receive_loop_with_slot(config, &mut shutdown_rx),
+        )
+        .await
+        .expect("publisher_receive_loop_with_slot should not hang");
+        assert!(result.is_ok());
+
+        assert!(matches!(events_rx.try_recv().unwrap(), PublisherEvent::Connected { .. }));
+        assert!(matches!(events_rx.try_recv().unwrap(), PublisherEvent::Disconnected { .. }));
+        let audio = mock.get_packets_for_pin("audio/data").await;
+        assert_eq!(audio.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn publisher_receive_loop_with_slot_skips_when_no_permit() {
+        let fx = make_publisher_broadcast();
+
+        let mock = crate::test_utils::MockOutputSender::new();
+        let sender = mock.to_output_sender("test_node".to_string());
+        let (stats_tx, _stats_rx) = mpsc::channel::<NodeStatsDelta>(256);
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let slot = Arc::new(Semaphore::new(0));
+        let (_shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
+
+        let config = PublisherReceiveLoopWithSlotConfig {
+            subscribe: fx.consumer,
+            broadcast_name: "input".to_string(),
+            output_sender: sender,
+            publisher_slot: slot,
+            publisher_events: events_tx,
+            publisher_path: "peer-1".to_string(),
+            stats_delta_tx: stats_tx,
+            dynamic_outputs,
+            video_codec: VideoCodec::Vp9,
+        };
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            MoqPeerNode::publisher_receive_loop_with_slot(config, &mut shutdown_rx),
+        )
+        .await
+        .expect("publisher_receive_loop_with_slot should not hang");
+        assert!(result.is_ok());
+        assert!(events_rx.try_recv().is_err(), "no Connected event when the slot is unavailable");
+    }
+
+    #[tokio::test]
+    async fn resolve_media_types_applies_already_resolved_state() {
+        let (_tx, mut rx) =
+            watch::channel(MediaTypeState { has_audio: true, has_video: true, resolved: true });
+        let mut media = sub_media(false, false);
+        let (_shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
+
+        let ok =
+            MoqPeerNode::resolve_media_types(&mut media, &mut rx, &mut shutdown_rx).await.unwrap();
+        assert!(ok);
+        assert!(media.has_audio && media.has_video);
+    }
+
+    #[tokio::test]
+    async fn resolve_media_types_returns_false_on_shutdown() {
+        let (_tx, mut rx) =
+            watch::channel(MediaTypeState { has_audio: false, has_video: false, resolved: false });
+        let mut media = sub_media(false, false);
+        let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
+        shutdown_tx.send(()).unwrap();
+
+        let ok =
+            MoqPeerNode::resolve_media_types(&mut media, &mut rx, &mut shutdown_rx).await.unwrap();
+        assert!(!ok);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn resolve_media_types_grace_period_times_out_with_partial_media() {
+        let (_tx, mut rx) =
+            watch::channel(MediaTypeState { has_audio: true, has_video: false, resolved: true });
+        let mut media = sub_media(false, false);
+        let (_shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
+
+        let ok =
+            MoqPeerNode::resolve_media_types(&mut media, &mut rx, &mut shutdown_rx).await.unwrap();
+        assert!(ok);
+        assert!(media.has_audio && !media.has_video);
+    }
+
+    #[tokio::test]
+    async fn setup_subscriber_broadcast_publishes_catalog_with_both_tracks() {
+        let publish = moq_lite::Origin::random().produce();
+        let media = sub_media(true, true);
+        let (bcast, audio, video, catalog) =
+            MoqPeerNode::setup_subscriber_broadcast(&publish, "output", &media).unwrap();
+        assert!(audio.is_some());
+        assert!(video.is_some());
+
+        let bc = publish.consume().get_broadcast("output").unwrap();
+        let cat_track = bc.subscribe_track(&hang::catalog::Catalog::default_track()).unwrap();
+        let mut cc = crate::transport::moq::catalog_consumer::CatalogConsumer::new(cat_track);
+        let cat = tokio::time::timeout(Duration::from_secs(2), cc.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .expect("a catalog frame should be published");
+        assert!(cat.audio.renditions.contains_key("audio/data"));
+        assert!(cat.video.renditions.contains_key("video/data"));
+        assert_eq!(cat.video.renditions.get("video/data").unwrap().coded_width, Some(640));
+        drop((bcast, catalog));
+    }
+
+    #[tokio::test]
+    async fn setup_subscriber_broadcast_audio_only_omits_video_track() {
+        let publish = moq_lite::Origin::random().produce();
+        let media = sub_media(true, false);
+        let (_bcast, audio, video, _catalog) =
+            MoqPeerNode::setup_subscriber_broadcast(&publish, "output", &media).unwrap();
+        assert!(audio.is_some());
+        assert!(video.is_none());
+    }
+
+    #[tokio::test]
+    async fn create_and_publish_catalog_aac_advertises_stereo() {
+        let publish = moq_lite::Origin::random().produce();
+        let mut bcast = publish.create_broadcast("output").unwrap();
+        let audio_track = moq_lite::Track { name: "audio/data".to_string(), priority: 80 };
+        let catalog = MoqPeerNode::create_and_publish_catalog(
+            &mut bcast,
+            Some(&audio_track),
+            None,
+            640,
+            480,
+            VideoCodec::Vp9,
+            AudioCodec::Aac,
+        )
+        .unwrap();
+
+        let bc = publish.consume().get_broadcast("output").unwrap();
+        let cat_track = bc.subscribe_track(&hang::catalog::Catalog::default_track()).unwrap();
+        let mut cc = crate::transport::moq::catalog_consumer::CatalogConsumer::new(cat_track);
+        let cat = tokio::time::timeout(Duration::from_secs(2), cc.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .expect("a catalog frame should be published");
+        assert_eq!(cat.audio.renditions.get("audio/data").unwrap().channel_count, 2);
+        drop((bcast, catalog));
+    }
+
+    #[tokio::test]
+    async fn run_subscriber_send_loop_forwards_audio_and_video() {
+        let publish = moq_lite::Origin::random().produce();
+        let media = sub_media(true, true);
+        let (_bcast, mut audio, mut video, _catalog) =
+            MoqPeerNode::setup_subscriber_broadcast(&publish, "output", &media).unwrap();
+
+        let (tx, rx) = broadcast::channel::<BroadcastFrame>(16);
+        tx.send(audio_frame(b"a0")).unwrap();
+        tx.send(video_frame(b"v0", true)).unwrap();
+        tx.send(audio_frame(b"a1")).unwrap();
+        drop(tx);
+
+        let (stats_tx, _stats_rx) = mpsc::channel::<NodeStatsDelta>(256);
+        let (_shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
+
+        let count = drive_send_loop(&mut audio, &mut video, rx, &mut shutdown_rx, &stats_tx).await;
+        assert_eq!(count, 3);
+        drop(publish);
+    }
+
+    #[tokio::test]
+    async fn run_subscriber_send_loop_records_lagged_discards() {
+        let publish = moq_lite::Origin::random().produce();
+        let media = sub_media(true, false);
+        let (_bcast, mut audio, mut video, _catalog) =
+            MoqPeerNode::setup_subscriber_broadcast(&publish, "output", &media).unwrap();
+
+        let (tx, rx) = broadcast::channel::<BroadcastFrame>(2);
+        for _ in 0..6 {
+            let _ = tx.send(audio_frame(b"a"));
+        }
+        drop(tx);
+
+        let (stats_tx, mut stats_rx) = mpsc::channel::<NodeStatsDelta>(256);
+        let (_shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
+
+        let count = drive_send_loop(&mut audio, &mut video, rx, &mut shutdown_rx, &stats_tx).await;
+        let stats = drain_stats(&mut stats_rx);
+        // capacity 2 + 6 sends before any recv yields exactly Lagged(4), then the
+        // 2 buffered frames are delivered.
+        assert_eq!(stats.discarded, 4, "lagged frames should be counted as discarded");
+        assert_eq!(count, 2);
+        drop(publish);
+    }
+
+    #[tokio::test]
+    async fn run_subscriber_send_loop_stops_on_shutdown() {
+        let publish = moq_lite::Origin::random().produce();
+        let media = sub_media(true, true);
+        let (_bcast, mut audio, mut video, _catalog) =
+            MoqPeerNode::setup_subscriber_broadcast(&publish, "output", &media).unwrap();
+
+        // Keep the sender alive so recv() stays pending and shutdown wins.
+        let (_tx, rx) = broadcast::channel::<BroadcastFrame>(4);
+        let (stats_tx, _stats_rx) = mpsc::channel::<NodeStatsDelta>(16);
+        let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
+        shutdown_tx.send(()).unwrap();
+
+        let count = drive_send_loop(&mut audio, &mut video, rx, &mut shutdown_rx, &stats_tx).await;
+        assert_eq!(count, 0);
+        drop(publish);
+    }
+
+    #[tokio::test]
+    async fn run_subscriber_send_loop_skips_frame_without_matching_producer() {
+        let publish = moq_lite::Origin::random().produce();
+        let media = sub_media(true, false);
+        let (_bcast, mut audio, mut video, _catalog) =
+            MoqPeerNode::setup_subscriber_broadcast(&publish, "output", &media).unwrap();
+        assert!(video.is_none());
+
+        let (tx, rx) = broadcast::channel::<BroadcastFrame>(8);
+        tx.send(video_frame(b"v", true)).unwrap();
+        tx.send(audio_frame(b"a")).unwrap();
+        drop(tx);
+
+        let (stats_tx, _stats_rx) = mpsc::channel::<NodeStatsDelta>(16);
+        let (_shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
+
+        let count = drive_send_loop(&mut audio, &mut video, rx, &mut shutdown_rx, &stats_tx).await;
+        assert_eq!(count, 2, "both frames are counted even though the video frame is skipped");
+        drop(publish);
+    }
+
+    #[tokio::test]
+    async fn handle_pin_management_output_pin_lifecycle() {
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let (btx, _brx) = broadcast::channel::<BroadcastFrame>(16);
+        let (stats_tx, _stats_rx) = mpsc::channel::<NodeStatsDelta>(16);
+        let (shutdown_tx, _shutdown_rx) = broadcast::channel::<()>(1);
+        let mut handles: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
+        let codecs = MediaCodecConfig { video: VideoCodec::Av1, audio: AudioCodec::Opus };
+
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        MoqPeerNode::handle_pin_management(
+            PinManagementMessage::RequestAddOutputPin {
+                suggested_name: Some("video/hd".to_string()),
+                response_tx: resp_tx,
+            },
+            &dynamic_outputs,
+            &btx,
+            &stats_tx,
+            &shutdown_tx,
+            &mut handles,
+            codecs,
+        );
+        let pin = resp_rx.await.unwrap().unwrap();
+        assert_eq!(pin.name, "video/hd");
+        assert!(
+            matches!(&pin.produces_type, PacketType::EncodedVideo(fmt) if fmt.codec == VideoCodec::Av1)
+        );
+
+        let (data_tx, _data_rx) = mpsc::channel::<Packet>(4);
+        MoqPeerNode::handle_pin_management(
+            PinManagementMessage::AddedOutputPin { pin, channel: data_tx },
+            &dynamic_outputs,
+            &btx,
+            &stats_tx,
+            &shutdown_tx,
+            &mut handles,
+            codecs,
+        );
+        assert!(dynamic_outputs.read().unwrap().contains_key("video/hd"));
+
+        MoqPeerNode::handle_pin_management(
+            PinManagementMessage::RemoveOutputPin { pin_name: "video/hd".to_string() },
+            &dynamic_outputs,
+            &btx,
+            &stats_tx,
+            &shutdown_tx,
+            &mut handles,
+            codecs,
+        );
+        assert!(!dynamic_outputs.read().unwrap().contains_key("video/hd"));
+    }
+
+    #[tokio::test]
+    async fn handle_pin_management_input_pin_lifecycle() {
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let (btx, _brx) = broadcast::channel::<BroadcastFrame>(16);
+        let (stats_tx, _stats_rx) = mpsc::channel::<NodeStatsDelta>(16);
+        let (shutdown_tx, _shutdown_rx) = broadcast::channel::<()>(1);
+        let mut handles: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
+        let codecs = MediaCodecConfig { video: VideoCodec::Vp9, audio: AudioCodec::Opus };
+
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        MoqPeerNode::handle_pin_management(
+            PinManagementMessage::RequestAddInputPin {
+                suggested_name: Some("audio/extra".to_string()),
+                response_tx: resp_tx,
+            },
+            &dynamic_outputs,
+            &btx,
+            &stats_tx,
+            &shutdown_tx,
+            &mut handles,
+            codecs,
+        );
+        assert_eq!(resp_rx.await.unwrap().unwrap().name, "audio/extra");
+
+        let (_in_tx, in_rx) = mpsc::channel::<Packet>(4);
+        let pin = InputPin {
+            name: "audio/extra".to_string(),
+            accepts_types: vec![],
+            cardinality: PinCardinality::One,
+        };
+        MoqPeerNode::handle_pin_management(
+            PinManagementMessage::AddedInputPin { pin, channel: in_rx, hint_tx: None },
+            &dynamic_outputs,
+            &btx,
+            &stats_tx,
+            &shutdown_tx,
+            &mut handles,
+            codecs,
+        );
+        assert!(handles.contains_key("audio/extra"));
+
+        MoqPeerNode::handle_pin_management(
+            PinManagementMessage::RemoveInputPin { pin_name: "audio/extra".to_string() },
+            &dynamic_outputs,
+            &btx,
+            &stats_tx,
+            &shutdown_tx,
+            &mut handles,
+            codecs,
+        );
+        assert!(!handles.contains_key("audio/extra"));
+    }
+
+    #[tokio::test]
+    async fn dynamic_input_forwarder_forwards_packets_to_broadcast() {
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let (btx, mut brx) = broadcast::channel::<BroadcastFrame>(16);
+        let (stats_tx, mut stats_rx) = mpsc::channel::<NodeStatsDelta>(16);
+        let (shutdown_tx, _shutdown_rx) = broadcast::channel::<()>(1);
+        let mut handles: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
+        let codecs = MediaCodecConfig { video: VideoCodec::Vp9, audio: AudioCodec::Opus };
+
+        let (in_tx, in_rx) = mpsc::channel::<Packet>(4);
+        let pin = InputPin {
+            name: "audio/extra".to_string(),
+            accepts_types: vec![],
+            cardinality: PinCardinality::One,
+        };
+        MoqPeerNode::handle_pin_management(
+            PinManagementMessage::AddedInputPin { pin, channel: in_rx, hint_tx: None },
+            &dynamic_outputs,
+            &btx,
+            &stats_tx,
+            &shutdown_tx,
+            &mut handles,
+            codecs,
+        );
+
+        in_tx
+            .send(Packet::Binary {
+                data: bytes::Bytes::from_static(b"opus"),
+                content_type: None,
+                metadata: None,
+            })
+            .await
+            .unwrap();
+        let frame = tokio::time::timeout(Duration::from_secs(2), brx.recv())
+            .await
+            .expect("forwarder should publish promptly")
+            .unwrap();
+        assert_eq!(frame.kind, MediaKind::Audio);
+        assert_eq!(&frame.data[..], b"opus");
+        let stats = drain_stats(&mut stats_rx);
+        assert_eq!(stats.received, 1);
+        assert_eq!(stats.sent, 1);
+
+        shutdown_tx.send(()).unwrap();
+    }
 }

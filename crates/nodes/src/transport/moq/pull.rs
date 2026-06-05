@@ -2213,4 +2213,236 @@ mod tests {
             "dynamic pin routing must not touch the engine output sender"
         );
     }
+
+    fn track_pair(name: &str) -> (moq_lite::TrackProducer, moq_lite::TrackConsumer) {
+        let origin = moq_lite::Origin::random().produce();
+        let mut broadcast = origin.create_broadcast("test-broadcast").unwrap();
+        let track = moq_lite::Track { name: name.to_string(), priority: 0 };
+        let producer = broadcast.create_track(track.clone()).unwrap();
+        let consumer = origin.consume().get_broadcast("test-broadcast").unwrap();
+        let track_consumer = consumer.subscribe_track(&track).unwrap();
+        (producer, track_consumer)
+    }
+
+    fn write_group(producer: &mut moq_lite::TrackProducer, frames: &[&[u8]]) {
+        let mut group = producer.append_group().unwrap();
+        for f in frames {
+            group.write_frame(bytes::Bytes::copy_from_slice(f)).unwrap();
+        }
+        group.finish().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_read_next_raw_moq_walks_groups_and_flags_first_frame() {
+        let (mut producer, mut consumer) = track_pair("audio/data");
+        write_group(&mut producer, &[b"a", b"b"]);
+        write_group(&mut producer, &[b"c"]);
+        producer.finish().unwrap();
+
+        let mut group: Option<moq_lite::GroupConsumer> = None;
+        let mut is_first = false;
+
+        let p1 =
+            MoqPullNode::read_next_raw_moq(&mut consumer, &mut group, &mut is_first).await.unwrap();
+        assert_eq!(p1.as_deref(), Some(&b"a"[..]));
+        assert!(is_first, "first frame of a freshly opened group is flagged");
+
+        is_first = false;
+        let p2 =
+            MoqPullNode::read_next_raw_moq(&mut consumer, &mut group, &mut is_first).await.unwrap();
+        assert_eq!(p2.as_deref(), Some(&b"b"[..]));
+        assert!(!is_first, "subsequent frame in the same group is not flagged");
+
+        let p3 =
+            MoqPullNode::read_next_raw_moq(&mut consumer, &mut group, &mut is_first).await.unwrap();
+        assert_eq!(p3.as_deref(), Some(&b"c"[..]));
+        assert!(is_first, "first frame of the second group is flagged again");
+
+        let end =
+            MoqPullNode::read_next_raw_moq(&mut consumer, &mut group, &mut is_first).await.unwrap();
+        assert!(end.is_none(), "finished track reads as end-of-stream");
+    }
+
+    #[tokio::test]
+    async fn test_read_next_raw_moq_propagates_group_error() {
+        let (mut producer, mut consumer) = track_pair("audio/data");
+        let mut g = producer.append_group().unwrap();
+        g.write_frame(bytes::Bytes::from_static(b"a")).unwrap();
+        g.abort(moq_lite::Error::Cancel).unwrap();
+
+        let mut group: Option<moq_lite::GroupConsumer> = None;
+        let mut is_first = false;
+
+        let first =
+            MoqPullNode::read_next_raw_moq(&mut consumer, &mut group, &mut is_first).await.unwrap();
+        assert_eq!(first.as_deref(), Some(&b"a"[..]));
+
+        let err = MoqPullNode::read_next_raw_moq(&mut consumer, &mut group, &mut is_first).await;
+        assert!(err.is_err(), "an aborted group should surface as an error");
+        assert!(group.is_none(), "the errored group is cleared");
+    }
+
+    #[tokio::test]
+    async fn test_read_next_raw_moq_propagates_next_group_error() {
+        let (mut producer, mut consumer) = track_pair("audio/data");
+        producer.abort(moq_lite::Error::Cancel).unwrap();
+
+        let mut group: Option<moq_lite::GroupConsumer> = None;
+        let mut is_first = false;
+        let err = MoqPullNode::read_next_raw_moq(&mut consumer, &mut group, &mut is_first).await;
+        assert!(err.is_err(), "an aborted track should surface as an error");
+    }
+
+    #[tokio::test]
+    async fn test_parse_catalog_errors_when_track_closed() {
+        let (mut producer, consumer) = track_pair(".catalog");
+        producer.finish().unwrap();
+        let node = MoqPullNode::new(MoqPullConfig::default());
+        let mut cc = super::super::catalog_consumer::CatalogConsumer::new(consumer);
+
+        let Err(err) = node.parse_catalog(&mut cc).await else {
+            panic!("expected a track-closed error");
+        };
+        assert!(err.to_string().contains("closed"), "expected a track-closed error, got: {err}");
+    }
+
+    // `start_paused` lets the catalog timeout elapse in virtual time.
+    #[tokio::test(start_paused = true)]
+    async fn test_parse_catalog_times_out_without_catalog() {
+        let (_producer, consumer) = track_pair(".catalog");
+        let node = MoqPullNode::new(MoqPullConfig::default());
+        let mut cc = super::super::catalog_consumer::CatalogConsumer::new(consumer);
+
+        let Err(err) = node.parse_catalog(&mut cc).await else {
+            panic!("expected a timeout error");
+        };
+        assert!(err.to_string().contains("Timed out"), "expected a timeout error, got: {err}");
+    }
+
+    #[test]
+    fn test_extract_tracks_skips_unsupported_codecs() {
+        let mut catalog = audio_only_catalog();
+        catalog.audio.renditions.insert(
+            "audio/aac-he".to_string(),
+            hang::catalog::AudioConfig {
+                codec: hang::catalog::AudioCodec::AAC(hang::catalog::AAC { profile: 5 }),
+                sample_rate: 48000,
+                channel_count: 2,
+                bitrate: None,
+                description: None,
+                container: hang::catalog::Container::default(),
+                jitter: None,
+            },
+        );
+        catalog.video.renditions.insert(
+            "video/vp8".to_string(),
+            hang::catalog::VideoConfig {
+                codec: hang::catalog::VideoCodec::VP8,
+                coded_width: None,
+                coded_height: None,
+                display_ratio_width: None,
+                display_ratio_height: None,
+                framerate: None,
+                bitrate: None,
+                description: None,
+                optimize_for_latency: None,
+                container: hang::catalog::Container::default(),
+                jitter: None,
+            },
+        );
+
+        let tracks = MoqPullNode::extract_tracks(&catalog);
+        assert!(tracks.iter().all(|t| t.track.name != "audio/aac-he"));
+        assert!(tracks.iter().all(|t| t.track.name != "video/vp8"));
+        assert_eq!(tracks.len(), 1, "only the supported Opus rendition survives");
+        assert!(tracks[0].audio_codec.is_some());
+    }
+
+    #[test]
+    fn test_input_and_output_pins() {
+        let node = MoqPullNode::new(MoqPullConfig::default());
+        assert!(node.input_pins().is_empty());
+        let outs = node.output_pins();
+        assert_eq!(outs.len(), 1);
+        assert_eq!(outs[0].name, "out");
+    }
+
+    #[tokio::test]
+    async fn test_route_track_frame_static_pin_closed_channel() {
+        let (mut ctx, mock, _state_rx) = crate::test_utils::create_test_context(HashMap::new(), 1);
+        drop(mock); // closes the only routed-packet receiver
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+
+        let outcome = MoqPullNode::route_track_frame(
+            &mut ctx,
+            &dynamic_outputs,
+            true,
+            "out",
+            Packet::Text(Arc::from("frame")),
+        )
+        .await;
+        assert!(matches!(outcome, RouteOutcome::Closed));
+    }
+
+    #[tokio::test]
+    async fn test_pin_management_rejects_input_pins_and_ignores_input_variants() {
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let (mgmt_tx, mgmt_rx) = mpsc::channel(8);
+        let task = tokio::spawn(MoqPullNode::handle_pin_management(
+            mgmt_rx,
+            dynamic_outputs.clone(),
+            "test-node".to_string(),
+            AudioCodec::Opus,
+        ));
+
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        mgmt_tx
+            .send(PinManagementMessage::RequestAddInputPin {
+                suggested_name: Some("in".to_string()),
+                response_tx: resp_tx,
+            })
+            .await
+            .unwrap();
+        assert!(resp_rx.await.unwrap().is_err(), "input pins are not supported");
+
+        mgmt_tx
+            .send(PinManagementMessage::RemoveInputPin { pin_name: "in".to_string() })
+            .await
+            .unwrap();
+
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        mgmt_tx
+            .send(PinManagementMessage::RequestAddOutputPin {
+                suggested_name: Some("out".to_string()),
+                response_tx: ack_tx,
+            })
+            .await
+            .unwrap();
+        assert!(ack_rx.await.unwrap().is_ok());
+
+        drop(mgmt_tx);
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_initialize_falls_back_to_default_pin_on_discovery_error() {
+        let mut node = MoqPullNode::new(MoqPullConfig::default());
+        let (state_tx, _state_rx) = mpsc::channel(10);
+        let ctx = streamkit_core::InitContext { node_id: "node".to_string(), state_tx };
+
+        let update = node.initialize(&ctx).await.unwrap();
+        assert!(matches!(update, streamkit_core::pins::PinUpdate::NoChange));
+    }
+
+    #[tokio::test]
+    async fn test_run_returns_configuration_error_on_invalid_url() {
+        let node = MoqPullNode::new(MoqPullConfig::default());
+        let (ctx, _mock, _state_rx) = crate::test_utils::create_test_context(HashMap::new(), 1);
+
+        let result = Box::new(node).run(ctx).await;
+        assert!(
+            matches!(result, Err(StreamKitError::Configuration(_))),
+            "empty URL should surface as a fatal configuration error, got: {result:?}"
+        );
+    }
 }

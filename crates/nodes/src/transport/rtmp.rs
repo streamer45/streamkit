@@ -1558,4 +1558,636 @@ mod tests {
         assert!(nal_types.contains(&9), "AUD should be in video_data");
         assert!(nal_types.contains(&5), "IDR should be in video_data");
     }
+
+    // The production AMF0 / chunk encoders live in `rtmp_client.rs` and are
+    // private to that module, so the helpers below reproduce just enough of
+    // the server→client wire format to drive a real
+    // `RtmpPublishClientConnection` (sans-IO) to the `Publishing` state from
+    // this test module — mirroring `rtmp_client.rs`'s own
+    // `drive_to_publishing` helper.
+    const TEST_HANDSHAKE_SIZE: usize = 1536;
+
+    fn amf0_string(buf: &mut Vec<u8>, s: &str) {
+        buf.push(0x02);
+        buf.extend_from_slice(&u16::try_from(s.len()).unwrap().to_be_bytes());
+        buf.extend_from_slice(s.as_bytes());
+    }
+
+    fn amf0_number(buf: &mut Vec<u8>, n: f64) {
+        buf.push(0x00);
+        buf.extend_from_slice(&n.to_be_bytes());
+    }
+
+    fn amf0_null(buf: &mut Vec<u8>) {
+        buf.push(0x05);
+    }
+
+    /// AMF0 object whose key/value pairs are all strings, e.g. the
+    /// `level`/`code`/`description` info object servers send in `onStatus`
+    /// and `connect` `_result`.
+    fn amf0_string_object(buf: &mut Vec<u8>, fields: &[(&str, &str)]) {
+        buf.push(0x03); // object marker
+        for (key, val) in fields {
+            buf.extend_from_slice(&u16::try_from(key.len()).unwrap().to_be_bytes());
+            buf.extend_from_slice(key.as_bytes());
+            amf0_string(buf, val);
+        }
+        buf.extend_from_slice(&[0x00, 0x00, 0x09]); // object-end marker
+    }
+
+    fn amf0_status_object(buf: &mut Vec<u8>, code: &str) {
+        amf0_status_object_with_desc(buf, code, "ok");
+    }
+
+    fn amf0_status_object_with_desc(buf: &mut Vec<u8>, code: &str, description: &str) {
+        amf0_string_object(
+            buf,
+            &[("level", "status"), ("code", code), ("description", description)],
+        );
+    }
+
+    /// Encode one server→client RTMP message as a fmt=0 chunk, splitting
+    /// payloads larger than 128 bytes into fmt=3 continuation chunks (the
+    /// client decoder uses the 128-byte default until told otherwise).
+    fn server_chunk(csid: u8, msg_type_id: u8, stream_id: u32, payload: &[u8]) -> Vec<u8> {
+        const CHUNK: usize = 128;
+        debug_assert!(csid < 64, "server_chunk only emits the 1-byte basic header (csid < 64)");
+        let mut out = Vec::new();
+        out.push(csid); // fmt=0 (top two bits zero) + csid in the low six bits
+        out.extend_from_slice(&[0, 0, 0]); // timestamp
+        out.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_be_bytes()[1..4]);
+        out.push(msg_type_id);
+        out.extend_from_slice(&stream_id.to_le_bytes());
+
+        let first = payload.len().min(CHUNK);
+        out.extend_from_slice(&payload[..first]);
+        let mut offset = first;
+        while offset < payload.len() {
+            out.push(0xC0 | csid); // fmt=3 continuation header
+            let end = (offset + CHUNK).min(payload.len());
+            out.extend_from_slice(&payload[offset..end]);
+            offset = end;
+        }
+        out
+    }
+
+    /// The 1 + 1536 + 1536 handshake bytes a server sends (S0/S1/S2).  The
+    /// client's handshake ignores S1/S2 content, so filler bytes suffice.
+    fn handshake_s0s1s2() -> Vec<u8> {
+        let mut out = Vec::with_capacity(1 + TEST_HANDSHAKE_SIZE * 2);
+        out.push(0x03); // S0
+        out.extend_from_slice(&[0xBB; TEST_HANDSHAKE_SIZE]); // S1
+        out.extend_from_slice(&[0xCC; TEST_HANDSHAKE_SIZE]); // S2
+        out
+    }
+
+    /// Post-handshake server messages that take a publish client all the way
+    /// to `Publishing`: window-ack + set-bandwidth, the `connect` `_result`,
+    /// the `createStream` `_result` (stream id 1) and the
+    /// `NetStream.Publish.Start` `onStatus`.
+    fn server_publish_sequence() -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&server_chunk(2, 5, 0, &2_500_000u32.to_be_bytes()));
+        let mut set_bw = 2_500_000u32.to_be_bytes().to_vec();
+        set_bw.push(2); // limit type = dynamic
+        out.extend_from_slice(&server_chunk(2, 6, 0, &set_bw));
+
+        // A real connect `_result` carries two AMF0 objects after the
+        // transaction id: a `properties` object then the `info` status object
+        // (no Null in between, unlike `createStream`'s result below).
+        let mut connect_result = Vec::new();
+        amf0_string(&mut connect_result, "_result");
+        amf0_number(&mut connect_result, 1.0);
+        amf0_string_object(&mut connect_result, &[("fmsVer", "FMS/3,5,7,7009"), ("mode", "1")]);
+        amf0_status_object(&mut connect_result, "NetConnection.Connect.Success");
+        out.extend_from_slice(&server_chunk(3, 20, 0, &connect_result));
+
+        let mut create_stream_result = Vec::new();
+        amf0_string(&mut create_stream_result, "_result");
+        amf0_number(&mut create_stream_result, 2.0);
+        amf0_null(&mut create_stream_result);
+        amf0_number(&mut create_stream_result, 1.0); // media stream id
+        out.extend_from_slice(&server_chunk(3, 20, 0, &create_stream_result));
+
+        let mut on_status = Vec::new();
+        amf0_string(&mut on_status, "onStatus");
+        amf0_number(&mut on_status, 0.0);
+        amf0_null(&mut on_status);
+        amf0_status_object(&mut on_status, "NetStream.Publish.Start");
+        out.extend_from_slice(&server_chunk(4, 20, 1, &on_status));
+
+        out
+    }
+
+    fn test_connection() -> RtmpPublishClientConnection {
+        let url: RtmpUrl = "rtmp://x.rtmp.example.com/live2/stream-key".parse().unwrap();
+        RtmpPublishClientConnection::new(url)
+    }
+
+    /// Drive a fresh connection (in-process, no sockets) to `Publishing` and
+    /// return it with its send buffer and event queue drained.
+    fn drive_to_publishing() -> RtmpPublishClientConnection {
+        let mut conn = test_connection();
+        assert_eq!(conn.state(), RtmpConnectionState::Handshaking);
+        conn.advance_send_buf(conn.send_buf().len()); // drain C0+C1
+
+        conn.feed_recv_buf(&handshake_s0s1s2()).unwrap();
+        assert_eq!(conn.state(), RtmpConnectionState::Connecting);
+        conn.advance_send_buf(conn.send_buf().len());
+
+        conn.feed_recv_buf(&server_publish_sequence()).unwrap();
+        assert_eq!(conn.state(), RtmpConnectionState::Publishing);
+        conn.advance_send_buf(conn.send_buf().len());
+        while conn.next_event().is_some() {}
+
+        conn
+    }
+
+    fn keyframe_annexb() -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xC0, 0x1F]); // SPS
+        data.extend_from_slice(&[0x00, 0x00, 0x01, 0x68, 0xCE, 0x38, 0x80]); // PPS
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x84]); // IDR
+        data
+    }
+
+    fn idr_only_annexb() -> Vec<u8> {
+        vec![0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x84] // IDR, no SPS/PPS
+    }
+
+    fn interframe_annexb() -> Vec<u8> {
+        vec![0x00, 0x00, 0x00, 0x01, 0x41, 0x9A, 0x12] // non-IDR slice (type 1)
+    }
+
+    /// An interframe access unit that *also* repeats SPS/PPS (some encoders
+    /// emit parameter sets on every frame). The keyframe guard must still
+    /// suppress the AVC sequence header here.
+    fn interframe_with_params_annexb() -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xC0, 0x1F]); // SPS
+        data.extend_from_slice(&[0x00, 0x00, 0x01, 0x68, 0xCE, 0x38, 0x80]); // PPS
+        data.extend_from_slice(&interframe_annexb());
+        data
+    }
+
+    fn binary_packet(data: &[u8], keyframe: Option<bool>) -> Packet {
+        Packet::Binary {
+            data: bytes::Bytes::copy_from_slice(data),
+            metadata: Some(PacketMetadata {
+                timestamp_us: Some(0),
+                duration_us: None,
+                sequence: None,
+                keyframe,
+            }),
+            content_type: None,
+        }
+    }
+
+    fn test_counter() -> opentelemetry::metrics::Counter<u64> {
+        opentelemetry::global::meter("test").u64_counter("test").build()
+    }
+
+    fn test_stats() -> NodeStatsTracker {
+        NodeStatsTracker::new("test".to_string(), None)
+    }
+
+    const MSG_TYPE_AUDIO: u8 = 8;
+    const MSG_TYPE_VIDEO: u8 = 9;
+    /// Outbound chunk size the client announces during connect (see
+    /// `RtmpPublishClientConnection::LOCAL_CHUNK_SIZE`).
+    const CLIENT_CHUNK_SIZE: usize = 4096;
+
+    /// Decode the client's outbound `send_buf` into `(msg_type_id, payload)`
+    /// pairs. Media payloads in these tests are far below the negotiated
+    /// 4096-byte chunk size, so every message is a single chunk; only the
+    /// per-csid length/type carried by fmt=2/3 headers needs tracking.
+    fn decode_outbound_messages(buf: &[u8]) -> Vec<(u8, Vec<u8>)> {
+        fn be24(b: &[u8]) -> usize {
+            (usize::from(b[0]) << 16) | (usize::from(b[1]) << 8) | usize::from(b[2])
+        }
+        let mut prev: std::collections::HashMap<u8, (usize, u8)> = std::collections::HashMap::new();
+        let mut msgs = Vec::new();
+        let mut pos = 0;
+        while pos < buf.len() {
+            let fmt = buf[pos] >> 6;
+            let csid = buf[pos] & 0x3F;
+            assert!(csid >= 2, "extended (2-/3-byte) csid headers are not produced by these tests");
+            pos += 1;
+            let (len, ty) = match fmt {
+                0 => {
+                    let v = (be24(&buf[pos + 3..]), buf[pos + 6]);
+                    pos += 11;
+                    v
+                },
+                1 => {
+                    let v = (be24(&buf[pos + 3..]), buf[pos + 6]);
+                    pos += 7;
+                    v
+                },
+                2 => {
+                    pos += 3;
+                    *prev.get(&csid).unwrap() // fmt=2 reuses the prior length/type
+                },
+                _ => *prev.get(&csid).unwrap(), // fmt=3 reuses the prior length/type
+            };
+            // This decoder reads `len` contiguous bytes as one chunk; it does
+            // not skip interior fmt=3 continuation headers. Guard the
+            // single-chunk precondition so a future larger payload trips here
+            // instead of silently misparsing.
+            assert!(
+                len <= CLIENT_CHUNK_SIZE,
+                "decoder assumes single-chunk messages; payload ({len}) exceeds the negotiated \
+                 {CLIENT_CHUNK_SIZE}-byte chunk size"
+            );
+            let payload = buf[pos..pos + len].to_vec();
+            pos += len;
+            prev.insert(csid, (len, ty));
+            msgs.push((ty, payload));
+        }
+        msgs
+    }
+
+    /// `(frame_type, avc_packet_type)` for each emitted FLV video message.
+    /// frame_type: 1 = keyframe, 2 = interframe. avc_packet_type: 0 = AVC
+    /// sequence header, 1 = NAL unit.
+    fn video_tags(buf: &[u8]) -> Vec<(u8, u8)> {
+        decode_outbound_messages(buf)
+            .into_iter()
+            .filter(|(ty, _)| *ty == MSG_TYPE_VIDEO)
+            .map(|(_, p)| (p[0] >> 4, p[1]))
+            .collect()
+    }
+
+    /// `channelConfiguration` decoded from the AAC `AudioSpecificConfig` in
+    /// the audio sequence-header message (AAC packet type 0), if one was sent.
+    fn aac_seq_header_channels(buf: &[u8]) -> Option<u8> {
+        decode_outbound_messages(buf)
+            .into_iter()
+            .filter(|(ty, _)| *ty == MSG_TYPE_AUDIO)
+            .find(|(_, p)| p.get(1) == Some(&0))
+            // FLV audio header(1) + AAC packet type(1) then the 2-byte ASC;
+            // channelConfiguration is bits 3..=6 of the second ASC byte.
+            .map(|(_, p)| (p[3] >> 3) & 0x0F)
+    }
+
+    fn send_video(
+        conn: &mut RtmpPublishClientConnection,
+        pkt: &Packet,
+        count: &mut u64,
+    ) -> Result<(), StreamKitError> {
+        let counter = test_counter();
+        let mut stats = test_stats();
+        let labels = [KeyValue::new("track", "video")];
+        process_video_packet(pkt, conn, 0, &counter, &labels, &mut stats, count, "test")
+    }
+
+    #[test]
+    fn drive_to_publishing_reaches_publishing_state() {
+        let conn = drive_to_publishing();
+        assert_eq!(conn.state(), RtmpConnectionState::Publishing);
+        assert!(conn.send_buf().is_empty());
+    }
+
+    #[test]
+    fn process_video_keyframe_sends_seq_header_and_nal() {
+        let mut conn = drive_to_publishing();
+        let mut count = 0u64;
+        let pkt = binary_packet(&keyframe_annexb(), Some(true));
+        send_video(&mut conn, &pkt, &mut count).unwrap();
+
+        assert_eq!(count, 1);
+        let with_params = conn.send_buf().len();
+        assert!(with_params > 0, "keyframe should enqueue RTMP data");
+
+        // An IDR-only keyframe (no SPS/PPS) skips the AVC sequence header, so
+        // it must enqueue strictly fewer bytes than the SPS+PPS keyframe.
+        let mut conn2 = drive_to_publishing();
+        let mut count2 = 0u64;
+        let pkt2 = binary_packet(&idr_only_annexb(), Some(true));
+        send_video(&mut conn2, &pkt2, &mut count2).unwrap();
+        let without_params = conn2.send_buf().len();
+
+        assert_eq!(count2, 1);
+        assert!(
+            with_params > without_params,
+            "keyframe with SPS/PPS ({with_params}) should send more than IDR-only \
+             ({without_params})"
+        );
+    }
+
+    #[test]
+    fn process_video_interframe_sends_without_seq_header() {
+        // A keyframe emits seq-header + NAL; the following interframe repeats
+        // SPS/PPS but must emit only its own NAL unit — the keyframe guard
+        // suppresses a second AVC sequence header.
+        let mut conn = drive_to_publishing();
+        let mut count = 0u64;
+        send_video(&mut conn, &binary_packet(&keyframe_annexb(), Some(true)), &mut count).unwrap();
+        send_video(
+            &mut conn,
+            &binary_packet(&interframe_with_params_annexb(), Some(false)),
+            &mut count,
+        )
+        .unwrap();
+
+        assert_eq!(count, 2);
+        assert_eq!(
+            video_tags(conn.send_buf()),
+            [(1, 0), (1, 1), (2, 1)],
+            "keyframe emits seq-header + NAL; interframe emits only its NAL, no seq header"
+        );
+    }
+
+    #[test]
+    fn process_video_keyframe_without_slices_sends_only_seq_header() {
+        // An access unit with SPS+PPS but no slice NALUs has empty video_data,
+        // so only the sequence header is sent (no zero-length NalUnit frame).
+        let mut conn = drive_to_publishing();
+        let mut count = 0u64;
+        let mut params_only = Vec::new();
+        params_only.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xC0, 0x1F]); // SPS
+        params_only.extend_from_slice(&[0x00, 0x00, 0x01, 0x68, 0xCE, 0x38, 0x80]); // PPS
+
+        send_video(&mut conn, &binary_packet(&params_only, Some(true)), &mut count).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(
+            video_tags(conn.send_buf()),
+            [(1, 0)],
+            "params-only access unit must emit only the AVC sequence header, no NAL-unit frame"
+        );
+    }
+
+    #[test]
+    fn process_video_ignores_non_binary_packet() {
+        let mut conn = drive_to_publishing();
+        let mut count = 0u64;
+        let pkt = Packet::Text(std::sync::Arc::from("not video"));
+        send_video(&mut conn, &pkt, &mut count).unwrap();
+        assert_eq!(count, 0);
+        assert!(conn.send_buf().is_empty(), "non-binary packet should not enqueue data");
+    }
+
+    #[test]
+    fn process_audio_first_packet_sends_seq_header_then_frame() {
+        let mut conn = drive_to_publishing();
+        let counter = test_counter();
+        let mut stats = test_stats();
+        let labels = [KeyValue::new("track", "audio")];
+        let mut count = 0u64;
+        let mut seq_sent = false;
+        let pkt = binary_packet(&[0xAA; 20], None);
+
+        process_audio_packet(
+            &pkt,
+            &mut conn,
+            &mut seq_sent,
+            0,
+            48_000,
+            2,
+            &counter,
+            &labels,
+            &mut stats,
+            &mut count,
+            "test",
+        )
+        .unwrap();
+
+        assert!(seq_sent, "AAC sequence header flag should flip on the first packet");
+        assert_eq!(count, 1);
+        let first_len = conn.send_buf().len();
+        conn.advance_send_buf(first_len);
+
+        // Subsequent packet reuses the cached header → only the raw frame is
+        // sent, so it enqueues strictly fewer bytes than the first packet.
+        process_audio_packet(
+            &pkt,
+            &mut conn,
+            &mut seq_sent,
+            20,
+            48_000,
+            2,
+            &counter,
+            &labels,
+            &mut stats,
+            &mut count,
+            "test",
+        )
+        .unwrap();
+        let second_len = conn.send_buf().len();
+
+        assert_eq!(count, 2);
+        assert!(
+            first_len > second_len,
+            "first audio packet ({first_len}) carries the sequence header so it should send more \
+             than a subsequent frame ({second_len})"
+        );
+    }
+
+    #[test]
+    fn process_audio_mono_config_succeeds() {
+        let mut conn = drive_to_publishing();
+        let counter = test_counter();
+        let mut stats = test_stats();
+        let labels = [KeyValue::new("track", "audio")];
+        let mut count = 0u64;
+        let mut seq_sent = false;
+        let pkt = binary_packet(&[0x01, 0x02, 0x03, 0x04], None);
+
+        process_audio_packet(
+            &pkt,
+            &mut conn,
+            &mut seq_sent,
+            0,
+            44_100,
+            1,
+            &counter,
+            &labels,
+            &mut stats,
+            &mut count,
+            "test",
+        )
+        .unwrap();
+
+        assert!(seq_sent);
+        assert_eq!(count, 1);
+        assert_eq!(
+            aac_seq_header_channels(conn.send_buf()),
+            Some(1),
+            "mono config must encode channelConfiguration=1 in the AudioSpecificConfig"
+        );
+    }
+
+    #[test]
+    fn process_audio_ignores_non_binary_packet() {
+        let mut conn = drive_to_publishing();
+        let counter = test_counter();
+        let mut stats = test_stats();
+        let labels = [KeyValue::new("track", "audio")];
+        let mut count = 0u64;
+        let mut seq_sent = false;
+        let pkt = Packet::Text(std::sync::Arc::from("not audio"));
+
+        process_audio_packet(
+            &pkt,
+            &mut conn,
+            &mut seq_sent,
+            0,
+            48_000,
+            2,
+            &counter,
+            &labels,
+            &mut stats,
+            &mut count,
+            "test",
+        )
+        .unwrap();
+
+        assert!(!seq_sent, "non-binary packet must not emit the sequence header");
+        assert_eq!(count, 0);
+        assert!(conn.send_buf().is_empty());
+    }
+
+    #[test]
+    fn drain_events_returns_false_for_state_changes_only() {
+        let mut conn = test_connection();
+        conn.advance_send_buf(conn.send_buf().len());
+        conn.feed_recv_buf(&handshake_s0s1s2()).unwrap();
+        // Handshake completion queues StateChanged events but no disconnect.
+        assert!(!drain_events(&mut conn, "test"));
+        assert!(conn.next_event().is_none(), "events should be drained");
+    }
+
+    #[test]
+    fn drain_events_detects_peer_disconnect() {
+        let mut conn = drive_to_publishing();
+        let mut on_status = Vec::new();
+        amf0_string(&mut on_status, "onStatus");
+        amf0_number(&mut on_status, 0.0);
+        amf0_null(&mut on_status);
+        amf0_status_object(&mut on_status, "NetStream.Publish.Failed");
+        conn.feed_recv_buf(&server_chunk(4, 20, 1, &on_status)).unwrap();
+
+        assert!(drain_events(&mut conn, "test"), "a failed onStatus should report a disconnect");
+        assert_eq!(conn.state(), RtmpConnectionState::Disconnecting);
+    }
+
+    #[test]
+    fn server_chunk_reassembles_multichunk_message() {
+        // An onStatus whose payload exceeds the 128-byte chunk size forces
+        // server_chunk down its fmt=3 continuation path; the client must
+        // reassemble all chunks to parse the command end-to-end.
+        let mut conn = drive_to_publishing();
+        let mut on_status = Vec::new();
+        amf0_string(&mut on_status, "onStatus");
+        amf0_number(&mut on_status, 0.0);
+        amf0_null(&mut on_status);
+        amf0_status_object_with_desc(&mut on_status, "NetStream.Publish.Failed", &"x".repeat(200));
+        assert!(on_status.len() > 128, "payload must exceed one chunk to exercise continuation");
+
+        let wire = server_chunk(4, 20, 1, &on_status);
+        // fmt=0 basic+message header (12 bytes) + payload + one fmt=3 basic
+        // header (1 byte) per extra chunk.
+        assert_eq!(wire.len(), 12 + on_status.len() + (on_status.len() - 1) / 128);
+
+        conn.feed_recv_buf(&wire).unwrap();
+        assert!(drain_events(&mut conn, "test"), "reassembled onStatus should report a disconnect");
+        assert_eq!(conn.state(), RtmpConnectionState::Disconnecting);
+    }
+
+    async fn fake_server(listener: tokio::net::TcpListener) {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut c0c1 = vec![0u8; 1 + TEST_HANDSHAKE_SIZE];
+        sock.read_exact(&mut c0c1).await.unwrap();
+
+        let mut s0s1s2 = vec![0x03];
+        s0s1s2.extend_from_slice(&[0xBB; TEST_HANDSHAKE_SIZE]); // S1
+        s0s1s2.extend_from_slice(&c0c1[1..]); // S2 echoes C1
+        sock.write_all(&s0s1s2).await.unwrap();
+
+        let mut buf = vec![0u8; 8192];
+        let _ = sock.read(&mut buf).await.unwrap(); // C2 + connect sequence
+        sock.write_all(&server_publish_sequence()).await.unwrap();
+
+        // Keep draining so the client's later writes never block.
+        loop {
+            match sock.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {},
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn drive_handshake_reaches_publishing() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(fake_server(listener));
+
+        let tcp = TcpStream::connect(addr).await.unwrap();
+        let mut stream = RtmpStream::Plain(tcp);
+        let url: RtmpUrl = "rtmp://x.rtmp.example.com/live2/key".parse().unwrap();
+        let mut conn = RtmpPublishClientConnection::new(url);
+
+        drive_handshake(&mut conn, &mut stream, "test").await.unwrap();
+        assert_eq!(conn.state(), RtmpConnectionState::Publishing);
+
+        stream.shutdown().await.unwrap();
+        drop(stream);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn flush_send_buf_raw_drains_buffer_to_stream() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut received = Vec::new();
+            let _ = sock.read_to_end(&mut received).await;
+            received.len()
+        });
+
+        let tcp = TcpStream::connect(addr).await.unwrap();
+        let mut stream = RtmpStream::Plain(tcp);
+        let mut conn = test_connection();
+        let queued = conn.send_buf().len(); // C0 + C1
+        assert_eq!(queued, 1 + TEST_HANDSHAKE_SIZE);
+
+        flush_send_buf_raw(&mut conn, &mut stream).await.unwrap();
+        assert!(conn.send_buf().is_empty(), "send buffer should be fully drained after flush");
+
+        stream.shutdown().await.unwrap();
+        drop(stream);
+        assert_eq!(server.await.unwrap(), queued);
+    }
+
+    #[tokio::test]
+    async fn flush_send_buf_writes_and_returns_when_no_server_data() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            // Drain without ever replying so the client's non-blocking drain
+            // sees `WouldBlock` and returns cleanly.
+            loop {
+                match sock.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {},
+                }
+            }
+        });
+
+        let tcp = TcpStream::connect(addr).await.unwrap();
+        let mut stream = RtmpStream::Plain(tcp);
+        let mut conn = test_connection();
+        let mut read_buf = vec![0u8; 8192];
+
+        flush_send_buf(&mut conn, &mut stream, &mut read_buf, "test").await.unwrap();
+        assert!(conn.send_buf().is_empty());
+
+        stream.shutdown().await.unwrap();
+        drop(stream);
+        server.await.unwrap();
+    }
 }
