@@ -1,3 +1,8 @@
+# Deliberate fork of samples/pipelines/oneshot/speech_to_text.yml (which is
+# referenced by gen-docs-reference.rs, so it is not repurposed here). This copy
+# targets the multilingual ggml-tiny-q5_1.bin that the -demo image actually
+# ships (the canonical pipeline points at the English-only ggml-tiny.en model,
+# which is absent from that image; see README / #553).
 name: stt
 description: Speech-to-Text (Whisper) for the observability sample
 mode: oneshot

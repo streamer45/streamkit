@@ -1,3 +1,8 @@
+# Deliberate fork of samples/pipelines/oneshot/kokoro-tts.yml (which is
+# referenced by gen-docs-reference.rs, so it is not repurposed here). This copy
+# adds `attributes: { service: tts }` for the per-service metric label and muxes
+# Ogg/Opus instead of WebM so generate-traffic.sh can feed the output straight
+# into the STT pipeline.
 name: tts
 description: Text-to-Speech (Kokoro) for the observability sample
 mode: oneshot

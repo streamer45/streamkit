@@ -9,7 +9,9 @@
 # logs "no plugins found" and TTS/STT pipelines fail with "node kind not found".
 # We assemble the expected layout from the repo manifests (mounted at
 # /repo-manifests) plus the .so files baked into the image, then start the
-# server. Tracked upstream; remove once the demo image ships bundles directly.
+# server. The proper fix is in Dockerfile.demo (ship the bundles directly);
+# tracked in https://github.com/streamer45/streamkit/issues/553 — remove this
+# shim once the demo image ships plugin bundles.
 set -e
 
 SRC=/opt/streamkit/plugins/native

@@ -20,8 +20,8 @@ dashboards. Use it to validate metrics and dashboards without any cloud setup.
 cd samples/observability
 docker compose up -d
 ./generate-traffic.sh                 # direct-to-skit TTS+STT
-# optional gateway row:
-docker compose --profile gateway up -d --build
+# optional gateway row (overlay adds the service + its Prometheus scrape):
+docker compose -f docker-compose.yml -f docker-compose.gateway.yml up -d --build
 ./generate-traffic.sh --gateway
 ```
 
@@ -71,19 +71,12 @@ Key name/label facts:
   policy; the pinned `v0.5.0-demo` predates this).
 - Video / MoQ / codec panels — only populate when you run those pipelines.
 
-## Gotchas (most-common causes of empty dashboards)
+## Gotchas
 
-- **`latest-demo` is stale.** Pin a versioned `-demo` tag; `latest-demo` can
-  predate metrics like `plugin.call.duration`, leaving the Plugins row empty.
-- **Demo-image plugin layout.** `-demo` images ship bare `.so` files but the
-  loader wants `plugins/native/<id>/` bundles; `skit/entrypoint.sh` reassembles
-  them. Symptom: "no plugins found" / "node kind not found in registry".
-- **Model-name mismatch.** A pipeline's `model_path` must exist in the image's
-  `models/`. The stack's `pipelines/` use the names the `-demo` image ships.
-- **Grafana datasource input.** Committed dashboards use `${DS_PROMETHEUS}`;
-  the `dashboard-prep` step rewrites it to the provisioned uid. In compose
-  command strings, escape it as `$${DS_PROMETHEUS}` so compose doesn't
-  interpolate it.
-- **Local auth.** skit needs `SK_AUTH__MODE=disabled` +
-  `SK_PERMISSIONS__ALLOW_INSECURE_NO_AUTH=true` to start unauthenticated on a
-  non-loopback bind. Local only.
+The canonical list of setup gotchas (stale `latest-demo`, demo-image plugin
+layout, model-name matching, `by Service` panels, local-auth override,
+`${DS_PROMETHEUS}` datasource) lives in
+[`samples/observability/README.md`](../../../samples/observability/README.md#known-gotchas)
+— keep it there to avoid drift. One detail specific to *editing* the stack: in
+compose `command:` strings, escape the datasource input as `$${DS_PROMETHEUS}`
+so compose doesn't interpolate it before `dashboard-prep` runs.

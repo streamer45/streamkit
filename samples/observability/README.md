@@ -32,7 +32,7 @@ dashboards are auto-provisioned:
 | Grafana    | <http://localhost:3000> |
 | Prometheus | <http://localhost:9090> |
 | skit API   | <http://localhost:4545> |
-| gateway    | <http://localhost:8080> (gateway profile only) |
+| gateway    | <http://localhost:8080> (gateway overlay only) |
 
 ## How metrics get to Prometheus
 
@@ -44,17 +44,27 @@ Two different paths, both visible on the dashboards:
   `http://prometheus:9090/api/v1/otlp/v1/metrics`. This feeds the HTTP, engine,
   oneshot, and **plugin** metrics.
 - **gateway → Prometheus (scrape).** The speech gateway exposes a classic
-  `/metrics` endpoint that Prometheus scrapes (see `prometheus.yml`). This feeds
-  the **Speech Gateway** row.
+  `/metrics` endpoint that Prometheus scrapes. That scrape lives in the gateway
+  overlay (`prometheus.gateway.yml`, wired up by `docker-compose.gateway.yml`)
+  rather than the base `prometheus.yml`, so the default stack has no
+  perpetually-DOWN target. This feeds the **Speech Gateway** row.
 
 ## Speech Gateway row
 
-The gateway is behind a compose profile because it requires the gateway
-**metrics** instrumentation:
+The gateway lives in a compose overlay (`docker-compose.gateway.yml`) that adds
+the service and points Prometheus at the config that scrapes its `/metrics`:
 
 ```bash
-docker compose --profile gateway up -d --build
+docker compose -f docker-compose.yml -f docker-compose.gateway.yml up -d --build
 ./generate-traffic.sh --gateway   # route traffic through the gateway
+```
+
+`--build` is only needed the first time, or after you change the gateway
+sources under `examples/speech-gateway/`. To just bring the stack back up, drop
+it:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gateway.yml up -d
 ```
 
 Notes:
@@ -106,5 +116,5 @@ These are the sharp edges worth knowing when wiring this up yourself:
 ## Cleanup
 
 ```bash
-docker compose --profile gateway down -v
+docker compose -f docker-compose.yml -f docker-compose.gateway.yml down -v
 ```
