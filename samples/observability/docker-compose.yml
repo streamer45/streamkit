@@ -76,8 +76,10 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:
-      - prometheus
-      - dashboard-prep
+      prometheus:
+        condition: service_started
+      dashboard-prep:
+        condition: service_completed_successfully
 
   gateway:
     profiles: ["gateway"]
