@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+# Used by the gateway overlay (docker-compose.gateway.yml): the base config plus
+# a scrape of the speech gateway's /metrics endpoint. Only loaded when the
+# gateway is actually running, so the gateway target is never DOWN.
+scrape_configs:
+  - job_name: speech-gateway
+    static_configs:
+      - targets: ['gateway:8080']

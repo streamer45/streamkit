@@ -2,11 +2,10 @@ global:
   scrape_interval: 5s
   evaluation_interval: 5s
 
-# skit pushes metrics via OTLP to Prometheus' native OTLP receiver
-# (enabled with --web.enable-otlp-receiver in docker-compose.yml), so skit
-# does not need a scrape_config here. The speech gateway exposes a classic
-# Prometheus /metrics endpoint and is scraped below.
-scrape_configs:
-  - job_name: speech-gateway
-    static_configs:
-      - targets: ['gateway:8080']
+# skit pushes metrics via OTLP to Prometheus' native OTLP receiver (enabled with
+# --web.enable-otlp-receiver in docker-compose.yml), so it needs no scrape_config.
+# The optional speech gateway exposes a classic /metrics endpoint; it is scraped
+# via the gateway overlay (docker-compose.gateway.yml + prometheus.gateway.yml).
+# Keeping its scrape out of the base config means the default stack has no
+# perpetually-DOWN target. See README.md.
+scrape_configs: []

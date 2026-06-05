@@ -1,14 +1,16 @@
-# Local observability stack for StreamKit: skit + Prometheus + Grafana, with an
-# optional speech gateway. See README.md for the walkthrough and known gotchas.
+# Local observability stack for StreamKit: skit + Prometheus + Grafana. The
+# optional speech gateway lives in the docker-compose.gateway.yml overlay. See
+# README.md for the walkthrough and known gotchas.
 #
 # Usage:
-#   docker compose up -d                  # skit + Prometheus + Grafana
-#   docker compose --profile gateway up -d # also build & run the speech gateway
+#   docker compose up -d   # skit + Prometheus + Grafana
+#   # add the gateway (and its Prometheus scrape):
+#   docker compose -f docker-compose.yml -f docker-compose.gateway.yml up -d --build
 #
 # Grafana:    http://localhost:3000  (anonymous admin, no login)
 # Prometheus: http://localhost:9090
 # skit API:   http://localhost:4545
-# gateway:    http://localhost:8080  (gateway profile only)
+# gateway:    http://localhost:8080  (gateway overlay only)
 
 services:
   skit:
@@ -69,7 +71,6 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
-      GF_SECURITY_ADMIN_PASSWORD: admin
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana-dashboards:/var/lib/grafana/dashboards:ro
@@ -80,19 +81,6 @@ services:
         condition: service_started
       dashboard-prep:
         condition: service_completed_successfully
-
-  gateway:
-    profiles: ["gateway"]
-    build:
-      context: ../../examples/speech-gateway
-    environment:
-      GATEWAY_LISTEN: ":8080"
-      SKIT_URL: http://skit:4545
-    ports:
-      - "127.0.0.1:8080:8080"
-    depends_on:
-      skit:
-        condition: service_healthy
 
 volumes:
   grafana-dashboards:

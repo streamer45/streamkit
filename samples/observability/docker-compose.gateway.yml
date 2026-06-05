@@ -1,0 +1,29 @@
+# Overlay that adds the optional speech gateway and points Prometheus at a config
+# that scrapes the gateway's /metrics endpoint. Without this overlay the base
+# stack never references the gateway, so there is no perpetually-DOWN scrape
+# target on Prometheus' Targets page.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gateway.yml up -d --build
+#   ./generate-traffic.sh --gateway
+
+services:
+  prometheus:
+    command:
+      - --config.file=/etc/prometheus/prometheus.gateway.yml
+      - --web.enable-otlp-receiver
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ./prometheus.gateway.yml:/etc/prometheus/prometheus.gateway.yml:ro
+
+  gateway:
+    build:
+      context: ../../examples/speech-gateway
+    environment:
+      GATEWAY_LISTEN: ":8080"
+      SKIT_URL: http://skit:4545
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      skit:
+        condition: service_healthy
