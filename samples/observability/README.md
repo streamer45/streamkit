@@ -95,8 +95,10 @@ These are the sharp edges worth knowing when wiring this up yourself:
   for the attribute mechanism.
 - **Local auth override.** skit refuses to start unauthenticated on a
   non-loopback bind unless you opt in. This stack sets
-  `SK_AUTH__MODE=disabled` + `SK_PERMISSIONS__ALLOW_INSECURE_NO_AUTH=true`.
-  **Local testing only** — never do this on an exposed instance.
+  `SK_AUTH__MODE=disabled` + `SK_PERMISSIONS__ALLOW_INSECURE_NO_AUTH=true`, and
+  to keep that safe every published port is bound to `127.0.0.1` so the
+  unauthenticated skit and anonymous-admin Grafana stay reachable only from the
+  host. **Local testing only** — never do this on an exposed instance.
 - **Grafana dashboard datasource.** The committed dashboards use a
   `${DS_PROMETHEUS}` datasource input. The `dashboard-prep` step rewrites it to
   the provisioned datasource uid so the dashboards load without a manual import.

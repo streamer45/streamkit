@@ -26,7 +26,7 @@ services:
       - ./skit/entrypoint.sh:/entrypoint.sh:ro
       - ../../plugins/native:/repo-manifests:ro
     ports:
-      - "4545:4545"
+      - "127.0.0.1:4545:4545"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:4545/healthz"]
       interval: 5s
@@ -42,7 +42,7 @@ services:
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
 
   dashboard-prep:
     image: alpine:3.21
@@ -74,7 +74,7 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana-dashboards:/var/lib/grafana/dashboards:ro
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       - prometheus
       - dashboard-prep
@@ -87,7 +87,7 @@ services:
       GATEWAY_LISTEN: ":8080"
       SKIT_URL: http://skit:4545
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     depends_on:
       skit:
         condition: service_healthy
