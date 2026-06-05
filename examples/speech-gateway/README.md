@@ -84,3 +84,50 @@ Histogram buckets are tuned for multi-second STT/TTS workloads:
 ```sh
 curl http://127.0.0.1:8080/metrics
 ```
+
+### Grafana dashboard
+
+A ready-made dashboard lives at [`grafana-dashboard.json`](./grafana-dashboard.json). It is self-contained but draws from **two metric sources**, so point Grafana at a Prometheus that sees both:
+
+- **Gateway metrics** (`gateway_*`): Prometheus **scrapes** the gateway's `/metrics` endpoint directly.
+- **Backend metrics** (`oneshot_pipeline_duration`, `plugin_call_duration_seconds`, `plugin_calls_total`, …): skit does **not** expose a `/metrics` scrape endpoint — it **pushes** via OTLP. Run an OTLP collector (e.g. the OpenTelemetry Collector with a `prometheus` exporter, or a Prometheus OTLP receiver) and have Grafana's Prometheus read from there.
+
+The dashboard's **Oneshot Speech Services** row splits `oneshot_pipeline_duration` by a `service` label (`tts`/`stt`). That label is sourced from each pipeline's `attributes: {service: ...}` block — the gateway's embedded STT/TTS pipelines declare it — and is only emitted when the operator allowlists the dimension in `skit.toml` (see the config below). Without that allowlist the backend rows stay empty (the `service` label is dropped). See the [observability guide](https://github.com/streamer45/streamkit/blob/main/docs/src/content/docs/guides/observability.md) for details.
+
+### Wiring up Prometheus end-to-end
+
+The two sources reach one Prometheus by two different paths: Prometheus
+**scrapes** the gateway, and skit **pushes** to Prometheus's OTLP receiver.
+
+1. Run Prometheus with its OTLP receiver enabled (Prometheus ≥ 2.47):
+
+   ```sh
+   prometheus --config.file=prometheus.yml --web.enable-otlp-receiver
+   ```
+
+   ```yaml
+   # prometheus.yml — scrape the gateway directly
+   scrape_configs:
+     - job_name: speech-gateway
+       static_configs:
+         - targets: ["127.0.0.1:8080"]   # gateway /metrics
+   ```
+
+2. Point skit's OTLP exporter at that receiver (in `skit.toml`) and allowlist
+   the `service` dimension so the per-service rows populate:
+
+   ```toml
+   [telemetry]
+   enable       = true
+   otlp_endpoint = "http://127.0.0.1:9090/api/v1/otlp/v1/metrics"
+
+   [server.metrics.attributes.service]
+   values   = ["tts", "stt"]
+   fallback = "other"
+   ```
+
+Prefer an [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/)
+(OTLP receiver → `prometheus` exporter) in front of skit if you need
+buffering, fan-out, or relabeling; point `otlp_endpoint` at the collector and
+have Prometheus scrape the collector instead. Either way, set Grafana's
+Prometheus datasource to this instance when importing the dashboard.

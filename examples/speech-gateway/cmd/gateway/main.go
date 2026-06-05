@@ -36,6 +36,8 @@ const (
 name: stt-ogg-opus
 description: STT over streamed Ogg/Opus
 mode: oneshot
+attributes:
+  service: stt
 steps:
   - kind: streamkit::http_input
 
@@ -72,6 +74,8 @@ steps:
 name: tts-ogg-opus
 description: TTS to streamed Ogg/Opus
 mode: oneshot
+attributes:
+  service: tts
 steps:
   - kind: streamkit::http_input
   - kind: core::text_chunker
@@ -413,9 +417,6 @@ func (gw *gateway) proxyMultipart(w http.ResponseWriter, r *http.Request, endpoi
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	req.Close = true
-	// Consumed by the backend's oneshot metrics (sibling PR #545) to split
-	// oneshot_pipeline.duration by service {tts,stt,other}.
-	req.Header.Set("X-StreamKit-Service", endpoint)
 	if gw.authToken != "" {
 		req.Header.Set("Authorization", "Bearer "+gw.authToken)
 	}
