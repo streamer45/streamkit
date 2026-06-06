@@ -131,3 +131,6 @@ Prefer an [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/)
 buffering, fan-out, or relabeling; point `otlp_endpoint` at the collector and
 have Prometheus scrape the collector instead. Either way, set Grafana's
 Prometheus datasource to this instance when importing the dashboard.
+
+To run the gateway, Prometheus, and Grafana together locally with everything
+pre-wired, see [`samples/observability`](../../samples/observability).
