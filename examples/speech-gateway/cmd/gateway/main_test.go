@@ -4,7 +4,11 @@
 
 package main
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"testing"
+)
 
 func TestUnwrapPacketJSON(t *testing.T) {
 	cases := []struct {
@@ -70,5 +74,15 @@ func TestIsJSONContentType(t *testing.T) {
 		if got := isJSONContentType(ct); got != want {
 			t.Errorf("isJSONContentType(%q) = %v, want %v", ct, got, want)
 		}
+	}
+}
+
+func TestSTTPipelineModelTemplating(t *testing.T) {
+	got := fmt.Sprintf(sttPipelineYAML, defaultSTTModel)
+	if !strings.Contains(got, "model_path: models/ggml-tiny-q5_1.bin") {
+		t.Errorf("default STT pipeline missing expected model_path:\n%s", got)
+	}
+	if strings.Contains(got, "%!") {
+		t.Errorf("STT pipeline has unresolved format verbs:\n%s", got)
 	}
 }

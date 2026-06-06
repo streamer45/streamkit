@@ -49,6 +49,7 @@ Environment equivalents:
 - `GATEWAY_MAX_CONCURRENCY` (default 10)
 - `GATEWAY_MAX_BODY_BYTES` (default 1MB)
 - `GATEWAY_MAX_TTS_TEXT_SIZE` (default 1000 characters)
+- `GATEWAY_STT_MODEL` (default `models/ggml-tiny-q5_1.bin`, the Whisper model bundled in the `-demo` images; must exist on the skit backend)
 
 ## STT via curl (Ogg/Opus)
 
