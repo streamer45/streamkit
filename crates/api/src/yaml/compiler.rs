@@ -63,7 +63,9 @@ fn is_bidirectional_kind(kind: &str) -> bool {
     BIDIRECTIONAL_NODE_KINDS.contains(&kind)
 }
 
-/// Cycles involving bidirectional nodes (e.g. `transport::moq::peer`) are allowed.
+/// Cycles involving bidirectional nodes (e.g. `transport::moq::peer`) are allowed:
+/// edges touching a bidirectional node are excluded from the graph before running
+/// standard cycle detection on the remainder.
 fn detect_cycles(user_nodes: &IndexMap<String, UserNode>) -> Result<(), String> {
     use std::collections::HashSet;
 
@@ -73,7 +75,7 @@ fn detect_cycles(user_nodes: &IndexMap<String, UserNode>) -> Result<(), String> 
         visited: &mut HashSet<&'a String>,
         rec_stack: &mut HashSet<&'a String>,
         cycle_path: &mut Vec<&'a String>,
-    ) -> Option<(Vec<&'a String>, String)> {
+    ) -> Option<String> {
         visited.insert(node);
         rec_stack.insert(node);
         cycle_path.push(node);
@@ -89,8 +91,8 @@ fn detect_cycles(user_nodes: &IndexMap<String, UserNode>) -> Result<(), String> 
                 } else if rec_stack.contains(neighbor) {
                     let cycle_start_idx =
                         cycle_path.iter().position(|&n| n == *neighbor).unwrap_or(0);
-                    let cycle_nodes: Vec<&'a String> = cycle_path[cycle_start_idx..].to_vec();
-                    let cycle_strs: Vec<&str> = cycle_nodes.iter().map(|s| s.as_str()).collect();
+                    let cycle_strs: Vec<&str> =
+                        cycle_path[cycle_start_idx..].iter().map(|s| s.as_str()).collect();
                     let description = format!(
                         "Circular dependency detected: {} -> {}",
                         cycle_strs.join(" -> "),
@@ -98,7 +100,7 @@ fn detect_cycles(user_nodes: &IndexMap<String, UserNode>) -> Result<(), String> 
                     );
                     rec_stack.remove(node);
                     cycle_path.pop();
-                    return Some((cycle_nodes, description));
+                    return Some(description);
                 }
             }
         }
@@ -113,6 +115,10 @@ fn detect_cycles(user_nodes: &IndexMap<String, UserNode>) -> Result<(), String> 
     for (node_name, node_def) in user_nodes {
         adjacency.entry(node_name).or_default();
 
+        if is_bidirectional_kind(&node_def.kind) {
+            continue;
+        }
+
         let dependencies: Vec<&str> = match &node_def.needs {
             Needs::None => vec![],
             Needs::Single(dep) => vec![dep.node_and_pin().0],
@@ -121,7 +127,10 @@ fn detect_cycles(user_nodes: &IndexMap<String, UserNode>) -> Result<(), String> 
         };
 
         for dep_name in dependencies {
-            if let Some((key, _)) = user_nodes.get_key_value(dep_name) {
+            if let Some((key, dep_def)) = user_nodes.get_key_value(dep_name) {
+                if is_bidirectional_kind(&dep_def.kind) {
+                    continue;
+                }
                 adjacency.entry(key).or_default().push(node_name);
             }
         }
@@ -133,16 +142,10 @@ fn detect_cycles(user_nodes: &IndexMap<String, UserNode>) -> Result<(), String> 
 
     for node_name in user_nodes.keys() {
         if !visited.contains(node_name) {
-            if let Some((cycle_nodes, cycle_error)) =
+            if let Some(cycle_error) =
                 dfs(node_name, &adjacency, &mut visited, &mut rec_stack, &mut cycle_path)
             {
-                let has_bidirectional = cycle_nodes.iter().any(|node_name| {
-                    user_nodes.get(*node_name).is_some_and(|node| is_bidirectional_kind(&node.kind))
-                });
-
-                if !has_bidirectional {
-                    return Err(cycle_error);
-                }
+                return Err(cycle_error);
             }
         }
     }
@@ -223,38 +226,37 @@ fn compile_dag(
         .map(|(name, def)| {
             let mut params = def.params;
 
-            if def.kind == "audio::mixer" {
-                if let Some(ref p) = params {
-                    if !p.is_object() {
-                        return Err(format!(
-                            "audio::mixer node '{name}' params must be an object, got {}",
-                            value_type_name(p),
-                        ));
-                    }
+            if let Some(ref p) = params {
+                if !p.is_object() {
+                    return Err(format!(
+                        "Node '{name}' (kind '{}') params must be an object, got {}",
+                        def.kind,
+                        value_type_name(p),
+                    ));
                 }
+            }
 
-                if mode != EngineMode::Dynamic {
-                    if let Some(count) = incoming_counts.get(&name) {
-                        if *count > 1 {
-                            if let Some(serde_json::Value::Object(ref mut map)) = params {
-                                let should_inject = matches!(
-                                    map.get("num_inputs"),
-                                    Some(serde_json::Value::Null) | None
-                                );
-                                if should_inject {
-                                    map.insert(
-                                        "num_inputs".to_string(),
-                                        serde_json::Value::Number((*count).into()),
-                                    );
-                                }
-                            } else if params.is_none() {
-                                let mut map = serde_json::Map::new();
+            if def.kind == "audio::mixer" && mode != EngineMode::Dynamic {
+                if let Some(count) = incoming_counts.get(&name) {
+                    if *count > 1 {
+                        if let Some(serde_json::Value::Object(ref mut map)) = params {
+                            let should_inject = matches!(
+                                map.get("num_inputs"),
+                                Some(serde_json::Value::Null) | None
+                            );
+                            if should_inject {
                                 map.insert(
                                     "num_inputs".to_string(),
                                     serde_json::Value::Number((*count).into()),
                                 );
-                                params = Some(serde_json::Value::Object(map));
                             }
+                        } else if params.is_none() {
+                            let mut map = serde_json::Map::new();
+                            map.insert(
+                                "num_inputs".to_string(),
+                                serde_json::Value::Number((*count).into()),
+                            );
+                            params = Some(serde_json::Value::Object(map));
                         }
                     }
                 }
@@ -382,10 +384,77 @@ mod tests {
         let err = compile(dag_pipeline(nodes, EngineMode::OneShot))
             .expect_err("non-object params should be rejected");
         assert!(
-            err.contains("audio::mixer node 'mixer' params must be an object"),
+            err.contains("Node 'mixer' (kind 'audio::mixer') params must be an object"),
             "error should mention the node name and requirement: {err}",
         );
         assert!(err.contains("string"), "error should mention the actual type: {err}");
+    }
+
+    #[test]
+    fn compile_dag_rejects_non_object_params_for_any_kind() {
+        let sink = UserNode {
+            kind: "core::sink".to_string(),
+            params: Some(serde_json::Value::Array(vec![])),
+            needs: Needs::Single(simple_dep("a")),
+        };
+        let nodes = dag_nodes(vec![("a", user_node("core::source", Needs::None)), ("b", sink)]);
+        let err = compile(dag_pipeline(nodes, EngineMode::Dynamic))
+            .expect_err("non-object params should be rejected for all node kinds");
+        assert!(
+            err.contains("Node 'b' (kind 'core::sink') params must be an object"),
+            "error should mention the node name and kind: {err}",
+        );
+        assert!(err.contains("array"), "error should mention the actual type: {err}");
+    }
+
+    #[test]
+    fn compile_dag_accepts_object_params_for_any_kind() {
+        let sink = UserNode {
+            kind: "core::sink".to_string(),
+            params: Some(serde_json::json!({"key": "value"})),
+            needs: Needs::Single(simple_dep("a")),
+        };
+        let nodes = dag_nodes(vec![("a", user_node("core::source", Needs::None)), ("b", sink)]);
+        compile(dag_pipeline(nodes, EngineMode::Dynamic)).expect("object params should compile");
+    }
+
+    #[test]
+    fn detect_cycles_finds_genuine_cycle_masked_by_bidirectional_cycle() {
+        // Repro from issue #533: the bidirectional cycle aaa <-> bbb is explored
+        // first and must not mask the genuine cycle aaa <-> ccc.
+        let nodes = dag_nodes(vec![
+            (
+                "aaa",
+                user_node("test_node", Needs::Multiple(vec![simple_dep("bbb"), simple_dep("ccc")])),
+            ),
+            ("bbb", user_node("transport::moq::peer", Needs::Single(simple_dep("aaa")))),
+            ("ccc", user_node("test_node", Needs::Single(simple_dep("aaa")))),
+        ]);
+        let err = compile(dag_pipeline(nodes, EngineMode::Dynamic))
+            .expect_err("genuine cycle should be detected even next to a bidirectional cycle");
+        assert!(err.contains("Circular dependency detected"), "unexpected error: {err}");
+        assert!(err.contains("aaa") && err.contains("ccc"), "error should name the cycle: {err}");
+    }
+
+    #[test]
+    fn detect_cycles_rejects_plain_cycle_without_bidirectional_node() {
+        let nodes = dag_nodes(vec![
+            ("aaa", user_node("test_node", Needs::Single(simple_dep("ccc")))),
+            ("ccc", user_node("test_node", Needs::Single(simple_dep("aaa")))),
+        ]);
+        let err = compile(dag_pipeline(nodes, EngineMode::Dynamic))
+            .expect_err("plain cycle should be rejected");
+        assert!(err.contains("Circular dependency detected"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn detect_cycles_allows_bidirectional_peer_cycle() {
+        let nodes = dag_nodes(vec![
+            ("aaa", user_node("test_node", Needs::Single(simple_dep("bbb")))),
+            ("bbb", user_node("transport::moq::peer", Needs::Single(simple_dep("aaa")))),
+        ]);
+        compile(dag_pipeline(nodes, EngineMode::Dynamic))
+            .expect("bidirectional peer cycle should compile");
     }
 
     #[test]
