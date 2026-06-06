@@ -334,6 +334,11 @@ async fn wedged_tick_returns_promptly_after_call_timeout() {
         )
         .expect("source node task should not panic");
     assert!(run_result.is_err(), "run() must return Err after a call timeout, got: {run_result:?}");
+    let err_msg = run_result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("timed out"),
+        "run() error must report the call timeout, got: {err_msg}"
+    );
 }
 
 /// Pins the host contract that an `UpdateParams` arriving in the

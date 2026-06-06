@@ -450,12 +450,23 @@ impl InstanceWorker {
         self.shutdown_with_limit(Some(ERROR_PATH_JOIN_TIMEOUT)).await;
     }
 
+    /// Single decision point for the unified join policy shared by
+    /// `run_source` and `run_processor`: deterministic join on clean exit,
+    /// bounded join with fallback-to-detach when the loop failed and the
+    /// worker may be wedged in an FFI call.
+    async fn shutdown_for_result(self, result: &Result<(), StreamKitError>) {
+        match result {
+            Ok(()) => self.shutdown().await,
+            Err(_) => self.shutdown_bounded().await,
+        }
+    }
+
     /// The join runs on a dedicated thread rather than `spawn_blocking` so
     /// a wedged worker cannot pin a blocking-pool thread or stall runtime
     /// shutdown after the bounded join gives up.
     async fn shutdown_with_limit(mut self, limit: Option<std::time::Duration>) {
         let handle = self.join_handle.take();
-        let node_id = self.node_id.clone();
+        let node_id = std::mem::take(&mut self.node_id);
         drop(self);
         let Some(h) = handle else { return };
 
@@ -1678,10 +1689,7 @@ impl NativeNodeWrapper {
         // On error paths the worker may be wedged in an FFI call (the loop
         // error may be a call timeout), so the join must be bounded or the
         // node would hang here despite the timeout having fired.
-        match &loop_result {
-            Ok(()) => worker.shutdown().await,
-            Err(_) => worker.shutdown_bounded().await,
-        }
+        worker.shutdown_for_result(&loop_result).await;
 
         loop_result?;
 
@@ -2012,6 +2020,14 @@ impl NativeNodeWrapper {
                         // on_upstream_hint from stalling the tick loop — the
                         // capacity-1 channel would otherwise block the send until
                         // the worker drains the previous request.
+                        //
+                        // Invariant: the reply is never awaited, so a slow hint can
+                        // leave the worker mid-FFI.  The awaited, timeout-bounded
+                        // Tick that always follows in the same iteration is what
+                        // guarantees the worker is idle at every clean loop exit —
+                        // the unbounded join below relies on it.  Any new clean
+                        // `break` between here and the Tick reply breaks that
+                        // invariant.
                         match worker_tx.try_send(WorkerRequest::OnUpstreamHint {
                             hints: pending_hints,
                             reply: hint_reply_tx,
@@ -2125,13 +2141,7 @@ impl NativeNodeWrapper {
             }
         }
 
-        // Same policy as run_processor: deterministic join on clean exit,
-        // bounded join with fallback-to-detach when the worker may be
-        // wedged in an FFI call.
-        match &loop_result {
-            Ok(()) => worker.shutdown().await,
-            Err(_) => worker.shutdown_bounded().await,
-        }
+        worker.shutdown_for_result(&loop_result).await;
         loop_result
     }
 
