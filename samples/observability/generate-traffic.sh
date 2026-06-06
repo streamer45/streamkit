@@ -5,7 +5,8 @@
 
 # Drives TTS + STT traffic so the dashboards have data. By default it calls
 # skit's oneshot /api/v1/process directly (no gateway required). Pass --gateway
-# to route through the speech gateway instead (requires the `gateway` profile),
+# to route through the speech gateway instead (requires the gateway overlay:
+# `docker compose -f docker-compose.yml -f docker-compose.gateway.yml up -d`),
 # which also populates the Speech Gateway dashboard row.
 set -euo pipefail
 
@@ -52,7 +53,7 @@ echo "mode=$MODE rounds=$ROUNDS"
 for i in $(seq 1 "$ROUNDS"); do
   text="StreamKit observability sample, round $i: the quick brown fox."
   if [ "$MODE" = "gateway" ]; then
-    curl -fsS -o "$tmp/a.ogg" -d "$text" "$GATEWAY_URL/tts"
+    curl --retry 5 --retry-connrefused --retry-delay 1 -fsS -o "$tmp/a.ogg" -d "$text" "$GATEWAY_URL/tts"
     code=$(curl -s -o /dev/null -w '%{http_code}' --data-binary @"$tmp/a.ogg" -H 'Content-Type: audio/ogg' "$GATEWAY_URL/stt" || true)
     warn_stt_once "$code" gateway
   else
@@ -60,7 +61,7 @@ for i in $(seq 1 "$ROUNDS"); do
     # The pipelines declare `attributes: { service: tts|stt }`, which a
     # service-label-aware skit (see README / observability guide) turns into a
     # bounded `service` metric label; older builds simply ignore the field.
-    curl -fsS -o "$tmp/a.ogg" \
+    curl --retry 5 --retry-connrefused --retry-delay 1 -fsS -o "$tmp/a.ogg" \
       -F "config=<$HERE/pipelines/tts-kokoro.yml" \
       -F "media=@$tmp/in.txt;type=text/plain;filename=media" \
       "$SKIT_URL/api/v1/process"

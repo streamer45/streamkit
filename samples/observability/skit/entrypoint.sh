@@ -21,7 +21,7 @@ mkdir -p "$DST"
 for manifest in /repo-manifests/*/plugin.yml; do
   [ -f "$manifest" ] || continue
   id=$(basename "$(dirname "$manifest")")
-  so=$(awk '/^entrypoint:/{print $2}' "$manifest")
+  so=$(awk '/^entrypoint:/{print $2}' "$manifest" | tr -d '\r')
   if [ -n "$so" ] && [ -f "$SRC/$so" ]; then
     mkdir -p "$DST/$id"
     cp "$manifest" "$DST/$id/plugin.yml"
