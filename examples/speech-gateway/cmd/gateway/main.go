@@ -6,8 +6,10 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -22,6 +24,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 const (
@@ -32,6 +36,8 @@ const (
 name: stt-ogg-opus
 description: STT over streamed Ogg/Opus
 mode: oneshot
+attributes:
+  service: stt
 steps:
   - kind: streamkit::http_input
 
@@ -68,6 +74,8 @@ steps:
 name: tts-ogg-opus
 description: TTS to streamed Ogg/Opus
 mode: oneshot
+attributes:
+  service: tts
 steps:
   - kind: streamkit::http_input
   - kind: core::text_chunker
@@ -126,8 +134,11 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/stt", gw.handleSTT)
-	mux.HandleFunc("/tts", gw.handleTTS)
+	mux.HandleFunc("/stt", instrument("stt", gw.handleSTT))
+	mux.HandleFunc("/tts", instrument("tts", gw.handleTTS))
+	// /metrics is intentionally not gated by the concurrency semaphore so it
+	// stays scrapable while request slots are saturated.
+	mux.Handle("/metrics", promhttp.Handler())
 
 	server := &http.Server{
 		Addr:              cfg.listenAddr,
@@ -237,19 +248,21 @@ func (gw *gateway) handleSTT(w http.ResponseWriter, r *http.Request) {
 	}()
 	if !strings.HasPrefix(ct, "audio/ogg") {
 		log.Printf("stt unsupported content type: %s", ct)
+		recordRejection("stt", reasonBadContentType)
 		http.Error(w, "Content-Type must be audio/ogg (Opus mono 48k)", http.StatusUnsupportedMediaType)
+		return
+	}
+	if r.ContentLength > gw.maxBodySize {
+		log.Printf("stt body too large: %d bytes (max: %d)", r.ContentLength, gw.maxBodySize)
+		recordRejection("stt", reasonTooLarge)
+		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		return
 	}
 	release := gw.acquire()
 	defer release()
-	r.Body = http.MaxBytesReader(w, r.Body, gw.maxBodySize)
+	r.Body = http.MaxBytesReader(underlying(w), r.Body, gw.maxBodySize)
 	useBuffer := r.ContentLength > 0 && r.ContentLength <= gw.maxBodySize
-	if err := gw.proxyMultipart(w, r, sttPipelineYAML, "media", "audio/ogg", useBuffer); err != nil {
-		log.Printf("stt error: %v", err)
-		if !errors.Is(err, context.Canceled) {
-			http.Error(w, "upstream error", http.StatusBadGateway)
-		}
-	}
+	gw.proxyMultipart(w, r, "stt", sttPipelineYAML, "media", "audio/ogg", useBuffer)
 }
 
 func (gw *gateway) handleTTS(w http.ResponseWriter, r *http.Request) {
@@ -268,14 +281,21 @@ func (gw *gateway) handleTTS(w http.ResponseWriter, r *http.Request) {
 		_ = r.Body.Close()
 	}()
 	if !strings.HasPrefix(ct, "text/plain") {
+		recordRejection("tts", reasonBadContentType)
 		http.Error(w, "Content-Type must be text/plain", http.StatusUnsupportedMediaType)
+		return
+	}
+	if r.ContentLength > gw.maxBodySize {
+		log.Printf("tts body too large: %d bytes (max: %d)", r.ContentLength, gw.maxBodySize)
+		recordRejection("tts", reasonTooLarge)
+		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		return
 	}
 	release := gw.acquire()
 	defer release()
 
 	// Read and validate text size
-	r.Body = http.MaxBytesReader(w, r.Body, gw.maxBodySize)
+	r.Body = http.MaxBytesReader(underlying(w), r.Body, gw.maxBodySize)
 
 	// UTF-8 characters can be up to 4 bytes, so read up to 4x the character limit
 	// to ensure we can properly count characters and detect if input exceeds limit
@@ -298,6 +318,7 @@ func (gw *gateway) handleTTS(w http.ResponseWriter, r *http.Request) {
 		if n > 0 {
 			// There's more data, so we definitely exceeded the limit
 			log.Printf("tts text too large: >%d chars (max: %d)", runeCount, gw.maxTTSTextSize)
+			recordRejection("tts", reasonTooLarge)
 			http.Error(w, fmt.Sprintf("text too large: exceeds %d characters", gw.maxTTSTextSize), http.StatusRequestEntityTooLarge)
 			return
 		}
@@ -305,6 +326,7 @@ func (gw *gateway) handleTTS(w http.ResponseWriter, r *http.Request) {
 
 	if runeCount > gw.maxTTSTextSize {
 		log.Printf("tts text too large: %d chars (max: %d)", runeCount, gw.maxTTSTextSize)
+		recordRejection("tts", reasonTooLarge)
 		http.Error(w, fmt.Sprintf("text too large: %d characters (max: %d)", runeCount, gw.maxTTSTextSize), http.StatusRequestEntityTooLarge)
 		return
 	}
@@ -315,27 +337,49 @@ func (gw *gateway) handleTTS(w http.ResponseWriter, r *http.Request) {
 	r.Body = io.NopCloser(bytes.NewReader(textBytes))
 
 	useBuffer := true // We've already buffered it
-	if err := gw.proxyMultipart(w, r, ttsPipelineYAML, "media", "text/plain", useBuffer); err != nil {
-		log.Printf("tts error: %v", err)
-		if !errors.Is(err, context.Canceled) {
-			http.Error(w, "upstream error", http.StatusBadGateway)
-		}
-	}
+	gw.proxyMultipart(w, r, "tts", ttsPipelineYAML, "media", "text/plain", useBuffer)
 }
 
-func (gw *gateway) proxyMultipart(w http.ResponseWriter, r *http.Request, pipelineYAML, mediaField, mediaContentType string, bufferBody bool) error {
+// failUpstream is the single place a gateway-side upstream failure is reported,
+// so the rejection counter and the 502 status never diverge.
+func (gw *gateway) failUpstream(w http.ResponseWriter, endpoint string, err error) {
+	log.Printf("%s upstream error: %v", endpoint, err)
+	recordRejection(endpoint, reasonUpstreamError)
+	http.Error(w, "upstream error", http.StatusBadGateway)
+}
+
+// underlying reaches the writer wrapped by instrument so http.MaxBytesReader can
+// force-close the connection on overflow (the embedded interface hides it).
+func underlying(w http.ResponseWriter) http.ResponseWriter {
+	if u, ok := w.(interface{ Unwrap() http.ResponseWriter }); ok {
+		return u.Unwrap()
+	}
+	return w
+}
+
+// proxyMultipart owns the full response for an STT/TTS request: it forwards the
+// upstream result, and classifies any gateway-side failure to a status/rejection
+// reason itself. Once it has committed response headers (200 streaming begins),
+// a mid-stream failure can no longer be relabeled, so it is only logged.
+func (gw *gateway) proxyMultipart(w http.ResponseWriter, r *http.Request, endpoint, pipelineYAML, mediaField, mediaContentType string, bufferBody bool) {
 	ctx := r.Context()
 
 	// Optionally buffer the request body for finite uploads (helps curl -T file).
 	var src io.Reader = r.Body
 	if bufferBody {
-		limited := io.LimitReader(r.Body, gw.maxBodySize+1)
-		buf, err := io.ReadAll(limited)
+		// r.Body is already MaxBytesReader-bounded by the handler, so an oversize
+		// read surfaces as *http.MaxBytesError rather than an unbounded buffer.
+		buf, err := io.ReadAll(r.Body)
 		if err != nil {
-			return fmt.Errorf("buffer request body: %w", err)
-		}
-		if int64(len(buf)) > gw.maxBodySize {
-			return fmt.Errorf("body too large")
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				log.Printf("%s body too large", endpoint)
+				recordRejection(endpoint, reasonTooLarge)
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			gw.failUpstream(w, endpoint, fmt.Errorf("buffer request body: %w", err))
+			return
 		}
 		log.Printf("buffered upload (%d bytes) before forwarding", len(buf))
 		src = bytes.NewReader(buf)
@@ -368,7 +412,8 @@ func (gw *gateway) proxyMultipart(w http.ResponseWriter, r *http.Request, pipeli
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, gw.skitURL+"/api/v1/process", bodyReader)
 	if err != nil {
-		return fmt.Errorf("create skit request: %w", err)
+		gw.failUpstream(w, endpoint, fmt.Errorf("create skit request: %w", err))
+		return
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	req.Close = true
@@ -376,16 +421,40 @@ func (gw *gateway) proxyMultipart(w http.ResponseWriter, r *http.Request, pipeli
 		req.Header.Set("Authorization", "Bearer "+gw.authToken)
 	}
 
+	upstreamStart := time.Now()
 	resp, err := gw.client.Do(req)
 	if err != nil {
-		log.Printf("call skit failed: %v", err)
-		return fmt.Errorf("call skit: %w", err)
+		// An oversize body trips MaxBytesReader in the writer goroutine and
+		// surfaces here; that is a client size violation, not a backend fault.
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			log.Printf("%s body too large during stream", endpoint)
+			recordRejection(endpoint, reasonTooLarge)
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		if errors.Is(err, context.Canceled) {
+			log.Printf("%s client canceled before upstream response", endpoint)
+			return
+		}
+		gw.failUpstream(w, endpoint, fmt.Errorf("call skit: %w", err))
+		return
 	}
+	// Record only requests that actually received response headers; dial timeouts
+	// and cancellations above never reached the backend.
+	upstreamDuration.WithLabelValues(endpoint).Observe(time.Since(upstreamStart).Seconds())
 	defer func() {
 		_ = resp.Body.Close()
 	}()
 
 	log.Printf("<- skit status=%d", resp.StatusCode)
+
+	// net/http panics in WriteHeader for codes outside [100,999]; a malformed
+	// upstream status line is a backend fault, handled before headers commit.
+	if resp.StatusCode < 100 || resp.StatusCode > 999 {
+		gw.failUpstream(w, endpoint, fmt.Errorf("invalid upstream status %d", resp.StatusCode))
+		return
+	}
 
 	copyHeaders(w.Header(), resp.Header)
 	// Avoid forwarding length/transfer headers so Go can stream-chunk the proxied body.
@@ -403,7 +472,33 @@ func (gw *gateway) proxyMultipart(w http.ResponseWriter, r *http.Request, pipeli
 		if _, err := w.Write(slurp); err != nil {
 			log.Printf("write error: %v", err)
 		}
-		return nil
+		return
+	}
+
+	// STT transcriptions arrive as newline-delimited, externally-tagged Packet
+	// JSON ({"Transcription": {...}}). Unwrap and flush each line as it arrives so
+	// streaming is preserved and memory stays bounded to a single line. Audio
+	// (TTS) is non-JSON and copied through unchanged.
+	if isJSONContentType(resp.Header.Get("Content-Type")) {
+		br := bufio.NewReader(resp.Body)
+		for {
+			line, err := br.ReadBytes('\n')
+			if len(line) > 0 {
+				if _, werr := w.Write(unwrapPacketJSON(line)); werr != nil {
+					log.Printf("%s write error: %v", endpoint, werr)
+					return
+				}
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+			if err != nil {
+				if !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
+					log.Printf("%s read response error: %v", endpoint, err)
+				}
+				return
+			}
+		}
 	}
 
 	target := w.(io.Writer)
@@ -411,12 +506,11 @@ func (gw *gateway) proxyMultipart(w http.ResponseWriter, r *http.Request, pipeli
 		target = flushWriter{w: w, f: flusher}
 	}
 
-	_, copyErr := io.Copy(target, resp.Body)
-	if copyErr != nil {
-		log.Printf("copy response error: %v", copyErr)
+	// The 200 status line is already on the wire, so a failure here cannot be
+	// turned into a 502; log it without double-counting a gateway rejection.
+	if _, copyErr := io.Copy(target, resp.Body); copyErr != nil && !errors.Is(copyErr, context.Canceled) {
+		log.Printf("%s copy response error: %v", endpoint, copyErr)
 	}
-
-	return copyErr
 }
 
 func writeConfigPart(mw *multipart.Writer, pipelineYAML string) error {
@@ -448,6 +542,52 @@ func writeStreamPart(mw *multipart.Writer, fieldName, contentType string, src io
 		return fmt.Errorf("copy media: %w", err)
 	}
 	return nil
+}
+
+func isJSONContentType(ct string) bool {
+	mediaType := ct
+	if i := strings.IndexByte(mediaType, ';'); i >= 0 {
+		mediaType = mediaType[:i]
+	}
+	return strings.EqualFold(strings.TrimSpace(mediaType), "application/json")
+}
+
+// packet names the StreamKit Packet variant the gateway flattens. The inner
+// value is kept as RawMessage and forwarded verbatim, so the gateway strips only
+// the outer wrapper without coupling to the transcription schema.
+type packet struct {
+	Transcription json.RawMessage `json:"Transcription"`
+}
+
+// unwrapPacketJSON flattens the STT Packet enum ({"Transcription": {...}}) to the
+// inner transcription object. The backend emits newline-delimited JSON, so each
+// line is handled independently; lines that are not a Transcription packet are
+// left unchanged.
+func unwrapPacketJSON(body []byte) []byte {
+	lines := bytes.Split(body, []byte("\n"))
+	changed := false
+	for i, line := range lines {
+		if inner, ok := unwrapTranscription(bytes.TrimSpace(line)); ok {
+			lines[i] = inner
+			changed = true
+		}
+	}
+	if !changed {
+		return body
+	}
+	return bytes.Join(lines, []byte("\n"))
+}
+
+func unwrapTranscription(line []byte) ([]byte, bool) {
+	var pkt packet
+	if err := json.Unmarshal(line, &pkt); err != nil {
+		return nil, false
+	}
+	inner := bytes.TrimSpace(pkt.Transcription)
+	if len(inner) == 0 || inner[0] != '{' {
+		return nil, false
+	}
+	return inner, true
 }
 
 func copyHeaders(dst, src http.Header) {

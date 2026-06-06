@@ -1,0 +1,86 @@
+# Local observability stack for StreamKit: skit + Prometheus + Grafana. The
+# optional speech gateway lives in the docker-compose.gateway.yml overlay. See
+# README.md for the walkthrough and known gotchas.
+#
+# Usage:
+#   docker compose up -d   # skit + Prometheus + Grafana
+#   # add the gateway (and its Prometheus scrape):
+#   docker compose -f docker-compose.yml -f docker-compose.gateway.yml up -d --build
+#
+# Grafana:    http://localhost:3000  (anonymous admin, no login)
+# Prometheus: http://localhost:9090
+# skit API:   http://localhost:4545
+# gateway:    http://localhost:8080  (gateway overlay only)
+
+services:
+  skit:
+    image: ghcr.io/streamer45/streamkit:v0.5.0-demo
+    # Pinned to a versioned -demo tag on purpose: `latest-demo` can lag behind
+    # and predate metrics like plugin.call.duration, leaving dashboard rows empty.
+    entrypoint: ["/entrypoint.sh"]
+    environment:
+      SK_AUTH__MODE: disabled
+      SK_PERMISSIONS__ALLOW_INSECURE_NO_AUTH: "true"
+      SK_PLUGINS__DIRECTORY: /opt/streamkit/np
+      SK_TELEMETRY__ENABLE: "true"
+      SK_TELEMETRY__OTLP_ENDPOINT: http://prometheus:9090/api/v1/otlp/v1/metrics
+    volumes:
+      - ./skit/entrypoint.sh:/entrypoint.sh:ro
+      - ../../plugins/native:/repo-manifests:ro
+    ports:
+      - "127.0.0.1:4545:4545"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:4545/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --web.enable-otlp-receiver
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+
+  dashboard-prep:
+    image: alpine:3.21
+    # Copies the in-repo dashboards into Grafana's provisioning dir, resolving
+    # the ${DS_PROMETHEUS} template input to the provisioned datasource uid so
+    # the dashboards load without manual import.
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        for f in /in/*.json; do
+          sed 's/$${DS_PROMETHEUS}/prometheus/g' "$$f" > "/out/$$(basename "$$f")"
+        done
+        echo "prepared dashboards:"; ls -1 /out
+    volumes:
+      - ../../samples/grafana-dashboard.json:/in/streamkit.json:ro
+      - ../../examples/speech-gateway/grafana-dashboard.json:/in/speech-gateway.json:ro
+      - grafana-dashboards:/out
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      prometheus:
+        condition: service_started
+      dashboard-prep:
+        condition: service_completed_successfully
+
+volumes:
+  grafana-dashboards:

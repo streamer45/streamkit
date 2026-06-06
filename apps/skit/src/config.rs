@@ -7,7 +7,7 @@ use figment::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use tracing::Level;
 
 use crate::permissions::PermissionsConfig;
@@ -231,6 +231,144 @@ impl Default for CorsConfig {
     }
 }
 
+fn default_label_fallback() -> String {
+    "other".to_string()
+}
+
+/// Per-dimension cardinality policy for a pipeline-declared attribute.
+///
+/// The declared value is trimmed and lowercased, then matched against `values`;
+/// anything not in the allowlist (or an empty value) collapses to `fallback`,
+/// so a user-submitted pipeline can never inflate metric cardinality. Omitting
+/// `values` makes the dimension passthrough — any non-empty declared value is
+/// emitted as-is (the operator opts into that cardinality).
+#[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
+pub struct MetricsAttributePolicy {
+    /// Permitted values (the allowlist), matched case-insensitively after
+    /// trimming. Empty (or absent) ⇒ passthrough.
+    #[serde(default, rename = "values")]
+    pub allowed: Vec<String>,
+    /// Value emitted when a *declared* value is empty or outside the allowlist.
+    ///
+    /// A dimension a pipeline never declares emits no label at all (the
+    /// declared-only contract), so this never applies to absent dimensions.
+    #[serde(default = "default_label_fallback")]
+    pub fallback: String,
+}
+
+impl MetricsAttributePolicy {
+    /// A policy with no allowlist accepts any non-empty value.
+    #[must_use]
+    pub const fn is_passthrough(&self) -> bool {
+        self.allowed.is_empty()
+    }
+}
+
+/// Configuration for pipeline-attribute metric labeling.
+///
+/// Empty by default: no metric gains a configured label unless an operator
+/// opts in by declaring a dimension under `[server.metrics.attributes.<dim>]`.
+/// A pipeline-declared attribute whose key is absent from this map is dropped.
+/// See the commented example in `samples/skit.toml`.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, JsonSchema)]
+pub struct MetricsConfig {
+    /// Per-dimension policy keyed by attribute name (e.g. `service`). Applied to
+    /// pipeline and node metrics in both oneshot and dynamic modes.
+    #[serde(default)]
+    pub attributes: BTreeMap<String, MetricsAttributePolicy>,
+}
+
+/// Prometheus sanitizes any character outside `[a-zA-Z0-9_]` in a label key to
+/// `_`, so `http.method` and `http_method` collapse to the same series key. We
+/// compare sanitized keys to catch collisions that only appear after scrape.
+fn sanitize_label_key(name: &str) -> String {
+    name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect()
+}
+
+/// A metric label name must be a non-empty identifier (dots allowed, per the
+/// OpenTelemetry convention used by the built-in keys) so it survives export.
+fn is_valid_label_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {},
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+}
+
+impl MetricsConfig {
+    /// Normalize then validate — the single chokepoint that readies a metrics
+    /// config for use. Callers decide how to treat the error: `load()` rejects
+    /// the file, `create_app_state()` warns and disables the labels.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if validation fails after normalization.
+    pub fn prepare(&mut self) -> Result<(), String> {
+        self.normalize();
+        self.validate()
+    }
+
+    /// Lowercase and trim every allowlist entry and each `fallback` so
+    /// resolution only has to normalize the declared value and every emitted
+    /// value shares one normalized space.
+    pub fn normalize(&mut self) {
+        for policy in self.attributes.values_mut() {
+            for allowed in &mut policy.allowed {
+                *allowed = crate::metrics_labels::normalize(allowed);
+            }
+            policy.fallback = crate::metrics_labels::normalize(&policy.fallback);
+        }
+    }
+
+    /// Reject attribute policies that would silently corrupt metrics: invalid
+    /// dimension names, names colliding (after Prometheus sanitization) with a
+    /// built-in key or each other, and empty allowlist or fallback values.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error describing the first offending dimension.
+    pub fn validate(&self) -> Result<(), String> {
+        let reserved: std::collections::HashSet<String> =
+            crate::metrics_labels::RESERVED_LABEL_KEYS
+                .iter()
+                .map(|k| sanitize_label_key(k))
+                .collect();
+        let mut seen = std::collections::HashSet::new();
+        for (name, policy) in &self.attributes {
+            if !is_valid_label_name(name) {
+                return Err(format!(
+                    "metrics attribute name '{name}' is not a valid metric label name"
+                ));
+            }
+            if *name != crate::metrics_labels::normalize(name) {
+                return Err(format!(
+                    "metrics attribute name '{name}' must be lowercase and trimmed; \
+                     declared values are case-folded, so the dimension key must be too"
+                ));
+            }
+            let key = sanitize_label_key(name);
+            if reserved.contains(&key) {
+                return Err(format!(
+                    "metrics attribute name '{name}' collides with a built-in metric key"
+                ));
+            }
+            if !seen.insert(key) {
+                return Err(format!(
+                    "metrics attribute name '{name}' collides with another after sanitization"
+                ));
+            }
+            if policy.allowed.iter().any(|v| v.trim().is_empty()) {
+                return Err(format!("metrics attribute '{name}' has an empty allowed value"));
+            }
+            if policy.fallback.trim().is_empty() {
+                return Err(format!("metrics attribute '{name}' has an empty fallback value"));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Telemetry and observability configuration (OpenTelemetry, tokio-console).
 #[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
 pub struct TelemetryConfig {
@@ -322,6 +460,9 @@ pub struct ServerConfig {
     /// CORS configuration for cross-origin requests
     #[serde(default)]
     pub cors: CorsConfig,
+    /// Bounded pipeline-attribute metric labeling configuration.
+    #[serde(default)]
+    pub metrics: MetricsConfig,
     #[cfg(feature = "moq")]
     pub moq_address: Option<String>,
     /// TLS certificate for the MoQ WebTransport listener.
@@ -350,6 +491,7 @@ impl Default for ServerConfig {
             max_body_size: default_max_body_size(),
             base_path: None,
             cors: CorsConfig::default(),
+            metrics: MetricsConfig::default(),
             #[cfg(feature = "moq")]
             moq_address: None,
             #[cfg(feature = "moq")]
@@ -1035,6 +1177,9 @@ pub fn load(config_path: &str) -> Result<ConfigLoadResult, Box<figment::Error>> 
     if let Err(e) = config.mcp.validate() {
         return Err(Box::new(figment::Error::from(e)));
     }
+    if let Err(e) = config.server.metrics.prepare() {
+        return Err(Box::new(figment::Error::from(e)));
+    }
 
     Ok(ConfigLoadResult { config, file_missing })
 }
@@ -1442,6 +1587,114 @@ allowed_plugins = []
                 custom.allowed_samples,
                 vec!["oneshot/foo.yml".to_string(), "dynamic/bar.yml".to_string()]
             );
+            Ok(())
+        });
+    }
+
+    fn attr_policy(allowed: &[&str], fallback: &str) -> MetricsAttributePolicy {
+        MetricsAttributePolicy {
+            allowed: allowed.iter().map(|s| (*s).to_string()).collect(),
+            fallback: fallback.to_string(),
+        }
+    }
+
+    fn metrics_with(name: &str, policy: MetricsAttributePolicy) -> MetricsConfig {
+        let mut attributes = BTreeMap::new();
+        attributes.insert(name.to_string(), policy);
+        MetricsConfig { attributes }
+    }
+
+    #[test]
+    fn metrics_validate_rejects_reserved_label_name() {
+        let metrics = metrics_with("status", attr_policy(&[], "other"));
+        assert!(metrics.validate().is_err());
+    }
+
+    #[test]
+    fn metrics_validate_rejects_reserved_node_label_name() {
+        assert!(metrics_with("node_id", attr_policy(&[], "other")).validate().is_err());
+        assert!(metrics_with("node_kind", attr_policy(&[], "other")).validate().is_err());
+        assert!(metrics_with("state", attr_policy(&[], "other")).validate().is_err());
+        assert!(metrics_with("pin_name", attr_policy(&[], "other")).validate().is_err());
+    }
+
+    #[test]
+    fn metrics_validate_rejects_non_lowercase_dimension_name() {
+        assert!(metrics_with("Service", attr_policy(&["tts"], "other")).validate().is_err());
+    }
+
+    #[test]
+    fn metrics_validate_accepts_default() {
+        assert!(MetricsConfig::default().validate().is_ok());
+    }
+
+    #[test]
+    fn metrics_default_is_empty_opt_in() {
+        assert!(MetricsConfig::default().attributes.is_empty());
+    }
+
+    #[test]
+    fn metrics_validate_rejects_empty_or_invalid_label_name() {
+        assert!(metrics_with("", attr_policy(&[], "other")).validate().is_err());
+        assert!(metrics_with("   ", attr_policy(&[], "other")).validate().is_err());
+        assert!(metrics_with("1service", attr_policy(&[], "other")).validate().is_err());
+    }
+
+    #[test]
+    fn metrics_validate_rejects_sanitized_reserved_collision() {
+        // `node.id` sanitizes to the same Prometheus key as the built-in `node_id`.
+        let metrics = metrics_with("node.id", attr_policy(&[], "other"));
+        assert!(metrics.validate().is_err());
+    }
+
+    #[test]
+    fn metrics_validate_rejects_empty_allowed_value() {
+        let metrics = metrics_with("service", attr_policy(&["tts", " "], "other"));
+        assert!(metrics.validate().is_err());
+    }
+
+    #[test]
+    fn metrics_validate_rejects_empty_fallback() {
+        let metrics = metrics_with("service", attr_policy(&["tts"], "  "));
+        assert!(metrics.validate().is_err());
+    }
+
+    #[test]
+    fn metrics_validate_accepts_passthrough_dimension() {
+        let metrics = metrics_with("tenant", attr_policy(&[], "other"));
+        assert!(metrics.validate().is_ok());
+        assert!(metrics.attributes["tenant"].is_passthrough());
+    }
+
+    #[test]
+    fn metrics_prepare_normalizes_then_validates() {
+        let mut metrics = metrics_with("service", attr_policy(&["  TTS "], "Other"));
+        assert!(metrics.prepare().is_ok());
+        assert_eq!(metrics.attributes["service"].allowed, vec!["tts".to_string()]);
+        assert_eq!(metrics.attributes["service"].fallback, "other");
+    }
+
+    #[test]
+    fn metrics_normalize_lowercases_allowlist_and_fallback() {
+        let mut metrics = metrics_with("service", attr_policy(&["  TTS ", "Stt"], " Other "));
+        metrics.normalize();
+        assert_eq!(
+            metrics.attributes["service"].allowed,
+            vec!["tts".to_string(), "stt".to_string()]
+        );
+        assert_eq!(metrics.attributes["service"].fallback, "other");
+    }
+
+    #[test]
+    fn load_rejects_reserved_metrics_label_name() {
+        figment::Jail::expect_with(|jail| {
+            jail.create_file(
+                "skit.toml",
+                r#"[server.metrics.attributes.state]
+values = ["tts"]
+"#,
+            )?;
+            assert!(load("skit.toml").is_err(), "reserved label name must fail load");
             Ok(())
         });
     }

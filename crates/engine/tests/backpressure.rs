@@ -56,6 +56,7 @@ async fn test_backpressure_no_deadlock() {
         node_input_capacity: None,
         pin_distributor_capacity: None,
         asset_root: repo_root.to_path_buf(),
+        attributes: streamkit_engine::ResolvedAttributes::default(),
     };
     let handle = engine.start_dynamic_actor(config);
 

@@ -72,6 +72,7 @@ async fn run_oneshot_with_empty_registry_fails_to_build_pipeline() {
         name: None,
         description: None,
         mode: EngineMode::OneShot,
+        attributes: None,
         client: None,
         nodes,
         connections: vec![streamkit_api::Connection {
@@ -87,7 +88,13 @@ async fn run_oneshot_with_empty_registry_fails_to_build_pipeline() {
 
     let inputs: Vec<OneshotInput<DummyStream>> = Vec::new();
     let result = engine
-        .run_oneshot_pipeline(definition, inputs, Some(OneshotEngineConfig::default()), None)
+        .run_oneshot_pipeline(
+            definition,
+            inputs,
+            Some(OneshotEngineConfig::default()),
+            std::sync::Arc::new(crate::ResolvedAttributes::default()),
+            None,
+        )
         .await;
     // Pin to the specific variant + message substring that the registry
     // surfaces when a referenced node kind is missing. A regression that

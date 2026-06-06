@@ -280,6 +280,7 @@ impl Session {
         event_tx: broadcast::Sender<BroadcastEvent>,
         created_by: Option<String>,
         asset_root: std::path::PathBuf,
+        attributes: streamkit_engine::ResolvedAttributes,
     ) -> Result<Self, String> {
         let session_id = Uuid::new_v4().to_string();
         let name =
@@ -305,6 +306,7 @@ impl Session {
             node_input_capacity,
             pin_distributor_capacity,
             asset_root,
+            attributes,
         };
 
         // Start the long-running dynamic engine actor for this session.

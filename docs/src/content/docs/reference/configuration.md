@@ -56,6 +56,8 @@ HTTP server configuration.
 |--------|------|---------|-------------|
 | `allowed_origins` | string[] | `["http://localhost:*", ...]` | Allowed origins (supports wildcards) |
 
+**Metric attributes** (`[server.metrics.attributes.<dimension>]`): operator-bounded labels attached to pipeline and node metrics, sourced from a pipeline's declared `attributes`. Each dimension takes an optional `values` allowlist (unknown/empty values clamp to `fallback`) and a `fallback` value; omit `values` for a passthrough dimension. Disabled by default. See [Observability → Metric attributes](/guides/observability/#metric-attributes).
+
 ## `[plugins]`
 
 | Option | Type | Default | Description |

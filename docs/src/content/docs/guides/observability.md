@@ -66,6 +66,89 @@ Import [`samples/grafana-dashboard.json`](https://github.com/streamer45/streamki
 
 ![Grafana Dashboard](/screenshots/grafana_dashboard.png)
 
+### What's measured
+
+Beyond HTTP and engine/node throughput, a few metric families are especially
+useful for speech and ML workloads:
+
+- **Plugin / ML inference** — native plugins emit per-call metrics labelled by
+  `plugin_kind` (e.g. `whisper`, `kokoro`) and `op`: `plugin_call_duration_seconds`
+  (histogram), `plugin_calls_total`, and `plugin_errors_total` /
+  `plugin_timeouts_total` / `plugin_panics_total`. This is where inference
+  latency and failures show up — usually the dominant cost of a speech pipeline.
+- **Oneshot pipelines** — `oneshot_pipeline_duration` (histogram) is labelled by
+  `status` (`ok`/`error`). Because every oneshot request hits the same
+  `POST /api/v1/process` endpoint, splitting TTS vs STT relies on a bounded
+  `service` label sourced from the pipeline's own `attributes` (see
+  [Metric attributes](#metric-attributes) below); without it all oneshot traffic
+  collapses into one series.
+- **Speech gateway** — the [speech gateway example](https://github.com/streamer45/streamkit/tree/main/examples/speech-gateway)
+  exposes Prometheus metrics for the front door it puts in front of skit:
+  per-endpoint request rate/latency (`gateway_requests_total`,
+  `gateway_request_duration_seconds`), in-flight gauge, upstream latency, and
+  rejections by reason (`gateway_rejected_total`).
+
+### Metric attributes
+
+Pipelines can carry **bounded labels** on their metrics so you can break dashboards down by use case (e.g. `service=tts` vs `service=stt`) instead of collapsing every pipeline into one series.
+
+A pipeline declares its own attributes in the definition:
+
+```yaml
+name: Speech-to-Text
+mode: oneshot
+attributes:
+  service: stt
+nodes: ...
+```
+
+`attributes` is a workload property — it describes *which* pipeline is running, not who called it — so the same value flows to both oneshot and dynamic runs.
+
+The operator decides which attributes are allowed and how each is bounded, under `[server.metrics.attributes.<dimension>]` in `skit.toml`:
+
+```toml
+[server.metrics.attributes.service]
+values   = ["tts", "stt"]   # enum allowlist; unknown/empty values clamp to `fallback`
+fallback = "other"
+
+# Omit `values` for a passthrough dimension — any non-empty declared value is
+# emitted as-is (the operator opts into that cardinality), e.g. for `tenant`:
+[server.metrics.attributes.tenant]
+fallback = "unknown"
+```
+
+**Cardinality is operator-bounded.** A declared attribute whose key has **no** policy entry is dropped, never emitted — so a user-submitted oneshot pipeline can't inflate metric cardinality. With `values`, the declared value is trimmed + lowercased and matched against the allowlist; anything else (or an empty value) collapses to `fallback`.
+
+**Declared-only contract.** If a pipeline omits a configured dimension, **no** label is emitted for it (rather than stamping `fallback` onto every pipeline). In PromQL the catch-all is still aggregated — `sum by (service)` groups the undeclared runs as `{service=""}` — so you keep uniform aggregation without forcing the label onto pipelines that never declared it.
+
+**Coverage by mode:**
+
+| Metric | Oneshot | Dynamic |
+|--------|:-------:|:-------:|
+| `oneshot_pipeline.duration` | ✓ | — (no pipeline-level duration metric) |
+| `node.execution.duration` | ✓ | — (oneshot graph builder only) |
+| `node.packets.*` | ✓ | ✓ |
+| `node.state`, `engine.node.state_transitions`, `engine.nodes.active`, `pin_distributor.*` | — | ✓ (dynamic-engine instruments) |
+
+`http.server.*` request metrics are **not** labeled — `service` is a pipeline property, so the breakdown lives on pipeline/node metrics, not on the HTTP layer.
+
+### Run the full stack locally
+
+To see all of the above on the dashboards without any cloud setup, use the
+[`samples/observability`](https://github.com/streamer45/streamkit/tree/main/samples/observability)
+compose stack — it wires skit (OTLP push) + the gateway (scrape) into Prometheus
+and auto-provisions both dashboards in Grafana:
+
+```bash
+cd samples/observability
+docker compose up -d
+./generate-traffic.sh
+# Grafana: http://localhost:3000
+```
+
+See its README for the wiring details and known gotchas (demo-image tag/plugin
+layout, model-name matching, the Prometheus OTLP receiver, and local auth).
+
 ## Traces (OTLP)
 
 Tracing export is controlled by:

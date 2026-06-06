@@ -12,9 +12,12 @@ use streamkit_core::constraints::GlobalNodeConstraints;
 use streamkit_core::registry::NodeRegistry;
 use tokio::sync::mpsc;
 
+pub mod attributes;
 pub mod constants;
 pub mod graph_builder;
 pub mod oneshot;
+
+pub use attributes::ResolvedAttributes;
 
 #[cfg(feature = "dynamic")]
 mod dynamic_actor;
@@ -168,6 +171,7 @@ impl Engine {
             connections: HashMap::new(),
             node_kinds: HashMap::new(),
             node_metric_labels: HashMap::new(),
+            node_attributes: Arc::new(config.attributes),
             batch_size: config.packet_batch_size,
             session_id: config.session_id,
             audio_pool: self.audio_pool.clone(),

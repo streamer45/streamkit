@@ -19,16 +19,20 @@ pub struct DynamicEngineConfig {
     pub pin_distributor_capacity: Option<usize>,
     /// Root directory for resolving relative asset paths in nodes.
     pub asset_root: std::path::PathBuf,
+    /// Bounded metric attributes, resolved at the boundary and merged into the
+    /// session's node metrics. Empty for WS-assembled sessions.
+    pub attributes: crate::ResolvedAttributes,
 }
 
 impl DynamicEngineConfig {
-    pub const fn new(asset_root: std::path::PathBuf) -> Self {
+    pub fn new(asset_root: std::path::PathBuf) -> Self {
         Self {
             packet_batch_size: DEFAULT_BATCH_SIZE,
             session_id: None,
             node_input_capacity: None,
             pin_distributor_capacity: None,
             asset_root,
+            attributes: crate::ResolvedAttributes::default(),
         }
     }
 }
@@ -43,6 +47,7 @@ impl Default for DynamicEngineConfig {
             node_input_capacity: None,
             pin_distributor_capacity: None,
             asset_root: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            attributes: crate::ResolvedAttributes::default(),
         }
     }
 }
