@@ -7,14 +7,15 @@ mod config;
 pub use config::MoqPeerConfig;
 use config::{
     infer_kind_from_packet, join_gateway_path, make_broadcast_frame, media_kind_for_packet_type,
-    normalize_gateway_path, BidirectionalTaskConfig, BroadcastFrame, DynamicOutputs, FrameResult,
-    MediaCodecConfig, MediaKind, MediaTypeState, NodeStatsDelta, PublisherEvent,
-    PublisherReceiveLoopWithSlotConfig, SendResult, SubscriberMediaConfig, SubscriberSendCtx,
-    TrackExit,
+    normalize_gateway_path, BidirectionalTaskConfig, BroadcastFrame, DiscoveredVideoCodecs,
+    DynamicOutputs, FrameResult, MediaCodecConfig, MediaKind, MediaTypeState, NodeStatsDelta,
+    PublisherEvent, PublisherReceiveLoopWithSlotConfig, SendResult, SubscriberMediaConfig,
+    SubscriberSendCtx, TrackExit,
 };
 
 use crate::transport::moq::constants::{
     catalog_audio_codec, catalog_video_codec, resolve_audio_codec, resolve_video_codec,
+    video_codec_from_catalog,
 };
 use crate::video::{AV1_CONTENT_TYPE, H264_CONTENT_TYPE, VP9_CONTENT_TYPE};
 use async_trait::async_trait;
@@ -285,6 +286,10 @@ impl ProcessorNode for MoqPeerNode {
         // Dynamic output pin channels — populated when the engine creates
         // track-named output pins (e.g. `audio/data`, `video/hd`) on demand.
         let dynamic_outputs: DynamicOutputs = Arc::default();
+        // Per-pin video codecs read from remote publishers' catalogs, so
+        // dynamically created pins advertise the remote codec, not the local
+        // `video_codec` config.
+        let discovered_video_codecs: DiscoveredVideoCodecs = Arc::default();
 
         // Pin management channel for runtime pin creation
         let mut pin_mgmt_rx = context.pin_management_rx.take();
@@ -369,6 +374,7 @@ impl ProcessorNode for MoqPeerNode {
                             },
                             media_state_rx: media_state_rx.clone(),
                             dynamic_outputs: dynamic_outputs.clone(),
+                            discovered_video_codecs: discovered_video_codecs.clone(),
                         },
                     ).await {
                         Ok(_handle) => {
@@ -422,6 +428,7 @@ impl ProcessorNode for MoqPeerNode {
                         publisher_events_tx.clone(),
                         stats_delta_tx.clone(),
                         dynamic_outputs.clone(),
+                        discovered_video_codecs.clone(),
                         video_codec,
                     ).await {
                         Ok(_handle) => {
@@ -630,7 +637,7 @@ impl ProcessorNode for MoqPeerNode {
                         None => std::future::pending().await,
                     }
                 } => {
-                    Self::handle_pin_management(msg, &dynamic_outputs, &subscriber_broadcast_tx, &stats_delta_tx, &shutdown_tx, &mut forwarder_handles, MediaCodecConfig { video: video_codec, audio: publisher_audio_codec });
+                    Self::handle_pin_management(msg, &dynamic_outputs, &discovered_video_codecs, &subscriber_broadcast_tx, &stats_delta_tx, &shutdown_tx, &mut forwarder_handles, MediaCodecConfig { video: video_codec, audio: publisher_audio_codec });
                 }
 
                 // Check for shutdown signal
@@ -788,6 +795,32 @@ impl MoqPeerNode {
         dynamic_outputs.write().unwrap_or_else(std::sync::PoisonError::into_inner).remove(name);
     }
 
+    /// Record the video codec the remote catalog advertises for an output pin.
+    ///
+    /// Recovers from lock poisoning — see [`DiscoveredVideoCodecs`] doc comment.
+    fn record_discovered_video_codec(
+        discovered_video_codecs: &DiscoveredVideoCodecs,
+        pin_name: &str,
+        codec: VideoCodec,
+    ) {
+        discovered_video_codecs
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(pin_name.to_string(), codec);
+    }
+
+    /// Look up the catalog-advertised video codec for an output pin, if any.
+    fn discovered_video_codec(
+        discovered_video_codecs: &DiscoveredVideoCodecs,
+        pin_name: &str,
+    ) -> Option<VideoCodec> {
+        discovered_video_codecs
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(pin_name)
+            .copied()
+    }
+
     /// Handle a dynamic pin management message from the engine.
     ///
     /// - [`PinManagementMessage::RequestAddOutputPin`]: the engine is creating a
@@ -795,9 +828,11 @@ impl MoqPeerNode {
     ///   respond with an appropriate pin definition.
     /// - [`PinManagementMessage::AddedOutputPin`]: the engine has set up the pin
     ///   distributor and sends us the channel to write frames to.
+    #[allow(clippy::too_many_arguments)]
     fn handle_pin_management(
         msg: PinManagementMessage,
         dynamic_outputs: &DynamicOutputs,
+        discovered_video_codecs: &DiscoveredVideoCodecs,
         subscriber_broadcast_tx: &broadcast::Sender<BroadcastFrame>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
         shutdown_tx: &broadcast::Sender<()>,
@@ -807,8 +842,18 @@ impl MoqPeerNode {
         match msg {
             PinManagementMessage::RequestAddOutputPin { suggested_name, response_tx } => {
                 let pin_name = suggested_name.unwrap_or_else(|| "dynamic_out".to_string());
-                tracing::info!("MoqPeerNode: creating dynamic output pin '{}'", pin_name);
-                let pin = make_dynamic_output_pin(&pin_name, codecs.video, codecs.audio);
+                // Prefer the codec the remote publisher's catalog advertises
+                // for this pin over the local video_codec config — peers may
+                // publish a different codec than this pipeline sends out.
+                let discovered = Self::discovered_video_codec(discovered_video_codecs, &pin_name);
+                let video = discovered.unwrap_or(codecs.video);
+                tracing::info!(
+                    pin = %pin_name,
+                    ?discovered,
+                    ?video,
+                    "MoqPeerNode: creating dynamic output pin"
+                );
+                let pin = make_dynamic_output_pin(&pin_name, video, codecs.audio);
                 let _ = response_tx.send(Ok(pin));
             },
             PinManagementMessage::AddedOutputPin { pin, channel } => {
@@ -889,6 +934,7 @@ impl MoqPeerNode {
         publisher_events: mpsc::UnboundedSender<PublisherEvent>,
         stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
         dynamic_outputs: DynamicOutputs,
+        discovered_video_codecs: DiscoveredVideoCodecs,
         video_codec: VideoCodec,
     ) -> Result<tokio::task::JoinHandle<Result<(), StreamKitError>>, StreamKitError> {
         let path = moq_connection.path.clone();
@@ -926,6 +972,7 @@ impl MoqPeerNode {
                 &mut shutdown_rx,
                 stats_delta_tx,
                 dynamic_outputs,
+                discovered_video_codecs,
                 video_codec,
             )
             .await;
@@ -1015,6 +1062,7 @@ impl MoqPeerNode {
                         publisher_path: path.clone(),
                         stats_delta_tx: publisher_stats_delta_tx.clone(),
                         dynamic_outputs: config.dynamic_outputs.clone(),
+                        discovered_video_codecs: config.discovered_video_codecs.clone(),
                         video_codec,
                     },
                     &mut publisher_shutdown_rx,
@@ -1033,6 +1081,7 @@ impl MoqPeerNode {
                     let mut shutdown = extra_shutdown_rx.resubscribe();
                     let stats = extra_stats_delta_tx.clone();
                     let dyn_out = config.dynamic_outputs.clone();
+                    let discovered = config.discovered_video_codecs.clone();
 
                     handles.push(tokio::spawn(async move {
                         tracing::info!(broadcast = %bc_name, "Subscribing to additional broadcast");
@@ -1056,6 +1105,7 @@ impl MoqPeerNode {
                             &mut shutdown,
                             &stats,
                             &dyn_out,
+                            &discovered,
                             Some(&bc_name),
                             video_codec,
                         )
@@ -1174,6 +1224,7 @@ impl MoqPeerNode {
             shutdown_rx,
             &config.stats_delta_tx,
             &config.dynamic_outputs,
+            &config.discovered_video_codecs,
             config.video_codec,
         )
         .await;
@@ -1188,6 +1239,7 @@ impl MoqPeerNode {
     }
 
     /// Publisher receive loop - receives audio/video from client and sends to pipeline
+    #[allow(clippy::too_many_arguments)]
     async fn publisher_receive_loop(
         subscribe: moq_lite::OriginConsumer,
         broadcast_name: String,
@@ -1195,6 +1247,7 @@ impl MoqPeerNode {
         shutdown_rx: &mut broadcast::Receiver<()>,
         stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
         dynamic_outputs: DynamicOutputs,
+        discovered_video_codecs: DiscoveredVideoCodecs,
         video_codec: VideoCodec,
     ) -> Result<(), StreamKitError> {
         tracing::info!("Waiting for publisher to announce broadcast: {}", broadcast_name);
@@ -1214,6 +1267,7 @@ impl MoqPeerNode {
             shutdown_rx,
             &stats_delta_tx,
             &dynamic_outputs,
+            &discovered_video_codecs,
             video_codec,
         )
         .await
@@ -1306,12 +1360,14 @@ impl MoqPeerNode {
     ///
     /// Supports N tracks per broadcast — each rendition in the catalog gets its
     /// own track processor task, keyed by track name in a `HashMap`.
+    #[allow(clippy::too_many_arguments)]
     async fn watch_catalog_and_process(
         broadcast_consumer: &moq_lite::BroadcastConsumer,
         output_sender: streamkit_core::OutputSender,
         shutdown_rx: &mut broadcast::Receiver<()>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
         dynamic_outputs: &DynamicOutputs,
+        discovered_video_codecs: &DiscoveredVideoCodecs,
         video_codec: VideoCodec,
     ) -> Result<(), StreamKitError> {
         Self::watch_catalog_and_process_inner(
@@ -1320,6 +1376,7 @@ impl MoqPeerNode {
             shutdown_rx,
             stats_delta_tx,
             dynamic_outputs,
+            discovered_video_codecs,
             None, // no pin prefix for single-broadcast mode
             video_codec,
         )
@@ -1343,6 +1400,7 @@ impl MoqPeerNode {
         shutdown_rx: &broadcast::Receiver<()>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
         dynamic_outputs: &DynamicOutputs,
+        discovered_video_codecs: &DiscoveredVideoCodecs,
         pin_prefix: Option<&str>,
         track_handles: &mut HashMap<String, tokio::task::JoinHandle<Result<(), StreamKitError>>>,
         video_codec: VideoCodec,
@@ -1370,12 +1428,35 @@ impl MoqPeerNode {
             }
         }
 
-        // Subscribe to all video tracks not yet being handled
-        for track_name in catalog.video.renditions.keys() {
+        // Subscribe to all video tracks not yet being handled. Each track is
+        // labeled with the codec its catalog rendition advertises — the local
+        // `video_codec` config describes this pipeline's outgoing media and may
+        // differ from what the remote peer publishes (issue #529).
+        for (track_name, rendition) in &catalog.video.renditions {
             if !track_handles.contains_key(track_name) {
-                tracing::info!("Found video track in catalog: {}", track_name);
+                let track_codec = video_codec_from_catalog(&rendition.codec);
+                tracing::info!(
+                    track = %track_name,
+                    catalog_codec = ?rendition.codec,
+                    resolved_codec = ?track_codec,
+                    fallback_codec = ?video_codec,
+                    "Found video track in catalog"
+                );
+                let track_codec = track_codec.unwrap_or_else(|| {
+                    tracing::warn!(
+                        track = %track_name,
+                        catalog_codec = ?rendition.codec,
+                        "Unsupported catalog video codec; falling back to local video_codec config"
+                    );
+                    video_codec
+                });
                 let output_pin = pin_prefix
                     .map_or_else(|| track_name.clone(), |prefix| format!("{prefix}/{track_name}"));
+                Self::record_discovered_video_codec(
+                    discovered_video_codecs,
+                    &output_pin,
+                    track_codec,
+                );
                 track_handles.insert(
                     track_name.clone(),
                     Self::spawn_track_processor_with_pin(
@@ -1387,7 +1468,7 @@ impl MoqPeerNode {
                         stats_delta_tx,
                         dynamic_outputs,
                         &output_pin,
-                        video_codec,
+                        track_codec,
                     ),
                 );
             }
@@ -1399,12 +1480,14 @@ impl MoqPeerNode {
     /// When `pin_prefix` is `Some(name)`, output pin names are namespaced as
     /// `{name}/{track_name}` (e.g. `screen-input/video/hd`).  When `None`,
     /// track names are used directly (e.g. `video/hd`).
+    #[allow(clippy::too_many_arguments)]
     async fn watch_catalog_and_process_inner(
         broadcast_consumer: &moq_lite::BroadcastConsumer,
         output_sender: streamkit_core::OutputSender,
         shutdown_rx: &mut broadcast::Receiver<()>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
         dynamic_outputs: &DynamicOutputs,
+        discovered_video_codecs: &DiscoveredVideoCodecs,
         pin_prefix: Option<&str>,
         video_codec: VideoCodec,
     ) -> Result<(), StreamKitError> {
@@ -1452,6 +1535,7 @@ impl MoqPeerNode {
                         shutdown_rx,
                         stats_delta_tx,
                         dynamic_outputs,
+                        discovered_video_codecs,
                         pin_prefix,
                         &mut track_handles,
                         video_codec,
@@ -2560,6 +2644,7 @@ mod tests {
     async fn added_input_pin_channel_not_dropped() {
         let (tx, rx) = tokio::sync::mpsc::channel::<Packet>(4);
         let dynamic_outputs: DynamicOutputs = Arc::default();
+        let discovered_video_codecs: DiscoveredVideoCodecs = Arc::default();
         let (broadcast_tx, _broadcast_rx) = broadcast::channel::<BroadcastFrame>(16);
 
         let (stats_delta_tx, _stats_delta_rx) = mpsc::channel::<NodeStatsDelta>(16);
@@ -2575,6 +2660,7 @@ mod tests {
         MoqPeerNode::handle_pin_management(
             msg,
             &dynamic_outputs,
+            &discovered_video_codecs,
             &broadcast_tx,
             &stats_delta_tx,
             &shutdown_tx,
@@ -3148,6 +3234,7 @@ mod tests {
                 &mut shutdown_rx,
                 stats_tx,
                 dynamic_outputs,
+                Arc::default(),
                 VideoCodec::Vp9,
             ),
         )
@@ -3193,6 +3280,7 @@ mod tests {
             publisher_path: "peer-1".to_string(),
             stats_delta_tx: stats_tx,
             dynamic_outputs,
+            discovered_video_codecs: Arc::default(),
             video_codec: VideoCodec::Vp9,
         };
 
@@ -3231,6 +3319,7 @@ mod tests {
             publisher_path: "peer-1".to_string(),
             stats_delta_tx: stats_tx,
             dynamic_outputs,
+            discovered_video_codecs: Arc::default(),
             video_codec: VideoCodec::Vp9,
         };
 
@@ -3432,6 +3521,7 @@ mod tests {
     #[tokio::test]
     async fn handle_pin_management_output_pin_lifecycle() {
         let dynamic_outputs: DynamicOutputs = Arc::default();
+        let discovered_video_codecs: DiscoveredVideoCodecs = Arc::default();
         let (btx, _brx) = broadcast::channel::<BroadcastFrame>(16);
         let (stats_tx, _stats_rx) = mpsc::channel::<NodeStatsDelta>(16);
         let (shutdown_tx, _shutdown_rx) = broadcast::channel::<()>(1);
@@ -3445,6 +3535,7 @@ mod tests {
                 response_tx: resp_tx,
             },
             &dynamic_outputs,
+            &discovered_video_codecs,
             &btx,
             &stats_tx,
             &shutdown_tx,
@@ -3461,6 +3552,7 @@ mod tests {
         MoqPeerNode::handle_pin_management(
             PinManagementMessage::AddedOutputPin { pin, channel: data_tx },
             &dynamic_outputs,
+            &discovered_video_codecs,
             &btx,
             &stats_tx,
             &shutdown_tx,
@@ -3472,6 +3564,7 @@ mod tests {
         MoqPeerNode::handle_pin_management(
             PinManagementMessage::RemoveOutputPin { pin_name: "video/hd".to_string() },
             &dynamic_outputs,
+            &discovered_video_codecs,
             &btx,
             &stats_tx,
             &shutdown_tx,
@@ -3484,6 +3577,7 @@ mod tests {
     #[tokio::test]
     async fn handle_pin_management_input_pin_lifecycle() {
         let dynamic_outputs: DynamicOutputs = Arc::default();
+        let discovered_video_codecs: DiscoveredVideoCodecs = Arc::default();
         let (btx, _brx) = broadcast::channel::<BroadcastFrame>(16);
         let (stats_tx, _stats_rx) = mpsc::channel::<NodeStatsDelta>(16);
         let (shutdown_tx, _shutdown_rx) = broadcast::channel::<()>(1);
@@ -3497,6 +3591,7 @@ mod tests {
                 response_tx: resp_tx,
             },
             &dynamic_outputs,
+            &discovered_video_codecs,
             &btx,
             &stats_tx,
             &shutdown_tx,
@@ -3514,6 +3609,7 @@ mod tests {
         MoqPeerNode::handle_pin_management(
             PinManagementMessage::AddedInputPin { pin, channel: in_rx, hint_tx: None },
             &dynamic_outputs,
+            &discovered_video_codecs,
             &btx,
             &stats_tx,
             &shutdown_tx,
@@ -3525,6 +3621,7 @@ mod tests {
         MoqPeerNode::handle_pin_management(
             PinManagementMessage::RemoveInputPin { pin_name: "audio/extra".to_string() },
             &dynamic_outputs,
+            &discovered_video_codecs,
             &btx,
             &stats_tx,
             &shutdown_tx,
@@ -3537,6 +3634,7 @@ mod tests {
     #[tokio::test]
     async fn dynamic_input_forwarder_forwards_packets_to_broadcast() {
         let dynamic_outputs: DynamicOutputs = Arc::default();
+        let discovered_video_codecs: DiscoveredVideoCodecs = Arc::default();
         let (btx, mut brx) = broadcast::channel::<BroadcastFrame>(16);
         let (stats_tx, mut stats_rx) = mpsc::channel::<NodeStatsDelta>(16);
         let (shutdown_tx, _shutdown_rx) = broadcast::channel::<()>(1);
@@ -3552,6 +3650,7 @@ mod tests {
         MoqPeerNode::handle_pin_management(
             PinManagementMessage::AddedInputPin { pin, channel: in_rx, hint_tx: None },
             &dynamic_outputs,
+            &discovered_video_codecs,
             &btx,
             &stats_tx,
             &shutdown_tx,
@@ -3578,5 +3677,129 @@ mod tests {
         assert_eq!(stats.sent, 1);
 
         shutdown_tx.send(()).unwrap();
+    }
+
+    /// Regression for #529: a dynamic output pin must advertise the codec the
+    /// remote publisher's catalog declared for that track — not the local
+    /// `video_codec` config — otherwise downstream nodes receive mislabeled
+    /// frames when peers use different codecs.
+    #[tokio::test]
+    async fn request_add_output_pin_prefers_catalog_discovered_codec() {
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let discovered_video_codecs: DiscoveredVideoCodecs = Arc::default();
+        let (btx, _brx) = broadcast::channel::<BroadcastFrame>(16);
+        let (stats_tx, _stats_rx) = mpsc::channel::<NodeStatsDelta>(16);
+        let (shutdown_tx, _shutdown_rx) = broadcast::channel::<()>(1);
+        let mut handles: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
+        // Local config says VP9 but the remote catalog advertised H264.
+        let codecs = MediaCodecConfig { video: VideoCodec::Vp9, audio: AudioCodec::Opus };
+        MoqPeerNode::record_discovered_video_codec(
+            &discovered_video_codecs,
+            "video/hd",
+            VideoCodec::H264,
+        );
+
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        MoqPeerNode::handle_pin_management(
+            PinManagementMessage::RequestAddOutputPin {
+                suggested_name: Some("video/hd".to_string()),
+                response_tx: resp_tx,
+            },
+            &dynamic_outputs,
+            &discovered_video_codecs,
+            &btx,
+            &stats_tx,
+            &shutdown_tx,
+            &mut handles,
+            codecs,
+        );
+        let pin = resp_rx.await.unwrap().unwrap();
+        assert!(
+            matches!(&pin.produces_type, PacketType::EncodedVideo(fmt) if fmt.codec == VideoCodec::H264),
+            "pin should advertise the catalog-discovered codec, got {:?}",
+            pin.produces_type
+        );
+
+        // Pins without a catalog entry still fall back to the local config.
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        MoqPeerNode::handle_pin_management(
+            PinManagementMessage::RequestAddOutputPin {
+                suggested_name: Some("video/sd".to_string()),
+                response_tx: resp_tx,
+            },
+            &dynamic_outputs,
+            &discovered_video_codecs,
+            &btx,
+            &stats_tx,
+            &shutdown_tx,
+            &mut handles,
+            codecs,
+        );
+        let pin = resp_rx.await.unwrap().unwrap();
+        assert!(
+            matches!(&pin.produces_type, PacketType::EncodedVideo(fmt) if fmt.codec == VideoCodec::Vp9)
+        );
+    }
+
+    /// Regression for #529: `subscribe_catalog_tracks` must label each video
+    /// track with its catalog rendition codec, not the local `video_codec`.
+    #[tokio::test]
+    async fn subscribe_catalog_tracks_records_per_rendition_codec() {
+        let mut catalog = hang::catalog::Catalog::default();
+        catalog.video.renditions.insert(
+            "video/hd".to_string(),
+            hang::catalog::VideoConfig {
+                codec: crate::transport::moq::constants::catalog_video_codec(VideoCodec::H264),
+                coded_width: None,
+                coded_height: None,
+                display_ratio_width: None,
+                display_ratio_height: None,
+                framerate: Some(30.0),
+                bitrate: None,
+                description: None,
+                optimize_for_latency: Some(true),
+                container: hang::catalog::Container::default(),
+                jitter: None,
+            },
+        );
+
+        let origin = moq_lite::Origin::random().produce();
+        let mut broadcast = origin.create_broadcast("input").unwrap();
+        let _track = broadcast
+            .create_track(moq_lite::Track { name: "video/hd".to_string(), priority: 2 })
+            .unwrap();
+        let consumer = origin.consume().get_broadcast("input").unwrap();
+
+        let mock = crate::test_utils::MockOutputSender::new();
+        let sender = mock.to_output_sender("test_node".to_string());
+        let (shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
+        let (stats_tx, _stats_rx) = mpsc::channel::<NodeStatsDelta>(16);
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let discovered_video_codecs: DiscoveredVideoCodecs = Arc::default();
+        let mut track_handles = HashMap::new();
+
+        MoqPeerNode::subscribe_catalog_tracks(
+            &catalog,
+            &consumer,
+            &sender,
+            &shutdown_rx,
+            &stats_tx,
+            &dynamic_outputs,
+            &discovered_video_codecs,
+            None,
+            &mut track_handles,
+            VideoCodec::Vp9,
+        );
+
+        assert_eq!(
+            MoqPeerNode::discovered_video_codec(&discovered_video_codecs, "video/hd"),
+            Some(VideoCodec::H264),
+            "catalog rendition codec (H264) should win over local config (VP9)"
+        );
+
+        shutdown_tx.send(()).unwrap();
+        for (_, handle) in track_handles {
+            handle.abort();
+        }
     }
 }

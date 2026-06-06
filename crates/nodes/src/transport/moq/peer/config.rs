@@ -120,6 +120,7 @@ pub(super) struct BidirectionalTaskConfig {
     pub media: SubscriberMediaConfig,
     pub media_state_rx: watch::Receiver<MediaTypeState>,
     pub dynamic_outputs: DynamicOutputs,
+    pub discovered_video_codecs: DiscoveredVideoCodecs,
 }
 
 pub(super) struct PublisherReceiveLoopWithSlotConfig {
@@ -131,6 +132,7 @@ pub(super) struct PublisherReceiveLoopWithSlotConfig {
     pub publisher_path: String,
     pub stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
     pub dynamic_outputs: DynamicOutputs,
+    pub discovered_video_codecs: DiscoveredVideoCodecs,
     pub video_codec: VideoCodec,
 }
 
@@ -179,6 +181,19 @@ pub(super) struct SubscriberSendCtx<'a> {
 /// lock is never held across an `.await` point — only brief synchronous reads
 /// and writes.
 pub(super) type DynamicOutputs = Arc<std::sync::RwLock<HashMap<String, mpsc::Sender<Packet>>>>;
+
+/// Per-pin video codecs discovered from the remote publisher's catalog,
+/// keyed by output pin name (e.g. `video/hd`, `screen-input/video/hd`).
+///
+/// Written by the catalog watch when it subscribes to a video rendition and
+/// read by `handle_pin_management` so a dynamically created output pin
+/// advertises the codec the remote peer actually publishes, rather than the
+/// local `video_codec` config (which describes the pipeline-input side and
+/// may differ when peers use different codecs).
+///
+/// Uses [`std::sync::RwLock`] for the same reason as [`DynamicOutputs`]:
+/// the lock is never held across an `.await` point.
+pub(super) type DiscoveredVideoCodecs = Arc<std::sync::RwLock<HashMap<String, VideoCodec>>>;
 
 pub(super) fn normalize_gateway_path(path: &str) -> String {
     let trimmed = path.trim();

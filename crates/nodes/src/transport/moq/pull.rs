@@ -15,7 +15,7 @@ use streamkit_core::types::{
     VideoCodec,
 };
 
-use super::constants::audio_codec_from_catalog;
+use super::constants::{audio_codec_from_catalog, video_codec_from_catalog};
 use std::collections::HashMap;
 use std::sync::Arc;
 use streamkit_core::pins::PinManagementMessage;
@@ -207,6 +207,73 @@ impl MoqPullNode {
             PacketType::EncodedAudio(fmt) => Some(fmt.codec),
             _ => None,
         })
+    }
+
+    /// Video codec advertised by the output pin with the given name, fixed
+    /// during `initialize()`. Used to detect when the catalog's codec
+    /// (possibly discovered after init) differs from what downstream consumers
+    /// were wired up for.
+    fn advertised_video_codec_for_pin(&self, pin_name: &str) -> Option<VideoCodec> {
+        self.output_pins.iter().find(|p| p.name == pin_name).and_then(|p| match &p.produces_type {
+            PacketType::EncodedVideo(fmt) => Some(fmt.codec),
+            _ => None,
+        })
+    }
+
+    /// Output pin types are fixed at `initialize()` and the engine has no
+    /// mechanism to retype a pin at runtime, so a post-init codec mismatch can
+    /// never be fixed by reconnecting. Fail terminally with a Configuration
+    /// error instead of looping the 1s retry forever. This can happen when init
+    /// fails to discover the catalog (timeout) and the pin remains at the
+    /// constructor's default codec.
+    fn verify_pin_codecs(
+        &self,
+        video_track: Option<&DiscoveredTrack>,
+        resolved_audio_codec: AudioCodec,
+    ) -> Result<(), StreamKitError> {
+        if let Some(pin_codec) = self.advertised_out_audio_codec() {
+            if pin_codec != resolved_audio_codec {
+                tracing::error!(
+                    advertised = ?pin_codec,
+                    discovered = ?resolved_audio_codec,
+                    "Catalog audio codec differs from output pin; \
+                     pin was set during init before catalog was available"
+                );
+                return Err(StreamKitError::Configuration(format!(
+                    "Audio codec mismatch: output pin advertises {pin_codec:?} \
+                     but the broadcast catalog provides {resolved_audio_codec:?}; \
+                     set `audio_codec: {resolved_audio_codec:?}` in the moq_pull \
+                     config or fix the publisher (pin types are fixed at \
+                     initialization and cannot change at runtime)"
+                )));
+            }
+        }
+
+        if let Some(dt) = video_track {
+            if let (Some(pin_codec), Some(catalog_codec)) =
+                (self.advertised_video_codec_for_pin(&dt.track.name), dt.video_codec)
+            {
+                if pin_codec != catalog_codec {
+                    tracing::error!(
+                        advertised = ?pin_codec,
+                        discovered = ?catalog_codec,
+                        track = %dt.track.name,
+                        "Catalog video codec differs from output pin; \
+                         pin was set during init before catalog was available"
+                    );
+                    return Err(StreamKitError::Configuration(format!(
+                        "Video codec mismatch on track '{}': output pin advertises \
+                         {pin_codec:?} but the broadcast catalog provides \
+                         {catalog_codec:?}; fix the publisher or restart the \
+                         pipeline (pin types are fixed at initialization and \
+                         cannot change at runtime)",
+                        dt.track.name
+                    )));
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Subscribe to the first audio track in `new_tracks` so a late-arriving
@@ -682,34 +749,15 @@ impl MoqPullNode {
         }
 
         for (name, config) in &catalog.video.renditions {
-            match config.codec {
-                hang::catalog::VideoCodec::VP9(_) => {
-                    tracing::info!(track = %name, "found VP9 video track");
-                    tracks.push(DiscoveredTrack {
-                        track: moq_lite::Track { name: name.clone(), priority: 60 },
-                        video_codec: Some(VideoCodec::Vp9),
-                        audio_codec: None,
-                    });
-                },
-                hang::catalog::VideoCodec::AV1(_) => {
-                    tracing::info!(track = %name, "found AV1 video track");
-                    tracks.push(DiscoveredTrack {
-                        track: moq_lite::Track { name: name.clone(), priority: 60 },
-                        video_codec: Some(VideoCodec::Av1),
-                        audio_codec: None,
-                    });
-                },
-                hang::catalog::VideoCodec::H264(_) => {
-                    tracing::info!(track = %name, "found H264 video track");
-                    tracks.push(DiscoveredTrack {
-                        track: moq_lite::Track { name: name.clone(), priority: 60 },
-                        video_codec: Some(VideoCodec::H264),
-                        audio_codec: None,
-                    });
-                },
-                _ => {
-                    tracing::debug!(track = %name, codec = ?config.codec, "skipping unsupported video track");
-                },
+            if let Some(codec) = video_codec_from_catalog(&config.codec) {
+                tracing::info!(track = %name, ?codec, "found video track");
+                tracks.push(DiscoveredTrack {
+                    track: moq_lite::Track { name: name.clone(), priority: 60 },
+                    video_codec: Some(codec),
+                    audio_codec: None,
+                });
+            } else {
+                tracing::debug!(track = %name, codec = ?config.codec, "skipping unsupported video track");
             }
         }
 
@@ -896,24 +944,7 @@ impl MoqPullNode {
             .or(self.config.audio_codec)
             .unwrap_or(AudioCodec::Opus);
 
-        // Warn when the catalog codec differs from the output pin set during
-        // initialize(). This can happen when init fails to discover the catalog
-        // (timeout) and the pin remains at the constructor's default codec.
-        if let Some(pin_codec) = self.advertised_out_audio_codec() {
-            if pin_codec != resolved_audio_codec {
-                tracing::warn!(
-                    advertised = ?pin_codec,
-                    discovered = ?resolved_audio_codec,
-                    "Catalog audio codec differs from output pin; \
-                     pin was set during init before catalog was available"
-                );
-                return Err(StreamKitError::Runtime(format!(
-                    "Audio codec mismatch: output pin advertises {pin_codec:?} \
-                     but catalog resolved {resolved_audio_codec:?}; \
-                     reconnecting to retry catalog discovery"
-                )));
-            }
-        }
+        self.verify_pin_codecs(video_track, resolved_audio_codec)?;
 
         if audio_track.is_none() && video_track.is_none() {
             return Err(StreamKitError::Runtime(
@@ -1621,40 +1652,33 @@ mod tests {
         assert_eq!(pin_codec, AudioCodec::Opus);
     }
 
-    #[test]
-    fn test_codec_mismatch_detected_between_pin_and_catalog() {
-        // Simulates the scenario where initialize() failed to discover the
-        // catalog (timeout), leaving the output pin at the default Opus codec.
-        // run_connection() later discovers a different codec (AAC) from the
-        // catalog and should detect the mismatch.
-        let node = MoqPullNode::new(MoqPullConfig::default());
-        let out_pin = node.output_pins.iter().find(|p| p.name == "out").unwrap();
-        let pin_codec = match &out_pin.produces_type {
-            PacketType::EncodedAudio(fmt) => fmt.codec,
-            _ => panic!("expected EncodedAudio"),
-        };
+    fn video_discovered_track(codec: VideoCodec) -> DiscoveredTrack {
+        DiscoveredTrack {
+            track: moq_lite::Track { name: "video/data".to_string(), priority: 60 },
+            video_codec: Some(codec),
+            audio_codec: None,
+        }
+    }
 
-        let catalog_codec = AudioCodec::Aac;
-        assert_ne!(
-            pin_codec, catalog_codec,
-            "default pin codec should differ from catalog AAC, triggering connection failure"
+    /// Regression for #530: a post-init audio codec mismatch used to return a
+    /// transient Runtime error, looping the 1s reconnect forever even though
+    /// reconnecting can never fix it. It must be a terminal Configuration error.
+    #[test]
+    fn test_audio_codec_mismatch_is_terminal_configuration_error() {
+        // initialize() failed to discover the catalog (timeout), leaving the
+        // "out" pin at the default Opus codec; the catalog later provides AAC.
+        let node = MoqPullNode::new(MoqPullConfig::default());
+        let err = node.verify_pin_codecs(None, AudioCodec::Aac).unwrap_err();
+        assert!(
+            matches!(err, StreamKitError::Configuration(_)),
+            "expected terminal Configuration error, got {err:?}"
         );
     }
 
     #[test]
     fn test_no_mismatch_when_pin_matches_catalog() {
         let node = MoqPullNode::new(MoqPullConfig::default());
-        let out_pin = node.output_pins.iter().find(|p| p.name == "out").unwrap();
-        let pin_codec = match &out_pin.produces_type {
-            PacketType::EncodedAudio(fmt) => fmt.codec,
-            _ => panic!("expected EncodedAudio"),
-        };
-
-        let catalog_codec = AudioCodec::Opus;
-        assert_eq!(
-            pin_codec, catalog_codec,
-            "matching codecs should not trigger a connection failure"
-        );
+        node.verify_pin_codecs(None, AudioCodec::Opus).unwrap();
     }
 
     #[test]
@@ -1662,18 +1686,36 @@ mod tests {
         let config =
             MoqPullConfig { audio_codec: Some(AudioCodec::Aac), ..MoqPullConfig::default() };
         let node = MoqPullNode::new(config);
-        let out_pin = node.output_pins.iter().find(|p| p.name == "out").unwrap();
-        let pin_codec = match &out_pin.produces_type {
-            PacketType::EncodedAudio(fmt) => fmt.codec,
-            _ => panic!("expected EncodedAudio"),
-        };
-        assert_eq!(pin_codec, AudioCodec::Aac);
+        node.verify_pin_codecs(None, AudioCodec::Aac).unwrap();
+    }
 
-        let catalog_codec = AudioCodec::Aac;
-        assert_eq!(
-            pin_codec, catalog_codec,
-            "AAC-configured node should match AAC catalog without mismatch"
+    /// Regression for #530: there was no video-codec mismatch guard at all,
+    /// so a stale video pin silently forwarded mislabeled frames.
+    #[test]
+    fn test_video_codec_mismatch_is_terminal_configuration_error() {
+        let mut node = MoqPullNode::new(MoqPullConfig::default());
+        node.output_pins = MoqPullNode::output_pins_for_tracks(
+            &[video_discovered_track(VideoCodec::Vp9)],
+            AudioCodec::Opus,
         );
+        let err = node
+            .verify_pin_codecs(Some(&video_discovered_track(VideoCodec::Av1)), AudioCodec::Opus)
+            .unwrap_err();
+        assert!(
+            matches!(err, StreamKitError::Configuration(_)),
+            "expected terminal Configuration error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_video_codec_match_passes_guard() {
+        let mut node = MoqPullNode::new(MoqPullConfig::default());
+        node.output_pins = MoqPullNode::output_pins_for_tracks(
+            &[video_discovered_track(VideoCodec::Av1)],
+            AudioCodec::Opus,
+        );
+        node.verify_pin_codecs(Some(&video_discovered_track(VideoCodec::Av1)), AudioCodec::Opus)
+            .unwrap();
     }
 
     /// Validate that every `transport::moq::subscriber` node in the sample
