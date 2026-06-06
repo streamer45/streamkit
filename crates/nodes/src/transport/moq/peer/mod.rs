@@ -828,6 +828,7 @@ impl MoqPeerNode {
     ///   respond with an appropriate pin definition.
     /// - [`PinManagementMessage::AddedOutputPin`]: the engine has set up the pin
     ///   distributor and sends us the channel to write frames to.
+    // Pin lifecycle handling needs both routing maps plus codec config; bundling into a config struct is a future cleanup.
     #[allow(clippy::too_many_arguments)]
     fn handle_pin_management(
         msg: PinManagementMessage,
@@ -1239,6 +1240,7 @@ impl MoqPeerNode {
     }
 
     /// Publisher receive loop - receives audio/video from client and sends to pipeline
+    // Per-broadcast routing state requires per-call parameters; bundling into a config struct is a future cleanup.
     #[allow(clippy::too_many_arguments)]
     async fn publisher_receive_loop(
         subscribe: moq_lite::OriginConsumer,
@@ -1360,6 +1362,7 @@ impl MoqPeerNode {
     ///
     /// Supports N tracks per broadcast — each rendition in the catalog gets its
     /// own track processor task, keyed by track name in a `HashMap`.
+    // Per-broadcast routing state requires per-call parameters; bundling into a config struct is a future cleanup.
     #[allow(clippy::too_many_arguments)]
     async fn watch_catalog_and_process(
         broadcast_consumer: &moq_lite::BroadcastConsumer,
@@ -1480,6 +1483,7 @@ impl MoqPeerNode {
     /// When `pin_prefix` is `Some(name)`, output pin names are namespaced as
     /// `{name}/{track_name}` (e.g. `screen-input/video/hd`).  When `None`,
     /// track names are used directly (e.g. `video/hd`).
+    // Per-broadcast routing state requires per-call parameters; bundling into a config struct is a future cleanup.
     #[allow(clippy::too_many_arguments)]
     async fn watch_catalog_and_process_inner(
         broadcast_consumer: &moq_lite::BroadcastConsumer,
