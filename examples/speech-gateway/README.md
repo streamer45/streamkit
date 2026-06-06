@@ -25,6 +25,8 @@ Speech to text — record from your mic with `ffmpeg`, no audio file needed (use
 ffmpeg -hide_banner -f avfoundation -i ":0" -t 5 -ac 1 -ar 48000 -c:a libopus -f ogg - | curl -s --data-binary @- -H 'Content-Type: audio/ogg' https://stt.streamkit.dev | jq
 ```
 
+The trailing `| jq` just pretty-prints the JSON — drop it (or install [`jq`](https://jqlang.github.io/jq/)) if you don't have it.
+
 There is no SLA — it may be slow, rate-limited, or offline at any time, and usage is monitored for abuse. Don't send anything sensitive. Run your own (below) to remove those limits.
 
 ## Prereqs

@@ -95,7 +95,9 @@ ffmpeg -hide_banner -f avfoundation -i ":0" -t 5 -ac 1 -ar 48000 -c:a libopus -f
 ffmpeg -hide_banner -f pulse -i default -t 5 -ac 1 -ar 48000 -c:a libopus -f ogg - | curl -s --data-binary @- -H 'Content-Type: audio/ogg' https://stt.streamkit.dev | jq
 ```
 
-Drop `-t 5` to record until you stop `ffmpeg` with `q`.
+Drop `-t 5` to record until you stop `ffmpeg` with `q`. The trailing `| jq`
+just pretty-prints the JSON response — drop it (or install [`jq`](https://jqlang.github.io/jq/))
+if you don't have it.
 
 > [!NOTE]
 > `tts.streamkit.dev` and `stt.streamkit.dev` are a free, best-effort public demo with no SLA — they may be slow, rate-limited, or offline at any time, and usage is monitored for abuse. Don't send anything sensitive. To run your own, see [`examples/speech-gateway/`](examples/speech-gateway/).
