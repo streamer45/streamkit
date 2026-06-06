@@ -14,6 +14,8 @@
 //!   `create_instance` returning null path.
 //! - `"error_update_params"`: returns `Err(..)` from `update_params`.
 //! - `"error_flush"`: returns `Err(..)` from `flush`.
+//! - `"wedge_process"`: sleeps far longer than any test call-timeout
+//!   inside `process`, simulating a plugin wedged in an FFI call.
 //! - `"passthrough"`: returns Ok from every method, forwards the packet
 //!   to the output pin.
 
@@ -26,6 +28,7 @@ enum Mode {
     ErrorProcess,
     ErrorUpdateParams,
     ErrorFlush,
+    WedgeProcess,
     Passthrough,
 }
 
@@ -36,6 +39,7 @@ impl Mode {
             "error_process" => Some(Self::ErrorProcess),
             "error_update_params" => Some(Self::ErrorUpdateParams),
             "error_flush" => Some(Self::ErrorFlush),
+            "wedge_process" => Some(Self::WedgeProcess),
             "passthrough" => Some(Self::Passthrough),
             _ => None,
         }
@@ -84,6 +88,10 @@ impl NativeProcessorNode for PanickingPlugin {
             },
             Mode::ErrorProcess => {
                 Err("panicking-plugin: intentional error in process_packet".to_string())
+            },
+            Mode::WedgeProcess => {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                Ok(())
             },
             Mode::Passthrough => output.send("output", &packet),
             // For modes that target other entry points, `process` is a no-op.
