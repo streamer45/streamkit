@@ -1397,6 +1397,8 @@ impl DynamicEngine {
         self.dynamic_pin_nodes.remove(node_id);
         self.runtime_schemas.remove(node_id);
         self.connections.retain(|(to, _), (from, _)| to != node_id && from != node_id);
+        self.pending_connections.retain(|pc| pc.from_node != node_id && pc.to_node != node_id);
+        self.pending_tunes.retain(|pt| pt.node_id != node_id);
         self.node_kinds.remove(node_id);
         self.node_metric_labels.remove(node_id);
         self.nodes_active_gauge
