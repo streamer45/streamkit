@@ -1966,7 +1966,7 @@ fn sniff_compression_kind(header: &[u8]) -> Option<ModelArchiveKind> {
     if header.starts_with(&XZ_MAGIC) {
         return Some(ModelArchiveKind::TarXz);
     }
-    if header.starts_with(&BZIP2_MAGIC) {
+    if header.starts_with(&BZIP2_MAGIC) && header.get(3).is_some_and(u8::is_ascii_digit) {
         return Some(ModelArchiveKind::TarBz2);
     }
     if header.starts_with(&GZIP_MAGIC) {
@@ -2436,6 +2436,7 @@ mod tests {
             Some(ModelArchiveKind::TarXz)
         );
         assert_eq!(sniff_compression_kind(b"BZh91AY"), Some(ModelArchiveKind::TarBz2));
+        assert_eq!(sniff_compression_kind(b"BZhello"), None);
         assert_eq!(sniff_compression_kind(&[0x1f, 0x8b, 0x08]), Some(ModelArchiveKind::TarGz));
         assert_eq!(
             sniff_compression_kind(&[0x28, 0xb5, 0x2f, 0xfd]),
