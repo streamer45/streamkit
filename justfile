@@ -830,19 +830,19 @@ setup-parakeet: install-sherpa-onnx download-parakeet-models download-silero-vad
 download-nllb-models:
     @echo "Downloading pre-converted NLLB-200 models from Hugging Face..."
     @mkdir -p models
-    @if [ -f models/nllb-200-distilled-600M-ct2-int8.tar.bz2 ]; then \
+    @if [ -f models/nllb-200-distilled-600M-ct2-int8.tar.xz ]; then \
         echo "✓ NLLB archive already exists"; \
     else \
-        echo "Downloading nllb-200-distilled-600M-ct2-int8.tar.bz2 (~1.1GB)..." && \
-        curl -L -o models/nllb-200-distilled-600M-ct2-int8.tar.bz2 \
-            https://huggingface.co/streamkit/nllb-models/resolve/main/nllb-200-distilled-600M-ct2-int8.tar.bz2 && \
+        echo "Downloading nllb-200-distilled-600M-ct2-int8.tar.xz (~1.1GB)..." && \
+        curl -L -o models/nllb-200-distilled-600M-ct2-int8.tar.xz \
+            https://huggingface.co/streamkit/nllb-models/resolve/main/nllb-200-distilled-600M-ct2-int8.tar.xz && \
         echo "✓ NLLB archive downloaded"; \
     fi
     @if [ -d models/nllb-200-distilled-600M-ct2-int8 ]; then \
         echo "✓ NLLB model already extracted"; \
     else \
         echo "Extracting models..." && \
-        cd models && tar xf nllb-200-distilled-600M-ct2-int8.tar.bz2 && \
+        cd models && tar xf nllb-200-distilled-600M-ct2-int8.tar.xz && \
         echo "✓ NLLB model ready at models/nllb-200-distilled-600M-ct2-int8 (supports 200 languages)"; \
     fi
 

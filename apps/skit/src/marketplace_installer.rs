@@ -1608,7 +1608,7 @@ impl PluginInstaller {
         archive_path: &Path,
         cancel: &CancellationToken,
     ) -> Result<(), InstallError> {
-        let Some(kind) = model_archive_kind(archive_path) else {
+        let Some(ext_kind) = model_archive_kind(archive_path) else {
             return Ok(());
         };
         if let Some(dir) = model_archive_dir(archive_path, &self.models_dir) {
@@ -1636,10 +1636,12 @@ impl PluginInstaller {
                     archive_path = archive_path.display()
                 )
             })?;
+            let kind = resolve_archive_kind(&archive_path, ext_kind)?;
             let reader: Box<dyn std::io::Read> = match kind {
                 ModelArchiveKind::TarZst => Box::new(zstd::stream::read::Decoder::new(file)?),
                 ModelArchiveKind::TarGz => Box::new(flate2::read::GzDecoder::new(file)),
                 ModelArchiveKind::TarBz2 => Box::new(bzip2::read::BzDecoder::new(file)),
+                ModelArchiveKind::TarXz => Box::new(liblzma::read::XzDecoder::new(file)),
                 ModelArchiveKind::Tar => Box::new(file),
             };
             safe_extract_archive(reader, &models_dir, Some(&cancel_clone))?;
@@ -1894,11 +1896,12 @@ fn safe_extract_archive<R: std::io::Read>(
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ModelArchiveKind {
     Tar,
     TarGz,
     TarBz2,
+    TarXz,
     TarZst,
 }
 
@@ -1912,6 +1915,9 @@ fn model_archive_kind(path: &Path) -> Option<ModelArchiveKind> {
     }
     if ext.eq_ignore_ascii_case("tbz2") {
         return Some(ModelArchiveKind::TarBz2);
+    }
+    if ext.eq_ignore_ascii_case("txz") {
+        return Some(ModelArchiveKind::TarXz);
     }
     if ext.eq_ignore_ascii_case("tzst") {
         return Some(ModelArchiveKind::TarZst);
@@ -1932,6 +1938,14 @@ fn model_archive_kind(path: &Path) -> Option<ModelArchiveKind> {
     {
         return Some(ModelArchiveKind::TarBz2);
     }
+    if ext.eq_ignore_ascii_case("xz")
+        && path
+            .file_stem()
+            .and_then(|stem| Path::new(stem).extension())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("tar"))
+    {
+        return Some(ModelArchiveKind::TarXz);
+    }
     if ext.eq_ignore_ascii_case("zst")
         && path
             .file_stem()
@@ -1943,12 +1957,63 @@ fn model_archive_kind(path: &Path) -> Option<ModelArchiveKind> {
     None
 }
 
+const XZ_MAGIC: [u8; 6] = [0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00];
+const BZIP2_MAGIC: [u8; 3] = *b"BZh";
+const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
+const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
+
+fn sniff_compression_kind(header: &[u8]) -> Option<ModelArchiveKind> {
+    if header.starts_with(&XZ_MAGIC) {
+        return Some(ModelArchiveKind::TarXz);
+    }
+    if header.starts_with(&BZIP2_MAGIC) {
+        return Some(ModelArchiveKind::TarBz2);
+    }
+    if header.starts_with(&GZIP_MAGIC) {
+        return Some(ModelArchiveKind::TarGz);
+    }
+    if header.starts_with(&ZSTD_MAGIC) {
+        return Some(ModelArchiveKind::TarZst);
+    }
+    None
+}
+
+/// Pick the decompressor from the archive's leading magic bytes, falling
+/// back to the extension-derived kind when no compression magic is found.
+/// Mislabeled archives (e.g. XZ data named `.tar.bz2`) would otherwise be
+/// routed into the wrong decoder and fail mid-extraction.
+fn resolve_archive_kind(path: &Path, ext_kind: ModelArchiveKind) -> Result<ModelArchiveKind> {
+    use std::io::Read;
+    let mut header = [0u8; 6];
+    let mut file = std::fs::File::open(path)
+        .with_context(|| format!("Failed to open model archive {path}", path = path.display()))?;
+    let read = file.read(&mut header).with_context(|| {
+        format!("Failed to read model archive header {path}", path = path.display())
+    })?;
+    let sniffed = sniff_compression_kind(&header[..read]);
+    match sniffed {
+        Some(kind) if kind != ext_kind => {
+            tracing::warn!(
+                "Model archive {path} has extension kind {ext_kind:?} but content is \
+                 {kind:?}; using content kind",
+                path = path.display()
+            );
+            Ok(kind)
+        },
+        Some(kind) => Ok(kind),
+        None => Ok(ext_kind),
+    }
+}
+
 fn model_archive_dir(path: &Path, base_dir: &Path) -> Option<PathBuf> {
     let kind = model_archive_kind(path)?;
     let file_stem = path.file_stem()?.to_str()?;
     let base = match kind {
         ModelArchiveKind::Tar => file_stem.to_string(),
-        ModelArchiveKind::TarGz | ModelArchiveKind::TarBz2 | ModelArchiveKind::TarZst => {
+        ModelArchiveKind::TarGz
+        | ModelArchiveKind::TarBz2
+        | ModelArchiveKind::TarXz
+        | ModelArchiveKind::TarZst => {
             let stem_path = Path::new(file_stem);
             if stem_path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("tar")) {
                 stem_path.file_stem()?.to_str()?.to_string()
@@ -2360,6 +2425,56 @@ mod tests {
 
         let _ = shutdown_tx.send(());
         server_handle.await.context("file server task panicked")??;
+
+        Ok(())
+    }
+
+    #[test]
+    fn sniff_compression_kind_maps_magic_bytes() {
+        assert_eq!(
+            sniff_compression_kind(&[0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]),
+            Some(ModelArchiveKind::TarXz)
+        );
+        assert_eq!(sniff_compression_kind(b"BZh91AY"), Some(ModelArchiveKind::TarBz2));
+        assert_eq!(sniff_compression_kind(&[0x1f, 0x8b, 0x08]), Some(ModelArchiveKind::TarGz));
+        assert_eq!(
+            sniff_compression_kind(&[0x28, 0xb5, 0x2f, 0xfd]),
+            Some(ModelArchiveKind::TarZst)
+        );
+        assert_eq!(sniff_compression_kind(b"ustar"), None);
+        assert_eq!(sniff_compression_kind(&[]), None);
+    }
+
+    #[test]
+    fn model_archive_kind_recognizes_xz_extensions() {
+        assert_eq!(model_archive_kind(Path::new("model.tar.xz")), Some(ModelArchiveKind::TarXz));
+        assert_eq!(model_archive_kind(Path::new("model.txz")), Some(ModelArchiveKind::TarXz));
+        assert_eq!(model_archive_kind(Path::new("model.xz")), None);
+    }
+
+    #[test]
+    fn resolve_archive_kind_overrides_mislabeled_extension() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let mislabeled = temp_dir.path().join("model.tar.bz2");
+        let mut xz_bytes = Vec::new();
+        {
+            use std::io::Write;
+            let mut encoder = liblzma::write::XzEncoder::new(&mut xz_bytes, 6);
+            encoder.write_all(b"data")?;
+            encoder.finish()?;
+        }
+        std::fs::write(&mislabeled, &xz_bytes)?;
+        assert_eq!(
+            resolve_archive_kind(&mislabeled, ModelArchiveKind::TarBz2)?,
+            ModelArchiveKind::TarXz
+        );
+
+        let unknown_magic = temp_dir.path().join("plain.tar.bz2");
+        std::fs::write(&unknown_magic, b"not a compressed stream")?;
+        assert_eq!(
+            resolve_archive_kind(&unknown_magic, ModelArchiveKind::TarBz2)?,
+            ModelArchiveKind::TarBz2
+        );
 
         Ok(())
     }

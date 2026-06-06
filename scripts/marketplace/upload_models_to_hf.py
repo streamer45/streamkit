@@ -33,6 +33,10 @@ def archive_mode(file_path: str) -> tuple[str, str] | None:
         return file_path[: -len(".tar.bz2")], "w:bz2"
     if file_path.endswith(".tbz2"):
         return file_path[: -len(".tbz2")], "w:bz2"
+    if file_path.endswith(".tar.xz"):
+        return file_path[: -len(".tar.xz")], "w:xz"
+    if file_path.endswith(".txz"):
+        return file_path[: -len(".txz")], "w:xz"
     if file_path.endswith(".tar.gz"):
         return file_path[: -len(".tar.gz")], "w:gz"
     if file_path.endswith(".tgz"):
