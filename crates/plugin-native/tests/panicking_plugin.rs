@@ -358,6 +358,48 @@ async fn update_params_error_is_silently_absorbed_today_and_node_keeps_running()
     );
 }
 
+/// Regression test for #531: a plugin wedged inside `process_packet` must
+/// not hang the node after `call_timeout` fires.  `run()` must emit Failed
+/// and return promptly via a bounded join — an unbounded join of the
+/// wedged worker would block this test until its 3s deadline.
+#[tokio::test]
+async fn wedged_process_returns_promptly_after_call_timeout() {
+    let mut plugin = load_plugin_fixture();
+    plugin.set_call_timeout(Some(std::time::Duration::from_millis(200)));
+
+    let node = create_node_with_mode(&plugin, "wedge_process")
+        .unwrap_or_else(|e| panic!("Failed to create plugin node: {e}"));
+
+    let (input_tx, input_rx) = mpsc::channel::<Packet>(16);
+    let (ctx, mut state_rx, _control_tx, _routed_rx) =
+        test_node_context_with_output_observer(input_rx);
+
+    let node_handle = tokio::spawn(async move { node.run(ctx).await });
+
+    await_running(&mut state_rx).await;
+
+    input_tx.send(Packet::Text(Arc::from("wedge"))).await.expect("input open");
+
+    let failure_reason = await_failed(&mut state_rx).await;
+    assert!(
+        failure_reason.contains("timed out"),
+        "Failure reason must report the call timeout, got: {failure_reason}"
+    );
+
+    let run_result = tokio::time::timeout(std::time::Duration::from_secs(3), node_handle)
+        .await
+        .expect(
+            "run() must return promptly after call_timeout instead of joining the wedged worker",
+        )
+        .expect("node task should not panic");
+    assert!(run_result.is_err(), "run() must return Err after a call timeout, got: {run_result:?}");
+    let err_msg = run_result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("timed out"),
+        "run() error must report the call timeout, got: {err_msg}"
+    );
+}
+
 #[tokio::test]
 async fn loaded_plugin_exposes_metadata_and_api_and_library_accessors() {
     let plugin = load_plugin_fixture();
