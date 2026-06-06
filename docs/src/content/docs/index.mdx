@@ -110,6 +110,25 @@ Then open [http://localhost:4545](http://localhost:4545) to access the web UI.
 > - Follow the [Quick Start](/getting-started/quick-start/) to run your first pipeline end-to-end.
 > - Explore the [web UI guide](/guides/web-ui/) and [Creating Pipelines](/guides/creating-pipelines/) when you're ready to build your own graphs.
 
+## Try it from your terminal
+
+No install required — these hit a public instance of the [speech gateway example](https://github.com/streamer45/streamkit/tree/main/examples/speech-gateway), a thin HTTP front-end over StreamKit oneshot pipelines (Kokoro TTS and Whisper STT).
+
+Text to speech (returns Opus audio, piped straight to `ffplay`):
+
+```bash
+curl -d 'Hello from StreamKit' https://tts.streamkit.dev | ffplay -nodisp -autoexit -
+```
+
+Speech to text — pipe the synthesized audio straight back into STT (no local file needed) and get back newline-delimited JSON:
+
+```bash
+curl -fsSd 'StreamKit transcribes speech' https://tts.streamkit.dev | curl -fsS --data-binary @- https://stt.streamkit.dev
+```
+
+> [!NOTE]
+> `tts.streamkit.dev` and `stt.streamkit.dev` are a free, best-effort public demo with no SLA — they may be slow, rate-limited, or offline at any time, and usage is monitored for abuse. Don't send anything sensitive. To run your own, see [`examples/speech-gateway`](https://github.com/streamer45/streamkit/tree/main/examples/speech-gateway).
+
 ## Execution modes
 
 StreamKit supports two pipeline execution modes:
