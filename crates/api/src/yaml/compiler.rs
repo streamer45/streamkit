@@ -9,7 +9,7 @@ use indexmap::IndexMap;
 pub fn compile(pipeline: UserPipeline) -> Result<Pipeline, String> {
     match pipeline {
         UserPipeline::Steps { name, description, mode, attributes, steps, client } => {
-            Ok(compile_steps(name, description, mode, attributes, steps, client))
+            compile_steps(name, description, mode, attributes, steps, client)
         },
         UserPipeline::Dag { name, description, mode, attributes, nodes, client } => {
             compile_dag(name, description, mode, attributes, nodes, client)
@@ -24,12 +24,22 @@ fn compile_steps(
     attributes: Option<std::collections::BTreeMap<String, String>>,
     steps: Vec<Step>,
     client: Option<ClientSection>,
-) -> Pipeline {
+) -> Result<Pipeline, String> {
     let mut nodes = IndexMap::new();
     let mut connections = Vec::new();
 
     for (i, step) in steps.into_iter().enumerate() {
         let node_name = format!("step_{i}");
+
+        if let Some(ref p) = step.params {
+            if !p.is_object() {
+                return Err(format!(
+                    "Node '{node_name}' (kind '{}') params must be an object, got {}",
+                    step.kind,
+                    value_type_name(p),
+                ));
+            }
+        }
 
         if i > 0 {
             connections.push(Connection {
@@ -44,7 +54,7 @@ fn compile_steps(
         nodes.insert(node_name, Node { kind: step.kind, params: step.params, state: None });
     }
 
-    Pipeline {
+    Ok(Pipeline {
         name,
         description,
         mode,
@@ -54,7 +64,7 @@ fn compile_steps(
         connections,
         view_data: None,
         runtime_schemas: None,
-    }
+    })
 }
 
 const BIDIRECTIONAL_NODE_KINDS: &[&str] = &["transport::moq::peer"];
@@ -63,59 +73,19 @@ fn is_bidirectional_kind(kind: &str) -> bool {
     BIDIRECTIONAL_NODE_KINDS.contains(&kind)
 }
 
-/// Cycles involving bidirectional nodes (e.g. `transport::moq::peer`) are allowed:
-/// edges touching a bidirectional node are excluded from the graph before running
-/// standard cycle detection on the remainder.
+/// Rejects circular dependencies. Cycles routing through a bidirectional node
+/// (e.g. `transport::moq::peer`) are allowed: such a node's input and output
+/// are decoupled by the network round-trip, so the loop is not a local
+/// dependency cycle. Edges incident to a bidirectional node are excluded from
+/// the graph before running standard cycle detection on the remainder.
 fn detect_cycles(user_nodes: &IndexMap<String, UserNode>) -> Result<(), String> {
-    use std::collections::HashSet;
+    let names: Vec<&str> = user_nodes.keys().map(String::as_str).collect();
+    let bidirectional: Vec<bool> =
+        user_nodes.values().map(|n| is_bidirectional_kind(&n.kind)).collect();
 
-    fn dfs<'a>(
-        node: &'a String,
-        adjacency: &IndexMap<&'a String, Vec<&'a String>>,
-        visited: &mut HashSet<&'a String>,
-        rec_stack: &mut HashSet<&'a String>,
-        cycle_path: &mut Vec<&'a String>,
-    ) -> Option<String> {
-        visited.insert(node);
-        rec_stack.insert(node);
-        cycle_path.push(node);
-
-        if let Some(neighbors) = adjacency.get(node) {
-            for neighbor in neighbors {
-                if !visited.contains(neighbor) {
-                    if let Some(cycle) = dfs(neighbor, adjacency, visited, rec_stack, cycle_path) {
-                        rec_stack.remove(node);
-                        cycle_path.pop();
-                        return Some(cycle);
-                    }
-                } else if rec_stack.contains(neighbor) {
-                    let cycle_start_idx =
-                        cycle_path.iter().position(|&n| n == *neighbor).unwrap_or(0);
-                    let cycle_strs: Vec<&str> =
-                        cycle_path[cycle_start_idx..].iter().map(|s| s.as_str()).collect();
-                    let description = format!(
-                        "Circular dependency detected: {} -> {}",
-                        cycle_strs.join(" -> "),
-                        neighbor
-                    );
-                    rec_stack.remove(node);
-                    cycle_path.pop();
-                    return Some(description);
-                }
-            }
-        }
-
-        rec_stack.remove(node);
-        cycle_path.pop();
-        None
-    }
-
-    let mut adjacency: IndexMap<&String, Vec<&String>> = IndexMap::new();
-
-    for (node_name, node_def) in user_nodes {
-        adjacency.entry(node_name).or_default();
-
-        if is_bidirectional_kind(&node_def.kind) {
+    let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); user_nodes.len()];
+    for (idx, node_def) in user_nodes.values().enumerate() {
+        if bidirectional[idx] {
             continue;
         }
 
@@ -127,30 +97,121 @@ fn detect_cycles(user_nodes: &IndexMap<String, UserNode>) -> Result<(), String> 
         };
 
         for dep_name in dependencies {
-            if let Some((key, dep_def)) = user_nodes.get_key_value(dep_name) {
-                if is_bidirectional_kind(&dep_def.kind) {
-                    continue;
+            if let Some(dep_idx) = user_nodes.get_index_of(dep_name) {
+                if !bidirectional[dep_idx] {
+                    adjacency[dep_idx].push(idx);
                 }
-                adjacency.entry(key).or_default().push(node_name);
             }
         }
     }
 
-    let mut visited: HashSet<&String> = HashSet::new();
-    let mut rec_stack: HashSet<&String> = HashSet::new();
-    let mut cycle_path: Vec<&String> = Vec::new();
+    let scc = strongly_connected_components(&adjacency);
 
-    for node_name in user_nodes.keys() {
-        if !visited.contains(node_name) {
-            if let Some(cycle_error) =
-                dfs(node_name, &adjacency, &mut visited, &mut rec_stack, &mut cycle_path)
-            {
-                return Err(cycle_error);
+    for (from, neighbors) in adjacency.iter().enumerate() {
+        for &to in neighbors {
+            if scc[from] != scc[to] {
+                continue;
             }
+            let mut cycle = vec![names[from]];
+            cycle.extend(path_within_scc(&adjacency, &scc, to, from).iter().map(|&i| names[i]));
+            return Err(format!("Circular dependency detected: {}", cycle.join(" -> ")));
         }
     }
 
     Ok(())
+}
+
+/// Iterative Tarjan: returns the SCC id of every vertex without recursing, so
+/// arbitrarily deep graphs cannot overflow the stack.
+fn strongly_connected_components(adjacency: &[Vec<usize>]) -> Vec<usize> {
+    let n = adjacency.len();
+    let mut index = vec![usize::MAX; n];
+    let mut lowlink = vec![0usize; n];
+    let mut on_stack = vec![false; n];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut scc = vec![usize::MAX; n];
+    let mut next_index = 0;
+    let mut scc_count = 0;
+
+    for start in 0..n {
+        if index[start] != usize::MAX {
+            continue;
+        }
+        let mut frames: Vec<(usize, usize)> = vec![(start, 0)];
+        while let Some(&(v, cursor)) = frames.last() {
+            if cursor == 0 {
+                index[v] = next_index;
+                lowlink[v] = next_index;
+                next_index += 1;
+                stack.push(v);
+                on_stack[v] = true;
+            }
+            if let Some(&w) = adjacency[v].get(cursor) {
+                frames.last_mut().expect("frame exists").1 += 1;
+                if index[w] == usize::MAX {
+                    frames.push((w, 0));
+                } else if on_stack[w] {
+                    lowlink[v] = lowlink[v].min(index[w]);
+                }
+            } else {
+                frames.pop();
+                if let Some(&(parent, _)) = frames.last() {
+                    lowlink[parent] = lowlink[parent].min(lowlink[v]);
+                }
+                if lowlink[v] == index[v] {
+                    loop {
+                        let w = stack.pop().expect("SCC stack is non-empty until root is popped");
+                        on_stack[w] = false;
+                        scc[w] = scc_count;
+                        if w == v {
+                            break;
+                        }
+                    }
+                    scc_count += 1;
+                }
+            }
+        }
+    }
+
+    scc
+}
+
+/// BFS path from `start` to `target` restricted to `start`'s SCC; both vertices
+/// must belong to the same SCC, which guarantees the path exists.
+fn path_within_scc(
+    adjacency: &[Vec<usize>],
+    scc: &[usize],
+    start: usize,
+    target: usize,
+) -> Vec<usize> {
+    use std::collections::VecDeque;
+
+    let mut prev = vec![usize::MAX; adjacency.len()];
+    let mut seen = vec![false; adjacency.len()];
+    let mut queue = VecDeque::from([start]);
+    seen[start] = true;
+
+    'bfs: while let Some(v) = queue.pop_front() {
+        for &w in &adjacency[v] {
+            if !seen[w] && scc[w] == scc[start] {
+                seen[w] = true;
+                prev[w] = v;
+                if w == target {
+                    break 'bfs;
+                }
+                queue.push_back(w);
+            }
+        }
+    }
+
+    let mut path = vec![target];
+    let mut cur = target;
+    while cur != start {
+        cur = prev[cur];
+        path.push(cur);
+    }
+    path.reverse();
+    path
 }
 
 fn compile_dag(
@@ -250,7 +311,7 @@ fn compile_dag(
                                     serde_json::Value::Number((*count).into()),
                                 );
                             }
-                        } else if params.is_none() {
+                        } else {
                             let mut map = serde_json::Map::new();
                             map.insert(
                                 "num_inputs".to_string(),
@@ -293,7 +354,7 @@ fn value_type_name(v: &serde_json::Value) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::yaml::{Needs, NeedsDependency, UserNode, UserPipeline};
+    use crate::yaml::{Needs, NeedsDependency, Step, UserNode, UserPipeline};
     use crate::EngineMode;
     use indexmap::IndexMap;
 
@@ -455,6 +516,65 @@ mod tests {
         ]);
         compile(dag_pipeline(nodes, EngineMode::Dynamic))
             .expect("bidirectional peer cycle should compile");
+    }
+
+    #[test]
+    fn detect_cycles_allows_multi_hop_cycle_routed_through_peer() {
+        // a -> b -> peer -> a: the loop is only closed via the peer's network
+        // round-trip (e.g. samples/pipelines/dynamic/moq_mixing.yml), so it is
+        // not a local dependency cycle.
+        let nodes = dag_nodes(vec![
+            ("a", user_node("test_node", Needs::Single(simple_dep("peer")))),
+            ("b", user_node("test_node", Needs::Single(simple_dep("a")))),
+            ("peer", user_node("transport::moq::peer", Needs::Single(simple_dep("b")))),
+        ]);
+        compile(dag_pipeline(nodes, EngineMode::Dynamic))
+            .expect("cycle routed through a peer should compile");
+    }
+
+    #[test]
+    fn detect_cycles_rejects_self_reference() {
+        let nodes = dag_nodes(vec![("a", user_node("test_node", Needs::Single(simple_dep("a"))))]);
+        let err = compile(dag_pipeline(nodes, EngineMode::Dynamic))
+            .expect_err("self-referencing node should be rejected");
+        assert!(err.contains("Circular dependency detected"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn detect_cycles_handles_deep_linear_chain_without_overflow() {
+        let mut entries = vec![("n0".to_string(), user_node("test_node", Needs::None))];
+        for i in 1..20_000 {
+            entries.push((
+                format!("n{i}"),
+                user_node("test_node", Needs::Single(simple_dep(&format!("n{}", i - 1)))),
+            ));
+        }
+        let nodes: IndexMap<String, UserNode> = entries.into_iter().collect();
+        compile(dag_pipeline(nodes, EngineMode::Dynamic))
+            .expect("deep linear chain should compile without stack overflow");
+    }
+
+    #[test]
+    fn compile_steps_rejects_non_object_params() {
+        let steps = vec![
+            Step { kind: "core::source".to_string(), params: None },
+            Step { kind: "core::sink".to_string(), params: Some(serde_json::Value::Array(vec![])) },
+        ];
+        let pipeline = UserPipeline::Steps {
+            name: None,
+            description: None,
+            mode: EngineMode::OneShot,
+            attributes: None,
+            steps,
+            client: None,
+        };
+        let err =
+            compile(pipeline).expect_err("non-object params should be rejected in steps format");
+        assert!(
+            err.contains("Node 'step_1' (kind 'core::sink') params must be an object"),
+            "error should mention the step and kind: {err}",
+        );
+        assert!(err.contains("array"), "error should mention the actual type: {err}");
     }
 
     #[test]
