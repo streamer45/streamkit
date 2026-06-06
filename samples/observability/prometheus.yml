@@ -4,8 +4,10 @@ global:
 
 # skit pushes metrics via OTLP to Prometheus' native OTLP receiver (enabled with
 # --web.enable-otlp-receiver in docker-compose.yml), so it needs no scrape_config.
-# The optional speech gateway exposes a classic /metrics endpoint; it is scraped
-# via the gateway overlay (docker-compose.gateway.yml + prometheus.gateway.yml).
-# Keeping its scrape out of the base config means the default stack has no
-# perpetually-DOWN target. See README.md.
+# The optional speech gateway exposes a classic /metrics endpoint; the gateway
+# overlay (docker-compose.gateway.yml) drops a scrape fragment into conf.d/. The
+# glob matches nothing by default, so the base stack has no perpetually-DOWN
+# target and there is no duplicated `global:` block to drift. See README.md.
 scrape_configs: []
+scrape_config_files:
+  - /etc/prometheus/conf.d/*.yml

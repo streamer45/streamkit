@@ -44,10 +44,11 @@ Two different paths, both visible on the dashboards:
   `http://prometheus:9090/api/v1/otlp/v1/metrics`. This feeds the HTTP, engine,
   oneshot, and **plugin** metrics.
 - **gateway → Prometheus (scrape).** The speech gateway exposes a classic
-  `/metrics` endpoint that Prometheus scrapes. That scrape lives in the gateway
-  overlay (`prometheus.gateway.yml`, wired up by `docker-compose.gateway.yml`)
-  rather than the base `prometheus.yml`, so the default stack has no
-  perpetually-DOWN target. This feeds the **Speech Gateway** row.
+  `/metrics` endpoint that Prometheus scrapes. The base `prometheus.yml` loads
+  scrape configs from a `conf.d/*.yml` glob that matches nothing by default; the
+  gateway overlay (`docker-compose.gateway.yml`) drops
+  `prometheus-gateway-scrape.yml` into that directory, so the default stack has
+  no perpetually-DOWN target. This feeds the **Speech Gateway** row.
 
 ## Speech Gateway row
 
