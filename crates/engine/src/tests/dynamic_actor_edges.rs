@@ -684,15 +684,21 @@ async fn remove_live_node_prunes_pending_connections() {
         .expect("add src");
 
     // Wait for src to be live so RemoveNode hits the shutdown_node path.
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while Instant::now() < deadline {
-        if let Ok(states) = handle.get_node_states().await {
-            if states.get("src").is_some_and(|s| !matches!(s, NodeState::Creating)) {
-                break;
+    let src_live = {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut live = false;
+        while Instant::now() < deadline {
+            if let Ok(states) = handle.get_node_states().await {
+                if states.get("src").is_some_and(|s| !matches!(s, NodeState::Creating)) {
+                    live = true;
+                    break;
+                }
             }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+        live
+    };
+    assert!(src_live, "src must be live so RemoveNode exercises the shutdown_node path");
 
     handle
         .send_control(EngineControlMessage::AddNode {
@@ -722,15 +728,21 @@ async fn remove_live_node_prunes_pending_connections() {
         .await
         .expect("remove src");
 
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while Instant::now() < deadline {
-        if let Ok(states) = handle.get_node_states().await {
-            if !states.contains_key("src") {
-                break;
+    let src_removed = {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut removed = false;
+        while Instant::now() < deadline {
+            if let Ok(states) = handle.get_node_states().await {
+                if !states.contains_key("src") {
+                    removed = true;
+                    break;
+                }
             }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+        removed
+    };
+    assert!(src_removed, "src must be removed so the re-add is not rejected as a duplicate id");
 
     // Re-add a node with the same id before the sink finishes creating.
     handle
