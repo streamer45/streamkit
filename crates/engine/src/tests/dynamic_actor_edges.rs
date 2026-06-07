@@ -553,3 +553,233 @@ async fn disconnect_cancels_pending_connection() {
 
     handle.shutdown_and_wait().await.expect("shutdown");
 }
+
+struct EmittingSourceNode;
+
+#[streamkit_core::async_trait]
+impl ProcessorNode for EmittingSourceNode {
+    fn input_pins(&self) -> Vec<streamkit_core::InputPin> {
+        Vec::new()
+    }
+    fn output_pins(&self) -> Vec<streamkit_core::OutputPin> {
+        vec![streamkit_core::OutputPin {
+            name: "out".to_string(),
+            produces_type: PacketType::Binary,
+            cardinality: streamkit_core::PinCardinality::Broadcast,
+        }]
+    }
+    async fn run(
+        self: Box<Self>,
+        mut ctx: streamkit_core::NodeContext,
+    ) -> Result<(), StreamKitError> {
+        let mut ticker = tokio::time::interval(Duration::from_millis(10));
+        loop {
+            tokio::select! {
+                msg = ctx.control_rx.recv() => match msg {
+                    Some(NodeControlMessage::Shutdown) | None => return Ok(()),
+                    _ => {},
+                },
+                _ = ticker.tick() => {
+                    let _ = ctx
+                        .output_sender
+                        .send(
+                            "out",
+                            streamkit_core::types::Packet::Binary {
+                                data: bytes::Bytes::from_static(b"tick"),
+                                content_type: None,
+                                metadata: None,
+                            },
+                        )
+                        .await;
+                },
+            }
+        }
+    }
+}
+
+struct CountingSinkNode {
+    received: Arc<AtomicU32>,
+}
+
+#[streamkit_core::async_trait]
+impl ProcessorNode for CountingSinkNode {
+    fn input_pins(&self) -> Vec<streamkit_core::InputPin> {
+        vec![streamkit_core::InputPin {
+            name: "in".to_string(),
+            accepts_types: vec![PacketType::Any],
+            cardinality: streamkit_core::PinCardinality::One,
+        }]
+    }
+    fn output_pins(&self) -> Vec<streamkit_core::OutputPin> {
+        Vec::new()
+    }
+    async fn run(
+        self: Box<Self>,
+        mut ctx: streamkit_core::NodeContext,
+    ) -> Result<(), StreamKitError> {
+        let mut input = ctx.inputs.remove("in");
+        loop {
+            tokio::select! {
+                msg = ctx.control_rx.recv() => match msg {
+                    Some(NodeControlMessage::Shutdown) | None => return Ok(()),
+                    _ => {},
+                },
+                Some(packet) = async {
+                    match input.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    let _ = packet;
+                    self.received.fetch_add(1, Ordering::SeqCst);
+                },
+            }
+        }
+    }
+}
+
+/// Regression test for issue #528: `RemoveNode` of a **live** node must prune
+/// deferred (pending) connections referencing it. Otherwise re-adding a node
+/// with the same id causes `flush_pending_connections` to replay the stale
+/// connection, resurrecting a phantom edge that delivers packets the
+/// post-removal graph never requested.
+#[tokio::test]
+async fn remove_live_node_prunes_pending_connections() {
+    let received = Arc::new(AtomicU32::new(0));
+    let sink_received = received.clone();
+
+    let mut registry = NodeRegistry::new();
+    registry.register_dynamic(
+        "test::emitter",
+        |_p| Ok(Box::new(EmittingSourceNode) as Box<dyn ProcessorNode>),
+        serde_json::json!({}),
+        vec!["test".to_string()],
+        false,
+    );
+    registry.register_dynamic(
+        "test::slow_sink",
+        move |_p| {
+            std::thread::sleep(Duration::from_millis(600));
+            Ok(Box::new(CountingSinkNode { received: sink_received.clone() })
+                as Box<dyn ProcessorNode>)
+        },
+        serde_json::json!({}),
+        vec!["test".to_string()],
+        false,
+    );
+    let engine = Engine {
+        registry: Arc::new(std::sync::RwLock::new(registry)),
+        audio_pool: Arc::new(streamkit_core::AudioFramePool::audio_default()),
+        video_pool: Arc::new(streamkit_core::VideoFramePool::video_default()),
+    };
+    let handle = engine.start_dynamic_actor(DynamicEngineConfig::default());
+
+    handle
+        .send_control(EngineControlMessage::AddNode {
+            node_id: "src".to_string(),
+            kind: "test::emitter".to_string(),
+            params: None,
+        })
+        .await
+        .expect("add src");
+
+    // Wait for src to be live so RemoveNode hits the shutdown_node path.
+    let src_live = {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut live = false;
+        while Instant::now() < deadline {
+            if let Ok(states) = handle.get_node_states().await {
+                if states.get("src").is_some_and(|s| !matches!(s, NodeState::Creating)) {
+                    live = true;
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        live
+    };
+    assert!(src_live, "src must be live so RemoveNode exercises the shutdown_node path");
+
+    handle
+        .send_control(EngineControlMessage::AddNode {
+            node_id: "sink".to_string(),
+            kind: "test::slow_sink".to_string(),
+            params: None,
+        })
+        .await
+        .expect("add sink");
+
+    // Connect while sink is still Creating → deferred into pending_connections.
+    handle
+        .send_control(EngineControlMessage::Connect {
+            from_node: "src".to_string(),
+            from_pin: "out".to_string(),
+            to_node: "sink".to_string(),
+            to_pin: "in".to_string(),
+            mode: streamkit_core::control::ConnectionMode::Reliable,
+        })
+        .await
+        .expect("connect");
+
+    // Remove the live src endpoint — this must also discard the deferred
+    // connection, just as the Creating-node removal branch does.
+    handle
+        .send_control(EngineControlMessage::RemoveNode { node_id: "src".to_string() })
+        .await
+        .expect("remove src");
+
+    let src_removed = {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut removed = false;
+        while Instant::now() < deadline {
+            if let Ok(states) = handle.get_node_states().await {
+                if !states.contains_key("src") {
+                    removed = true;
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        removed
+    };
+    assert!(src_removed, "src must be removed so the re-add is not rejected as a duplicate id");
+
+    // Re-add a node with the same id before the sink finishes creating.
+    handle
+        .send_control(EngineControlMessage::AddNode {
+            node_id: "src".to_string(),
+            kind: "test::emitter".to_string(),
+            params: None,
+        })
+        .await
+        .expect("re-add src");
+
+    // Wait for the sink to finish creating; flush_pending_connections runs here.
+    let sink_ready = {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut ready = false;
+        while Instant::now() < deadline {
+            if let Ok(states) = handle.get_node_states().await {
+                if states.get("sink").is_some_and(|s| !matches!(s, NodeState::Creating)) {
+                    ready = true;
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        ready
+    };
+    assert!(sink_ready, "sink should finish creation");
+
+    // Give a phantom edge ample time to deliver packets (src emits every 10ms).
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    assert_eq!(
+        received.load(Ordering::SeqCst),
+        0,
+        "no packets should flow: the deferred connection referenced a removed node \
+         and must not be replayed when the id is reused"
+    );
+
+    handle.shutdown_and_wait().await.expect("shutdown");
+}
