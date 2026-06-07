@@ -6,6 +6,7 @@
 
 mod catalog_consumer;
 mod constants;
+mod discovered;
 mod ordered_producer;
 mod peer;
 mod pull;
