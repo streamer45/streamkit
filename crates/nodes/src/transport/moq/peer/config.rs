@@ -110,29 +110,36 @@ pub(super) struct BidirectionalTaskConfig {
     pub input_broadcasts: Vec<String>,
     pub output_broadcast: String,
     pub node_id: String,
-    pub output_sender: streamkit_core::OutputSender,
     pub broadcast_rx: broadcast::Receiver<BroadcastFrame>,
     pub shutdown_rx: broadcast::Receiver<()>,
     pub publisher_slot: Arc<Semaphore>,
     pub publisher_events: mpsc::UnboundedSender<PublisherEvent>,
     pub subscriber_count: Arc<std::sync::atomic::AtomicU64>,
-    pub stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
     pub media: SubscriberMediaConfig,
     pub media_state_rx: watch::Receiver<MediaTypeState>,
-    pub dynamic_outputs: DynamicOutputs,
-    pub discovered_video_codecs: DiscoveredVideoCodecs,
+    pub routing: TrackRouting,
 }
 
 pub(super) struct PublisherReceiveLoopWithSlotConfig {
     pub subscribe: moq_lite::OriginConsumer,
     pub broadcast_name: String,
-    pub output_sender: streamkit_core::OutputSender,
     pub publisher_slot: Arc<Semaphore>,
     pub publisher_events: mpsc::UnboundedSender<PublisherEvent>,
     pub publisher_path: String,
+    pub routing: TrackRouting,
+}
+
+/// Everything a publisher-side track processor needs to route frames and
+/// label pins, bundled so the receive-loop call chain doesn't pass five
+/// parameters through every layer.
+#[derive(Clone)]
+pub(super) struct TrackRouting {
+    pub output_sender: streamkit_core::OutputSender,
     pub stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
     pub dynamic_outputs: DynamicOutputs,
-    pub discovered_video_codecs: DiscoveredVideoCodecs,
+    pub discovered_codecs: crate::transport::moq::discovered::DiscoveredCodecs,
+    /// Local video codec config — fallback for frame `content_type` when the
+    /// catalog hasn't advertised a codec for the track.
     pub video_codec: VideoCodec,
 }
 
@@ -181,19 +188,6 @@ pub(super) struct SubscriberSendCtx<'a> {
 /// lock is never held across an `.await` point — only brief synchronous reads
 /// and writes.
 pub(super) type DynamicOutputs = Arc<std::sync::RwLock<HashMap<String, mpsc::Sender<Packet>>>>;
-
-/// Per-pin video codecs discovered from the remote publisher's catalog,
-/// keyed by output pin name (e.g. `video/hd`, `screen-input/video/hd`).
-///
-/// Written by the catalog watch when it subscribes to a video rendition and
-/// read by `handle_pin_management` so a dynamically created output pin
-/// advertises the codec the remote peer actually publishes, rather than the
-/// local `video_codec` config (which describes the pipeline-input side and
-/// may differ when peers use different codecs).
-///
-/// Uses [`std::sync::RwLock`] for the same reason as [`DynamicOutputs`]:
-/// the lock is never held across an `.await` point.
-pub(super) type DiscoveredVideoCodecs = Arc<std::sync::RwLock<HashMap<String, VideoCodec>>>;
 
 pub(super) fn normalize_gateway_path(path: &str) -> String {
     let trimmed = path.trim();

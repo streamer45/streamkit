@@ -323,7 +323,10 @@ mod tests {
     /// dropped when re-parsed by a subscriber.
     #[test]
     fn audio_codec_catalog_round_trips() {
-        for codec in [AudioCodec::Opus, AudioCodec::Aac] {
+        // Iterates AudioCodec::ALL so a new codec variant fails this test
+        // (instead of silently hitting the wildcard fallback arms) until the
+        // catalog mappings above are taught about it.
+        for &codec in AudioCodec::ALL {
             let catalog = catalog_audio_codec(codec);
             assert_eq!(audio_codec_from_catalog(&catalog), Some(codec));
         }
@@ -334,7 +337,8 @@ mod tests {
     /// drop renditions published by a peer.
     #[test]
     fn video_codec_catalog_round_trips() {
-        for codec in [VideoCodec::Vp9, VideoCodec::Av1, VideoCodec::H264] {
+        // See audio_codec_catalog_round_trips for why this iterates ALL.
+        for &codec in VideoCodec::ALL {
             let catalog = catalog_video_codec(codec);
             assert_eq!(video_codec_from_catalog(&catalog), Some(codec));
         }
