@@ -134,7 +134,7 @@ func main() {
 		authToken:      cfg.authToken,
 		maxBodySize:    cfg.maxBodySize,
 		maxTTSTextSize: cfg.maxTTSTextSize,
-		sttPipeline:    fmt.Sprintf(sttPipelineYAML, cfg.sttModel),
+		sttPipeline:    fmt.Sprintf(sttPipelineYAML, strconv.Quote(cfg.sttModel)),
 		sem:            make(chan struct{}, cfg.maxConcurrency),
 	}
 
@@ -167,6 +167,11 @@ func loadConfig() config {
 	sttModel := flagString("stt-model", getEnvDefault("GATEWAY_STT_MODEL", defaultSTTModel), "Whisper model path used by the STT pipeline (relative to the skit working dir)")
 
 	flag.Parse()
+
+	if *sttModel == "" {
+		log.Printf("empty stt-model, falling back to default %s", defaultSTTModel)
+		*sttModel = defaultSTTModel
+	}
 
 	return config{
 		skitURL:        *skit,

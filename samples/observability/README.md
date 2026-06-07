@@ -94,8 +94,9 @@ These are the sharp edges worth knowing when wiring this up yourself:
   `skit serve` otherwise logs "no plugins found" and pipelines fail with "node
   kind not found". `skit/entrypoint.sh` reassembles the expected layout at
   startup from the in-repo manifests (mounted at `/repo-manifests`); newer
-  images ship the bundles directly and the shim passes them through. Once the
-  pinned tag ships bundles, the shim can be dropped.
+  images ship the bundles directly and the shim passes them through. The shim
+  can only be dropped after bumping the pin to a tag newer than `v0.5.0-demo`
+  that ships bundles.
 - **Model names must match.** Pipelines reference model files by path; the file
   must actually be present in the image/`models/` dir. The pipelines under
   `pipelines/` use the model names the `-demo` image actually ships.

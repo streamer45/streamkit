@@ -21,6 +21,7 @@ mkdir -p "$DST"
 for dir in "$SRC"/*/; do
   [ -d "$dir" ] || continue
   id=$(basename "$dir")
+  [ -d "$DST/$id" ] && continue
   if [ -f "$dir/plugin.yml" ] && ls "$dir"/*.so > /dev/null 2>&1; then
     cp -r "$SRC/$id" "$DST/$id"
     echo "copied plugin bundle: $id"

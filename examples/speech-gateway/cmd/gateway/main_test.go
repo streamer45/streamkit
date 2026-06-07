@@ -6,6 +6,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -78,11 +79,17 @@ func TestIsJSONContentType(t *testing.T) {
 }
 
 func TestSTTPipelineModelTemplating(t *testing.T) {
-	got := fmt.Sprintf(sttPipelineYAML, defaultSTTModel)
-	if !strings.Contains(got, "model_path: models/ggml-tiny-q5_1.bin") {
+	got := fmt.Sprintf(sttPipelineYAML, strconv.Quote(defaultSTTModel))
+	if !strings.Contains(got, `model_path: "models/ggml-tiny-q5_1.bin"`) {
 		t.Errorf("default STT pipeline missing expected model_path:\n%s", got)
 	}
 	if strings.Contains(got, "%!") {
 		t.Errorf("STT pipeline has unresolved format verbs:\n%s", got)
+	}
+
+	tricky := "models/v: 2/#m\n.bin"
+	got = fmt.Sprintf(sttPipelineYAML, strconv.Quote(tricky))
+	if !strings.Contains(got, `model_path: "models/v: 2/#m\n.bin"`) {
+		t.Errorf("tricky model path not quoted as a single YAML scalar:\n%s", got)
 	}
 }
