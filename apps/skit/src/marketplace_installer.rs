@@ -1987,10 +1987,17 @@ fn resolve_archive_kind(path: &Path, ext_kind: ModelArchiveKind) -> Result<Model
     let mut header = [0u8; 6];
     let mut file = std::fs::File::open(path)
         .with_context(|| format!("Failed to open model archive {path}", path = path.display()))?;
-    let read = file.read(&mut header).with_context(|| {
-        format!("Failed to read model archive header {path}", path = path.display())
-    })?;
-    let sniffed = sniff_compression_kind(&header[..read]);
+    let mut filled = 0;
+    while filled < header.len() {
+        let read = file.read(&mut header[filled..]).with_context(|| {
+            format!("Failed to read model archive header {path}", path = path.display())
+        })?;
+        if read == 0 {
+            break;
+        }
+        filled += read;
+    }
+    let sniffed = sniff_compression_kind(&header[..filled]);
     match sniffed {
         Some(kind) if kind != ext_kind => {
             tracing::warn!(
@@ -2468,6 +2475,13 @@ mod tests {
         assert_eq!(
             resolve_archive_kind(&mislabeled, ModelArchiveKind::TarBz2)?,
             ModelArchiveKind::TarXz
+        );
+
+        let tiny = temp_dir.path().join("tiny.tar.bz2");
+        std::fs::write(&tiny, b"BZ")?;
+        assert_eq!(
+            resolve_archive_kind(&tiny, ModelArchiveKind::TarBz2)?,
+            ModelArchiveKind::TarBz2
         );
 
         let unknown_magic = temp_dir.path().join("plain.tar.bz2");

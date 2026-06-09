@@ -69,6 +69,12 @@ def maybe_create_archive(
             return None
         return tar_info
 
+    if tar_mode == "w:xz":
+        try:
+            import lzma  # noqa: F401
+        except ImportError:
+            sys.exit("Python was built without lzma support; cannot create .tar.xz archives")
+
     print(f"Creating archive {archive_path} from {source_dir}...")
     with tarfile.open(archive_path, tar_mode) as tar:
         tar.add(source_dir, arcname=base_name, filter=filter_hidden)
