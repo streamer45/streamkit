@@ -1350,6 +1350,13 @@ impl DynamicEngine {
         }
     }
 
+    /// Discard deferred state referencing a node that is being removed or has
+    /// failed, so a later node with the same id cannot resurrect it.
+    fn prune_pending_for(&mut self, node_id: &str) {
+        self.pending_connections.retain(|pc| pc.from_node != node_id && pc.to_node != node_id);
+        self.pending_tunes.retain(|pt| pt.node_id != node_id);
+    }
+
     /// Gracefully shut down a node and its associated actors.
     async fn shutdown_node(&mut self, node_id: &str) {
         if let Some(state) = self.node_states.get(node_id) {
@@ -1397,6 +1404,7 @@ impl DynamicEngine {
         self.dynamic_pin_nodes.remove(node_id);
         self.runtime_schemas.remove(node_id);
         self.connections.retain(|(to, _), (from, _)| to != node_id && from != node_id);
+        self.prune_pending_for(node_id);
         self.node_kinds.remove(node_id);
         self.node_metric_labels.remove(node_id);
         self.nodes_active_gauge
@@ -1451,9 +1459,7 @@ impl DynamicEngine {
                     );
                     self.node_kinds.remove(&node_id);
                     self.node_metric_labels.remove(&node_id);
-                    self.pending_connections
-                        .retain(|pc| pc.from_node != node_id && pc.to_node != node_id);
-                    self.pending_tunes.retain(|pt| pt.node_id != node_id);
+                    self.prune_pending_for(&node_id);
                     return;
                 }
 
@@ -1478,9 +1484,7 @@ impl DynamicEngine {
                 // RemoveNode clears it.
                 self.node_kinds.remove(&node_id);
                 self.node_metric_labels.remove(&node_id);
-                self.pending_connections
-                    .retain(|pc| pc.from_node != node_id && pc.to_node != node_id);
-                self.pending_tunes.retain(|pt| pt.node_id != node_id);
+                self.prune_pending_for(&node_id);
             },
         }
     }
@@ -1710,9 +1714,7 @@ impl DynamicEngine {
                     Arc::make_mut(&mut self.node_states).remove(&node_id);
                     self.node_kinds.remove(&node_id);
                     self.node_metric_labels.remove(&node_id);
-                    self.pending_connections
-                        .retain(|pc| pc.from_node != node_id && pc.to_node != node_id);
-                    self.pending_tunes.retain(|pt| pt.node_id != node_id);
+                    self.prune_pending_for(&node_id);
                 } else {
                     self.shutdown_node(&node_id).await;
                 }

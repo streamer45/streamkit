@@ -74,9 +74,10 @@ Notes:
   metrics-instrumented gateway. The Speech Gateway dashboard row stays empty
   until those metrics are present and the gateway has served traffic.
 - The gateway's default STT pipeline targets a Whisper model that must exist on
-  the skit it talks to. The bundled `-demo` image ships `ggml-tiny-q5_1.bin`; if
-  the gateway points at a different model, STT through the gateway will fail
-  while TTS still works. The direct-to-skit traffic path (the default
+  the skit it talks to. The default (`models/ggml-tiny-q5_1.bin`, overridable
+  via `GATEWAY_STT_MODEL` / `--stt-model`) matches what the `-demo` image
+  ships; if the gateway points at a model that isn't present, STT through the
+  gateway will fail while TTS still works. The direct-to-skit traffic path (the default
   `generate-traffic.sh`) avoids this by shipping its own pipelines under
   `pipelines/`.
 
@@ -87,12 +88,15 @@ These are the sharp edges worth knowing when wiring this up yourself:
 - **Pin a versioned `-demo` tag.** `latest-demo` can lag behind released
   versions and predate metrics like `plugin.call.duration`, which leaves the
   Plugins / ML inference row empty. This stack pins `v0.5.0-demo`.
-- **Demo image plugin layout.** Current `-demo` images ship native plugins as
-  bare `.so` files under `plugins/native/`, but the loader expects directory
-  bundles (`plugins/native/<id>/` with a `plugin.yml` + the `.so`). `skit serve`
-  otherwise logs "no plugins found" and pipelines fail with "node kind not
-  found". `skit/entrypoint.sh` reassembles the expected layout at startup from
-  the in-repo manifests (mounted at `/repo-manifests`).
+- **Demo image plugin layout.** Older `-demo` images (<= v0.5.0) ship native
+  plugins as bare `.so` files under `plugins/native/`, but the loader expects
+  directory bundles (`plugins/native/<id>/` with a `plugin.yml` + the `.so`).
+  `skit serve` otherwise logs "no plugins found" and pipelines fail with "node
+  kind not found". `skit/entrypoint.sh` reassembles the expected layout at
+  startup from the in-repo manifests (mounted at `/repo-manifests`); newer
+  images ship the bundles directly and the shim passes them through. The shim
+  can only be dropped after bumping the pin to a tag newer than `v0.5.0-demo`
+  that ships bundles.
 - **Model names must match.** Pipelines reference model files by path; the file
   must actually be present in the image/`models/` dir. The pipelines under
   `pipelines/` use the model names the `-demo` image actually ships.
