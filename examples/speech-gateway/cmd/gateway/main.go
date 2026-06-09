@@ -31,6 +31,8 @@ import (
 const (
 	defaultSkitURL    = "http://127.0.0.1:4545"
 	defaultListenAddr = ":8080"
+	// Matches the Whisper model bundled in the -demo images.
+	defaultSTTModel = "models/ggml-tiny-q5_1.bin"
 
 	sttPipelineYAML = `
 name: stt-ogg-opus
@@ -53,7 +55,7 @@ steps:
 
   - kind: plugin::native::whisper
     params:
-      model_path: models/ggml-base.en-q5_1.bin
+      model_path: %s
       language: en
       vad_model_path: models/silero_vad.onnx
       vad_threshold: 0.5
@@ -110,6 +112,7 @@ type gateway struct {
 	authToken      string
 	maxBodySize    int64
 	maxTTSTextSize int64
+	sttPipeline    string
 	sem            chan struct{}
 }
 
@@ -120,6 +123,7 @@ type config struct {
 	maxConcurrency int
 	maxBodySize    int64
 	maxTTSTextSize int64
+	sttModel       string
 }
 
 func main() {
@@ -130,6 +134,7 @@ func main() {
 		authToken:      cfg.authToken,
 		maxBodySize:    cfg.maxBodySize,
 		maxTTSTextSize: cfg.maxTTSTextSize,
+		sttPipeline:    fmt.Sprintf(sttPipelineYAML, strconv.Quote(cfg.sttModel)),
 		sem:            make(chan struct{}, cfg.maxConcurrency),
 	}
 
@@ -159,8 +164,14 @@ func loadConfig() config {
 	maxConc := flagInt("max-concurrency", envInt("GATEWAY_MAX_CONCURRENCY", 10), "Maximum concurrent in-flight requests")
 	maxBody := flagInt64("max-body-bytes", envInt64("GATEWAY_MAX_BODY_BYTES", 1*1024*1024), "Maximum request body size")
 	maxTTSText := flagInt64("max-tts-text-size", envInt64("GATEWAY_MAX_TTS_TEXT_SIZE", 1000), "Maximum TTS text size in characters")
+	sttModel := flagString("stt-model", getEnvDefault("GATEWAY_STT_MODEL", defaultSTTModel), "Whisper model path used by the STT pipeline (relative to the skit working dir)")
 
 	flag.Parse()
+
+	if *sttModel == "" {
+		log.Printf("empty stt-model, falling back to default %s", defaultSTTModel)
+		*sttModel = defaultSTTModel
+	}
 
 	return config{
 		skitURL:        *skit,
@@ -169,6 +180,7 @@ func loadConfig() config {
 		maxConcurrency: *maxConc,
 		maxBodySize:    *maxBody,
 		maxTTSTextSize: *maxTTSText,
+		sttModel:       *sttModel,
 	}
 }
 
@@ -262,7 +274,7 @@ func (gw *gateway) handleSTT(w http.ResponseWriter, r *http.Request) {
 	defer release()
 	r.Body = http.MaxBytesReader(underlying(w), r.Body, gw.maxBodySize)
 	useBuffer := r.ContentLength > 0 && r.ContentLength <= gw.maxBodySize
-	gw.proxyMultipart(w, r, "stt", sttPipelineYAML, "media", "audio/ogg", useBuffer)
+	gw.proxyMultipart(w, r, "stt", gw.sttPipeline, "media", "audio/ogg", useBuffer)
 }
 
 func (gw *gateway) handleTTS(w http.ResponseWriter, r *http.Request) {
