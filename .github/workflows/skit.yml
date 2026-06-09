@@ -56,6 +56,9 @@ jobs:
         with:
           rust-cache-key: skit-test
           rust-cache-shared-key: skit
+          # Three sequential test builds (default, moq, mcp) sit right at the
+          # hosted runner's disk limit; reclaim everything we can up front.
+          free-disk-aggressive: "true"
 
       - name: Run tests (GPU tests run separately on self-hosted runner)
         run: |
@@ -85,6 +88,12 @@ jobs:
       # cache usefully across runs; bypass the workflow-level sccache to
       # avoid the "sccache not installed" failure and unnecessary indirection.
       RUSTC_WRAPPER: ""
+      # Instrumented builds with full DWARF debuginfo exceed the hosted
+      # runner's disk ("No space left on device" during the mcp link step).
+      # llvm-cov reads its own coverage-mapping sections, not DWARF, so line
+      # tables are enough to keep backtraces useful at a fraction of the size.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v5
 
