@@ -92,6 +92,20 @@ pub fn catalog_video_codec(codec: VideoCodec) -> hang::catalog::VideoCodec {
     }
 }
 
+/// Map a [`hang::catalog::VideoCodec`] back to our [`VideoCodec`].
+///
+/// Returns `None` for catalog codecs we don't support yet.
+pub const fn video_codec_from_catalog(
+    catalog_codec: &hang::catalog::VideoCodec,
+) -> Option<VideoCodec> {
+    match catalog_codec {
+        hang::catalog::VideoCodec::VP9(_) => Some(VideoCodec::Vp9),
+        hang::catalog::VideoCodec::AV1(_) => Some(VideoCodec::Av1),
+        hang::catalog::VideoCodec::H264(_) => Some(VideoCodec::H264),
+        _ => None,
+    }
+}
+
 /// Resolve the video codec from config → input_types → default (VP9).
 ///
 /// Priority order:
@@ -309,9 +323,24 @@ mod tests {
     /// dropped when re-parsed by a subscriber.
     #[test]
     fn audio_codec_catalog_round_trips() {
-        for codec in [AudioCodec::Opus, AudioCodec::Aac] {
+        // Iterates AudioCodec::ALL so a new codec variant fails this test
+        // (instead of silently hitting the wildcard fallback arms) until the
+        // catalog mappings above are taught about it.
+        for &codec in AudioCodec::ALL {
             let catalog = catalog_audio_codec(codec);
             assert_eq!(audio_codec_from_catalog(&catalog), Some(codec));
+        }
+    }
+
+    /// `catalog_video_codec` and `video_codec_from_catalog` must round-trip the
+    /// codecs MoQ actually supports, otherwise a subscriber would mislabel or
+    /// drop renditions published by a peer.
+    #[test]
+    fn video_codec_catalog_round_trips() {
+        // See audio_codec_catalog_round_trips for why this iterates ALL.
+        for &codec in VideoCodec::ALL {
+            let catalog = catalog_video_codec(codec);
+            assert_eq!(video_codec_from_catalog(&catalog), Some(codec));
         }
     }
 

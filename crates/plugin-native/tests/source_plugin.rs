@@ -302,6 +302,45 @@ async fn source_plugin_control_channel_close_before_start_exits_cleanly() {
     );
 }
 
+/// Companion to the run_processor wedged-plugin regression test (#531,
+/// #523): a tick wedged inside the FFI call must not hang `run_source`
+/// after `call_timeout` fires — the bounded join falls back to detach.
+#[tokio::test]
+async fn wedged_tick_returns_promptly_after_call_timeout() {
+    let mut plugin = load_source_plugin();
+    plugin.set_call_timeout(Some(std::time::Duration::from_millis(200)));
+
+    let node = plugin
+        .create_node(Some(&serde_json::json!({ "mode": "wedge_tick" })))
+        .expect("create_node succeeds for source plugin");
+
+    let (ctx, mut state_rx, control_tx, _routed_rx) = source_node_context();
+    let node_handle = tokio::spawn(async move { node.run(ctx).await });
+
+    await_state_matching(&mut state_rx, |s| matches!(s, NodeState::Ready), "Ready").await;
+    control_tx.send(NodeControlMessage::Start).await.expect("control open");
+
+    await_state_matching(
+        &mut state_rx,
+        |s| matches!(s, NodeState::Failed { reason } if reason.contains("timed out")),
+        "Failed (timed out)",
+    )
+    .await;
+
+    let run_result = tokio::time::timeout(std::time::Duration::from_secs(3), node_handle)
+        .await
+        .expect(
+            "run() must return promptly after call_timeout instead of joining the wedged worker",
+        )
+        .expect("source node task should not panic");
+    assert!(run_result.is_err(), "run() must return Err after a call timeout, got: {run_result:?}");
+    let err_msg = run_result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("timed out"),
+        "run() error must report the call timeout, got: {err_msg}"
+    );
+}
+
 /// Pins the host contract that an `UpdateParams` arriving in the
 /// Ready→Start window is accepted by the wrapper (routed through
 /// `apply_params_update` and the worker thread) without failing the
