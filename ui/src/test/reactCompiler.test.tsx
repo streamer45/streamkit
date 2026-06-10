@@ -4,9 +4,13 @@
 
 import { render, screen, act } from '@testing-library/react';
 import { useState } from 'react';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 let childRenders = 0;
+
+beforeEach(() => {
+  childRenders = 0;
+});
 
 function Child({ label }: { label: string }) {
   childRenders++;
