@@ -23,6 +23,15 @@ import type {
 import { detectSnapGuides } from './compositorResizeHelpers';
 import type { SnapGuides } from './compositorResizeHelpers';
 
+const NO_SNAP_GUIDES: SnapGuides = {
+  verticalCenter: false,
+  horizontalCenter: false,
+  leftEdge: false,
+  rightEdge: false,
+  topEdge: false,
+  bottomEdge: false,
+};
+
 export interface DragState {
   type: 'drag' | 'resize';
   layerId: string;
@@ -222,11 +231,7 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
       if (state.rafId !== null) cancelAnimationFrame(state.rafId);
 
       // Hide all snap guides on drop.
-      const refs = snapGuideRefs.current;
-      for (const key of ['vertical', 'horizontal', 'left', 'right', 'top', 'bottom'] as const) {
-        const el = refs[key];
-        if (el) el.style.opacity = '0';
-      }
+      updateSnapGuideVisibility(snapGuideRefs.current, NO_SNAP_GUIDES);
 
       const updated = computeLayerFromPointer(state, e.clientX, e.clientY);
       setIsDragging(false);
@@ -296,9 +301,12 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
       }
 
       dragStateRef.current = null;
-      document.removeEventListener('pointermove', handlePointerMove);
-      document.removeEventListener('pointerup', handlePointerUp);
-      activeListenersRef.current = null;
+      const listeners = activeListenersRef.current;
+      if (listeners) {
+        document.removeEventListener('pointermove', listeners.move);
+        document.removeEventListener('pointerup', listeners.up);
+        activeListenersRef.current = null;
+      }
     },
     [
       dragStateRef,
@@ -312,7 +320,6 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
       imageOverlaysRef,
       throttledConfigChange,
       commitOverlaysRef,
-      handlePointerMove,
       snapGuideRefs,
     ]
   );
