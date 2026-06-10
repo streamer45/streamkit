@@ -77,7 +77,6 @@ import type {
 } from '@/types/types';
 import { buildParamUpdate, dispatchParamUpdate } from '@/utils/controlProps';
 import { topoLevelsFromPipeline, orderedNamesFromLevels } from '@/utils/dag';
-import { deepEqual } from '@/utils/deepEqual';
 import {
   computeMissingRequired,
   defaultParamsForKind as draftDefaultParamsForKind,
@@ -198,23 +197,6 @@ const MonitorViewContent: React.FC = () => {
   useEffect(() => {
     draftNodesRef.current = draftNodes;
   }, [draftNodes]);
-  useEffect(() => {
-    const state = location.state as { sessionId?: string } | null;
-    if (state?.sessionId && !selectedSessionId) {
-      const sessionId = state.sessionId;
-      setSelectedSessionId(sessionId);
-
-      const savedPos = getNodePositions(sessionId);
-      const hasPositions = Object.keys(savedPos).length > 0;
-
-      setNeedsAutoLayout(!hasPositions);
-      setNeedsFit(true);
-
-      window.history.replaceState({}, document.title);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- setNeedsAutoLayout/setNeedsFit are stable useState setters declared later
-  }, [location.state, selectedSessionId, getNodePositions]);
-
   const {
     onInit: baseOnInit,
     isValidConnection,
@@ -270,31 +252,29 @@ const MonitorViewContent: React.FC = () => {
     return nodes.find((node) => node.id === selectedNodeId) ?? null;
   }, [selectedNodeId, nodes]);
 
-  const selectedNodeRef = React.useRef(selectedNode);
-
-  const stableSelectedNode = React.useMemo(() => {
-    if (!selectedNode) {
-      selectedNodeRef.current = null;
-      return null;
-    }
-    const prev = selectedNodeRef.current;
-    const prevData = (prev?.data as Record<string, unknown> | undefined) ?? undefined;
-    const nextData = selectedNode.data as Record<string, unknown>;
-    if (
-      !prev ||
-      prev.id !== selectedNode.id ||
-      prev.type !== selectedNode.type ||
-      prevData?.['kind'] !== nextData['kind'] ||
-      prevData?.['label'] !== nextData['label'] ||
-      prevData?.['sessionId'] !== nextData['sessionId'] ||
-      !deepEqual(prevData?.['state'], nextData['state']) ||
-      !deepEqual(prevData?.['params'], nextData['params']) ||
-      !deepEqual(prevData?.['draft'], nextData['draft'])
-    ) {
-      selectedNodeRef.current = selectedNode;
-    }
-    return selectedNodeRef.current;
+  // Stability key over the fields that matter for the right pane; keying the
+  // memo on it preserves the previous reference when only irrelevant parts of
+  // the node object change (e.g. position updates recreating the nodes array).
+  const selectedNodeStabilityKey = React.useMemo(() => {
+    if (!selectedNode) return null;
+    const data = selectedNode.data as Record<string, unknown>;
+    return JSON.stringify([
+      selectedNode.id,
+      selectedNode.type,
+      data['kind'],
+      data['label'],
+      data['sessionId'],
+      data['state'],
+      data['params'],
+      data['draft'],
+    ]);
   }, [selectedNode]);
+
+  const stableSelectedNode = React.useMemo(
+    () => selectedNode,
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by selectedNodeStabilityKey for referential stability
+    [selectedNodeStabilityKey]
+  );
 
   const defByKind = React.useMemo(() => {
     const map = new Map<string, NodeDefinition>();
@@ -322,39 +302,23 @@ const MonitorViewContent: React.FC = () => {
     }
   }, [sessions]);
 
-  const prevSelectedSessionRef = React.useRef<
-    { id: string; name: string | null; created_at: string } | undefined
-  >(undefined);
-  const selectedSession = React.useMemo(() => {
-    const found = sessions.find((s) => s.id === selectedSessionId);
-    const prev = prevSelectedSessionRef.current;
+  const rawSelectedSession = React.useMemo(
+    () => sessions.find((s) => s.id === selectedSessionId),
+    [sessions, selectedSessionId]
+  );
 
-    if (!found && !prev) return undefined;
+  // Session list refetches recreate session objects; keying on the fields that
+  // matter preserves the previous reference when the data is unchanged.
+  const selectedSessionKey = React.useMemo(() => {
+    if (!rawSelectedSession) return null;
+    return `${rawSelectedSession.id}|${rawSelectedSession.name ?? ''}|${rawSelectedSession.created_at}`;
+  }, [rawSelectedSession]);
 
-    if (!found || !prev) {
-      prevSelectedSessionRef.current = found;
-      return found;
-    }
-
-    if (found.id === prev.id && found.name === prev.name && found.created_at === prev.created_at) {
-      return prev;
-    }
-
-    prevSelectedSessionRef.current = found;
-    return found;
-  }, [sessions, selectedSessionId]);
-
-  useEffect(() => {
-    if (!selectedSessionId && !isLoadingSessions && sessions.length > 0) {
-      const sessionId = sessions[0].id;
-      setSelectedSessionId(sessionId);
-
-      const savedPos = getNodePositions(sessionId);
-      setNeedsAutoLayout(Object.keys(savedPos).length === 0);
-      setNeedsFit(true);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- setNeedsAutoLayout/setNeedsFit are stable useState setters declared later
-  }, [selectedSessionId, isLoadingSessions, sessions, getNodePositions]);
+  const selectedSession = React.useMemo(
+    () => rawSelectedSession,
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by selectedSessionKey for referential stability
+    [selectedSessionKey]
+  );
 
   const {
     pipeline,
@@ -380,7 +344,9 @@ const MonitorViewContent: React.FC = () => {
   } = useMonitorPreview(selectedSessionId);
 
   const pipelineRef = useRef(pipeline);
-  pipelineRef.current = pipeline;
+  useEffect(() => {
+    pipelineRef.current = pipeline;
+  }, [pipeline]);
 
   useEffect(() => {
     const drafts = draftNodesRef.current;
@@ -466,6 +432,38 @@ const MonitorViewContent: React.FC = () => {
     updateNodePosition,
   });
 
+  useEffect(() => {
+    const state = location.state as { sessionId?: string } | null;
+    if (state?.sessionId && !selectedSessionId) {
+      const sessionId = state.sessionId;
+      const savedPos = getNodePositions(sessionId);
+      const hasPositions = Object.keys(savedPos).length > 0;
+
+      React.startTransition(() => {
+        setSelectedSessionId(sessionId);
+        setNeedsAutoLayout(!hasPositions);
+        setNeedsFit(true);
+      });
+
+      window.history.replaceState({}, document.title);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setNeedsAutoLayout/setNeedsFit are stable useState setters
+  }, [location.state, selectedSessionId, getNodePositions]);
+
+  useEffect(() => {
+    if (!selectedSessionId && !isLoadingSessions && sessions.length > 0) {
+      const sessionId = sessions[0].id;
+      const savedPos = getNodePositions(sessionId);
+
+      React.startTransition(() => {
+        setSelectedSessionId(sessionId);
+        setNeedsAutoLayout(Object.keys(savedPos).length === 0);
+        setNeedsFit(true);
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setNeedsAutoLayout/setNeedsFit are stable useState setters
+  }, [selectedSessionId, isLoadingSessions, sessions, getNodePositions]);
+
   const { topoEffectRanRef } = useEdgeAlertSubscription({
     selectedSessionId,
     setEdges,
@@ -474,9 +472,11 @@ const MonitorViewContent: React.FC = () => {
   });
 
   const sessionSeenInListRef = useRef(false);
-  if (selectedSession) {
-    sessionSeenInListRef.current = true;
-  }
+  useEffect(() => {
+    if (selectedSession) {
+      sessionSeenInListRef.current = true;
+    }
+  }, [selectedSession]);
   useEffect(() => {
     if (
       selectedSessionId &&
@@ -522,7 +522,9 @@ const MonitorViewContent: React.FC = () => {
   );
 
   const validateParamValueRef = useRef(validateParamValue);
-  validateParamValueRef.current = validateParamValue;
+  useEffect(() => {
+    validateParamValueRef.current = validateParamValue;
+  }, [validateParamValue]);
 
   const handleDraftParamChange = useCallback(
     (nodeId: string, key: string, value: unknown) => {
@@ -606,7 +608,9 @@ const MonitorViewContent: React.FC = () => {
   );
 
   const stablePromoteDraftRef = useRef(promoteDraft);
-  stablePromoteDraftRef.current = promoteDraft;
+  useEffect(() => {
+    stablePromoteDraftRef.current = promoteDraft;
+  }, [promoteDraft]);
 
   const handleRightPaneParamChange = useCallback(
     (nodeId: string, key: string, value: unknown) => {
@@ -851,6 +855,32 @@ const MonitorViewContent: React.FC = () => {
     [nodes, reconstructDynamicInputs, reconstructDynamicOutputs]
   );
 
+  const stableOnParamChange = useCallback(
+    (nodeId: string, paramName: string, value: unknown) => {
+      if (draftNodesRef.current.has(nodeId)) {
+        handleDraftParamChange(nodeId, paramName, value);
+        return;
+      }
+      const error = validateParamValueRef.current(nodeId, paramName, value);
+      if (error) {
+        toast.error(`Invalid value for ${paramName}: ${error}`);
+        return;
+      }
+
+      // dispatchParamUpdate handles nested dot-paths via tuneNodeConfigDeep.
+      dispatchParamUpdate(nodeId, paramName, value, tuneNode, tuneNodeConfigDeep);
+    },
+    [toast, tuneNode, tuneNodeConfigDeep, handleDraftParamChange]
+  );
+
+  // Stable callback for full-config updates (compositor nodes).
+  const stableOnConfigChange = useCallback(
+    (nodeId: string, config: Record<string, unknown>) => {
+      tuneNodeConfig(nodeId, config);
+    },
+    [tuneNodeConfig]
+  );
+
   // eslint-disable-next-line max-statements -- Core graph-building logic
   useEffect(() => {
     viewsLogger.debug(
@@ -870,9 +900,11 @@ const MonitorViewContent: React.FC = () => {
 
     if (!pipeline && draftNodes.size === 0) {
       viewsLogger.debug('Topology effect: No pipeline, clearing nodes');
-      setNodes([]);
-      setEdges([]);
-      setYamlString('');
+      React.startTransition(() => {
+        setNodes([]);
+        setEdges([]);
+        setYamlString('');
+      });
       return;
     }
 
@@ -991,40 +1023,18 @@ const MonitorViewContent: React.FC = () => {
     });
 
     const yamlString = pipeline ? generatePipelineYaml(pipeline, orderedNames) : '';
-    setYamlString(yamlString);
+    React.startTransition(() => {
+      setYamlString(yamlString);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [topoKey, defByKind, selectedSessionId, tuneNode]);
-
-  const stableOnParamChange = useCallback(
-    (nodeId: string, paramName: string, value: unknown) => {
-      if (draftNodesRef.current.has(nodeId)) {
-        handleDraftParamChange(nodeId, paramName, value);
-        return;
-      }
-      const error = validateParamValueRef.current(nodeId, paramName, value);
-      if (error) {
-        toast.error(`Invalid value for ${paramName}: ${error}`);
-        return;
-      }
-
-      // dispatchParamUpdate handles nested dot-paths via tuneNodeConfigDeep.
-      dispatchParamUpdate(nodeId, paramName, value, tuneNode, tuneNodeConfigDeep);
-    },
-    [toast, tuneNode, tuneNodeConfigDeep, handleDraftParamChange]
-  );
-
-  // Stable callback for full-config updates (compositor nodes).
-  const stableOnConfigChange = useCallback(
-    (nodeId: string, config: Record<string, unknown>) => {
-      tuneNodeConfig(nodeId, config);
-    },
-    [tuneNodeConfig]
-  );
 
   // Keep YAML in sync with live param overrides; runs only on param changes.
   useEffect(() => {
     if (!pipeline) {
-      setYamlString('');
+      React.startTransition(() => {
+        setYamlString('');
+      });
       return;
     }
 
@@ -1066,7 +1076,10 @@ const MonitorViewContent: React.FC = () => {
       yamlObject.nodes[nodeName] = nodeConfig;
     }
 
-    setYamlString(dump(yamlObject, { skipInvalid: true }));
+    const nextYaml = dump(yamlObject, { skipInvalid: true });
+    React.startTransition(() => {
+      setYamlString(nextYaml);
+    });
   }, [pipeline, selectedSessionId]);
 
   const onConnectEnd: OnConnectEnd = React.useCallback(
@@ -1192,14 +1205,14 @@ const MonitorViewContent: React.FC = () => {
         }
         setSessionToDelete(null);
       } else if (response.payload.action === 'error') {
-        throw new Error(response.payload.message);
+        viewsLogger.error('Failed to delete session:', response.payload.message);
+        toast.error(response.payload.message || 'Failed to delete session');
       }
     } catch (error) {
       viewsLogger.error('Failed to delete session:', error);
       toast.error(error instanceof Error ? error.message : 'Failed to delete session');
-    } finally {
-      setIsDeletingSession(false);
     }
+    setIsDeletingSession(false);
   }, [sessionToDelete, selectedSessionId, toast, clearSessionPositions, handleStopPreview]);
 
   const handleDeleteSession = useCallback(async () => {
@@ -1229,14 +1242,14 @@ const MonitorViewContent: React.FC = () => {
         setSelectedSessionId(null);
         setShowDeleteModal(false);
       } else if (response.payload.action === 'error') {
-        throw new Error(response.payload.message);
+        viewsLogger.error('Failed to delete session:', response.payload.message);
+        toast.error(response.payload.message || 'Failed to delete session');
       }
     } catch (error) {
       viewsLogger.error('Failed to delete session:', error);
       toast.error(error instanceof Error ? error.message : 'Failed to delete session');
-    } finally {
-      setIsDeletingSession(false);
     }
+    setIsDeletingSession(false);
   }, [selectedSessionId, toast, clearSessionPositions, handleStopPreview]);
 
   const handleCancelDeleteModal = useCallback(() => setShowDeleteModal(false), []);
