@@ -447,7 +447,7 @@ const MonitorViewContent: React.FC = () => {
 
       window.history.replaceState({}, document.title);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- setNeedsAutoLayout/setNeedsFit are stable useState setters
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setters intentionally excluded
   }, [location.state, selectedSessionId, getNodePositions]);
 
   useEffect(() => {
@@ -461,7 +461,7 @@ const MonitorViewContent: React.FC = () => {
         setNeedsFit(true);
       });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- setNeedsAutoLayout/setNeedsFit are stable useState setters
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setters intentionally excluded
   }, [selectedSessionId, isLoadingSessions, sessions, getNodePositions]);
 
   const { topoEffectRanRef } = useEdgeAlertSubscription({
@@ -1165,7 +1165,7 @@ const MonitorViewContent: React.FC = () => {
         setNeedsFit(true);
       });
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- setNeedsAutoLayout/setNeedsFit are stable useState setters
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setters intentionally excluded
     [getNodePositions]
   );
 
