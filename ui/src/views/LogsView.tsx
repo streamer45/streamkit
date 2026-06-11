@@ -143,7 +143,7 @@ function useLogViewer(
   logContainerRef: React.RefObject<HTMLDivElement | null>
 ): UseLogViewerResult {
   const [lines, setLines] = useState<string[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(shouldLoad);
   const [error, setError] = useState<string | null>(null);
   const [fileSize, setFileSize] = useState(0);
   const [backwardOffset, setBackwardOffset] = useState(0);

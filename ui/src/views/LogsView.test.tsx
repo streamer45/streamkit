@@ -32,6 +32,7 @@ describe('LogsView', () => {
 
     render(<LogsView />);
 
+    expect(screen.queryByText('No log lines to display.')).not.toBeInTheDocument();
     await waitFor(() => expect(fetchLogsMock).toHaveBeenCalled());
     expect(screen.queryByText('No log lines to display.')).not.toBeInTheDocument();
 
