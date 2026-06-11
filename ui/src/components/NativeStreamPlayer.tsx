@@ -66,7 +66,9 @@ export const NativeStreamPlayer: React.FC<NativeStreamPlayerProps> = ({
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const onErrorRef = useRef(onError);
-  onErrorRef.current = onError;
+  useEffect(() => {
+    onErrorRef.current = onError;
+  }, [onError]);
 
   const seekToLiveEdge = useCallback((video: HTMLVideoElement) => {
     const buf = video.buffered;

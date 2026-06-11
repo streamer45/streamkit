@@ -46,16 +46,18 @@ const SaveFragmentModal: React.FC<SaveFragmentModalProps> = ({
   const prevOpenRef = React.useRef(false);
 
   React.useEffect(() => {
-    if (isOpen && !prevOpenRef.current) {
+    const wasOpen = prevOpenRef.current;
+    prevOpenRef.current = isOpen;
+    if (isOpen && !wasOpen) {
       setName(initialName);
       setDescription(initialDescription);
       setTagsInput(initialTags.join(', '));
       // Manually focus the input after a small delay to ensure modal is fully rendered
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         inputRef.current?.focus();
       }, 100);
+      return () => clearTimeout(timer);
     }
-    prevOpenRef.current = isOpen;
   }, [isOpen, initialName, initialDescription, initialTags]);
 
   const handleSave = async () => {
@@ -76,9 +78,8 @@ const SaveFragmentModal: React.FC<SaveFragmentModalProps> = ({
     } catch (error) {
       componentsLogger.error('Error saving fragment:', error);
       // Don't close modal on error
-    } finally {
-      setIsSaving(false);
     }
+    setIsSaving(false);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

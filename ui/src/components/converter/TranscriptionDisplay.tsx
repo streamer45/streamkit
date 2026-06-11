@@ -338,14 +338,14 @@ export const TranscriptionDisplay: React.FC<TranscriptionDisplayProps> = ({
           componentsLogger.error('TranscriptionDisplay: Stream processing error:', error);
         }
         setIsLoading(false);
-      } finally {
-        // Always release the reader lock
-        if (reader) {
-          try {
-            reader.releaseLock();
-          } catch {
-            // Ignore errors when releasing lock
-          }
+      }
+      // Lock release lives here instead of a `finally` block — the React
+      // Compiler cannot yet lower try/finally and would skip the component.
+      if (reader) {
+        try {
+          reader.releaseLock();
+        } catch {
+          // Ignore errors when releasing lock
         }
       }
     };

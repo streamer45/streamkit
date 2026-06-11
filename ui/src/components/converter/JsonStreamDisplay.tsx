@@ -308,13 +308,14 @@ export const JsonStreamDisplay: React.FC<JsonStreamDisplayProps> = ({
           componentsLogger.error('JsonStreamDisplay: Stream processing error:', error);
         }
         setIsLoading(false);
-      } finally {
-        if (reader) {
-          try {
-            reader.releaseLock();
-          } catch {
-            // ignore
-          }
+      }
+      // Lock release lives here instead of a `finally` block — the React
+      // Compiler cannot yet lower try/finally and would skip the component.
+      if (reader) {
+        try {
+          reader.releaseLock();
+        } catch {
+          // ignore
         }
       }
     };

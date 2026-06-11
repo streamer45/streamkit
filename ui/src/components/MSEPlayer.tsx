@@ -427,9 +427,11 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
   const onCompleteRef = useRef(onComplete);
   const onCancelRef = useRef(onCancel);
   const onErrorRef = useRef(onError);
-  onCompleteRef.current = onComplete;
-  onCancelRef.current = onCancel;
-  onErrorRef.current = onError;
+  useEffect(() => {
+    onCompleteRef.current = onComplete;
+    onCancelRef.current = onCancel;
+    onErrorRef.current = onError;
+  }, [onComplete, onCancel, onError]);
   const [status, setStatus] = useState<string>('Initializing...');
   const [error, setError] = useState<string | null>(null);
   const [isReadyToPlay, setIsReadyToPlay] = useState<boolean>(false);
@@ -538,6 +540,7 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
       } catch (err) {
         if (abortedDueToPlaybackError) {
           // Playback failed (e.g., decode error). Caller can decide how to fall back.
+          readerRef.current = null;
           return;
         }
         if (isCancellationError(err) || aborted) {
@@ -547,9 +550,10 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
           componentsLogger.error('MSEPlayer: Streaming error:', err);
           setErrorAndNotify(err instanceof Error ? err.message : 'Unknown error');
         }
-      } finally {
-        readerRef.current = null;
       }
+      // Reader cleanup lives here instead of a `finally` block — the React
+      // Compiler cannot yet lower try/finally and would skip the component.
+      readerRef.current = null;
     };
 
     mediaSource.addEventListener('sourceopen', handleSourceOpen);

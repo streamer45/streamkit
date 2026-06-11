@@ -101,7 +101,9 @@ export function usePreviewPanelInteraction(aspectRatio?: string): PanelInteracti
   // the latest value without depending on it (which would cause the height
   // to auto-adjust on every horizontal resize).
   const panelWidthRef = useRef(panelWidth);
-  panelWidthRef.current = panelWidth;
+  useEffect(() => {
+    panelWidthRef.current = panelWidth;
+  }, [panelWidth]);
 
   // Auto-adjust panel height when the stream aspect ratio changes (e.g. the
   // first frame arrives or a different session is selected), but only if the
@@ -135,7 +137,9 @@ export function usePreviewPanelInteraction(aspectRatio?: string): PanelInteracti
   // captured at pointer-down via resizeRef/dragRef, so the closures only
   // need the refs — not fresh state on every render.
   const stateRef = useRef({ panelWidth, panelHeight, pos });
-  stateRef.current = { panelWidth, panelHeight, pos };
+  useEffect(() => {
+    stateRef.current = { panelWidth, panelHeight, pos };
+  }, [panelWidth, panelHeight, pos]);
 
   const handleResizeStart = useCallback(
     (edge: ResizeEdge, e: React.PointerEvent) => {

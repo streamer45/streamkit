@@ -42,9 +42,13 @@ const CreateSessionModal: React.FC<CreateSessionModalProps> = ({
       await onCreate(name.trim());
       setName('');
       onClose();
-    } finally {
+    } catch (error) {
+      // No `finally` — the React Compiler cannot yet lower try/finally and
+      // would skip the component, so reset the flag on both paths.
       setIsCreating(false);
+      throw error;
     }
+    setIsCreating(false);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
