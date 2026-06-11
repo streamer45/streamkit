@@ -68,6 +68,7 @@ import { useSessionStore } from '@/stores/sessionStore';
 import type {
   NodeDefinition,
   Connection,
+  SessionInfo,
   JsonValue,
   NodeState,
   Pipeline,
@@ -77,6 +78,7 @@ import type {
 } from '@/types/types';
 import { buildParamUpdate, dispatchParamUpdate } from '@/utils/controlProps';
 import { topoLevelsFromPipeline, orderedNamesFromLevels } from '@/utils/dag';
+import { deepEqual } from '@/utils/deepEqual';
 import {
   computeMissingRequired,
   defaultParamsForKind as draftDefaultParamsForKind,
@@ -109,6 +111,44 @@ const nodeStateFailedReason = (s: NodeState | null | undefined): string | undefi
   }
   return undefined;
 };
+
+/** Keep the previous node reference unless a right-pane-relevant field changed,
+ *  so inspector consumers behind React.memo don't re-render on every drag. */
+function pickStableNode(prev: RFNode | null, next: RFNode | null): RFNode | null {
+  if (!next) return null;
+  if (!prev || prev.id !== next.id || prev.type !== next.type) return next;
+  const prevData = prev.data as Record<string, unknown>;
+  const nextData = next.data as Record<string, unknown>;
+  if (
+    prevData['kind'] !== nextData['kind'] ||
+    prevData['label'] !== nextData['label'] ||
+    prevData['sessionId'] !== nextData['sessionId'] ||
+    !deepEqual(prevData['state'], nextData['state']) ||
+    !deepEqual(prevData['params'], nextData['params']) ||
+    !deepEqual(prevData['draft'], nextData['draft'])
+  ) {
+    return next;
+  }
+  return prev;
+}
+
+/** Session list refetches recreate session objects; keep the previous
+ *  reference when the rendered fields are unchanged. */
+function pickStableSession(
+  prev: SessionInfo | undefined,
+  next: SessionInfo | undefined
+): SessionInfo | undefined {
+  if (!next) return undefined;
+  if (
+    !prev ||
+    prev.id !== next.id ||
+    prev.name !== next.name ||
+    prev.created_at !== next.created_at
+  ) {
+    return next;
+  }
+  return prev;
+}
 
 // eslint-disable-next-line max-statements -- Main view component with many hooks and state management
 const MonitorViewContent: React.FC = () => {
@@ -252,29 +292,13 @@ const MonitorViewContent: React.FC = () => {
     return nodes.find((node) => node.id === selectedNodeId) ?? null;
   }, [selectedNodeId, nodes]);
 
-  // Stability key over the fields that matter for the right pane; keying the
-  // memo on it preserves the previous reference when only irrelevant parts of
-  // the node object change (e.g. position updates recreating the nodes array).
-  const selectedNodeStabilityKey = React.useMemo(() => {
-    if (!selectedNode) return null;
-    const data = selectedNode.data as Record<string, unknown>;
-    return JSON.stringify([
-      selectedNode.id,
-      selectedNode.type,
-      data['kind'],
-      data['label'],
-      data['sessionId'],
-      data['state'],
-      data['params'],
-      data['draft'],
-    ]);
-  }, [selectedNode]);
-
-  const stableSelectedNode = React.useMemo(
-    () => selectedNode,
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by selectedNodeStabilityKey for referential stability
-    [selectedNodeStabilityKey]
-  );
+  // Render-time state adjustment (instead of a keyed memo) so the React
+  // Compiler can optimize this component while keeping referential stability.
+  const [cachedStableNode, setCachedStableNode] = useState(selectedNode);
+  const stableSelectedNode = pickStableNode(cachedStableNode, selectedNode);
+  if (stableSelectedNode !== cachedStableNode) {
+    setCachedStableNode(stableSelectedNode);
+  }
 
   const defByKind = React.useMemo(() => {
     const map = new Map<string, NodeDefinition>();
@@ -307,18 +331,11 @@ const MonitorViewContent: React.FC = () => {
     [sessions, selectedSessionId]
   );
 
-  // Session list refetches recreate session objects; keying on the fields that
-  // matter preserves the previous reference when the data is unchanged.
-  const selectedSessionKey = React.useMemo(() => {
-    if (!rawSelectedSession) return null;
-    return `${rawSelectedSession.id}|${rawSelectedSession.name ?? ''}|${rawSelectedSession.created_at}`;
-  }, [rawSelectedSession]);
-
-  const selectedSession = React.useMemo(
-    () => rawSelectedSession,
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by selectedSessionKey for referential stability
-    [selectedSessionKey]
-  );
+  const [cachedStableSession, setCachedStableSession] = useState(rawSelectedSession);
+  const selectedSession = pickStableSession(cachedStableSession, rawSelectedSession);
+  if (selectedSession !== cachedStableSession) {
+    setCachedStableSession(selectedSession);
+  }
 
   const {
     pipeline,
@@ -447,8 +464,7 @@ const MonitorViewContent: React.FC = () => {
 
       window.history.replaceState({}, document.title);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- setters intentionally excluded
-  }, [location.state, selectedSessionId, getNodePositions]);
+  }, [location.state, selectedSessionId, getNodePositions, setNeedsAutoLayout, setNeedsFit]);
 
   useEffect(() => {
     if (!selectedSessionId && !isLoadingSessions && sessions.length > 0) {
@@ -461,8 +477,14 @@ const MonitorViewContent: React.FC = () => {
         setNeedsFit(true);
       });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- setters intentionally excluded
-  }, [selectedSessionId, isLoadingSessions, sessions, getNodePositions]);
+  }, [
+    selectedSessionId,
+    isLoadingSessions,
+    sessions,
+    getNodePositions,
+    setNeedsAutoLayout,
+    setNeedsFit,
+  ]);
 
   const { topoEffectRanRef } = useEdgeAlertSubscription({
     selectedSessionId,
@@ -901,8 +923,8 @@ const MonitorViewContent: React.FC = () => {
     if (!pipeline && draftNodes.size === 0) {
       viewsLogger.debug('Topology effect: No pipeline, clearing nodes');
       React.startTransition(() => {
-        setNodes([]);
-        setEdges([]);
+        setNodes((prev) => (prev.length === 0 ? prev : []));
+        setEdges((prev) => (prev.length === 0 ? prev : []));
         setYamlString('');
       });
       return;
@@ -1017,8 +1039,8 @@ const MonitorViewContent: React.FC = () => {
 
     viewsLogger.debug('Setting', newNodes.length, 'nodes and', newEdges.length, 'edges');
     React.startTransition(() => {
-      setNodes(newNodes);
-      setEdges(newEdges);
+      setNodes((prev) => (prev.length === 0 && newNodes.length === 0 ? prev : newNodes));
+      setEdges((prev) => (prev.length === 0 && newEdges.length === 0 ? prev : newEdges));
       topoEffectRanRef.current = true;
     });
 
@@ -1026,8 +1048,23 @@ const MonitorViewContent: React.FC = () => {
     React.startTransition(() => {
       setYamlString(yamlString);
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [topoKey, defByKind, selectedSessionId, tuneNode]);
+    // The topoKey ref guard makes re-runs from non-topology dep changes no-ops.
+  }, [
+    topoKey,
+    nodes,
+    pipeline,
+    draftNodes,
+    selectedSessionId,
+    getNodePositions,
+    defByKind,
+    resolveNodePosition,
+    resolveDynamicPins,
+    stableOnParamChange,
+    stableOnConfigChange,
+    setNodes,
+    setEdges,
+    topoEffectRanRef,
+  ]);
 
   // Keep YAML in sync with live param overrides; runs only on param changes.
   useEffect(() => {
@@ -1165,92 +1202,89 @@ const MonitorViewContent: React.FC = () => {
         setNeedsFit(true);
       });
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- setters intentionally excluded
-    [getNodePositions]
+    [getNodePositions, setNeedsAutoLayout, setNeedsFit]
   );
 
   const handleQuickDeleteSession = useCallback((sessionId: string) => {
     setSessionToDelete(sessionId);
   }, []);
 
-  const handleConfirmQuickDelete = useCallback(async () => {
-    if (!sessionToDelete) return;
+  const deleteSession = useCallback(
+    async (
+      targetId: string,
+      { tearDownPreview, onSuccess }: { tearDownPreview: boolean; onSuccess: () => void }
+    ) => {
+      setIsDeletingSession(true);
 
-    setIsDeletingSession(true);
+      // Only the awaits live in the try: the React Compiler cannot optimize
+      // components containing value blocks (ternary/logical) inside try/catch.
+      let response;
+      try {
+        // Tear down preview/MoQ connection BEFORE destroying the session
+        // to avoid SIGSEGV from WebCodecs operating on a dead stream.
+        if (tearDownPreview) {
+          await handleStopPreview();
+        }
 
-    try {
-      // Only tear down preview if it's for the session being deleted —
-      // sessionToDelete may be any session from the sidebar.
-      if (sessionToDelete === selectedSessionId) {
-        await handleStopPreview();
+        const wsService = getWebSocketService();
+
+        response = await wsService.send({
+          type: 'request' as MessageType,
+          correlation_id: uuidv4(),
+          payload: {
+            action: 'destroysession' as const,
+            session_id: targetId,
+          },
+        });
+      } catch (error) {
+        viewsLogger.error('Failed to delete session:', error);
+        let message = 'Failed to delete session';
+        if (error instanceof Error) {
+          message = error.message;
+        }
+        toast.error(message);
+        setIsDeletingSession(false);
+        return;
       }
 
-      const wsService = getWebSocketService();
-
-      const response = await wsService.send({
-        type: 'request' as MessageType,
-        correlation_id: uuidv4(),
-        payload: {
-          action: 'destroysession' as const,
-          session_id: sessionToDelete,
-        },
-      });
-
       if (response.payload.action === 'sessiondestroyed') {
-        toast.success(`Session deleted successfully`);
-        clearSessionPositions(sessionToDelete);
-        // If the deleted session was selected, clear selection
+        toast.success(`Session ${targetId} deleted successfully`);
+        clearSessionPositions(targetId);
+        onSuccess();
+      } else if (response.payload.action === 'error') {
+        viewsLogger.error('Failed to delete session:', response.payload.message);
+        toast.error(response.payload.message || 'Failed to delete session');
+      }
+      setIsDeletingSession(false);
+    },
+    [toast, clearSessionPositions, handleStopPreview]
+  );
+
+  const handleConfirmQuickDelete = useCallback(async () => {
+    if (!sessionToDelete) return;
+    // Only tear down preview if it's for the session being deleted —
+    // sessionToDelete may be any session from the sidebar.
+    await deleteSession(sessionToDelete, {
+      tearDownPreview: sessionToDelete === selectedSessionId,
+      onSuccess: () => {
         if (selectedSessionId === sessionToDelete) {
           setSelectedSessionId(null);
         }
         setSessionToDelete(null);
-      } else if (response.payload.action === 'error') {
-        viewsLogger.error('Failed to delete session:', response.payload.message);
-        toast.error(response.payload.message || 'Failed to delete session');
-      }
-    } catch (error) {
-      viewsLogger.error('Failed to delete session:', error);
-      toast.error(error instanceof Error ? error.message : 'Failed to delete session');
-    }
-    setIsDeletingSession(false);
-  }, [sessionToDelete, selectedSessionId, toast, clearSessionPositions, handleStopPreview]);
+      },
+    });
+  }, [sessionToDelete, selectedSessionId, deleteSession]);
 
   const handleDeleteSession = useCallback(async () => {
     if (!selectedSessionId) return;
-
-    setIsDeletingSession(true);
-
-    try {
-      // Tear down preview/MoQ connection BEFORE destroying the session
-      // to avoid SIGSEGV from WebCodecs operating on a dead stream.
-      await handleStopPreview();
-
-      const wsService = getWebSocketService();
-
-      const response = await wsService.send({
-        type: 'request' as MessageType,
-        correlation_id: uuidv4(),
-        payload: {
-          action: 'destroysession' as const,
-          session_id: selectedSessionId,
-        },
-      });
-
-      if (response.payload.action === 'sessiondestroyed') {
-        toast.success(`Session ${selectedSessionId} deleted successfully`);
-        clearSessionPositions(selectedSessionId);
+    await deleteSession(selectedSessionId, {
+      tearDownPreview: true,
+      onSuccess: () => {
         setSelectedSessionId(null);
         setShowDeleteModal(false);
-      } else if (response.payload.action === 'error') {
-        viewsLogger.error('Failed to delete session:', response.payload.message);
-        toast.error(response.payload.message || 'Failed to delete session');
-      }
-    } catch (error) {
-      viewsLogger.error('Failed to delete session:', error);
-      toast.error(error instanceof Error ? error.message : 'Failed to delete session');
-    }
-    setIsDeletingSession(false);
-  }, [selectedSessionId, toast, clearSessionPositions, handleStopPreview]);
+      },
+    });
+  }, [selectedSessionId, deleteSession]);
 
   const handleCancelDeleteModal = useCallback(() => setShowDeleteModal(false), []);
   const handleCancelQuickDelete = useCallback(() => setSessionToDelete(null), []);
@@ -1282,97 +1316,74 @@ const MonitorViewContent: React.FC = () => {
     ]
   );
 
-  // - Only track nodes.length, not full nodes array (FlowCanvas handles position updates internally)
-  // - selectedSession used instead of sessions array to prevent unnecessary re-renders
-  const hasPipeline = !!pipeline;
-  const centerPanel = React.useMemo(
-    () => (
-      <CenterPanelContainer>
-        <CanvasTopBar>
-          <TopLeftControls>
-            <MonitorViewTitle />
-            {selectedSession && <SessionInfoChip session={selectedSession} />}
-          </TopLeftControls>
-          <TopControls
-            isConnected={isConnected}
-            selectedSessionId={selectedSessionId}
-            onDelete={handleDeleteModalOpen}
-            onStartPreview={handleStartPreview}
-            onStopPreview={handleStopPreview}
-            isPreviewConnected={isPreviewConnected}
-            isPreviewLoading={isPreviewLoading}
-            previewError={previewError}
+  const centerPanel = (
+    <CenterPanelContainer>
+      <CanvasTopBar>
+        <TopLeftControls>
+          <MonitorViewTitle />
+          {selectedSession && <SessionInfoChip session={selectedSession} />}
+        </TopLeftControls>
+        <TopControls
+          isConnected={isConnected}
+          selectedSessionId={selectedSessionId}
+          onDelete={handleDeleteModalOpen}
+          onStartPreview={handleStartPreview}
+          onStopPreview={handleStopPreview}
+          isPreviewConnected={isPreviewConnected}
+          isPreviewLoading={isPreviewLoading}
+          previewError={previewError}
+        />
+      </CanvasTopBar>
+      {selectedSessionId && nodes.length > 0 ? (
+        <>
+          <FlowCanvas
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={nodeTypes}
+            onNodesChange={onNodesChangeBatched}
+            onEdgesChange={onEdgesChange}
+            colorMode={colorMode}
+            onInit={onInit}
+            defaultEdgeOptions={defaultEdgeOptions}
+            editMode={true}
+            onNodeDragStop={onNodeDragStop}
+            onNodeDoubleClick={handleNodeDoubleClick}
+            isValidConnection={
+              isValidConnection
+                ? (conn) =>
+                    isValidConnection(
+                      conn,
+                      nodesRefForCallbacks.current,
+                      edgesRefForCallbacks.current
+                    )
+                : undefined
+            }
+            onConnect={onConnect}
+            onConnectEnd={onConnectEnd}
+            onEdgesDelete={onEdgesDelete}
+            onNodesDelete={onNodesDelete}
+            onPaneClick={onPaneClick}
+            onPaneContextMenu={onPaneContextMenu}
+            onNodeContextMenu={onNodeContextMenu}
+            onDrop={onDrop}
+            onDragOver={onDragOver}
+            reactFlowWrapper={reactFlowWrapper}
           />
-        </CanvasTopBar>
-        {selectedSessionId && nodes.length > 0 ? (
-          <>
-            <FlowCanvas
-              nodes={nodes}
-              edges={edges}
-              nodeTypes={nodeTypes}
-              onNodesChange={onNodesChangeBatched}
-              onEdgesChange={onEdgesChange}
-              colorMode={colorMode}
-              onInit={onInit}
-              defaultEdgeOptions={defaultEdgeOptions}
-              editMode={true}
-              onNodeDragStop={onNodeDragStop}
-              onNodeDoubleClick={handleNodeDoubleClick}
-              isValidConnection={
-                isValidConnection
-                  ? (conn) =>
-                      isValidConnection(
-                        conn,
-                        nodesRefForCallbacks.current,
-                        edgesRefForCallbacks.current
-                      )
-                  : undefined
-              }
-              onConnect={onConnect}
-              onConnectEnd={onConnectEnd}
-              onEdgesDelete={onEdgesDelete}
-              onNodesDelete={onNodesDelete}
-              onPaneClick={onPaneClick}
-              onPaneContextMenu={onPaneContextMenu}
-              onNodeContextMenu={onNodeContextMenu}
-              onDrop={onDrop}
-              onDragOver={onDragOver}
-              reactFlowWrapper={reactFlowWrapper}
-            />
-            <Legend />
-          </>
-        ) : (
-          <EmptyMonitorState>
-            {selectedSessionId && !pipeline ? (
-              <p>Loading pipeline...</p>
-            ) : (
-              <p>Select a session from the left panel to inspect its pipeline.</p>
-            )}
-          </EmptyMonitorState>
-        )}
-        {(isPreviewConnected || isPreviewLoading) && (
-          <OutputPreviewPanel hasSession={selectedSessionId != null} conditionalRender />
-        )}
-      </CenterPanelContainer>
-    ),
-    // Intentional sparse dependencies for performance optimization:
-    // - Only track nodes.length, not full nodes array (FlowCanvas handles position updates internally)
-    // - selectedSession used instead of sessions array to prevent unnecessary re-renders
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [
-      selectedSessionId,
-      selectedSession,
-      isConnected,
-      nodes.length,
-      hasPipeline,
-      colorMode,
-      onInit,
-      handleStartPreview,
-      handleStopPreview,
-      isPreviewConnected,
-      isPreviewLoading,
-      previewError,
-    ]
+          <Legend />
+        </>
+      ) : (
+        <EmptyMonitorState>
+          {selectedSessionId && !pipeline ? (
+            <p>Loading pipeline...</p>
+          ) : (
+            <p>Select a session from the left panel to inspect its pipeline.</p>
+          )}
+        </EmptyMonitorState>
+      )}
+      {(isPreviewConnected || isPreviewLoading) && (
+        <OutputPreviewPanel hasSession={selectedSessionId != null} conditionalRender />
+      )}
+    </CenterPanelContainer>
   );
 
   const selectedNodeLabel = React.useMemo(() => {

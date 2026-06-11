@@ -171,33 +171,36 @@ function useLogViewer(
     async (direction: 'forward' | 'backward', offset?: number) => {
       setIsLoading(true);
       setError(null);
+      // Only the await lives in the try: the React Compiler cannot optimize
+      // hooks containing value blocks (ternary/logical) inside try/catch.
+      const filter = debouncedFilter || undefined;
+      const level = levelFilter || undefined;
+      let response: LogResponse;
       try {
-        const response: LogResponse = await fetchLogs({
-          offset,
-          limit: pageSize,
-          direction,
-          filter: debouncedFilter || undefined,
-          level: levelFilter || undefined,
-        });
-        setLines(response.lines);
-        setFileSize(response.file_size);
-
-        if (direction === 'backward') {
-          setBackwardOffset(response.next_offset);
-          setForwardOffset(offset ?? response.file_size);
-          setIsAtLatest(offset === undefined || offset >= response.file_size);
-        } else {
-          setForwardOffset(response.next_offset);
-          setBackwardOffset(offset ?? 0);
-          setIsAtLatest(!response.has_more);
-        }
-        setIsLoading(false);
+        response = await fetchLogs({ offset, limit: pageSize, direction, filter, level });
       } catch (err) {
-        const message = err instanceof Error ? err.message : 'Failed to load logs';
+        let message = 'Failed to load logs';
+        if (err instanceof Error) {
+          message = err.message;
+        }
         logger.error('Failed to load logs:', err);
         setError(message);
         setIsLoading(false);
+        return;
       }
+      setLines(response.lines);
+      setFileSize(response.file_size);
+
+      if (direction === 'backward') {
+        setBackwardOffset(response.next_offset);
+        setForwardOffset(offset ?? response.file_size);
+        setIsAtLatest(offset === undefined || offset >= response.file_size);
+      } else {
+        setForwardOffset(response.next_offset);
+        setBackwardOffset(offset ?? 0);
+        setIsAtLatest(!response.has_more);
+      }
+      setIsLoading(false);
     },
     [debouncedFilter, levelFilter, pageSize]
   );
