@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { defineConfig, type Plugin } from 'vitest/config';
-import react from '@vitejs/plugin-react';
+import react, { reactCompilerPreset } from '@vitejs/plugin-react';
 import { transformAsync } from '@babel/core';
 import babelPresetTypescript from '@babel/preset-typescript';
 import path from 'path';
@@ -12,13 +12,22 @@ import path from 'path';
 // vite.config.ts), but @vitejs/plugin-react only applies that preset to
 // environments with consumer === 'client', and vitest runs the SSR pipeline.
 // Force-apply the compiler here so tests exercise the same memoization regime
-// as production.
+// as production. The compiler plugin and its options come from the same
+// reactCompilerPreset() production uses, and the code pre-filter mirrors the
+// preset's compile-candidate filter. Test/setup files are skipped because
+// production never compiles them.
 const reactCompilerForTests = (): Plugin => ({
   name: 'react-compiler-for-tests',
   enforce: 'pre',
   async transform(code, id) {
     const file = id.split('?')[0];
-    if (!/\/src\/.*\.tsx?$/.test(file) || file.includes('/node_modules/')) {
+    if (
+      !/\/src\/.*\.tsx?$/.test(file) ||
+      file.includes('/node_modules/') ||
+      /\.test\.tsx?$/.test(file) ||
+      file.endsWith('/src/test/setup.ts') ||
+      !/\b[A-Z]|\buse/.test(code)
+    ) {
       return null;
     }
     const result = await transformAsync(code, {
@@ -27,8 +36,8 @@ const reactCompilerForTests = (): Plugin => ({
       configFile: false,
       presets: [
         [babelPresetTypescript, { isTSX: file.endsWith('.tsx'), allExtensions: true }],
+        reactCompilerPreset().preset,
       ],
-      plugins: [['babel-plugin-react-compiler', {}]],
       sourceMaps: true,
     });
     if (!result?.code) {
