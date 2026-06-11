@@ -16,6 +16,8 @@ import path from 'path';
 // reactCompilerPreset() production uses, and the code pre-filter mirrors the
 // preset's compile-candidate filter. Test/setup files are skipped because
 // production never compiles them.
+const compilerPreset = reactCompilerPreset().preset;
+
 const reactCompilerForTests = (): Plugin => ({
   name: 'react-compiler-for-tests',
   enforce: 'pre',
@@ -36,7 +38,7 @@ const reactCompilerForTests = (): Plugin => ({
       configFile: false,
       presets: [
         [babelPresetTypescript, { isTSX: file.endsWith('.tsx'), allExtensions: true }],
-        reactCompilerPreset().preset,
+        compilerPreset,
       ],
       sourceMaps: true,
     });
