@@ -132,6 +132,25 @@ function pickStableNode(prev: RFNode | null, next: RFNode | null): RFNode | null
   return prev;
 }
 
+/** Drag-move frames recreate node objects with new positions but identical
+ *  id/type/data; keep the previous array reference in that case so the
+ *  FlowCanvas element stays referentially stable (React Flow tracks position
+ *  updates internally). */
+function pickStableCanvasNodes(prev: RFNode[], next: RFNode[]): RFNode[] {
+  if (prev === next) return prev;
+  if (prev.length !== next.length) return next;
+  for (let i = 0; i < next.length; i++) {
+    if (
+      prev[i].id !== next[i].id ||
+      prev[i].type !== next[i].type ||
+      prev[i].data !== next[i].data
+    ) {
+      return next;
+    }
+  }
+  return prev;
+}
+
 /** Session list refetches recreate session objects; keep the previous
  *  reference when the rendered fields are unchanged. */
 function pickStableSession(
@@ -330,6 +349,12 @@ const MonitorViewContent: React.FC = () => {
     () => sessions.find((s) => s.id === selectedSessionId),
     [sessions, selectedSessionId]
   );
+
+  const [cachedCanvasNodes, setCachedCanvasNodes] = useState(nodes);
+  const canvasNodes = pickStableCanvasNodes(cachedCanvasNodes, nodes);
+  if (canvasNodes !== cachedCanvasNodes) {
+    setCachedCanvasNodes(canvasNodes);
+  }
 
   const [cachedStableSession, setCachedStableSession] = useState(rawSelectedSession);
   const selectedSession = pickStableSession(cachedStableSession, rawSelectedSession);
@@ -1337,7 +1362,7 @@ const MonitorViewContent: React.FC = () => {
       {selectedSessionId && nodes.length > 0 ? (
         <>
           <FlowCanvas
-            nodes={nodes}
+            nodes={canvasNodes}
             edges={edges}
             nodeTypes={nodeTypes}
             onNodesChange={onNodesChangeBatched}
