@@ -12,6 +12,8 @@
 //!   ticks is taken from the `max_ticks` JSON param (defaults to 3).
 //! - `"error_tick"`: returns `Err(..)` from the first `tick` call so we
 //!   exercise the host's tick-error path.
+//! - `"wedge_tick"`: sleeps far longer than any test call-timeout inside
+//!   `tick`, simulating a plugin wedged in an FFI call.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -22,6 +24,7 @@ use streamkit_plugin_sdk_native::{native_source_plugin_entry, NativeSourceNode, 
 enum Mode {
     EmitN,
     ErrorTick,
+    WedgeTick,
 }
 
 impl Mode {
@@ -29,6 +32,7 @@ impl Mode {
         match s {
             "emit_n" => Some(Self::EmitN),
             "error_tick" => Some(Self::ErrorTick),
+            "wedge_tick" => Some(Self::WedgeTick),
             _ => None,
         }
     }
@@ -102,6 +106,10 @@ impl NativeSourceNode for TickingSource {
         match self.mode {
             Mode::ErrorTick => {
                 Err("source-plugin: intentional error in tick".to_string())
+            },
+            Mode::WedgeTick => {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                Ok(true)
             },
             Mode::EmitN => {
                 // Compute the would-be tick number without mutating the

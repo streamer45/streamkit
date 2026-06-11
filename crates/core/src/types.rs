@@ -57,6 +57,12 @@ pub enum AudioCodec {
 }
 
 impl AudioCodec {
+    /// Every variant, for tests and mappings that must cover all codecs.
+    ///
+    /// Adding a new `AudioCodec` variant?  Add it here too — the
+    /// `audio_codec_all_is_exhaustive` test fails to compile otherwise.
+    pub const ALL: &'static [Self] = &[Self::Opus, Self::Aac];
+
     /// Default frame duration in microseconds for this codec.
     ///
     /// Used as a fallback when audio packets lack `duration_us` metadata.
@@ -109,6 +115,12 @@ pub enum VideoCodec {
 }
 
 impl VideoCodec {
+    /// Every variant, for tests and mappings that must cover all codecs.
+    ///
+    /// Adding a new `VideoCodec` variant?  Add it here too — the
+    /// `video_codec_all_is_exhaustive` test fails to compile otherwise.
+    pub const ALL: &'static [Self] = &[Self::Vp9, Self::H264, Self::Av1];
+
     /// Canonical lowercase name used in the C ABI (`custom_type_id`).
     ///
     /// Adding a new `VideoCodec` variant?  Add its name here and in
@@ -684,6 +696,28 @@ impl VideoFrame {
 mod tests {
     use super::*;
     use crate::frame_pool::FramePool;
+
+    #[test]
+    fn audio_codec_all_is_exhaustive() {
+        // In-crate matches are exhaustive even on #[non_exhaustive] enums, so
+        // adding a variant breaks this compile, forcing ALL to be updated.
+        for codec in AudioCodec::ALL {
+            match codec {
+                AudioCodec::Opus | AudioCodec::Aac => {},
+            }
+        }
+        assert_eq!(AudioCodec::ALL.len(), 2);
+    }
+
+    #[test]
+    fn video_codec_all_is_exhaustive() {
+        for codec in VideoCodec::ALL {
+            match codec {
+                VideoCodec::Vp9 | VideoCodec::H264 | VideoCodec::Av1 => {},
+            }
+        }
+        assert_eq!(VideoCodec::ALL.len(), 3);
+    }
 
     #[test]
     fn video_frame_copy_on_write() {

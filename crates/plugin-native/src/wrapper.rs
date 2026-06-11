@@ -51,13 +51,14 @@
 //!   returns; once it does, the deadline check fires and no further
 //!   hints are attempted.
 //! - **Worker shutdown**: `InstanceWorker::shutdown()` drops the
-//!   channel sender and joins the thread via `spawn_blocking`.
-//!   Both `run_source` and `run_processor` call `shutdown()` on
-//!   their clean-exit paths so the worker has fully exited before
-//!   the function returns.  On `?`-error paths (timeout, dead
-//!   worker) `Drop` is used instead — it closes the channel but
-//!   detaches the thread, which is safe because the worker holds
-//!   an `Arc<InstanceState>` keeping the plugin alive.
+//!   channel sender and joins the thread on a dedicated joiner
+//!   thread.  Both `run_source` and `run_processor` join
+//!   unboundedly on clean exits (the worker is known idle) and
+//!   perform a short bounded join with fallback-to-detach on error
+//!   paths (call timeout, dead worker), where the worker may be
+//!   wedged inside a plugin FFI call.  Detaching is safe because
+//!   the worker holds an `Arc<InstanceState>` keeping the plugin
+//!   alive until the call returns.
 //! - **One OS thread per instance**: each plugin instance consumes an
 //!   OS thread for its entire lifetime.  This is acceptable for the
 //!   expected instance counts but would not scale to thousands of
@@ -427,20 +428,69 @@ struct InstanceWorker {
     node_id: String,
 }
 
+/// Bound applied when joining the worker on error paths, where it may be
+/// wedged inside a plugin FFI call.  Long enough for an idle worker to
+/// drain and exit, short enough that node teardown stays prompt.
+const ERROR_PATH_JOIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);
+
 impl InstanceWorker {
     /// Drop the channel sender (signalling the worker to exit) and join
-    /// its thread via `spawn_blocking` so we don't block the async runtime.
-    async fn shutdown(mut self) {
+    /// its thread without blocking the async runtime.  Used on clean-exit
+    /// paths where the worker is known idle and the join is prompt.
+    async fn shutdown(self) {
+        self.shutdown_with_limit(None).await;
+    }
+
+    /// Like [`Self::shutdown`] but bounded: if the worker does not exit
+    /// within [`ERROR_PATH_JOIN_TIMEOUT`] it is detached instead.  Used on
+    /// error paths where the worker may be wedged inside an FFI call —
+    /// detaching is safe because the worker holds an `Arc<InstanceState>`
+    /// → `Arc<Library>` keeping the plugin alive until the call returns.
+    async fn shutdown_bounded(self) {
+        self.shutdown_with_limit(Some(ERROR_PATH_JOIN_TIMEOUT)).await;
+    }
+
+    /// Single decision point for the unified join policy shared by
+    /// `run_source` and `run_processor`: deterministic join on clean exit,
+    /// bounded join with fallback-to-detach when the loop failed and the
+    /// worker may be wedged in an FFI call.
+    async fn shutdown_for_result(self, result: &Result<(), StreamKitError>) {
+        match result {
+            Ok(()) => self.shutdown().await,
+            Err(_) => self.shutdown_bounded().await,
+        }
+    }
+
+    /// The join runs on a dedicated thread rather than `spawn_blocking` so
+    /// a wedged worker cannot pin a blocking-pool thread or stall runtime
+    /// shutdown after the bounded join gives up.
+    async fn shutdown_with_limit(mut self, limit: Option<std::time::Duration>) {
         let handle = self.join_handle.take();
-        let node_id = self.node_id.clone();
+        let node_id = std::mem::take(&mut self.node_id);
         drop(self);
-        if let Some(h) = handle {
-            let _ = tokio::task::spawn_blocking(move || {
-                if let Err(panic) = h.join() {
-                    tracing::warn!(node = %node_id, "Worker thread panicked: {panic:?}");
+        let Some(h) = handle else { return };
+
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let joiner_node_id = node_id.clone();
+        std::thread::spawn(move || {
+            if let Err(panic) = h.join() {
+                tracing::warn!(node = %joiner_node_id, "Worker thread panicked: {panic:?}");
+            }
+            let _ = done_tx.send(());
+        });
+
+        match limit {
+            None => {
+                let _ = done_rx.await;
+            },
+            Some(d) => {
+                if tokio::time::timeout(d, done_rx).await.is_err() {
+                    tracing::warn!(
+                        node = %node_id,
+                        "Worker thread did not exit within {d:?} (likely wedged in an FFI call); detaching"
+                    );
                 }
-            })
-            .await;
+            },
         }
     }
 }
@@ -1636,7 +1686,10 @@ impl NativeNodeWrapper {
             handle.abort();
         }
 
-        worker.shutdown().await;
+        // On error paths the worker may be wedged in an FFI call (the loop
+        // error may be a call timeout), so the join must be bounded or the
+        // node would hang here despite the timeout having fired.
+        worker.shutdown_for_result(&loop_result).await;
 
         loop_result?;
 
@@ -1775,14 +1828,19 @@ impl NativeNodeWrapper {
                         }
                         Some(NodeControlMessage::UpdateParams(params_value)) => {
                             // Apply parameter updates even before Start.
-                            self.apply_params_update(
-                                &node_name,
-                                &params_value,
-                                &worker.tx,
-                                &context.state_tx,
-                                Some(&telemetry),
-                            )
-                            .await?;
+                            if let Err(e) = self
+                                .apply_params_update(
+                                    &node_name,
+                                    &params_value,
+                                    &worker.tx,
+                                    &context.state_tx,
+                                    Some(&telemetry),
+                                )
+                                .await
+                            {
+                                worker.shutdown_bounded().await;
+                                return Err(e);
+                            }
                         }
                         None => {
                             // Control channel closed before Start — shut down gracefully.
@@ -1866,10 +1924,13 @@ impl NativeNodeWrapper {
             tokio::sync::mpsc::Receiver<streamkit_core::UpstreamHint>,
         )> = Vec::new();
 
-        let mut tick_result: Result<(), StreamKitError> = Ok(());
         let mut final_state_emitted = false;
 
-        {
+        // Capture the tick-loop result (including `?` early exits from
+        // send_to_worker / await_reply / apply_params_update) so all paths
+        // funnel through a single worker-shutdown step below.
+        let loop_result: Result<(), StreamKitError> = async {
+            let mut tick_result: Result<(), StreamKitError> = Ok(());
             let worker_tx = &worker.tx;
 
             loop {
@@ -1959,6 +2020,14 @@ impl NativeNodeWrapper {
                         // on_upstream_hint from stalling the tick loop — the
                         // capacity-1 channel would otherwise block the send until
                         // the worker drains the previous request.
+                        //
+                        // Invariant: the reply is never awaited, so a slow hint can
+                        // leave the worker mid-FFI.  The awaited, timeout-bounded
+                        // Tick that always follows in the same iteration is what
+                        // guarantees the worker is idle at every clean loop exit —
+                        // the unbounded join below relies on it.  Any new clean
+                        // `break` between here and the Tick reply breaks that
+                        // invariant.
                         match worker_tx.try_send(WorkerRequest::OnUpstreamHint {
                             hints: pending_hints,
                             reply: hint_reply_tx,
@@ -2055,9 +2124,11 @@ impl NativeNodeWrapper {
                     _ = interval.tick() => {}
                 }
             }
-        } // end borrow scope for worker_tx
+            tick_result
+        }
+        .await;
 
-        if !final_state_emitted {
+        if loop_result.is_ok() && !final_state_emitted {
             if let Err(e) = context
                 .state_tx
                 .send(NodeStateUpdate::new(
@@ -2070,8 +2141,8 @@ impl NativeNodeWrapper {
             }
         }
 
-        worker.shutdown().await;
-        tick_result
+        worker.shutdown_for_result(&loop_result).await;
+        loop_result
     }
 
     /// Helper to apply a parameter update via the worker thread.
