@@ -132,21 +132,28 @@ function pickStableNode(prev: RFNode | null, next: RFNode | null): RFNode | null
   return prev;
 }
 
-/** Drag-move frames recreate node objects with new positions but identical
- *  id/type/data; keep the previous array reference in that case so the
- *  FlowCanvas element stays referentially stable (React Flow tracks position
- *  updates internally). */
+/** Drag-move frames recreate node objects that differ only in position; keep
+ *  the previous array reference in that case so the FlowCanvas element stays
+ *  referentially stable (React Flow tracks position updates internally). Every
+ *  other field (data, selected, measured, ...) must be compared: ReactFlow is
+ *  controlled, so feeding it a node array that drops such a change makes it
+ *  fight its own internal state. */
+const DRAG_ONLY_NODE_KEYS = new Set(['position', 'dragging']);
+
+function nodeEqualIgnoringPosition(prev: RFNode, next: RFNode): boolean {
+  const keys = new Set([...Object.keys(prev), ...Object.keys(next)] as Array<keyof RFNode>);
+  for (const key of keys) {
+    if (DRAG_ONLY_NODE_KEYS.has(key)) continue;
+    if (prev[key] !== next[key]) return false;
+  }
+  return true;
+}
+
 function pickStableCanvasNodes(prev: RFNode[], next: RFNode[]): RFNode[] {
   if (prev === next) return prev;
   if (prev.length !== next.length) return next;
   for (let i = 0; i < next.length; i++) {
-    if (
-      prev[i].id !== next[i].id ||
-      prev[i].type !== next[i].type ||
-      prev[i].data !== next[i].data
-    ) {
-      return next;
-    }
+    if (!nodeEqualIgnoringPosition(prev[i], next[i])) return next;
   }
   return prev;
 }
