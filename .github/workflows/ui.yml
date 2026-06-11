@@ -16,15 +16,20 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.3.5"
+          bun-version: "1.3.14"
 
-      - name: Cache node_modules
+      # Cache bun's global package cache rather than node_modules: bun's
+      # incremental install over a restored node_modules can miss nested
+      # transitive deps, and a failed run poisons the cache for the same
+      # lockfile key. A fresh install from the global cache is just as fast
+      # and always consistent with the lockfile.
+      - name: Cache bun package cache
         uses: actions/cache@v4
         with:
-          path: ui/node_modules
-          key: ${{ runner.os }}-bun-${{ hashFiles('ui/bun.lock') }}
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-pkg-cache-${{ hashFiles('ui/bun.lock') }}
           restore-keys: |
-            ${{ runner.os }}-bun-
+            ${{ runner.os }}-bun-pkg-cache-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
