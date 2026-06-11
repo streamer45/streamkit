@@ -134,16 +134,17 @@ function pickStableNode(prev: RFNode | null, next: RFNode | null): RFNode | null
 
 /** Drag-move frames recreate node objects that differ only in position; keep
  *  the previous array reference in that case so the FlowCanvas element stays
- *  referentially stable (React Flow tracks position updates internally). Every
+ *  referentially stable (React Flow tracks drag positions internally). The
+ *  position skip applies only while the node is dragging: programmatic moves
+ *  (e.g. auto-layout) must propagate or fitView fits a stale viewport. Every
  *  other field (data, selected, measured, ...) must be compared: ReactFlow is
  *  controlled, so feeding it a node array that drops such a change makes it
  *  fight its own internal state. */
-const DRAG_ONLY_NODE_KEYS = new Set(['position', 'dragging']);
-
-function nodeEqualIgnoringPosition(prev: RFNode, next: RFNode): boolean {
+function nodeEqualIgnoringDragPosition(prev: RFNode, next: RFNode): boolean {
   const keys = new Set([...Object.keys(prev), ...Object.keys(next)] as Array<keyof RFNode>);
+  const dragging = prev.dragging === true || next.dragging === true;
   for (const key of keys) {
-    if (DRAG_ONLY_NODE_KEYS.has(key)) continue;
+    if (key === 'position' && dragging) continue;
     if (prev[key] !== next[key]) return false;
   }
   return true;
@@ -153,7 +154,7 @@ function pickStableCanvasNodes(prev: RFNode[], next: RFNode[]): RFNode[] {
   if (prev === next) return prev;
   if (prev.length !== next.length) return next;
   for (let i = 0; i < next.length; i++) {
-    if (!nodeEqualIgnoringPosition(prev[i], next[i])) return next;
+    if (!nodeEqualIgnoringDragPosition(prev[i], next[i])) return next;
   }
   return prev;
 }
