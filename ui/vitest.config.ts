@@ -7,6 +7,7 @@ import react, { reactCompilerPreset } from '@vitejs/plugin-react';
 import { transformAsync } from '@babel/core';
 import babelPresetTypescript from '@babel/preset-typescript';
 import path from 'path';
+import { reactCompilerOptions } from './reactCompilerOptions';
 
 // Production builds compile src with the React Compiler (reactCompilerPreset in
 // vite.config.ts), but @vitejs/plugin-react only applies that preset to
@@ -14,9 +15,10 @@ import path from 'path';
 // Force-apply the compiler here so tests exercise the same memoization regime
 // as production. The compiler plugin and its options come from the same
 // reactCompilerPreset() production uses, and the code pre-filter mirrors the
-// preset's compile-candidate filter. Test/setup files are skipped because
-// production never compiles them.
-const compilerPreset = reactCompilerPreset().preset;
+// preset's compile-candidate filter. Files under src/test/ are skipped because
+// production never compiles them, except *Fixture* files, which exist to be
+// compiled (the sanity test in reactCompiler.test.tsx depends on it).
+const compilerPreset = reactCompilerPreset(reactCompilerOptions).preset;
 
 const reactCompilerForTests = (): Plugin => ({
   name: 'react-compiler-for-tests',
@@ -27,7 +29,7 @@ const reactCompilerForTests = (): Plugin => ({
       !/\/src\/.*\.tsx?$/.test(file) ||
       file.includes('/node_modules/') ||
       /\.test\.tsx?$/.test(file) ||
-      file.endsWith('/src/test/setup.ts') ||
+      (file.includes('/src/test/') && !/Fixture\.tsx?$/.test(file)) ||
       !/\b[A-Z]|\buse/.test(code)
     ) {
       return null;
