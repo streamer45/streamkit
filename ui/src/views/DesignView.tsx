@@ -485,7 +485,6 @@ function pickStableNode(
   if (
     prevData['kind'] !== nextData['kind'] ||
     prevData['label'] !== nextData['label'] ||
-    !deepEqual(prevData['state'], nextData['state']) ||
     !deepEqual(prevData['params'], nextData['params'])
   ) {
     return next;
