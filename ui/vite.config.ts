@@ -5,6 +5,7 @@
 import { defineConfig, loadEnv } from 'vite';
 import react, { reactCompilerPreset } from '@vitejs/plugin-react';
 import path from 'path';
+import { reactCompilerOptions } from './reactCompilerOptions';
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
@@ -39,7 +40,7 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react({
         babel: {
-          presets: [reactCompilerPreset()],
+          presets: [reactCompilerPreset(reactCompilerOptions)],
         },
       }),
       // @moq/hang publishes a JS worklet file but imports it as .ts.
