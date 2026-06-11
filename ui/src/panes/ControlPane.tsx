@@ -340,8 +340,8 @@ const ControlPane: React.FC<ControlPaneProps> = ({
         return;
       }
 
+      setIsUploading(true);
       try {
-        setIsUploading(true);
         const summary = await uploadPlugin(file);
         upsertPlugin(summary);
         await reloadSchemas();
@@ -349,17 +349,16 @@ const ControlPane: React.FC<ControlPaneProps> = ({
       } catch (err) {
         logger.error('Failed to upload plugin:', err);
         toast.error(err instanceof Error ? err.message : 'Failed to upload plugin');
-      } finally {
-        setIsUploading(false);
       }
+      setIsUploading(false);
     },
     [can.loadPlugin, isUploading, toast, upsertPlugin]
   );
 
   const performRemovePlugin = React.useCallback(
     async (kind: string) => {
+      setDeletingKind(kind);
       try {
-        setDeletingKind(kind);
         await deletePlugin(kind);
         removePluginFromStore(kind);
         await reloadSchemas();
@@ -367,9 +366,8 @@ const ControlPane: React.FC<ControlPaneProps> = ({
       } catch (err) {
         logger.error('Failed to unload plugin:', err);
         toast.error(err instanceof Error ? err.message : 'Failed to unload plugin');
-      } finally {
-        setDeletingKind(null);
       }
+      setDeletingKind(null);
     },
     [removePluginFromStore, toast]
   );

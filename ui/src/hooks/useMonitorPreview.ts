@@ -258,6 +258,9 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
       await previewConnect();
       previewOwnsConnectionRef.current =
         wasDisconnected && useStreamStore.getState().status === 'connected';
+      if (!controller.signal.aborted) {
+        setIsPreviewLoading(false);
+      }
     } catch (err) {
       // Ignore abort errors — cleanup already happened
       if (controller.signal.aborted) return;
@@ -266,7 +269,6 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
       setPreviewError(message);
       // Clean up partial state
       await teardownExistingPreview(previewIdRef, previewSessionIdRef);
-    } finally {
       if (!controller.signal.aborted) {
         setIsPreviewLoading(false);
       }
