@@ -5,7 +5,7 @@
 //! WASM node wrapper that implements the ProcessorNode trait
 
 use crate::bindings::Plugin;
-use crate::{arm_epoch_deadline, wit_types, HostState};
+use crate::{arm_epoch_deadline, rearm_call_deadline, wit_types, HostState};
 use async_trait::async_trait;
 use futures::future::poll_fn;
 use std::{sync::Arc, task::Poll};
@@ -18,11 +18,6 @@ use tokio::sync::Mutex;
 use wasmtime::component::{Linker, ResourceTable};
 use wasmtime::{Engine, Store, StoreLimitsBuilder};
 use wasmtime_wasi::WasiCtx;
-
-/// Interval at which a node's ticker increments the engine epoch. The epoch
-/// callback enforces the wall-clock deadline, so this only bounds how often
-/// a runaway guest is checked, not the timeout itself.
-const EPOCH_TICK: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Wraps a WASM component to implement the ProcessorNode trait
 pub struct WasmNodeWrapper {
@@ -49,40 +44,6 @@ impl WasmNodeWrapper {
     ) -> Self {
         Self { component, metadata, params, engine, linker, max_memory_bytes, call_timeout }
     }
-}
-
-/// Drives the engine epoch forward for the lifetime of one node run so the
-/// store's epoch callback gets a chance to interrupt a non-yielding guest.
-/// Uses a dedicated thread rather than a tokio task: a spinning guest blocks
-/// its worker thread without yielding, and a same-worker task could be
-/// starved indefinitely (e.g. stuck in the worker's non-stealable LIFO slot).
-/// Drop stops the ticker, covering every exit path of `run`.
-struct EpochTicker {
-    stop: Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl EpochTicker {
-    fn spawn(engine: Engine) -> Self {
-        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let flag = Arc::clone(&stop);
-        std::thread::spawn(move || {
-            while !flag.load(std::sync::atomic::Ordering::Relaxed) {
-                std::thread::sleep(EPOCH_TICK);
-                engine.increment_epoch();
-            }
-        });
-        Self { stop }
-    }
-}
-
-impl Drop for EpochTicker {
-    fn drop(&mut self) {
-        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-}
-
-fn rearm_call_deadline(store: &mut Store<HostState>, timeout: std::time::Duration) {
-    store.data_mut().call_deadline = Some(std::time::Instant::now() + timeout);
 }
 
 #[async_trait]
@@ -147,14 +108,13 @@ impl ProcessorNode for WasmNodeWrapper {
         let mut store = Store::new(&engine, host_state);
         store.limiter(|s| &mut s.limits);
         arm_epoch_deadline(&mut store, call_timeout);
-        let _epoch_ticker = EpochTicker::spawn(engine.clone());
 
         // Instantiate the component
         let instance = match linker.instantiate_async(&mut store, &component).await {
             Ok(instance) => instance,
             Err(e) => {
                 let err =
-                    StreamKitError::Configuration(format!("Failed to instantiate plugin: {e}"));
+                    StreamKitError::Configuration(format!("Failed to instantiate plugin: {e:#}"));
                 emit_state(
                     &state_tx_clone,
                     &node_id,

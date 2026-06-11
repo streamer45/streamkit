@@ -69,7 +69,6 @@ impl Default for PluginRuntimeConfig {
 pub struct PluginRuntime {
     engine: Engine,
     linker: Arc<Linker<HostState>>,
-    #[allow(dead_code)] // Stored for potential future use
     config: PluginRuntimeConfig,
 }
 
@@ -90,6 +89,7 @@ impl PluginRuntime {
         engine_config.epoch_interruption(true);
 
         let engine = Engine::new(&engine_config)?;
+        spawn_epoch_ticker(engine.weak());
         let mut linker = Linker::new(&engine);
 
         wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
@@ -141,9 +141,6 @@ impl PluginRuntime {
         };
         let mut store = Store::new(&self.engine, host_state);
         store.limiter(|s| &mut s.limits);
-        // The engine epoch may be advancing (node tickers share the engine),
-        // so arm the same wall-clock deadline machinery the wrapper uses or
-        // metadata extraction would trap on the first epoch tick.
         arm_epoch_deadline(&mut store, self.config.call_timeout);
 
         let instance =
@@ -272,6 +269,23 @@ pub struct HostState {
     call_deadline: Option<std::time::Instant>,
 }
 
+/// Interval at which the engine epoch is incremented. The epoch callback
+/// enforces the wall-clock deadline, so this only bounds how often a runaway
+/// guest is checked, not the timeout itself.
+const EPOCH_TICK: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Spawns the single per-engine thread that drives the epoch forward so epoch
+/// callbacks get a chance to interrupt non-yielding guests (a spinning guest
+/// blocks its tokio worker, so this must be a dedicated OS thread). Holds only
+/// a weak engine handle and exits once the engine is dropped.
+fn spawn_epoch_ticker(engine: wasmtime::EngineWeak) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(EPOCH_TICK);
+        let Some(engine) = engine.upgrade() else { break };
+        engine.increment_epoch();
+    });
+}
+
 /// Configure epoch-based interruption on a store: the epoch callback checks
 /// the per-call wall-clock deadline so the interval at which the (shared)
 /// engine epoch is incremented does not affect the effective timeout.
@@ -285,7 +299,13 @@ pub(crate) fn arm_epoch_deadline(store: &mut Store<HostState>, timeout: std::tim
         Ok(UpdateDeadline::Continue(1))
     });
     store.set_epoch_deadline(1);
-    store.data_mut().call_deadline = Some(std::time::Instant::now() + timeout);
+    rearm_call_deadline(store, timeout);
+}
+
+/// Starts the wall-clock deadline for the next guest call. A timeout too large
+/// to represent as an `Instant` disables the deadline rather than panicking.
+pub(crate) fn rearm_call_deadline(store: &mut Store<HostState>, timeout: std::time::Duration) {
+    store.data_mut().call_deadline = std::time::Instant::now().checked_add(timeout);
 }
 
 impl WasiView for HostState {

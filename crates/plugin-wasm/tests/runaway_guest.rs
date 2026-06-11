@@ -29,7 +29,12 @@ const SPIN: &str = "(loop $spin (br $spin)) unreachable";
 /// `streamkit:plugin` world, with selectable runaway (tight-loop) bodies.
 /// Compiling WAT in-test keeps the fixture hermetic — no wasm toolchain
 /// (cargo-component, wasm32 targets) is needed at build time.
-fn component_wat(ctor_body: &str, process_body: &str, update_params_body: &str) -> String {
+fn component_wat(
+    metadata_body: &str,
+    ctor_body: &str,
+    process_body: &str,
+    update_params_body: &str,
+) -> String {
     format!(
         r#"(component
   (component $inner
@@ -42,8 +47,7 @@ fn component_wat(ctor_body: &str, process_body: &str, update_params_body: &str) 
         (local.set $ret (global.get $bump))
         (global.set $bump (i32.add (global.get $bump) (local.get 3)))
         (local.get $ret))
-      ;; node-metadata with empty strings/lists: 40 zero bytes at offset 64
-      (func (export "metadata") (result i32) (i32.const 64))
+      (func (export "metadata") (result i32) {metadata_body})
       (func (export "ctor") (param i32 i32 i32) (result i32) {ctor_body})
       (func (export "process") (param i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32) {process_body})
       (func (export "update-params") (param i32 i32 i32 i32) (result i32) {update_params_body})
@@ -140,6 +144,8 @@ fn component_wat(ctor_body: &str, process_body: &str, update_params_body: &str) 
     )
 }
 
+// node-metadata with empty strings/lists: 40 zero bytes at offset 64.
+const OK_METADATA: &str = "(i32.const 64)";
 const OK_CTOR: &str = "(call $rnew (i32.const 0))";
 // Pointer to zeroed memory = ok-case of result<_, string>.
 const OK_RESULT: &str = "(i32.const 0)";
@@ -148,19 +154,21 @@ const TEST_DEADLINE: Duration = Duration::from_millis(300);
 // Generous wall-clock bound for the whole interruption to be observed; the
 // actual interruption should happen shortly after TEST_DEADLINE.
 const TEST_TIMEOUT: Duration = Duration::from_secs(15);
+const WELL_BEHAVED_DEADLINE: Duration = Duration::from_secs(2);
 
 fn load_runaway_plugin(
     ctor_body: &str,
     process_body: &str,
     update_params_body: &str,
+    call_timeout: Duration,
 ) -> Box<dyn streamkit_core::ProcessorNode> {
     let runtime = PluginRuntime::new(PluginRuntimeConfig::default()).expect("runtime initializes");
     let dir = tempfile::TempDir::new().expect("temp dir creates");
     let path = dir.path().join("runaway.wasm");
-    std::fs::write(&path, component_wat(ctor_body, process_body, update_params_body))
+    std::fs::write(&path, component_wat(OK_METADATA, ctor_body, process_body, update_params_body))
         .expect("fixture writes");
     let mut plugin = runtime.load_plugin(&path).expect("WAT fixture must load as a component");
-    plugin.set_call_timeout(TEST_DEADLINE);
+    plugin.set_call_timeout(call_timeout);
     plugin.create_node(None).expect("node creates")
 }
 
@@ -235,9 +243,33 @@ async fn await_running_state(state_rx: &mut mpsc::Receiver<NodeStateUpdate>) {
     }
 }
 
+#[test]
+fn runaway_metadata_is_interrupted_at_load_time() {
+    let runtime = PluginRuntime::new(PluginRuntimeConfig {
+        call_timeout: TEST_DEADLINE,
+        ..PluginRuntimeConfig::default()
+    })
+    .expect("runtime initializes");
+    let dir = tempfile::TempDir::new().expect("temp dir creates");
+    let path = dir.path().join("runaway.wasm");
+    std::fs::write(&path, component_wat(SPIN, OK_CTOR, OK_RESULT, OK_RESULT))
+        .expect("fixture writes");
+
+    let start = std::time::Instant::now();
+    let Err(err) = runtime.load_plugin(&path) else {
+        panic!("runaway metadata() must not load successfully")
+    };
+    assert!(start.elapsed() < TEST_TIMEOUT, "load_plugin took too long: {:?}", start.elapsed());
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("exceeded execution deadline"),
+        "error must mention the deadline, got: {msg}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runaway_constructor_is_interrupted_and_node_fails() {
-    let node = load_runaway_plugin(SPIN, OK_RESULT, OK_RESULT);
+    let node = load_runaway_plugin(SPIN, OK_RESULT, OK_RESULT, TEST_DEADLINE);
     let (ctx, mut harness) = node_context();
 
     let run = tokio::spawn(node.run(ctx));
@@ -256,18 +288,21 @@ async fn runaway_constructor_is_interrupted_and_node_fails() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn runaway_process_is_interrupted_and_shutdown_completes() {
-    let node = load_runaway_plugin(OK_CTOR, SPIN, OK_RESULT);
+async fn runaway_process_is_interrupted_with_shutdown_queued() {
+    let node = load_runaway_plugin(OK_CTOR, SPIN, OK_RESULT, TEST_DEADLINE);
     let (ctx, mut harness) = node_context();
 
     let run = tokio::spawn(node.run(ctx));
     await_running_state(&mut harness.state_rx).await;
 
     harness.input_tx.send(Packet::Text("spin".into())).await.expect("packet sends");
-    // Wait for the guest to be inside the spinning process() call (the biased
-    // select would otherwise observe Shutdown before the packet), then verify
-    // a queued Shutdown cannot be starved forever by the runaway guest.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Wait until the node has dequeued the packet (it is then inside the
+    // spinning process() call; the biased select would otherwise observe
+    // Shutdown before the packet), then verify a queued Shutdown cannot be
+    // starved forever by the runaway guest.
+    while harness.input_tx.capacity() < harness.input_tx.max_capacity() {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
     harness.control_tx.send(NodeControlMessage::Shutdown).await.expect("shutdown sends");
 
     let reason = await_failed_state(&mut harness.state_rx).await;
@@ -285,7 +320,7 @@ async fn runaway_process_is_interrupted_and_shutdown_completes() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runaway_update_params_is_interrupted_and_node_fails() {
-    let node = load_runaway_plugin(OK_CTOR, OK_RESULT, SPIN);
+    let node = load_runaway_plugin(OK_CTOR, OK_RESULT, SPIN, TEST_DEADLINE);
     let (ctx, mut harness) = node_context();
 
     let run = tokio::spawn(node.run(ctx));
@@ -307,21 +342,23 @@ async fn runaway_update_params_is_interrupted_and_node_fails() {
         .await
         .expect("run task must complete after interruption")
         .expect("run task must not panic");
-    assert!(result.is_err(), "got: {result:?}");
+    assert!(matches!(result, Err(StreamKitError::Configuration(_))), "got: {result:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn well_behaved_guest_is_not_interrupted() {
-    let node = load_runaway_plugin(OK_CTOR, OK_RESULT, OK_RESULT);
+    // A generous deadline keeps slow-CI instantiation from tripping it; the
+    // idle sleep below still exceeds it to prove the deadline is per-call.
+    let node = load_runaway_plugin(OK_CTOR, OK_RESULT, OK_RESULT, WELL_BEHAVED_DEADLINE);
     let (ctx, mut harness) = node_context();
 
     let run = tokio::spawn(node.run(ctx));
     await_running_state(&mut harness.state_rx).await;
 
     harness.input_tx.send(Packet::Text("ok".into())).await.expect("packet sends");
-    // Give the guest call ample time to complete past the short deadline,
-    // proving the deadline is per-call and idle time between calls is exempt.
-    tokio::time::sleep(TEST_DEADLINE * 3).await;
+    // Stay idle past the deadline, proving the deadline is per-call and idle
+    // time between calls is exempt.
+    tokio::time::sleep(WELL_BEHAVED_DEADLINE + Duration::from_millis(500)).await;
 
     harness.control_tx.send(NodeControlMessage::Shutdown).await.expect("shutdown sends");
     let result = tokio::time::timeout(TEST_TIMEOUT, run)
