@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { LogResponse } from '@/services/logs';
@@ -57,5 +57,64 @@ describe('LogsView', () => {
     render(<LogsView />);
 
     expect(await screen.findByText('No log lines to display.')).toBeInTheDocument();
+  });
+
+  it('shows the error message when the fetch fails', async () => {
+    fetchLogsMock.mockRejectedValue(new Error('boom'));
+
+    render(<LogsView />);
+
+    expect(await screen.findByText('boom')).toBeInTheDocument();
+    expect(screen.getByText('No log lines to display.')).toBeInTheDocument();
+  });
+
+  it('shows a fallback error message when the fetch fails with a non-Error', async () => {
+    fetchLogsMock.mockRejectedValue('boom');
+
+    render(<LogsView />);
+
+    expect(await screen.findByText('Failed to load logs')).toBeInTheDocument();
+  });
+
+  it('loads newer lines in the forward direction', async () => {
+    fetchLogsMock.mockResolvedValueOnce({
+      lines: ['old line'],
+      file_size: 100,
+      next_offset: 10,
+      has_more: true,
+    } satisfies LogResponse);
+
+    render(<LogsView />);
+
+    expect(await screen.findByText('old line')).toBeInTheDocument();
+
+    fetchLogsMock.mockResolvedValueOnce({
+      lines: ['older line'],
+      file_size: 100,
+      next_offset: 0,
+      has_more: true,
+    } satisfies LogResponse);
+
+    const older = screen.getByTestId('logs-load-older');
+    await waitFor(() => expect(older).toBeEnabled());
+    fireEvent.click(older);
+
+    expect(await screen.findByText('older line')).toBeInTheDocument();
+
+    fetchLogsMock.mockResolvedValueOnce({
+      lines: ['new line'],
+      file_size: 100,
+      next_offset: 80,
+      has_more: true,
+    } satisfies LogResponse);
+
+    const newer = screen.getByTestId('logs-load-newer');
+    await waitFor(() => expect(newer).toBeEnabled());
+    fireEvent.click(newer);
+
+    expect(await screen.findByText('new line')).toBeInTheDocument();
+    expect(fetchLogsMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ direction: 'forward' })
+    );
   });
 });
