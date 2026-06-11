@@ -207,9 +207,7 @@ function useLogViewer(
 
   useEffect(() => {
     if (shouldLoad) {
-      React.startTransition(async () => {
-        await loadLogs('backward');
-      });
+      loadLogs('backward');
     }
   }, [loadLogs, shouldLoad]);
 
