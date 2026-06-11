@@ -110,27 +110,36 @@ pub(super) struct BidirectionalTaskConfig {
     pub input_broadcasts: Vec<String>,
     pub output_broadcast: String,
     pub node_id: String,
-    pub output_sender: streamkit_core::OutputSender,
     pub broadcast_rx: broadcast::Receiver<BroadcastFrame>,
     pub shutdown_rx: broadcast::Receiver<()>,
     pub publisher_slot: Arc<Semaphore>,
     pub publisher_events: mpsc::UnboundedSender<PublisherEvent>,
     pub subscriber_count: Arc<std::sync::atomic::AtomicU64>,
-    pub stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
     pub media: SubscriberMediaConfig,
     pub media_state_rx: watch::Receiver<MediaTypeState>,
-    pub dynamic_outputs: DynamicOutputs,
+    pub routing: TrackRouting,
 }
 
 pub(super) struct PublisherReceiveLoopWithSlotConfig {
     pub subscribe: moq_lite::OriginConsumer,
     pub broadcast_name: String,
-    pub output_sender: streamkit_core::OutputSender,
     pub publisher_slot: Arc<Semaphore>,
     pub publisher_events: mpsc::UnboundedSender<PublisherEvent>,
     pub publisher_path: String,
+    pub routing: TrackRouting,
+}
+
+/// Everything a publisher-side track processor needs to route frames and
+/// label pins, bundled so the receive-loop call chain doesn't pass five
+/// parameters through every layer.
+#[derive(Clone)]
+pub(super) struct TrackRouting {
+    pub output_sender: streamkit_core::OutputSender,
     pub stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
     pub dynamic_outputs: DynamicOutputs,
+    pub discovered_codecs: crate::transport::moq::discovered::DiscoveredCodecs,
+    /// Local video codec config — fallback for frame `content_type` when the
+    /// catalog hasn't advertised a codec for the track.
     pub video_codec: VideoCodec,
 }
 

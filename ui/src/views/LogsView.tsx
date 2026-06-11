@@ -125,7 +125,6 @@ interface UseLogViewerResult {
   pageSize: number;
   expanded: boolean;
   copyToastVisible: boolean;
-  logContainerRef: React.RefObject<HTMLDivElement | null>;
   setFilterText: (v: string) => void;
   handleLoadNewer: () => void;
   handleLoadOlder: () => void;
@@ -139,9 +138,12 @@ interface UseLogViewerResult {
   handleLevelChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
 }
 
-function useLogViewer(shouldLoad: boolean): UseLogViewerResult {
+function useLogViewer(
+  shouldLoad: boolean,
+  logContainerRef: React.RefObject<HTMLDivElement | null>
+): UseLogViewerResult {
   const [lines, setLines] = useState<string[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(shouldLoad);
   const [error, setError] = useState<string | null>(null);
   const [fileSize, setFileSize] = useState(0);
   const [backwardOffset, setBackwardOffset] = useState(0);
@@ -155,7 +157,6 @@ function useLogViewer(shouldLoad: boolean): UseLogViewerResult {
   const [expanded, setExpanded] = useState(false);
   const [copyToastVisible, setCopyToastVisible] = useState(false);
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const logContainerRef = useRef<HTMLDivElement | null>(null);
 
   const debouncedFilter = useDebouncedValue(filterText, 300);
   const { liveTail, setLiveTail } = useLiveTail(debouncedFilter, levelFilter, setLines);
@@ -164,39 +165,42 @@ function useLogViewer(shouldLoad: boolean): UseLogViewerResult {
     if (logContainerRef.current && autoScroll) {
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
-  }, [autoScroll]);
+  }, [autoScroll, logContainerRef]);
 
   const loadLogs = useCallback(
     async (direction: 'forward' | 'backward', offset?: number) => {
       setIsLoading(true);
       setError(null);
+      // Only the await lives in the try: the React Compiler cannot optimize
+      // hooks containing value blocks (ternary/logical) inside try/catch.
+      const filter = debouncedFilter || undefined;
+      const level = levelFilter || undefined;
+      let response: LogResponse;
       try {
-        const response: LogResponse = await fetchLogs({
-          offset,
-          limit: pageSize,
-          direction,
-          filter: debouncedFilter || undefined,
-          level: levelFilter || undefined,
-        });
-        setLines(response.lines);
-        setFileSize(response.file_size);
-
-        if (direction === 'backward') {
-          setBackwardOffset(response.next_offset);
-          setForwardOffset(offset ?? response.file_size);
-          setIsAtLatest(offset === undefined || offset >= response.file_size);
-        } else {
-          setForwardOffset(response.next_offset);
-          setBackwardOffset(offset ?? 0);
-          setIsAtLatest(!response.has_more);
-        }
+        response = await fetchLogs({ offset, limit: pageSize, direction, filter, level });
       } catch (err) {
-        const message = err instanceof Error ? err.message : 'Failed to load logs';
+        let message = 'Failed to load logs';
+        if (err instanceof Error) {
+          message = err.message;
+        }
         logger.error('Failed to load logs:', err);
         setError(message);
-      } finally {
         setIsLoading(false);
+        return;
       }
+      setLines(response.lines);
+      setFileSize(response.file_size);
+
+      if (direction === 'backward') {
+        setBackwardOffset(response.next_offset);
+        setForwardOffset(offset ?? response.file_size);
+        setIsAtLatest(offset === undefined || offset >= response.file_size);
+      } else {
+        setForwardOffset(response.next_offset);
+        setBackwardOffset(offset ?? 0);
+        setIsAtLatest(!response.has_more);
+      }
+      setIsLoading(false);
     },
     [debouncedFilter, levelFilter, pageSize]
   );
@@ -225,7 +229,6 @@ function useLogViewer(shouldLoad: boolean): UseLogViewerResult {
     pageSize,
     expanded,
     copyToastVisible,
-    logContainerRef,
     setFilterText,
     handleLoadNewer: useCallback(() => {
       if (forwardOffset < fileSize) loadLogs('forward', forwardOffset);
@@ -267,7 +270,7 @@ function useLogViewer(shouldLoad: boolean): UseLogViewerResult {
       if (!container) return;
       const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50;
       setAutoScroll(nearBottom);
-    }, []),
+    }, [logContainerRef]),
     handleLevelChange: useCallback(
       (e: React.ChangeEvent<HTMLSelectElement>) => setLevelFilter(e.target.value),
       []
@@ -360,7 +363,8 @@ const LogsPagination: React.FC<{ lv: UseLogViewerResult }> = ({ lv }) => (
 const LogsView: React.FC = () => {
   const { role, isAdmin } = usePermissions();
   const admin = isAdmin();
-  const lv = useLogViewer(admin);
+  const logContainerRef = useRef<HTMLDivElement | null>(null);
+  const lv = useLogViewer(admin, logContainerRef);
 
   if (!admin) {
     return (
@@ -405,7 +409,7 @@ const LogsView: React.FC = () => {
             <LogsToolbar lv={lv} />
 
             <LogContainer
-              ref={lv.logContainerRef}
+              ref={logContainerRef}
               onScroll={lv.handleScroll}
               $wrap={lv.wrapLines}
               data-testid="logs-container"

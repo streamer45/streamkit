@@ -68,6 +68,21 @@ export function useCompositorOverlays(deps: OverlayDeps) {
     [setSelectedLayerId]
   );
 
+  const commitOverlays = useCallback(
+    (nextText: TextOverlayState[], nextImg: ImageOverlayState[]) => {
+      commitAdapter?.commitOverlays(nextText, nextImg);
+    },
+    [commitAdapter]
+  );
+
+  // Stable ref so pointer-up / visibility / mirror can call latest commit.
+  // Declared (and synced) before any hook that captures it, so the React
+  // Compiler doesn't see a mutation of an already-captured hook argument.
+  const commitOverlaysRef = useRef(commitOverlays);
+  useEffect(() => {
+    commitOverlaysRef.current = commitOverlays;
+  }, [commitOverlays]);
+
   //
   // Opacity and rotation write to atoms via the atom-backed setLayers.
   // Only the affected layer's atom changes — fine-grained reactivity
@@ -252,19 +267,6 @@ export function useCompositorOverlays(deps: OverlayDeps) {
     },
     [setLayers, layersRef, throttledConfigChange]
   );
-
-  const commitOverlays = useCallback(
-    (nextText: TextOverlayState[], nextImg: ImageOverlayState[]) => {
-      commitAdapter?.commitOverlays(nextText, nextImg);
-    },
-    [commitAdapter]
-  );
-
-  // Stable ref so pointer-up / visibility / mirror can call latest commit.
-  const commitOverlaysRef = useRef(commitOverlays);
-  useEffect(() => {
-    commitOverlaysRef.current = commitOverlays;
-  }, [commitOverlays]);
 
   const updateOverlay = useCallback(
     <T extends { id: string }>(
