@@ -472,6 +472,26 @@ function processRegularNodeDrop(
   return { node: newNode, nodeId: newId };
 }
 
+/** Keep the previous node reference unless a render-relevant field changed,
+ *  so inspector consumers behind React.memo don't re-render on every drag. */
+function pickStableNode(
+  prev: RFNode<EditorNodeData> | null,
+  next: RFNode<EditorNodeData> | null
+): RFNode<EditorNodeData> | null {
+  if (!next) return null;
+  if (!prev || prev.id !== next.id || prev.type !== next.type) return next;
+  const prevData = prev.data as Record<string, unknown>;
+  const nextData = next.data as Record<string, unknown>;
+  if (
+    prevData['kind'] !== nextData['kind'] ||
+    prevData['label'] !== nextData['label'] ||
+    !deepEqual(prevData['params'], nextData['params'])
+  ) {
+    return next;
+  }
+  return prev;
+}
+
 /**
  * Main DesignView component for the pipeline editor.
  *
@@ -864,26 +884,32 @@ const DesignViewContent: React.FC = () => {
     }
   };
 
+  // Throws live in a separate function because the React Compiler cannot yet
+  // compile components containing `throw` inside a try/catch block.
+  const validatePipelineForSession = () => {
+    if (!yamlString.trim()) {
+      throw new Error('Pipeline is empty. Add some nodes before creating a session.');
+    }
+
+    if (mode === 'dynamic') {
+      const oneshotNodes = nodes.filter((node) => {
+        const nodeDef = nodeDefinitions.find((def) => def.kind === node.data.kind);
+        return nodeDef?.categories.includes('oneshot');
+      });
+
+      if (oneshotNodes.length > 0) {
+        const nodeList = oneshotNodes.map((n) => `"${n.data.label}" (${n.data.kind})`).join(', ');
+        throw new Error(
+          `Cannot create dynamic session: Pipeline contains oneshot-only nodes: ${nodeList}. ` +
+            `These nodes are only compatible with oneshot mode. Please remove them or switch to oneshot mode.`
+        );
+      }
+    }
+  };
+
   const handleCreateSession = async (name: string) => {
     try {
-      if (!yamlString.trim()) {
-        throw new Error('Pipeline is empty. Add some nodes before creating a session.');
-      }
-
-      if (mode === 'dynamic') {
-        const oneshotNodes = nodes.filter((node) => {
-          const nodeDef = nodeDefinitions.find((def) => def.kind === node.data.kind);
-          return nodeDef?.categories.includes('oneshot');
-        });
-
-        if (oneshotNodes.length > 0) {
-          const nodeList = oneshotNodes.map((n) => `"${n.data.label}" (${n.data.kind})`).join(', ');
-          throw new Error(
-            `Cannot create dynamic session: Pipeline contains oneshot-only nodes: ${nodeList}. ` +
-              `These nodes are only compatible with oneshot mode. Please remove them or switch to oneshot mode.`
-          );
-        }
-      }
+      validatePipelineForSession();
 
       const result = await createSession(name, yamlString);
       const sessionDisplayName = result.name || result.session_id;
@@ -1173,32 +1199,19 @@ const DesignViewContent: React.FC = () => {
     return nodes.find((node) => node.id === selectedNodeId) ?? null;
   }, [selectedNodeId, nodes]);
 
-  const selectedNodeRef = React.useRef(selectedNode);
-  const stableSelectedNode = React.useMemo(() => {
-    if (!selectedNode) {
-      selectedNodeRef.current = null;
-      return null;
-    }
-    const prev = selectedNodeRef.current;
-    const prevData = (prev?.data as Record<string, unknown> | undefined) ?? undefined;
-    const nextData = selectedNode.data as Record<string, unknown>;
-    if (
-      !prev ||
-      prev.id !== selectedNode.id ||
-      prev.type !== selectedNode.type ||
-      prevData?.['kind'] !== nextData['kind'] ||
-      prevData?.['label'] !== nextData['label'] ||
-      !deepEqual(prevData?.['state'], nextData['state']) ||
-      !deepEqual(prevData?.['params'], nextData['params'])
-    ) {
-      selectedNodeRef.current = selectedNode;
-    }
-    return selectedNodeRef.current;
-  }, [selectedNode]);
+  // Render-time state adjustment (instead of a ref cache) so the React
+  // Compiler can optimize this component while keeping referential stability.
+  const [cachedStableNode, setCachedStableNode] = useState(selectedNode);
+  const stableSelectedNode = pickStableNode(cachedStableNode, selectedNode);
+  if (stableSelectedNode !== cachedStableNode) {
+    setCachedStableNode(stableSelectedNode);
+  }
 
-  useEffect(() => {
+  const [prevSelectedNodes, setPrevSelectedNodes] = useState(selectedNodes);
+  if (prevSelectedNodes !== selectedNodes) {
+    setPrevSelectedNodes(selectedNodes);
     setRightPaneView('yaml');
-  }, [selectedNodes]);
+  }
 
   const handleNodeDoubleClick = React.useCallback(() => {
     setRightPaneView('inspector');
@@ -1210,24 +1223,6 @@ const DesignViewContent: React.FC = () => {
   React.useEffect(() => {
     handleAutoLayoutRef.current = handleAutoLayout;
   });
-
-  useEffect(() => {
-    if (nodes.length > 0) {
-      if (pendingAutoLayoutRef.current) {
-        const timeoutId = window.setTimeout(() => {
-          pendingAutoLayoutRef.current = false;
-          handleAutoLayoutRef.current();
-        }, 50);
-        return () => window.clearTimeout(timeoutId);
-      } else if (pendingInitialFitViewRef.current) {
-        const timeoutId = window.setTimeout(() => {
-          pendingInitialFitViewRef.current = false;
-          rf.current?.fitView({ padding: 0.2, duration: 300 });
-        }, 50);
-        return () => window.clearTimeout(timeoutId);
-      }
-    }
-  }, [nodes.length]);
 
   const selectedNodeDefinition = (() => {
     if (!selectedNode) return null;
@@ -1329,6 +1324,26 @@ const DesignViewContent: React.FC = () => {
       handleCloseLoadSampleModal();
     }
   };
+
+  // Declared after every callback that sets the pending flags, so the React
+  // Compiler doesn't see a mutation of values already captured by this effect.
+  useEffect(() => {
+    if (nodes.length > 0) {
+      if (pendingAutoLayoutRef.current) {
+        const timeoutId = window.setTimeout(() => {
+          pendingAutoLayoutRef.current = false;
+          handleAutoLayoutRef.current();
+        }, 50);
+        return () => window.clearTimeout(timeoutId);
+      } else if (pendingInitialFitViewRef.current) {
+        const timeoutId = window.setTimeout(() => {
+          pendingInitialFitViewRef.current = false;
+          rf.current?.fitView({ padding: 0.2, duration: 300 });
+        }, 50);
+        return () => window.clearTimeout(timeoutId);
+      }
+    }
+  }, [nodes.length]);
 
   const handleClearCanvas = React.useCallback(() => {
     setNodes([]);
