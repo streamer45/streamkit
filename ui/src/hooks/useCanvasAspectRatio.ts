@@ -12,52 +12,31 @@
  * hardcoded ratio.
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useSyncExternalStore } from 'react';
+
+const readRatio = (canvas: HTMLCanvasElement | null | undefined): string | undefined => {
+  if (!canvas) return undefined;
+  const wAttr = canvas.getAttribute('width');
+  const hAttr = canvas.getAttribute('height');
+  if (wAttr === null || hAttr === null) return undefined;
+  const w = canvas.width;
+  const h = canvas.height;
+  return w > 0 && h > 0 ? `${w} / ${h}` : undefined;
+};
 
 export const useCanvasAspectRatio = (
   canvas: HTMLCanvasElement | null | undefined
 ): string | undefined => {
-  const [ratio, setRatio] = useState<string | undefined>(() => {
-    if (!canvas) return undefined;
-    const wAttr = canvas.getAttribute('width');
-    const hAttr = canvas.getAttribute('height');
-    if (wAttr === null || hAttr === null) return undefined;
-    const w = canvas.width;
-    const h = canvas.height;
-    return w > 0 && h > 0 ? `${w} / ${h}` : undefined;
-  });
+  // Watch for attribute changes made by the Hang renderer.
+  const subscribe = useCallback(
+    (onChange: () => void) => {
+      if (!canvas) return () => {};
+      const observer = new MutationObserver(onChange);
+      observer.observe(canvas, { attributes: true, attributeFilter: ['width', 'height'] });
+      return () => observer.disconnect();
+    },
+    [canvas]
+  );
 
-  useEffect(() => {
-    if (!canvas) {
-      setRatio(undefined);
-      return;
-    }
-
-    const update = () => {
-      const wAttr = canvas.getAttribute('width');
-      const hAttr = canvas.getAttribute('height');
-      if (wAttr !== null && hAttr !== null) {
-        const w = canvas.width;
-        const h = canvas.height;
-        if (w > 0 && h > 0) {
-          setRatio(`${w} / ${h}`);
-        } else {
-          // Dimensions were reset (e.g. renderer removed) — clear the ratio
-          // so layout doesn't keep the stale aspect ratio.
-          setRatio(undefined);
-        }
-      }
-    };
-
-    // Read current values immediately.
-    update();
-
-    // Watch for attribute changes made by the Hang renderer.
-    const observer = new MutationObserver(update);
-    observer.observe(canvas, { attributes: true, attributeFilter: ['width', 'height'] });
-
-    return () => observer.disconnect();
-  }, [canvas]);
-
-  return ratio;
+  return useSyncExternalStore(subscribe, () => readRatio(canvas));
 };
