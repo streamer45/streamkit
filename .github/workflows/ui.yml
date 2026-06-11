@@ -11,7 +11,11 @@ jobs:
       run:
         working-directory: ./ui
     steps:
+      # Full history so react-doctor can resolve the merge-base with origin/main
+      # for its diff-gated scan.
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -36,6 +40,13 @@ jobs:
 
       - name: Lint
         run: bun run lint
+
+      # Diff-gated: only files changed vs origin/main are scanned, and only
+      # error-severity findings block. Manual-memoization warnings are
+      # disabled in doctor.config.json (deliberate React.memo barriers),
+      # and dead-code analysis is skipped since knip covers it.
+      - name: React Doctor (changed files)
+        run: bun run doctor
 
       # Test and Coverage are deliberately separate so a v8-provider
       # regression in the instrumented run can't taint the plain
