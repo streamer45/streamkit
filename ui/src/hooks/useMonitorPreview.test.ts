@@ -11,9 +11,10 @@
  * bug).
  */
 
+import { act, renderHook } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import { cleanupPreview } from './useMonitorPreview';
+import { cleanupPreview, useMonitorPreview } from './useMonitorPreview';
 
 // Mock the sessions service so stopPreview calls don't hit a real server.
 vi.mock('@/services/sessions', () => ({
@@ -21,13 +22,27 @@ vi.mock('@/services/sessions', () => ({
   stopPreview: vi.fn().mockResolvedValue(undefined),
 }));
 
-// Mock the stream store — cleanupPreview doesn't use it directly but the
-// module-level import in useMonitorPreview.ts needs it resolvable.
+const storeState = {
+  status: 'disconnected',
+  configServerUrl: '',
+  serverUrl: '',
+  configLoaded: true,
+  loadConfig: vi.fn(),
+  connect: vi.fn(),
+  disconnect: vi.fn(),
+  setEnablePublish: vi.fn(),
+  setEnableWatch: vi.fn(),
+  setServerUrl: vi.fn(),
+  setOutputBroadcast: vi.fn(),
+  setPipelineOutputTypes: vi.fn(),
+  audioEmitter: null,
+};
+
 vi.mock('@/stores/streamStore', () => ({
   useStreamStore: Object.assign(
-    vi.fn(() => ({})),
+    vi.fn((selector: (s: unknown) => unknown) => selector(storeState)),
     {
-      getState: vi.fn(() => ({ status: 'disconnected', configServerUrl: '', serverUrl: '' })),
+      getState: vi.fn(() => storeState),
     }
   ),
 }));
@@ -124,5 +139,48 @@ describe('cleanupPreview', () => {
     // disconnect should still be called despite stopPreview failure
     expect(disconnect).toHaveBeenCalledOnce();
     expect(ownsRef.current).toBe(false);
+  });
+});
+
+describe('useMonitorPreview session-switch state reset', () => {
+  it('clears previewError when the selected session changes', async () => {
+    const { startPreview } = await import('@/services/sessions');
+    vi.mocked(startPreview).mockRejectedValueOnce(new Error('boom'));
+
+    const { result, rerender } = renderHook(
+      ({ id }: { id: string | null }) => useMonitorPreview(id),
+      {
+        initialProps: { id: 's1' as string | null },
+      }
+    );
+
+    await act(async () => {
+      await result.current.handleStartPreview();
+    });
+    expect(result.current.previewError).toBe('boom');
+
+    rerender({ id: 's2' });
+
+    expect(result.current.previewError).toBeNull();
+    expect(result.current.isPreviewLoading).toBe(false);
+  });
+
+  it('keeps state when rerendered with the same session', async () => {
+    const { startPreview } = await import('@/services/sessions');
+    vi.mocked(startPreview).mockRejectedValueOnce(new Error('boom'));
+
+    const { result, rerender } = renderHook(
+      ({ id }: { id: string | null }) => useMonitorPreview(id),
+      {
+        initialProps: { id: 's1' as string | null },
+      }
+    );
+
+    await act(async () => {
+      await result.current.handleStartPreview();
+    });
+    rerender({ id: 's1' });
+
+    expect(result.current.previewError).toBe('boom');
   });
 });

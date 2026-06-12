@@ -1493,6 +1493,7 @@ const DesignViewContent: React.FC = () => {
         ref={importFileInputRef}
         onChange={handleImportFileChange}
         accept=".yaml,.yml"
+        aria-label="Import pipeline YAML file"
         style={{ display: 'none' }}
       />
       <ConfirmModal
