@@ -38,18 +38,20 @@ const CreateSessionModal: React.FC<CreateSessionModalProps> = ({
 
   const handleCreate = async () => {
     setIsCreating(true);
-    let caught: unknown;
+    let caught = false;
+    let caughtError: unknown;
     try {
       await onCreate(name.trim());
       setName('');
       onClose();
     } catch (error) {
-      caught = error;
+      caught = true;
+      caughtError = error;
     }
     // Single reset for success and failure — kept out of a `finally` block,
     // which the React Compiler cannot yet lower.
     setIsCreating(false);
-    if (caught !== undefined) throw caught;
+    if (caught) throw caughtError;
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

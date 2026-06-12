@@ -62,7 +62,8 @@ const SaveTemplateModal: React.FC<SaveTemplateModalProps> = ({
     if (!name.trim()) return;
 
     setIsSaving(true);
-    let caught: unknown;
+    let caught = false;
+    let caughtError: unknown;
     try {
       await onSave(name.trim(), description.trim(), overwrite);
       setName('');
@@ -73,13 +74,14 @@ const SaveTemplateModal: React.FC<SaveTemplateModalProps> = ({
       if (error instanceof Error && error.message.includes('409')) {
         setShowOverwriteConfirm(true);
       } else {
-        caught = error;
+        caught = true;
+        caughtError = error;
       }
     }
     // Single reset for success and failure — kept out of a `finally` block,
     // which the React Compiler cannot yet lower.
     setIsSaving(false);
-    if (caught !== undefined) throw caught;
+    if (caught) throw caughtError;
   };
 
   const handleOverwriteConfirm = () => {
