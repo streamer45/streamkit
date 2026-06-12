@@ -23,11 +23,15 @@ mod bindings {
         path: "../../wit",
         world: "plugin",
         imports: { default: async },
-        exports: { default: async },
+        exports: { default: async | store },
+        with: {
+            "wasi": wasmtime_wasi::p3::bindings,
+        },
+        require_store_data_send: true,
     });
 }
 
-use bindings::streamkit::plugin::host::Host;
+use bindings::streamkit::plugin::host::{Host, HostWithStore};
 pub use bindings::streamkit::plugin::types as wit_types;
 use bindings::Plugin;
 
@@ -73,6 +77,7 @@ impl PluginRuntime {
     pub fn new(config: PluginRuntimeConfig) -> Result<Self> {
         let mut engine_config = Config::new();
         engine_config.wasm_component_model(true);
+        engine_config.wasm_component_model_async(true);
         engine_config.wasm_simd(config.enable_simd);
         if !config.enable_simd {
             engine_config.wasm_relaxed_simd(false);
@@ -82,7 +87,7 @@ impl PluginRuntime {
         let engine = Engine::new(&engine_config)?;
         let mut linker = Linker::new(&engine);
 
-        wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+        wasmtime_wasi::p3::add_to_linker(&mut linker)?;
         bindings::streamkit::plugin::host::add_to_linker::<HostState, HasSelf<_>>(
             &mut linker,
             |s| s,
@@ -130,12 +135,15 @@ impl PluginRuntime {
         let mut store = Store::new(&self.engine, host_state);
         store.limiter(|s| &mut s.limits);
 
-        let instance =
-            futures::executor::block_on(self.linker.instantiate_async(&mut store, component))?;
-        let plugin = Plugin::new(&mut store, &instance)?;
+        let metadata = futures::executor::block_on(async {
+            let instance = self.linker.instantiate_async(&mut store, component).await?;
+            let plugin = Plugin::new(&mut store, &instance)?;
 
-        let node = plugin.streamkit_plugin_node();
-        let metadata = futures::executor::block_on(node.call_metadata(&mut store))?;
+            let node = plugin.streamkit_plugin_node();
+            store
+                .run_concurrent(async move |accessor| node.call_metadata(accessor).await)
+                .await?
+        })?;
 
         Ok(metadata)
     }
@@ -251,22 +259,31 @@ impl WasiView for HostState {
     }
 }
 
-impl Host for HostState {
-    async fn send_output(
-        &mut self,
+impl HostWithStore for HasSelf<HostState> {
+    async fn send_output<T: 'static>(
+        accessor: &wasmtime::component::Accessor<T, Self>,
         pin_name: String,
         packet: wit_types::Packet,
     ) -> Result<(), String> {
-        if let Some(sender) = &self.output_sender {
-            let core_packet = streamkit_core::types::Packet::try_from(packet)?;
-            // Tighten lock scope: acquire lock only for the send operation
-            sender.lock().await.send(&pin_name, core_packet).await.map_err(|e| e.to_string())?;
-            Ok(())
-        } else {
-            Err("Output sender not initialized".to_string())
-        }
+        let sender = accessor.with(|mut access| access.get().output_sender.clone());
+        send_packet_to_output(sender, &pin_name, packet).await
     }
+}
 
+async fn send_packet_to_output(
+    sender: Option<Arc<Mutex<streamkit_core::OutputSender>>>,
+    pin_name: &str,
+    packet: wit_types::Packet,
+) -> Result<(), String> {
+    let Some(sender) = sender else {
+        return Err("Output sender not initialized".to_string());
+    };
+    let core_packet = streamkit_core::types::Packet::try_from(packet)?;
+    let mut guard = sender.lock().await;
+    guard.send(pin_name, core_packet).await.map_err(|e| e.to_string())
+}
+
+impl Host for HostState {
     async fn log(&mut self, level: LogLevel, message: String) {
         match level {
             LogLevel::Debug => tracing::debug!("[Plugin] {}", message),
@@ -640,17 +657,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn host_state_send_output_returns_error_when_no_sender_is_attached() {
-        // Direct exercise of the Host trait impl: without an output_sender set,
-        // any send_output call must surface a clear error rather than panicking.
-        let mut state = HostState {
-            wasi: wasmtime_wasi::WasiCtx::builder().build(),
-            resource_table: wasmtime::component::ResourceTable::new(),
-            output_sender: None,
-            limits: wasmtime::StoreLimitsBuilder::new().memory_size(1 << 20).build(),
-        };
+    async fn send_packet_to_output_returns_error_when_no_sender_is_attached() {
+        // Without an output_sender set, any send_output call must surface a
+        // clear error rather than panicking.
         let packet = wit_types::Packet::Text("hi".to_string());
-        let err = <HostState as Host>::send_output(&mut state, "out".to_string(), packet)
+        let err = send_packet_to_output(None, "out", packet)
             .await
             .expect_err("send_output without sender must error");
         assert!(

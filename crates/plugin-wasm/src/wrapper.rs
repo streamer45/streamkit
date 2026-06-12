@@ -144,11 +144,15 @@ impl ProcessorNode for WasmNodeWrapper {
         // Access the resource interface for `node-instance`
         let instance_iface = node.node_instance();
 
+        // Drive all guest calls inside `run_concurrent` so the component-model
+        // async ABI can multiplex guest tasks while the host loop awaits them.
+        let loop_result = store
+            .run_concurrent(async move |accessor| {
         tracing::debug!(node = %node_id, "Calling plugin constructor");
 
         // Construct a new stateful instance in the plugin with parameters
         let instance_handle =
-            match instance_iface.call_constructor(&mut store, initial_params_json.as_deref()).await
+            match instance_iface.call_constructor(accessor, initial_params_json.clone()).await
             {
                 Ok(handle) => {
                     tracing::debug!(node = %node_id, "Plugin constructor succeeded");
@@ -198,7 +202,7 @@ impl ProcessorNode for WasmNodeWrapper {
                             };
 
                             match instance_iface
-                                .call_update_params(&mut store, instance_handle, params_json.as_deref())
+                                .call_update_params(accessor, instance_handle, params_json)
                                 .await
                             {
                                 Ok(Ok(())) => {
@@ -255,7 +259,7 @@ impl ProcessorNode for WasmNodeWrapper {
                             let wit_packet: wit_types::Packet = packet.into();
 
                             match instance_iface
-                                .call_process(&mut store, instance_handle, &input_pin, &wit_packet)
+                                .call_process(accessor, instance_handle, input_pin, wit_packet)
                                 .await
                             {
                                 Ok(Ok(())) => {}
@@ -310,7 +314,7 @@ impl ProcessorNode for WasmNodeWrapper {
         }
 
         // Clean up
-        if let Err(e) = instance_iface.call_cleanup(&mut store, instance_handle).await {
+        if let Err(e) = instance_iface.call_cleanup(accessor, instance_handle).await {
             tracing::warn!("Plugin cleanup error: {}", e);
         }
 
@@ -321,6 +325,13 @@ impl ProcessorNode for WasmNodeWrapper {
         );
 
         Ok(())
+            })
+            .await;
+
+        match loop_result {
+            Ok(result) => result,
+            Err(e) => Err(StreamKitError::Runtime(format!("Plugin execution error: {e}"))),
+        }
     }
 }
 

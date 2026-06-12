@@ -1,4 +1,4 @@
-package streamkit:plugin@0.1.0;
+package streamkit:plugin@0.2.0;
 
 /// Core types for audio processing
 interface types {
@@ -92,7 +92,7 @@ interface host {
     }
 
     /// Send a packet to an output pin
-    send-output: func(pin-name: string, packet: packet) -> result<_, string>;
+    send-output: async func(pin-name: string, packet: packet) -> result<_, string>;
 
     /// Log a message to the host
     log: func(level: log-level, message: string);
@@ -111,10 +111,10 @@ interface node {
         constructor(params: option<string>);
 
         /// Process an incoming packet from a specific input pin using this instance's state
-        process: func(input-pin: string, packet: packet) -> result<_, string>;
+        process: async func(input-pin: string, packet: packet) -> result<_, string>;
 
         /// Update the runtime parameters for this instance. The payload is a JSON string.
-        update-params: func(params: option<string>) -> result<_, string>;
+        update-params: async func(params: option<string>) -> result<_, string>;
 
         /// Clean up any resources associated with this instance
         cleanup: func();
@@ -125,7 +125,7 @@ interface node {
 world plugin {
     import host;
 
-    include wasi:cli/imports@0.2.0;
+    include wasi:cli/imports@0.3.0-rc-2026-03-15;
 
     export node;
 }
