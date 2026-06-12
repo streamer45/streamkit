@@ -112,7 +112,7 @@ describe('usePipeline YAML round-trip', () => {
   it('imports YAML into canvas nodes and persists name/description', async () => {
     const { result } = renderHook(() => usePipeline(), { wrapper });
 
-    const yaml = ['steps:', '  - kind: audio::decoder', '    label: decoder_1'].join('\n');
+    const yaml = ['steps:', '  - kind: audio::decoder'].join('\n');
     act(() => {
       result.current.handleImportYaml(yaml, 'imported description', 'imported name');
     });
@@ -144,7 +144,7 @@ describe('usePipeline YAML round-trip', () => {
   it('applies edited YAML to the canvas after the debounce', async () => {
     const { result } = renderHook(() => usePipeline(), { wrapper });
 
-    const yaml = ['steps:', '  - kind: audio::decoder', '    label: decoder_1'].join('\n');
+    const yaml = ['steps:', '  - kind: audio::decoder'].join('\n');
     act(() => {
       result.current.handleYamlChange(yaml);
     });
