@@ -73,9 +73,8 @@ const InstalledPluginsTab: React.FC = () => {
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to upload plugin.';
         toast.error(message);
-      } finally {
-        setIsUploading(false);
       }
+      setIsUploading(false);
     },
     [can.loadPlugin, upsertPlugin, toast]
   );
@@ -91,9 +90,8 @@ const InstalledPluginsTab: React.FC = () => {
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to unload plugin.';
       toast.error(message);
-    } finally {
-      setDeletingKind(null);
     }
+    setDeletingKind(null);
   }, [pendingDelete, removePlugin, toast]);
 
   return (

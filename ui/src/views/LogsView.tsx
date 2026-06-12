@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { startTransition, useCallback, useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 
 import { Button } from '@/components/ui/Button';
@@ -207,7 +207,9 @@ function useLogViewer(
 
   useEffect(() => {
     if (shouldLoad) {
-      loadLogs('backward');
+      startTransition(() => {
+        loadLogs('backward');
+      });
     }
   }, [loadLogs, shouldLoad]);
 
