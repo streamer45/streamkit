@@ -52,13 +52,20 @@ const SaveFragmentModal: React.FC<SaveFragmentModalProps> = ({
       setName(initialName);
       setDescription(initialDescription);
       setTagsInput(initialTags.join(', '));
-      // Manually focus the input after a small delay to ensure modal is fully rendered
-      const timer = setTimeout(() => {
-        inputRef.current?.focus();
-      }, 100);
-      return () => clearTimeout(timer);
     }
   }, [isOpen, initialName, initialDescription, initialTags]);
+
+  // Focus runs in its own effect keyed only on `isOpen`: the reset effect above
+  // re-runs whenever callers pass fresh `initialTags` arrays, and a cleanup
+  // there would cancel the pending focus timer without rescheduling it.
+  React.useEffect(() => {
+    if (!isOpen) return;
+    // Small delay to ensure the modal is fully rendered before focusing.
+    const timer = setTimeout(() => {
+      inputRef.current?.focus();
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [isOpen]);
 
   const handleSave = async () => {
     if (!name.trim()) return;

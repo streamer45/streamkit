@@ -271,26 +271,27 @@ const NumberControl: React.FC<{
     onSendRef.current = onSend;
   }, [onSend]);
 
-  // Created in an effect (not useMemo) because the React Compiler forbids
-  // touching refs during render, even just to capture them in the closure.
+  // Lazily created in event handlers (not useMemo) because the React Compiler
+  // forbids touching refs during render, even just to capture them in a closure.
   const throttledSendRef = useRef<ReturnType<typeof createThrottledSender> | null>(null);
-  useEffect(() => {
-    const throttledSend = createThrottledSender(onSendRef);
-    throttledSendRef.current = throttledSend;
-    return () => {
-      throttledSend.cancel();
-      throttledSendRef.current = null;
-    };
+  const getThrottledSend = useCallback(() => {
+    if (!throttledSendRef.current) {
+      throttledSendRef.current = createThrottledSender(onSendRef);
+    }
+    return throttledSendRef.current;
   }, []);
+
+  // Cancel any pending trailing send on unmount.
+  useEffect(() => () => throttledSendRef.current?.cancel(), []);
 
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const raw = Number.parseFloat(e.target.value);
       const clamped = Math.min(Math.max(Number.isFinite(raw) ? raw : min, min), max);
       setLocalValue(clamped);
-      throttledSendRef.current?.(clamped);
+      getThrottledSend()(clamped);
     },
-    [min, max]
+    [min, max, getThrottledSend]
   );
 
   const handlePointerDown = useCallback((e: React.PointerEvent<HTMLInputElement>) => {
@@ -301,7 +302,7 @@ const NumberControl: React.FC<{
   const handlePointerUp = useCallback((e: React.PointerEvent<HTMLInputElement>) => {
     e.stopPropagation();
     e.currentTarget.releasePointerCapture?.(e.pointerId);
-    throttledSendRef.current?.flush?.();
+    throttledSendRef.current?.flush();
   }, []);
 
   const display = Number.isInteger(step) ? Math.round(localValue) : localValue.toFixed(2);

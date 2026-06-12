@@ -45,6 +45,16 @@ describe('SaveFragmentModal', () => {
     expect(screen.getByLabelText(/Fragment Name/)).toHaveFocus();
   });
 
+  it('still focuses when a re-render happens before the delay elapses', () => {
+    const { rerender } = render(<SaveFragmentModal {...defaultProps} initialTags={['a']} />);
+
+    // Fresh array identity, as DesignView produces on every render.
+    rerender(<SaveFragmentModal {...defaultProps} initialTags={['a']} />);
+    vi.runAllTimers();
+
+    expect(screen.getByLabelText(/Fragment Name/)).toHaveFocus();
+  });
+
   it('clears the pending focus timer on unmount', () => {
     const { unmount } = render(<SaveFragmentModal {...defaultProps} />);
 

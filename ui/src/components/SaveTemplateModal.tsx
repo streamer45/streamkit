@@ -62,6 +62,7 @@ const SaveTemplateModal: React.FC<SaveTemplateModalProps> = ({
     if (!name.trim()) return;
 
     setIsSaving(true);
+    let caught: unknown;
     try {
       await onSave(name.trim(), description.trim(), overwrite);
       setName('');
@@ -72,13 +73,13 @@ const SaveTemplateModal: React.FC<SaveTemplateModalProps> = ({
       if (error instanceof Error && error.message.includes('409')) {
         setShowOverwriteConfirm(true);
       } else {
-        // No `finally` — the React Compiler cannot yet lower try/finally and
-        // would skip the component, so reset the flag on both paths.
-        setIsSaving(false);
-        throw error;
+        caught = error;
       }
     }
+    // Single reset for success and failure — kept out of a `finally` block,
+    // which the React Compiler cannot yet lower.
     setIsSaving(false);
+    if (caught !== undefined) throw caught;
   };
 
   const handleOverwriteConfirm = () => {

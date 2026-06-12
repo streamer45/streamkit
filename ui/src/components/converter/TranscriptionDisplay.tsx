@@ -6,7 +6,7 @@ import styled from '@emotion/styled';
 import React, { useEffect, useState } from 'react';
 
 import type { TranscriptionData, TranscriptionSegment } from '@/types/generated/api-types';
-import { extractJsonValues } from '@/utils/jsonStream';
+import { extractJsonValues, releaseReaderLock } from '@/utils/jsonStream';
 import { componentsLogger } from '@/utils/logger';
 
 import { LoadingSpinner } from '../LoadingSpinner';
@@ -339,15 +339,7 @@ export const TranscriptionDisplay: React.FC<TranscriptionDisplayProps> = ({
         }
         setIsLoading(false);
       }
-      // Lock release lives here instead of a `finally` block — the React
-      // Compiler cannot yet lower try/finally and would skip the component.
-      if (reader) {
-        try {
-          reader.releaseLock();
-        } catch {
-          // Ignore errors when releasing lock
-        }
-      }
+      releaseReaderLock(reader);
     };
 
     processStream();
