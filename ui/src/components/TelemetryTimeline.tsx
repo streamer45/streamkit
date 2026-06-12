@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import styled from '@emotion/styled';
-import React, { useMemo } from 'react';
+import React from 'react';
 import { useShallow } from 'zustand/shallow';
 
 import { useTelemetryStore, type TelemetryEvent } from '@/stores/telemetryStore';
@@ -217,7 +217,7 @@ export const TelemetryTimeline: React.FC<TelemetryTimelineProps> = ({ sessionId,
   );
 
   // Reverse to show newest first
-  const reversedEvents = useMemo(() => [...events].reverse(), [events]);
+  const reversedEvents = [...events].reverse();
 
   return (
     <TimelineContainer style={{ maxHeight }}>
@@ -248,7 +248,7 @@ interface TelemetryEventCardProps {
   event: TelemetryEvent;
 }
 
-const TelemetryEventCard: React.FC<TelemetryEventCardProps> = React.memo(({ event }) => {
+const TelemetryEventCard: React.FC<TelemetryEventCardProps> = ({ event }) => {
   const preview = getEventPreview(event);
 
   return (
@@ -269,6 +269,4 @@ const TelemetryEventCard: React.FC<TelemetryEventCardProps> = React.memo(({ even
       {preview && <EventPreview title={preview}>{preview}</EventPreview>}
     </EventCard>
   );
-});
-
-TelemetryEventCard.displayName = 'TelemetryEventCard';
+};

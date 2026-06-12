@@ -104,125 +104,119 @@ const TopRightControlsContainer = styled.div`
   }
 `;
 
-const DesignViewTitle = React.memo(() => <CanvasTitle>Design</CanvasTitle>);
+const DesignViewTitle = () => <CanvasTitle>Design</CanvasTitle>;
 
-const TopRightControls = React.memo(
-  ({
-    mode,
-    onModeChange,
-    selectionMode,
-    onSelectionModeChange,
-    onClear,
-    onSaveTemplate,
-    onCreateSession,
-    nodesLength,
-  }: {
-    mode: 'oneshot' | 'dynamic';
-    onModeChange: () => void;
-    selectionMode: boolean;
-    onSelectionModeChange: () => void;
-    onClear: () => void;
-    onSaveTemplate: () => void;
-    onCreateSession: () => void;
-    nodesLength: number;
-  }) => {
-    const { can } = usePermissions();
+const TopRightControls = ({
+  mode,
+  onModeChange,
+  selectionMode,
+  onSelectionModeChange,
+  onClear,
+  onSaveTemplate,
+  onCreateSession,
+  nodesLength,
+}: {
+  mode: 'oneshot' | 'dynamic';
+  onModeChange: () => void;
+  selectionMode: boolean;
+  onSelectionModeChange: () => void;
+  onClear: () => void;
+  onSaveTemplate: () => void;
+  onCreateSession: () => void;
+  nodesLength: number;
+}) => {
+  const { can } = usePermissions();
 
-    return (
-      <TopRightControlsContainer>
+  return (
+    <TopRightControlsContainer>
+      <SKTooltip
+        content={
+          mode === 'oneshot'
+            ? 'Oneshot mode for file conversion workflows'
+            : 'Switch to oneshot mode (your dynamic canvas is preserved)'
+        }
+      >
+        <Button
+          variant={mode === 'oneshot' ? 'primary' : 'secondary'}
+          size="small"
+          onClick={() => mode !== 'oneshot' && onModeChange()}
+        >
+          📄 Oneshot
+        </Button>
+      </SKTooltip>
+      <SKTooltip
+        content={
+          mode === 'dynamic'
+            ? 'Dynamic mode for real-time streaming pipelines'
+            : 'Switch to dynamic mode (your oneshot canvas is preserved)'
+        }
+      >
+        <Button
+          variant={mode === 'dynamic' ? 'primary' : 'secondary'}
+          size="small"
+          onClick={() => mode !== 'dynamic' && onModeChange()}
+        >
+          ⚡ Dynamic
+        </Button>
+      </SKTooltip>
+      <SKTooltip content={selectionMode ? 'Switch to connection mode' : 'Switch to selection mode'}>
+        <Button
+          variant="secondary"
+          size="small"
+          active={selectionMode}
+          onClick={onSelectionModeChange}
+        >
+          {selectionMode ? '🖱️ Selection' : '🔗 Connection'}
+        </Button>
+      </SKTooltip>
+      <SKTooltip
+        content={nodesLength === 0 ? 'Canvas is already empty' : 'Clear all nodes and connections'}
+      >
+        <Button variant="ghost" size="small" onClick={onClear} disabled={nodesLength === 0}>
+          🗑️ Clear
+        </Button>
+      </SKTooltip>
+      <SKTooltip
+        content={
+          !can.saveTemplate
+            ? 'You do not have permission to save templates'
+            : nodesLength === 0
+              ? 'Add nodes to save a template'
+              : 'Save pipeline as a reusable template'
+        }
+      >
+        <Button
+          variant="primary"
+          size="small"
+          onClick={onSaveTemplate}
+          disabled={nodesLength === 0 || !can.saveTemplate}
+        >
+          💾 Save Template
+        </Button>
+      </SKTooltip>
+      {mode === 'dynamic' && (
         <SKTooltip
           content={
-            mode === 'oneshot'
-              ? 'Oneshot mode for file conversion workflows'
-              : 'Switch to oneshot mode (your dynamic canvas is preserved)'
-          }
-        >
-          <Button
-            variant={mode === 'oneshot' ? 'primary' : 'secondary'}
-            size="small"
-            onClick={() => mode !== 'oneshot' && onModeChange()}
-          >
-            📄 Oneshot
-          </Button>
-        </SKTooltip>
-        <SKTooltip
-          content={
-            mode === 'dynamic'
-              ? 'Dynamic mode for real-time streaming pipelines'
-              : 'Switch to dynamic mode (your oneshot canvas is preserved)'
-          }
-        >
-          <Button
-            variant={mode === 'dynamic' ? 'primary' : 'secondary'}
-            size="small"
-            onClick={() => mode !== 'dynamic' && onModeChange()}
-          >
-            ⚡ Dynamic
-          </Button>
-        </SKTooltip>
-        <SKTooltip
-          content={selectionMode ? 'Switch to connection mode' : 'Switch to selection mode'}
-        >
-          <Button
-            variant="secondary"
-            size="small"
-            active={selectionMode}
-            onClick={onSelectionModeChange}
-          >
-            {selectionMode ? '🖱️ Selection' : '🔗 Connection'}
-          </Button>
-        </SKTooltip>
-        <SKTooltip
-          content={
-            nodesLength === 0 ? 'Canvas is already empty' : 'Clear all nodes and connections'
-          }
-        >
-          <Button variant="ghost" size="small" onClick={onClear} disabled={nodesLength === 0}>
-            🗑️ Clear
-          </Button>
-        </SKTooltip>
-        <SKTooltip
-          content={
-            !can.saveTemplate
-              ? 'You do not have permission to save templates'
+            !can.createSession
+              ? 'You do not have permission to create sessions'
               : nodesLength === 0
-                ? 'Add nodes to save a template'
-                : 'Save pipeline as a reusable template'
+                ? 'Add nodes to create a session'
+                : 'Create and test session'
           }
         >
           <Button
             variant="primary"
             size="small"
-            onClick={onSaveTemplate}
-            disabled={nodesLength === 0 || !can.saveTemplate}
+            onClick={onCreateSession}
+            disabled={nodesLength === 0 || !can.createSession}
           >
-            💾 Save Template
+            ▶️ Create Session
           </Button>
         </SKTooltip>
-        {mode === 'dynamic' && (
-          <SKTooltip
-            content={
-              !can.createSession
-                ? 'You do not have permission to create sessions'
-                : nodesLength === 0
-                  ? 'Add nodes to create a session'
-                  : 'Create and test session'
-            }
-          >
-            <Button
-              variant="primary"
-              size="small"
-              onClick={onCreateSession}
-              disabled={nodesLength === 0 || !can.createSession}
-            >
-              ▶️ Create Session
-            </Button>
-          </SKTooltip>
-        )}
-      </TopRightControlsContainer>
-    );
-  }
-);
+      )}
+    </TopRightControlsContainer>
+  );
+};
 
 interface JsonSchema {
   properties?: Record<string, { default?: unknown }>;

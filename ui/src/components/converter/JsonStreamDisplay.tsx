@@ -141,7 +141,7 @@ function safePrettyPrint(value: unknown): string {
   }
 }
 
-const JsonStreamRow = React.memo(({ item }: { item: JsonStreamDisplayItem }) => {
+const JsonStreamRow = ({ item }: { item: JsonStreamDisplayItem }) => {
   return (
     <Item>
       <details>
@@ -153,8 +153,7 @@ const JsonStreamRow = React.memo(({ item }: { item: JsonStreamDisplayItem }) => 
       </details>
     </Item>
   );
-});
-JsonStreamRow.displayName = 'JsonStreamRow';
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
