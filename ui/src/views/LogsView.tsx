@@ -37,6 +37,17 @@ const logger = getLogger('LogsView');
 
 const DEFAULT_PAGE_SIZE = 500;
 
+interface LogEntry {
+  id: number;
+  text: string;
+}
+
+// Stable per-line identity so list keys survive buffer trims and pagination.
+let nextLogEntryId = 0;
+function toEntries(lines: string[]): LogEntry[] {
+  return lines.map((text) => ({ id: nextLogEntryId++, text }));
+}
+
 function detectLevel(line: string): string | undefined {
   if (/ ERROR /i.test(line) || /"level":"ERROR"/i.test(line)) return 'error';
   if (/ WARN /i.test(line) || /"level":"WARN"/i.test(line)) return 'warn';
@@ -63,7 +74,7 @@ function useDebouncedValue(value: string, delayMs: number): string {
 function useLiveTail(
   debouncedFilter: string,
   levelFilter: string,
-  setLines: React.Dispatch<React.SetStateAction<string[]>>
+  setLines: React.Dispatch<React.SetStateAction<LogEntry[]>>
 ) {
   const [liveTail, setLiveTail] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -86,7 +97,7 @@ function useLiveTail(
       const newLines = (event.data as string).split('\n').filter(Boolean);
       if (newLines.length > 0) {
         setLines((prev) => {
-          const combined = [...prev, ...newLines];
+          const combined = [...prev, ...toEntries(newLines)];
           return combined.length > 5000 ? combined.slice(combined.length - 5000) : combined;
         });
       }
@@ -112,7 +123,7 @@ function useLiveTail(
 }
 
 interface UseLogViewerResult {
-  lines: string[];
+  lines: LogEntry[];
   isLoading: boolean;
   error: string | null;
   fileSize: number;
@@ -142,7 +153,7 @@ function useLogViewer(
   shouldLoad: boolean,
   logContainerRef: React.RefObject<HTMLDivElement | null>
 ): UseLogViewerResult {
-  const [lines, setLines] = useState<string[]>([]);
+  const [lines, setLines] = useState<LogEntry[]>([]);
   const [isLoading, setIsLoading] = useState(shouldLoad);
   const [error, setError] = useState<string | null>(null);
   const [fileSize, setFileSize] = useState(0);
@@ -188,7 +199,7 @@ function useLogViewer(
         setIsLoading(false);
         return;
       }
-      setLines(response.lines);
+      setLines(toEntries(response.lines));
       setFileSize(response.file_size);
 
       if (direction === 'backward') {
@@ -419,14 +430,14 @@ const LogsView: React.FC = () => {
               {lv.lines.length === 0 && !lv.isLoading && (
                 <EmptyState>No log lines to display.</EmptyState>
               )}
-              {lv.lines.map((line, i) => (
+              {lv.lines.map((entry) => (
                 <LogLine
-                  key={`${i}:${line}`}
-                  $level={detectLevel(line)}
-                  onClick={() => lv.handleCopyLine(line)}
+                  key={entry.id}
+                  $level={detectLevel(entry.text)}
+                  onClick={() => lv.handleCopyLine(entry.text)}
                   title="Click to copy"
                 >
-                  {line}
+                  {entry.text}
                 </LogLine>
               ))}
             </LogContainer>
