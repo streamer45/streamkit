@@ -76,7 +76,7 @@ function loadDraftFromStorage(): PipelineDraft | null {
 
     let maxId = 0;
     savedNodes.forEach((node) => {
-      const match = node.id.match(/^skitnode_(\\d+)$/);
+      const match = node.id.match(/^skitnode_(\d+)$/);
       if (match) {
         const num = parseInt(match[1], 10);
         if (num > maxId) {
@@ -88,7 +88,7 @@ function loadDraftFromStorage(): PipelineDraft | null {
 
     const labelCounters: Record<string, number> = {};
     savedNodes.forEach((node) => {
-      const match = node.data.label.match(/^(.*)_(\\d+)$/);
+      const match = node.data.label.match(/^(.*)_(\d+)$/);
       if (match) {
         const [, kind, numStr] = match;
         const num = parseInt(numStr, 10);
