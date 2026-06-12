@@ -44,6 +44,9 @@ const decoderDef: NodeDefinition = {
 
 beforeEach(() => {
   window.localStorage.clear();
+  // Hydrating an empty draft resets the module-level id counter (id =
+  // maxId + 1 = 1) so tests don't inherit counter state from each other.
+  seedDraft([]);
   useSchemaStore.getState().setNodeDefinitions([decoderDef]);
 });
 
