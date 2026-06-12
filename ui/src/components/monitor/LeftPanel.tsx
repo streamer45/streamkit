@@ -58,17 +58,14 @@ export const LeftPanel = ({
   const [activeTab, setActiveTab] = useState<'sessions' | 'add'>('sessions');
   const [searchQuery, setSearchQuery] = useState('');
 
-  const filteredSessions = (() => {
-    if (!searchQuery.trim()) {
-      return sessions;
-    }
-    const query = searchQuery.toLowerCase();
-    return sessions.filter(
-      (session) =>
-        session.id.toLowerCase().includes(query) ||
-        (session.name && session.name.toLowerCase().includes(query))
-    );
-  })();
+  const query = searchQuery.trim().toLowerCase();
+  const filteredSessions = !query
+    ? sessions
+    : sessions.filter(
+        (session) =>
+          session.id.toLowerCase().includes(query) ||
+          (session.name && session.name.toLowerCase().includes(query))
+      );
 
   return (
     <LeftPanelAside>

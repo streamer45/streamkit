@@ -248,7 +248,11 @@ interface TelemetryEventCardProps {
   event: TelemetryEvent;
 }
 
-const TelemetryEventCard: React.FC<TelemetryEventCardProps> = ({ event }) => {
+// React.memo is required here even with the React Compiler: the parent's
+// events array gets a new identity on every append, so all row elements are
+// recreated and the memo's shallow prop compare is the only thing that skips
+// re-invoking unchanged rows on hot telemetry streams.
+const TelemetryEventCard: React.FC<TelemetryEventCardProps> = React.memo(({ event }) => {
   const preview = getEventPreview(event);
 
   return (
@@ -269,4 +273,6 @@ const TelemetryEventCard: React.FC<TelemetryEventCardProps> = ({ event }) => {
       {preview && <EventPreview title={preview}>{preview}</EventPreview>}
     </EventCard>
   );
-};
+});
+
+TelemetryEventCard.displayName = 'TelemetryEventCard';
