@@ -130,7 +130,8 @@ export const NativeStreamPlayer: React.FC<NativeStreamPlayerProps> = ({
 
   return (
     <PlayerContainer className={className}>
-      <video ref={videoRef} controls onError={handleError}>
+      {/* Live stream — no caption track exists to attach. */}
+      <video ref={videoRef} controls aria-label="Live stream player" onError={handleError}>
         <source src={src} type={type} />
       </video>
     </PlayerContainer>

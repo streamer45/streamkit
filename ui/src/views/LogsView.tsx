@@ -421,7 +421,7 @@ const LogsView: React.FC = () => {
               )}
               {lv.lines.map((line, i) => (
                 <LogLine
-                  key={i}
+                  key={`${i}:${line}`}
                   $level={detectLevel(line)}
                   onClick={() => lv.handleCopyLine(line)}
                   title="Click to copy"

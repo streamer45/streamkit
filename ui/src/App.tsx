@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MotionConfig } from 'motion/react';
 import React, { Suspense, useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 
@@ -99,44 +100,48 @@ const App: React.FC = () => {
 
   return (
     <ErrorBoundary>
-      <QueryClientProvider client={queryClient}>
-        <ThemeProvider>
-          <ToastProvider>
-            <TooltipProvider delayDuration={300} skipDelayDuration={200}>
-              <BrowserRouter basename={getBasePathname()}>
-                <Routes>
-                  <Route
-                    path="/login"
-                    element={
-                      <Suspense fallback={<LoadingSpinner message="Loading..." />}>
-                        <LoginView onLoggedIn={() => setRequiresLogin(false)} />
-                      </Suspense>
-                    }
-                  />
-                  <Route
-                    path="/"
-                    element={requiresLogin ? <Navigate to="/login" replace /> : <Layout />}
-                  >
-                    <Route index element={<Navigate to="/design" replace />} />
-                    <Route path="design" element={<DesignView />} />
-                    <Route path="monitor" element={<MonitorView />} />
-                    <Route path="convert" element={<ConvertView />} />
-                    <Route path="stream" element={<StreamView />} />
-                    <Route path="admin" element={<Navigate to="/admin/plugins" replace />} />
+      {/* Honors the OS-level prefers-reduced-motion setting for all motion/react
+          animations (WCAG 2.3.3). */}
+      <MotionConfig reducedMotion="user">
+        <QueryClientProvider client={queryClient}>
+          <ThemeProvider>
+            <ToastProvider>
+              <TooltipProvider delayDuration={300} skipDelayDuration={200}>
+                <BrowserRouter basename={getBasePathname()}>
+                  <Routes>
                     <Route
-                      path="admin/plugins"
-                      element={<Navigate to="/admin/plugins/installed" replace />}
+                      path="/login"
+                      element={
+                        <Suspense fallback={<LoadingSpinner message="Loading..." />}>
+                          <LoginView onLoggedIn={() => setRequiresLogin(false)} />
+                        </Suspense>
+                      }
                     />
-                    <Route path="admin/plugins/:tab" element={<PluginsView />} />
-                    <Route path="admin/tokens" element={<TokensView />} />
-                    <Route path="admin/logs" element={<LogsView />} />
-                  </Route>
-                </Routes>
-              </BrowserRouter>
-            </TooltipProvider>
-          </ToastProvider>
-        </ThemeProvider>
-      </QueryClientProvider>
+                    <Route
+                      path="/"
+                      element={requiresLogin ? <Navigate to="/login" replace /> : <Layout />}
+                    >
+                      <Route index element={<Navigate to="/design" replace />} />
+                      <Route path="design" element={<DesignView />} />
+                      <Route path="monitor" element={<MonitorView />} />
+                      <Route path="convert" element={<ConvertView />} />
+                      <Route path="stream" element={<StreamView />} />
+                      <Route path="admin" element={<Navigate to="/admin/plugins" replace />} />
+                      <Route
+                        path="admin/plugins"
+                        element={<Navigate to="/admin/plugins/installed" replace />}
+                      />
+                      <Route path="admin/plugins/:tab" element={<PluginsView />} />
+                      <Route path="admin/tokens" element={<TokensView />} />
+                      <Route path="admin/logs" element={<LogsView />} />
+                    </Route>
+                  </Routes>
+                </BrowserRouter>
+              </TooltipProvider>
+            </ToastProvider>
+          </ThemeProvider>
+        </QueryClientProvider>
+      </MotionConfig>
     </ErrorBoundary>
   );
 };
