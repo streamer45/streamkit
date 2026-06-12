@@ -169,6 +169,20 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
   // user switches sessions before the call completes.
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  // Reset UI state inline during render when the selected session changes
+  // (https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes)
+  // so the new session never renders a frame with the old session's
+  // error/loading/dismissed state.
+  const [prevSessionIdForState, setPrevSessionIdForState] = useState(selectedSessionId);
+  if (selectedSessionId !== prevSessionIdForState) {
+    setPrevSessionIdForState(selectedSessionId);
+    if (prevSessionIdForState) {
+      setPreviewError(null);
+      setIsPreviewLoading(false);
+      setPreviewDismissed(false);
+    }
+  }
+
   // Session-change cleanup: fires when selectedSessionId changes to a
   // different value (including null). Also handles component unmount.
   const prevSelectedSessionIdRef = useRef(selectedSessionId);
@@ -192,9 +206,6 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
         previewDisconnect,
         previewOwnsConnectionRef
       );
-      setPreviewError(null);
-      setIsPreviewLoading(false);
-      setPreviewDismissed(false);
     }
 
     // Cleanup on unmount — fire-and-forget for the same reason as above.

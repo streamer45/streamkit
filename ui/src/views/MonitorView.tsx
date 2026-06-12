@@ -482,10 +482,10 @@ const MonitorViewContent: React.FC = () => {
     updateNodePosition,
   });
 
+  const locationState = location.state as { sessionId?: string } | null;
   useEffect(() => {
-    const state = location.state as { sessionId?: string } | null;
-    if (state?.sessionId && !selectedSessionId) {
-      const sessionId = state.sessionId;
+    if (locationState?.sessionId && !selectedSessionId) {
+      const sessionId = locationState.sessionId;
       const savedPos = getNodePositions(sessionId);
       const hasPositions = Object.keys(savedPos).length > 0;
 
@@ -497,7 +497,7 @@ const MonitorViewContent: React.FC = () => {
 
       window.history.replaceState({}, document.title);
     }
-  }, [location.state, selectedSessionId, getNodePositions, setNeedsAutoLayout, setNeedsFit]);
+  }, [locationState, selectedSessionId, getNodePositions, setNeedsAutoLayout, setNeedsFit]);
 
   useEffect(() => {
     if (!selectedSessionId && !isLoadingSessions && sessions.length > 0) {

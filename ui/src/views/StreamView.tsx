@@ -604,6 +604,7 @@ const StreamView: React.FC = () => {
     )
   );
 
+  const locationPathname = location.pathname;
   useEffect(() => {
     const validateSession = async () => {
       if (!activeSessionId) return;
@@ -620,7 +621,7 @@ const StreamView: React.FC = () => {
 
     validateSession();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.pathname]); // Trigger when route changes to /stream
+  }, [locationPathname]); // Trigger when route changes to /stream
 
   useEffect(() => {
     const unsubscribe = onMessage((message) => {
@@ -922,6 +923,7 @@ const StreamView: React.FC = () => {
                 <Checkbox data-disabled={status !== 'disconnected' || !outputBroadcast}>
                   <input
                     type="checkbox"
+                    aria-label="Subscribe (Watch)"
                     checked={enableWatch}
                     onChange={(e) => setEnableWatch(e.target.checked)}
                     disabled={status !== 'disconnected' || !outputBroadcast}
@@ -931,6 +933,7 @@ const StreamView: React.FC = () => {
                 <Checkbox data-disabled={status !== 'disconnected'}>
                   <input
                     type="checkbox"
+                    aria-label="Publish (Mic)"
                     checked={enablePublish}
                     onChange={(e) => setEnablePublish(e.target.checked)}
                     disabled={status !== 'disconnected'}

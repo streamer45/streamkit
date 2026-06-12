@@ -358,7 +358,7 @@ const SelectControl: React.FC<{
   return (
     <SelectDropdown value={selectedIdx} onChange={handleChange} aria-label={control.label}>
       {options.map((opt, i) => (
-        <option key={i} value={i}>
+        <option key={`${opt.label}:${JSON.stringify(opt.value)}`} value={i}>
           {opt.label}
         </option>
       ))}
