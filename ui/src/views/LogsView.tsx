@@ -96,8 +96,9 @@ function useLiveTail(
     es.onmessage = (event: MessageEvent) => {
       const newLines = (event.data as string).split('\n').filter(Boolean);
       if (newLines.length > 0) {
+        const newEntries = toEntries(newLines);
         setLines((prev) => {
-          const combined = [...prev, ...toEntries(newLines)];
+          const combined = [...prev, ...newEntries];
           return combined.length > 5000 ? combined.slice(combined.length - 5000) : combined;
         });
       }
