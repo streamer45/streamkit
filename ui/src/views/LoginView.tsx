@@ -180,9 +180,8 @@ const LoginView: React.FC<LoginViewProps> = ({ onLoggedIn }) => {
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Login failed';
       setError(message);
-    } finally {
-      setIsSubmitting(false);
     }
+    setIsSubmitting(false);
   };
 
   return (

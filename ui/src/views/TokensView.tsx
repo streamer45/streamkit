@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { startTransition, useCallback, useEffect, useMemo, useState } from 'react';
 
 import ConfirmModal from '@/components/ConfirmModal';
 import { CopyButton } from '@/components/CopyButton';
@@ -167,7 +167,7 @@ function useMoqTokenFormState(defaultMoqRoot: string) {
   const [createdMoqUrl, setCreatedMoqUrl] = useState<string | null>(null);
 
   useEffect(() => {
-    setMoqRoot(defaultMoqRoot);
+    startTransition(() => setMoqRoot(defaultMoqRoot));
   }, [defaultMoqRoot]);
 
   return {
@@ -256,23 +256,24 @@ const TokensView: React.FC = () => {
       setRole(me.role);
       setAuthenticated(me.authenticated);
       setCurrentJti(me.jti);
-      if (!me.auth_enabled) {
+      if (me.auth_enabled) {
+        const list = await listTokens();
+        setTokens(list);
+      } else {
         setTokens([]);
-        return;
       }
-      const list = await listTokens();
-      setTokens(list);
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Failed to load tokens';
       logger.error('Failed to refresh tokens view:', e);
       setError(message);
-    } finally {
-      setIsLoading(false);
     }
+    setIsLoading(false);
   }, []);
 
   useEffect(() => {
-    refresh();
+    startTransition(() => {
+      refresh();
+    });
   }, [refresh]);
 
   const onCreateApiToken = async () => {
@@ -340,9 +341,8 @@ const TokensView: React.FC = () => {
       setTokenToRevoke(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to revoke token');
-    } finally {
-      setRevokeConfirmLoading(false);
     }
+    setRevokeConfirmLoading(false);
   }, [tokenToRevoke, refresh]);
 
   const onLogout = async () => {
