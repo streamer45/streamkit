@@ -21,6 +21,21 @@ function shallowEqualNodeStates(
   return true;
 }
 
+// Per-session cache so a recreated store (e.g. after a structural pipeline
+// update) keeps returning the previous object when states are shallow-equal,
+// preserving referential stability for memoized consumers.
+const lastSnapshots = new Map<string, Record<string, NodeState>>();
+
+function stableSnapshot(
+  sessionId: string,
+  next: Record<string, NodeState>
+): Record<string, NodeState> {
+  const prev = lastSnapshots.get(sessionId);
+  if (prev && shallowEqualNodeStates(prev, next)) return prev;
+  lastSnapshots.set(sessionId, next);
+  return next;
+}
+
 // Lives outside the hook so the snapshot closure mutation stays opaque to
 // the React Compiler.
 function createNodeStatesStore(sessionId: string, pipeline: Pipeline | null) {
@@ -35,7 +50,7 @@ function createNodeStatesStore(sessionId: string, pipeline: Pipeline | null) {
     return states;
   };
 
-  let snapshot = readAll();
+  let snapshot = stableSnapshot(sessionId, readAll());
 
   const subscribe = (onStoreChange: () => void) => {
     let disposed = false;
@@ -48,7 +63,7 @@ function createNodeStatesStore(sessionId: string, pipeline: Pipeline | null) {
         if (disposed) return;
         const next = readAll();
         if (!shallowEqualNodeStates(snapshot, next)) {
-          snapshot = next;
+          snapshot = stableSnapshot(sessionId, next);
           onStoreChange();
         }
       });

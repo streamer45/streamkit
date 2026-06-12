@@ -341,6 +341,7 @@ const ControlPane: React.FC<ControlPaneProps> = ({
       }
 
       setIsUploading(true);
+      let errorMessage: string | null = null;
       try {
         const summary = await uploadPlugin(file);
         upsertPlugin(summary);
@@ -348,9 +349,11 @@ const ControlPane: React.FC<ControlPaneProps> = ({
         toast.success(`Loaded plugin ${summary.kind}`);
       } catch (err) {
         logger.error('Failed to upload plugin:', err);
-        toast.error(err instanceof Error ? err.message : 'Failed to upload plugin');
+        errorMessage = err instanceof Error ? err.message : 'Failed to upload plugin';
       }
+      // Reset before toasting so a throwing toast can't strand the flag.
       setIsUploading(false);
+      if (errorMessage) toast.error(errorMessage);
     },
     [can.loadPlugin, isUploading, toast, upsertPlugin]
   );
@@ -358,6 +361,7 @@ const ControlPane: React.FC<ControlPaneProps> = ({
   const performRemovePlugin = React.useCallback(
     async (kind: string) => {
       setDeletingKind(kind);
+      let errorMessage: string | null = null;
       try {
         await deletePlugin(kind);
         removePluginFromStore(kind);
@@ -365,9 +369,10 @@ const ControlPane: React.FC<ControlPaneProps> = ({
         toast.success(`Unloaded plugin ${kind}`);
       } catch (err) {
         logger.error('Failed to unload plugin:', err);
-        toast.error(err instanceof Error ? err.message : 'Failed to unload plugin');
+        errorMessage = err instanceof Error ? err.message : 'Failed to unload plugin';
       }
       setDeletingKind(null);
+      if (errorMessage) toast.error(errorMessage);
     },
     [removePluginFromStore, toast]
   );
