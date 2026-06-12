@@ -6,6 +6,13 @@ SPDX-License-Identifier: MPL-2.0
 
 # Go Gain Filter Plugin Example
 
+> ⚠️ **Currently not buildable.** The StreamKit plugin world migrated to
+> WASI 0.3 / Component Model native async (`async func` for `process`,
+> `update-params`, and `send-output`), and `wit-bindgen-go` cannot parse or
+> generate bindings for async WIT yet. This example (and the Go SDK bindings
+> in `sdks/plugin-sdk/go/`) still target the previous WASI 0.2 world and will
+> be migrated once the Go toolchain gains component-model async support.
+
 This directory contains a Go implementation of the StreamKit gain (volume)
 filter plugin. It mirrors the Rust example so you can compare language
 ergonomics when targeting WebAssembly components.

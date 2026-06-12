@@ -41,23 +41,22 @@ gen-types:
     @cargo run -p streamkit-api --bin generate-ts-types
     @cargo run -p streamkit-nodes --bin generate-compositor-types --features codegen
 
-# Fetch WIT dependencies (WASI interfaces)
+# WASI 0.3 WIT deps are vendored in wit/deps from the snapshot wasmtime's p3
+# host links against (wasmtime-wasi src/p3/wit/deps); no registry fetch yet.
 fetch-wit-deps:
-    @echo "Fetching WIT dependencies..."
-    @wkg wit fetch -d wit
+    @echo "WIT dependencies are vendored in wit/deps (wasi@0.3.0-rc snapshot); nothing to fetch."
 
-# Generate pre-baked bindings for WASM plugin SDKs (Rust, Go, and C)
+# Generate pre-baked bindings for WASM plugin SDKs (Rust and C).
+# Go is skipped until wit-bindgen-go supports component-model async.
 gen-plugin-bindings: fetch-wit-deps
     @echo "Regenerating StreamKit WASM plugin bindings..."
-    @wkg wit build --wit-dir wit --output sdks/plugin-sdk/wit/streamkit-plugin.wasm
+    @wasm-tools component wit --wasm wit -o sdks/plugin-sdk/wit/streamkit-plugin.wasm
     @rm -rf sdks/plugin-sdk/wasm/rust/src/generated
     @mkdir -p sdks/plugin-sdk/wasm/rust/src/generated
     @wit-bindgen rust \
         --world plugin \
         --generate-all \
         --pub-export-macro \
-        --runtime-path wit_bindgen_rt \
-        --bitflags-path wit_bindgen_rt::bitflags \
         --out-dir sdks/plugin-sdk/wasm/rust/src/generated \
         wit
     @printf '%s\n' \
@@ -67,18 +66,12 @@ gen-plugin-bindings: fetch-wit-deps
         'pub mod plugin;' \
         'pub use plugin::*;' \
         > sdks/plugin-sdk/wasm/rust/src/generated/mod.rs
-    @rm -rf sdks/plugin-sdk/go/bindings
-    @(cd sdks/plugin-sdk/go && go tool wit-bindgen-go generate \
-        --world plugin \
-        --out bindings \
-        ../wit/streamkit-plugin.wasm)
     @rm -rf sdks/plugin-sdk/c/include sdks/plugin-sdk/c/src
     @mkdir -p sdks/plugin-sdk/c/include sdks/plugin-sdk/c/src
-    @(cd sdks/plugin-sdk/c && wit-bindgen c ../../wit --world plugin)
+    @(cd sdks/plugin-sdk/c && wit-bindgen c ../../../wit --world plugin)
     @mv sdks/plugin-sdk/c/plugin.h sdks/plugin-sdk/c/include/
     @mv sdks/plugin-sdk/c/plugin.c sdks/plugin-sdk/c/plugin_component_type.o sdks/plugin-sdk/c/src/
     @cargo fmt -p streamkit-plugin-sdk-wasm
-    @gofmt -w sdks/plugin-sdk/go || true
 
 # --- skit ---
 # Pre-flight: ensure the UI has been built (required by RustEmbed)
@@ -550,22 +543,16 @@ dev: install-ui
 [working-directory: 'examples/plugins/gain-wasm-rust']
 build-plugin-wasm-rust:
     @echo "Building Rust WASM gain plugin..."
-    @cargo component build --release
-    @echo "✓ Plugin built: examples/plugins/gain-wasm-rust/target/wasm32-wasip1/release/gain_plugin.wasm"
+    @cargo build --release --target wasm32-wasip2
+    @echo "✓ Plugin built: examples/plugins/gain-wasm-rust/target/wasm32-wasip2/release/gain_plugin.wasm"
 
-# Build Go WASM gain plugin example
+# Build Go WASM gain plugin example.
+# Blocked on component-model async support in wit-bindgen-go/TinyGo (the
+# plugin world now uses async funcs, which wit-bindgen-go cannot parse yet).
 [working-directory: 'examples/plugins/gain-wasm-go']
 build-plugin-wasm-go:
-    @echo "Building Go WASM gain plugin..."
-    @mkdir -p build
-    @tinygo build \
-        -target=wasip2 \
-        -no-debug \
-        --wit-package ../../../sdks/plugin-sdk/wit/streamkit-plugin.wasm \
-        --wit-world plugin \
-        -o build/gain_plugin_go.wasm \
-        .
-    @echo "✓ Plugin built: examples/plugins/gain-wasm-go/build/gain_plugin_go.wasm"
+    @echo "The Go SDK does not support the WASI 0.3 async plugin world yet (waiting on wit-bindgen-go async support)."
+    @exit 1
 
 # Build C WASM gain plugin example (requires wit-bindgen and WASI SDK)
 [working-directory: 'examples/plugins/gain-wasm-c']
@@ -573,8 +560,8 @@ build-plugin-wasm-c:
     @echo "Building C WASM gain plugin..."
     @make
 
-# Build all WASM plugin examples
-build-plugins-wasm: build-plugin-wasm-rust build-plugin-wasm-go build-plugin-wasm-c
+# Build all WASM plugin examples (Go pending toolchain async support)
+build-plugins-wasm: build-plugin-wasm-rust build-plugin-wasm-c
 
 ## Native Plugins
 

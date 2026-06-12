@@ -17,22 +17,22 @@ This plugin applies a gain adjustment to audio streams. You can specify the gain
 
 ## Building
 
-You need the WebAssembly Component Model toolchain:
+You need the `wasm32-wasip2` target, which produces a WebAssembly component
+directly:
 
 ```bash
-cargo install cargo-component
-rustup target add wasm32-wasip1
+rustup target add wasm32-wasip2
 ```
 
 Then build the plugin:
 
 ```bash
-cargo component build --release
+cargo build --release --target wasm32-wasip2
 ```
 
 The compiled plugin will be at:
 ```
-target/wasm32-wasip1/release/gain_plugin.wasm
+target/wasm32-wasip2/release/gain_plugin.wasm
 ```
 
 ## Using with StreamKit

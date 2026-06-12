@@ -172,7 +172,7 @@ WASM plugins run in a sandboxed WebAssembly Component Model runtime.
 ```bash
 cargo new --lib my-wasm-plugin
 cd my-wasm-plugin
-cargo install cargo-component
+rustup target add wasm32-wasip2
 ```
 
 ```toml
@@ -187,7 +187,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 streamkit-plugin-sdk-wasm = "0.1.0"
-wit-bindgen = "0.44"
+wit-bindgen = "0.58"
 serde_json = "1"
 ```
 
@@ -198,11 +198,11 @@ serde_json = "1"
 
 ```bash
 # Build
-cargo component build --release
+cargo build --release --target wasm32-wasip2
 
 # Upload
 curl -X POST \
-  -F plugin=@target/wasm32-wasip1/release/my_wasm_plugin.wasm \
+  -F plugin=@target/wasm32-wasip2/release/my_wasm_plugin.wasm \
   http://localhost:4545/api/v1/plugins
 ```
 
@@ -212,7 +212,6 @@ For complete, working examples:
 
 - `examples/plugins/gain-native`
 - `examples/plugins/gain-wasm-rust`
-- `examples/plugins/gain-wasm-go`
 - `examples/plugins/gain-wasm-c`
 
 ## Next Steps

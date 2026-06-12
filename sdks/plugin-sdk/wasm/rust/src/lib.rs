@@ -12,7 +12,7 @@
 //! ```toml
 //! [dependencies]
 //! streamkit-plugin-sdk-wasm = "0.1.0"
-//! wit-bindgen = "0.44"
+//! wit-bindgen = "0.58"
 //! serde_json = "1"
 //!
 //! [lib]
@@ -60,11 +60,12 @@
 //!         Self { /* ... */ }
 //!     }
 //!
-//!     fn process(&self, input_pin: String, packet: Packet) -> Result<(), String> {
+//!     async fn process(&self, input_pin: String, packet: Packet) -> Result<(), String> {
+//!         // Push results to an output pin with `sdk::host::send_output(...).await`
 //!         Ok(())
 //!     }
 //!
-//!     fn update_params(&self, params: Option<String>) -> Result<(), String> {
+//!     async fn update_params(&self, params: Option<String>) -> Result<(), String> {
 //!         Ok(())
 //!     }
 //!

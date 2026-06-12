@@ -29,7 +29,8 @@ The `native/` directory contains the SDK for writing high-performance native plu
 The `wasm/` directory packages WIT-generated bindings for WASM plugins:
 
 - `wasm/rust/` exposes the `streamkit-plugin-sdk-wasm` crate with pre-generated component bindings
-- `go/` contains generated Go bindings used by `examples/plugins/gain-wasm-go`
+- `go/` contains Go bindings for the previous (WASI 0.2) plugin world; regeneration
+  is paused until `wit-bindgen-go` supports component-model async
 - `c/` provides generated C bindings used by `examples/plugins/gain-wasm-c`
 - All bindings are generated from `/wit/plugin.wit`
 - WASM plugins must be built as WebAssembly *components* (Component Model)
@@ -44,11 +45,9 @@ After editing the shared WIT interfaces, regenerate the language bindings and bu
 just gen-plugin-bindings
 ```
 
-The recipe requires `wkg`, `wit-bindgen` (CLI), and the Go toolchain (with
-`wit-bindgen-go` installed via `go install`) to be available in `$PATH`. The command
-updates:
+The recipe requires `wasm-tools` and `wit-bindgen` (CLI) to be available in
+`$PATH`. The command updates:
 - `plugin-sdk/wasm/rust/src/generated/` - Rust WASM SDK bindings
-- `plugin-sdk/go/bindings/` - Go bindings
 - `plugin-sdk/c/include/` and `plugin-sdk/c/src/` - C bindings
 - `plugin-sdk/wit/streamkit-plugin.wasm` - Binary WIT package
 

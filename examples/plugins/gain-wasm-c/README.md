@@ -34,7 +34,7 @@ The C plugin is expected to be comparable to or slightly smaller than Rust, with
 - ❌ Manual memory management (risk of memory leaks/bugs)
 - ❌ More verbose code (no high-level abstractions)
 - ❌ Requires manual JSON parsing (no serde equivalent)
-- ❌ Less integrated tooling compared to Rust's `cargo component`
+- ❌ Less integrated tooling compared to Rust's built-in `wasm32-wasip2` target
 
 ## Prerequisites
 
@@ -189,7 +189,7 @@ wasm-tools component new --help
 - General-purpose plugins (better ergonomics, safety)
 - Complex state management (borrow checker prevents bugs)
 - Rich JSON parsing (serde)
-- Integrated tooling (`cargo component`)
+- Integrated tooling (built-in `wasm32-wasip2` target)
 
 **When to use Go instead:**
 - Familiar to Go developers
