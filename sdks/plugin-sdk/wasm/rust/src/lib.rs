@@ -29,8 +29,8 @@
 //!     path: "wit",
 //!     generate_all,
 //!     with: {
-//!         "streamkit:plugin/types@0.1.0": sdk::types,
-//!         "streamkit:plugin/host@0.1.0": sdk::host,
+//!         "streamkit:plugin/types@0.2.0": sdk::types,
+//!         "streamkit:plugin/host@0.2.0": sdk::host,
 //!     },
 //! });
 //!

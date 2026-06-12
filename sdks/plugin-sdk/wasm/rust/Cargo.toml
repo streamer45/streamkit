@@ -13,7 +13,7 @@ categories = ["multimedia", "api-bindings", "wasm"]
 readme = "README.md"
 
 [dependencies]
-wit-bindgen-rt = { version = "0.44", features = ["bitflags"] }
+wit-bindgen = { version = "0.58", features = ["async"] }
 
 [lib]
 crate-type = ["rlib"]

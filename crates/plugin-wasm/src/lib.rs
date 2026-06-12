@@ -87,6 +87,9 @@ impl PluginRuntime {
         let engine = Engine::new(&engine_config)?;
         let mut linker = Linker::new(&engine);
 
+        // Guests built with current toolchains (e.g. Rust's wasm32-wasip2) still
+        // import wasi@0.2 interfaces from std, so link both p2 and p3.
+        wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
         wasmtime_wasi::p3::add_to_linker(&mut linker)?;
         bindings::streamkit::plugin::host::add_to_linker::<HostState, HasSelf<_>>(
             &mut linker,

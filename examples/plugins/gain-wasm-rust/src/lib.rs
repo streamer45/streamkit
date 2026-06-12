@@ -16,8 +16,8 @@ wit_bindgen::generate!({
     path: "../../../wit",
     generate_all,
     with: {
-        "streamkit:plugin/types@0.1.0": sdk::types,
-        "streamkit:plugin/host@0.1.0": sdk::host,
+        "streamkit:plugin/types@0.2.0": sdk::types,
+        "streamkit:plugin/host@0.2.0": sdk::host,
     },
 });
 
@@ -94,7 +94,7 @@ impl GuestNodeInstance for GainInstance {
         }
     }
 
-    fn process(&self, _input_pin: String, packet: Packet) -> Result<(), String> {
+    async fn process(&self, _input_pin: String, packet: Packet) -> Result<(), String> {
         match packet {
             Packet::Audio(mut audio_frame) => {
                 let gain = *self
@@ -105,14 +105,14 @@ impl GuestNodeInstance for GainInstance {
                     *sample *= gain;
                 }
 
-                sdk::host::send_output("out", &Packet::Audio(audio_frame))?;
+                sdk::host::send_output("out".to_string(), Packet::Audio(audio_frame)).await?;
                 Ok(())
             }
             _ => Err("Gain filter only accepts audio packets".to_string()),
         }
     }
 
-    fn update_params(&self, params: Option<String>) -> Result<(), String> {
+    async fn update_params(&self, params: Option<String>) -> Result<(), String> {
         let Some(params_str) = params else {
             return Ok(());
         };
