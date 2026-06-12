@@ -4,7 +4,7 @@
 
 import { useNodesState, useEdgesState, type Node, type Edge } from '@xyflow/react';
 import { dump } from 'js-yaml';
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 
 import { useToast } from '@/context/ToastContext';
 import { useSchemaStore } from '@/stores/schemaStore';
@@ -15,6 +15,7 @@ import {
   writeNodeParams,
   clearNodeParams,
 } from '@/stores/sessionAtoms';
+import type { NodeDefinition } from '@/types/types';
 import { dispatchParamUpdate } from '@/utils/controlProps';
 import { hooksLogger } from '@/utils/logger';
 import { parseYamlToPipeline, type EngineMode } from '@/utils/yamlPipeline';
@@ -27,19 +28,116 @@ const LOCAL_STORAGE_KEY = 'sk-pipeline-draft';
 let id = 1;
 const getId = () => `skitnode_${id++}`;
 
+type DraftNodeData = Record<string, unknown> & {
+  label: string;
+  kind: string;
+  params?: Record<string, unknown>;
+  ui?: { position?: { x: number; y: number } };
+};
+
+type YamlSnapshot = {
+  nodes?: Array<Node<EditorNodeData>>;
+  edges?: Array<Edge>;
+  mode?: EngineMode;
+};
+
+interface PipelineDraft {
+  nodes: Node<DraftNodeData>[];
+  edges: Edge[];
+  mode?: EngineMode;
+  name?: string;
+  description?: string;
+  labelCounters: Record<string, number>;
+}
+
+// Lives outside the hook so hydration stays synchronous (no flash of an
+// empty canvas) and the module-level id counter can be advanced without
+// tripping the React Compiler.
+function loadDraftFromStorage(): PipelineDraft | null {
+  try {
+    const item = window.localStorage.getItem(LOCAL_STORAGE_KEY);
+    if (!item) return null;
+
+    const {
+      nodes: savedNodes,
+      edges: savedEdges,
+      mode: savedMode,
+      name: savedName,
+      description: savedDescription,
+    } = JSON.parse(item) as {
+      nodes: Node<DraftNodeData>[];
+      edges: Edge[];
+      mode?: EngineMode;
+      name?: string;
+      description?: string;
+    };
+
+    if (!Array.isArray(savedNodes) || !Array.isArray(savedEdges)) return null;
+
+    let maxId = 0;
+    savedNodes.forEach((node) => {
+      const match = node.id.match(/^skitnode_(\\d+)$/);
+      if (match) {
+        const num = parseInt(match[1], 10);
+        if (num > maxId) {
+          maxId = num;
+        }
+      }
+    });
+    id = maxId + 1;
+
+    const labelCounters: Record<string, number> = {};
+    savedNodes.forEach((node) => {
+      const match = node.data.label.match(/^(.*)_(\\d+)$/);
+      if (match) {
+        const [, kind, numStr] = match;
+        const num = parseInt(numStr, 10);
+        if (num > (labelCounters[kind] || 0)) {
+          labelCounters[kind] = num;
+        }
+      }
+    });
+
+    return {
+      nodes: savedNodes,
+      edges: savedEdges,
+      mode: savedMode,
+      name: savedName,
+      description: savedDescription,
+      labelCounters,
+    };
+  } catch (error) {
+    hooksLogger.warn('Could not load pipeline from local storage:', error);
+    return null;
+  }
+}
+
+// Drafts saved before mode existed fall back to inferring it from the
+// node kinds; the inference re-runs as schemas stream in asynchronously.
+function useDraftMode(draft: PipelineDraft | null, nodeDefinitions: NodeDefinition[]) {
+  const [modeOverride, setMode] = useState<EngineMode | null>(draft?.mode ?? null);
+  const inferredMode = useMemo<EngineMode>(() => {
+    if (!draft) return 'dynamic';
+    const hasOneshotNodes = draft.nodes.some((node) => {
+      const nodeDef = nodeDefinitions.find((def) => def.kind === node.data.kind);
+      return nodeDef?.categories.includes('oneshot');
+    });
+    return hasOneshotNodes ? 'oneshot' : 'dynamic';
+  }, [draft, nodeDefinitions]);
+  return [modeOverride ?? inferredMode, setMode] as const;
+}
+
 export const usePipeline = () => {
-  const [nodes, setNodes, onNodesChange] = useNodesState<Node<EditorNodeData>>([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const [draft] = useState(loadDraftFromStorage);
   const nodeDefinitions = useSchemaStore((s) => s.nodeDefinitions);
   const [yamlString, setYamlString] = useState<string>(
     '# Add nodes to the canvas to see YAML output'
   );
-  const [isLoading, setIsLoading] = useState(true);
-  const [mode, setMode] = useState<EngineMode>('dynamic');
+  const [mode, setMode] = useDraftMode(draft, nodeDefinitions);
   const [yamlError, setYamlError] = useState<string>('');
-  const [pipelineName, setPipelineName] = useState<string>(''),
-    [pipelineDescription, setPipelineDescription] = useState<string>('');
-  const labelCountersRef = useRef<Record<string, number>>({});
+  const [pipelineName, setPipelineName] = useState<string>(draft?.name ?? ''),
+    [pipelineDescription, setPipelineDescription] = useState<string>(draft?.description ?? '');
+  const labelCountersRef = useRef<Record<string, number>>(draft?.labelCounters ?? {});
   const toast = useToast();
 
   const updateSourceRef = useRef<'canvas' | 'yaml' | null>(null);
@@ -50,7 +148,53 @@ export const usePipeline = () => {
   const labelValidationTimerRef = useRef<NodeJS.Timeout | null>(null);
   const labelValidationTokenRef = useRef(0);
 
-  const handleLabelChange = useCallback(
+  // Stable forwarder: hydrated draft nodes capture the label handler in
+  // their data before the real implementation (which needs setNodes from
+  // useNodesState) can exist.
+  // regenerateYamlRef holds the latest regenerateYamlFromCanvas without
+  // adding it as a dependency of handleParamChange (which would cause
+  // identity churn).
+  const labelChangeImplRef = useRef<(nodeId: string, newLabel: string) => void>(() => {}),
+    regenerateYamlRef = useRef<(snapshot?: YamlSnapshot) => void>(() => {});
+  const handleLabelChange = useCallback((nodeId: string, newLabel: string) => {
+    labelChangeImplRef.current(nodeId, newLabel);
+  }, []);
+
+  const handleParamChange = useCallback((nodeId: string, paramName: string, value: unknown) => {
+    // Dot-notation paths (e.g. "properties.score") need to be stored as
+    // nested objects so readByPath can find them.  Flat keys use the
+    // simple writeNodeParam helper.
+    dispatchParamUpdate(nodeId, paramName, value, writeNodeParam, (nid, config) => {
+      // writeNodeParams handles the deep-merge internally.
+      writeNodeParams(nid, config);
+    });
+    // Keep the YAML editor in sync with param changes made via the canvas
+    // (e.g. compositor layer drag / slider). The guard prevents a feedback
+    // loop when YAML editing triggers parseYamlToPipeline which stores the
+    // onParamChange callback inside node data but never calls it inline.
+    // We defer via queueMicrotask to avoid calling setState (setYamlString)
+    // while React is still rendering the component that triggered this change.
+    if (updateSourceRef.current !== 'yaml') {
+      queueMicrotask(() => regenerateYamlRef.current());
+    }
+  }, []);
+
+  const [initialDraftNodes] = useState(
+    () =>
+      (draft?.nodes ?? []).map((node) => ({
+        ...node,
+        data: {
+          ...(node.data as Record<string, unknown>),
+          onParamChange: handleParamChange,
+          onLabelChange: handleLabelChange,
+        },
+      })) as unknown as Node<EditorNodeData>[]
+  );
+
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node<EditorNodeData>>(initialDraftNodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(draft?.edges ?? []);
+
+  const labelChangeImpl = useCallback(
     (nodeId: string, newLabel: string) => {
       setNodes((nds) => {
         return nds.map((node) => {
@@ -101,35 +245,12 @@ export const usePipeline = () => {
     [setNodes, toast]
   );
 
-  // Ref to hold the latest regenerateYamlFromCanvas without adding it as
-  // a dependency of handleParamChange (which would cause identity churn).
-  const regenerateYamlRef = useRef<() => void>(() => {});
-
-  const handleParamChange = useCallback((nodeId: string, paramName: string, value: unknown) => {
-    // Dot-notation paths (e.g. "properties.score") need to be stored as
-    // nested objects so readByPath can find them.  Flat keys use the
-    // simple writeNodeParam helper.
-    dispatchParamUpdate(nodeId, paramName, value, writeNodeParam, (nid, config) => {
-      // writeNodeParams handles the deep-merge internally.
-      writeNodeParams(nid, config);
-    });
-    // Keep the YAML editor in sync with param changes made via the canvas
-    // (e.g. compositor layer drag / slider). The guard prevents a feedback
-    // loop when YAML editing triggers parseYamlToPipeline which stores the
-    // onParamChange callback inside node data but never calls it inline.
-    // We defer via queueMicrotask to avoid calling setState (setYamlString)
-    // while React is still rendering the component that triggered this change.
-    if (updateSourceRef.current !== 'yaml') {
-      queueMicrotask(() => regenerateYamlRef.current());
-    }
-  }, []);
+  useEffect(() => {
+    labelChangeImplRef.current = labelChangeImpl;
+  }, [labelChangeImpl]);
 
   const regenerateYamlFromCanvas = useCallback(
-    (snapshot?: {
-      nodes?: Array<Node<EditorNodeData>>;
-      edges?: Array<Edge>;
-      mode?: EngineMode;
-    }) => {
+    (snapshot?: YamlSnapshot) => {
       const nodesForYaml = snapshot?.nodes ?? nodes;
       const edgesForYaml = snapshot?.edges ?? edges;
       const modeForYaml = snapshot?.mode ?? mode;
@@ -149,7 +270,9 @@ export const usePipeline = () => {
   );
 
   // Keep the ref in sync so handleParamChange always calls the latest version.
-  regenerateYamlRef.current = regenerateYamlFromCanvas;
+  useEffect(() => {
+    regenerateYamlRef.current = regenerateYamlFromCanvas;
+  }, [regenerateYamlFromCanvas]);
 
   const handleExportYaml = () => {
     if (nodes.length === 0) return;
@@ -255,98 +378,6 @@ export const usePipeline = () => {
   );
 
   useEffect(() => {
-    try {
-      const item = window.localStorage.getItem(LOCAL_STORAGE_KEY);
-      if (item) {
-        const {
-          nodes: savedNodes,
-          edges: savedEdges,
-          mode: savedMode,
-          name: savedName,
-          description: savedDescription,
-        } = JSON.parse(item) as {
-          nodes: Array<
-            Node<{
-              label: string;
-              kind: string;
-              params?: Record<string, unknown>;
-              ui?: { position?: { x: number; y: number } };
-            }>
-          >;
-          edges: Edge[];
-          mode?: EngineMode;
-          name?: string;
-          description?: string;
-        };
-
-        if (Array.isArray(savedNodes) && Array.isArray(savedEdges)) {
-          let maxId = 0;
-          savedNodes.forEach((node) => {
-            const match = node.id.match(/^skitnode_(\\d+)$/);
-            if (match) {
-              const num = parseInt(match[1], 10);
-              if (num > maxId) {
-                maxId = num;
-              }
-            }
-          });
-          id = maxId + 1;
-
-          const newCounters: Record<string, number> = {};
-          savedNodes.forEach((node) => {
-            const match = node.data.label.match(/^(.*)_(\\d+)$/);
-            if (match) {
-              const [, kind, numStr] = match;
-              const num = parseInt(numStr, 10);
-              if (num > (newCounters[kind] || 0)) {
-                newCounters[kind] = num;
-              }
-            }
-          });
-          labelCountersRef.current = newCounters;
-
-          const hydratedNodes = savedNodes.map((node) => ({
-            ...node,
-            data: {
-              ...(node.data as Record<string, unknown>),
-              onParamChange: handleParamChange,
-              onLabelChange: handleLabelChange,
-            },
-          })) as unknown as Node<EditorNodeData>[];
-
-          setNodes(hydratedNodes);
-          setEdges(savedEdges);
-
-          if (savedName) {
-            setPipelineName(savedName);
-          }
-          if (savedDescription) {
-            setPipelineDescription(savedDescription);
-          }
-
-          if (savedMode) {
-            setMode(savedMode);
-          } else {
-            const hasOneshotNodes = hydratedNodes.some((node) => {
-              const nodeDef = nodeDefinitions.find((def) => def.kind === node.data.kind);
-              return nodeDef?.categories.includes('oneshot');
-            });
-            setMode(hasOneshotNodes ? 'oneshot' : 'dynamic');
-          }
-        }
-      }
-    } catch (error) {
-      hooksLogger.warn('Could not load pipeline from local storage:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [handleParamChange, handleLabelChange, setNodes, setEdges, setMode, nodeDefinitions]);
-
-  useEffect(() => {
-    if (isLoading) {
-      return;
-    }
-
     const serializableNodes = nodes.map((node) => {
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { onParamChange, onLabelChange, ...restData } = node.data as EditorNodeData;
@@ -375,7 +406,7 @@ export const usePipeline = () => {
     } catch (error) {
       hooksLogger.warn('Could not save pipeline to local storage:', error);
     }
-  }, [nodes, edges, mode, pipelineName, pipelineDescription, isLoading]);
+  }, [nodes, edges, mode, pipelineName, pipelineDescription]);
 
   const nextLabelForKind = useCallback((kind: string) => {
     const current = labelCountersRef.current[kind] ?? 0;
@@ -433,14 +464,9 @@ export const usePipeline = () => {
     prevEdgesRef.current = edges;
     prevModeRef.current = mode;
 
-    if (nodes.length === 0) {
-      setYamlString('# Add nodes to the canvas to see YAML output');
-      setYamlError('');
-      return;
-    }
-
-    setYamlString(dump(buildPipelineForYaml(nodes, edges, mode), { skipInvalid: true }));
-    setYamlError('');
+    // Defer so the compiler-visible effect body never calls setState
+    // directly; regenerateYamlFromCanvas handles the empty-canvas case.
+    queueMicrotask(() => regenerateYamlRef.current({ nodes, edges, mode }));
   }, [nodes, edges, mode]);
 
   return {
@@ -453,7 +479,7 @@ export const usePipeline = () => {
     nodeDefinitions,
     yamlString,
     yamlError,
-    isLoading,
+    isLoading: false,
     mode,
     setMode,
     pipelineName,
