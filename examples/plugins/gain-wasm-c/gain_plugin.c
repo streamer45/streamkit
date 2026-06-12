@@ -150,13 +150,34 @@ exports_streamkit_plugin_node_constructor_node_instance(plugin_string_t *maybe_p
     return exports_streamkit_plugin_node_node_instance_new((exports_streamkit_plugin_node_node_instance_t*)state);
 }
 
-// Process function
-bool exports_streamkit_plugin_node_method_node_instance_process(
+// State kept alive across the async send-output subtask. The canonical ABI
+// reads `args` lazily (while the subtask is STARTING) and writes `result`
+// when it completes, so both must outlive the call.
+typedef struct {
+    streamkit_plugin_host_send_output_args_t args;
+    streamkit_plugin_host_result_void_string_t result;
+    plugin_waitable_set_t set;
+} pending_send_t;
+
+static plugin_callback_code_t finish_process(pending_send_t *pending) {
+    exports_streamkit_plugin_node_result_void_string_t ret = {0};
+    if (pending->result.is_err) {
+        ret.is_err = true;
+        ret.val.err = pending->result.val.err;
+    }
+    free(pending);
+    exports_streamkit_plugin_node_method_node_instance_process_return(ret);
+    return PLUGIN_CALLBACK_CODE_EXIT;
+}
+
+// Process function (async export: returns a callback code instead of a bool,
+// reporting its result via process_return)
+plugin_callback_code_t exports_streamkit_plugin_node_method_node_instance_process(
     exports_streamkit_plugin_node_borrow_node_instance_t self,
     plugin_string_t *input_pin,
-    exports_streamkit_plugin_node_packet_t *packet,
-    plugin_string_t *err) {
+    exports_streamkit_plugin_node_packet_t *packet) {
 
+    (void)input_pin;
     gain_state_t *state = (gain_state_t*)(uintptr_t)self;
 
     // Debug log
@@ -168,8 +189,11 @@ bool exports_streamkit_plugin_node_method_node_instance_process(
 
     // Check if packet is audio
     if (packet->tag != STREAMKIT_PLUGIN_TYPES_PACKET_AUDIO) {
-        plugin_string_dup(err, "Gain filter only accepts audio packets");
-        return false;
+        exports_streamkit_plugin_node_result_void_string_t ret = {0};
+        ret.is_err = true;
+        plugin_string_dup(&ret.val.err, "Gain filter only accepts audio packets");
+        exports_streamkit_plugin_node_method_node_instance_process_return(ret);
+        return PLUGIN_CALLBACK_CODE_EXIT;
     }
 
     // Apply gain to all samples (in-place modification)
@@ -187,37 +211,58 @@ bool exports_streamkit_plugin_node_method_node_instance_process(
     plugin_string_set(&debug_msg, "[C] samples processed, sending output");
     streamkit_plugin_host_log(STREAMKIT_PLUGIN_HOST_LOG_LEVEL_DEBUG, &debug_msg);
 
-    // Send output
-    plugin_string_t out_pin;
-    plugin_string_set(&out_pin, "out");
+    // Send output as an async subtask
+    pending_send_t *pending = calloc(1, sizeof(pending_send_t));
+    if (!pending) {
+        exports_streamkit_plugin_node_result_void_string_t ret = {0};
+        ret.is_err = true;
+        plugin_string_dup(&ret.val.err, "Out of memory");
+        exports_streamkit_plugin_node_method_node_instance_process_return(ret);
+        return PLUGIN_CALLBACK_CODE_EXIT;
+    }
+    plugin_string_set(&pending->args.pin_name, "out");
+    pending->args.packet = *packet;
 
-    plugin_string_t send_err = {0};  // Initialize to zero
-    bool send_ok = streamkit_plugin_host_send_output(&out_pin, packet, &send_err);
+    plugin_subtask_status_t status =
+        streamkit_plugin_host_send_output(&pending->args, &pending->result);
 
-    if (!send_ok) {
-        plugin_string_set(&debug_msg, "[C] send_output failed");
-        streamkit_plugin_host_log(STREAMKIT_PLUGIN_HOST_LOG_LEVEL_ERROR, &debug_msg);
-        // Forward error from send_output
-        *err = send_err;
-        return false;
+    if (PLUGIN_SUBTASK_STATE(status) == PLUGIN_SUBTASK_RETURNED) {
+        return finish_process(pending);
     }
 
-    plugin_string_set(&debug_msg, "[C] process() completed successfully");
-    streamkit_plugin_host_log(STREAMKIT_PLUGIN_HOST_LOG_LEVEL_DEBUG, &debug_msg);
-
-    return true;
+    // The host hasn't completed the send yet: park the subtask in a waitable
+    // set and resume from the callback when it completes.
+    pending->set = plugin_waitable_set_new();
+    plugin_waitable_join(PLUGIN_SUBTASK_HANDLE(status), pending->set);
+    plugin_context_set_0(pending);
+    return PLUGIN_CALLBACK_CODE_WAIT(pending->set);
 }
 
-// Update params function
-bool exports_streamkit_plugin_node_method_node_instance_update_params(
+plugin_callback_code_t exports_streamkit_plugin_node_method_node_instance_process_callback(
+    plugin_event_t *event) {
+    pending_send_t *pending = plugin_context_get_0();
+
+    if (event->event != PLUGIN_EVENT_SUBTASK ||
+        PLUGIN_SUBTASK_STATE(event->code) != PLUGIN_SUBTASK_RETURNED) {
+        return PLUGIN_CALLBACK_CODE_WAIT(pending->set);
+    }
+
+    plugin_subtask_drop(event->waitable);
+    plugin_waitable_set_drop(pending->set);
+    return finish_process(pending);
+}
+
+// Update params function (async export, but completes synchronously)
+plugin_callback_code_t exports_streamkit_plugin_node_method_node_instance_update_params(
     exports_streamkit_plugin_node_borrow_node_instance_t self,
-    plugin_string_t *maybe_params,
-    plugin_string_t *err) {
+    plugin_string_t *maybe_params) {
 
     gain_state_t *state = (gain_state_t*)(uintptr_t)self;
+    exports_streamkit_plugin_node_result_void_string_t ok = {0};
 
     if (!maybe_params || !maybe_params->ptr || maybe_params->len == 0) {
-        return true;
+        exports_streamkit_plugin_node_method_node_instance_update_params_return(ok);
+        return PLUGIN_CALLBACK_CODE_EXIT;
     }
 
     float gain_db = parse_gain_db((const char*)maybe_params->ptr, maybe_params->len);
@@ -234,7 +279,14 @@ bool exports_streamkit_plugin_node_method_node_instance_update_params(
     plugin_string_set(&log_msg, log_buffer);
     streamkit_plugin_host_log(STREAMKIT_PLUGIN_HOST_LOG_LEVEL_INFO, &log_msg);
 
-    return true;
+    exports_streamkit_plugin_node_method_node_instance_update_params_return(ok);
+    return PLUGIN_CALLBACK_CODE_EXIT;
+}
+
+plugin_callback_code_t exports_streamkit_plugin_node_method_node_instance_update_params_callback(
+    plugin_event_t *event) {
+    (void)event;
+    return PLUGIN_CALLBACK_CODE_EXIT;
 }
 
 // Cleanup function

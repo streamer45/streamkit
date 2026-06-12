@@ -20,23 +20,16 @@ use streamkit_core::{NodeContext, PipelineMode};
 use streamkit_plugin_wasm::{PluginRuntime, PluginRuntimeConfig};
 use tokio::sync::mpsc;
 
-fn gain_plugin_path() -> Option<PathBuf> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
-        "../../examples/plugins/gain-wasm-rust/target/wasm32-wasip2/release/gain_plugin.wasm",
-    );
-    path.exists().then_some(path)
+fn example_plugin_path(relative: &str) -> PathBuf {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins").join(relative);
+    assert!(path.exists(), "{} not found; build the example first", path.display());
+    path
 }
 
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires the gain example component to be prebuilt"]
-async fn gain_plugin_processes_audio_through_async_host() {
-    let Some(path) = gain_plugin_path() else {
-        panic!("gain_plugin.wasm not found; build the example first");
-    };
-
+async fn run_gain_plugin(path: PathBuf, expected_kind: &str) {
     let runtime = PluginRuntime::new(PluginRuntimeConfig::default()).expect("runtime");
     let plugin = runtime.load_plugin(&path).expect("load plugin");
-    assert_eq!(plugin.metadata().kind, "gain_filter_rust");
+    assert_eq!(plugin.metadata().kind, expected_kind);
 
     let node = plugin
         .create_node(Some(&serde_json::json!({"gain_db": 6.0206})))
@@ -95,4 +88,24 @@ async fn gain_plugin_processes_audio_through_async_host() {
     }
 
     handle.await.expect("join").expect("node run");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the gain example component to be prebuilt"]
+async fn rust_gain_plugin_processes_audio_through_async_host() {
+    run_gain_plugin(
+        example_plugin_path("gain-wasm-rust/target/wasm32-wasip2/release/gain_plugin.wasm"),
+        "gain_filter_rust",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the gain example component to be prebuilt"]
+async fn c_gain_plugin_processes_audio_through_async_host() {
+    run_gain_plugin(
+        example_plugin_path("gain-wasm-c/build/gain_plugin_c.wasm"),
+        "gain_filter_c",
+    )
+    .await;
 }
