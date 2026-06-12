@@ -5,7 +5,7 @@
 import styled from '@emotion/styled';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { extractJsonValues } from '@/utils/jsonStream';
+import { extractJsonValues, releaseReaderLock } from '@/utils/jsonStream';
 import { componentsLogger } from '@/utils/logger';
 
 import { LoadingSpinner } from '../LoadingSpinner';
@@ -308,15 +308,8 @@ export const JsonStreamDisplay: React.FC<JsonStreamDisplayProps> = ({
           componentsLogger.error('JsonStreamDisplay: Stream processing error:', error);
         }
         setIsLoading(false);
-      } finally {
-        if (reader) {
-          try {
-            reader.releaseLock();
-          } catch {
-            // ignore
-          }
-        }
       }
+      releaseReaderLock(reader);
     };
 
     processStream();

@@ -244,6 +244,15 @@ const TextControl: React.FC<{
   return <TextInput value={text} onChange={handleChange} placeholder={control.label} />;
 };
 
+// Module-level factory so the ref read happens outside render scope — the
+// React Compiler rejects closures created during render that read refs.
+function createThrottledSender(onSendRef: React.RefObject<(value: unknown) => void>) {
+  return throttle((value: number) => onSendRef.current(value), SLIDER_THROTTLE_MS, {
+    leading: true,
+    trailing: true,
+  });
+}
+
 const NumberControl: React.FC<{
   control: ControlConfig;
   onSend: (value: unknown) => void;
@@ -262,25 +271,27 @@ const NumberControl: React.FC<{
     onSendRef.current = onSend;
   }, [onSend]);
 
-  const throttledSend = useMemo(
-    () =>
-      throttle((value: number) => onSendRef.current(value), SLIDER_THROTTLE_MS, {
-        leading: true,
-        trailing: true,
-      }),
-    []
-  );
+  // Lazily created in event handlers (not useMemo) because the React Compiler
+  // forbids touching refs during render, even just to capture them in a closure.
+  const throttledSendRef = useRef<ReturnType<typeof createThrottledSender> | null>(null);
+  const getThrottledSend = useCallback(() => {
+    if (!throttledSendRef.current) {
+      throttledSendRef.current = createThrottledSender(onSendRef);
+    }
+    return throttledSendRef.current;
+  }, []);
 
-  useEffect(() => () => throttledSend.cancel(), [throttledSend]);
+  // Cancel any pending trailing send on unmount.
+  useEffect(() => () => throttledSendRef.current?.cancel(), []);
 
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const raw = Number.parseFloat(e.target.value);
       const clamped = Math.min(Math.max(Number.isFinite(raw) ? raw : min, min), max);
       setLocalValue(clamped);
-      throttledSend(clamped);
+      getThrottledSend()(clamped);
     },
-    [min, max, throttledSend]
+    [min, max, getThrottledSend]
   );
 
   const handlePointerDown = useCallback((e: React.PointerEvent<HTMLInputElement>) => {
@@ -288,14 +299,11 @@ const NumberControl: React.FC<{
     e.currentTarget.setPointerCapture?.(e.pointerId);
   }, []);
 
-  const handlePointerUp = useCallback(
-    (e: React.PointerEvent<HTMLInputElement>) => {
-      e.stopPropagation();
-      e.currentTarget.releasePointerCapture?.(e.pointerId);
-      throttledSend.flush?.();
-    },
-    [throttledSend]
-  );
+  const handlePointerUp = useCallback((e: React.PointerEvent<HTMLInputElement>) => {
+    e.stopPropagation();
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
+    throttledSendRef.current?.flush();
+  }, []);
 
   const display = Number.isInteger(step) ? Math.round(localValue) : localValue.toFixed(2);
 
