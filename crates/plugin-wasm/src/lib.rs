@@ -143,9 +143,7 @@ impl PluginRuntime {
             let plugin = Plugin::new(&mut store, &instance)?;
 
             let node = plugin.streamkit_plugin_node();
-            store
-                .run_concurrent(async move |accessor| node.call_metadata(accessor).await)
-                .await?
+            store.run_concurrent(async move |accessor| node.call_metadata(accessor).await).await?
         })?;
 
         Ok(metadata)

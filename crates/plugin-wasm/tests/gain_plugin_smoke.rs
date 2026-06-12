@@ -11,6 +11,8 @@
 //!     --manifest-path examples/plugins/gain-wasm-rust/Cargo.toml
 //! ```
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -21,7 +23,8 @@ use streamkit_plugin_wasm::{PluginRuntime, PluginRuntimeConfig};
 use tokio::sync::mpsc;
 
 fn example_plugin_path(relative: &str) -> PathBuf {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins").join(relative);
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins").join(relative);
     assert!(path.exists(), "{} not found; build the example first", path.display());
     path
 }
@@ -31,9 +34,8 @@ async fn run_gain_plugin(path: PathBuf, expected_kind: &str) {
     let plugin = runtime.load_plugin(&path).expect("load plugin");
     assert_eq!(plugin.metadata().kind, expected_kind);
 
-    let node = plugin
-        .create_node(Some(&serde_json::json!({"gain_db": 6.0206})))
-        .expect("create node");
+    let node =
+        plugin.create_node(Some(&serde_json::json!({"gain_db": 6.0206}))).expect("create node");
 
     let (input_tx, input_rx) = mpsc::channel(8);
     let (state_tx, _state_rx) = mpsc::channel(32);
@@ -103,9 +105,6 @@ async fn rust_gain_plugin_processes_audio_through_async_host() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires the gain example component to be prebuilt"]
 async fn c_gain_plugin_processes_audio_through_async_host() {
-    run_gain_plugin(
-        example_plugin_path("gain-wasm-c/build/gain_plugin_c.wasm"),
-        "gain_filter_c",
-    )
-    .await;
+    run_gain_plugin(example_plugin_path("gain-wasm-c/build/gain_plugin_c.wasm"), "gain_filter_c")
+        .await;
 }
