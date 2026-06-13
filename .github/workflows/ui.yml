@@ -75,5 +75,11 @@ jobs:
       - name: Build
         run: bun run build
 
+      # Fails if the React Compiler stops optimizing the perf-critical node-graph
+      # components — catches the silent `react({ babel })` misconfiguration that
+      # @vitejs/plugin-react v6 ignores. See ui/scripts/verify-react-compiler.mjs.
+      - name: Verify React Compiler
+        run: bun run verify-compiler
+
       - name: Knip (unused code)
         run: bun run knip

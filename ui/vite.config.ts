@@ -4,6 +4,7 @@
 
 import { defineConfig, loadEnv } from 'vite';
 import react, { reactCompilerPreset } from '@vitejs/plugin-react';
+import babel from '@rolldown/plugin-babel';
 import path from 'path';
 import { reactCompilerOptions } from './reactCompilerOptions';
 
@@ -38,10 +39,11 @@ export default defineConfig(({ mode }) => {
   return {
     base: './', // Use relative paths for assets (required for subpath deployments)
     plugins: [
-      react({
-        babel: {
-          presets: [reactCompilerPreset(reactCompilerOptions)],
-        },
+      react(),
+      // @vitejs/plugin-react v6 is oxc-based and ignores its `babel` option, so
+      // the React Compiler must run as a separate @rolldown/plugin-babel pass.
+      babel({
+        presets: [reactCompilerPreset(reactCompilerOptions)],
       }),
       // @moq/hang publishes a JS worklet file but imports it as .ts.
       moqHangWorkletFix(),
