@@ -76,6 +76,7 @@ import type {
   InputPin,
   OutputPin,
 } from '@/types/types';
+import { arraysEqual } from '@/utils/arraysEqual';
 import { buildParamUpdate, dispatchParamUpdate } from '@/utils/controlProps';
 import { topoLevelsFromPipeline, orderedNamesFromLevels } from '@/utils/dag';
 import { deepEqual } from '@/utils/deepEqual';
@@ -297,9 +298,7 @@ const MonitorViewContent: React.FC = () => {
   const handleSelectionChange = useCallback<OnSelectionChangeFunc<RFNode>>(
     ({ nodes: selNodes }) => {
       const nextIds = selNodes.map((n) => n.id);
-      setSelectedNodes((prev) =>
-        prev.length === nextIds.length && prev.every((v, i) => v === nextIds[i]) ? prev : nextIds
-      );
+      setSelectedNodes((prev) => (arraysEqual(prev, nextIds) ? prev : nextIds));
     },
     []
   );

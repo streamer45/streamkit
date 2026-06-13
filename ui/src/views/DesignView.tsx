@@ -45,6 +45,7 @@ import { saveSample } from '@/services/samples';
 import { createSession } from '@/services/sessions';
 import { useLayoutStore } from '@/stores/layoutStore';
 import type { NodeDefinition } from '@/types/generated/api-types';
+import { arraysEqual } from '@/utils/arraysEqual';
 import { topoLevelsFromEdges, verticalLayout } from '@/utils/dag';
 import { deepEqual } from '@/utils/deepEqual';
 import { extractFragment, fragmentToReactFlow } from '@/utils/fragmentUtils';
@@ -485,9 +486,6 @@ function pickStableNode(
   }
   return prev;
 }
-
-const arraysEqual = (a: string[], b: string[]) =>
-  a.length === b.length && a.every((v, i) => v === b[i]);
 
 /**
  * Main DesignView component for the pipeline editor.
