@@ -16,22 +16,11 @@ import { reactCompilerOptions } from './reactCompilerOptions';
 // that the compiler actually ran on the perf-critical components. The variable
 // is unset in normal dev/build, so there is zero cost or output then.
 function compilerEventLogger(logPath: string) {
-  fs.writeFileSync(logPath, '');
+  const fd = fs.openSync(logPath, 'w');
   return {
-    logEvent(
-      filename: string | null,
-      event: { kind?: string; fnName?: string | null; memoSlots?: number } | null
-    ) {
-      const kind = event?.kind;
-      if (kind === 'CompileSuccess') {
-        fs.appendFileSync(
-          logPath,
-          JSON.stringify({
-            filename,
-            fnName: event?.fnName ?? null,
-            memoSlots: typeof event?.memoSlots === 'number' ? event.memoSlots : null,
-          }) + '\n'
-        );
+    logEvent(filename: string | null, event: { kind?: string } | null) {
+      if (event?.kind === 'CompileSuccess') {
+        fs.writeSync(fd, JSON.stringify({ filename }) + '\n');
       }
     },
   };

@@ -51,7 +51,15 @@ const WIRING_HELP =
   'The compiler must run as a separate `babel({ presets: [reactCompilerPreset()] })`\n' +
   'plugin in ui/vite.config.ts. @vitejs/plugin-react v6 ignores `react({ babel })`.';
 
+// Temp artifacts created by a local build (never the CI-provided log), removed
+// before every exit since process.exit() skips finally blocks.
+const tempPaths = [];
+function cleanup() {
+  for (const p of tempPaths) fs.rmSync(p, { recursive: true, force: true });
+}
+
 function fail(message, { wiring = false } = {}) {
+  cleanup();
   console.error('\n' + message);
   if (wiring) console.error('\n' + WIRING_HELP);
   process.exit(1);
@@ -63,9 +71,13 @@ function fail(message, { wiring = false } = {}) {
 let logPath = process.env.VERIFY_COMPILER_LOG;
 const haveLog = logPath && fs.existsSync(logPath) && fs.statSync(logPath).size > 0;
 if (!haveLog) {
-  logPath = logPath || path.join(os.tmpdir(), `react-compiler-events-${process.pid}.ndjson`);
+  if (!logPath) {
+    logPath = path.join(os.tmpdir(), `react-compiler-events-${process.pid}.ndjson`);
+    tempPaths.push(logPath);
+  }
   process.env.VERIFY_COMPILER_LOG = logPath;
   const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'verify-react-compiler-'));
+  tempPaths.push(outDir);
   try {
     await build({
       configFile: viteConfig,
@@ -75,8 +87,6 @@ if (!haveLog) {
     });
   } catch (err) {
     fail(`Production build failed (unrelated to the React Compiler wiring):\n    ${err.message}`);
-  } finally {
-    fs.rmSync(outDir, { recursive: true, force: true });
   }
 }
 
@@ -100,8 +110,10 @@ if (optimized.length === 0) {
 }
 
 const optimizedSet = new Set(optimized.map((f) => f.split('?')[0].replace(/\\/g, '/')));
+// Anchor on a path separator so a longer suffix (e.g. XCompositorNode.tsx)
+// cannot match a shorter CRITICAL entry (CompositorNode.tsx).
 const wasOptimized = (rel) => {
-  for (const f of optimizedSet) if (f.endsWith(rel)) return true;
+  for (const f of optimizedSet) if (f === rel || f.endsWith('/' + rel)) return true;
   return false;
 };
 
@@ -121,6 +133,7 @@ if (problems.length > 0) {
   );
 }
 
+cleanup();
 console.log(
   `React Compiler verified: all ${CRITICAL.length} perf-critical components optimized ` +
     `(${optimized.length} functions compiled in the production build).`
