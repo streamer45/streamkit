@@ -235,7 +235,7 @@ pub(super) async fn validate_moq_auth(
 }
 
 #[cfg(all(test, feature = "moq"))]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used)] // test fixtures use unwrap to fail loudly on setup errors
 mod tests {
     use super::validate_moq_auth;
     use crate::auth::{hash_token, AuthState, MoqClaims, TokenMetadata, TokenType, AUD_MOQ};
@@ -313,9 +313,9 @@ mod tests {
         assert_eq!(err, StatusCode::UNAUTHORIZED);
     }
 
-    // An API-audience token is rejected by `validate_moq_token`'s audience check.
-    // The explicit `claims.aud != AUD_MOQ` guard in `validate_moq_auth` is
-    // unreachable defensive code (see PR "Follow-ups").
+    // `validate_moq_token` sets `set_audience(&[AUD_MOQ])`, so an API-audience
+    // token is rejected there and the explicit `claims.aud != AUD_MOQ` guard in
+    // `validate_moq_auth` is unreachable defensive code that stays uncovered.
     #[tokio::test(flavor = "multi_thread")]
     async fn wrong_audience_token_is_unauthorized() {
         let (state, _temp) = enabled_auth_state().await;

@@ -98,7 +98,7 @@ fn ensure_under_base(base_real: &Path, dir_real: &Path, label: &str) -> Result<(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used)] // test fixtures use unwrap to fail loudly on setup errors
 mod tests {
     use super::{
         canonicalize_existing_dir, ensure_base_dir, ensure_dir_under, ensure_existing_dir_under,
