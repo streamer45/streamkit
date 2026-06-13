@@ -4,10 +4,33 @@
 
 import { defineConfig, loadEnv } from 'vite';
 import react, { reactCompilerPreset } from '@vitejs/plugin-react';
+import babel from '@rolldown/plugin-babel';
+import fs from 'node:fs';
 import path from 'path';
 import { reactCompilerOptions } from './reactCompilerOptions';
 
+// When VERIFY_COMPILER_LOG points at a file, attach the React Compiler's
+// structured logger so it records a CompileSuccess event for every function it
+// optimizes during the real build. The guard in scripts/verify-react-compiler.mjs
+// reads this log to prove — per component, without parsing minified output —
+// that the compiler actually ran on the perf-critical components. The variable
+// is unset in normal dev/build, so there is zero cost or output then.
+function compilerEventLogger(logPath: string) {
+  const fd = fs.openSync(logPath, 'w');
+  return {
+    logEvent(filename: string | null, event: { kind?: string } | null) {
+      if (event?.kind === 'CompileSuccess') {
+        fs.writeSync(fd, JSON.stringify({ filename }) + '\n');
+      }
+    },
+  };
+}
+
 export default defineConfig(({ mode }) => {
+  const compilerLogPath = process.env.VERIFY_COMPILER_LOG;
+  const compilerOptions = compilerLogPath
+    ? { ...reactCompilerOptions, logger: compilerEventLogger(compilerLogPath) }
+    : reactCompilerOptions;
   const env = loadEnv(mode, process.cwd(), '');
   const apiUrl = env.SK_SERVER__ADDRESS || '127.0.0.1:4545';
   const moqHangWorkletFix = () => ({
@@ -38,10 +61,11 @@ export default defineConfig(({ mode }) => {
   return {
     base: './', // Use relative paths for assets (required for subpath deployments)
     plugins: [
-      react({
-        babel: {
-          presets: [reactCompilerPreset(reactCompilerOptions)],
-        },
+      react(),
+      // @vitejs/plugin-react v6 is oxc-based and ignores its `babel` option, so
+      // the React Compiler must run as a separate @rolldown/plugin-babel pass.
+      babel({
+        presets: [reactCompilerPreset(compilerOptions)],
       }),
       // @moq/hang publishes a JS worklet file but imports it as .ts.
       moqHangWorkletFix(),
