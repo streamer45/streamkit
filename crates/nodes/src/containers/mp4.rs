@@ -2831,8 +2831,6 @@ mod tests {
         }
     }
 
-    // ----- Shared fixtures for the helper/accumulation/flush tests below -----
-
     fn h264_keyframe_annexb() -> Vec<u8> {
         let mut d = Vec::new();
         d.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
@@ -2890,8 +2888,6 @@ mod tests {
         PacketMetadata { timestamp_us: None, duration_us, sequence: None, keyframe: Some(keyframe) }
     }
 
-    // ----- classify_packet -----
-
     #[test]
     fn classify_packet_audio_video_and_non_av() {
         // Binary with an audio content_type → Audio.
@@ -2922,8 +2918,6 @@ mod tests {
         assert!(classify_packet(Packet::Text(std::sync::Arc::from("hi"))).is_none());
     }
 
-    // ----- mp4_content_type: arms not already covered by content_type_combinations -----
-
     #[test]
     fn content_type_remaining_combinations() {
         assert_eq!(
@@ -2948,8 +2942,6 @@ mod tests {
         // Video-only with an unrecognised codec → bare "video/mp4".
         assert_eq!(mp4_content_type(None, Some(VideoCodec::Vp9)), "video/mp4");
     }
-
-    // ----- Mp4MuxerNode::content_type (pre-connection hint) -----
 
     #[test]
     fn node_content_type_hint() {
@@ -2976,8 +2968,6 @@ mod tests {
         Mp4MuxerConfig::default()
     }
 
-    // ----- resolve_timescales -----
-
     #[test]
     fn resolve_timescales_defaults_and_overrides() {
         let (v, a) = resolve_timescales(&Mp4MuxerConfig::default());
@@ -2998,16 +2988,12 @@ mod tests {
         assert_eq!(a.get(), 44_100);
     }
 
-    // ----- Mp4MuxerConfig::finalize_chunk_size -----
-
     #[test]
     fn finalize_chunk_size_default_and_custom() {
         assert_eq!(Mp4MuxerConfig::default().finalize_chunk_size(), 256 * 1024);
         let custom = Mp4MuxerConfig { finalize_chunk_size: NonZeroUsize::new(4096), ..default() };
         assert_eq!(custom.finalize_chunk_size(), 4096);
     }
-
-    // ----- check_video_keyframe_gate -----
 
     #[test]
     fn keyframe_gate_stays_closed_until_first_keyframe() {
@@ -3024,8 +3010,6 @@ mod tests {
         assert!(check_video_keyframe_gate(false, &mut seen));
         assert!(check_video_keyframe_gate(true, &mut seen));
     }
-
-    // ----- accumulate_video_sample -----
 
     #[test]
     fn accumulate_video_sample_non_h264_bookkeeping() {
@@ -3103,8 +3087,6 @@ mod tests {
         assert_eq!(seg.pending_samples[0].data_size, stored.len());
     }
 
-    // ----- accumulate_audio_sample -----
-
     #[test]
     fn accumulate_audio_sample_bookkeeping() {
         let config = Mp4MuxerConfig::default();
@@ -3139,8 +3121,6 @@ mod tests {
             us_to_ticks(AudioCodec::Aac.default_frame_duration_us(), ats.get())
         );
     }
-
-    // ----- should_flush_fmp4_segment -----
 
     #[test]
     fn should_flush_after_init_is_unconditional() {
@@ -3199,8 +3179,6 @@ mod tests {
         assert!(should_flush_fmp4_segment(&seg, &inputs, 2));
     }
 
-    // ----- partition_samples_by_track: edge cases -----
-
     #[test]
     fn partition_samples_empty_input() {
         let (s, p) = partition_samples_by_track(Vec::new(), Vec::new());
@@ -3226,8 +3204,6 @@ mod tests {
         assert!(s.iter().all(|x| matches!(x.track_kind, TrackKind::Video)));
     }
 
-    // ----- us_to_ticks: boundary / large values -----
-
     #[test]
     fn us_to_ticks_boundaries() {
         assert_eq!(us_to_ticks(0, 90_000), 0);
@@ -3238,8 +3214,6 @@ mod tests {
         // Pathologically large durations saturate at u32::MAX rather than wrap.
         assert_eq!(us_to_ticks(u64::MAX, 90_000), u32::MAX);
     }
-
-    // ----- End-to-end node runs through run_stream_mode / run_file_mode -----
 
     fn vtype(codec: VideoCodec) -> PacketType {
         PacketType::EncodedVideo(EncodedVideoFormat {
@@ -3455,6 +3429,8 @@ mod tests {
         let config = Mp4MuxerConfig {
             mode: Mp4StreamingMode::File,
             num_inputs: 2,
+            video_width: 320,
+            video_height: 240,
             video_codec: Some(VideoCodec::H264),
             audio_codec: Some(AudioCodec::Aac),
             ..default()
