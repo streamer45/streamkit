@@ -486,6 +486,9 @@ function pickStableNode(
   return prev;
 }
 
+const arraysEqual = (a: string[], b: string[]) =>
+  a.length === b.length && a.every((v, i) => v === b[i]);
+
 /**
  * Main DesignView component for the pipeline editor.
  *
@@ -738,9 +741,6 @@ const DesignViewContent: React.FC = () => {
     },
     [createOnConnectEnd]
   );
-
-  const arraysEqual = (a: string[], b: string[]) =>
-    a.length === b.length && a.every((v, i) => v === b[i]);
 
   const handleSelectionChange = useCallback<OnSelectionChangeFunc<RFNode>>(
     ({ nodes: selectedNodes }) => {

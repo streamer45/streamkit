@@ -10,7 +10,7 @@ import {
   type Node,
   type OnSelectionChangeParams,
 } from '@xyflow/react';
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { describe, it, expect, vi } from 'vitest';
 
 import { nodeTypes, defaultEdgeOptions } from '@/utils/reactFlowDefaults';
@@ -43,7 +43,10 @@ const initialNodes: Node[] = [
 let store: ReturnType<typeof useStoreApi> | null = null;
 
 function StoreProbe() {
-  store = useStoreApi();
+  const api = useStoreApi();
+  useEffect(() => {
+    store = api;
+  }, [api]);
   return null;
 }
 
