@@ -72,6 +72,9 @@ demo/
 # React DevTools profiling exports
 profiling-data*.json
 
+# React Compiler event log emitted by the verify-react-compiler CI guard
+react-compiler-events.ndjson
+
 # E2E test artifacts
 e2e/test-results
 e2e/playwright-report

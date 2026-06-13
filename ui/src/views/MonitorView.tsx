@@ -6,13 +6,13 @@ import {
   ReactFlowProvider,
   useNodesState,
   useEdgesState,
-  useOnSelectionChange,
   type Node as RFNode,
   type Edge,
   type NodeChange,
   type Connection as RFConnection,
   type ReactFlowInstance,
   type OnConnectEnd,
+  type OnSelectionChangeFunc,
 } from '@xyflow/react';
 import { dump } from 'js-yaml';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
@@ -76,6 +76,7 @@ import type {
   InputPin,
   OutputPin,
 } from '@/types/types';
+import { arraysEqual } from '@/utils/arraysEqual';
 import { buildParamUpdate, dispatchParamUpdate } from '@/utils/controlProps';
 import { topoLevelsFromPipeline, orderedNamesFromLevels } from '@/utils/dag';
 import { deepEqual } from '@/utils/deepEqual';
@@ -289,14 +290,18 @@ const MonitorViewContent: React.FC = () => {
   const { menu, paneMenu, reactFlowWrapper, onNodeContextMenu, onPaneContextMenu, onPaneClick } =
     useContextMenu();
 
-  useOnSelectionChange({
-    onChange: ({ nodes: selNodes }) => {
+  // Passed as the `onSelectionChange` prop on <ReactFlow> (via FlowCanvas) rather than
+  // registered through useOnSelectionChange: the prop is re-applied on every render, so it
+  // survives the canvas remount that MonitorView triggers when session data arrives. The
+  // hook's effect keys on the (compiler-stabilized) callback identity and would not re-run to
+  // re-register after xyflow resets its store on that remount.
+  const handleSelectionChange = useCallback<OnSelectionChangeFunc<RFNode>>(
+    ({ nodes: selNodes }) => {
       const nextIds = selNodes.map((n) => n.id);
-      setSelectedNodes((prev) =>
-        prev.length === nextIds.length && prev.every((v, i) => v === nextIds[i]) ? prev : nextIds
-      );
+      setSelectedNodes((prev) => (arraysEqual(prev, nextIds) ? prev : nextIds));
     },
-  });
+    []
+  );
 
   useEffect(() => {
     if (selectedNodes.length === 1 && draftNodesRef.current.has(selectedNodes[0])) {
@@ -1381,6 +1386,7 @@ const MonitorViewContent: React.FC = () => {
             editMode={true}
             onNodeDragStop={onNodeDragStop}
             onNodeDoubleClick={handleNodeDoubleClick}
+            onSelectionChange={handleSelectionChange}
             isValidConnection={
               isValidConnection
                 ? (conn) =>
