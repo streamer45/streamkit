@@ -102,6 +102,28 @@ describe('useSessionNodeStates', () => {
     expect(result.current).toBe(first);
   });
 
+  it('returns a stable reference across pipeline object replacements with unchanged states', async () => {
+    seedPipeline({
+      source: { kind: 'core::passthrough' },
+      mixer: { kind: 'core::mixer' },
+    });
+
+    sessionStore.set(nodeStateAtom(nodeKey(SESSION_ID, 'source')), 'Running');
+    sessionStore.set(nodeStateAtom(nodeKey(SESSION_ID, 'mixer')), 'Running');
+
+    const { result } = renderHook(() => useSessionNodeStates(SESSION_ID));
+    const first = result.current;
+
+    await act(async () => {
+      seedPipeline({
+        source: { kind: 'core::passthrough' },
+        mixer: { kind: 'core::mixer' },
+      });
+    });
+
+    expect(result.current).toBe(first);
+  });
+
   it('works with computeSessionStatus', async () => {
     const { computeSessionStatus } = await import('@/utils/sessionStatus');
 

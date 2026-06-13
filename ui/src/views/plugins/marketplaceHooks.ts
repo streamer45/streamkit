@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import { useCallback, useEffect, useState } from 'react';
+import { startTransition, useCallback, useEffect, useState } from 'react';
 
 import {
   cancelMarketplaceJob,
@@ -28,8 +28,10 @@ export const useMarketplaceRegistries = (active: boolean) => {
   useEffect(() => {
     if (!active || loaded) return;
     let cancelled = false;
-    setLoading(true);
-    setError(null);
+    startTransition(() => {
+      setLoading(true);
+      setError(null);
+    });
 
     (async () => {
       try {
@@ -42,11 +44,10 @@ export const useMarketplaceRegistries = (active: boolean) => {
           const message = err instanceof Error ? err.message : 'Failed to load registries.';
           setError(message);
         }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-          setLoaded(true);
-        }
+      }
+      if (!cancelled) {
+        setLoading(false);
+        setLoaded(true);
       }
     })();
 
@@ -73,13 +74,15 @@ export const useMarketplaceIndex = (active: boolean, registry: string, query: st
   useEffect(() => {
     if (!active) return;
     if (!registry) {
-      setIndex(null);
+      startTransition(() => setIndex(null));
       return;
     }
 
     let cancelled = false;
-    setLoading(true);
-    setError(null);
+    startTransition(() => {
+      setLoading(true);
+      setError(null);
+    });
 
     (async () => {
       try {
@@ -92,9 +95,8 @@ export const useMarketplaceIndex = (active: boolean, registry: string, query: st
           setError(message);
           setIndex(null);
         }
-      } finally {
-        if (!cancelled) setLoading(false);
       }
+      if (!cancelled) setLoading(false);
     })();
 
     return () => {
@@ -116,19 +118,21 @@ export const useMarketplaceDetails = (
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setSelectedVersion(null);
+    startTransition(() => setSelectedVersion(null));
   }, [pluginId, registry]);
 
   useEffect(() => {
     if (!active) return;
     if (!registry || !pluginId) {
-      setDetails(null);
+      startTransition(() => setDetails(null));
       return;
     }
 
     let cancelled = false;
-    setLoading(true);
-    setError(null);
+    startTransition(() => {
+      setLoading(true);
+      setError(null);
+    });
 
     (async () => {
       try {
@@ -146,9 +150,8 @@ export const useMarketplaceDetails = (
           setError(message);
           setDetails(null);
         }
-      } finally {
-        if (!cancelled) setLoading(false);
       }
+      if (!cancelled) setLoading(false);
     })();
 
     return () => {
@@ -171,8 +174,10 @@ export const useMarketplaceJob = (jobId: string | null, callbacks: JobCallbacks)
 
   useEffect(() => {
     if (!jobId) {
-      setJobInfo(null);
-      setJobError(null);
+      startTransition(() => {
+        setJobInfo(null);
+        setJobError(null);
+      });
       return;
     }
 

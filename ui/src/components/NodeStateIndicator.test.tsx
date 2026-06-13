@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import * as RadixTooltip from '@radix-ui/react-tooltip';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { Provider as JotaiProvider } from 'jotai/react';
 import { describe, it, expect, vi } from 'vitest';
 
@@ -24,14 +24,29 @@ vi.mock('@/stores/sessionStore', () => ({
   useSessionStore: () => null,
 }));
 
-function renderIndicator(state: NodeState, opts: { showLabel?: boolean; stats?: NodeStats } = {}) {
+function renderIndicator(
+  state: NodeState,
+  opts: { showLabel?: boolean; stats?: NodeStats; nodeId?: string; sessionId?: string } = {}
+) {
   return render(
-    <RadixTooltip.Provider>
+    <RadixTooltip.Provider delayDuration={0}>
       <JotaiProvider>
-        <NodeStateIndicator state={state} showLabel={opts.showLabel} stats={opts.stats} />
+        <NodeStateIndicator
+          state={state}
+          showLabel={opts.showLabel}
+          stats={opts.stats}
+          nodeId={opts.nodeId}
+          sessionId={opts.sessionId}
+        />
       </JotaiProvider>
     </RadixTooltip.Provider>
   );
+}
+
+function openTooltip() {
+  const trigger = screen.getByTestId('state-dot').closest('.nodrag');
+  expect(trigger).not.toBeNull();
+  fireEvent.focus(trigger!);
 }
 
 describe('NodeStateIndicator', () => {
@@ -114,6 +129,41 @@ describe('NodeStateIndicator', () => {
       };
       renderIndicator('Running', { stats });
       expect(screen.queryByTestId('error-badge')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('tooltip content', () => {
+    const stats: NodeStats = {
+      received: BigInt(100),
+      sent: BigInt(90),
+      errored: BigInt(0),
+      discarded: BigInt(0),
+      duration_secs: 10,
+    };
+
+    it('shows static state details when opened without a node id', async () => {
+      renderIndicator('Running', { stats });
+      openTooltip();
+      expect(
+        (await screen.findAllByText('Node is operating normally and processing data')).length
+      ).toBeGreaterThan(0);
+    });
+
+    it('shows live state details when opened with a node id', async () => {
+      renderIndicator('Running', { stats, nodeId: 'node-1', sessionId: 'session-1' });
+      openTooltip();
+      expect(
+        (await screen.findAllByText('Node is operating normally and processing data')).length
+      ).toBeGreaterThan(0);
+    });
+
+    it('shows degraded details with slow pins when opened with a node id', async () => {
+      const state: NodeState = {
+        Degraded: { reason: 'slow input', details: { slow_pins: ['in_0'] } },
+      };
+      renderIndicator(state, { nodeId: 'node-1', sessionId: 'session-1' });
+      openTooltip();
+      expect((await screen.findAllByText('slow input')).length).toBeGreaterThan(0);
     });
   });
 

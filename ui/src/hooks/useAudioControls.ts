@@ -10,7 +10,7 @@
  * provide consistent volume controls wherever a MoQ audio stream is played.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useSyncExternalStore } from 'react';
 
 /** Minimal shape of the audio emitter expected by the hook. */
 export interface AudioEmitterLike {
@@ -26,22 +26,21 @@ export interface AudioEmitterLike {
   };
 }
 
+const noopUnsubscribe = () => {};
+
 /** Subscribe to an audioEmitter's muted/volume signals and return React state. */
 export function useAudioControls(audioEmitter: AudioEmitterLike | null) {
-  const [muted, setMuted] = useState(() => audioEmitter?.muted.peek() ?? true);
-  const [volume, setVolume] = useState(() => audioEmitter?.volume.peek() ?? 0.5);
+  const subscribeMuted = useCallback(
+    (onChange: () => void) => audioEmitter?.muted.subscribe(onChange) ?? noopUnsubscribe,
+    [audioEmitter]
+  );
+  const subscribeVolume = useCallback(
+    (onChange: () => void) => audioEmitter?.volume.subscribe(onChange) ?? noopUnsubscribe,
+    [audioEmitter]
+  );
 
-  useEffect(() => {
-    if (!audioEmitter) return;
-    setMuted(audioEmitter.muted.peek());
-    setVolume(audioEmitter.volume.peek());
-    const unsubMuted = audioEmitter.muted.subscribe(setMuted);
-    const unsubVolume = audioEmitter.volume.subscribe(setVolume);
-    return () => {
-      unsubMuted();
-      unsubVolume();
-    };
-  }, [audioEmitter]);
+  const muted = useSyncExternalStore(subscribeMuted, () => audioEmitter?.muted.peek() ?? true);
+  const volume = useSyncExternalStore(subscribeVolume, () => audioEmitter?.volume.peek() ?? 0.5);
 
   const toggleMute = useCallback(() => {
     if (!audioEmitter) return;

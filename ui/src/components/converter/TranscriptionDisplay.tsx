@@ -6,7 +6,7 @@ import styled from '@emotion/styled';
 import React, { useEffect, useState } from 'react';
 
 import type { TranscriptionData, TranscriptionSegment } from '@/types/generated/api-types';
-import { extractJsonValues } from '@/utils/jsonStream';
+import { extractJsonValues, releaseReaderLock } from '@/utils/jsonStream';
 import { componentsLogger } from '@/utils/logger';
 
 import { LoadingSpinner } from '../LoadingSpinner';
@@ -338,16 +338,8 @@ export const TranscriptionDisplay: React.FC<TranscriptionDisplayProps> = ({
           componentsLogger.error('TranscriptionDisplay: Stream processing error:', error);
         }
         setIsLoading(false);
-      } finally {
-        // Always release the reader lock
-        if (reader) {
-          try {
-            reader.releaseLock();
-          } catch {
-            // Ignore errors when releasing lock
-          }
-        }
       }
+      releaseReaderLock(reader);
     };
 
     processStream();

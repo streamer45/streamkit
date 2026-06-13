@@ -42,17 +42,28 @@ const SaveTemplateModal: React.FC<SaveTemplateModalProps> = ({
   const [isSaving, setIsSaving] = useState(false);
   const [showOverwriteConfirm, setShowOverwriteConfirm] = useState(false);
 
-  React.useEffect(() => {
+  // Reset fields on open during render (instead of in an effect) so the
+  // initial values are applied before paint and the component stays React
+  // Compiler-compatible.
+  const [prevReset, setPrevReset] = useState({ isOpen, initialName, initialDescription });
+  if (
+    isOpen !== prevReset.isOpen ||
+    initialName !== prevReset.initialName ||
+    initialDescription !== prevReset.initialDescription
+  ) {
+    setPrevReset({ isOpen, initialName, initialDescription });
     if (isOpen) {
       setName(initialName);
       setDescription(initialDescription);
     }
-  }, [isOpen, initialName, initialDescription]);
+  }
 
   const handleSave = async (overwrite = false) => {
     if (!name.trim()) return;
 
     setIsSaving(true);
+    let caught = false;
+    let caughtError: unknown;
     try {
       await onSave(name.trim(), description.trim(), overwrite);
       setName('');
@@ -63,11 +74,14 @@ const SaveTemplateModal: React.FC<SaveTemplateModalProps> = ({
       if (error instanceof Error && error.message.includes('409')) {
         setShowOverwriteConfirm(true);
       } else {
-        throw error;
+        caught = true;
+        caughtError = error;
       }
-    } finally {
-      setIsSaving(false);
     }
+    // Single reset for success and failure — kept out of a `finally` block,
+    // which the React Compiler cannot yet lower.
+    setIsSaving(false);
+    if (caught) throw caughtError;
   };
 
   const handleOverwriteConfirm = () => {

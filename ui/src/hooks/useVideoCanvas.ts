@@ -14,7 +14,7 @@
  * ```
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useCanvasAspectRatio } from '@/hooks/useCanvasAspectRatio';
 
@@ -25,10 +25,12 @@ interface CanvasSetter {
 
 export function useVideoCanvas(renderer: CanvasSetter | null | undefined) {
   const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
+  const canvasElRef = useRef<HTMLCanvasElement | null>(null);
   const aspectRatio = useCanvasAspectRatio(canvasEl);
 
   const canvasRef = useCallback(
     (el: HTMLCanvasElement | null) => {
+      canvasElRef.current = el;
       setCanvasEl(el);
       if (el && renderer) {
         renderer.canvas.set(el);
@@ -40,14 +42,15 @@ export function useVideoCanvas(renderer: CanvasSetter | null | undefined) {
   // Clear canvas pixels when the renderer is removed (e.g. pipeline
   // destroyed / stream disconnected) so stale frames don't linger.
   useEffect(() => {
-    if (!renderer && canvasEl) {
-      const ctx = canvasEl.getContext('2d');
+    const el = canvasElRef.current;
+    if (!renderer && el) {
+      const ctx = el.getContext('2d');
       if (ctx) {
-        ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+        ctx.clearRect(0, 0, el.width, el.height);
       }
       // Reset intrinsic size so the aspect-ratio hook also resets.
-      canvasEl.width = 0;
-      canvasEl.height = 0;
+      el.width = 0;
+      el.height = 0;
     }
   }, [renderer, canvasEl]);
 

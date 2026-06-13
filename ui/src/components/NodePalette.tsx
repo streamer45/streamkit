@@ -526,4 +526,4 @@ const NodePalette: React.FC<NodePaletteProps> = ({
   );
 };
 
-export default React.memo(NodePalette);
+export default NodePalette;

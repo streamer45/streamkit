@@ -428,7 +428,7 @@ export const ImageOverlayLayer: React.FC<{
       {imgSrc && (
         <img
           src={imgSrc}
-          alt={`Image overlay ${index}`}
+          alt=""
           style={{
             position: 'absolute',
             inset: 0,

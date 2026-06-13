@@ -5,7 +5,7 @@
 import styled from '@emotion/styled';
 import { useQueries, useQueryClient } from '@tanstack/react-query';
 import { Upload } from 'lucide-react';
-import { useState, useCallback, useMemo, useRef } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 
 import { useToast } from '@/context/ToastContext';
 import { usePermissions } from '@/hooks/usePermissions';
@@ -307,13 +307,17 @@ function useAssetData(typeFilter: TypeFilter, assetTypes: AssetTypeInfo[] | unde
     })),
   });
 
-  // useQueries returns a new array ref every render; stabilise for useMemo deps.
+  // useQueries returns a new array ref every render; stabilise for useMemo
+  // deps. Uses render-time state adjustment instead of a ref so the React
+  // Compiler can optimize this component (refs may not be read during render).
   const pluginQueryData = pluginQueries.map((q) => q.data);
-  const prevPluginDataRef = useRef(pluginQueryData);
-  const stablePluginData = pluginQueryData.every((d, i) => d === prevPluginDataRef.current[i])
-    ? prevPluginDataRef.current
-    : pluginQueryData;
-  prevPluginDataRef.current = stablePluginData;
+  const [stablePluginData, setStablePluginData] = useState(pluginQueryData);
+  if (
+    pluginQueryData.length !== stablePluginData.length ||
+    pluginQueryData.some((d, i) => d !== stablePluginData[i])
+  ) {
+    setStablePluginData(pluginQueryData);
+  }
 
   const uploadAudio = useUploadAudioAsset();
   const deleteAudio = useDeleteAudioAsset();

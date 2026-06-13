@@ -340,36 +340,39 @@ const ControlPane: React.FC<ControlPaneProps> = ({
         return;
       }
 
+      setIsUploading(true);
+      let errorMessage: string | null = null;
       try {
-        setIsUploading(true);
         const summary = await uploadPlugin(file);
         upsertPlugin(summary);
         await reloadSchemas();
         toast.success(`Loaded plugin ${summary.kind}`);
       } catch (err) {
         logger.error('Failed to upload plugin:', err);
-        toast.error(err instanceof Error ? err.message : 'Failed to upload plugin');
-      } finally {
-        setIsUploading(false);
+        errorMessage = err instanceof Error ? err.message : 'Failed to upload plugin';
       }
+      // Reset before toasting so a throwing toast can't strand the flag.
+      setIsUploading(false);
+      if (errorMessage) toast.error(errorMessage);
     },
     [can.loadPlugin, isUploading, toast, upsertPlugin]
   );
 
   const performRemovePlugin = React.useCallback(
     async (kind: string) => {
+      setDeletingKind(kind);
+      let errorMessage: string | null = null;
       try {
-        setDeletingKind(kind);
         await deletePlugin(kind);
         removePluginFromStore(kind);
         await reloadSchemas();
         toast.success(`Unloaded plugin ${kind}`);
       } catch (err) {
         logger.error('Failed to unload plugin:', err);
-        toast.error(err instanceof Error ? err.message : 'Failed to unload plugin');
-      } finally {
-        setDeletingKind(null);
+        errorMessage = err instanceof Error ? err.message : 'Failed to unload plugin';
       }
+      setDeletingKind(null);
+      if (errorMessage) toast.error(errorMessage);
     },
     [removePluginFromStore, toast]
   );

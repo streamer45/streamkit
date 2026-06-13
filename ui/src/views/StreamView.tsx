@@ -33,7 +33,7 @@ import { useVideoCanvas } from '@/hooks/useVideoCanvas';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { getApiUrl } from '@/services/base';
 import { listDynamicSamples } from '@/services/samples';
-import { createSession } from '@/services/sessions';
+import { createSession, listSessions } from '@/services/sessions';
 import { useSchemaStore, ensureSchemasLoaded } from '@/stores/schemaStore';
 import { useSessionStore } from '@/stores/sessionStore';
 import type { Event } from '@/types/types';
@@ -604,11 +604,11 @@ const StreamView: React.FC = () => {
     )
   );
 
+  const locationPathname = location.pathname;
   useEffect(() => {
     const validateSession = async () => {
       if (!activeSessionId) return;
       try {
-        const { listSessions } = await import('@/services/sessions');
         const sessions = await listSessions();
         if (sessions.some((s) => s.id === activeSessionId)) return;
 
@@ -621,7 +621,7 @@ const StreamView: React.FC = () => {
 
     validateSession();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.pathname]); // Trigger when route changes to /stream
+  }, [locationPathname]); // Trigger when route changes to /stream
 
   useEffect(() => {
     const unsubscribe = onMessage((message) => {
@@ -700,9 +700,8 @@ const StreamView: React.FC = () => {
   const confirmDestroySession = useCallback(async () => {
     if (!activeSessionId) return;
 
+    setDestroyConfirmLoading(true);
     try {
-      setDestroyConfirmLoading(true);
-
       if (status === 'connected' || status === 'connecting') {
         disconnect();
       }
@@ -721,9 +720,8 @@ const StreamView: React.FC = () => {
       viewState.setSessionCreationError(
         error instanceof Error ? error.message : 'Failed to destroy session'
       );
-    } finally {
-      setDestroyConfirmLoading(false);
     }
+    setDestroyConfirmLoading(false);
   }, [activeSessionId, clearActiveSession, disconnect, sendWs, status, viewState]);
 
   const canConnect =
@@ -925,6 +923,7 @@ const StreamView: React.FC = () => {
                 <Checkbox data-disabled={status !== 'disconnected' || !outputBroadcast}>
                   <input
                     type="checkbox"
+                    aria-label="Subscribe (Watch)"
                     checked={enableWatch}
                     onChange={(e) => setEnableWatch(e.target.checked)}
                     disabled={status !== 'disconnected' || !outputBroadcast}
@@ -934,6 +933,7 @@ const StreamView: React.FC = () => {
                 <Checkbox data-disabled={status !== 'disconnected'}>
                   <input
                     type="checkbox"
+                    aria-label="Publish (Mic)"
                     checked={enablePublish}
                     onChange={(e) => setEnablePublish(e.target.checked)}
                     disabled={status !== 'disconnected'}
