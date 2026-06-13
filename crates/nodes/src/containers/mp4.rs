@@ -2830,4 +2830,682 @@ mod tests {
             other => panic!("Expected Avc1, got {other:?}"),
         }
     }
+
+    // ----- Shared fixtures for the helper/accumulation/flush tests below -----
+
+    fn h264_keyframe_annexb() -> Vec<u8> {
+        let mut d = Vec::new();
+        d.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        d.extend_from_slice(&[0x67, 0x42, 0xC0, 0x1F]); // SPS
+        d.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        d.extend_from_slice(&[0x68, 0xCE, 0x38, 0x80]); // PPS
+        d.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        d.extend_from_slice(&[0x65, 0x11, 0x22, 0x33]); // IDR slice
+        d
+    }
+
+    fn h264_pframe_annexb(byte: u8) -> Vec<u8> {
+        let mut d = Vec::new();
+        d.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        d.extend_from_slice(&[0x41, byte, byte.wrapping_add(1)]); // non-IDR slice
+        d
+    }
+
+    fn new_seg_state() -> Fmp4SegmentState {
+        Fmp4SegmentState {
+            pending_samples: Vec::new(),
+            pending_payloads: Vec::new(),
+            init_sent: false,
+            video_sample_entry_sent: false,
+            audio_sample_entry_sent: false,
+        }
+    }
+
+    fn new_inputs(audio: bool, video: bool, skip: bool) -> MuxInputs {
+        MuxInputs {
+            audio_rx: None,
+            video_rx: None,
+            all_receivers: Vec::new(),
+            tp: TrackPresence { audio, video, skip_classification: skip },
+            tg: TrackProgress { audio_done: false, video_done: false },
+        }
+    }
+
+    fn n_video_samples(n: usize) -> Vec<Sample> {
+        (0..n)
+            .map(|_| Sample {
+                track_kind: TrackKind::Video,
+                timescale: NonZeroU32::new(90_000).unwrap(),
+                sample_entry: None,
+                duration: 3000,
+                keyframe: true,
+                composition_time_offset: None,
+                data_offset: 0,
+                data_size: 10,
+            })
+            .collect()
+    }
+
+    fn meta(duration_us: Option<u64>, keyframe: bool) -> PacketMetadata {
+        PacketMetadata { timestamp_us: None, duration_us, sequence: None, keyframe: Some(keyframe) }
+    }
+
+    // ----- classify_packet -----
+
+    #[test]
+    fn classify_packet_audio_video_and_non_av() {
+        // Binary with an audio content_type → Audio.
+        let audio = classify_packet(Packet::Binary {
+            data: Bytes::from_static(b"a"),
+            content_type: Some("audio/opus".into()),
+            metadata: None,
+        });
+        assert!(matches!(audio, Some(MuxFrame::Audio(ref d, _)) if &d[..] == b"a"));
+
+        // Binary with a video content_type → Video.
+        let video = classify_packet(Packet::Binary {
+            data: Bytes::from_static(b"v"),
+            content_type: Some("video/h264".into()),
+            metadata: None,
+        });
+        assert!(matches!(video, Some(MuxFrame::Video(ref d, _)) if &d[..] == b"v"));
+
+        // Binary without a content_type → defaults to Audio (with a warning).
+        let defaulted = classify_packet(Packet::Binary {
+            data: Bytes::from_static(b"x"),
+            content_type: None,
+            metadata: None,
+        });
+        assert!(matches!(defaulted, Some(MuxFrame::Audio(_, _))));
+
+        // A non-Binary packet is not classifiable → None.
+        assert!(classify_packet(Packet::Text(std::sync::Arc::from("hi"))).is_none());
+    }
+
+    // ----- mp4_content_type: arms not already covered by content_type_combinations -----
+
+    #[test]
+    fn content_type_remaining_combinations() {
+        assert_eq!(
+            mp4_content_type(Some(AudioCodec::Aac), Some(VideoCodec::Av1)),
+            "video/mp4; codecs=\"av01,mp4a\""
+        );
+        assert_eq!(
+            mp4_content_type(Some(AudioCodec::Aac), Some(VideoCodec::H264)),
+            "video/mp4; codecs=\"avc1,mp4a\""
+        );
+        assert_eq!(mp4_content_type(Some(AudioCodec::Aac), None), "audio/mp4; codecs=\"mp4a\"");
+        // Vp9 is neither Av1 nor H264 → treated as an unrecognised/future video
+        // codec, so only the audio codec survives in the codecs param.
+        assert_eq!(
+            mp4_content_type(Some(AudioCodec::Opus), Some(VideoCodec::Vp9)),
+            "video/mp4; codecs=\"opus\""
+        );
+        assert_eq!(
+            mp4_content_type(Some(AudioCodec::Aac), Some(VideoCodec::Vp9)),
+            "video/mp4; codecs=\"mp4a\""
+        );
+        // Video-only with an unrecognised codec → bare "video/mp4".
+        assert_eq!(mp4_content_type(None, Some(VideoCodec::Vp9)), "video/mp4");
+    }
+
+    // ----- Mp4MuxerNode::content_type (pre-connection hint) -----
+
+    #[test]
+    fn node_content_type_hint() {
+        let av =
+            Mp4MuxerNode::new(Mp4MuxerConfig { video_width: 640, video_height: 480, ..default() });
+        // No explicit codecs → AV1 video hint + Opus audio default.
+        assert_eq!(av.content_type().unwrap(), "video/mp4; codecs=\"av01,opus\"");
+
+        let h264_aac = Mp4MuxerNode::new(Mp4MuxerConfig {
+            video_width: 640,
+            video_height: 480,
+            video_codec: Some(VideoCodec::H264),
+            audio_codec: Some(AudioCodec::Aac),
+            ..default()
+        });
+        assert_eq!(h264_aac.content_type().unwrap(), "video/mp4; codecs=\"avc1,mp4a\"");
+
+        // No video dimensions → audio-only hint.
+        let audio_only = Mp4MuxerNode::new(Mp4MuxerConfig::default());
+        assert_eq!(audio_only.content_type().unwrap(), "audio/mp4; codecs=\"opus\"");
+    }
+
+    fn default() -> Mp4MuxerConfig {
+        Mp4MuxerConfig::default()
+    }
+
+    // ----- resolve_timescales -----
+
+    #[test]
+    fn resolve_timescales_defaults_and_overrides() {
+        let (v, a) = resolve_timescales(&Mp4MuxerConfig::default());
+        assert_eq!(v.get(), 90_000);
+        assert_eq!(a.get(), 48_000);
+
+        // Zero is invalid → falls back to the compile-time defaults.
+        let zeroed = Mp4MuxerConfig { video_timescale: 0, audio_timescale: 0, ..default() };
+        let (v, a) = resolve_timescales(&zeroed);
+        assert_eq!(v.get(), 90_000);
+        assert_eq!(a.get(), 48_000);
+
+        // Explicit overrides are honoured.
+        let custom =
+            Mp4MuxerConfig { video_timescale: 30_000, audio_timescale: 44_100, ..default() };
+        let (v, a) = resolve_timescales(&custom);
+        assert_eq!(v.get(), 30_000);
+        assert_eq!(a.get(), 44_100);
+    }
+
+    // ----- Mp4MuxerConfig::finalize_chunk_size -----
+
+    #[test]
+    fn finalize_chunk_size_default_and_custom() {
+        assert_eq!(Mp4MuxerConfig::default().finalize_chunk_size(), 256 * 1024);
+        let custom = Mp4MuxerConfig { finalize_chunk_size: NonZeroUsize::new(4096), ..default() };
+        assert_eq!(custom.finalize_chunk_size(), 4096);
+    }
+
+    // ----- check_video_keyframe_gate -----
+
+    #[test]
+    fn keyframe_gate_stays_closed_until_first_keyframe() {
+        let mut seen = false;
+        // Non-keyframes are dropped while the gate is closed.
+        assert!(!check_video_keyframe_gate(false, &mut seen));
+        assert!(!seen);
+        assert!(!check_video_keyframe_gate(false, &mut seen));
+        assert!(!seen);
+        // The first keyframe opens the gate.
+        assert!(check_video_keyframe_gate(true, &mut seen));
+        assert!(seen);
+        // Once open, everything passes — including subsequent non-keyframes.
+        assert!(check_video_keyframe_gate(false, &mut seen));
+        assert!(check_video_keyframe_gate(true, &mut seen));
+    }
+
+    // ----- accumulate_video_sample -----
+
+    #[test]
+    fn accumulate_video_sample_non_h264_bookkeeping() {
+        let config = Mp4MuxerConfig { video_width: 320, video_height: 240, ..default() };
+        let (vts, _) = resolve_timescales(&config);
+        let mut entry = build_av01_sample_entry(320, 240, None);
+        let mut seg = new_seg_state();
+        let data = Bytes::from(vec![0u8; 128]);
+
+        accumulate_video_sample(
+            &data,
+            Some(&meta(Some(33_333), true)),
+            true,
+            false,
+            &config,
+            vts,
+            &mut entry,
+            &mut seg,
+        );
+
+        assert_eq!(seg.pending_samples.len(), 1);
+        assert_eq!(seg.pending_payloads.len(), 1);
+        let s = &seg.pending_samples[0];
+        assert!(matches!(s.track_kind, TrackKind::Video));
+        assert_eq!(s.data_size, 128, "non-H.264 payload is stored verbatim");
+        assert!(s.keyframe);
+        assert_eq!(s.duration, us_to_ticks(33_333, vts.get()));
+        assert!(seg.video_sample_entry_sent);
+        assert!(s.sample_entry.is_some(), "first sample carries the entry");
+
+        // Second sample: entry already sent → None, and missing duration metadata
+        // falls back to the default video frame duration.
+        accumulate_video_sample(&data, None, false, false, &config, vts, &mut entry, &mut seg);
+        assert_eq!(seg.pending_samples.len(), 2);
+        assert!(seg.pending_samples[1].sample_entry.is_none());
+        assert!(!seg.pending_samples[1].keyframe);
+        assert_eq!(
+            seg.pending_samples[1].duration,
+            us_to_ticks(DEFAULT_VIDEO_FRAME_DURATION_US, vts.get())
+        );
+    }
+
+    #[test]
+    fn accumulate_video_sample_h264_rebuilds_entry_from_sps() {
+        let config = Mp4MuxerConfig { video_width: 320, video_height: 240, ..default() };
+        let (vts, _) = resolve_timescales(&config);
+        // Start from the placeholder entry; the first keyframe should replace it
+        // with one built from the real SPS/PPS in the access unit.
+        let mut entry = build_avc1_sample_entry(320, 240, None);
+        let mut seg = new_seg_state();
+        let data = Bytes::from(h264_keyframe_annexb());
+
+        accumulate_video_sample(
+            &data,
+            Some(&meta(Some(33_333), true)),
+            true,
+            true,
+            &config,
+            vts,
+            &mut entry,
+            &mut seg,
+        );
+
+        match &entry {
+            SampleEntry::Avc1(avc1) => {
+                assert_eq!(avc1.avcc_box.sps_list.len(), 1);
+                assert_eq!(avc1.avcc_box.pps_list.len(), 1);
+                assert_eq!(avc1.avcc_box.avc_profile_indication, 0x42);
+            },
+            other => panic!("expected Avc1 entry, got {other:?}"),
+        }
+        // The stored payload is the AVCC (length-prefixed) form, not Annex B.
+        let stored = &seg.pending_payloads[0];
+        assert_eq!(&stored[0..4], &[0x00, 0x00, 0x00, 0x04], "4-byte length prefix for the SPS");
+        assert_eq!(seg.pending_samples[0].data_size, stored.len());
+    }
+
+    // ----- accumulate_audio_sample -----
+
+    #[test]
+    fn accumulate_audio_sample_bookkeeping() {
+        let config = Mp4MuxerConfig::default();
+        let (_, ats) = resolve_timescales(&config);
+        let entry = build_opus_sample_entry(48_000, 2);
+        let mut seg = new_seg_state();
+        let data = Bytes::from(vec![0u8; 64]);
+
+        accumulate_audio_sample(
+            data.clone(),
+            Some(&meta(Some(20_000), true)),
+            AudioCodec::Opus,
+            ats,
+            &entry,
+            &mut seg,
+        );
+        assert_eq!(seg.pending_samples.len(), 1);
+        let s = &seg.pending_samples[0];
+        assert!(matches!(s.track_kind, TrackKind::Audio));
+        assert!(s.keyframe, "audio frames are always keyframes");
+        assert_eq!(s.data_size, 64);
+        assert_eq!(s.duration, us_to_ticks(20_000, ats.get()));
+        assert!(s.sample_entry.is_some());
+        assert!(seg.audio_sample_entry_sent);
+
+        // No metadata → fall back to the codec's default frame duration; entry
+        // is no longer re-sent.
+        accumulate_audio_sample(data, None, AudioCodec::Aac, ats, &entry, &mut seg);
+        assert!(seg.pending_samples[1].sample_entry.is_none());
+        assert_eq!(
+            seg.pending_samples[1].duration,
+            us_to_ticks(AudioCodec::Aac.default_frame_duration_us(), ats.get())
+        );
+    }
+
+    // ----- should_flush_fmp4_segment -----
+
+    #[test]
+    fn should_flush_after_init_is_unconditional() {
+        let mut seg = new_seg_state();
+        seg.init_sent = true;
+        let inputs = new_inputs(true, true, false);
+        assert!(should_flush_fmp4_segment(&seg, &inputs, 0));
+    }
+
+    #[test]
+    fn should_flush_when_all_present_tracks_ready() {
+        // Both tracks present and both sample entries registered → flush.
+        let mut seg = new_seg_state();
+        seg.video_sample_entry_sent = true;
+        seg.audio_sample_entry_sent = true;
+        let inputs = new_inputs(true, true, false);
+        assert!(should_flush_fmp4_segment(&seg, &inputs, 0));
+
+        // Audio-only stream (video absent): the missing video track counts as
+        // ready, so the first audio entry is enough.
+        let mut seg = new_seg_state();
+        seg.audio_sample_entry_sent = true;
+        let inputs = new_inputs(true, false, false);
+        assert!(should_flush_fmp4_segment(&seg, &inputs, 0));
+    }
+
+    #[test]
+    fn should_not_flush_while_a_track_is_still_pending() {
+        // Audio ready, but video present without its entry and not closed.
+        let mut seg = new_seg_state();
+        seg.audio_sample_entry_sent = true;
+        seg.pending_samples = n_video_samples(5);
+        let inputs = new_inputs(true, true, false);
+        assert!(!should_flush_fmp4_segment(&seg, &inputs, 0));
+    }
+
+    #[test]
+    fn should_force_flush_past_defer_cap_when_not_skip_classifying() {
+        let mut seg = new_seg_state();
+        seg.audio_sample_entry_sent = true; // video still not ready
+        seg.pending_samples = n_video_samples(FMP4_FIRST_FLUSH_DEFER_CAP);
+        let inputs = new_inputs(true, true, false);
+        assert!(should_flush_fmp4_segment(&seg, &inputs, 0));
+    }
+
+    #[test]
+    fn skip_classification_defers_until_hard_cap() {
+        // Skip-classification mode with open inputs defers at the soft cap...
+        let mut seg = new_seg_state();
+        seg.pending_samples = n_video_samples(FMP4_FIRST_FLUSH_DEFER_CAP);
+        let inputs = new_inputs(true, true, true);
+        assert!(!should_flush_fmp4_segment(&seg, &inputs, 2));
+
+        // ...but force-flushes once the hard cap is reached.
+        seg.pending_samples = n_video_samples(FMP4_SKIP_CLASS_HARD_CAP);
+        assert!(should_flush_fmp4_segment(&seg, &inputs, 2));
+    }
+
+    // ----- partition_samples_by_track: edge cases -----
+
+    #[test]
+    fn partition_samples_empty_input() {
+        let (s, p) = partition_samples_by_track(Vec::new(), Vec::new());
+        assert!(s.is_empty());
+        assert!(p.is_empty());
+    }
+
+    #[test]
+    fn partition_samples_single_track_recomputes_offsets() {
+        let mut samples = n_video_samples(2);
+        samples[0].data_size = 10;
+        samples[1].data_size = 20;
+        // Arrival offsets are deliberately wrong; partition must recompute them.
+        samples[0].data_offset = 999;
+        samples[1].data_offset = 999;
+        let payloads = vec![Bytes::from(vec![1u8; 10]), Bytes::from(vec![2u8; 20])];
+
+        let (s, p) = partition_samples_by_track(samples, payloads);
+        assert_eq!(s.len(), 2);
+        assert_eq!(p.len(), 2);
+        assert_eq!(s[0].data_offset, 0);
+        assert_eq!(s[1].data_offset, 10);
+        assert!(s.iter().all(|x| matches!(x.track_kind, TrackKind::Video)));
+    }
+
+    // ----- us_to_ticks: boundary / large values -----
+
+    #[test]
+    fn us_to_ticks_boundaries() {
+        assert_eq!(us_to_ticks(0, 90_000), 0);
+        // Exactly one second of ticks.
+        assert_eq!(us_to_ticks(1_000_000, 90_000), 90_000);
+        // A zero timescale yields zero ticks (no panic).
+        assert_eq!(us_to_ticks(1_000_000, 0), 0);
+        // Pathologically large durations saturate at u32::MAX rather than wrap.
+        assert_eq!(us_to_ticks(u64::MAX, 90_000), u32::MAX);
+    }
+
+    // ----- End-to-end node runs through run_stream_mode / run_file_mode -----
+
+    fn vtype(codec: VideoCodec) -> PacketType {
+        PacketType::EncodedVideo(EncodedVideoFormat {
+            codec,
+            bitstream_format: None,
+            codec_private: None,
+            profile: None,
+            level: None,
+        })
+    }
+
+    fn atype(codec: AudioCodec) -> PacketType {
+        PacketType::EncodedAudio(EncodedAudioFormat { codec, codec_private: None })
+    }
+
+    fn av_binary(
+        data: Vec<u8>,
+        ct: Option<&'static str>,
+        keyframe: bool,
+        duration_us: u64,
+    ) -> Packet {
+        Packet::Binary {
+            data: Bytes::from(data),
+            content_type: ct.map(std::borrow::Cow::Borrowed),
+            metadata: Some(meta(Some(duration_us), keyframe)),
+        }
+    }
+
+    fn first_binary_bytes(packets: &[Packet]) -> Bytes {
+        match packets.first().expect("expected at least one output packet") {
+            Packet::Binary { data, .. } => data.clone(),
+            other => panic!("expected a Binary packet, got {other:?}"),
+        }
+    }
+
+    fn concat_binary(packets: &[Packet]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for p in packets {
+            if let Packet::Binary { data, .. } = p {
+                out.extend_from_slice(data);
+            }
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn stream_mode_video_only_h264_end_to_end() {
+        use crate::test_utils::create_test_context;
+        use std::collections::HashMap;
+        use tokio::sync::mpsc;
+
+        let (tx, rx) = mpsc::channel(64);
+        let mut inputs = HashMap::new();
+        inputs.insert("in".to_string(), rx);
+        let (mut ctx, mock, _state_rx) = create_test_context(inputs, 1);
+        ctx.input_types.insert("in".to_string(), vtype(VideoCodec::H264));
+
+        let config = Mp4MuxerConfig {
+            mode: Mp4StreamingMode::Stream,
+            video_width: 320,
+            video_height: 240,
+            video_codec: Some(VideoCodec::H264),
+            ..default()
+        };
+        let node = Box::new(Mp4MuxerNode::new(config));
+        let handle = tokio::spawn(async move { node.run(ctx).await });
+
+        // A leading non-keyframe is dropped by the keyframe gate; the first
+        // keyframe opens it and the P-frames that follow are muxed.
+        tx.send(av_binary(h264_pframe_annexb(9), None, false, 33_333)).await.unwrap();
+        tx.send(av_binary(h264_keyframe_annexb(), None, true, 33_333)).await.unwrap();
+        for i in 0..5u8 {
+            tx.send(av_binary(h264_pframe_annexb(i), None, false, 33_333)).await.unwrap();
+        }
+        drop(tx);
+        handle.await.unwrap().unwrap();
+
+        let out = mock.get_packets_for_pin("out").await;
+        let first = first_binary_bytes(&out);
+        assert!(first.len() > 8);
+        assert_eq!(&first[4..8], b"ftyp", "first fMP4 packet starts with the init segment");
+    }
+
+    #[tokio::test]
+    async fn stream_mode_skip_classification_multi_segment() {
+        use crate::test_utils::create_test_context;
+        use std::collections::HashMap;
+        use tokio::sync::mpsc;
+
+        // Two inputs + video dimensions trigger skip-classification (unified
+        // receive loop, content_type-driven classification).
+        let (vtx, vrx) = mpsc::channel(256);
+        let (atx, arx) = mpsc::channel(256);
+        let mut inputs = HashMap::new();
+        inputs.insert("in".to_string(), vrx);
+        inputs.insert("in_1".to_string(), arx);
+        let (ctx, mock, _state_rx) = create_test_context(inputs, 1);
+
+        let config = Mp4MuxerConfig {
+            mode: Mp4StreamingMode::Stream,
+            video_width: 320,
+            video_height: 240,
+            num_inputs: 2,
+            video_codec: Some(VideoCodec::H264),
+            audio_codec: Some(AudioCodec::Aac),
+            ..default()
+        };
+        let node = Box::new(Mp4MuxerNode::new(config));
+        let handle = tokio::spawn(async move { node.run(ctx).await });
+
+        // Interleave enough samples to cross the 30-sample flush threshold
+        // several times, exercising both the init and subsequent-segment paths.
+        vtx.send(av_binary(h264_keyframe_annexb(), Some("video/h264"), true, 33_333))
+            .await
+            .unwrap();
+        for i in 0..40u8 {
+            vtx.send(av_binary(h264_pframe_annexb(i), Some("video/h264"), false, 33_333))
+                .await
+                .unwrap();
+            atx.send(av_binary(vec![0xAA; 64], Some("audio/aac"), true, 21_333)).await.unwrap();
+        }
+        drop(vtx);
+        drop(atx);
+        handle.await.unwrap().unwrap();
+
+        let out = mock.get_packets_for_pin("out").await;
+        assert!(out.len() >= 2, "multiple segments expected, got {}", out.len());
+        let first = first_binary_bytes(&out);
+        assert_eq!(&first[4..8], b"ftyp");
+    }
+
+    #[tokio::test]
+    async fn stream_mode_video_only_no_keyframe_produces_no_output() {
+        use crate::test_utils::create_test_context;
+        use std::collections::HashMap;
+        use tokio::sync::mpsc;
+
+        let (tx, rx) = mpsc::channel(64);
+        let mut inputs = HashMap::new();
+        inputs.insert("in".to_string(), rx);
+        let (mut ctx, mock, _state_rx) = create_test_context(inputs, 1);
+        ctx.input_types.insert("in".to_string(), vtype(VideoCodec::H264));
+
+        let config = Mp4MuxerConfig {
+            mode: Mp4StreamingMode::Stream,
+            video_width: 320,
+            video_height: 240,
+            video_codec: Some(VideoCodec::H264),
+            ..default()
+        };
+        let node = Box::new(Mp4MuxerNode::new(config));
+        let handle = tokio::spawn(async move { node.run(ctx).await });
+
+        // Never a keyframe — every frame is gated out, nothing is muxed.
+        for i in 0..5u8 {
+            tx.send(av_binary(h264_pframe_annexb(i), None, false, 33_333)).await.unwrap();
+        }
+        drop(tx);
+        handle.await.unwrap().unwrap();
+
+        assert!(mock.get_packets_for_pin("out").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dual_track_classified_av1_audio_end_to_end() {
+        use crate::test_utils::create_test_context;
+        use std::collections::HashMap;
+        use tokio::sync::mpsc;
+
+        // num_inputs == 2 with zero video dimensions keeps classification on
+        // (per-pin type resolution), exercising the dual-track receive loop.
+        let (vtx, vrx) = mpsc::channel(64);
+        let (atx, arx) = mpsc::channel(64);
+        let mut inputs = HashMap::new();
+        inputs.insert("in".to_string(), vrx);
+        inputs.insert("in_1".to_string(), arx);
+        let (mut ctx, mock, _state_rx) = create_test_context(inputs, 1);
+        ctx.input_types.insert("in".to_string(), vtype(VideoCodec::Av1));
+        ctx.input_types.insert("in_1".to_string(), atype(AudioCodec::Opus));
+
+        let config = Mp4MuxerConfig { mode: Mp4StreamingMode::Stream, num_inputs: 2, ..default() };
+        let node = Box::new(Mp4MuxerNode::new(config));
+        let handle = tokio::spawn(async move { node.run(ctx).await });
+
+        for i in 0..3u8 {
+            vtx.send(av_binary(vec![0x10 + i; 256], None, true, 33_333)).await.unwrap();
+            atx.send(av_binary(vec![0x80 + i; 64], None, true, 20_000)).await.unwrap();
+        }
+        drop(vtx);
+        drop(atx);
+        handle.await.unwrap().unwrap();
+
+        let out = mock.get_packets_for_pin("out").await;
+        let first = first_binary_bytes(&out);
+        assert_eq!(&first[4..8], b"ftyp");
+    }
+
+    #[tokio::test]
+    async fn file_mode_dual_track_round_trip_end_to_end() {
+        use crate::test_utils::create_test_context;
+        use std::collections::HashMap;
+        use tokio::sync::mpsc;
+
+        let (vtx, vrx) = mpsc::channel(64);
+        let (atx, arx) = mpsc::channel(64);
+        let mut inputs = HashMap::new();
+        inputs.insert("in".to_string(), vrx);
+        inputs.insert("in_1".to_string(), arx);
+        let (mut ctx, mock, _state_rx) = create_test_context(inputs, 1);
+        ctx.input_types.insert("in".to_string(), vtype(VideoCodec::H264));
+        ctx.input_types.insert("in_1".to_string(), atype(AudioCodec::Aac));
+
+        let config = Mp4MuxerConfig {
+            mode: Mp4StreamingMode::File,
+            num_inputs: 2,
+            video_codec: Some(VideoCodec::H264),
+            audio_codec: Some(AudioCodec::Aac),
+            ..default()
+        };
+        let node = Box::new(Mp4MuxerNode::new(config));
+        let handle = tokio::spawn(async move { node.run(ctx).await });
+
+        vtx.send(av_binary(h264_keyframe_annexb(), None, true, 33_333)).await.unwrap();
+        for i in 0..4u8 {
+            vtx.send(av_binary(h264_pframe_annexb(i), None, false, 33_333)).await.unwrap();
+            atx.send(av_binary(vec![0xBB; 64], None, true, 21_333)).await.unwrap();
+        }
+        drop(vtx);
+        drop(atx);
+        handle.await.unwrap().unwrap();
+
+        let out = mock.get_packets_for_pin("out").await;
+        let bytes = concat_binary(&out);
+        assert!(bytes.len() > 8, "file-mode output should be a complete MP4");
+        assert_eq!(&bytes[4..8], b"ftyp", "regular MP4 starts with the ftyp box");
+    }
+
+    #[tokio::test]
+    async fn run_errors_without_any_input() {
+        use crate::test_utils::create_test_context;
+        use std::collections::HashMap;
+
+        let (ctx, _mock, _state_rx) = create_test_context(HashMap::new(), 1);
+        let node = Box::new(Mp4MuxerNode::new(Mp4MuxerConfig::default()));
+        assert!(node.run(ctx).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn run_errors_on_multiple_same_kind_inputs() {
+        use crate::test_utils::create_test_context;
+        use std::collections::HashMap;
+        use tokio::sync::mpsc;
+
+        // Two inputs both resolved to video (dims zero ⇒ classification stays on)
+        // is a misconfiguration the node rejects.
+        let (_vtx0, vrx0) = mpsc::channel::<Packet>(4);
+        let (_vtx1, vrx1) = mpsc::channel::<Packet>(4);
+        let mut inputs = HashMap::new();
+        inputs.insert("in".to_string(), vrx0);
+        inputs.insert("in_1".to_string(), vrx1);
+        let (mut ctx, _mock, _state_rx) = create_test_context(inputs, 1);
+        ctx.input_types.insert("in".to_string(), vtype(VideoCodec::H264));
+        ctx.input_types.insert("in_1".to_string(), vtype(VideoCodec::H264));
+
+        let config = Mp4MuxerConfig { num_inputs: 2, ..default() };
+        let node = Box::new(Mp4MuxerNode::new(config));
+        assert!(node.run(ctx).await.is_err());
+    }
 }
