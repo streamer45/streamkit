@@ -5,7 +5,7 @@
 //! WASM node wrapper that implements the ProcessorNode trait
 
 use crate::bindings::Plugin;
-use crate::{wit_types, HostState};
+use crate::{arm_epoch_deadline, rearm_call_deadline, wit_types, HostState};
 use async_trait::async_trait;
 use futures::future::poll_fn;
 use std::{sync::Arc, task::Poll};
@@ -27,6 +27,7 @@ pub struct WasmNodeWrapper {
     engine: Engine,
     linker: Arc<Linker<HostState>>,
     max_memory_bytes: usize,
+    call_timeout: std::time::Duration,
 }
 
 impl WasmNodeWrapper {
@@ -39,8 +40,9 @@ impl WasmNodeWrapper {
         engine: Engine,
         linker: Arc<Linker<HostState>>,
         max_memory_bytes: usize,
+        call_timeout: std::time::Duration,
     ) -> Self {
-        Self { component, metadata, params, engine, linker, max_memory_bytes }
+        Self { component, metadata, params, engine, linker, max_memory_bytes, call_timeout }
     }
 }
 
@@ -75,8 +77,15 @@ impl ProcessorNode for WasmNodeWrapper {
     }
 
     async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
-        let Self { component, metadata: _metadata, params, engine, linker, max_memory_bytes } =
-            *self;
+        let Self {
+            component,
+            metadata: _metadata,
+            params,
+            engine,
+            linker,
+            max_memory_bytes,
+            call_timeout,
+        } = *self;
 
         let node_id = context.output_sender.node_name().to_string();
         tracing::info!(node = %node_id, "WASM plugin node starting");
@@ -93,17 +102,19 @@ impl ProcessorNode for WasmNodeWrapper {
             resource_table: ResourceTable::new(),
             output_sender: Some(output_sender),
             limits: StoreLimitsBuilder::new().memory_size(max_memory_bytes).build(),
+            call_deadline: None,
         };
 
         let mut store = Store::new(&engine, host_state);
         store.limiter(|s| &mut s.limits);
+        arm_epoch_deadline(&mut store, call_timeout);
 
         // Instantiate the component
         let instance = match linker.instantiate_async(&mut store, &component).await {
             Ok(instance) => instance,
             Err(e) => {
                 let err =
-                    StreamKitError::Configuration(format!("Failed to instantiate plugin: {e}"));
+                    StreamKitError::Configuration(format!("Failed to instantiate plugin: {e:#}"));
                 emit_state(
                     &state_tx_clone,
                     &node_id,
@@ -147,24 +158,26 @@ impl ProcessorNode for WasmNodeWrapper {
         tracing::debug!(node = %node_id, "Calling plugin constructor");
 
         // Construct a new stateful instance in the plugin with parameters
-        let instance_handle =
-            match instance_iface.call_constructor(&mut store, initial_params_json.as_deref()).await
-            {
-                Ok(handle) => {
-                    tracing::debug!(node = %node_id, "Plugin constructor succeeded");
-                    handle
-                },
-                Err(e) => {
-                    let err = StreamKitError::Configuration(format!("Plugin construct error: {e}"));
-                    tracing::error!(node = %node_id, error = %e, "Plugin constructor failed");
-                    emit_state(
-                        &state_tx_clone,
-                        &node_id,
-                        NodeState::Failed { reason: err.to_string() },
-                    );
-                    return Err(err);
-                },
-            };
+        rearm_call_deadline(&mut store, call_timeout);
+        let instance_handle = match instance_iface
+            .call_constructor(&mut store, initial_params_json.as_deref())
+            .await
+        {
+            Ok(handle) => {
+                tracing::debug!(node = %node_id, "Plugin constructor succeeded");
+                handle
+            },
+            Err(e) => {
+                let err = StreamKitError::Configuration(format!("Plugin construct error: {e:#}"));
+                tracing::error!(node = %node_id, error = %e, "Plugin constructor failed");
+                emit_state(
+                    &state_tx_clone,
+                    &node_id,
+                    NodeState::Failed { reason: err.to_string() },
+                );
+                return Err(err);
+            },
+        };
 
         tracing::info!(node = %node_id, "Plugin instance created, entering main loop");
         emit_state(&state_tx_clone, &node_id, NodeState::Running);
@@ -197,6 +210,7 @@ impl ProcessorNode for WasmNodeWrapper {
                                 }
                             };
 
+                            rearm_call_deadline(&mut store, call_timeout);
                             match instance_iface
                                 .call_update_params(&mut store, instance_handle, params_json.as_deref())
                                 .await
@@ -223,7 +237,7 @@ impl ProcessorNode for WasmNodeWrapper {
                                 }
                                 Err(e) => {
                                     let err = StreamKitError::Configuration(format!(
-                                        "Plugin update_params invocation error: {e}"
+                                        "Plugin update_params invocation error: {e:#}"
                                     ));
                                     emit_state(
                                         &state_tx_clone,
@@ -254,6 +268,7 @@ impl ProcessorNode for WasmNodeWrapper {
                         Some((input_pin, packet)) => {
                             let wit_packet: wit_types::Packet = packet.into();
 
+                            rearm_call_deadline(&mut store, call_timeout);
                             match instance_iface
                                 .call_process(&mut store, instance_handle, &input_pin, &wit_packet)
                                 .await
@@ -310,6 +325,7 @@ impl ProcessorNode for WasmNodeWrapper {
         }
 
         // Clean up
+        rearm_call_deadline(&mut store, call_timeout);
         if let Err(e) = instance_iface.call_cleanup(&mut store, instance_handle).await {
             tracing::warn!("Plugin cleanup error: {}", e);
         }
@@ -528,6 +544,7 @@ mod tests {
             engine,
             linker,
             32 * 1024 * 1024,
+            crate::DEFAULT_CALL_TIMEOUT,
         );
 
         let inputs = wrapper.input_pins();
@@ -560,6 +577,7 @@ mod tests {
             engine,
             linker,
             8 * 1024 * 1024,
+            crate::DEFAULT_CALL_TIMEOUT,
         );
         assert!(wrapper.input_pins().is_empty());
         assert!(wrapper.output_pins().is_empty());
@@ -588,6 +606,7 @@ mod tests {
             engine,
             linker,
             16 * 1024 * 1024,
+            crate::DEFAULT_CALL_TIMEOUT,
         );
 
         let inputs = wrapper.input_pins();

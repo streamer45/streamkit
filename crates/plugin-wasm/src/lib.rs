@@ -15,7 +15,7 @@ use std::sync::Arc;
 use streamkit_core::{NodeRegistry, StreamKitError};
 use tokio::sync::Mutex;
 use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
-use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
+use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder, UpdateDeadline};
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
 mod bindings {
@@ -35,6 +35,10 @@ mod conversions;
 mod wrapper;
 pub use wrapper::WasmNodeWrapper;
 
+/// Default wall-clock bound for a single guest call (constructor, process,
+/// update-params, cleanup). Mirrors the native host's `DEFAULT_CALL_TIMEOUT`.
+pub const DEFAULT_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(5);
+
 /// Configuration for the WASM plugin runtime
 #[derive(Debug, Clone)]
 pub struct PluginRuntimeConfig {
@@ -44,6 +48,10 @@ pub struct PluginRuntimeConfig {
     pub enable_simd: bool,
     /// Enable multi-threading (experimental)
     pub enable_threads: bool,
+    /// Wall-clock bound for a single guest call. A guest that exceeds this
+    /// (e.g. a tight compute loop) is interrupted via wasmtime epoch
+    /// interruption and the node transitions to `Failed`.
+    pub call_timeout: std::time::Duration,
 }
 
 impl Default for PluginRuntimeConfig {
@@ -52,6 +60,7 @@ impl Default for PluginRuntimeConfig {
             max_memory_bytes: 64 * 1024 * 1024, // 64MB
             enable_simd: true,
             enable_threads: false,
+            call_timeout: DEFAULT_CALL_TIMEOUT,
         }
     }
 }
@@ -60,7 +69,6 @@ impl Default for PluginRuntimeConfig {
 pub struct PluginRuntime {
     engine: Engine,
     linker: Arc<Linker<HostState>>,
-    #[allow(dead_code)] // Stored for potential future use
     config: PluginRuntimeConfig,
 }
 
@@ -78,8 +86,10 @@ impl PluginRuntime {
             engine_config.wasm_relaxed_simd(false);
         }
         engine_config.wasm_threads(config.enable_threads);
+        engine_config.epoch_interruption(true);
 
         let engine = Engine::new(&engine_config)?;
+        spawn_epoch_ticker(engine.weak());
         let mut linker = Linker::new(&engine);
 
         wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
@@ -116,6 +126,7 @@ impl PluginRuntime {
             engine: self.engine.clone(),
             linker: Arc::clone(&self.linker),
             max_memory_bytes: self.config.max_memory_bytes,
+            call_timeout: self.config.call_timeout,
         })
     }
 
@@ -126,9 +137,11 @@ impl PluginRuntime {
             resource_table: ResourceTable::new(),
             output_sender: None,
             limits: StoreLimitsBuilder::new().memory_size(self.config.max_memory_bytes).build(),
+            call_deadline: None,
         };
         let mut store = Store::new(&self.engine, host_state);
         store.limiter(|s| &mut s.limits);
+        arm_epoch_deadline(&mut store, self.config.call_timeout);
 
         let instance =
             futures::executor::block_on(self.linker.instantiate_async(&mut store, component))?;
@@ -206,6 +219,7 @@ pub struct LoadedPlugin {
     engine: Engine,
     linker: Arc<Linker<HostState>>,
     max_memory_bytes: usize,
+    call_timeout: std::time::Duration,
 }
 
 impl LoadedPlugin {
@@ -214,6 +228,12 @@ impl LoadedPlugin {
     /// This is a const fn since it only returns a reference to stored data
     pub const fn metadata(&self) -> &wit_types::NodeMetadata {
         &self.metadata
+    }
+
+    /// Override the per-call execution deadline for nodes created from this
+    /// plugin ([`DEFAULT_CALL_TIMEOUT`] unless configured otherwise).
+    pub const fn set_call_timeout(&mut self, timeout: std::time::Duration) {
+        self.call_timeout = timeout;
     }
 
     /// Create a new node instance from this plugin
@@ -232,6 +252,7 @@ impl LoadedPlugin {
             self.engine.clone(),
             Arc::clone(&self.linker),
             self.max_memory_bytes,
+            self.call_timeout,
         );
         Ok(Box::new(node))
     }
@@ -243,6 +264,48 @@ pub struct HostState {
     resource_table: ResourceTable,
     output_sender: Option<Arc<Mutex<streamkit_core::OutputSender>>>,
     limits: StoreLimits,
+    /// Wall-clock instant after which the current guest call is interrupted.
+    /// Re-armed before every guest call; consulted by the epoch callback.
+    call_deadline: Option<std::time::Instant>,
+}
+
+/// Interval at which the engine epoch is incremented. The epoch callback
+/// enforces the wall-clock deadline, so this only bounds how often a runaway
+/// guest is checked, not the timeout itself.
+const EPOCH_TICK: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Spawns the single per-engine thread that drives the epoch forward so epoch
+/// callbacks get a chance to interrupt non-yielding guests (a spinning guest
+/// blocks its tokio worker, so this must be a dedicated OS thread). Holds only
+/// a weak engine handle and exits once the engine is dropped.
+fn spawn_epoch_ticker(engine: wasmtime::EngineWeak) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(EPOCH_TICK);
+        let Some(engine) = engine.upgrade() else { break };
+        engine.increment_epoch();
+    });
+}
+
+/// Configure epoch-based interruption on a store: the epoch callback checks
+/// the per-call wall-clock deadline so the interval at which the (shared)
+/// engine epoch is incremented does not affect the effective timeout.
+pub(crate) fn arm_epoch_deadline(store: &mut Store<HostState>, timeout: std::time::Duration) {
+    store.epoch_deadline_callback(move |ctx| {
+        if ctx.data().call_deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            return Err(wasmtime::Error::msg(format!(
+                "plugin call exceeded execution deadline of {timeout:?}"
+            )));
+        }
+        Ok(UpdateDeadline::Continue(1))
+    });
+    store.set_epoch_deadline(1);
+    rearm_call_deadline(store, timeout);
+}
+
+/// Starts the wall-clock deadline for the next guest call. A timeout too large
+/// to represent as an `Instant` disables the deadline rather than panicking.
+pub(crate) fn rearm_call_deadline(store: &mut Store<HostState>, timeout: std::time::Duration) {
+    store.data_mut().call_deadline = std::time::Instant::now().checked_add(timeout);
 }
 
 impl WasiView for HostState {
@@ -389,6 +452,7 @@ mod tests {
             max_memory_bytes: 16 * 1024 * 1024,
             enable_simd: true,
             enable_threads: false,
+            call_timeout: DEFAULT_CALL_TIMEOUT,
         };
         let _runtime =
             PluginRuntime::new(cfg).expect("runtime must initialize with custom memory limit");
@@ -401,6 +465,7 @@ mod tests {
                 max_memory_bytes: 16 * 1024 * 1024,
                 enable_simd: false,
                 enable_threads,
+                call_timeout: DEFAULT_CALL_TIMEOUT,
             };
             PluginRuntime::new(cfg).unwrap_or_else(|e| {
                 panic!("enable_simd=false (enable_threads={enable_threads}) must succeed: {e}")
@@ -527,6 +592,7 @@ mod tests {
             engine,
             linker: runtime.linker_for_test(),
             max_memory_bytes: PluginRuntimeConfig::default().max_memory_bytes,
+            call_timeout: DEFAULT_CALL_TIMEOUT,
         }
     }
 
@@ -648,6 +714,7 @@ mod tests {
             resource_table: wasmtime::component::ResourceTable::new(),
             output_sender: None,
             limits: wasmtime::StoreLimitsBuilder::new().memory_size(1 << 20).build(),
+            call_deadline: None,
         };
         let packet = wit_types::Packet::Text("hi".to_string());
         let err = <HostState as Host>::send_output(&mut state, "out".to_string(), packet)
@@ -668,6 +735,7 @@ mod tests {
             resource_table: wasmtime::component::ResourceTable::new(),
             output_sender: None,
             limits: wasmtime::StoreLimitsBuilder::new().memory_size(1 << 20).build(),
+            call_deadline: None,
         };
         for (level, label) in [
             (LogLevel::Debug, "dbg"),
