@@ -4,7 +4,7 @@
 
 import styled from '@emotion/styled';
 import { load as loadYaml } from 'js-yaml';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { AssetSelector } from '@/components/converter/AssetSelector';
 import { ConversionProgress } from '@/components/converter/ConversionProgress';
@@ -690,14 +690,16 @@ const ConvertView: React.FC = () => {
 
   useEffect(() => {
     const { fields, hasHttpInput: hasHttp } = deriveHttpInputFieldsFromParsed(parsedPipelineYaml);
-    setHasHttpInput(hasHttp);
-    setHttpInputFields(fields);
-    setFieldUploads((prev) => {
-      const next: Record<string, File | null> = {};
-      fields.forEach((f) => {
-        next[f.name] = prev[f.name] ?? null;
+    startTransition(() => {
+      setHasHttpInput(hasHttp);
+      setHttpInputFields(fields);
+      setFieldUploads((prev) => {
+        const next: Record<string, File | null> = {};
+        fields.forEach((f) => {
+          next[f.name] = prev[f.name] ?? null;
+        });
+        return next;
       });
-      return next;
     });
   }, [parsedPipelineYaml]);
 
@@ -730,9 +732,11 @@ const ConvertView: React.FC = () => {
 
   useEffect(() => {
     const fetchSamples = async () => {
-      try {
+      startTransition(() => {
         setSamplesLoading(true);
         setSamplesError(null);
+      });
+      try {
         const fetchedSamples = await listSamples();
 
         const oneshotSamples = fetchedSamples.filter((sample) => sample.mode === 'oneshot');
@@ -747,9 +751,8 @@ const ConvertView: React.FC = () => {
       } catch (error) {
         viewsLogger.error('Failed to fetch samples:', error);
         setSamplesError(error instanceof Error ? error.message : 'Failed to load sample pipelines');
-      } finally {
-        setSamplesLoading(false);
       }
+      setSamplesLoading(false);
     };
 
     fetchSamples();

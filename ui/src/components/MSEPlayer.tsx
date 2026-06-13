@@ -427,9 +427,11 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
   const onCompleteRef = useRef(onComplete);
   const onCancelRef = useRef(onCancel);
   const onErrorRef = useRef(onError);
-  onCompleteRef.current = onComplete;
-  onCancelRef.current = onCancel;
-  onErrorRef.current = onError;
+  useEffect(() => {
+    onCompleteRef.current = onComplete;
+    onCancelRef.current = onCancel;
+    onErrorRef.current = onError;
+  }, [onComplete, onCancel, onError]);
   const [status, setStatus] = useState<string>('Initializing...');
   const [error, setError] = useState<string | null>(null);
   const [isReadyToPlay, setIsReadyToPlay] = useState<boolean>(false);
@@ -482,6 +484,12 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
     const handleSourceOpen = async () => {
       if (aborted) return;
 
+      if (stream.locked) {
+        componentsLogger.warn('MSEPlayer: Stream is already locked, skipping');
+        setErrorAndNotify('Stream is already locked. Please try again.');
+        return;
+      }
+
       try {
         setStatus('Opening media source...');
 
@@ -493,12 +501,6 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
 
         const mediaKind = isVideo ? 'video' : 'audio';
         setStatus(`Streaming ${mediaKind}...`);
-
-        if (stream.locked) {
-          componentsLogger.warn('MSEPlayer: Stream is already locked, skipping');
-          setErrorAndNotify('Stream is already locked. Please try again.');
-          return;
-        }
 
         // Read chunks from the stream and append to source buffer
         const reader = stream.getReader();
@@ -538,18 +540,17 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
       } catch (err) {
         if (abortedDueToPlaybackError) {
           // Playback failed (e.g., decode error). Caller can decide how to fall back.
-          return;
-        }
-        if (isCancellationError(err) || aborted) {
+        } else if (isCancellationError(err) || aborted) {
           componentsLogger.info('MSEPlayer: Stream cancelled/aborted by user');
           onCancelRef.current?.();
         } else {
           componentsLogger.error('MSEPlayer: Streaming error:', err);
           setErrorAndNotify(err instanceof Error ? err.message : 'Unknown error');
         }
-      } finally {
-        readerRef.current = null;
       }
+      // Single cleanup point for every exit above — kept out of a `finally`
+      // block, which the React Compiler cannot yet lower.
+      readerRef.current = null;
     };
 
     mediaSource.addEventListener('sourceopen', handleSourceOpen);

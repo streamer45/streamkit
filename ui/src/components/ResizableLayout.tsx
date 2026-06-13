@@ -34,6 +34,46 @@ const normalizePercent = (value: unknown, fallback: number) => {
   return Math.max(0, Math.min(100, normalized));
 };
 
+const clampSideSize = (size: number, collapsed: boolean) => {
+  if (collapsed) return 0;
+  return Math.max(10, Math.min(50, normalizePercent(size, 20)));
+};
+
+interface InitialLayout {
+  hasRightPanel: boolean;
+  left: number;
+  center: number;
+  right: number;
+}
+
+function computeInitialLayout(
+  hasRightPanel: boolean,
+  leftSize: number,
+  leftCollapsed: boolean,
+  rightSize: number,
+  rightCollapsed: boolean
+): InitialLayout {
+  let initialLeftSize = clampSideSize(leftSize, leftCollapsed);
+  let initialRightSize = hasRightPanel ? clampSideSize(rightSize, rightCollapsed) : 0;
+  let initialCenterSize = Math.max(0, 100 - initialLeftSize - initialRightSize);
+
+  if (initialCenterSize < 20) {
+    const deficit = 20 - initialCenterSize;
+    const reduceRight = Math.min(deficit, initialRightSize);
+    initialRightSize -= reduceRight;
+    const reduceLeft = Math.min(deficit - reduceRight, initialLeftSize);
+    initialLeftSize -= reduceLeft;
+    initialCenterSize = Math.max(0, 100 - initialLeftSize - initialRightSize);
+  }
+
+  return {
+    hasRightPanel,
+    left: initialLeftSize,
+    center: initialCenterSize,
+    right: initialRightSize,
+  };
+}
+
 export function ResizableLayout(props: ResizableLayoutProps) {
   const { mobileBreakpointPx = 900 } = props;
   const isMobile = useMediaQuery(`(max-width: ${mobileBreakpointPx}px)`);
@@ -51,11 +91,11 @@ function MobileResizableLayout({
   const hasRightPanel = right != null;
   const [activeMobilePane, setActiveMobilePane] = useState<'left' | 'center' | 'right'>('center');
 
-  useEffect(() => {
-    if (activeMobilePane === 'right' && !hasRightPanel) {
-      setActiveMobilePane('center');
-    }
-  }, [activeMobilePane, hasRightPanel]);
+  // Adjust state during render (instead of in an effect) so the fallback pane
+  // is applied before paint and the component stays React Compiler-compatible.
+  if (activeMobilePane === 'right' && !hasRightPanel) {
+    setActiveMobilePane('center');
+  }
 
   const mobilePanes = useMemo(() => {
     const panes: Array<{
@@ -126,41 +166,18 @@ function DesktopResizableLayout({ left, center, right }: ResizableLayoutProps) {
     }))
   );
 
-  const clampSideSize = (size: number, collapsed: boolean) => {
-    if (collapsed) return 0;
-    return Math.max(10, Math.min(50, normalizePercent(size, 20)));
-  };
-
-  const initialLayoutRef = useRef<{
-    hasRightPanel: boolean;
-    left: number;
-    center: number;
-    right: number;
-  } | null>(null);
-
-  if (!initialLayoutRef.current || initialLayoutRef.current.hasRightPanel !== hasRightPanel) {
-    let initialLeftSize = clampSideSize(leftSize, leftCollapsed);
-    let initialRightSize = hasRightPanel ? clampSideSize(rightSize, rightCollapsed) : 0;
-    let initialCenterSize = Math.max(0, 100 - initialLeftSize - initialRightSize);
-
-    if (initialCenterSize < 20) {
-      const deficit = 20 - initialCenterSize;
-      const reduceRight = Math.min(deficit, initialRightSize);
-      initialRightSize -= reduceRight;
-      const reduceLeft = Math.min(deficit - reduceRight, initialLeftSize);
-      initialLeftSize -= reduceLeft;
-      initialCenterSize = Math.max(0, 100 - initialLeftSize - initialRightSize);
-    }
-
-    initialLayoutRef.current = {
-      hasRightPanel,
-      left: initialLeftSize,
-      center: initialCenterSize,
-      right: initialRightSize,
-    };
+  // Captured once per hasRightPanel value (state instead of a ref so the
+  // React Compiler can optimize this component — refs may not be read during
+  // render). Intentionally NOT recomputed when sizes change: these are only
+  // the panels' initial defaultSize values.
+  const [initialLayout, setInitialLayout] = useState<InitialLayout>(() =>
+    computeInitialLayout(hasRightPanel, leftSize, leftCollapsed, rightSize, rightCollapsed)
+  );
+  if (initialLayout.hasRightPanel !== hasRightPanel) {
+    setInitialLayout(
+      computeInitialLayout(hasRightPanel, leftSize, leftCollapsed, rightSize, rightCollapsed)
+    );
   }
-
-  const initialLayout = initialLayoutRef.current;
 
   const handleLeftCollapse = useCallback(() => setLeftCollapsed(true), [setLeftCollapsed]);
   const handleLeftExpand = useCallback(() => setLeftCollapsed(false), [setLeftCollapsed]);

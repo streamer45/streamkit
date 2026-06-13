@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useToast } from '@/context/ToastContext';
 import { usePermissions } from '@/hooks/usePermissions';
@@ -368,11 +368,11 @@ const MarketplaceTab: React.FC<MarketplaceTabProps> = ({ active }) => {
   }, [index, selectedPluginId]);
 
   useEffect(() => {
-    setLicenseAccepted(false);
+    startTransition(() => setLicenseAccepted(false));
   }, [selectedPluginId, selectedVersion]);
 
   useEffect(() => {
-    setSelectedModelIds(defaultModelSelection(details));
+    startTransition(() => setSelectedModelIds(defaultModelSelection(details)));
   }, [details, selectedVersion]);
 
   const jobCallbacks = useMemo(

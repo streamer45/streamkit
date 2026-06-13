@@ -68,3 +68,16 @@ export function extractJsonValues(buffer: string): { values: string[]; remainder
 
   return { values, remainder: buffer.slice(startIndex) };
 }
+
+/**
+ * Release a stream reader's lock, ignoring failures (the lock may already be
+ * released). Callers use this after a try/catch instead of in a `finally`
+ * block, which the React Compiler cannot yet lower.
+ */
+export function releaseReaderLock(reader: ReadableStreamDefaultReader<string> | null): void {
+  try {
+    reader?.releaseLock();
+  } catch {
+    // Already released.
+  }
+}

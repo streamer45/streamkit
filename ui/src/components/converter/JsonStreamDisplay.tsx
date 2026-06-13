@@ -5,7 +5,7 @@
 import styled from '@emotion/styled';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { extractJsonValues } from '@/utils/jsonStream';
+import { extractJsonValues, releaseReaderLock } from '@/utils/jsonStream';
 import { componentsLogger } from '@/utils/logger';
 
 import { LoadingSpinner } from '../LoadingSpinner';
@@ -141,6 +141,10 @@ function safePrettyPrint(value: unknown): string {
   }
 }
 
+// React.memo is required here even with the React Compiler: the items array
+// gets a new identity on every streamed chunk, so all row elements are
+// recreated and the memo's shallow prop compare is the only thing that skips
+// re-invoking unchanged rows.
 const JsonStreamRow = React.memo(({ item }: { item: JsonStreamDisplayItem }) => {
   return (
     <Item>
@@ -308,15 +312,8 @@ export const JsonStreamDisplay: React.FC<JsonStreamDisplayProps> = ({
           componentsLogger.error('JsonStreamDisplay: Stream processing error:', error);
         }
         setIsLoading(false);
-      } finally {
-        if (reader) {
-          try {
-            reader.releaseLock();
-          } catch {
-            // ignore
-          }
-        }
       }
+      releaseReaderLock(reader);
     };
 
     processStream();

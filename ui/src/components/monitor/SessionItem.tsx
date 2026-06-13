@@ -148,9 +148,14 @@ export const SessionInfoChip: React.FC<SessionInfoDisplayProps> = React.memo(({ 
 
   const displayName = session.name || `session-${shortSessionId(session.id)}`;
 
-  useEffect(() => {
+  // Collapse inline during render when the session changes
+  // (https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes)
+  // to avoid a one-frame flash of the previous session's expanded panel.
+  const [prevSessionId, setPrevSessionId] = useState(session.id);
+  if (session.id !== prevSessionId) {
+    setPrevSessionId(session.id);
     setIsExpanded(false);
-  }, [session.id]);
+  }
 
   useEffect(() => {
     if (!isExpanded) return;
