@@ -7,14 +7,14 @@ import '@/App.css';
 import styled from '@emotion/styled';
 import {
   ReactFlowProvider,
-  useOnSelectionChange,
   type ReactFlowInstance,
   type Node as RFNode,
   type Connection,
   type Edge,
   type OnConnectEnd,
+  type OnSelectionChangeFunc,
 } from '@xyflow/react';
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useShallow } from 'zustand/shallow';
 
@@ -742,12 +742,13 @@ const DesignViewContent: React.FC = () => {
   const arraysEqual = (a: string[], b: string[]) =>
     a.length === b.length && a.every((v, i) => v === b[i]);
 
-  useOnSelectionChange({
-    onChange: ({ nodes: selectedNodes }) => {
+  const handleSelectionChange = useCallback<OnSelectionChangeFunc<RFNode>>(
+    ({ nodes: selectedNodes }) => {
       const nextNodeIds = selectedNodes.map((node) => node.id);
       setSelectedNodes((prev) => (arraysEqual(prev, nextNodeIds) ? prev : nextNodeIds));
     },
-  });
+    []
+  );
 
   const handleAutoLayout = () => {
     if (nodes.length === 0) return;
@@ -1408,6 +1409,7 @@ const DesignViewContent: React.FC = () => {
         onPaneContextMenu={onPaneContextMenu}
         onNodeContextMenu={onNodeContextMenu}
         onNodeDragStop={handleNodeDragStop}
+        onSelectionChange={handleSelectionChange}
         onDrop={onDrop}
         onDragOver={onDragOver}
         reactFlowWrapper={reactFlowWrapper}
