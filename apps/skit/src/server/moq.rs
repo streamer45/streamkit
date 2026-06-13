@@ -233,3 +233,151 @@ pub(super) async fn validate_moq_auth(
         })
         .map(|ctx| Arc::new(ctx) as Arc<dyn streamkit_core::moq_gateway::MoqAuthChecker>)
 }
+
+#[cfg(all(test, feature = "moq"))]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::validate_moq_auth;
+    use crate::auth::{hash_token, AuthState, MoqClaims, TokenMetadata, TokenType, AUD_MOQ};
+    use crate::config::{AuthConfig, AuthMode};
+    use axum::http::StatusCode;
+    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+    use tempfile::TempDir;
+
+    const FAR_FUTURE: u64 = 4_102_444_800; // 2100-01-01
+
+    async fn enabled_auth_state() -> (AuthState, TempDir) {
+        let temp = TempDir::new().unwrap();
+        let config = AuthConfig {
+            mode: AuthMode::Enabled,
+            state_dir: temp.path().to_string_lossy().to_string(),
+            api_max_ttl_secs: 86400,
+            moq_max_ttl_secs: 86400,
+            ..Default::default()
+        };
+        let state = AuthState::new(&config, true).await.unwrap();
+        (state, temp)
+    }
+
+    fn moq_claims(jti: &str, root: &str) -> MoqClaims {
+        MoqClaims {
+            aud: AUD_MOQ.to_string(),
+            root: root.to_string(),
+            subscribe: vec![String::new()],
+            publish: vec![String::new()],
+            iat: 0,
+            exp: FAR_FUTURE,
+            jti: jti.to_string(),
+        }
+    }
+
+    /// Sign a MoQ JWT with the server's active key without recording metadata.
+    /// Returns the raw token and its hash so tests can craft each rejection arm.
+    fn sign(state: &AuthState, claims: &MoqClaims) -> (String, String) {
+        let key = state.key_provider().unwrap().active_key();
+        let mut header = Header::new(Algorithm::EdDSA);
+        header.kid = Some(key.kid.clone());
+        let encoding_key = EncodingKey::from_ed_der(&key.pkcs8);
+        let token = encode(&header, claims, &encoding_key).unwrap();
+        let hash = hash_token(&token);
+        (token, hash)
+    }
+
+    async fn store_meta(state: &AuthState, jti: &str, token_hash: &str, revoked: bool) {
+        let meta = TokenMetadata {
+            jti: jti.to_string(),
+            token_hash: token_hash.to_string(),
+            token_type: TokenType::Moq,
+            role: None,
+            label: None,
+            created_at: 0,
+            exp: FAR_FUTURE,
+            revoked,
+            created_by: "test".to_string(),
+        };
+        state.token_metadata_store().unwrap().store(meta).await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn missing_jwt_is_unauthorized() {
+        let (state, _temp) = enabled_auth_state().await;
+        let err = validate_moq_auth(&state, "/moq", None).await.unwrap_err();
+        assert_eq!(err, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn malformed_jwt_is_unauthorized() {
+        let (state, _temp) = enabled_auth_state().await;
+        let err =
+            validate_moq_auth(&state, "/moq", Some("not.a.jwt".to_string())).await.unwrap_err();
+        assert_eq!(err, StatusCode::UNAUTHORIZED);
+    }
+
+    // An API-audience token is rejected by `validate_moq_token`'s audience check.
+    // The explicit `claims.aud != AUD_MOQ` guard in `validate_moq_auth` is
+    // unreachable defensive code (see PR "Follow-ups").
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wrong_audience_token_is_unauthorized() {
+        let (state, _temp) = enabled_auth_state().await;
+        let (api_token, _) = state.mint_api_token("admin", None, 3600, "test").await.unwrap();
+        let err = validate_moq_auth(&state, "/moq", Some(api_token)).await.unwrap_err();
+        assert_eq!(err, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn jti_not_minted_is_unauthorized() {
+        let (state, _temp) = enabled_auth_state().await;
+        let (token, _hash) = sign(&state, &moq_claims("never-stored", "/moq"));
+        let err = validate_moq_auth(&state, "/moq", Some(token)).await.unwrap_err();
+        assert_eq!(err, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn token_hash_mismatch_is_unauthorized() {
+        let (state, _temp) = enabled_auth_state().await;
+        let (token, _hash) = sign(&state, &moq_claims("hash-mismatch", "/moq"));
+        store_meta(&state, "hash-mismatch", &"0".repeat(64), false).await;
+        let err = validate_moq_auth(&state, "/moq", Some(token)).await.unwrap_err();
+        assert_eq!(err, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn metadata_revoked_is_unauthorized() {
+        let (state, _temp) = enabled_auth_state().await;
+        let (token, hash) = sign(&state, &moq_claims("meta-revoked", "/moq"));
+        store_meta(&state, "meta-revoked", &hash, true).await;
+        let err = validate_moq_auth(&state, "/moq", Some(token)).await.unwrap_err();
+        assert_eq!(err, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn revocation_store_hit_is_unauthorized() {
+        let (state, _temp) = enabled_auth_state().await;
+        let (token, hash) = sign(&state, &moq_claims("revoked-hash", "/moq"));
+        store_meta(&state, "revoked-hash", &hash, false).await;
+        state.revocation_store().unwrap().revoke(&hash, FAR_FUTURE).await.unwrap();
+        let err = validate_moq_auth(&state, "/moq", Some(token)).await.unwrap_err();
+        assert_eq!(err, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn path_outside_token_root_is_unauthorized() {
+        let (state, _temp) = enabled_auth_state().await;
+        let (token, hash) = sign(&state, &moq_claims("path-mismatch", "/moq"));
+        store_meta(&state, "path-mismatch", &hash, false).await;
+        let err = validate_moq_auth(&state, "/other", Some(token)).await.unwrap_err();
+        assert_eq!(err, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn valid_token_returns_auth_context() {
+        let (state, _temp) = enabled_auth_state().await;
+        let (token, hash) = sign(&state, &moq_claims("happy", "/moq"));
+        store_meta(&state, "happy", &hash, false).await;
+
+        let ctx = validate_moq_auth(&state, "/moq", Some(token)).await.unwrap();
+
+        assert!(ctx.can_subscribe("any-broadcast"));
+        assert!(ctx.can_publish("any-broadcast"));
+    }
+}
