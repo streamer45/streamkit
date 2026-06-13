@@ -2374,7 +2374,6 @@ impl MoqPeerNode {
         match recv_result {
             Ok(broadcast_frame) => {
                 ctx.packet_count += 1;
-                ctx.frame_count += 1;
 
                 if ctx.last_log.elapsed() > Duration::from_secs(1) {
                     tracing::debug!("Subscriber: sent {} frames/sec", ctx.frame_count);
@@ -2464,10 +2463,16 @@ impl MoqPeerNode {
                     MediaKind::Video => crate::video::DEFAULT_VIDEO_FRAME_DURATION_US,
                 };
                 clock.advance_by_duration_us(broadcast_frame.duration_us, default_duration);
+                ctx.frame_count += 1;
                 Ok(SendResult::Continue)
             },
             Err(broadcast::error::RecvError::Lagged(n)) => {
                 tracing::warn!("Subscriber lagged, dropped {} packets", n);
+                // A dropped frame may have been the keyframe that opened the
+                // current video group. Wait for the next keyframe before
+                // forwarding video again so a subscriber joining after the lag
+                // still starts decoding on a keyframe.
+                ctx.video_first_sent = false;
                 let _ = ctx
                     .stats_delta_tx
                     .try_send(NodeStatsDelta { discarded: n, ..Default::default() });
@@ -3543,6 +3548,68 @@ mod tests {
             b"key",
             "the first frame of the first MoQ group must be the keyframe"
         );
+
+        drop(publish);
+    }
+
+    #[tokio::test]
+    async fn lagged_video_resets_keyframe_gate() {
+        // Regression test: a lag may drop the keyframe that opened the current
+        // video group. The gate must reset so post-lag leading deltas are
+        // dropped and a subscriber joining after the lag still starts on a
+        // keyframe, rather than wedging on a delta-leading group.
+        let publish = moq_lite::Origin::random().produce();
+        let media = sub_media(false, true);
+        let (_bcast, mut audio, mut video, _catalog) =
+            MoqPeerNode::setup_subscriber_broadcast(&publish, "output", &media).unwrap();
+
+        let (stats_tx, mut stats_rx) = mpsc::channel::<NodeStatsDelta>(256);
+        let gap_histogram =
+            opentelemetry::global::meter("test").f64_histogram("test.inter_frame_ms").build();
+
+        let mut ctx = SubscriberSendCtx {
+            audio_track_producer: &mut audio,
+            video_track_producer: &mut video,
+            packet_count: 0,
+            frame_count: 0,
+            audio_first_sent: false,
+            video_first_sent: false,
+            last_log: std::time::Instant::now(),
+            group_duration_ms: 40,
+            audio_clock: MediaClock::new(0),
+            video_clock: MediaClock::new(0),
+            gap_histogram,
+            metric_labels: [
+                opentelemetry::KeyValue::new("node_id", "test"),
+                opentelemetry::KeyValue::new("broadcast", "output"),
+            ],
+            last_audio_ts_ms: None,
+            last_video_ts_ms: None,
+            stats_delta_tx: &stats_tx,
+            audio_codec: AudioCodec::Opus,
+        };
+
+        let r = MoqPeerNode::handle_broadcast_recv(Ok(video_frame(b"k0", true)), &mut ctx).unwrap();
+        assert!(matches!(r, SendResult::Continue));
+        assert!(ctx.video_first_sent, "the first keyframe opens the gate");
+
+        let r = MoqPeerNode::handle_broadcast_recv(
+            Err(broadcast::error::RecvError::Lagged(2)),
+            &mut ctx,
+        )
+        .unwrap();
+        assert!(matches!(r, SendResult::Continue));
+        assert!(!ctx.video_first_sent, "a lag must reset the video keyframe gate");
+        assert_eq!(drain_stats(&mut stats_rx).discarded, 2);
+
+        let r = MoqPeerNode::handle_broadcast_recv(Ok(video_frame(b"d", false)), &mut ctx).unwrap();
+        assert!(matches!(r, SendResult::Continue));
+        assert!(!ctx.video_first_sent);
+        assert_eq!(drain_stats(&mut stats_rx).discarded, 1, "a post-lag delta is dropped");
+
+        let r = MoqPeerNode::handle_broadcast_recv(Ok(video_frame(b"k1", true)), &mut ctx).unwrap();
+        assert!(matches!(r, SendResult::Continue));
+        assert!(ctx.video_first_sent, "the next keyframe reopens the gate");
 
         drop(publish);
     }
