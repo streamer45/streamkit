@@ -9,6 +9,7 @@ import type {
   OnNodesChange,
   OnEdgesChange,
   OnConnectEnd,
+  OnSelectionChangeFunc,
   ReactFlowInstance,
 } from '@xyflow/react';
 import { ReactFlow, Background, Controls, MarkerType } from '@xyflow/react';
@@ -86,6 +87,7 @@ export const FlowCanvas = <NodeData extends Record<string, unknown> = Record<str
   onEdgesDelete,
   onNodesDelete,
   onNodeDoubleClick,
+  onSelectionChange,
   onPaneClick,
   onPaneContextMenu,
   onNodeContextMenu,
@@ -127,6 +129,7 @@ export const FlowCanvas = <NodeData extends Record<string, unknown> = Record<str
   onEdgesDelete?: (edges: Edge[]) => void;
   onNodesDelete?: (nodes: Node<NodeData>[]) => void;
   onNodeDoubleClick?: (event: React.MouseEvent, node: Node<NodeData>) => void;
+  onSelectionChange?: OnSelectionChangeFunc<Node<NodeData>>;
   onPaneClick: () => void;
   onPaneContextMenu: (event: React.MouseEvent | MouseEvent) => void;
   onNodeContextMenu: (event: React.MouseEvent, node: Node<NodeData>) => void;
@@ -158,6 +161,7 @@ export const FlowCanvas = <NodeData extends Record<string, unknown> = Record<str
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeDoubleClick={onNodeDoubleClick}
+        onSelectionChange={onSelectionChange}
         onPaneClick={onPaneClick}
         colorMode={colorMode}
         onInit={onInit}
