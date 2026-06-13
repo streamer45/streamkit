@@ -1034,8 +1034,6 @@ bundle:
         assert!(manifest.assets.is_empty());
     }
 
-    // ==================== RegistryClient fetch + cache Tests ====================
-
     #[tokio::test]
     async fn fetch_index_caches_after_first_fetch() {
         let body = r#"{"schema_version":1,"plugins":[{"id":"demo","versions":[]}]}"#.to_string();
@@ -1142,8 +1140,6 @@ bundle:
         let _ = shutdown_tx.send(());
         let _ = handle.await;
     }
-
-    // ==================== RegistryCache pruning Tests ====================
 
     #[test]
     fn cached_is_fresh_respects_ttl() {

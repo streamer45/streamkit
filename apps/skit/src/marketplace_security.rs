@@ -313,6 +313,7 @@ const fn is_blocked_ip(ip: IpAddr, host_policy: MarketplaceHostPolicy) -> bool {
 }
 
 #[cfg(test)]
+// Tests use unwrap/expect for concise assertions; panics surface failures loudly.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
