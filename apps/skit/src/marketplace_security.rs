@@ -341,34 +341,22 @@ mod tests {
         }
     }
 
-    fn policy_with(
-        scheme_policy: MarketplaceSchemePolicy,
-        host_policy: MarketplaceHostPolicy,
-        require_registry_origin: bool,
-        allowed_origins: Vec<String>,
-        resolve_hostnames: bool,
-    ) -> MarketplaceUrlPolicy {
-        MarketplaceUrlPolicy {
-            allowed_origins,
-            require_registry_origin,
-            scheme_policy,
-            host_policy,
-            resolve_hostnames,
-        }
-    }
-
     fn permissive_policy() -> MarketplaceUrlPolicy {
-        policy_with(
-            MarketplaceSchemePolicy::AllowHttp,
-            MarketplaceHostPolicy::AllowPrivate,
-            false,
-            Vec::new(),
-            false,
-        )
+        MarketplaceUrlPolicy {
+            allowed_origins: Vec::new(),
+            require_registry_origin: false,
+            scheme_policy: MarketplaceSchemePolicy::AllowHttp,
+            host_policy: MarketplaceHostPolicy::AllowPrivate,
+            resolve_hostnames: false,
+        }
     }
 
     fn no_redirect_client() -> Client {
         Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap()
+    }
+
+    async fn host_resolves(host: &str, port: u16) -> bool {
+        tokio::net::lookup_host((host, port)).await.is_ok_and(|mut addrs| addrs.next().is_some())
     }
 
     async fn spawn_server(
@@ -431,15 +419,12 @@ mod tests {
             .validate_url("index", "http://example.com/index.json", None)
             .await
             .expect_err("http must be rejected under HttpsOnly");
-        assert!(err.to_string().contains("https"));
+        assert!(err.to_string().contains("must use https"));
 
-        let lenient = policy_with(
-            MarketplaceSchemePolicy::AllowHttp,
-            MarketplaceHostPolicy::PublicOnly,
-            true,
-            Vec::new(),
-            false,
-        );
+        let lenient = MarketplaceUrlPolicy {
+            scheme_policy: MarketplaceSchemePolicy::AllowHttp,
+            ..test_policy()
+        };
         lenient.validate_url("index", "http://example.com/index.json", None).await?;
         Ok(())
     }
@@ -475,13 +460,10 @@ mod tests {
 
     #[tokio::test]
     async fn validate_url_allowlist_bypasses_registry_origin() -> Result<()> {
-        let policy = policy_with(
-            MarketplaceSchemePolicy::HttpsOnly,
-            MarketplaceHostPolicy::PublicOnly,
-            true,
-            vec!["https://cdn.example.net".to_string()],
-            false,
-        );
+        let policy = MarketplaceUrlPolicy {
+            allowed_origins: vec!["https://cdn.example.net".to_string()],
+            ..test_policy()
+        };
         let registry_origin = origin_key(&Url::parse("https://registry.example.com/index.json")?)?;
 
         policy
@@ -598,78 +580,38 @@ mod tests {
     }
 
     #[test]
-    fn is_blocked_ip_public_only() {
+    fn is_blocked_ip_matrix() {
         let v4 = |a, b, c, d| IpAddr::V4(Ipv4Addr::new(a, b, c, d));
-        let v6 = |segments: [u16; 8]| {
-            IpAddr::V6(Ipv6Addr::new(
-                segments[0],
-                segments[1],
-                segments[2],
-                segments[3],
-                segments[4],
-                segments[5],
-                segments[6],
-                segments[7],
-            ))
-        };
-        let policy = MarketplaceHostPolicy::PublicOnly;
-        let blocked = [
-            v4(10, 0, 0, 1),
-            v4(172, 16, 0, 1),
-            v4(192, 168, 1, 1),
-            v4(127, 0, 0, 1),
-            v4(169, 254, 0, 1),
-            v4(0, 0, 0, 0),
-            v4(224, 0, 0, 1),
-            v4(255, 255, 255, 255),
-            v6([0, 0, 0, 0, 0, 0, 0, 1]),
-            v6([0xfd00, 0, 0, 0, 0, 0, 0, 1]),
-            v6([0xfe80, 0, 0, 0, 0, 0, 0, 1]),
-            v6([0, 0, 0, 0, 0, 0, 0, 0]),
-            v6([0xff02, 0, 0, 0, 0, 0, 0, 1]),
+        let v6 = |segments: [u16; 8]| IpAddr::V6(Ipv6Addr::from(segments));
+        // (ip, blocked under PublicOnly, blocked under AllowPrivate)
+        let cases = [
+            (v4(10, 0, 0, 1), true, false),
+            (v4(172, 16, 0, 1), true, false),
+            (v4(192, 168, 1, 1), true, false),
+            (v4(127, 0, 0, 1), true, false),
+            (v4(169, 254, 0, 1), true, false),
+            (v4(0, 0, 0, 0), true, true),
+            (v4(224, 0, 0, 1), true, true),
+            (v4(255, 255, 255, 255), true, true),
+            (v6([0, 0, 0, 0, 0, 0, 0, 1]), true, false),
+            (v6([0xfd00, 0, 0, 0, 0, 0, 0, 1]), true, false),
+            (v6([0xfe80, 0, 0, 0, 0, 0, 0, 1]), true, false),
+            (v6([0, 0, 0, 0, 0, 0, 0, 0]), true, true),
+            (v6([0xff02, 0, 0, 0, 0, 0, 0, 1]), true, true),
+            (v4(8, 8, 8, 8), false, false),
+            (v6([0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888]), false, false),
         ];
-        for ip in blocked {
-            assert!(is_blocked_ip(ip, policy), "expected {ip} blocked");
-        }
-        for ip in [v4(8, 8, 8, 8), v6([0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888])] {
-            assert!(!is_blocked_ip(ip, policy), "expected {ip} allowed");
-        }
-    }
-
-    #[test]
-    fn is_blocked_ip_allow_private() {
-        let v4 = |a, b, c, d| IpAddr::V4(Ipv4Addr::new(a, b, c, d));
-        let v6 = |segments: [u16; 8]| {
-            IpAddr::V6(Ipv6Addr::new(
-                segments[0],
-                segments[1],
-                segments[2],
-                segments[3],
-                segments[4],
-                segments[5],
-                segments[6],
-                segments[7],
-            ))
-        };
-        let policy = MarketplaceHostPolicy::AllowPrivate;
-        for ip in [
-            v4(10, 0, 0, 1),
-            v4(127, 0, 0, 1),
-            v4(169, 254, 0, 1),
-            v6([0, 0, 0, 0, 0, 0, 0, 1]),
-            v6([0xfd00, 0, 0, 0, 0, 0, 0, 1]),
-            v6([0xfe80, 0, 0, 0, 0, 0, 0, 1]),
-        ] {
-            assert!(!is_blocked_ip(ip, policy), "expected {ip} allowed under AllowPrivate");
-        }
-        for ip in [
-            v4(0, 0, 0, 0),
-            v4(255, 255, 255, 255),
-            v4(224, 0, 0, 1),
-            v6([0, 0, 0, 0, 0, 0, 0, 0]),
-            v6([0xff02, 0, 0, 0, 0, 0, 0, 1]),
-        ] {
-            assert!(is_blocked_ip(ip, policy), "expected {ip} blocked even under AllowPrivate");
+        for (ip, public_blocked, private_blocked) in cases {
+            assert_eq!(
+                is_blocked_ip(ip, MarketplaceHostPolicy::PublicOnly),
+                public_blocked,
+                "PublicOnly {ip}"
+            );
+            assert_eq!(
+                is_blocked_ip(ip, MarketplaceHostPolicy::AllowPrivate),
+                private_blocked,
+                "AllowPrivate {ip}"
+            );
         }
     }
 
@@ -682,6 +624,10 @@ mod tests {
 
     #[tokio::test]
     async fn validate_resolved_ips_blocks_hostname_resolving_to_loopback() -> Result<()> {
+        // Skip in hermetic environments where `localhost` does not resolve.
+        if !host_resolves("localhost", 80).await {
+            return Ok(());
+        }
         let url = Url::parse("http://localhost:80/x")?;
         let err = validate_resolved_ips("x", &url, MarketplaceHostPolicy::PublicOnly)
             .await
@@ -700,15 +646,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn validate_url_resolves_hostnames_when_enabled() -> Result<()> {
-        let policy = policy_with(
-            MarketplaceSchemePolicy::AllowHttp,
-            MarketplaceHostPolicy::AllowPrivate,
-            false,
-            Vec::new(),
-            true,
-        );
-        policy.validate_url("index", "http://localhost:80/index.json", None).await?;
+    async fn validate_url_resolve_hostnames_gates_dns_check() -> Result<()> {
+        // A trailing-dot host ("localhost.") is not caught by validate_host's
+        // literal-localhost check, so under PublicOnly only the DNS-resolution
+        // guard can reject it -- which makes the resolve_hostnames flag observable.
+        if !host_resolves("localhost.", 443).await {
+            return Ok(());
+        }
+        let url = "https://localhost./index.json";
+
+        let resolving = MarketplaceUrlPolicy { resolve_hostnames: true, ..test_policy() };
+        let err = resolving
+            .validate_url("index", url, None)
+            .await
+            .expect_err("loopback resolution must be rejected when resolve_hostnames is enabled");
+        assert!(err.to_string().contains("resolved to blocked address"));
+
+        let not_resolving = MarketplaceUrlPolicy { resolve_hostnames: false, ..test_policy() };
+        not_resolving.validate_url("index", url, None).await?;
         Ok(())
     }
 
