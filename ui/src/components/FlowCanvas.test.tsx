@@ -17,6 +17,16 @@ import { nodeTypes, defaultEdgeOptions } from '@/utils/reactFlowDefaults';
 
 import { FlowCanvas } from './FlowCanvas';
 
+// FlowCanvas statically imports the node-component registry and the edge/connection-line
+// components for its prop types, none of which this test exercises — selection is driven
+// through the xyflow store. Stub them so the test stays a focused unit on selection
+// forwarding instead of mounting the (separately-owned) node subtree.
+vi.mock('@/nodes/AudioGainNode', () => ({ default: () => null }));
+vi.mock('@/nodes/CompositorNode', () => ({ default: () => null }));
+vi.mock('@/nodes/ConfigurableNode', () => ({ default: () => null }));
+vi.mock('@/components/TypedEdge', () => ({ default: () => null }));
+vi.mock('./ConnectionLine', () => ({ default: () => null }));
+
 if (!('ResizeObserver' in globalThis)) {
   globalThis.ResizeObserver = class {
     observe() {}
