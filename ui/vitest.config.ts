@@ -9,13 +9,15 @@ import babelPresetTypescript from '@babel/preset-typescript';
 import path from 'path';
 import { reactCompilerOptions } from './reactCompilerOptions';
 
-// Production builds compile src with the React Compiler (reactCompilerPreset in
-// vite.config.ts), but @vitejs/plugin-react only applies that preset to
-// environments with consumer === 'client', and vitest runs the SSR pipeline.
-// Force-apply the compiler here so tests exercise the same memoization regime
-// as production. The compiler plugin and its options come from the same
-// reactCompilerPreset() production uses, and the code pre-filter mirrors the
-// preset's compile-candidate filter. Files under src/test/ are skipped because
+// Production builds compile src with the React Compiler (the @rolldown/plugin-babel
+// pass in vite.config.ts), but reactCompilerPreset only applies to environments
+// with consumer === 'client', and vitest runs the SSR pipeline. Force-apply the
+// compiler here so tests exercise the same memoization regime as production. The
+// compiler plugin and its options come from the same reactCompilerPreset()
+// production uses. The code pre-filter below is a hardcoded copy of the preset's
+// candidate filter at the *default* compilationMode; it would need updating if
+// reactCompilerOptions set compilationMode to 'annotation' or 'all' (the preset
+// uses a different filter then). Files under src/test/ are skipped because
 // production never compiles them, except *Fixture* files, which exist to be
 // compiled (the sanity test in reactCompiler.test.tsx depends on it).
 const compilerPreset = reactCompilerPreset(reactCompilerOptions).preset;
@@ -57,11 +59,7 @@ export default defineConfig({
     environment: 'happy-dom',
     globals: false,
     setupFiles: ['./src/test/setup.ts'],
-    exclude: [
-      '**/node_modules/**',
-      '**/.bun_install/**',
-      '**/dist/**',
-    ],
+    exclude: ['**/node_modules/**', '**/.bun_install/**', '**/dist/**'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'lcov', 'html'],

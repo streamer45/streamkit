@@ -308,6 +308,12 @@ build-ui: install-ui
     @echo "Building UI..."
     @bun run build
 
+# Verify the React Compiler optimizes the perf-critical components in the real build
+[working-directory: 'ui']
+verify-compiler: install-ui
+    @echo "Verifying React Compiler is active..."
+    @bun run verify-compiler
+
 # Start the UI development server with hot reload
 [working-directory: 'ui']
 ui: install-ui
