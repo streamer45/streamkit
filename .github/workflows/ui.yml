@@ -7,6 +7,10 @@ jobs:
   ci:
     name: Lint, Test & Build
     runs-on: ubuntu-22.04
+    # The Build step emits the React Compiler's per-component event log here;
+    # "Verify React Compiler" reads it instead of running a second full build.
+    env:
+      VERIFY_COMPILER_LOG: ${{ github.workspace }}/react-compiler-events.ndjson
     defaults:
       run:
         working-directory: ./ui
@@ -72,10 +76,13 @@ jobs:
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
+      # VERIFY_COMPILER_LOG (set at job level) makes this build emit the React
+      # Compiler's per-component event log, which the next step verifies.
       - name: Build
         run: bun run build
 
-      # Fails if the React Compiler stops optimizing the perf-critical node-graph
+      # Reads the event log from the Build step (no second build) and fails if
+      # the React Compiler stopped optimizing the perf-critical node-graph
       # components — catches the silent `react({ babel })` misconfiguration that
       # @vitejs/plugin-react v6 ignores. See ui/scripts/verify-react-compiler.mjs.
       - name: Verify React Compiler
