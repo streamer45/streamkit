@@ -380,34 +380,29 @@ function getStateDetails(state: NodeState, stats?: NodeStats): React.ReactNode {
   return null;
 }
 
-const NodeStateTooltipContent = React.memo(
-  ({ state, stats }: { state: NodeState; stats?: NodeStats }) => getStateDetails(state, stats)
-);
+const NodeStateTooltipContent = ({ state, stats }: { state: NodeState; stats?: NodeStats }) =>
+  getStateDetails(state, stats);
 
-const LiveNodeStateTooltipContent = React.memo(
-  ({
-    state,
-    nodeId,
-    sessionId,
-    fallbackStats,
-  }: {
-    state: NodeState;
-    nodeId: string;
-    sessionId: string;
-    fallbackStats?: NodeStats;
-  }) => {
-    const liveStats = useAtomValue(nodeStatsAtom(nodeKey(sessionId, nodeId)));
-    const pipeline = useSessionStore(
-      React.useCallback((s) => s.sessions.get(sessionId)?.pipeline, [sessionId])
-    );
+const LiveNodeStateTooltipContent = ({
+  state,
+  nodeId,
+  sessionId,
+  fallbackStats,
+}: {
+  state: NodeState;
+  nodeId: string;
+  sessionId: string;
+  fallbackStats?: NodeStats;
+}) => {
+  const liveStats = useAtomValue(nodeStatsAtom(nodeKey(sessionId, nodeId)));
+  const pipeline = useSessionStore((s) => s.sessions.get(sessionId)?.pipeline);
 
-    if (typeof state === 'object' && 'Degraded' in state) {
-      return renderDegradedDetails(state, liveStats ?? fallbackStats, { pipeline, nodeId });
-    }
-
-    return getStateDetails(state, liveStats ?? fallbackStats);
+  if (typeof state === 'object' && 'Degraded' in state) {
+    return renderDegradedDetails(state, liveStats ?? fallbackStats, { pipeline, nodeId });
   }
-);
+
+  return getStateDetails(state, liveStats ?? fallbackStats);
+};
 
 export const NodeStateIndicator: React.FC<NodeStateIndicatorProps> = ({
   state,

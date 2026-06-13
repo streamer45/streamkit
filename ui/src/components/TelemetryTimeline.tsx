@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import styled from '@emotion/styled';
-import React, { useMemo } from 'react';
+import React from 'react';
 import { useShallow } from 'zustand/shallow';
 
 import { useTelemetryStore, type TelemetryEvent } from '@/stores/telemetryStore';
@@ -217,7 +217,7 @@ export const TelemetryTimeline: React.FC<TelemetryTimelineProps> = ({ sessionId,
   );
 
   // Reverse to show newest first
-  const reversedEvents = useMemo(() => [...events].reverse(), [events]);
+  const reversedEvents = [...events].reverse();
 
   return (
     <TimelineContainer style={{ maxHeight }}>
@@ -248,6 +248,10 @@ interface TelemetryEventCardProps {
   event: TelemetryEvent;
 }
 
+// React.memo is required here even with the React Compiler: the parent's
+// events array gets a new identity on every append, so all row elements are
+// recreated and the memo's shallow prop compare is the only thing that skips
+// re-invoking unchanged rows on hot telemetry streams.
 const TelemetryEventCard: React.FC<TelemetryEventCardProps> = React.memo(({ event }) => {
   const preview = getEventPreview(event);
 

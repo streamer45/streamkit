@@ -52,66 +52,64 @@ interface PipelineRightPaneProps {
   sessionId?: string;
 }
 
-export const PipelineRightPane: React.FC<PipelineRightPaneProps> = React.memo(
-  ({
-    selectedNode,
-    selectedNodeDefinition,
-    selectedNodeLabel,
-    rightPaneView,
-    setRightPaneView,
-    yamlString,
-    yamlError,
-    onYamlChange,
-    onParamChange,
-    onLabelChange,
-    nodeDefinitions,
-    readOnly = false,
-    yamlReadOnly,
-    isMonitorView = false,
-    sessionId,
-  }) => {
-    const showTelemetry = isMonitorView && sessionId;
+export const PipelineRightPane: React.FC<PipelineRightPaneProps> = ({
+  selectedNode,
+  selectedNodeDefinition,
+  selectedNodeLabel,
+  rightPaneView,
+  setRightPaneView,
+  yamlString,
+  yamlError,
+  onYamlChange,
+  onParamChange,
+  onLabelChange,
+  nodeDefinitions,
+  readOnly = false,
+  yamlReadOnly,
+  isMonitorView = false,
+  sessionId,
+}) => {
+  const showTelemetry = isMonitorView && sessionId;
 
-    return (
-      <RightPanelWrapper>
-        <TabsRoot
-          value={rightPaneView}
-          onValueChange={(value) => setRightPaneView(value as RightPaneView)}
-        >
-          <TabsList>
-            {selectedNode && <TabsTrigger value="inspector">Inspector</TabsTrigger>}
-            <TabsTrigger value="yaml">YAML</TabsTrigger>
-            {showTelemetry && <TabsTrigger value="telemetry">Telemetry</TabsTrigger>}
-          </TabsList>
-          <TabsContent value="inspector">
-            {selectedNode && selectedNodeDefinition && (
-              <InspectorPane
-                node={selectedNode}
-                nodeDefinition={selectedNodeDefinition}
-                onParamChange={onParamChange}
-                onLabelChange={onLabelChange}
-                readOnly={readOnly}
-                isMonitorView={isMonitorView}
-              />
-            )}
-          </TabsContent>
-          <TabsContent value="yaml">
-            <YamlPane
-              yaml={yamlString}
-              onChange={onYamlChange}
-              error={yamlError}
-              nodeDefinitions={nodeDefinitions}
-              highlightNodeLabel={selectedNodeLabel}
-              readOnly={yamlReadOnly ?? readOnly}
+  return (
+    <RightPanelWrapper>
+      <TabsRoot
+        value={rightPaneView}
+        onValueChange={(value) => setRightPaneView(value as RightPaneView)}
+      >
+        <TabsList>
+          {selectedNode && <TabsTrigger value="inspector">Inspector</TabsTrigger>}
+          <TabsTrigger value="yaml">YAML</TabsTrigger>
+          {showTelemetry && <TabsTrigger value="telemetry">Telemetry</TabsTrigger>}
+        </TabsList>
+        <TabsContent value="inspector">
+          {selectedNode && selectedNodeDefinition && (
+            <InspectorPane
+              node={selectedNode}
+              nodeDefinition={selectedNodeDefinition}
+              onParamChange={onParamChange}
+              onLabelChange={onLabelChange}
+              readOnly={readOnly}
+              isMonitorView={isMonitorView}
             />
-          </TabsContent>
-          {showTelemetry && (
-            <TabsContent value="telemetry">
-              <TelemetryTimeline sessionId={sessionId} />
-            </TabsContent>
           )}
-        </TabsRoot>
-      </RightPanelWrapper>
-    );
-  }
-);
+        </TabsContent>
+        <TabsContent value="yaml">
+          <YamlPane
+            yaml={yamlString}
+            onChange={onYamlChange}
+            error={yamlError}
+            nodeDefinitions={nodeDefinitions}
+            highlightNodeLabel={selectedNodeLabel}
+            readOnly={yamlReadOnly ?? readOnly}
+          />
+        </TabsContent>
+        {showTelemetry && (
+          <TabsContent value="telemetry">
+            <TelemetryTimeline sessionId={sessionId} />
+          </TabsContent>
+        )}
+      </TabsRoot>
+    </RightPanelWrapper>
+  );
+};

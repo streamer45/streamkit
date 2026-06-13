@@ -141,6 +141,10 @@ function safePrettyPrint(value: unknown): string {
   }
 }
 
+// React.memo is required here even with the React Compiler: the items array
+// gets a new identity on every streamed chunk, so all row elements are
+// recreated and the memo's shallow prop compare is the only thing that skips
+// re-invoking unchanged rows.
 const JsonStreamRow = React.memo(({ item }: { item: JsonStreamDisplayItem }) => {
   return (
     <Item>

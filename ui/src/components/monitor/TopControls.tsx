@@ -8,8 +8,6 @@
  * Shows connection status, preview button, and session delete.
  */
 
-import React from 'react';
-
 import { TopRightControls, ButtonGroup } from '@/components/monitor/MonitorView.styles';
 import { SKTooltip } from '@/components/Tooltip';
 import { Button } from '@/components/ui/Button';
@@ -31,57 +29,55 @@ export interface TopControlsProps {
 
 // Component
 
-export const TopControls = React.memo(
-  ({
-    isConnected,
-    selectedSessionId,
-    onDelete,
-    onStartPreview,
-    onStopPreview,
-    isPreviewConnected,
-    isPreviewLoading,
-    previewError,
-  }: TopControlsProps) => {
-    return (
-      <TopRightControls>
-        <ButtonGroup>
-          <ConnectionStatus connected={isConnected} />
-          {selectedSessionId && isPreviewConnected && (
-            <SKTooltip content="Stop the preview and tear down the preview subgraph">
-              <Button variant="ghost" size="small" onClick={onStopPreview}>
-                Stop Preview
-              </Button>
-            </SKTooltip>
-          )}
-          {selectedSessionId && !isPreviewConnected && (
-            <SKTooltip
-              content={
-                previewError
-                  ? `Preview failed: ${previewError}`
-                  : 'Inject a preview tap into the pipeline and start watching'
-              }
-            >
-              <Button
-                variant="ghost"
-                size="small"
-                onClick={onStartPreview}
-                disabled={isPreviewLoading}
-              >
-                {isPreviewLoading ? 'Starting...' : 'Preview'}
-              </Button>
-            </SKTooltip>
-          )}
-        </ButtonGroup>
-        {selectedSessionId && (
-          <ButtonGroup>
-            <SKTooltip content="Delete Session" side="bottom">
-              <Button variant="danger" size="small" onClick={onDelete}>
-                Delete
-              </Button>
-            </SKTooltip>
-          </ButtonGroup>
+export const TopControls = ({
+  isConnected,
+  selectedSessionId,
+  onDelete,
+  onStartPreview,
+  onStopPreview,
+  isPreviewConnected,
+  isPreviewLoading,
+  previewError,
+}: TopControlsProps) => {
+  return (
+    <TopRightControls>
+      <ButtonGroup>
+        <ConnectionStatus connected={isConnected} />
+        {selectedSessionId && isPreviewConnected && (
+          <SKTooltip content="Stop the preview and tear down the preview subgraph">
+            <Button variant="ghost" size="small" onClick={onStopPreview}>
+              Stop Preview
+            </Button>
+          </SKTooltip>
         )}
-      </TopRightControls>
-    );
-  }
-);
+        {selectedSessionId && !isPreviewConnected && (
+          <SKTooltip
+            content={
+              previewError
+                ? `Preview failed: ${previewError}`
+                : 'Inject a preview tap into the pipeline and start watching'
+            }
+          >
+            <Button
+              variant="ghost"
+              size="small"
+              onClick={onStartPreview}
+              disabled={isPreviewLoading}
+            >
+              {isPreviewLoading ? 'Starting...' : 'Preview'}
+            </Button>
+          </SKTooltip>
+        )}
+      </ButtonGroup>
+      {selectedSessionId && (
+        <ButtonGroup>
+          <SKTooltip content="Delete Session" side="bottom">
+            <Button variant="danger" size="small" onClick={onDelete}>
+              Delete
+            </Button>
+          </SKTooltip>
+        </ButtonGroup>
+      )}
+    </TopRightControls>
+  );
+};

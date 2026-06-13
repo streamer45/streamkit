@@ -94,7 +94,7 @@ import {
 } from '@/utils/pipelineGraph';
 import { nodeTypes, defaultEdgeOptions } from '@/utils/reactFlowDefaults';
 
-const MonitorViewTitle = React.memo(() => <ViewTitle>Monitor</ViewTitle>);
+const MonitorViewTitle = () => <ViewTitle>Monitor</ViewTitle>;
 
 export type DraftNode = {
   kind: string;

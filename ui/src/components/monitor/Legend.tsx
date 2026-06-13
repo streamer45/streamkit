@@ -4,10 +4,7 @@
 
 /**
  * Node-state legend overlay for the Monitor View canvas.
- * Memoized to prevent re-renders during node drag.
  */
-
-import React from 'react';
 
 import {
   LegendContainer,
@@ -16,7 +13,7 @@ import {
   LegendDot,
 } from '@/components/monitor/MonitorView.styles';
 
-export const Legend = React.memo(() => (
+export const Legend = () => (
   <LegendContainer>
     <LegendTitle>Node States</LegendTitle>
     <LegendItem>
@@ -44,4 +41,4 @@ export const Legend = React.memo(() => (
       <span>Stopped</span>
     </LegendItem>
   </LegendContainer>
-));
+);
