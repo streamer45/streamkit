@@ -585,6 +585,76 @@ const fn default_manifest_schema_version() -> u32 {
 mod tests {
     use super::*;
 
+    use std::net::SocketAddr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use axum::routing::get;
+    use axum::Router;
+    use tokio::net::TcpListener;
+    use tokio::sync::oneshot;
+    use tokio::task::JoinHandle;
+
+    use crate::config::{
+        MarketplaceHostPolicy, MarketplaceSchemePolicy, PluginConfig, PluginMarketplaceConfig,
+        PluginMarketplaceSecurityConfig,
+    };
+    use crate::marketplace_security::origin_key;
+
+    fn permissive_policy() -> MarketplaceUrlPolicy {
+        let config = PluginConfig {
+            marketplace: PluginMarketplaceConfig {
+                security: PluginMarketplaceSecurityConfig {
+                    marketplace_scheme_policy: MarketplaceSchemePolicy::AllowHttp,
+                    marketplace_host_policy: MarketplaceHostPolicy::AllowPrivate,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        MarketplaceUrlPolicy::from_config(&config)
+    }
+
+    async fn spawn_server(app: Router) -> (SocketAddr, oneshot::Sender<()>, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app.into_make_service())
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await;
+        });
+        (addr, shutdown_tx, handle)
+    }
+
+    fn counting_route(path: &str, body: String) -> (Router, Arc<AtomicUsize>) {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        let app = Router::new().route(
+            path,
+            get(move || {
+                let counter = counter.clone();
+                let body = body.clone();
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    body
+                }
+            }),
+        );
+        (app, hits)
+    }
+
+    fn test_client() -> RegistryClient {
+        RegistryClient::new(
+            Duration::from_secs(5),
+            Duration::from_secs(90),
+            Duration::from_secs(90),
+        )
+        .unwrap()
+    }
+
     // Test fixtures generated with minisign CLI
     // Key ID: 3E52143322870FFA (displayed as fa0f87223314523e in little-endian hex)
     const TEST_PUBLIC_KEY: &str = "\
@@ -962,5 +1032,160 @@ bundle:
         assert_eq!(bundle.url, "https://example.com/bundle.tar.zst");
         assert_eq!(bundle.sha256, "abc123");
         assert!(manifest.assets.is_empty());
+    }
+
+    // ==================== RegistryClient fetch + cache Tests ====================
+
+    #[tokio::test]
+    async fn fetch_index_caches_after_first_fetch() {
+        let body = r#"{"schema_version":1,"plugins":[{"id":"demo","versions":[]}]}"#.to_string();
+        let (app, hits) = counting_route("/index.json", body);
+        let (addr, shutdown_tx, handle) = spawn_server(app).await;
+
+        let client = test_client();
+        let policy = permissive_policy();
+        let url = Url::parse(&format!("http://{addr}/index.json")).unwrap();
+        let origin = origin_key(&url).unwrap();
+
+        let first = client.fetch_index_with_policy(&url, &policy, &origin).await.unwrap();
+        assert_eq!(first.plugins.len(), 1);
+        assert_eq!(first.plugins[0].id, "demo");
+
+        let second = client.fetch_index_with_policy(&url, &policy, &origin).await.unwrap();
+        assert_eq!(second.plugins.len(), 1);
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "second call must be served from cache");
+
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn fetch_index_reports_parse_errors() {
+        let (app, _hits) = counting_route("/index.json", "this is not json".to_string());
+        let (addr, shutdown_tx, handle) = spawn_server(app).await;
+
+        let client = test_client();
+        let policy = permissive_policy();
+        let url = Url::parse(&format!("http://{addr}/index.json")).unwrap();
+        let origin = origin_key(&url).unwrap();
+
+        let err = client.fetch_index_with_policy(&url, &policy, &origin).await.unwrap_err();
+        assert!(err.to_string().contains("Failed to parse registry index"));
+
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn fetch_manifest_raw_parses_and_caches() {
+        let body = r#"{"schema_version":1,"id":"demo","version":"1.0.0",
+            "node_kind":"plugin::native::demo","kind":"native","entrypoint":"libdemo.so"}"#
+            .to_string();
+        let (app, hits) = counting_route("/manifest.json", body);
+        let (addr, shutdown_tx, handle) = spawn_server(app).await;
+
+        let client = test_client();
+        let policy = permissive_policy();
+        let url = Url::parse(&format!("http://{addr}/manifest.json")).unwrap();
+        let origin = origin_key(&url).unwrap();
+
+        let raw = client.fetch_manifest_raw_with_policy(&url, &policy, &origin).await.unwrap();
+        assert_eq!(raw.manifest.id, "demo");
+        assert!(!raw.bytes.is_empty());
+
+        client.fetch_manifest_raw_with_policy(&url, &policy, &origin).await.unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "manifest must be cached");
+
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn fetch_text_returns_body() {
+        let (app, _hits) = counting_route("/license.txt", "MPL-2.0 text".to_string());
+        let (addr, shutdown_tx, handle) = spawn_server(app).await;
+
+        let client = test_client();
+        let policy = permissive_policy();
+        let url = Url::parse(&format!("http://{addr}/license.txt")).unwrap();
+        let origin = origin_key(&url).unwrap();
+
+        let text = client.fetch_text_with_policy("license", &url, &policy, &origin).await.unwrap();
+        assert_eq!(text, "MPL-2.0 text");
+
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn fetch_text_rejects_non_utf8() {
+        let app = Router::new().route(
+            "/blob",
+            get(|| async {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+                    Bytes::from_static(&[0xff, 0xfe, 0xff]),
+                )
+            }),
+        );
+        let (addr, shutdown_tx, handle) = spawn_server(app).await;
+
+        let client = test_client();
+        let policy = permissive_policy();
+        let url = Url::parse(&format!("http://{addr}/blob")).unwrap();
+        let origin = origin_key(&url).unwrap();
+
+        let err =
+            client.fetch_text_with_policy("license", &url, &policy, &origin).await.unwrap_err();
+        assert!(err.to_string().contains("not valid UTF-8"));
+
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
+    }
+
+    // ==================== RegistryCache pruning Tests ====================
+
+    #[test]
+    fn cached_is_fresh_respects_ttl() {
+        let cached = Cached::new(7u32);
+        assert!(cached.is_fresh(Duration::from_secs(90)));
+        assert!(!cached.is_fresh(Duration::ZERO));
+    }
+
+    #[test]
+    fn prune_map_drops_stale_and_overflow_entries() {
+        let mut stale: HashMap<String, Cached<u32>> = HashMap::new();
+        stale.insert("a".to_string(), Cached::new(1));
+        RegistryCache::prune_map(&mut stale, Duration::ZERO, 10);
+        assert!(stale.is_empty(), "expired entries must be pruned");
+
+        let mut overflowing: HashMap<String, Cached<u32>> = HashMap::new();
+        for i in 0..5 {
+            overflowing.insert(format!("k{i}"), Cached::new(i));
+        }
+        RegistryCache::prune_map(&mut overflowing, Duration::from_secs(90), 3);
+        assert_eq!(overflowing.len(), 3, "cache must evict down to max_entries");
+    }
+
+    #[test]
+    fn prune_indexes_and_manifests_drop_stale_entries() {
+        let mut cache = RegistryCache::default();
+        cache.indexes.insert(
+            "u".to_string(),
+            Cached::new(RegistryIndex { schema_version: 1, plugins: vec![] }),
+        );
+        cache.prune_indexes(Duration::ZERO, 10);
+        assert!(cache.indexes.is_empty());
+
+        let manifest: PluginManifest = serde_json::from_str(
+            r#"{"id":"x","version":"1.0.0","node_kind":"k","kind":"native","entrypoint":"e.so"}"#,
+        )
+        .unwrap();
+        cache.manifests.insert(
+            "u".to_string(),
+            Cached::new(ManifestCacheEntry { raw: Bytes::from_static(b"{}"), manifest }),
+        );
+        cache.prune_manifests(Duration::ZERO, 10);
+        assert!(cache.manifests.is_empty());
     }
 }
