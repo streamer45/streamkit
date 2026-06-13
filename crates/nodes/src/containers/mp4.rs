@@ -1915,6 +1915,9 @@ pub fn register_mp4_nodes(registry: &mut NodeRegistry) {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::test_utils::{create_test_context, MockOutputSender};
+    use std::collections::HashMap;
+    use tokio::sync::mpsc;
 
     #[test]
     fn default_config_is_stream_mode() {
@@ -1924,24 +1927,32 @@ mod tests {
 
     #[test]
     fn content_type_combinations() {
-        // H.264 + Opus
-        assert_eq!(
-            mp4_content_type(Some(AudioCodec::Opus), Some(VideoCodec::H264)),
-            "video/mp4; codecs=\"avc1,opus\""
-        );
-        // H.264 video only
-        assert_eq!(mp4_content_type(None, Some(VideoCodec::H264)), "video/mp4; codecs=\"avc1\"");
-        // AV1 + Opus
-        assert_eq!(
-            mp4_content_type(Some(AudioCodec::Opus), Some(VideoCodec::Av1)),
-            "video/mp4; codecs=\"av01,opus\""
-        );
-        // AV1 video only
-        assert_eq!(mp4_content_type(None, Some(VideoCodec::Av1)), "video/mp4; codecs=\"av01\"");
-        // Audio-only (Opus)
-        assert_eq!(mp4_content_type(Some(AudioCodec::Opus), None), "audio/mp4; codecs=\"opus\"");
-        // No tracks
-        assert_eq!(mp4_content_type(None, None), "video/mp4");
+        use AudioCodec::{Aac, Opus};
+        use VideoCodec::{Av1, Vp9, H264};
+
+        // Vp9 stands in for an unrecognised/future video codec: it is neither
+        // Av1 nor H264, so it is dropped from the codecs param.
+        let cases: &[(Option<AudioCodec>, Option<VideoCodec>, &str)] = &[
+            (Some(Opus), Some(H264), "video/mp4; codecs=\"avc1,opus\""),
+            (Some(Aac), Some(H264), "video/mp4; codecs=\"avc1,mp4a\""),
+            (Some(Opus), Some(Av1), "video/mp4; codecs=\"av01,opus\""),
+            (Some(Aac), Some(Av1), "video/mp4; codecs=\"av01,mp4a\""),
+            (Some(Opus), Some(Vp9), "video/mp4; codecs=\"opus\""),
+            (Some(Aac), Some(Vp9), "video/mp4; codecs=\"mp4a\""),
+            (None, Some(H264), "video/mp4; codecs=\"avc1\""),
+            (None, Some(Av1), "video/mp4; codecs=\"av01\""),
+            (None, Some(Vp9), "video/mp4"),
+            (Some(Opus), None, "audio/mp4; codecs=\"opus\""),
+            (Some(Aac), None, "audio/mp4; codecs=\"mp4a\""),
+            (None, None, "video/mp4"),
+        ];
+        for (audio, video, expected) in cases {
+            assert_eq!(
+                mp4_content_type(*audio, *video),
+                *expected,
+                "audio={audio:?} video={video:?}"
+            );
+        }
     }
 
     #[test]
@@ -2919,31 +2930,6 @@ mod tests {
     }
 
     #[test]
-    fn content_type_remaining_combinations() {
-        assert_eq!(
-            mp4_content_type(Some(AudioCodec::Aac), Some(VideoCodec::Av1)),
-            "video/mp4; codecs=\"av01,mp4a\""
-        );
-        assert_eq!(
-            mp4_content_type(Some(AudioCodec::Aac), Some(VideoCodec::H264)),
-            "video/mp4; codecs=\"avc1,mp4a\""
-        );
-        assert_eq!(mp4_content_type(Some(AudioCodec::Aac), None), "audio/mp4; codecs=\"mp4a\"");
-        // Vp9 is neither Av1 nor H264 → treated as an unrecognised/future video
-        // codec, so only the audio codec survives in the codecs param.
-        assert_eq!(
-            mp4_content_type(Some(AudioCodec::Opus), Some(VideoCodec::Vp9)),
-            "video/mp4; codecs=\"opus\""
-        );
-        assert_eq!(
-            mp4_content_type(Some(AudioCodec::Aac), Some(VideoCodec::Vp9)),
-            "video/mp4; codecs=\"mp4a\""
-        );
-        // Video-only with an unrecognised codec → bare "video/mp4".
-        assert_eq!(mp4_content_type(None, Some(VideoCodec::Vp9)), "video/mp4");
-    }
-
-    #[test]
     fn node_content_type_hint() {
         let av =
             Mp4MuxerNode::new(Mp4MuxerConfig { video_width: 640, video_height: 480, ..default() });
@@ -3259,18 +3245,26 @@ mod tests {
         out
     }
 
+    type MuxerHandle = tokio::task::JoinHandle<Result<(), StreamKitError>>;
+
+    fn spawn_muxer(
+        config: Mp4MuxerConfig,
+        inputs: HashMap<String, mpsc::Receiver<Packet>>,
+        input_types: &[(&str, PacketType)],
+    ) -> (MockOutputSender, MuxerHandle) {
+        let (mut ctx, mock, _state_rx) = create_test_context(inputs, 1);
+        for (pin, ty) in input_types {
+            ctx.input_types.insert((*pin).to_string(), ty.clone());
+        }
+        let node = Box::new(Mp4MuxerNode::new(config));
+        let handle = tokio::spawn(async move { node.run(ctx).await });
+        (mock, handle)
+    }
+
     #[tokio::test]
     async fn stream_mode_video_only_h264_end_to_end() {
-        use crate::test_utils::create_test_context;
-        use std::collections::HashMap;
-        use tokio::sync::mpsc;
-
         let (tx, rx) = mpsc::channel(64);
-        let mut inputs = HashMap::new();
-        inputs.insert("in".to_string(), rx);
-        let (mut ctx, mock, _state_rx) = create_test_context(inputs, 1);
-        ctx.input_types.insert("in".to_string(), vtype(VideoCodec::H264));
-
+        let inputs = HashMap::from([("in".to_string(), rx)]);
         let config = Mp4MuxerConfig {
             mode: Mp4StreamingMode::Stream,
             video_width: 320,
@@ -3278,8 +3272,7 @@ mod tests {
             video_codec: Some(VideoCodec::H264),
             ..default()
         };
-        let node = Box::new(Mp4MuxerNode::new(config));
-        let handle = tokio::spawn(async move { node.run(ctx).await });
+        let (mock, handle) = spawn_muxer(config, inputs, &[("in", vtype(VideoCodec::H264))]);
 
         // A leading non-keyframe is dropped by the keyframe gate; the first
         // keyframe opens it and the P-frames that follow are muxed.
@@ -3299,19 +3292,11 @@ mod tests {
 
     #[tokio::test]
     async fn stream_mode_skip_classification_multi_segment() {
-        use crate::test_utils::create_test_context;
-        use std::collections::HashMap;
-        use tokio::sync::mpsc;
-
         // Two inputs + video dimensions trigger skip-classification (unified
         // receive loop, content_type-driven classification).
         let (vtx, vrx) = mpsc::channel(256);
         let (atx, arx) = mpsc::channel(256);
-        let mut inputs = HashMap::new();
-        inputs.insert("in".to_string(), vrx);
-        inputs.insert("in_1".to_string(), arx);
-        let (ctx, mock, _state_rx) = create_test_context(inputs, 1);
-
+        let inputs = HashMap::from([("in".to_string(), vrx), ("in_1".to_string(), arx)]);
         let config = Mp4MuxerConfig {
             mode: Mp4StreamingMode::Stream,
             video_width: 320,
@@ -3321,8 +3306,7 @@ mod tests {
             audio_codec: Some(AudioCodec::Aac),
             ..default()
         };
-        let node = Box::new(Mp4MuxerNode::new(config));
-        let handle = tokio::spawn(async move { node.run(ctx).await });
+        let (mock, handle) = spawn_muxer(config, inputs, &[]);
 
         // Interleave enough samples to cross the 30-sample flush threshold
         // several times, exercising both the init and subsequent-segment paths.
@@ -3347,16 +3331,8 @@ mod tests {
 
     #[tokio::test]
     async fn stream_mode_video_only_no_keyframe_produces_no_output() {
-        use crate::test_utils::create_test_context;
-        use std::collections::HashMap;
-        use tokio::sync::mpsc;
-
         let (tx, rx) = mpsc::channel(64);
-        let mut inputs = HashMap::new();
-        inputs.insert("in".to_string(), rx);
-        let (mut ctx, mock, _state_rx) = create_test_context(inputs, 1);
-        ctx.input_types.insert("in".to_string(), vtype(VideoCodec::H264));
-
+        let inputs = HashMap::from([("in".to_string(), rx)]);
         let config = Mp4MuxerConfig {
             mode: Mp4StreamingMode::Stream,
             video_width: 320,
@@ -3364,8 +3340,7 @@ mod tests {
             video_codec: Some(VideoCodec::H264),
             ..default()
         };
-        let node = Box::new(Mp4MuxerNode::new(config));
-        let handle = tokio::spawn(async move { node.run(ctx).await });
+        let (mock, handle) = spawn_muxer(config, inputs, &[("in", vtype(VideoCodec::H264))]);
 
         // Never a keyframe — every frame is gated out, nothing is muxed.
         for i in 0..5u8 {
@@ -3379,24 +3354,17 @@ mod tests {
 
     #[tokio::test]
     async fn dual_track_classified_av1_audio_end_to_end() {
-        use crate::test_utils::create_test_context;
-        use std::collections::HashMap;
-        use tokio::sync::mpsc;
-
         // num_inputs == 2 with zero video dimensions keeps classification on
         // (per-pin type resolution), exercising the dual-track receive loop.
         let (vtx, vrx) = mpsc::channel(64);
         let (atx, arx) = mpsc::channel(64);
-        let mut inputs = HashMap::new();
-        inputs.insert("in".to_string(), vrx);
-        inputs.insert("in_1".to_string(), arx);
-        let (mut ctx, mock, _state_rx) = create_test_context(inputs, 1);
-        ctx.input_types.insert("in".to_string(), vtype(VideoCodec::Av1));
-        ctx.input_types.insert("in_1".to_string(), atype(AudioCodec::Opus));
-
+        let inputs = HashMap::from([("in".to_string(), vrx), ("in_1".to_string(), arx)]);
         let config = Mp4MuxerConfig { mode: Mp4StreamingMode::Stream, num_inputs: 2, ..default() };
-        let node = Box::new(Mp4MuxerNode::new(config));
-        let handle = tokio::spawn(async move { node.run(ctx).await });
+        let (mock, handle) = spawn_muxer(
+            config,
+            inputs,
+            &[("in", vtype(VideoCodec::Av1)), ("in_1", atype(AudioCodec::Opus))],
+        );
 
         for i in 0..3u8 {
             vtx.send(av_binary(vec![0x10 + i; 256], None, true, 33_333)).await.unwrap();
@@ -3413,19 +3381,9 @@ mod tests {
 
     #[tokio::test]
     async fn file_mode_dual_track_round_trip_end_to_end() {
-        use crate::test_utils::create_test_context;
-        use std::collections::HashMap;
-        use tokio::sync::mpsc;
-
         let (vtx, vrx) = mpsc::channel(64);
         let (atx, arx) = mpsc::channel(64);
-        let mut inputs = HashMap::new();
-        inputs.insert("in".to_string(), vrx);
-        inputs.insert("in_1".to_string(), arx);
-        let (mut ctx, mock, _state_rx) = create_test_context(inputs, 1);
-        ctx.input_types.insert("in".to_string(), vtype(VideoCodec::H264));
-        ctx.input_types.insert("in_1".to_string(), atype(AudioCodec::Aac));
-
+        let inputs = HashMap::from([("in".to_string(), vrx), ("in_1".to_string(), arx)]);
         let config = Mp4MuxerConfig {
             mode: Mp4StreamingMode::File,
             num_inputs: 2,
@@ -3435,8 +3393,11 @@ mod tests {
             audio_codec: Some(AudioCodec::Aac),
             ..default()
         };
-        let node = Box::new(Mp4MuxerNode::new(config));
-        let handle = tokio::spawn(async move { node.run(ctx).await });
+        let (mock, handle) = spawn_muxer(
+            config,
+            inputs,
+            &[("in", vtype(VideoCodec::H264)), ("in_1", atype(AudioCodec::Aac))],
+        );
 
         vtx.send(av_binary(h264_keyframe_annexb(), None, true, 33_333)).await.unwrap();
         for i in 0..4u8 {
@@ -3455,33 +3416,23 @@ mod tests {
 
     #[tokio::test]
     async fn run_errors_without_any_input() {
-        use crate::test_utils::create_test_context;
-        use std::collections::HashMap;
-
-        let (ctx, _mock, _state_rx) = create_test_context(HashMap::new(), 1);
-        let node = Box::new(Mp4MuxerNode::new(Mp4MuxerConfig::default()));
-        assert!(node.run(ctx).await.is_err());
+        let (_mock, handle) = spawn_muxer(Mp4MuxerConfig::default(), HashMap::new(), &[]);
+        assert!(handle.await.unwrap().is_err());
     }
 
     #[tokio::test]
     async fn run_errors_on_multiple_same_kind_inputs() {
-        use crate::test_utils::create_test_context;
-        use std::collections::HashMap;
-        use tokio::sync::mpsc;
-
         // Two inputs both resolved to video (dims zero ⇒ classification stays on)
         // is a misconfiguration the node rejects.
         let (_vtx0, vrx0) = mpsc::channel::<Packet>(4);
         let (_vtx1, vrx1) = mpsc::channel::<Packet>(4);
-        let mut inputs = HashMap::new();
-        inputs.insert("in".to_string(), vrx0);
-        inputs.insert("in_1".to_string(), vrx1);
-        let (mut ctx, _mock, _state_rx) = create_test_context(inputs, 1);
-        ctx.input_types.insert("in".to_string(), vtype(VideoCodec::H264));
-        ctx.input_types.insert("in_1".to_string(), vtype(VideoCodec::H264));
-
+        let inputs = HashMap::from([("in".to_string(), vrx0), ("in_1".to_string(), vrx1)]);
         let config = Mp4MuxerConfig { num_inputs: 2, ..default() };
-        let node = Box::new(Mp4MuxerNode::new(config));
-        assert!(node.run(ctx).await.is_err());
+        let (_mock, handle) = spawn_muxer(
+            config,
+            inputs,
+            &[("in", vtype(VideoCodec::H264)), ("in_1", vtype(VideoCodec::H264))],
+        );
+        assert!(handle.await.unwrap().is_err());
     }
 }
