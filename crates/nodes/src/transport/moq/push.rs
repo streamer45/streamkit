@@ -538,6 +538,22 @@ impl ProcessorNode for MoqPushNode {
                     },
                 };
 
+                // A MoQ video track must begin with a keyframe so a late-joining
+                // subscriber, which is handed the track's latest group, can start
+                // decoding. A publisher that attaches mid-stream (e.g. the Monitor
+                // preview peer) would otherwise open its first group with a delta
+                // frame and wedge the subscriber's decoder, so drop leading deltas
+                // until the first keyframe arrives. Frames without keyframe metadata
+                // default to keyframe (see below) and pass through unchanged.
+                if is_video_source && !*first_sent {
+                    let is_keyframe = metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(true);
+                    if !is_keyframe {
+                        stats_tracker.discarded();
+                        continue;
+                    }
+                    *first_sent = true;
+                }
+
                 let duration_us =
                     super::constants::packet_duration_us(metadata.as_ref()).or(Some(default_dur));
                 let timestamp_ms =

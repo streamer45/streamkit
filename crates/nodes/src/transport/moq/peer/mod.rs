@@ -2331,6 +2331,7 @@ impl MoqPeerNode {
             packet_count: 0,
             frame_count: 0,
             audio_first_sent: false,
+            video_first_sent: false,
             last_log: std::time::Instant::now(),
             group_duration_ms: output_group_duration_ms.max(1),
             audio_clock: MediaClock::new(output_initial_delay_ms),
@@ -2399,6 +2400,22 @@ impl MoqPeerNode {
                     // No track producer for this media kind — skip frame
                     return Ok(SendResult::Continue);
                 };
+
+                // A MoQ video track must begin with a keyframe so a late-joining
+                // subscriber, which is handed the track's latest group, can start
+                // decoding. This peer (e.g. the Monitor preview) attaches mid-stream
+                // and would otherwise open its first group with a delta frame and
+                // wedge the subscriber's decoder, so drop leading deltas until the
+                // first keyframe arrives.
+                if matches!(broadcast_frame.kind, MediaKind::Video) {
+                    if !ctx.video_first_sent && !broadcast_frame.keyframe {
+                        let _ = ctx
+                            .stats_delta_tx
+                            .try_send(NodeStatsDelta { discarded: 1, ..Default::default() });
+                        return Ok(SendResult::Continue);
+                    }
+                    ctx.video_first_sent = true;
+                }
 
                 let timestamp_ms = clock.timestamp_ms();
                 // For audio, use time-based group boundaries; for video, use keyframe flag
@@ -3474,6 +3491,59 @@ mod tests {
 
         let count = drive_send_loop(&mut audio, &mut video, rx, &mut shutdown_rx, &stats_tx).await;
         assert_eq!(count, 0);
+        drop(publish);
+    }
+
+    #[tokio::test]
+    async fn run_subscriber_send_loop_drops_leading_video_deltas_until_keyframe() {
+        // Regression test for the Monitor preview "Waiting for first frame…"
+        // bug: a peer that attaches mid-GOP (e.g. the preview peer) must not
+        // open its first MoQ group with a delta frame, or a late-joining
+        // subscriber's decoder wedges on "a key frame is required after
+        // configure()".
+        let publish = moq_lite::Origin::random().produce();
+        let media = sub_media(false, true);
+        let (_bcast, mut audio, mut video, _catalog) =
+            MoqPeerNode::setup_subscriber_broadcast(&publish, "output", &media).unwrap();
+
+        let video_track = moq_lite::Track { name: "video/data".to_string(), priority: 60 };
+        let mut sub = publish
+            .consume()
+            .get_broadcast("output")
+            .unwrap()
+            .subscribe_track(&video_track)
+            .unwrap();
+
+        // The peer attaches mid-stream: two delta frames arrive before the
+        // first keyframe.
+        let (tx, rx) = broadcast::channel::<BroadcastFrame>(16);
+        tx.send(video_frame(b"d0", false)).unwrap();
+        tx.send(video_frame(b"d1", false)).unwrap();
+        tx.send(video_frame(b"key", true)).unwrap();
+        tx.send(video_frame(b"d2", false)).unwrap();
+        drop(tx);
+
+        let (stats_tx, mut stats_rx) = mpsc::channel::<NodeStatsDelta>(256);
+        let (_shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
+
+        let count = drive_send_loop(&mut audio, &mut video, rx, &mut shutdown_rx, &stats_tx).await;
+        assert_eq!(count, 4, "every received frame is accounted for");
+
+        let stats = drain_stats(&mut stats_rx);
+        assert_eq!(stats.discarded, 2, "the two leading delta frames are dropped");
+
+        let first = tokio::time::timeout(Duration::from_secs(2), sub.read_frame())
+            .await
+            .expect("reading the first published frame should not hang")
+            .unwrap()
+            .expect("a video frame should be published");
+        let decoded = hang::container::Frame::decode(first).unwrap();
+        assert_eq!(
+            decoded.payload.as_ref(),
+            b"key",
+            "the first frame of the first MoQ group must be the keyframe"
+        );
+
         drop(publish);
     }
 
