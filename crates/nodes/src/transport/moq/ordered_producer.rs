@@ -4,6 +4,17 @@
 
 use hang::container::{Frame, Timestamp};
 
+/// Outcome of [`OrderedProducer::write_video`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoWrite {
+    /// The frame was encoded into a (possibly new) group.
+    Written,
+    /// A leading delta frame was dropped because no keyframe-led group is open
+    /// yet. The caller should advance its media clock so audio/video timing
+    /// stays aligned, but must not count the frame as sent.
+    DroppedLeadingDelta,
+}
+
 /// Wraps a `moq_lite::TrackProducer` with MoQ group boundary management.
 ///
 /// Groups can be managed explicitly via [`keyframe()`](Self::keyframe) or automatically
@@ -40,11 +51,48 @@ impl OrderedProducer {
     }
 
     /// Close the current group so the next `write()` starts a fresh one.
+    ///
+    /// Despite the name this only finishes the open group (it does not itself
+    /// write a keyframe); video callers should prefer [`write_video`](Self::write_video),
+    /// which owns the "a group never opens on a delta" invariant.
     pub fn keyframe(&mut self) -> Result<(), hang::Error> {
         if let Some(mut group) = self.group.take() {
             group.finish()?;
         }
         Ok(())
+    }
+
+    /// Write a video frame while guaranteeing a MoQ group never *begins* on a
+    /// delta frame.
+    ///
+    /// A keyframe finishes the current group and opens a fresh one (so every
+    /// group starts decodable). A delta is appended to the open group, or
+    /// **dropped** when no group is open yet — a group that opens on a delta
+    /// wedges a late-joining subscriber's `VideoDecoder` ("a key frame is
+    /// required after configure()"). Because `keyframe()` is the only thing
+    /// that closes a group and it is immediately followed by the keyframe's
+    /// `write()`, the only moment a group is absent is before the first
+    /// keyframe (or after a fresh producer is created), so this gate is
+    /// self-arming and needs no external bookkeeping.
+    ///
+    /// Returns [`VideoWrite::DroppedLeadingDelta`] when the frame was dropped so
+    /// the caller can still advance its media clock (keeping audio/video timing
+    /// aligned) without counting the frame as sent.
+    pub fn write_video(
+        &mut self,
+        frame: &Frame,
+        is_keyframe: bool,
+    ) -> Result<VideoWrite, hang::Error> {
+        if is_keyframe {
+            self.keyframe()?;
+            self.write(frame)?;
+            Ok(VideoWrite::Written)
+        } else if self.group.is_some() {
+            self.write(frame)?;
+            Ok(VideoWrite::Written)
+        } else {
+            Ok(VideoWrite::DroppedLeadingDelta)
+        }
     }
 
     /// Encode a [`Frame`] into the current MoQ group, creating a new group when
@@ -254,5 +302,43 @@ mod tests {
         let tp = make_track_producer();
         let mut op = OrderedProducer::new(tp);
         op.finish().expect("finish on empty should succeed");
+    }
+
+    #[tokio::test]
+    async fn write_video_drops_leading_deltas_until_first_keyframe() {
+        let tp = make_track_producer();
+        let mut op = OrderedProducer::new(tp);
+
+        // Deltas before any keyframe must not open a group: a group that
+        // begins on a delta wedges a late-joining decoder.
+        assert_eq!(op.write_video(&make_frame(0), false).unwrap(), VideoWrite::DroppedLeadingDelta);
+        assert!(op.group.is_none(), "no group is opened by a leading delta");
+        assert_eq!(
+            op.write_video(&make_frame(1000), false).unwrap(),
+            VideoWrite::DroppedLeadingDelta
+        );
+        assert!(op.group.is_none());
+    }
+
+    #[tokio::test]
+    async fn write_video_opens_group_on_keyframe_and_appends_deltas() {
+        let tp = make_track_producer();
+        let mut op = OrderedProducer::new(tp);
+
+        // First keyframe opens group 0.
+        assert_eq!(op.write_video(&make_frame(0), true).unwrap(), VideoWrite::Written);
+        assert!(op.group.is_some());
+        assert_eq!(op.group_frames, 1);
+        assert_eq!(op.group_start, Some(ts(0)));
+
+        // A delta after a keyframe is appended to the open group.
+        assert_eq!(op.write_video(&make_frame(1000), false).unwrap(), VideoWrite::Written);
+        assert_eq!(op.group_frames, 2);
+        assert_eq!(op.group_start, Some(ts(0)), "still the same keyframe-led group");
+
+        // A subsequent keyframe closes the current group and opens a fresh one.
+        assert_eq!(op.write_video(&make_frame(5000), true).unwrap(), VideoWrite::Written);
+        assert_eq!(op.group_frames, 1);
+        assert_eq!(op.group_start, Some(ts(5000)), "new group starts on the keyframe");
     }
 }

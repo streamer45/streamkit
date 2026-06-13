@@ -271,9 +271,10 @@ pub(super) fn make_broadcast_frame(packet: Packet, kind: MediaKind) -> Option<Br
     if let Packet::Binary { data, metadata, .. } = packet {
         let duration_us = super::super::constants::packet_duration_us(metadata.as_ref());
         let keyframe = if kind == MediaKind::Video {
-            // Default to true when keyframe metadata is missing so that the
-            // subscriber's OrderedProducer opens an initial MoQ group on the
-            // first frame. Matches the convention in push.rs.
+            // Missing keyframe metadata defaults to keyframe so all-intra
+            // sources still open a group; inter-coded sources that omit the
+            // flag can't be grouped safely by any gate, and all in-tree
+            // encoders set it. Matches the convention in push.rs.
             metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(true)
         } else {
             false
