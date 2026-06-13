@@ -2902,14 +2902,15 @@ mod tests {
         .unwrap()
     }
 
-    /// Build a `SubscriberSendCtx` with the fixed test parameters, mirroring
-    /// the production initializer in `run_subscriber_send_loop` so a field
-    /// change can't silently drift the two apart. Used by tests that drive
-    /// `handle_broadcast_recv` directly.
+    /// Build a `SubscriberSendCtx` mirroring the production initializer in
+    /// `run_subscriber_send_loop` (including the `output_group_duration_ms.max(1)`
+    /// clamp) so a field change can't silently drift the two apart. Used by
+    /// tests that drive `handle_broadcast_recv` directly.
     fn make_test_ctx<'a>(
         audio: &'a mut Option<crate::transport::moq::ordered_producer::OrderedProducer>,
         video: &'a mut Option<crate::transport::moq::ordered_producer::OrderedProducer>,
         stats_tx: &'a mpsc::Sender<NodeStatsDelta>,
+        output_group_duration_ms: u64,
     ) -> SubscriberSendCtx<'a> {
         let gap_histogram =
             opentelemetry::global::meter("test").f64_histogram("test.inter_frame_ms").build();
@@ -2920,7 +2921,7 @@ mod tests {
             frame_count: 0,
             audio_first_sent: false,
             last_log: std::time::Instant::now(),
-            group_duration_ms: 40,
+            group_duration_ms: output_group_duration_ms.max(1),
             audio_clock: MediaClock::new(0),
             video_clock: MediaClock::new(0),
             gap_histogram,
@@ -3647,7 +3648,7 @@ mod tests {
             .unwrap();
 
         let (stats_tx, mut stats_rx) = mpsc::channel::<NodeStatsDelta>(256);
-        let mut ctx = make_test_ctx(&mut audio, &mut video, &stats_tx);
+        let mut ctx = make_test_ctx(&mut audio, &mut video, &stats_tx, 40);
 
         let r = MoqPeerNode::handle_broadcast_recv(Ok(video_frame(b"k0", true)), &mut ctx).unwrap();
         assert!(matches!(r, SendResult::Continue));
@@ -3679,29 +3680,72 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dropped_leading_video_deltas_advance_clock_to_stay_aligned_with_audio() {
+    async fn dropped_leading_video_deltas_stay_aligned_with_interleaved_audio() {
         // Finding #1: leading video deltas dropped before the first keyframe
-        // must still advance the video clock. The clock is accumulation-based
-        // and audio is never gated, so if video froze during the drop window
-        // the kept keyframe would land ahead of the concurrent audio's media
-        // time and lip-sync would drift permanently.
+        // must still advance the video clock. Audio is never gated, so if video
+        // froze during the drop window the first kept keyframe would land behind
+        // the audio that played alongside the dropped deltas and lip-sync would
+        // drift permanently. Interleave audio with the dropped deltas (matched
+        // 20ms durations) and assert the kept keyframe lands at the same media
+        // time as the concurrent audio — on the wire, not just in a counter.
         let publish = moq_lite::Origin::random().produce();
         let media = sub_media(true, true);
         let (_bcast, mut audio, mut video, _catalog) =
             MoqPeerNode::setup_subscriber_broadcast(&publish, "output", &media).unwrap();
 
+        let video_track = moq_lite::Track { name: "video/data".to_string(), priority: 60 };
+        let mut sub = publish
+            .consume()
+            .get_broadcast("output")
+            .unwrap()
+            .subscribe_track(&video_track)
+            .unwrap();
+
+        let video_delta = |data: &'static [u8]| BroadcastFrame {
+            data: bytes::Bytes::from_static(data),
+            duration_us: Some(20_000),
+            kind: MediaKind::Video,
+            keyframe: false,
+        };
+
         let (stats_tx, mut stats_rx) = mpsc::channel::<NodeStatsDelta>(256);
-        let mut ctx = make_test_ctx(&mut audio, &mut video, &stats_tx);
+        let mut ctx = make_test_ctx(&mut audio, &mut video, &stats_tx, 40);
 
-        MoqPeerNode::handle_broadcast_recv(Ok(video_frame(b"d0", false)), &mut ctx).unwrap();
-        MoqPeerNode::handle_broadcast_recv(Ok(video_frame(b"d1", false)), &mut ctx).unwrap();
+        MoqPeerNode::handle_broadcast_recv(Ok(audio_frame(b"a0")), &mut ctx).unwrap();
+        MoqPeerNode::handle_broadcast_recv(Ok(video_delta(b"d0")), &mut ctx).unwrap();
+        MoqPeerNode::handle_broadcast_recv(Ok(audio_frame(b"a1")), &mut ctx).unwrap();
+        MoqPeerNode::handle_broadcast_recv(Ok(video_delta(b"d1")), &mut ctx).unwrap();
 
+        // Two 20ms audio frames played while the two video deltas were dropped;
+        // both clocks must read 40ms so the kept keyframe is aligned.
+        assert_eq!(ctx.audio_clock.timestamp_us(), 40_000);
         assert_eq!(
             ctx.video_clock.timestamp_us(),
-            2 * crate::video::DEFAULT_VIDEO_FRAME_DURATION_US,
-            "each dropped leading delta still advances the video clock"
+            ctx.audio_clock.timestamp_us(),
+            "dropped video deltas keep the video clock level with audio"
         );
         assert_eq!(drain_stats(&mut stats_rx).discarded, 2);
+
+        MoqPeerNode::handle_broadcast_recv(Ok(video_frame(b"k0", true)), &mut ctx).unwrap();
+        ctx.video_track_producer.as_mut().unwrap().finish().unwrap();
+
+        let mut group = tokio::time::timeout(Duration::from_secs(2), sub.next_group())
+            .await
+            .expect("next_group should not hang")
+            .expect("next_group should succeed")
+            .expect("a keyframe-led group should exist");
+        let first = tokio::time::timeout(Duration::from_secs(2), group.read_frame())
+            .await
+            .expect("read_frame should not hang")
+            .expect("read_frame should succeed")
+            .expect("the keyframe should be published");
+        let decoded = hang::container::Frame::decode(first).unwrap();
+        assert_eq!(decoded.payload.as_ref(), b"k0");
+        assert_eq!(
+            decoded.timestamp.as_micros(),
+            40_000,
+            "the kept keyframe lands at the same media time as the concurrent audio"
+        );
 
         drop(publish);
     }
