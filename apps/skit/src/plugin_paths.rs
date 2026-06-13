@@ -98,8 +98,13 @@ fn ensure_under_base(base_real: &Path, dir_real: &Path, label: &str) -> Result<(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
-    use super::validate_path_component;
+    use super::{
+        canonicalize_existing_dir, ensure_base_dir, ensure_dir_under, ensure_existing_dir_under,
+        validate_path_component,
+    };
+    use tempfile::TempDir;
 
     #[test]
     fn validate_path_component_rejects_unsafe_values() {
@@ -111,5 +116,71 @@ mod tests {
     #[test]
     fn validate_path_component_accepts_simple_name() {
         assert!(validate_path_component("plugin id", "plugin-name").is_ok());
+    }
+
+    #[tokio::test]
+    async fn ensure_base_dir_creates_missing_and_returns_canonical() {
+        let temp = TempDir::new().unwrap();
+        let base = temp.path().join("plugins");
+        assert!(!base.exists());
+
+        let real = ensure_base_dir(&base).await.unwrap();
+
+        assert!(base.is_dir());
+        assert!(real.is_absolute());
+        assert_eq!(real, tokio::fs::canonicalize(&base).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn canonicalize_existing_dir_ok_and_missing_errors() {
+        let temp = TempDir::new().unwrap();
+        let real = canonicalize_existing_dir(temp.path()).await.unwrap();
+        assert_eq!(real, tokio::fs::canonicalize(temp.path()).await.unwrap());
+
+        let missing = temp.path().join("does-not-exist");
+        assert!(canonicalize_existing_dir(&missing).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn ensure_dir_under_creates_when_under_base() {
+        let temp = TempDir::new().unwrap();
+        let base = ensure_base_dir(temp.path()).await.unwrap();
+        let target = base.join("models");
+
+        let real = ensure_dir_under(&base, &target, "models").await.unwrap();
+
+        assert!(target.is_dir());
+        assert!(real.starts_with(&base));
+    }
+
+    #[tokio::test]
+    async fn ensure_dir_under_rejects_path_outside_base() {
+        let temp = TempDir::new().unwrap();
+        let base = ensure_base_dir(&temp.path().join("base")).await.unwrap();
+        let outside = temp.path().join("outside");
+
+        let err = ensure_dir_under(&base, &outside, "models").await.unwrap_err();
+
+        assert!(err.to_string().contains("outside plugin directory"));
+        assert!(outside.is_dir());
+    }
+
+    #[tokio::test]
+    async fn ensure_existing_dir_under_ok_outside_and_missing() {
+        let temp = TempDir::new().unwrap();
+        let base = ensure_base_dir(&temp.path().join("base")).await.unwrap();
+
+        let under = base.join("models");
+        tokio::fs::create_dir_all(&under).await.unwrap();
+        let real = ensure_existing_dir_under(&base, &under, "models").await.unwrap();
+        assert!(real.starts_with(&base));
+
+        let outside = temp.path().join("outside");
+        tokio::fs::create_dir_all(&outside).await.unwrap();
+        let err = ensure_existing_dir_under(&base, &outside, "models").await.unwrap_err();
+        assert!(err.to_string().contains("outside plugin directory"));
+
+        let missing = base.join("missing");
+        assert!(ensure_existing_dir_under(&base, &missing, "models").await.is_err());
     }
 }
