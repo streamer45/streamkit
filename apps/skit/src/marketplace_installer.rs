@@ -1640,6 +1640,7 @@ impl PluginInstaller {
                 ModelArchiveKind::TarZst => Box::new(zstd::stream::read::Decoder::new(file)?),
                 ModelArchiveKind::TarGz => Box::new(flate2::read::GzDecoder::new(file)),
                 ModelArchiveKind::TarBz2 => Box::new(bzip2::read::BzDecoder::new(file)),
+                ModelArchiveKind::TarXz => Box::new(liblzma::read::XzDecoder::new(file)),
                 ModelArchiveKind::Tar => Box::new(file),
             };
             safe_extract_archive(reader, &models_dir, Some(&cancel_clone))?;
@@ -1894,11 +1895,12 @@ fn safe_extract_archive<R: std::io::Read>(
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ModelArchiveKind {
     Tar,
     TarGz,
     TarBz2,
+    TarXz,
     TarZst,
 }
 
@@ -1912,6 +1914,9 @@ fn model_archive_kind(path: &Path) -> Option<ModelArchiveKind> {
     }
     if ext.eq_ignore_ascii_case("tbz2") {
         return Some(ModelArchiveKind::TarBz2);
+    }
+    if ext.eq_ignore_ascii_case("txz") {
+        return Some(ModelArchiveKind::TarXz);
     }
     if ext.eq_ignore_ascii_case("tzst") {
         return Some(ModelArchiveKind::TarZst);
@@ -1932,6 +1937,14 @@ fn model_archive_kind(path: &Path) -> Option<ModelArchiveKind> {
     {
         return Some(ModelArchiveKind::TarBz2);
     }
+    if ext.eq_ignore_ascii_case("xz")
+        && path
+            .file_stem()
+            .and_then(|stem| Path::new(stem).extension())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("tar"))
+    {
+        return Some(ModelArchiveKind::TarXz);
+    }
     if ext.eq_ignore_ascii_case("zst")
         && path
             .file_stem()
@@ -1948,7 +1961,10 @@ fn model_archive_dir(path: &Path, base_dir: &Path) -> Option<PathBuf> {
     let file_stem = path.file_stem()?.to_str()?;
     let base = match kind {
         ModelArchiveKind::Tar => file_stem.to_string(),
-        ModelArchiveKind::TarGz | ModelArchiveKind::TarBz2 | ModelArchiveKind::TarZst => {
+        ModelArchiveKind::TarGz
+        | ModelArchiveKind::TarBz2
+        | ModelArchiveKind::TarXz
+        | ModelArchiveKind::TarZst => {
             let stem_path = Path::new(file_stem);
             if stem_path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("tar")) {
                 stem_path.file_stem()?.to_str()?.to_string()
@@ -2362,6 +2378,115 @@ mod tests {
         server_handle.await.context("file server task panicked")??;
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn download_model_archive_extracts_xz() -> Result<()> {
+        let mut tar_bytes = Vec::new();
+        {
+            let encoder = liblzma::write::XzEncoder::new(&mut tar_bytes, 6);
+            let mut builder = tar::Builder::new(encoder);
+            let mut header = tar::Header::new_gnu();
+            let contents = b"model-data";
+            header.set_size(contents.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append_data(&mut header, "model-dir/model.txt", &contents[..])?;
+            let encoder = builder.into_inner()?;
+            encoder.finish()?;
+        }
+
+        let payload = Bytes::from(tar_bytes);
+        let (addr, shutdown_tx, server_handle) =
+            match start_file_server_with_path("/model.tar.xz", payload.clone()).await {
+                Ok(values) => values,
+                Err(err) => {
+                    if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
+                        if io_err.kind() == std::io::ErrorKind::PermissionDenied {
+                            tracing::warn!(error = %err, "Skipping model archive test");
+                            return Ok(());
+                        }
+                    }
+                    return Err(err);
+                },
+            };
+        let url = format!("http://{addr}/model.tar.xz");
+
+        let temp_dir = tempfile::tempdir()?;
+        let plugin_dir = temp_dir.path().join("plugins");
+        tokio::fs::create_dir_all(&plugin_dir).await?;
+
+        let mut hasher = Sha256::new();
+        hasher.update(&payload);
+        let hash = to_hex(&hasher.finalize());
+
+        let config = PluginConfig {
+            directory: plugin_dir.to_string_lossy().to_string(),
+            native_call_timeout_secs: Some(300),
+            http_management: crate::config::PluginHttpConfig { allow_http_management: false },
+            marketplace: crate::config::PluginMarketplaceConfig {
+                marketplace_enabled: true,
+                allow_native_marketplace: true,
+                security: crate::config::PluginMarketplaceSecurityConfig {
+                    allow_model_urls: true,
+                    marketplace_scheme_policy: crate::config::MarketplaceSchemePolicy::AllowHttp,
+                    marketplace_host_policy: crate::config::MarketplaceHostPolicy::AllowPrivate,
+                    marketplace_url_allowlist: vec!["http://127.0.0.1:*".to_string()],
+                    ..crate::config::PluginMarketplaceSecurityConfig::default()
+                },
+            },
+            trusted_pubkeys: Vec::new(),
+            registries: Vec::new(),
+            models_dir: Some(temp_dir.path().join("models").to_string_lossy().to_string()),
+            huggingface_token: None,
+        };
+
+        let queue = InstallJobQueue::new(
+            &config,
+            test_plugin_manager(&plugin_dir)?,
+            crate::plugin_assets::PluginAssetRegistry::new(),
+        )?;
+        let manifest = test_manifest(vec![crate::marketplace::ModelSpec {
+            id: None,
+            name: None,
+            default: false,
+            source: crate::marketplace::ModelSource::Url { url: url.clone() },
+            expected_size_bytes: Some(payload.len() as u64),
+            sha256: Some(hash),
+            file_checksums: HashMap::new(),
+            license: None,
+            license_url: None,
+            gated: false,
+        }]);
+        let tracker = JobTracker { job_id: "test".to_string(), queue: queue.clone() };
+        let cancel = CancellationToken::new();
+
+        let registry_origin =
+            origin_key(&reqwest::Url::parse("https://registry.example.com/index.json")?)?;
+        queue
+            .installer
+            .download_models(&manifest, None, &tracker, &cancel, Some(&registry_origin))
+            .await
+            .map_err(|err| match err {
+                InstallError::Cancelled => anyhow!("download cancelled"),
+                InstallError::Other(err) => err,
+            })?;
+
+        let extracted_path = temp_dir.path().join("models/model-dir/model.txt");
+        let extracted = tokio::fs::read(&extracted_path).await?;
+        assert_eq!(extracted, b"model-data");
+
+        let _ = shutdown_tx.send(());
+        server_handle.await.context("file server task panicked")??;
+
+        Ok(())
+    }
+
+    #[test]
+    fn model_archive_kind_recognizes_xz_extensions() {
+        assert_eq!(model_archive_kind(Path::new("model.tar.xz")), Some(ModelArchiveKind::TarXz));
+        assert_eq!(model_archive_kind(Path::new("model.txz")), Some(ModelArchiveKind::TarXz));
+        assert_eq!(model_archive_kind(Path::new("model.xz")), None);
     }
 
     #[tokio::test]

@@ -33,6 +33,10 @@ def archive_mode(file_path: str) -> tuple[str, str] | None:
         return file_path[: -len(".tar.bz2")], "w:bz2"
     if file_path.endswith(".tbz2"):
         return file_path[: -len(".tbz2")], "w:bz2"
+    if file_path.endswith(".tar.xz"):
+        return file_path[: -len(".tar.xz")], "w:xz"
+    if file_path.endswith(".txz"):
+        return file_path[: -len(".txz")], "w:xz"
     if file_path.endswith(".tar.gz"):
         return file_path[: -len(".tar.gz")], "w:gz"
     if file_path.endswith(".tgz"):
@@ -64,6 +68,12 @@ def maybe_create_archive(
         if is_hidden_path(pathlib.Path(tar_info.name)):
             return None
         return tar_info
+
+    if tar_mode == "w:xz":
+        try:
+            import lzma  # noqa: F401
+        except ImportError:
+            sys.exit("Python was built without lzma support; cannot create .tar.xz archives")
 
     print(f"Creating archive {archive_path} from {source_dir}...")
     with tarfile.open(archive_path, tar_mode) as tar:
