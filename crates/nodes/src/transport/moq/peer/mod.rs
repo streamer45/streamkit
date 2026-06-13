@@ -2331,7 +2331,6 @@ impl MoqPeerNode {
             packet_count: 0,
             frame_count: 0,
             audio_first_sent: false,
-            video_first_sent: false,
             last_log: std::time::Instant::now(),
             group_duration_ms: output_group_duration_ms.max(1),
             audio_clock: MediaClock::new(output_initial_delay_ms),
@@ -2400,79 +2399,82 @@ impl MoqPeerNode {
                     return Ok(SendResult::Continue);
                 };
 
-                // A MoQ video track must begin with a keyframe so a late-joining
-                // subscriber, which is handed the track's latest group, can start
-                // decoding. This peer (e.g. the Monitor preview) attaches mid-stream
-                // and would otherwise open its first group with a delta frame and
-                // wedge the subscriber's decoder, so drop leading deltas until the
-                // first keyframe arrives.
-                if matches!(broadcast_frame.kind, MediaKind::Video) {
-                    if !ctx.video_first_sent && !broadcast_frame.keyframe {
-                        let _ = ctx
-                            .stats_delta_tx
-                            .try_send(NodeStatsDelta { discarded: 1, ..Default::default() });
-                        return Ok(SendResult::Continue);
-                    }
-                    ctx.video_first_sent = true;
-                }
-
                 let timestamp_ms = clock.timestamp_ms();
-                // For audio, use time-based group boundaries; for video, use keyframe flag
-                let keyframe = match broadcast_frame.kind {
+                let default_duration = match broadcast_frame.kind {
+                    MediaKind::Audio => ctx.audio_codec.default_frame_duration_us(),
+                    MediaKind::Video => crate::video::DEFAULT_VIDEO_FRAME_DURATION_US,
+                };
+                let timestamp =
+                    hang::container::Timestamp::from_millis(timestamp_ms).map_err(|_| {
+                        StreamKitError::Runtime("MoQ frame timestamp overflow".to_string())
+                    })?;
+                let frame = hang::container::Frame { timestamp, payload: broadcast_frame.data };
+
+                match broadcast_frame.kind {
+                    MediaKind::Video => {
+                        // The OrderedProducer guarantees a group never opens on a
+                        // delta (dropping leading deltas), so a late-joining
+                        // subscriber always starts decoding on a keyframe.
+                        match track_producer.write_video(&frame, broadcast_frame.keyframe) {
+                            Ok(crate::transport::moq::ordered_producer::VideoWrite::Written) => {},
+                            Ok(crate::transport::moq::ordered_producer::VideoWrite::DroppedLeadingDelta) => {
+                                // Keep the video clock moving for the dropped frame
+                                // so the kept keyframe stays time-aligned with the
+                                // (ungated) audio track on this accumulation clock.
+                                clock.advance_by_duration_us(broadcast_frame.duration_us, default_duration);
+                                let _ = ctx
+                                    .stats_delta_tx
+                                    .try_send(NodeStatsDelta { discarded: 1, ..Default::default() });
+                                return Ok(SendResult::Continue);
+                            },
+                            Err(e) => {
+                                tracing::warn!("Failed to write MoQ video frame to subscriber: {e}");
+                                let _ = ctx
+                                    .stats_delta_tx
+                                    .try_send(NodeStatsDelta { errored: 1, ..Default::default() });
+                                return Ok(SendResult::Stop);
+                            },
+                        }
+                    },
                     MediaKind::Audio => {
                         let first = !ctx.audio_first_sent;
                         ctx.audio_first_sent = true;
-                        first || clock.is_group_boundary_ms(ctx.group_duration_ms)
+                        let keyframe = first || clock.is_group_boundary_ms(ctx.group_duration_ms);
+                        if keyframe {
+                            if let Err(e) = track_producer.keyframe() {
+                                tracing::warn!("Failed to signal audio group boundary: {e}");
+                                let _ = ctx
+                                    .stats_delta_tx
+                                    .try_send(NodeStatsDelta { errored: 1, ..Default::default() });
+                                return Ok(SendResult::Stop);
+                            }
+                        }
+                        if let Err(e) = track_producer.write(&frame) {
+                            tracing::warn!("Failed to write MoQ audio frame to subscriber: {e}");
+                            let _ = ctx
+                                .stats_delta_tx
+                                .try_send(NodeStatsDelta { errored: 1, ..Default::default() });
+                            return Ok(SendResult::Stop);
+                        }
                     },
-                    MediaKind::Video => broadcast_frame.keyframe,
-                };
+                }
 
                 if let Some(prev) = *last_ts_ms {
                     let gap = timestamp_ms.saturating_sub(prev);
                     ctx.gap_histogram.record(gap as f64, &ctx.metric_labels);
                 }
                 *last_ts_ms = Some(timestamp_ms);
-
-                let timestamp =
-                    hang::container::Timestamp::from_millis(timestamp_ms).map_err(|_| {
-                        StreamKitError::Runtime("MoQ frame timestamp overflow".to_string())
-                    })?;
-
-                if keyframe {
-                    if let Err(e) = track_producer.keyframe() {
-                        tracing::warn!(kind = ?broadcast_frame.kind, "Failed to signal keyframe: {e}");
-                        let _ = ctx
-                            .stats_delta_tx
-                            .try_send(NodeStatsDelta { errored: 1, ..Default::default() });
-                        return Ok(SendResult::Stop);
-                    }
-                }
-
-                let frame = hang::container::Frame { timestamp, payload: broadcast_frame.data };
-
-                if let Err(e) = track_producer.write(&frame) {
-                    tracing::warn!(kind = ?broadcast_frame.kind, "Failed to write MoQ frame to subscriber: {e}");
-                    let _ = ctx
-                        .stats_delta_tx
-                        .try_send(NodeStatsDelta { errored: 1, ..Default::default() });
-                    return Ok(SendResult::Stop);
-                }
-
-                let default_duration = match broadcast_frame.kind {
-                    MediaKind::Audio => ctx.audio_codec.default_frame_duration_us(),
-                    MediaKind::Video => crate::video::DEFAULT_VIDEO_FRAME_DURATION_US,
-                };
                 clock.advance_by_duration_us(broadcast_frame.duration_us, default_duration);
                 ctx.frame_count += 1;
                 Ok(SendResult::Continue)
             },
             Err(broadcast::error::RecvError::Lagged(n)) => {
                 tracing::warn!("Subscriber lagged, dropped {} packets", n);
-                // A dropped frame may have been the keyframe that opened the
-                // current video group. Wait for the next keyframe before
-                // forwarding video again so a subscriber joining after the lag
-                // still starts decoding on a keyframe.
-                ctx.video_first_sent = false;
+                // No video re-gating here: the current group already opened on a
+                // keyframe and stays open across the lag, so a subscriber joining
+                // afterwards still receives a keyframe-led group. Re-gating on a
+                // bare lag count (audio and video share this channel) would freeze
+                // video for up to a full GOP on an audio-only lag.
                 let _ = ctx
                     .stats_delta_tx
                     .try_send(NodeStatsDelta { discarded: n, ..Default::default() });
@@ -2898,6 +2900,59 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    /// Build a `SubscriberSendCtx` with the fixed test parameters, mirroring
+    /// the production initializer in `run_subscriber_send_loop` so a field
+    /// change can't silently drift the two apart. Used by tests that drive
+    /// `handle_broadcast_recv` directly.
+    fn make_test_ctx<'a>(
+        audio: &'a mut Option<crate::transport::moq::ordered_producer::OrderedProducer>,
+        video: &'a mut Option<crate::transport::moq::ordered_producer::OrderedProducer>,
+        stats_tx: &'a mpsc::Sender<NodeStatsDelta>,
+    ) -> SubscriberSendCtx<'a> {
+        let gap_histogram =
+            opentelemetry::global::meter("test").f64_histogram("test.inter_frame_ms").build();
+        SubscriberSendCtx {
+            audio_track_producer: audio,
+            video_track_producer: video,
+            packet_count: 0,
+            frame_count: 0,
+            audio_first_sent: false,
+            last_log: std::time::Instant::now(),
+            group_duration_ms: 40,
+            audio_clock: MediaClock::new(0),
+            video_clock: MediaClock::new(0),
+            gap_histogram,
+            metric_labels: [
+                opentelemetry::KeyValue::new("node_id", "test"),
+                opentelemetry::KeyValue::new("broadcast", "output"),
+            ],
+            last_audio_ts_ms: None,
+            last_video_ts_ms: None,
+            stats_delta_tx: stats_tx,
+            audio_codec: AudioCodec::Opus,
+        }
+    }
+
+    /// Read the next MoQ group off `sub` and return its frame payloads in
+    /// order, so tests can assert wire-level group boundaries (a group must
+    /// open on a keyframe) rather than internal producer state.
+    async fn read_group_payloads(sub: &mut moq_lite::TrackConsumer) -> Vec<Vec<u8>> {
+        let mut group = tokio::time::timeout(Duration::from_secs(2), sub.next_group())
+            .await
+            .expect("next_group should not hang")
+            .expect("next_group should succeed")
+            .expect("a group should be available");
+        let mut payloads = Vec::new();
+        while let Some(frame) = tokio::time::timeout(Duration::from_secs(2), group.read_frame())
+            .await
+            .expect("read_frame should not hang")
+            .expect("read_frame should succeed")
+        {
+            payloads.push(hang::container::Frame::decode(frame).unwrap().payload.to_vec());
+        }
+        payloads
     }
 
     struct SingleTrackFixture {
@@ -3520,78 +3575,82 @@ mod tests {
             .unwrap();
 
         // The peer attaches mid-stream: two delta frames arrive before the
-        // first keyframe.
+        // first keyframe. A trailing delta then lands in the keyframe-led
+        // group, and a second keyframe opens a fresh group.
         let (tx, rx) = broadcast::channel::<BroadcastFrame>(16);
         tx.send(video_frame(b"d0", false)).unwrap();
         tx.send(video_frame(b"d1", false)).unwrap();
         tx.send(video_frame(b"key", true)).unwrap();
         tx.send(video_frame(b"d2", false)).unwrap();
+        tx.send(video_frame(b"key2", true)).unwrap();
+        tx.send(video_frame(b"d3", false)).unwrap();
         drop(tx);
 
         let (stats_tx, mut stats_rx) = mpsc::channel::<NodeStatsDelta>(256);
         let (_shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
 
         let count = drive_send_loop(&mut audio, &mut video, rx, &mut shutdown_rx, &stats_tx).await;
-        assert_eq!(count, 4, "every received frame is accounted for");
+        assert_eq!(count, 6, "every received frame is accounted for");
 
         let stats = drain_stats(&mut stats_rx);
         assert_eq!(stats.discarded, 2, "the two leading delta frames are dropped");
 
-        let first = tokio::time::timeout(Duration::from_secs(2), sub.read_frame())
-            .await
-            .expect("reading the first published frame should not hang")
-            .unwrap()
-            .expect("a video frame should be published");
-        let decoded = hang::container::Frame::decode(first).unwrap();
+        // Close the final group/track so the group reads below terminate
+        // instead of waiting for more frames.
+        video.as_mut().unwrap().finish().unwrap();
+
+        // The first group must open on the keyframe and carry the trailing
+        // delta; a regression that opened a second, delta-led group would wedge
+        // a late-joining decoder.
         assert_eq!(
-            decoded.payload.as_ref(),
-            b"key",
-            "the first frame of the first MoQ group must be the keyframe"
+            read_group_payloads(&mut sub).await,
+            vec![b"key".to_vec(), b"d2".to_vec()],
+            "first group is keyframe-led and includes its trailing delta"
+        );
+        assert_eq!(
+            read_group_payloads(&mut sub).await,
+            vec![b"key2".to_vec(), b"d3".to_vec()],
+            "the next keyframe opens a fresh group"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), sub.next_group())
+                .await
+                .expect("next_group should not hang")
+                .expect("next_group should succeed")
+                .is_none(),
+            "no further groups are produced"
         );
 
         drop(publish);
     }
 
     #[tokio::test]
-    async fn lagged_video_resets_keyframe_gate() {
-        // Regression test: a lag may drop the keyframe that opened the current
-        // video group. The gate must reset so post-lag leading deltas are
-        // dropped and a subscriber joining after the lag still starts on a
-        // keyframe, rather than wedging on a delta-leading group.
+    async fn lagged_video_keeps_forwarding_without_regating() {
+        // A lag on the shared A/V broadcast channel carries no per-kind or
+        // keyframe information, so it must not re-gate video. The current group
+        // already opened on a keyframe and stays open across the lag, so a
+        // post-lag delta keeps flowing into it (and a subscriber joining after
+        // the lag still sees a keyframe-led group). Re-gating on a bare lag
+        // count would freeze video until the next keyframe — up to a full GOP —
+        // even for a lag that only dropped audio.
         let publish = moq_lite::Origin::random().produce();
         let media = sub_media(false, true);
         let (_bcast, mut audio, mut video, _catalog) =
             MoqPeerNode::setup_subscriber_broadcast(&publish, "output", &media).unwrap();
 
-        let (stats_tx, mut stats_rx) = mpsc::channel::<NodeStatsDelta>(256);
-        let gap_histogram =
-            opentelemetry::global::meter("test").f64_histogram("test.inter_frame_ms").build();
+        let video_track = moq_lite::Track { name: "video/data".to_string(), priority: 60 };
+        let mut sub = publish
+            .consume()
+            .get_broadcast("output")
+            .unwrap()
+            .subscribe_track(&video_track)
+            .unwrap();
 
-        let mut ctx = SubscriberSendCtx {
-            audio_track_producer: &mut audio,
-            video_track_producer: &mut video,
-            packet_count: 0,
-            frame_count: 0,
-            audio_first_sent: false,
-            video_first_sent: false,
-            last_log: std::time::Instant::now(),
-            group_duration_ms: 40,
-            audio_clock: MediaClock::new(0),
-            video_clock: MediaClock::new(0),
-            gap_histogram,
-            metric_labels: [
-                opentelemetry::KeyValue::new("node_id", "test"),
-                opentelemetry::KeyValue::new("broadcast", "output"),
-            ],
-            last_audio_ts_ms: None,
-            last_video_ts_ms: None,
-            stats_delta_tx: &stats_tx,
-            audio_codec: AudioCodec::Opus,
-        };
+        let (stats_tx, mut stats_rx) = mpsc::channel::<NodeStatsDelta>(256);
+        let mut ctx = make_test_ctx(&mut audio, &mut video, &stats_tx);
 
         let r = MoqPeerNode::handle_broadcast_recv(Ok(video_frame(b"k0", true)), &mut ctx).unwrap();
         assert!(matches!(r, SendResult::Continue));
-        assert!(ctx.video_first_sent, "the first keyframe opens the gate");
 
         let r = MoqPeerNode::handle_broadcast_recv(
             Err(broadcast::error::RecvError::Lagged(2)),
@@ -3599,17 +3658,50 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(r, SendResult::Continue));
-        assert!(!ctx.video_first_sent, "a lag must reset the video keyframe gate");
         assert_eq!(drain_stats(&mut stats_rx).discarded, 2);
 
         let r = MoqPeerNode::handle_broadcast_recv(Ok(video_frame(b"d", false)), &mut ctx).unwrap();
         assert!(matches!(r, SendResult::Continue));
-        assert!(!ctx.video_first_sent);
-        assert_eq!(drain_stats(&mut stats_rx).discarded, 1, "a post-lag delta is dropped");
+        assert_eq!(
+            drain_stats(&mut stats_rx).discarded,
+            0,
+            "a post-lag delta in an already-open group is forwarded, not dropped"
+        );
 
-        let r = MoqPeerNode::handle_broadcast_recv(Ok(video_frame(b"k1", true)), &mut ctx).unwrap();
-        assert!(matches!(r, SendResult::Continue));
-        assert!(ctx.video_first_sent, "the next keyframe reopens the gate");
+        ctx.video_track_producer.as_mut().unwrap().finish().unwrap();
+        assert_eq!(
+            read_group_payloads(&mut sub).await,
+            vec![b"k0".to_vec(), b"d".to_vec()],
+            "video keeps forwarding into the keyframe-led group across the lag"
+        );
+
+        drop(publish);
+    }
+
+    #[tokio::test]
+    async fn dropped_leading_video_deltas_advance_clock_to_stay_aligned_with_audio() {
+        // Finding #1: leading video deltas dropped before the first keyframe
+        // must still advance the video clock. The clock is accumulation-based
+        // and audio is never gated, so if video froze during the drop window
+        // the kept keyframe would land ahead of the concurrent audio's media
+        // time and lip-sync would drift permanently.
+        let publish = moq_lite::Origin::random().produce();
+        let media = sub_media(true, true);
+        let (_bcast, mut audio, mut video, _catalog) =
+            MoqPeerNode::setup_subscriber_broadcast(&publish, "output", &media).unwrap();
+
+        let (stats_tx, mut stats_rx) = mpsc::channel::<NodeStatsDelta>(256);
+        let mut ctx = make_test_ctx(&mut audio, &mut video, &stats_tx);
+
+        MoqPeerNode::handle_broadcast_recv(Ok(video_frame(b"d0", false)), &mut ctx).unwrap();
+        MoqPeerNode::handle_broadcast_recv(Ok(video_frame(b"d1", false)), &mut ctx).unwrap();
+
+        assert_eq!(
+            ctx.video_clock.timestamp_us(),
+            2 * crate::video::DEFAULT_VIDEO_FRAME_DURATION_US,
+            "each dropped leading delta still advances the video clock"
+        );
+        assert_eq!(drain_stats(&mut stats_rx).discarded, 2);
 
         drop(publish);
     }

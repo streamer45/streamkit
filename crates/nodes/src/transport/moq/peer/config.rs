@@ -164,11 +164,6 @@ pub(super) struct SubscriberSendCtx<'a> {
     /// Tracks whether the first audio frame has been sent so the initial
     /// MoQ group is opened independently of video frame ordering.
     pub audio_first_sent: bool,
-    /// Tracks whether the first video keyframe has been published. Until it
-    /// has, leading delta frames are dropped so the track's first MoQ group
-    /// always starts with a keyframe (required for late-joining subscribers
-    /// such as the Monitor preview, which attaches mid-stream).
-    pub video_first_sent: bool,
     pub last_log: std::time::Instant,
     pub group_duration_ms: u64,
     pub audio_clock: MediaClock,
@@ -276,9 +271,10 @@ pub(super) fn make_broadcast_frame(packet: Packet, kind: MediaKind) -> Option<Br
     if let Packet::Binary { data, metadata, .. } = packet {
         let duration_us = super::super::constants::packet_duration_us(metadata.as_ref());
         let keyframe = if kind == MediaKind::Video {
-            // Default to true when keyframe metadata is missing so that the
-            // subscriber's OrderedProducer opens an initial MoQ group on the
-            // first frame. Matches the convention in push.rs.
+            // Missing keyframe metadata defaults to keyframe so all-intra
+            // sources still open a group; inter-coded sources that omit the
+            // flag can't be grouped safely by any gate, and all in-tree
+            // encoders set it. Matches the convention in push.rs.
             metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(true)
         } else {
             false
