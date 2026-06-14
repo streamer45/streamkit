@@ -41,6 +41,10 @@ def archive_mode(file_path: str) -> tuple[str, str] | None:
         return file_path[: -len(".tar.gz")], "w:gz"
     if file_path.endswith(".tgz"):
         return file_path[: -len(".tgz")], "w:gz"
+    if file_path.endswith(".tar.zst"):
+        return file_path[: -len(".tar.zst")], "w:zst"
+    if file_path.endswith(".tzst"):
+        return file_path[: -len(".tzst")], "w:zst"
     if file_path.endswith(".tar"):
         return file_path[: -len(".tar")], "w"
     return None
@@ -76,8 +80,23 @@ def maybe_create_archive(
             sys.exit("Python was built without lzma support; cannot create .tar.xz archives")
 
     print(f"Creating archive {archive_path} from {source_dir}...")
-    with tarfile.open(archive_path, tar_mode) as tar:
-        tar.add(source_dir, arcname=base_name, filter=filter_hidden)
+    # stdlib tarfile gains native zstd support only in Python 3.14, so route
+    # .tar.zst/.tzst through the `zstandard` package to stay in parity with the
+    # Rust installer's archive handling (see marketplace_installer::model_archive_kind).
+    if tar_mode == "w:zst":
+        try:
+            import zstandard
+        except ImportError:
+            sys.exit(
+                "Missing dependency for .tar.zst archives: pip install zstandard"
+            )
+        with archive_path.open("wb") as raw, zstandard.ZstdCompressor().stream_writer(
+            raw
+        ) as stream, tarfile.open(fileobj=stream, mode="w|") as tar:
+            tar.add(source_dir, arcname=base_name, filter=filter_hidden)
+    else:
+        with tarfile.open(archive_path, tar_mode) as tar:
+            tar.add(source_dir, arcname=base_name, filter=filter_hidden)
     return archive_path
 
 
@@ -145,7 +164,7 @@ def main() -> int:
     parser.add_argument(
         "--create-archives",
         action="store_true",
-        help="Create .tar.bz2/.tar.gz archives from model directories when missing",
+        help="Create .tar/.tar.gz/.tar.bz2/.tar.xz/.tar.zst archives from model directories when missing",
     )
     args = parser.parse_args()
 

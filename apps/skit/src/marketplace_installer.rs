@@ -2894,6 +2894,58 @@ mod tests {
         }
     }
 
+    // Regression for #572: the Rust installer and `scripts/marketplace/upload_models_to_hf.py`
+    // each carry their own suffix->format table. They must agree, otherwise a `.tar.zst`
+    // model installs fine here but fails to upload ("Missing local model file") there.
+    #[test]
+    fn archive_suffix_mapping_matches_python_uploader() {
+        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scripts/marketplace/upload_models_to_hf.py");
+        let src = std::fs::read_to_string(&script)
+            .unwrap_or_else(|err| panic!("failed to read {}: {err}", script.display()));
+
+        let mut python_modes: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        let mut pending_suffix: Option<String> = None;
+        for raw in src.lines() {
+            let line = raw.trim();
+            if let Some(rest) = line.strip_prefix("if file_path.endswith(\"") {
+                pending_suffix = rest.find("\")").map(|end| rest[..end].to_string());
+            } else if line.starts_with("return file_path[") {
+                if let Some(suffix) = pending_suffix.take() {
+                    let mode = line
+                        .rsplit('"')
+                        .nth(1)
+                        .unwrap_or_else(|| panic!("no archive mode parsed for `{suffix}`"));
+                    python_modes.insert(suffix, mode.to_string());
+                }
+            }
+        }
+        assert!(!python_modes.is_empty(), "failed to parse archive_mode from {}", script.display());
+
+        let candidates = [
+            ".tar", ".tgz", ".tbz2", ".txz", ".tzst", ".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst",
+            ".gz", ".bz2", ".xz", ".zst", ".zip",
+        ];
+        for suffix in candidates {
+            let rust_mode = model_archive_kind(Path::new(&format!("model{suffix}"))).map(|kind| {
+                match kind {
+                    ModelArchiveKind::Tar => "w",
+                    ModelArchiveKind::TarGz => "w:gz",
+                    ModelArchiveKind::TarBz2 => "w:bz2",
+                    ModelArchiveKind::TarXz => "w:xz",
+                    ModelArchiveKind::TarZst => "w:zst",
+                }
+                .to_string()
+            });
+            let python_mode = python_modes.get(suffix).cloned();
+            assert_eq!(
+                rust_mode, python_mode,
+                "archive suffix `{suffix}` diverges between Rust installer and Python uploader"
+            );
+        }
+    }
+
     #[test]
     fn model_archive_dir_strips_archive_suffixes() {
         let base = Path::new("/models");
