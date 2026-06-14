@@ -2055,7 +2055,9 @@ mod tests {
     use std::sync::Arc;
 
     use crate::plugins::UnifiedPluginManager;
+    use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair};
     use axum::{routing::get, Router};
+    use base64::{engine::general_purpose, Engine as _};
     use bytes::Bytes;
     use sha2::Sha256;
     use tokio::net::TcpListener;
@@ -2482,13 +2484,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn model_archive_kind_recognizes_xz_extensions() {
-        assert_eq!(model_archive_kind(Path::new("model.tar.xz")), Some(ModelArchiveKind::TarXz));
-        assert_eq!(model_archive_kind(Path::new("model.txz")), Some(ModelArchiveKind::TarXz));
-        assert_eq!(model_archive_kind(Path::new("model.xz")), None);
-    }
-
     #[tokio::test]
     async fn gated_models_require_token() -> Result<()> {
         let temp_dir = tempfile::tempdir()?;
@@ -2603,6 +2598,846 @@ mod tests {
         assert!(yml_in_nested.exists(), "plugin.yml should be next to entrypoint");
         assert!(!yml_in_root.exists(), "plugin.yml should NOT be at bundle root");
 
+        Ok(())
+    }
+
+    fn registry_version(version: &str) -> crate::marketplace::RegistryPluginVersion {
+        crate::marketplace::RegistryPluginVersion {
+            version: version.to_string(),
+            manifest_url: format!("https://registry.example.com/{version}/manifest.json"),
+            signature_url: None,
+            published_at: None,
+        }
+    }
+
+    fn registry_index(latest: Option<&str>) -> RegistryIndex {
+        RegistryIndex {
+            schema_version: 1,
+            plugins: vec![crate::marketplace::RegistryPlugin {
+                id: "demo".to_string(),
+                name: None,
+                description: None,
+                latest: latest.map(str::to_string),
+                versions: vec![registry_version("1.0.0"), registry_version("2.0.0")],
+            }],
+        }
+    }
+
+    fn err_text<T>(result: Result<T>) -> Result<String> {
+        let Err(err) = result else { bail!("expected an error result") };
+        Ok(err.to_string())
+    }
+
+    #[test]
+    fn select_registry_version_covers_lookup_arms() -> Result<()> {
+        let index = registry_index(Some("1.0.0"));
+
+        assert!(err_text(select_registry_version(&index, "missing", None))?
+            .contains("not found in registry"));
+
+        let no_latest = registry_index(None);
+        assert!(err_text(select_registry_version(&no_latest, "demo", None))?
+            .contains("does not specify a latest version"));
+
+        assert!(err_text(select_registry_version(&index, "demo", Some("9.9.9")))?
+            .contains("not found for plugin"));
+
+        let Ok(explicit) = select_registry_version(&index, "demo", Some("2.0.0")) else {
+            bail!("expected explicit version to resolve");
+        };
+        assert_eq!(explicit.version, "2.0.0");
+
+        let Ok(latest) = select_registry_version(&index, "demo", None) else {
+            bail!("expected latest version to resolve");
+        };
+        assert_eq!(latest.version, "1.0.0");
+        Ok(())
+    }
+
+    fn model_spec(id: Option<&str>) -> crate::marketplace::ModelSpec {
+        crate::marketplace::ModelSpec {
+            id: id.map(str::to_string),
+            name: None,
+            default: false,
+            source: crate::marketplace::ModelSource::Url {
+                url: "http://example.com/model.bin".to_string(),
+            },
+            expected_size_bytes: None,
+            sha256: None,
+            file_checksums: HashMap::new(),
+            license: None,
+            license_url: None,
+            gated: false,
+        }
+    }
+
+    #[test]
+    fn select_models_returns_all_when_unselected() -> Result<()> {
+        let models = vec![model_spec(Some("a")), model_spec(Some("b"))];
+        let selected = select_models(&models, None)?;
+        assert_eq!(selected.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn select_models_rejects_empty_selection() -> Result<()> {
+        let models = vec![model_spec(Some("a"))];
+        assert!(err_text(select_models(&models, Some(&[])))?.contains("cannot be empty"));
+        Ok(())
+    }
+
+    #[test]
+    fn select_models_rejects_duplicate_manifest_ids() -> Result<()> {
+        let models = vec![model_spec(Some("dup")), model_spec(Some("dup"))];
+        assert!(err_text(select_models(&models, Some(&["dup".to_string()])))?
+            .contains("Duplicate model id"));
+        Ok(())
+    }
+
+    #[test]
+    fn select_models_requires_manifest_ids_when_selecting() -> Result<()> {
+        let models = vec![model_spec(None)];
+        assert!(err_text(select_models(&models, Some(&["a".to_string()])))?
+            .contains("requires manifest models to include ids"));
+        Ok(())
+    }
+
+    #[test]
+    fn select_models_rejects_unknown_id() -> Result<()> {
+        let models = vec![model_spec(Some("a"))];
+        assert!(err_text(select_models(&models, Some(&["b".to_string()])))?
+            .contains("Unknown model id 'b'"));
+        Ok(())
+    }
+
+    #[test]
+    fn select_models_dedupes_repeated_ids() -> Result<()> {
+        let models = vec![model_spec(Some("a")), model_spec(Some("b"))];
+        let ids = ["a".to_string(), "a".to_string(), "b".to_string()];
+        let selected = select_models(&models, Some(&ids))?;
+        let selected_ids: Vec<_> = selected.iter().filter_map(|m| m.id.as_deref()).collect();
+        assert_eq!(selected_ids, vec!["a", "b"]);
+        Ok(())
+    }
+
+    fn compat_manifest(
+        compat: crate::marketplace::PluginCompatibility,
+    ) -> crate::marketplace::PluginManifest {
+        let mut manifest = test_manifest(Vec::new());
+        manifest.compatibility = Some(compat);
+        manifest
+    }
+
+    #[test]
+    fn validate_manifest_compatibility_accepts_missing_section() {
+        assert!(validate_manifest_compatibility(&test_manifest(Vec::new())).is_ok());
+    }
+
+    #[test]
+    fn validate_manifest_compatibility_checks_os_and_arch() -> Result<()> {
+        let ok = compat_manifest(crate::marketplace::PluginCompatibility {
+            streamkit: None,
+            os: vec![std::env::consts::OS.to_string()],
+            arch: vec![std::env::consts::ARCH.to_string()],
+        });
+        assert!(validate_manifest_compatibility(&ok).is_ok());
+
+        let bad_os = compat_manifest(crate::marketplace::PluginCompatibility {
+            streamkit: None,
+            os: vec!["nonexistent-os".to_string()],
+            arch: Vec::new(),
+        });
+        assert!(
+            err_text(validate_manifest_compatibility(&bad_os))?.contains("not compatible with OS")
+        );
+
+        let bad_arch = compat_manifest(crate::marketplace::PluginCompatibility {
+            streamkit: None,
+            os: Vec::new(),
+            arch: vec!["nonexistent-arch".to_string()],
+        });
+        assert!(err_text(validate_manifest_compatibility(&bad_arch))?
+            .contains("not compatible with architecture"));
+        Ok(())
+    }
+
+    #[test]
+    fn validate_manifest_compatibility_checks_streamkit_requirement() -> Result<()> {
+        let ok = compat_manifest(crate::marketplace::PluginCompatibility {
+            streamkit: Some(">=0.0.1".to_string()),
+            os: Vec::new(),
+            arch: Vec::new(),
+        });
+        assert!(validate_manifest_compatibility(&ok).is_ok());
+
+        let too_new = compat_manifest(crate::marketplace::PluginCompatibility {
+            streamkit: Some(">=999999.0.0".to_string()),
+            os: Vec::new(),
+            arch: Vec::new(),
+        });
+        assert!(err_text(validate_manifest_compatibility(&too_new))?.contains("requires StreamKit"));
+
+        let invalid = compat_manifest(crate::marketplace::PluginCompatibility {
+            streamkit: Some("not-a-req".to_string()),
+            os: Vec::new(),
+            arch: Vec::new(),
+        });
+        assert!(err_text(validate_manifest_compatibility(&invalid))?
+            .contains("Invalid streamkit compatibility requirement"));
+        Ok(())
+    }
+
+    #[test]
+    fn validate_entrypoint_rejects_unsafe_paths() -> Result<()> {
+        assert!(validate_entrypoint("lib/plugin.so").is_ok());
+        assert!(err_text(validate_entrypoint(""))?.contains("must not be empty"));
+        assert!(
+            err_text(validate_entrypoint("/abs/plugin.so"))?.contains("must be a relative path")
+        );
+        assert!(err_text(validate_entrypoint("../escape.so"))?.contains("invalid path segments"));
+        Ok(())
+    }
+
+    #[test]
+    fn validate_entrypoint_for_kind_enforces_extension() {
+        assert!(validate_entrypoint_for_kind(&PluginKind::Wasm, Path::new("plugin.wasm")).is_ok());
+        assert!(
+            validate_entrypoint_for_kind(&PluginKind::Wasm, Path::new("plugin.so")).is_err(),
+            "wasm must reject non-.wasm"
+        );
+
+        for ext in ["so", "dylib", "dll"] {
+            let path = format!("plugin.{ext}");
+            assert!(
+                validate_entrypoint_for_kind(&PluginKind::Native, Path::new(&path)).is_ok(),
+                "native should accept .{ext}"
+            );
+        }
+        assert!(
+            validate_entrypoint_for_kind(&PluginKind::Native, Path::new("plugin.txt")).is_err(),
+            "native must reject non-library"
+        );
+    }
+
+    #[test]
+    fn is_safe_relative_path_classifies_components() {
+        assert!(is_safe_relative_path(Path::new("dir/file.txt")));
+        assert!(is_safe_relative_path(Path::new("./dir/file.txt")));
+        assert!(!is_safe_relative_path(Path::new("/abs/file.txt")));
+        assert!(!is_safe_relative_path(Path::new("../escape")));
+        assert!(!is_safe_relative_path(Path::new("dir/../escape")));
+    }
+
+    #[test]
+    fn namespaced_kind_uses_plugin_kind() {
+        let mut manifest = test_manifest(Vec::new());
+        manifest.node_kind = "demo".to_string();
+        manifest.kind = PluginKind::Wasm;
+        assert_eq!(namespaced_kind(&manifest), "plugin::wasm::demo");
+        manifest.kind = PluginKind::Native;
+        assert_eq!(namespaced_kind(&manifest), "plugin::native::demo");
+    }
+
+    #[test]
+    fn huggingface_model_url_builds_segments_and_filters_empties() -> Result<()> {
+        let url = huggingface_model_url("org/repo", "main", "subdir/model.bin")?;
+        assert_eq!(url, "https://huggingface.co/org/repo/resolve/main/subdir/model.bin");
+
+        let filtered = huggingface_model_url("org//repo", "", "model.bin")?;
+        assert_eq!(filtered, "https://huggingface.co/org/repo/resolve/model.bin");
+        Ok(())
+    }
+
+    #[test]
+    fn to_hex_encodes_bytes() {
+        assert_eq!(to_hex(&[0x00, 0x0f, 0xff]), "000fff");
+        assert_eq!(to_hex(&[]), "");
+    }
+
+    #[test]
+    fn install_steps_lists_pipeline_in_order() {
+        let steps = install_steps();
+        let names: Vec<_> = steps.iter().map(|step| step.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                STEP_DOWNLOAD_MANIFEST,
+                STEP_VERIFY_SIGNATURE,
+                STEP_DOWNLOAD_BUNDLE,
+                STEP_EXTRACT_BUNDLE,
+                STEP_ACTIVATE,
+                STEP_LOAD_PLUGIN,
+                STEP_DOWNLOAD_MODELS,
+            ]
+        );
+        assert!(steps.iter().all(|step| matches!(step.status, StepStatus::Pending)));
+    }
+
+    #[test]
+    fn model_archive_kind_recognizes_extensions() {
+        let cases = [
+            ("model.tar", Some(ModelArchiveKind::Tar)),
+            ("model.tgz", Some(ModelArchiveKind::TarGz)),
+            ("model.tbz2", Some(ModelArchiveKind::TarBz2)),
+            ("model.txz", Some(ModelArchiveKind::TarXz)),
+            ("model.tzst", Some(ModelArchiveKind::TarZst)),
+            ("model.tar.gz", Some(ModelArchiveKind::TarGz)),
+            ("model.tar.bz2", Some(ModelArchiveKind::TarBz2)),
+            ("model.tar.xz", Some(ModelArchiveKind::TarXz)),
+            ("model.tar.zst", Some(ModelArchiveKind::TarZst)),
+            ("model.gz", None),
+            ("model.xz", None),
+            ("model.zip", None),
+        ];
+        for (name, expected) in cases {
+            assert_eq!(model_archive_kind(Path::new(name)), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn model_archive_dir_strips_archive_suffixes() {
+        let base = Path::new("/models");
+        assert_eq!(model_archive_dir(Path::new("pack.tar"), base), Some(base.join("pack")));
+        assert_eq!(model_archive_dir(Path::new("pack.tar.gz"), base), Some(base.join("pack")));
+        assert_eq!(model_archive_dir(Path::new("pack.tgz"), base), Some(base.join("pack")));
+        assert_eq!(model_archive_dir(Path::new("pack.tzst"), base), Some(base.join("pack")));
+        assert_eq!(model_archive_dir(Path::new("pack.zip"), base), None);
+    }
+
+    fn tar_with_entry(name: &str, contents: &[u8]) -> Result<Vec<u8>> {
+        let mut buf = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut buf);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(contents.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append_data(&mut header, name, contents)?;
+            builder.finish()?;
+        }
+        Ok(buf)
+    }
+
+    // A well-behaved `tar::Builder` refuses to write `..` paths, so to exercise
+    // the extractor's traversal guard we splice the unsafe name straight into
+    // the header bytes and append the raw record.
+    fn tar_with_unsafe_name(name: &str, contents: &[u8]) -> Result<Vec<u8>> {
+        let mut buf = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut buf);
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_size(contents.len() as u64);
+            header.set_mode(0o644);
+            let name_bytes = name.as_bytes();
+            let Some(gnu) = header.as_gnu_mut() else { bail!("expected gnu header") };
+            gnu.name[..name_bytes.len()].copy_from_slice(name_bytes);
+            header.set_cksum();
+            builder.append(&header, contents)?;
+            builder.finish()?;
+        }
+        Ok(buf)
+    }
+
+    fn tar_with_link(entry_type: tar::EntryType, name: &str, target: &str) -> Result<Vec<u8>> {
+        let mut buf = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut buf);
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(entry_type);
+            header.set_size(0);
+            header.set_mode(0o644);
+            builder.append_link(&mut header, name, target)?;
+            builder.finish()?;
+        }
+        Ok(buf)
+    }
+
+    #[test]
+    fn safe_extract_archive_extracts_safe_entries() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let archive = tar_with_entry("nested/model.txt", b"payload")?;
+        safe_extract_archive(&archive[..], temp.path(), None)?;
+        let extracted = std::fs::read(temp.path().join("nested/model.txt"))?;
+        assert_eq!(extracted, b"payload");
+        Ok(())
+    }
+
+    #[test]
+    fn safe_extract_archive_rejects_path_traversal() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let archive = tar_with_unsafe_name("../escape.txt", b"evil")?;
+        assert!(err_text(safe_extract_archive(&archive[..], temp.path(), None))?
+            .contains("Unsafe path in bundle"));
+        Ok(())
+    }
+
+    #[test]
+    fn safe_extract_archive_rejects_symlinks_and_hardlinks() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let symlink = tar_with_link(tar::EntryType::Symlink, "link.txt", "/etc/passwd")?;
+        assert!(err_text(safe_extract_archive(&symlink[..], temp.path(), None))?
+            .contains("Symlinks and hardlinks are not allowed"));
+
+        let hardlink = tar_with_link(tar::EntryType::Link, "hard.txt", "model.txt")?;
+        assert!(err_text(safe_extract_archive(&hardlink[..], temp.path(), None))?
+            .contains("Symlinks and hardlinks are not allowed"));
+        Ok(())
+    }
+
+    #[test]
+    fn safe_extract_archive_honours_cancellation() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let archive = tar_with_entry("model.txt", b"payload")?;
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        assert!(err_text(safe_extract_archive(&archive[..], temp.path(), Some(&cancel)))?
+            .contains("cancelled"));
+        Ok(())
+    }
+
+    fn build_queue(plugin_dir: &Path, registries: Vec<String>) -> Result<InstallJobQueue> {
+        build_queue_with(
+            plugin_dir,
+            registries,
+            Vec::new(),
+            crate::config::PluginMarketplaceSecurityConfig::default(),
+        )
+    }
+
+    fn build_queue_with(
+        plugin_dir: &Path,
+        registries: Vec<String>,
+        trusted_pubkeys: Vec<String>,
+        security: crate::config::PluginMarketplaceSecurityConfig,
+    ) -> Result<InstallJobQueue> {
+        std::fs::create_dir_all(plugin_dir)?;
+        let config = PluginConfig {
+            directory: plugin_dir.to_string_lossy().to_string(),
+            native_call_timeout_secs: Some(300),
+            http_management: crate::config::PluginHttpConfig { allow_http_management: false },
+            marketplace: crate::config::PluginMarketplaceConfig {
+                marketplace_enabled: true,
+                allow_native_marketplace: true,
+                security,
+            },
+            trusted_pubkeys,
+            registries,
+            models_dir: Some(plugin_dir.join("models").to_string_lossy().to_string()),
+            huggingface_token: None,
+        };
+        InstallJobQueue::new(
+            &config,
+            test_plugin_manager(plugin_dir)?,
+            crate::plugin_assets::PluginAssetRegistry::new(),
+        )
+    }
+
+    async fn insert_job(queue: &InstallJobQueue, job_id: &str, status: JobStatus) {
+        let queued = matches!(status, JobStatus::Queued);
+        let mut state = queue.state.lock().await;
+        state.jobs.insert(job_id.to_string(), make_job(status));
+        state.job_order.push_back(job_id.to_string());
+        if queued {
+            state.queue.push_back(job_id.to_string());
+        }
+    }
+
+    #[tokio::test]
+    async fn queue_exposes_registry_configuration() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let registry = "https://registry.example.com/index.json".to_string();
+        let queue = build_queue(&temp.path().join("plugins"), vec![registry.clone()])?;
+
+        assert!(queue.is_registry_configured(&registry));
+        assert!(!queue.is_registry_configured("https://other.example.com/index.json"));
+        assert_eq!(queue.registries(), vec![registry]);
+
+        // Thin clone accessors must remain callable for downstream handlers.
+        let _client = queue.registry_client();
+        let _verifier = queue.verifier();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn get_job_returns_state_or_none() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let queue = build_queue(&temp.path().join("plugins"), Vec::new())?;
+        insert_job(&queue, "job-1", JobStatus::Queued).await;
+
+        let Some(info) = queue.get_job("job-1").await else { bail!("job should exist") };
+        assert!(matches!(info.status, JobStatus::Queued));
+        assert!(queue.get_job("missing").await.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn enqueue_registers_queued_job() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let queue = build_queue(&temp.path().join("plugins"), Vec::new())?;
+        let request = InstallPluginRequest {
+            registry: "registry".to_string(),
+            plugin_id: "demo".to_string(),
+            version: None,
+            install_models: false,
+            model_ids: None,
+        };
+
+        let job_id = queue.enqueue(request, Permissions::default()).await;
+        assert!(!job_id.is_empty());
+        let Some(info) = queue.get_job(&job_id).await else { bail!("enqueued job should exist") };
+        let step_names: Vec<&str> = info.steps.iter().map(|step| step.name.as_str()).collect();
+        assert_eq!(
+            step_names,
+            vec![
+                STEP_DOWNLOAD_MANIFEST,
+                STEP_VERIFY_SIGNATURE,
+                STEP_DOWNLOAD_BUNDLE,
+                STEP_EXTRACT_BUNDLE,
+                STEP_ACTIVATE,
+                STEP_LOAD_PLUGIN,
+                STEP_DOWNLOAD_MODELS,
+            ],
+            "enqueue should store the full install pipeline under the returned id"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancel_job_cancels_queued_and_reports_missing() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let queue = build_queue(&temp.path().join("plugins"), Vec::new())?;
+        insert_job(&queue, "job-1", JobStatus::Queued).await;
+
+        let Some(info) = queue.cancel_job("job-1").await else { bail!("job should exist") };
+        assert!(matches!(info.status, JobStatus::Cancelled));
+        let still_queued = {
+            let state = queue.state.lock().await;
+            state.queue.iter().any(|id| id == "job-1")
+        };
+        assert!(!still_queued);
+
+        assert!(queue.cancel_job("missing").await.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn job_tracker_reflects_step_lifecycle() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let queue = build_queue(&temp.path().join("plugins"), Vec::new())?;
+        insert_job(&queue, "job-1", JobStatus::Queued).await;
+        let tracker = JobTracker { job_id: "job-1".to_string(), queue: queue.clone() };
+
+        tracker.set_status(JobStatus::Running, "downloading").await;
+        tracker.start_step(STEP_DOWNLOAD_MANIFEST).await;
+        tracker
+            .update_progress(
+                STEP_DOWNLOAD_MANIFEST,
+                JobProgress {
+                    bytes_done: Some(5),
+                    bytes_total: Some(10),
+                    ..JobProgress::default()
+                },
+            )
+            .await;
+        tracker.succeed_step(STEP_DOWNLOAD_MANIFEST).await;
+        tracker.start_step(STEP_VERIFY_SIGNATURE).await;
+        tracker.fail_step(STEP_VERIFY_SIGNATURE, "bad signature".to_string()).await;
+
+        let Some(info) = queue.get_job("job-1").await else { bail!("job should exist") };
+        assert!(matches!(info.status, JobStatus::Running));
+        assert_eq!(info.summary, "downloading");
+
+        let Some(download) = info.steps.iter().find(|s| s.name == STEP_DOWNLOAD_MANIFEST) else {
+            bail!("download step missing");
+        };
+        assert!(matches!(download.status, StepStatus::Succeeded));
+        assert_eq!(download.progress.as_ref().and_then(|p| p.bytes_done), Some(5));
+
+        let Some(verify) = info.steps.iter().find(|s| s.name == STEP_VERIFY_SIGNATURE) else {
+            bail!("verify step missing");
+        };
+        assert!(matches!(verify.status, StepStatus::Failed));
+        assert_eq!(verify.error.as_deref(), Some("bad signature"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn job_tracker_mark_cancelled_fails_running_steps() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let queue = build_queue(&temp.path().join("plugins"), Vec::new())?;
+        insert_job(&queue, "job-1", JobStatus::Running).await;
+        let tracker = JobTracker { job_id: "job-1".to_string(), queue: queue.clone() };
+
+        tracker.start_step(STEP_DOWNLOAD_MANIFEST).await;
+        tracker.mark_cancelled("Aborted by user").await;
+
+        let Some(info) = queue.get_job("job-1").await else { bail!("job should exist") };
+        assert!(matches!(info.status, JobStatus::Cancelled));
+        assert_eq!(info.summary, "Aborted by user");
+        let Some(download) = info.steps.iter().find(|s| s.name == STEP_DOWNLOAD_MANIFEST) else {
+            bail!("download step missing");
+        };
+        assert!(matches!(download.status, StepStatus::Failed));
+        // Step error is a fixed literal, independent of the cancellation summary.
+        assert_eq!(download.error.as_deref(), Some("Cancelled"));
+        Ok(())
+    }
+
+    #[test]
+    fn prune_jobs_drops_terminal_before_queued() {
+        let mut state = InstallQueueState::default();
+        let total = MAX_JOB_HISTORY + 3;
+        for idx in 0..total {
+            let status = match idx {
+                0 => JobStatus::Succeeded,
+                1 => JobStatus::Failed,
+                2 => JobStatus::Cancelled,
+                _ => JobStatus::Queued,
+            };
+            let job_id = format!("job-{idx}");
+            state.jobs.insert(job_id.clone(), make_job(status));
+            state.job_order.push_back(job_id.clone());
+            if idx >= 3 {
+                state.queue.push_back(job_id);
+            }
+        }
+
+        state.prune_jobs();
+
+        assert_eq!(state.jobs.len(), MAX_JOB_HISTORY);
+        assert!(!state.jobs.contains_key("job-0"));
+        assert!(!state.jobs.contains_key("job-1"));
+        assert!(!state.jobs.contains_key("job-2"));
+        assert!(state.jobs.contains_key("job-3"));
+    }
+
+    // Builds a minisign public key + non-prehashed Ed25519 signature over
+    // `message`, matching the on-disk format `MinisignVerifier` parses.
+    fn minisign_keypair_and_sign(message: &[u8]) -> Result<(String, String)> {
+        let rng = aws_lc_rs::rand::SystemRandom::new();
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng)
+            .map_err(|err| anyhow!("Failed to generate keypair: {err}"))?;
+        let keypair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref())
+            .map_err(|err| anyhow!("Failed to parse keypair: {err}"))?;
+        let signature = keypair.sign(message);
+        let key_id = [1u8, 2, 3, 4, 5, 6, 7, 8];
+
+        let mut public_payload = Vec::with_capacity(42);
+        public_payload.extend_from_slice(b"Ed");
+        public_payload.extend_from_slice(&key_id);
+        public_payload.extend_from_slice(keypair.public_key().as_ref());
+        let public_b64 = general_purpose::STANDARD.encode(&public_payload);
+
+        let mut signature_payload = Vec::with_capacity(74);
+        signature_payload.extend_from_slice(b"Ed");
+        signature_payload.extend_from_slice(&key_id);
+        signature_payload.extend_from_slice(signature.as_ref());
+        let signature_b64 = general_purpose::STANDARD.encode(&signature_payload);
+
+        Ok((
+            format!("untrusted comment: test key\n{public_b64}\n"),
+            format!("untrusted comment: test signature\n{signature_b64}\n"),
+        ))
+    }
+
+    fn serve_static_routes(
+        listener: TcpListener,
+        routes: Vec<(String, Bytes)>,
+    ) -> (oneshot::Sender<()>, JoinHandle<Result<()>>) {
+        let mut app = Router::new();
+        for (path, body) in routes {
+            app = app.route(
+                path.as_str(),
+                get(move || {
+                    let body = body.clone();
+                    async move {
+                        ([(axum::http::header::CONTENT_TYPE, "application/octet-stream")], body)
+                    }
+                }),
+            );
+        }
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .context("serve test server")?;
+            Ok(())
+        });
+        (shutdown_tx, handle)
+    }
+
+    #[tokio::test]
+    async fn install_drives_pipeline_through_activation() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let plugin_dir = temp.path().join("plugins");
+        tokio::fs::create_dir_all(&plugin_dir).await?;
+
+        let bundle_bytes = tar_with_entry("libdemo.so", b"not a real shared object")?;
+        let mut hasher = Sha256::new();
+        hasher.update(&bundle_bytes);
+        let bundle_sha = to_hex(&hasher.finalize());
+
+        let listener = match TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => listener,
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+                tracing::warn!(error = %err, "Skipping install pipeline test");
+                return Ok(());
+            },
+            Err(err) => return Err(err.into()),
+        };
+        let addr = listener.local_addr()?;
+
+        let manifest = crate::marketplace::PluginManifest {
+            schema_version: 1,
+            id: "demo".to_string(),
+            name: None,
+            version: "1.0.0".to_string(),
+            node_kind: "demo".to_string(),
+            kind: PluginKind::Native,
+            description: None,
+            license: None,
+            license_url: None,
+            homepage: None,
+            repository: None,
+            entrypoint: "libdemo.so".to_string(),
+            bundle: Some(crate::marketplace::PluginBundle {
+                url: format!("http://{addr}/bundle.tar"),
+                sha256: bundle_sha,
+                size_bytes: None,
+            }),
+            compatibility: None,
+            models: Vec::new(),
+            assets: Vec::new(),
+        };
+        let manifest_bytes = serde_json::to_vec(&manifest)?;
+        let (pubkey, signature) = minisign_keypair_and_sign(&manifest_bytes)?;
+
+        let index = RegistryIndex {
+            schema_version: 1,
+            plugins: vec![crate::marketplace::RegistryPlugin {
+                id: "demo".to_string(),
+                name: None,
+                description: None,
+                latest: Some("1.0.0".to_string()),
+                versions: vec![crate::marketplace::RegistryPluginVersion {
+                    version: "1.0.0".to_string(),
+                    manifest_url: format!("http://{addr}/manifest.json"),
+                    signature_url: Some(format!("http://{addr}/manifest.json.minisig")),
+                    published_at: None,
+                }],
+            }],
+        };
+        let index_bytes = serde_json::to_vec(&index)?;
+        let registry_url = format!("http://{addr}/index.json");
+
+        let (shutdown_tx, server_handle) = serve_static_routes(
+            listener,
+            vec![
+                ("/index.json".to_string(), Bytes::from(index_bytes)),
+                ("/manifest.json".to_string(), Bytes::from(manifest_bytes)),
+                ("/manifest.json.minisig".to_string(), Bytes::from(signature)),
+                ("/bundle.tar".to_string(), Bytes::from(bundle_bytes)),
+            ],
+        );
+
+        let security = crate::config::PluginMarketplaceSecurityConfig {
+            allow_model_urls: true,
+            marketplace_scheme_policy: crate::config::MarketplaceSchemePolicy::AllowHttp,
+            marketplace_host_policy: crate::config::MarketplaceHostPolicy::AllowPrivate,
+            marketplace_url_allowlist: vec!["http://127.0.0.1:*".to_string()],
+            ..crate::config::PluginMarketplaceSecurityConfig::default()
+        };
+        let queue =
+            build_queue_with(&plugin_dir, vec![registry_url.clone()], vec![pubkey], security)?;
+        insert_job(&queue, "install-job", JobStatus::Running).await;
+        let tracker = JobTracker { job_id: "install-job".to_string(), queue: queue.clone() };
+        let cancel = CancellationToken::new();
+        let permissions =
+            Permissions { allowed_plugins: vec!["*".to_string()], ..Permissions::default() };
+        let request = InstallPluginRequest {
+            registry: registry_url,
+            plugin_id: "demo".to_string(),
+            version: None,
+            install_models: false,
+            model_ids: None,
+        };
+
+        // Loading a fabricated native library fails at dlopen, so install()
+        // errors at LOAD_PLUGIN. Everything up to and including ACTIVATE must
+        // have succeeded, which is what drives the download/verify/extract/
+        // activate pipeline under test.
+        let result = queue.installer.install(request, permissions, tracker, cancel).await;
+        assert!(result.is_err(), "fabricated native bundle should fail to load");
+
+        let Some(info) = queue.get_job("install-job").await else { bail!("job should exist") };
+        let step_succeeded = |name: &str| {
+            info.steps
+                .iter()
+                .find(|step| step.name == name)
+                .is_some_and(|step| matches!(step.status, StepStatus::Succeeded))
+        };
+        assert!(step_succeeded(STEP_DOWNLOAD_MANIFEST), "manifest step should succeed");
+        assert!(step_succeeded(STEP_VERIFY_SIGNATURE), "signature step should succeed");
+        assert!(step_succeeded(STEP_DOWNLOAD_BUNDLE), "bundle download should succeed");
+        assert!(step_succeeded(STEP_EXTRACT_BUNDLE), "bundle extraction should succeed");
+        assert!(step_succeeded(STEP_ACTIVATE), "activation should succeed");
+
+        let bundle_dir = plugin_dir.join("bundles").join("demo").join("1.0.0");
+        assert!(bundle_dir.join("libdemo.so").exists(), "entrypoint should be extracted");
+
+        let _ = shutdown_tx.send(());
+        server_handle.await.context("file server task panicked")??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn install_rejects_unconfigured_registry_and_empty_plugin_id() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let queue =
+            build_queue(&temp.path().join("plugins"), vec!["http://configured".to_string()])?;
+        insert_job(&queue, "job-1", JobStatus::Running).await;
+        let tracker = JobTracker { job_id: "job-1".to_string(), queue: queue.clone() };
+
+        let unconfigured = InstallPluginRequest {
+            registry: "http://other".to_string(),
+            plugin_id: "demo".to_string(),
+            version: None,
+            install_models: false,
+            model_ids: None,
+        };
+        let result = queue
+            .installer
+            .install(
+                unconfigured,
+                Permissions::default(),
+                tracker.clone(),
+                CancellationToken::new(),
+            )
+            .await;
+        let Err(InstallError::Other(err)) = result else {
+            bail!("expected unconfigured registry error");
+        };
+        assert!(err.to_string().contains("is not configured"), "{err}");
+
+        let empty_id = InstallPluginRequest {
+            registry: "http://configured".to_string(),
+            plugin_id: "   ".to_string(),
+            version: None,
+            install_models: false,
+            model_ids: None,
+        };
+        let result = queue
+            .installer
+            .install(empty_id, Permissions::default(), tracker, CancellationToken::new())
+            .await;
+        let Err(InstallError::Other(err)) = result else {
+            bail!("expected empty plugin id error");
+        };
+        assert!(err.to_string().contains("must not be empty"), "{err}");
         Ok(())
     }
 }
