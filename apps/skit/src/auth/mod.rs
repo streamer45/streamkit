@@ -564,7 +564,7 @@ pub mod test_support {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used)] // test fixtures use unwrap to fail loudly on setup errors
 mod tests {
     use super::test_support::create_test_auth_state;
     use super::*;
