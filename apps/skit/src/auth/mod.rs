@@ -535,12 +535,17 @@ pub fn now_secs() -> Result<u64, AuthError> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod tests {
+#[allow(clippy::unwrap_used)] // test fixtures use unwrap to fail loudly on setup errors
+pub mod test_support {
     use super::*;
     use tempfile::TempDir;
 
-    async fn create_test_auth_state() -> (AuthState, TempDir) {
+    /// Builds an enabled [`AuthState`] backed by a temporary state dir for tests.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the temporary directory or auth state cannot be created.
+    pub async fn create_test_auth_state() -> (AuthState, TempDir) {
         let temp_dir = TempDir::new().unwrap();
         let config = AuthConfig {
             mode: AuthMode::Enabled,
@@ -556,6 +561,14 @@ mod tests {
         let state = AuthState::new(&config, true).await.unwrap();
         (state, temp_dir)
     }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)] // test fixtures use unwrap to fail loudly on setup errors
+mod tests {
+    use super::test_support::create_test_auth_state;
+    use super::*;
+    use tempfile::TempDir;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_auth_state_disabled() {
