@@ -649,7 +649,7 @@ impl StreamKitMcp {
     // -- apply_batch -------------------------------------------------------
 
     #[tool(
-        description = "Apply a batch of graph mutations to a running session as a single validated batch. All operations are validated before any are applied; if validation fails, none are applied. Note: engine-side errors after validation do not roll back already-applied operations. Operations: addnode, removenode, connect, disconnect."
+        description = "Apply a batch of graph mutations to a running session as a single validated batch. All operations are validated before any are applied; if validation fails, none are applied. Added nodes use confirmed-add semantics: they appear in the pipeline only after the engine constructs them, so a node whose creation fails after validation leaves no orphan entry (failures surface as a Failed node state). Engine-side errors do not roll back other already-applied operations (e.g. connects/removes). Operations: addnode, removenode, connect, disconnect."
     )]
     async fn apply_batch(
         &self,

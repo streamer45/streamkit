@@ -196,6 +196,55 @@ fn extract_sse_json(body_text: &str) -> serde_json::Value {
     serde_json::from_str(json_str).expect("invalid JSON in SSE data")
 }
 
+/// Poll `get_pipeline` until `predicate` holds on the returned pipeline
+/// JSON, or panic after a timeout.  `AddNode` is confirmed-add (issue
+/// #455): nodes added via `apply_batch` / `update_pipeline` land in the
+/// durable snapshot only once the engine confirms them, so reads that
+/// expect a freshly-added node must retry instead of assuming the node
+/// was inserted synchronously.
+async fn get_pipeline_until(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    token: &str,
+    mcp_session: &str,
+    skit_session: &str,
+    id: u32,
+    predicate: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    let get = json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "tools/call",
+        "params": {
+            "name": "get_pipeline",
+            "arguments": { "session_id": skit_session }
+        }
+    });
+    // Generous budget: a node replacement (removenode + addnode of the same
+    // id) must wait for the old node to shut down, which the engine bounds at
+    // ~5s per node, so multi-node replacements can take >10s before the new
+    // nodes are confirmed.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut last = serde_json::Value::Null;
+    loop {
+        let res = mcp_post_with_session(client, addr, &get, token, mcp_session).await;
+        let body = extract_sse_json(&res.text().await.unwrap());
+        if let Some(text) = body["result"]["content"][0]["text"].as_str() {
+            if let Ok(pipeline) = serde_json::from_str::<serde_json::Value>(text) {
+                if predicate(&pipeline) {
+                    return pipeline;
+                }
+                last = pipeline;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "get_pipeline predicate not satisfied before timeout; last pipeline: {last}",
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 #[tokio::test]
 async fn mcp_unauthenticated_request_is_rejected() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -1072,23 +1121,11 @@ async fn mcp_apply_batch_add_node_round_trip() {
     let result: serde_json::Value = serde_json::from_str(text).unwrap();
     assert_eq!(result["success"], true);
 
-    // Verify via get_pipeline that "extra" exists
-    let get = json!({
-        "jsonrpc": "2.0",
-        "id": 3,
-        "method": "tools/call",
-        "params": {
-            "name": "get_pipeline",
-            "arguments": { "session_id": skit_session }
-        }
-    });
-    let res = mcp_post_with_session(&client, addr, &get, &token, &mcp_session).await;
-    assert_eq!(res.status(), StatusCode::OK);
-
-    let body = extract_sse_json(&res.text().await.unwrap());
-    let text = body["result"]["content"][0]["text"].as_str().expect("get_pipeline text");
-    let pipeline: serde_json::Value = serde_json::from_str(text).unwrap();
-    assert!(pipeline["nodes"]["extra"].is_object(), "expected 'extra' node in pipeline");
+    // Verify via get_pipeline that "extra" is confirmed (confirmed-add).
+    let pipeline = get_pipeline_until(&client, addr, &token, &mcp_session, &skit_session, 3, |p| {
+        p["nodes"]["extra"].is_object()
+    })
+    .await;
     assert!(pipeline["nodes"]["pass"].is_object(), "expected original 'pass' node in pipeline");
 
     // Clean up
@@ -1473,22 +1510,13 @@ async fn mcp_apply_batch_multi_operation() {
     let result: serde_json::Value = serde_json::from_str(text).unwrap();
     assert_eq!(result["success"], true);
 
-    // Verify both nodes and connection exist
-    let get = json!({
-        "jsonrpc": "2.0",
-        "id": 3,
-        "method": "tools/call",
-        "params": {
-            "name": "get_pipeline",
-            "arguments": { "session_id": skit_session }
-        }
-    });
-    let res = mcp_post_with_session(&client, addr, &get, &token, &mcp_session).await;
-    let body = extract_sse_json(&res.text().await.unwrap());
-    let text = body["result"]["content"][0]["text"].as_str().expect("pipeline text");
-    let pipeline: serde_json::Value = serde_json::from_str(text).unwrap();
+    // Verify both nodes and the connection exist (confirmed-add: wait for
+    // 'sink' to be reconciled into the snapshot).
+    let pipeline = get_pipeline_until(&client, addr, &token, &mcp_session, &skit_session, 3, |p| {
+        p["nodes"]["sink"].is_object()
+    })
+    .await;
     assert!(pipeline["nodes"]["pass"].is_object(), "expected 'pass' node");
-    assert!(pipeline["nodes"]["sink"].is_object(), "expected 'sink' node");
     let conns = pipeline["connections"].as_array().expect("connections array");
     assert_eq!(conns.len(), 1, "expected 1 connection");
 
@@ -1536,22 +1564,12 @@ async fn mcp_update_pipeline_add_node() {
     let result: serde_json::Value = serde_json::from_str(text).unwrap();
     assert_eq!(result["operations_applied"], 1, "expected 1 addnode operation");
 
-    // Verify both nodes exist
-    let get = json!({
-        "jsonrpc": "2.0",
-        "id": 3,
-        "method": "tools/call",
-        "params": {
-            "name": "get_pipeline",
-            "arguments": { "session_id": skit_session }
-        }
-    });
-    let res = mcp_post_with_session(&client, addr, &get, &token, &mcp_session).await;
-    let body = extract_sse_json(&res.text().await.unwrap());
-    let text = body["result"]["content"][0]["text"].as_str().expect("pipeline text");
-    let pipeline: serde_json::Value = serde_json::from_str(text).unwrap();
+    // Verify both nodes exist (confirmed-add: wait for 'extra').
+    let pipeline = get_pipeline_until(&client, addr, &token, &mcp_session, &skit_session, 3, |p| {
+        p["nodes"]["extra"].is_object()
+    })
+    .await;
     assert!(pipeline["nodes"]["pass"].is_object(), "expected 'pass' node");
-    assert!(pipeline["nodes"]["extra"].is_object(), "expected 'extra' node added by update");
 
     // Clean up
     let destroy = json!({
@@ -1700,25 +1718,13 @@ async fn mcp_update_pipeline_kind_change() {
         "expected 2 operations (removenode + addnode) for kind change"
     );
 
-    // Verify the node now has the new kind.
-    let get = json!({
-        "jsonrpc": "2.0",
-        "id": 3,
-        "method": "tools/call",
-        "params": {
-            "name": "get_pipeline",
-            "arguments": { "session_id": skit_session }
-        }
-    });
-    let res = mcp_post_with_session(&client, addr, &get, &token, &mcp_session).await;
-    let body = extract_sse_json(&res.text().await.unwrap());
-    let text = body["result"]["content"][0]["text"].as_str().expect("pipeline text");
-    let pipeline: serde_json::Value = serde_json::from_str(text).unwrap();
+    // Verify the node now has the new kind (confirmed-add: the replacement
+    // node appears only after the engine confirms it).
+    let pipeline = get_pipeline_until(&client, addr, &token, &mcp_session, &skit_session, 3, |p| {
+        p["nodes"]["pass"]["kind"] == "core::pacer"
+    })
+    .await;
     assert!(pipeline["nodes"]["pass"].is_object(), "expected 'pass' node to still exist");
-    assert_eq!(
-        pipeline["nodes"]["pass"]["kind"], "core::pacer",
-        "expected node kind to change to core::pacer"
-    );
 
     // Clean up
     let destroy = json!({
@@ -1791,24 +1797,12 @@ async fn mcp_update_pipeline_kind_change_preserves_connections() {
         result["operations_applied"]
     );
 
-    // Verify the node kind changed and the connection is preserved.
-    let get = json!({
-        "jsonrpc": "2.0",
-        "id": 4,
-        "method": "tools/call",
-        "params": {
-            "name": "get_pipeline",
-            "arguments": { "session_id": skit_session }
-        }
-    });
-    let res = mcp_post_with_session(&client, addr, &get, &token, &mcp_session).await;
-    let body = extract_sse_json(&res.text().await.unwrap());
-    let text = body["result"]["content"][0]["text"].as_str().expect("pipeline text");
-    let pipeline: serde_json::Value = serde_json::from_str(text).unwrap();
-    assert_eq!(
-        pipeline["nodes"]["src"]["kind"], "core::pacer",
-        "expected src kind to change to core::pacer"
-    );
+    // Verify the node kind changed and the connection is preserved
+    // (confirmed-add: wait for the replacement 'src' node).
+    let pipeline = get_pipeline_until(&client, addr, &token, &mcp_session, &skit_session, 4, |p| {
+        p["nodes"]["src"]["kind"] == "core::pacer"
+    })
+    .await;
     let conns = pipeline["connections"].as_array().expect("connections array");
     assert_eq!(conns.len(), 1, "expected connection to be preserved after kind change");
     assert_eq!(conns[0]["from_node"], "src");
@@ -2216,22 +2210,12 @@ async fn mcp_update_pipeline_both_endpoints_replaced() {
         result["operations_applied"]
     );
 
-    // Verify both nodes changed kind and connection is preserved.
-    let get = json!({
-        "jsonrpc": "2.0",
-        "id": 4,
-        "method": "tools/call",
-        "params": {
-            "name": "get_pipeline",
-            "arguments": { "session_id": skit_session }
-        }
-    });
-    let res = mcp_post_with_session(&client, addr, &get, &token, &mcp_session).await;
-    let body = extract_sse_json(&res.text().await.unwrap());
-    let text = body["result"]["content"][0]["text"].as_str().expect("pipeline text");
-    let pipeline: serde_json::Value = serde_json::from_str(text).unwrap();
-    assert_eq!(pipeline["nodes"]["src"]["kind"], "core::pacer");
-    assert_eq!(pipeline["nodes"]["dst"]["kind"], "core::pacer");
+    // Verify both nodes changed kind and connection is preserved
+    // (confirmed-add: wait for both replacement nodes).
+    let pipeline = get_pipeline_until(&client, addr, &token, &mcp_session, &skit_session, 4, |p| {
+        p["nodes"]["src"]["kind"] == "core::pacer" && p["nodes"]["dst"]["kind"] == "core::pacer"
+    })
+    .await;
     let conns = pipeline["connections"].as_array().expect("connections array");
     assert_eq!(conns.len(), 1, "expected connection to be preserved");
     assert_eq!(conns[0]["from_node"], "src");

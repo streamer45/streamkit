@@ -2121,7 +2121,7 @@ mod dispatcher_tests {
     }
 
     #[tokio::test]
-    async fn apply_batch_happy_path_returns_batch_applied_and_mutates_pipeline() {
+    async fn apply_batch_happy_path_returns_batch_applied_and_confirms_pipeline() {
         let state = make_app_state();
         let session = fresh_session(&state, "admin").await;
         let resp = dispatch(
@@ -2160,16 +2160,23 @@ mod dispatcher_tests {
             },
             other => panic!("expected BatchApplied, got {other:?}"),
         }
-        let (has_p1, has_p2, conn_count) = {
+
+        // Confirmed-add: nodes appear in the durable snapshot only after the
+        // engine confirms them via the node-added forwarder.  Connections are
+        // still recorded synchronously inside the batch.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
             let pipeline = session.pipeline.lock().await;
-            (
-                pipeline.nodes.contains_key("p1"),
-                pipeline.nodes.contains_key("p2"),
-                pipeline.connections.len(),
-            )
-        };
-        assert!(has_p1);
-        assert!(has_p2);
-        assert_eq!(conn_count, 1);
+            if pipeline.nodes.contains_key("p1") && pipeline.nodes.contains_key("p2") {
+                assert_eq!(pipeline.connections.len(), 1);
+                break;
+            }
+            drop(pipeline);
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "nodes were never confirmed into the pipeline snapshot",
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
     }
 }

@@ -502,6 +502,13 @@ pub async fn validate_batch_operations(
 /// (e.g. duplicate node IDs or forbidden node kinds).  Callers must perform
 /// session-level permission and ownership checks before calling this function.
 ///
+/// `AddNode` uses confirmed-add semantics, matching the single-node WS path
+/// (`handle_add_node`): the engine op is queued but `pipeline.nodes` is left
+/// untouched here.  The durable snapshot is reconciled by the session's
+/// `node-added` forwarder once the engine reports the node was constructed
+/// and initialized, so a creation that fails after validation leaves no
+/// orphan entry behind.
+///
 /// # Errors
 ///
 /// Returns an error string when a batch operation fails pre-validation
@@ -536,14 +543,6 @@ pub async fn apply_batch_operations(
         for op in operations {
             match op {
                 streamkit_api::BatchOperation::AddNode { node_id, kind, params } => {
-                    pipeline.nodes.insert(
-                        node_id.clone(),
-                        streamkit_api::Node {
-                            kind: kind.clone(),
-                            params: params.clone(),
-                            state: None,
-                        },
-                    );
                     engine_operations.push(
                         streamkit_core::control::EngineControlMessage::AddNode {
                             node_id,
@@ -809,6 +808,26 @@ mod sessions_batch_tests {
         }
     }
 
+    /// Poll `pipeline.nodes` until `node_id` is confirmed by the engine or
+    /// the deadline elapses.  `AddNode` is confirmed-add: the durable
+    /// snapshot is reconciled by the session's node-added forwarder once the
+    /// engine reports success, not synchronously inside
+    /// `apply_batch_operations`.  This is the unit-level analogue of the
+    /// integration tests' `wait_for_node_added`.
+    async fn wait_for_node(session: &Session, node_id: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if session.pipeline.lock().await.nodes.contains_key(node_id) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "node '{node_id}' was never confirmed into pipeline.nodes",
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
     /// Seed the session's durable pipeline model directly.  We bypass
     /// the engine because these unit tests only exercise the helpers'
     /// view of `pipeline.nodes`, not the actor's state.
@@ -1071,7 +1090,7 @@ mod sessions_batch_tests {
     }
 
     #[tokio::test]
-    async fn apply_happy_addnode_mutates_pipeline_and_records_params() {
+    async fn apply_happy_addnode_confirms_into_pipeline_and_records_params() {
         let (session, _rx) = fresh_session().await;
 
         let ops = vec![BatchOperation::AddNode {
@@ -1088,11 +1107,63 @@ mod sessions_batch_tests {
         .await
         .expect("happy AddNode must succeed");
 
+        // Confirmed-add: the node lands in the durable snapshot only after
+        // the engine reports success via the node-added forwarder.
+        wait_for_node(&session, "new").await;
+
         let pipeline = session.pipeline.lock().await;
-        let node = pipeline.nodes.get("new").expect("'new' should be in pipeline.nodes");
+        let node =
+            pipeline.nodes.get("new").expect("'new' should be confirmed into pipeline.nodes");
         assert_eq!(node.kind, "core::passthrough");
         assert_eq!(node.params, Some(serde_json::json!({ "k": "v" })));
         drop(pipeline);
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn apply_addnode_engine_failure_leaves_no_orphan() {
+        let (session, mut rx) = fresh_session().await;
+
+        // `core::definitely_not_a_real_kind` passes validation (the kind
+        // registry is not consulted there) but the engine has no entry for
+        // it, so creation fails after the batch is accepted.  Under the old
+        // optimistic semantics this left an orphan in `pipeline.nodes`;
+        // confirmed-add must leave nothing behind.
+        let ops = vec![add_op("ghost", "core::definitely_not_a_real_kind")];
+        apply_batch_operations(&session, ops, &Permissions::admin(), &SecurityConfig::default())
+            .await
+            .expect("batch is accepted; the engine-side creation is what fails");
+
+        // Wait for the engine's `Failed` state transition for this id so the
+        // assertion ties to the engine's "creation failed" signal rather
+        // than an arbitrary sleep.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut saw_failed = false;
+        while tokio::time::Instant::now() < deadline {
+            if let Ok(Ok(BroadcastEvent { event, .. })) =
+                tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await
+            {
+                match &event.payload {
+                    EventPayload::NodeStateChanged { node_id, state, .. }
+                        if node_id == "ghost"
+                            && matches!(state, streamkit_api::NodeState::Failed { .. }) =>
+                    {
+                        saw_failed = true;
+                        break;
+                    },
+                    EventPayload::NodeAdded { node_id, .. } => {
+                        assert_ne!(node_id, "ghost", "failed creation must not emit NodeAdded");
+                    },
+                    _ => {},
+                }
+            }
+        }
+        assert!(saw_failed, "expected a Failed state transition for 'ghost'");
+
+        assert!(
+            !session.pipeline.lock().await.nodes.contains_key("ghost"),
+            "a failed AddNode must not leave an orphan in pipeline.nodes",
+        );
         let _ = session.shutdown_and_wait().await;
     }
 
@@ -1113,6 +1184,9 @@ mod sessions_batch_tests {
         )
         .await
         .expect("connect after AddNode must succeed");
+
+        wait_for_node(&session, "src").await;
+        wait_for_node(&session, "dst").await;
 
         let pipeline = session.pipeline.lock().await;
         assert!(pipeline.nodes.contains_key("src"));
@@ -1186,6 +1260,13 @@ mod sessions_batch_tests {
         .await
         .expect("setup batch must succeed");
         assert_eq!(session.pipeline.lock().await.connections.len(), 2);
+
+        // Confirmed-add: wait for the engine to confirm all three nodes
+        // before removing one, otherwise the node-added forwarder could
+        // re-insert 'b' after the synchronous removal below.
+        wait_for_node(&session, "a").await;
+        wait_for_node(&session, "b").await;
+        wait_for_node(&session, "c").await;
 
         let ops = vec![remove_op("b")];
         apply_batch_operations(
