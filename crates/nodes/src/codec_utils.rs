@@ -99,6 +99,48 @@ async fn drain_codec_results<T: Send + 'static, F: Fn(T) -> Packet + Send + Sync
     tracing::debug!("{label} drain complete: forwarded {drained} result(s)");
 }
 
+/// Result of [`bounded_thread_join`].
+#[cfg(any(feature = "svt_av1", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ThreadJoin {
+    /// The worker signaled completion within the budget and was joined.
+    Joined,
+    /// The worker never signaled; it was left detached, so the caller must
+    /// leak any resource the thread can still touch (see below).
+    Abandoned,
+}
+
+/// Join a worker thread, bounded by `timeout`.
+///
+/// The blocking-FFI analogue of [`drain_codec_results`]'s idle watchdog: some
+/// encoders (e.g. SVT-AV1) flush through a two-thread native boundary whose
+/// receive thread can deadlock under rare scheduling, and a plain
+/// [`std::thread::JoinHandle::join`] there is unbounded — it can hang the codec
+/// task until the client request times out.
+///
+/// `done` is a channel the worker sends on immediately before returning; a
+/// disconnect (e.g. a panic that drops the sender) also counts as finished. If
+/// the signal arrives within `timeout` the handle is joined (an already-
+/// finished, non-blocking wait). Otherwise the worker is presumed wedged in a
+/// blocking call that cannot be interrupted, so it is abandoned: the
+/// `JoinHandle` is dropped (detaching the OS thread) and the caller MUST leak
+/// any resource the detached thread can still access, to avoid a
+/// use-after-free.
+#[cfg(any(feature = "svt_av1", test))]
+pub(crate) fn bounded_thread_join(
+    done: &std::sync::mpsc::Receiver<()>,
+    handle: std::thread::JoinHandle<()>,
+    timeout: Duration,
+) -> ThreadJoin {
+    match done.recv_timeout(timeout) {
+        Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            let _ = handle.join();
+            ThreadJoin::Joined
+        },
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => ThreadJoin::Abandoned,
+    }
+}
+
 /// Forward codec results downstream, draining the codec task on input close.
 ///
 /// `flush_idle_timeout` arms an idle watchdog on the post-input drain (see
@@ -304,5 +346,45 @@ mod tests {
         )
         .await
         .expect("drain must return when the codec finishes and closes the channel");
+    }
+
+    /// Regression for #540: a receive thread wedged in a blocking native flush
+    /// (never signals completion) must be abandoned once the budget elapses,
+    /// not joined forever. This is the synchronous counterpart to the async
+    /// EOS-flush watchdog above, and guards the SVT-AV1 dimension-change /
+    /// shutdown joins that `drain_codec_results` does not cover.
+    #[test]
+    fn bounded_thread_join_abandons_wedged_worker() {
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let handle = std::thread::spawn(move || {
+            // Never unparked — stands in for a thread wedged in a blocking
+            // native call that the join can't interrupt.
+            std::thread::park();
+            let _ = done_tx.send(());
+        });
+
+        let start = std::time::Instant::now();
+        let outcome = bounded_thread_join(&done_rx, handle, Duration::from_millis(100));
+        let elapsed = start.elapsed();
+
+        assert_eq!(outcome, ThreadJoin::Abandoned);
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "must not block on the wedged join; took {elapsed:?}"
+        );
+    }
+
+    /// A worker that finishes promptly is joined, not abandoned.
+    #[test]
+    fn bounded_thread_join_joins_completed_worker() {
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let handle = std::thread::spawn(move || {
+            let _ = done_tx.send(());
+        });
+
+        assert_eq!(
+            bounded_thread_join(&done_rx, handle, Duration::from_secs(5)),
+            ThreadJoin::Joined
+        );
     }
 }
