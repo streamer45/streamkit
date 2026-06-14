@@ -188,11 +188,6 @@ pub(super) async fn validate_moq_auth(
         axum::http::StatusCode::UNAUTHORIZED
     })?;
 
-    if claims.aud != crate::auth::AUD_MOQ {
-        warn!(path = %path, expected = crate::auth::AUD_MOQ, actual = %claims.aud, "MoQ auth failed: wrong audience");
-        return Err(axum::http::StatusCode::UNAUTHORIZED);
-    }
-
     let token_hash = crate::auth::hash_token(&jwt);
 
     // Enforce "tokens we mint" policy (parity with HTTP API auth).
@@ -299,9 +294,8 @@ mod tests {
         assert_eq!(err, StatusCode::UNAUTHORIZED);
     }
 
-    // `validate_moq_token` sets `set_audience(&[AUD_MOQ])`, so an API-audience
-    // token is rejected there and the explicit `claims.aud != AUD_MOQ` guard in
-    // `validate_moq_auth` is unreachable defensive code that stays uncovered.
+    // An API-audience token is rejected by `validate_moq_token`, which enforces
+    // `set_audience(&[AUD_MOQ])` and `claims.validate()`.
     #[tokio::test(flavor = "multi_thread")]
     async fn wrong_audience_token_is_unauthorized() {
         let (state, _temp) = create_test_auth_state().await;
