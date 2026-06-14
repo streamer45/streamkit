@@ -2484,13 +2484,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn model_archive_kind_recognizes_xz_extensions() {
-        assert_eq!(model_archive_kind(Path::new("model.tar.xz")), Some(ModelArchiveKind::TarXz));
-        assert_eq!(model_archive_kind(Path::new("model.txz")), Some(ModelArchiveKind::TarXz));
-        assert_eq!(model_archive_kind(Path::new("model.xz")), None);
-    }
-
     #[tokio::test]
     async fn gated_models_require_token() -> Result<()> {
         let temp_dir = tempfile::tempdir()?;
@@ -2893,6 +2886,7 @@ mod tests {
             ("model.tar.xz", Some(ModelArchiveKind::TarXz)),
             ("model.tar.zst", Some(ModelArchiveKind::TarZst)),
             ("model.gz", None),
+            ("model.xz", None),
             ("model.zip", None),
         ];
         for (name, expected) in cases {
@@ -3003,6 +2997,20 @@ mod tests {
     }
 
     fn build_queue(plugin_dir: &Path, registries: Vec<String>) -> Result<InstallJobQueue> {
+        build_queue_with(
+            plugin_dir,
+            registries,
+            Vec::new(),
+            crate::config::PluginMarketplaceSecurityConfig::default(),
+        )
+    }
+
+    fn build_queue_with(
+        plugin_dir: &Path,
+        registries: Vec<String>,
+        trusted_pubkeys: Vec<String>,
+        security: crate::config::PluginMarketplaceSecurityConfig,
+    ) -> Result<InstallJobQueue> {
         std::fs::create_dir_all(plugin_dir)?;
         let config = PluginConfig {
             directory: plugin_dir.to_string_lossy().to_string(),
@@ -3011,9 +3019,9 @@ mod tests {
             marketplace: crate::config::PluginMarketplaceConfig {
                 marketplace_enabled: true,
                 allow_native_marketplace: true,
-                security: crate::config::PluginMarketplaceSecurityConfig::default(),
+                security,
             },
-            trusted_pubkeys: Vec::new(),
+            trusted_pubkeys,
             registries,
             models_dir: Some(plugin_dir.join("models").to_string_lossy().to_string()),
             huggingface_token: None,
@@ -3078,7 +3086,20 @@ mod tests {
         let job_id = queue.enqueue(request, Permissions::default()).await;
         assert!(!job_id.is_empty());
         let Some(info) = queue.get_job(&job_id).await else { bail!("enqueued job should exist") };
-        assert_eq!(info.steps.len(), install_steps().len());
+        let step_names: Vec<&str> = info.steps.iter().map(|step| step.name.as_str()).collect();
+        assert_eq!(
+            step_names,
+            vec![
+                STEP_DOWNLOAD_MANIFEST,
+                STEP_VERIFY_SIGNATURE,
+                STEP_DOWNLOAD_BUNDLE,
+                STEP_EXTRACT_BUNDLE,
+                STEP_ACTIVATE,
+                STEP_LOAD_PLUGIN,
+                STEP_DOWNLOAD_MODELS,
+            ],
+            "enqueue should store the full install pipeline under the returned id"
+        );
         Ok(())
     }
 
@@ -3149,14 +3170,16 @@ mod tests {
         let tracker = JobTracker { job_id: "job-1".to_string(), queue: queue.clone() };
 
         tracker.start_step(STEP_DOWNLOAD_MANIFEST).await;
-        tracker.mark_cancelled("Cancelled").await;
+        tracker.mark_cancelled("Aborted by user").await;
 
         let Some(info) = queue.get_job("job-1").await else { bail!("job should exist") };
         assert!(matches!(info.status, JobStatus::Cancelled));
+        assert_eq!(info.summary, "Aborted by user");
         let Some(download) = info.steps.iter().find(|s| s.name == STEP_DOWNLOAD_MANIFEST) else {
             bail!("download step missing");
         };
         assert!(matches!(download.status, StepStatus::Failed));
+        // Step error is a fixed literal, independent of the cancellation summary.
         assert_eq!(download.error.as_deref(), Some("Cancelled"));
         Ok(())
     }
@@ -3321,32 +3344,15 @@ mod tests {
             ],
         );
 
-        let config = PluginConfig {
-            directory: plugin_dir.to_string_lossy().to_string(),
-            native_call_timeout_secs: Some(300),
-            http_management: crate::config::PluginHttpConfig { allow_http_management: false },
-            marketplace: crate::config::PluginMarketplaceConfig {
-                marketplace_enabled: true,
-                allow_native_marketplace: true,
-                security: crate::config::PluginMarketplaceSecurityConfig {
-                    allow_model_urls: true,
-                    marketplace_scheme_policy: crate::config::MarketplaceSchemePolicy::AllowHttp,
-                    marketplace_host_policy: crate::config::MarketplaceHostPolicy::AllowPrivate,
-                    marketplace_url_allowlist: vec!["http://127.0.0.1:*".to_string()],
-                    ..crate::config::PluginMarketplaceSecurityConfig::default()
-                },
-            },
-            trusted_pubkeys: vec![pubkey],
-            registries: vec![registry_url.clone()],
-            models_dir: Some(temp.path().join("models").to_string_lossy().to_string()),
-            huggingface_token: None,
+        let security = crate::config::PluginMarketplaceSecurityConfig {
+            allow_model_urls: true,
+            marketplace_scheme_policy: crate::config::MarketplaceSchemePolicy::AllowHttp,
+            marketplace_host_policy: crate::config::MarketplaceHostPolicy::AllowPrivate,
+            marketplace_url_allowlist: vec!["http://127.0.0.1:*".to_string()],
+            ..crate::config::PluginMarketplaceSecurityConfig::default()
         };
-
-        let queue = InstallJobQueue::new(
-            &config,
-            test_plugin_manager(&plugin_dir)?,
-            crate::plugin_assets::PluginAssetRegistry::new(),
-        )?;
+        let queue =
+            build_queue_with(&plugin_dir, vec![registry_url.clone()], vec![pubkey], security)?;
         insert_job(&queue, "install-job", JobStatus::Running).await;
         let tracker = JobTracker { job_id: "install-job".to_string(), queue: queue.clone() };
         let cancel = CancellationToken::new();
