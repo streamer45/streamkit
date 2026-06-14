@@ -37,6 +37,7 @@ export function useMoqYamlSync(
 
   const deriveMoqFromYaml = useCallback(
     (yaml: string) => {
+      if (timerRef.current) clearTimeout(timerRef.current);
       lastDerivedClientRef.current = clientSectionSignature(yaml);
       applyMoqSettings(
         extractMoqPeerSettings(yaml),
