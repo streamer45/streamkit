@@ -29,12 +29,10 @@ const OVERLAY_CONTROLS_YAML = fs.readFileSync(
  * CodeMirror (contenteditable), so we select-all and `insertText` the fixture
  * as a single input event — avoiding per-keystroke autocomplete/auto-indent.
  *
- * Unlike picking a sample from the list (which re-derives MoQ settings from the
- * pipeline), editing the YAML directly leaves the broadcast names from the
- * auto-selected first sample in place. The fixture has no MoQ transport, so we
- * clear those names; otherwise the post-create auto-connect would attempt a MoQ
- * session and surface a connection error. The durable UI-side fix is tracked in
- * https://github.com/streamer45/streamkit/issues/550.
+ * Editing the YAML directly re-derives MoQ settings from the new pipeline (issue
+ * #550). The fixture has no MoQ transport, so the broadcast names carried over
+ * from the auto-selected first sample must clear; we wait for that before
+ * returning so the post-create auto-connect doesn't target a stale broadcast.
  */
 async function loadPipelineYaml(page: Page, yaml: string): Promise<void> {
   const editor = page.locator('.cm-content');
@@ -44,10 +42,8 @@ async function loadPipelineYaml(page: Page, yaml: string): Promise<void> {
   await page.keyboard.press('Delete');
   await page.keyboard.insertText(yaml);
 
-  for (const id of ['#input-broadcast', '#output-broadcast']) {
-    const input = page.locator(id);
-    if (await input.count()) await input.fill('');
-  }
+  await expect(page.locator('#input-broadcast')).toHaveValue('');
+  await expect(page.locator('#output-broadcast')).toHaveValue('');
 }
 
 test.describe('Stream View - Overlay Controls', () => {

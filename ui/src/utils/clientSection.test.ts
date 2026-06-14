@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import type { ClientSection } from '@/types/types';
 
 import {
+  clientSectionSignature,
   extractClientFromParsed,
   extractClientSection,
   parseAcceptToFormats,
@@ -74,6 +75,40 @@ describe('extractClientSection', () => {
     };
     const pipeline = { nodes: {}, connections: [], mode: 'live', client } as never;
     expect(extractClientSection(pipeline)).toBe(client);
+  });
+});
+
+describe('clientSectionSignature', () => {
+  const moqYaml = [
+    'client:',
+    '  gateway_path: /moq/aac-echo',
+    '  publish:',
+    '    broadcast: input',
+    '  watch:',
+    '    broadcast: output',
+    'nodes:',
+    '  moq_peer:',
+    '    kind: transport::moq::peer',
+  ].join('\n');
+
+  it('is stable across edits that leave the client section unchanged', () => {
+    const edited = moqYaml + '\n  extra:\n    kind: core::sink\n';
+    expect(clientSectionSignature(edited)).toBe(clientSectionSignature(moqYaml));
+  });
+
+  it('changes when the client section changes', () => {
+    const rebroadcast = moqYaml.replace('broadcast: output', 'broadcast: other');
+    expect(clientSectionSignature(rebroadcast)).not.toBe(clientSectionSignature(moqYaml));
+  });
+
+  it('collapses pipelines without a client section to a single signature', () => {
+    const nonMoq = 'name: colorbars\nnodes:\n  colorbars:\n    kind: video::colorbars\n';
+    expect(clientSectionSignature(nonMoq)).toBe('null');
+    expect(clientSectionSignature(nonMoq)).not.toBe(clientSectionSignature(moqYaml));
+  });
+
+  it('treats invalid YAML as having no client section', () => {
+    expect(clientSectionSignature('{{{')).toBe('null');
   });
 });
 
