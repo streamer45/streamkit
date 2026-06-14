@@ -313,9 +313,23 @@ const fn is_blocked_ip(ip: IpAddr, host_policy: MarketplaceHostPolicy) -> bool {
 }
 
 #[cfg(test)]
+// Tests use unwrap/expect for concise assertions; panics surface failures loudly.
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use anyhow::{bail, Result};
+    use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::http::{header, HeaderMap, StatusCode};
+    use axum::response::{IntoResponse, Redirect, Response};
+    use axum::routing::get;
+    use axum::Router;
+    use tokio::net::TcpListener;
+    use tokio::sync::oneshot;
+    use tokio::task::JoinHandle;
 
     fn test_policy() -> MarketplaceUrlPolicy {
         MarketplaceUrlPolicy {
@@ -325,6 +339,40 @@ mod tests {
             host_policy: MarketplaceHostPolicy::PublicOnly,
             resolve_hostnames: false,
         }
+    }
+
+    fn permissive_policy() -> MarketplaceUrlPolicy {
+        MarketplaceUrlPolicy {
+            allowed_origins: Vec::new(),
+            require_registry_origin: false,
+            scheme_policy: MarketplaceSchemePolicy::AllowHttp,
+            host_policy: MarketplaceHostPolicy::AllowPrivate,
+            resolve_hostnames: false,
+        }
+    }
+
+    fn no_redirect_client() -> Client {
+        Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap()
+    }
+
+    async fn host_resolves(host: &str, port: u16) -> bool {
+        tokio::net::lookup_host((host, port)).await.is_ok_and(|mut addrs| addrs.next().is_some())
+    }
+
+    async fn spawn_server(
+        app: Router,
+    ) -> (std::net::SocketAddr, oneshot::Sender<()>, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app.into_make_service())
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await;
+        });
+        (addr, shutdown_tx, handle)
     }
 
     #[tokio::test]
@@ -354,6 +402,415 @@ mod tests {
             Err(err) => assert!(err.to_string().contains("origin")),
         }
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn validate_url_accepts_https_under_strict_policy() -> Result<()> {
+        let policy = test_policy();
+        policy.validate_url("index", "https://example.com/index.json", None).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn validate_url_http_follows_scheme_policy() -> Result<()> {
+        let strict = test_policy();
+        let err = strict
+            .validate_url("index", "http://example.com/index.json", None)
+            .await
+            .expect_err("http must be rejected under HttpsOnly");
+        assert!(err.to_string().contains("must use https"));
+
+        let lenient = MarketplaceUrlPolicy {
+            scheme_policy: MarketplaceSchemePolicy::AllowHttp,
+            ..test_policy()
+        };
+        lenient.validate_url("index", "http://example.com/index.json", None).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn validate_url_rejects_unknown_scheme() -> Result<()> {
+        let policy = test_policy();
+        let err = policy
+            .validate_url("index", "ftp://example.com/index.json", None)
+            .await
+            .expect_err("ftp is unsupported");
+        assert!(err.to_string().contains("unsupported scheme"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn validate_url_enforces_registry_origin() -> Result<()> {
+        let policy = test_policy();
+        let registry = policy.validate_url("index", "https://example.com/index.json", None).await?;
+        let registry_origin = origin_key(&registry)?;
+
+        policy
+            .validate_url("manifest", "https://example.com/manifest.json", Some(&registry_origin))
+            .await?;
+
+        let err = policy
+            .validate_url("manifest", "https://other.com/manifest.json", Some(&registry_origin))
+            .await
+            .expect_err("cross-origin must be rejected");
+        assert!(err.to_string().contains("does not match registry origin"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn validate_url_allowlist_bypasses_registry_origin() -> Result<()> {
+        let policy = MarketplaceUrlPolicy {
+            allowed_origins: vec!["https://cdn.example.net".to_string()],
+            ..test_policy()
+        };
+        let registry_origin = origin_key(&Url::parse("https://registry.example.com/index.json")?)?;
+
+        policy
+            .validate_url(
+                "bundle",
+                "https://cdn.example.net/plugin.tar.zst",
+                Some(&registry_origin),
+            )
+            .await?;
+        Ok(())
+    }
+
+    #[test]
+    fn origin_key_requires_host_and_known_port() -> Result<()> {
+        let err = origin_key(&Url::parse("foo:bar")?).expect_err("missing host");
+        assert!(err.to_string().contains("missing host"));
+
+        let err = origin_key(&Url::parse("foo://example.com/")?)
+            .expect_err("unknown scheme has no default port");
+        assert!(err.to_string().contains("missing a default port"));
+
+        let origin = origin_key(&Url::parse("https://example.com/x")?)?;
+        assert_eq!(origin.port, 443);
+        Ok(())
+    }
+
+    #[test]
+    fn origin_display_renders_scheme_host_port() -> Result<()> {
+        let origin = origin_key(&Url::parse("https://example.com:8443/x")?)?;
+        assert_eq!(origin_display(&origin), "https://example.com:8443");
+        Ok(())
+    }
+
+    #[test]
+    fn origin_allowlist_key_includes_explicit_port_only() -> Result<()> {
+        assert_eq!(
+            origin_allowlist_key(&Url::parse("https://example.com:8443/x")?)?,
+            "https://example.com:8443"
+        );
+        assert_eq!(
+            origin_allowlist_key(&Url::parse("https://example.com/x")?)?,
+            "https://example.com"
+        );
+        let err = origin_allowlist_key(&Url::parse("foo:bar")?).expect_err("missing host");
+        assert!(err.to_string().contains("missing host"));
+        Ok(())
+    }
+
+    #[test]
+    fn origin_matches_pattern_handles_wildcards_and_ports() {
+        let cases = [
+            ("https://anything.example", "*", true),
+            ("http://127.0.0.1:5000", "http://127.0.0.1:*", true),
+            ("http://127.0.0.1", "http://127.0.0.1:*", true),
+            ("http://127.0.0.1:", "http://127.0.0.1:*", false),
+            ("http://127.0.0.1:abc", "http://127.0.0.1:*", false),
+            ("http://other:5000", "http://127.0.0.1:*", false),
+            ("https://example.com", "https://example.com", true),
+            ("https://example.com", "https://other.com", false),
+        ];
+        for (origin, pattern, expected) in cases {
+            assert_eq!(
+                origin_matches_pattern(origin, pattern),
+                expected,
+                "origin={origin} pattern={pattern}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_scheme_matrix() -> Result<()> {
+        let https = Url::parse("https://example.com/")?;
+        let http = Url::parse("http://example.com/")?;
+        let ftp = Url::parse("ftp://example.com/")?;
+
+        assert!(validate_scheme("x", &https, MarketplaceSchemePolicy::HttpsOnly).is_ok());
+        assert!(validate_scheme("x", &https, MarketplaceSchemePolicy::AllowHttp).is_ok());
+        assert!(validate_scheme("x", &http, MarketplaceSchemePolicy::AllowHttp).is_ok());
+
+        let err = validate_scheme("x", &http, MarketplaceSchemePolicy::HttpsOnly)
+            .expect_err("http rejected");
+        assert!(err.to_string().contains("must use https"));
+        let err = validate_scheme("x", &ftp, MarketplaceSchemePolicy::AllowHttp)
+            .expect_err("ftp rejected");
+        assert!(err.to_string().contains("unsupported scheme"));
+        Ok(())
+    }
+
+    #[test]
+    fn validate_host_public_only_blocks_local_and_private() -> Result<()> {
+        for host in ["localhost", "plugin.localhost", "printer.local", "10.0.0.1", "192.168.1.1"] {
+            let url = Url::parse(&format!("https://{host}/x"))?;
+            let err = validate_host("x", &url, MarketplaceHostPolicy::PublicOnly)
+                .expect_err("blocked host");
+            assert!(err.to_string().contains("not allowed"), "host={host}");
+        }
+        for host in ["example.com", "8.8.8.8"] {
+            let url = Url::parse(&format!("https://{host}/x"))?;
+            assert!(validate_host("x", &url, MarketplaceHostPolicy::PublicOnly).is_ok());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn validate_host_allow_private_permits_private_but_blocks_unspecified() -> Result<()> {
+        let private = Url::parse("https://10.0.0.1/x")?;
+        assert!(validate_host("x", &private, MarketplaceHostPolicy::AllowPrivate).is_ok());
+
+        let unspecified = Url::parse("https://0.0.0.0/x")?;
+        let err = validate_host("x", &unspecified, MarketplaceHostPolicy::AllowPrivate)
+            .expect_err("unspecified always blocked");
+        assert!(err.to_string().contains("not allowed"));
+        Ok(())
+    }
+
+    #[test]
+    fn is_blocked_ip_matrix() {
+        let v4 = |a, b, c, d| IpAddr::V4(Ipv4Addr::new(a, b, c, d));
+        let v6 = |segments: [u16; 8]| IpAddr::V6(Ipv6Addr::from(segments));
+        // (ip, blocked under PublicOnly, blocked under AllowPrivate)
+        let cases = [
+            (v4(10, 0, 0, 1), true, false),
+            (v4(172, 16, 0, 1), true, false),
+            (v4(192, 168, 1, 1), true, false),
+            (v4(127, 0, 0, 1), true, false),
+            (v4(169, 254, 0, 1), true, false),
+            (v4(0, 0, 0, 0), true, true),
+            (v4(224, 0, 0, 1), true, true),
+            (v4(255, 255, 255, 255), true, true),
+            (v6([0, 0, 0, 0, 0, 0, 0, 1]), true, false),
+            (v6([0xfd00, 0, 0, 0, 0, 0, 0, 1]), true, false),
+            (v6([0xfe80, 0, 0, 0, 0, 0, 0, 1]), true, false),
+            (v6([0, 0, 0, 0, 0, 0, 0, 0]), true, true),
+            (v6([0xff02, 0, 0, 0, 0, 0, 0, 1]), true, true),
+            (v4(8, 8, 8, 8), false, false),
+            (v6([0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888]), false, false),
+        ];
+        for (ip, public_blocked, private_blocked) in cases {
+            assert_eq!(
+                is_blocked_ip(ip, MarketplaceHostPolicy::PublicOnly),
+                public_blocked,
+                "PublicOnly {ip}"
+            );
+            assert_eq!(
+                is_blocked_ip(ip, MarketplaceHostPolicy::AllowPrivate),
+                private_blocked,
+                "AllowPrivate {ip}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn validate_resolved_ips_skips_literal_ip() -> Result<()> {
+        let url = Url::parse("https://10.0.0.1/x")?;
+        validate_resolved_ips("x", &url, MarketplaceHostPolicy::PublicOnly).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn validate_resolved_ips_blocks_hostname_resolving_to_loopback() -> Result<()> {
+        // Skip in hermetic environments where `localhost` does not resolve.
+        if !host_resolves("localhost", 80).await {
+            return Ok(());
+        }
+        let url = Url::parse("http://localhost:80/x")?;
+        let err = validate_resolved_ips("x", &url, MarketplaceHostPolicy::PublicOnly)
+            .await
+            .expect_err("localhost resolves to a blocked address");
+        assert!(err.to_string().contains("resolved to blocked address"));
+
+        validate_resolved_ips("x", &url, MarketplaceHostPolicy::AllowPrivate).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn validate_resolved_ips_tolerates_unresolvable_host() -> Result<()> {
+        let url = Url::parse("https://does-not-exist.invalid/x")?;
+        validate_resolved_ips("x", &url, MarketplaceHostPolicy::PublicOnly).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn validate_url_resolve_hostnames_gates_dns_check() -> Result<()> {
+        // A trailing-dot host ("localhost.") is not caught by validate_host's
+        // literal-localhost check, so under PublicOnly only the DNS-resolution
+        // guard can reject it -- which makes the resolve_hostnames flag observable.
+        if !host_resolves("localhost.", 443).await {
+            return Ok(());
+        }
+        let url = "https://localhost./index.json";
+
+        let resolving = MarketplaceUrlPolicy { resolve_hostnames: true, ..test_policy() };
+        let err = resolving
+            .validate_url("index", url, None)
+            .await
+            .expect_err("loopback resolution must be rejected when resolve_hostnames is enabled");
+        assert!(err.to_string().contains("resolved to blocked address"));
+
+        let not_resolving = MarketplaceUrlPolicy { resolve_hostnames: false, ..test_policy() };
+        not_resolving.validate_url("index", url, None).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn validated_get_response_follows_revalidated_redirect() -> Result<()> {
+        let app = Router::new()
+            .route("/start", get(|| async { Redirect::temporary("/final").into_response() }))
+            .route("/final", get(|| async { "redirected-body" }));
+        let (addr, shutdown_tx, handle) = spawn_server(app).await;
+
+        let client = no_redirect_client();
+        let policy = permissive_policy();
+        let start = Url::parse(&format!("http://{addr}/start"))?;
+        let (response, final_url) =
+            validated_get_response(&client, &policy, "index", &start, None, None, None).await?;
+
+        assert_eq!(final_url.path(), "/final");
+        assert!(response.status().is_success());
+        assert_eq!(response.text().await?, "redirected-body");
+
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn validated_get_response_rejects_excessive_redirects() -> Result<()> {
+        let app = Router::new()
+            .route("/loop", get(|| async { Redirect::temporary("/loop").into_response() }));
+        let (addr, shutdown_tx, handle) = spawn_server(app).await;
+
+        let client = no_redirect_client();
+        let policy = permissive_policy();
+        let start = Url::parse(&format!("http://{addr}/loop"))?;
+        let err = validated_get_response(&client, &policy, "index", &start, None, None, None)
+            .await
+            .expect_err("redirect loop must be rejected");
+        assert!(err.to_string().contains("exceeded redirect limit"));
+
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn validated_get_response_requires_location_header() -> Result<()> {
+        let app = Router::new().route(
+            "/noloc",
+            get(|| async {
+                Response::builder().status(StatusCode::FOUND).body(Body::empty()).unwrap()
+            }),
+        );
+        let (addr, shutdown_tx, handle) = spawn_server(app).await;
+
+        let client = no_redirect_client();
+        let policy = permissive_policy();
+        let start = Url::parse(&format!("http://{addr}/noloc"))?;
+        let err = validated_get_response(&client, &policy, "index", &start, None, None, None)
+            .await
+            .expect_err("missing Location must be an error");
+        assert!(err.to_string().contains("missing Location header"));
+
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn validated_get_response_drops_bearer_token_cross_origin() -> Result<()> {
+        let auth_after_redirect = Arc::new(AtomicBool::new(false));
+        let dest_flag = auth_after_redirect.clone();
+        let app_b = Router::new().route(
+            "/b",
+            get(move |headers: HeaderMap| {
+                let dest_flag = dest_flag.clone();
+                async move {
+                    dest_flag.store(headers.contains_key(header::AUTHORIZATION), Ordering::SeqCst);
+                    "ok"
+                }
+            }),
+        );
+        let (addr_b, shutdown_b, handle_b) = spawn_server(app_b).await;
+
+        let auth_on_first_hop = Arc::new(AtomicBool::new(false));
+        let origin_flag = auth_on_first_hop.clone();
+        let redirect_target = format!("http://{addr_b}/b");
+        let app_a = Router::new().route(
+            "/a",
+            get(move |headers: HeaderMap| {
+                let origin_flag = origin_flag.clone();
+                let redirect_target = redirect_target.clone();
+                async move {
+                    origin_flag
+                        .store(headers.contains_key(header::AUTHORIZATION), Ordering::SeqCst);
+                    Redirect::temporary(&redirect_target).into_response()
+                }
+            }),
+        );
+        let (addr_a, shutdown_a, handle_a) = spawn_server(app_a).await;
+
+        let client = no_redirect_client();
+        let policy = permissive_policy();
+        let start = Url::parse(&format!("http://{addr_a}/a"))?;
+        let (response, final_url) =
+            validated_get_response(&client, &policy, "bundle", &start, None, Some("secret"), None)
+                .await?;
+
+        assert_eq!(final_url.path(), "/b");
+        assert!(response.status().is_success());
+        assert!(auth_on_first_hop.load(Ordering::SeqCst), "token must be sent to the start origin");
+        assert!(
+            !auth_after_redirect.load(Ordering::SeqCst),
+            "token must be dropped on cross-origin redirect"
+        );
+
+        let _ = shutdown_a.send(());
+        let _ = shutdown_b.send(());
+        let _ = handle_a.await;
+        let _ = handle_b.await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn validated_get_bytes_success_and_error_status() -> Result<()> {
+        let app = Router::new().route(
+            "/ok",
+            get(|| async {
+                ([(header::CONTENT_TYPE, "application/octet-stream")], Bytes::from_static(b"hello"))
+            }),
+        );
+        let (addr, shutdown_tx, handle) = spawn_server(app).await;
+
+        let client = no_redirect_client();
+        let policy = permissive_policy();
+
+        let ok_url = Url::parse(&format!("http://{addr}/ok"))?;
+        let bytes = validated_get_bytes(&client, &policy, "index", &ok_url, None, None).await?;
+        assert_eq!(bytes.as_ref(), b"hello");
+
+        let missing_url = Url::parse(&format!("http://{addr}/missing"))?;
+        let err = validated_get_bytes(&client, &policy, "index", &missing_url, None, None)
+            .await
+            .expect_err("404 must surface as an error");
+        assert!(err.to_string().contains("request failed"));
+
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
         Ok(())
     }
 }

@@ -353,7 +353,6 @@ impl ProcessorNode for MoqPushNode {
         let mut audio_seeded = false;
         let mut video_seeded = false;
         let mut audio_first_sent = false;
-        let mut video_first_sent = false;
 
         // Pin management for dynamic input pins
         let mut pin_mgmt_rx = context.pin_management_rx.take();
@@ -501,7 +500,7 @@ impl ProcessorNode for MoqPushNode {
                             &mut audio_clock,
                             &mut audio_seeded,
                             audio_codec.default_frame_duration_us(),
-                            &mut audio_first_sent,
+                            Some(&mut audio_first_sent),
                             ap,
                         )
                     },
@@ -512,11 +511,13 @@ impl ProcessorNode for MoqPushNode {
                             stats_tracker.discarded();
                             continue;
                         };
+                        // Video's keyframe-start invariant lives in
+                        // `write_video`, so video has no caller-side gate.
                         (
                             &mut video_clock,
                             &mut video_seeded,
                             crate::video::DEFAULT_VIDEO_FRAME_DURATION_US,
-                            &mut video_first_sent,
+                            None,
                             vp,
                         )
                     },
@@ -528,13 +529,9 @@ impl ProcessorNode for MoqPushNode {
                         } else {
                             audio_codec.default_frame_duration_us()
                         };
-                        (
-                            &mut state.clock,
-                            &mut state.seeded,
-                            dur,
-                            &mut state.first_sent,
-                            &mut state.producer,
-                        )
+                        let first_sent =
+                            if state.is_video { None } else { Some(&mut state.first_sent) };
+                        (&mut state.clock, &mut state.seeded, dur, first_sent, &mut state.producer)
                     },
                 };
 
@@ -551,41 +548,62 @@ impl ProcessorNode for MoqPushNode {
                         clock.timestamp_ms()
                     };
 
-                let keyframe = if is_video_source {
-                    // Default to true when keyframe metadata is missing to ensure
-                    // the OrderedProducer opens an initial MoQ group.
-                    metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(true)
-                } else {
-                    let first = !*first_sent;
-                    *first_sent = true;
-                    first || clock.is_group_boundary_ms(self.config.group_duration_ms)
-                };
-
                 let timestamp =
                     hang::container::Timestamp::from_millis(timestamp_ms).map_err(|_| {
                         StreamKitError::Runtime("MoQ frame timestamp overflow".to_string())
                     })?;
+                let frame = hang::container::Frame { timestamp, payload: data };
 
-                if keyframe {
-                    if let Err(e) = producer.keyframe() {
-                        let err_msg = format!("Failed to signal keyframe: {e}");
+                if is_video_source {
+                    // Missing keyframe metadata defaults to keyframe so all-intra
+                    // sources (every frame independently decodable) still stream;
+                    // inter-coded sources that omit the flag can't be grouped
+                    // safely by any gate, and all in-tree encoders set it.
+                    let is_keyframe = metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(true);
+                    match producer.write_video(&frame, is_keyframe) {
+                        Ok(super::ordered_producer::VideoWrite::Written) => {},
+                        Ok(super::ordered_producer::VideoWrite::DroppedLeadingDelta) => {
+                            // Keep the clock moving for the dropped frame so the
+                            // kept keyframe stays aligned with audio on the
+                            // accumulation path (no per-frame `timestamp_us`).
+                            clock.advance_by_duration_us(duration_us, default_dur);
+                            stats_tracker.discarded();
+                            stats_tracker.maybe_send();
+                            continue;
+                        },
+                        Err(e) => {
+                            let err_msg = format!("Failed to write MoQ video frame: {e}");
+                            tracing::warn!("{err_msg}");
+                            stats_tracker.errored();
+                            stats_tracker.force_send();
+                            state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
+                            return Err(StreamKitError::Runtime(err_msg));
+                        },
+                    }
+                } else {
+                    // `first_sent` is `Some` only on audio sources; the `None`
+                    // arm is unreachable here since video uses `write_video`.
+                    let first = first_sent.is_none_or(|fs| !std::mem::replace(fs, true));
+                    let keyframe =
+                        first || clock.is_group_boundary_ms(self.config.group_duration_ms);
+                    if keyframe {
+                        if let Err(e) = producer.keyframe() {
+                            let err_msg = format!("Failed to signal keyframe: {e}");
+                            tracing::warn!("{err_msg}");
+                            stats_tracker.errored();
+                            stats_tracker.force_send();
+                            state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
+                            return Err(StreamKitError::Runtime(err_msg));
+                        }
+                    }
+                    if let Err(e) = producer.write(&frame) {
+                        let err_msg = format!("Failed to write MoQ frame: {e}");
                         tracing::warn!("{err_msg}");
                         stats_tracker.errored();
                         stats_tracker.force_send();
                         state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
                         return Err(StreamKitError::Runtime(err_msg));
                     }
-                }
-
-                let frame = hang::container::Frame { timestamp, payload: data };
-
-                if let Err(e) = producer.write(&frame) {
-                    let err_msg = format!("Failed to write MoQ frame: {e}");
-                    tracing::warn!("{err_msg}");
-                    stats_tracker.errored();
-                    stats_tracker.force_send();
-                    state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
-                    return Err(StreamKitError::Runtime(err_msg));
                 }
 
                 if let Some(meta_ts) = metadata.as_ref().and_then(|m| m.timestamp_us) {
