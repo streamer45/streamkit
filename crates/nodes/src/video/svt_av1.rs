@@ -269,9 +269,22 @@ impl EncoderNodeRunner for SvtAv1EncoderNode {
                 }
             }
 
-            // Input channel closed — flush the encoder.
+            // Input channel closed — flush the encoder. Unlike the in-task
+            // flushes above, this join must stay *unbounded*: it runs while
+            // `drain_codec_results` drains concurrently, and that async idle
+            // watchdog (`EOS_FLUSH_IDLE_TIMEOUT`) is what bounds a wedged flush
+            // here by aborting this task. Bounding the join instead would let
+            // the task finish, which clears `codec_done` and disables the
+            // watchdog while the abandoned receive thread's sender keeps the
+            // result channel open — the drain would then hang forever.
             if let Some(enc) = encoder.take() {
-                Self::flush_and_join(enc, recv_thread.take());
+                send_eos(enc.handle);
+                if let Some(rt) = recv_thread.take() {
+                    let _ = rt.handle.join();
+                }
+                // Reaching here means the receive thread exited and no longer
+                // touches the handle, so Drop (deinit + deinit_handle) is safe.
+                drop(enc);
             }
         })
     }
