@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
@@ -59,12 +60,36 @@ pub async fn canonicalize_existing_dir(base_dir: &Path) -> Result<PathBuf> {
 /// Returns an error if the directory cannot be created, canonicalized, or is outside the base
 /// dir.
 pub async fn ensure_dir_under(base_real: &Path, dir: &Path, label: &str) -> Result<PathBuf> {
-    tokio::fs::create_dir_all(dir)
+    // Resolve the target's canonical location before creating anything so an out-of-base path is
+    // rejected with no filesystem side effect.
+    let dir_real = resolve_dir_under_base(base_real, dir, label).await?;
+    tokio::fs::create_dir_all(&dir_real)
         .await
-        .with_context(|| format!("Failed to create {label} dir {dir}", dir = dir.display()))?;
-    let dir_real = tokio::fs::canonicalize(dir)
-        .await
-        .with_context(|| format!("Failed to resolve {label} dir {dir}", dir = dir.display()))?;
+        .with_context(|| format!("Failed to create {label} dir {dir}", dir = dir_real.display()))?;
+    Ok(dir_real)
+}
+
+/// Resolves where `dir` would canonically live and ensures it is under `base_real` without
+/// creating it, by canonicalizing the deepest existing ancestor and re-attaching the missing tail.
+async fn resolve_dir_under_base(base_real: &Path, dir: &Path, label: &str) -> Result<PathBuf> {
+    let mut tail: Vec<OsString> = Vec::new();
+    let mut existing = dir.to_path_buf();
+    let existing_real = loop {
+        if let Ok(real) = tokio::fs::canonicalize(&existing).await {
+            break real;
+        }
+        let name = existing
+            .file_name()
+            .map(OsString::from)
+            .ok_or_else(|| anyhow!("Failed to resolve {label} dir {dir}", dir = dir.display()))?;
+        tail.push(name);
+        if !existing.pop() {
+            return Err(anyhow!("Failed to resolve {label} dir {dir}", dir = dir.display()));
+        }
+    };
+
+    let mut dir_real = existing_real;
+    dir_real.extend(tail.iter().rev());
     ensure_under_base(base_real, &dir_real, label)?;
     Ok(dir_real)
 }
@@ -162,7 +187,7 @@ mod tests {
         let err = ensure_dir_under(&base, &outside, "models").await.unwrap_err();
 
         assert!(err.to_string().contains("outside plugin directory"));
-        assert!(outside.is_dir());
+        assert!(!outside.exists(), "out-of-base dir must not be created when validation fails");
     }
 
     #[tokio::test]
