@@ -33,6 +33,8 @@ export function useMoqYamlSync(
   handleYamlChange: (yaml: string) => void;
 } {
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  // `null` is a "never derived" sentinel — it never equals a signature string
+  // (e.g. "null" for non-MoQ YAML), so the first debounced edit always derives.
   const lastDerivedClientRef = useRef<string | null>(null);
 
   const deriveMoqFromYaml = useCallback(
