@@ -9,6 +9,14 @@ description: Auto-generated configuration reference from schema and defaults
 
 This page is auto-generated from the server's configuration schema and `Config::default()`. For a human-friendly guide and examples, see [Configuration](./configuration/).
 
+## `[asset_root]`
+
+Root directory for sample assets (`samples/audio`, `samples/images`,
+`samples/fonts`, and plugin asset directories).  When `None` (the
+default), the working directory at server startup is used.
+A relative path is resolved against the startup working directory.
+The value is snapshotted once at startup and not re-read.
+
 ## `[auth]`
 
 Authentication configuration for built-in JWT-based auth.
@@ -158,6 +166,7 @@ HTTP server configuration including TLS and CORS settings.
 | `cors` | object | `{"allowed_origins":["http:/...` | CORS configuration for cross-origin requests. |
 | `key_path` | string | `` | — |
 | `max_body_size` | integer (uint) | `104857600` | Maximum request body size in bytes for multipart uploads (default: 100MB) |
+| `metrics` | object | `{"attributes":{}}` | Configuration for pipeline-attribute metric labeling. Empty by default: no metric gains a configured label unless an operator opts in by declaring a dimension under `[server.metrics.attributes.<dim>]`. A pipeline-declared attribute whose key is absent from this map is dropped. See the commented example in `samples/skit.toml`. |
 | `moq_address` | null | string | `null` | — |
 | `moq_cert_path` | null | string | `null` | TLS certificate for the MoQ WebTransport listener. When set, the MoQ QUIC server uses these certs independently of `[server].tls`. When unset, falls back to `cert_path`/`key_path` (if `tls = true`) or self-signed. |
 | `moq_gateway_url` | null | string | `null` | MoQ Gateway URL to use in the frontend (can be overridden via SK_SERVER__MOQ_GATEWAY_URL) |
@@ -555,6 +564,39 @@ Telemetry and observability configuration (OpenTelemetry, tokio-console).
           "default": "/api/v1/mcp",
           "description": "Streamable HTTP endpoint path (default: \"/api/v1/mcp\").",
           "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "MetricsAttributePolicy": {
+      "description": "Per-dimension cardinality policy for a pipeline-declared attribute.\n\nThe declared value is trimmed and lowercased, then matched against `values`;\nanything not in the allowlist (or an empty value) collapses to `fallback`,\nso a user-submitted pipeline can never inflate metric cardinality. Omitting\n`values` makes the dimension passthrough — any non-empty declared value is\nemitted as-is (the operator opts into that cardinality).",
+      "properties": {
+        "fallback": {
+          "default": "other",
+          "description": "Value emitted when a *declared* value is empty or outside the allowlist.\n\nA dimension a pipeline never declares emits no label at all (the\ndeclared-only contract), so this never applies to absent dimensions.",
+          "type": "string"
+        },
+        "values": {
+          "default": [],
+          "description": "Permitted values (the allowlist), matched case-insensitively after\ntrimming. Empty (or absent) ⇒ passthrough.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "MetricsConfig": {
+      "description": "Configuration for pipeline-attribute metric labeling.\n\nEmpty by default: no metric gains a configured label unless an operator\nopts in by declaring a dimension under `[server.metrics.attributes.<dim>]`.\nA pipeline-declared attribute whose key is absent from this map is dropped.\nSee the commented example in `samples/skit.toml`.",
+      "properties": {
+        "attributes": {
+          "additionalProperties": {
+            "$ref": "#/$defs/MetricsAttributePolicy"
+          },
+          "default": {},
+          "description": "Per-dimension policy keyed by attribute name (e.g. `service`). Applied to\npipeline and node metrics in both oneshot and dynamic modes.",
+          "type": "object"
         }
       },
       "type": "object"
@@ -1201,6 +1243,13 @@ Telemetry and observability configuration (OpenTelemetry, tokio-console).
           "minimum": 0,
           "type": "integer"
         },
+        "metrics": {
+          "$ref": "#/$defs/MetricsConfig",
+          "default": {
+            "attributes": {}
+          },
+          "description": "Bounded pipeline-attribute metric labeling configuration."
+        },
         "moq_address": {
           "type": [
             "string",
@@ -1289,6 +1338,13 @@ Telemetry and observability configuration (OpenTelemetry, tokio-console).
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "Root configuration for the StreamKit server.",
   "properties": {
+    "asset_root": {
+      "description": "Root directory for sample assets (`samples/audio`, `samples/images`,\n`samples/fonts`, and plugin asset directories).  When `None` (the\ndefault), the working directory at server startup is used.\nA relative path is resolved against the startup working directory.\nThe value is snapshotted once at startup and not re-read.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "auth": {
       "$ref": "#/$defs/AuthConfig",
       "default": {
@@ -1548,6 +1604,9 @@ Telemetry and observability configuration (OpenTelemetry, tokio-console).
         },
         "key_path": "",
         "max_body_size": 104857600,
+        "metrics": {
+          "attributes": {}
+        },
         "moq_address": null,
         "moq_cert_path": null,
         "moq_gateway_url": null,

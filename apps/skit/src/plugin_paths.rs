@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
@@ -59,12 +60,39 @@ pub async fn canonicalize_existing_dir(base_dir: &Path) -> Result<PathBuf> {
 /// Returns an error if the directory cannot be created, canonicalized, or is outside the base
 /// dir.
 pub async fn ensure_dir_under(base_real: &Path, dir: &Path, label: &str) -> Result<PathBuf> {
-    tokio::fs::create_dir_all(dir)
+    // Reject an out-of-base target before creating anything, so a rejected call leaves no
+    // directory behind.
+    let planned = resolve_dir_under_base(base_real, dir, label).await?;
+
+    tokio::fs::create_dir_all(&planned)
         .await
         .with_context(|| format!("Failed to create {label} dir {dir}", dir = dir.display()))?;
-    let dir_real = tokio::fs::canonicalize(dir)
-        .await
-        .with_context(|| format!("Failed to resolve {label} dir {dir}", dir = dir.display()))?;
+
+    // Re-validate the now-existing path: a symlink raced into an intermediate component between
+    // the pre-check and the create could otherwise let `create_dir_all` escape the base.
+    ensure_existing_dir_under(base_real, &planned, label).await
+}
+
+/// Resolves where `dir` would live and ensures it is under `base_real` without creating it.
+async fn resolve_dir_under_base(base_real: &Path, dir: &Path, label: &str) -> Result<PathBuf> {
+    let mut tail: Vec<OsString> = Vec::new();
+    let mut existing = dir.to_path_buf();
+    let existing_real = loop {
+        if let Ok(real) = tokio::fs::canonicalize(&existing).await {
+            break real;
+        }
+        let name = existing
+            .file_name()
+            .map(OsString::from)
+            .ok_or_else(|| anyhow!("Failed to resolve {label} dir {dir}", dir = dir.display()))?;
+        tail.push(name);
+        if !existing.pop() {
+            return Err(anyhow!("Failed to resolve {label} dir {dir}", dir = dir.display()));
+        }
+    };
+
+    let mut dir_real = existing_real;
+    dir_real.extend(tail.iter().rev());
     ensure_under_base(base_real, &dir_real, label)?;
     Ok(dir_real)
 }
@@ -162,7 +190,24 @@ mod tests {
         let err = ensure_dir_under(&base, &outside, "models").await.unwrap_err();
 
         assert!(err.to_string().contains("outside plugin directory"));
-        assert!(outside.is_dir());
+        assert!(!outside.exists(), "out-of-base dir must not be created when validation fails");
+    }
+
+    #[tokio::test]
+    async fn ensure_dir_under_rejects_symlinked_component_escape() {
+        let temp = TempDir::new().unwrap();
+        let base = ensure_base_dir(&temp.path().join("base")).await.unwrap();
+        let outside = temp.path().join("outside");
+        tokio::fs::create_dir_all(&outside).await.unwrap();
+
+        let link = base.join("cache");
+        tokio::fs::symlink(&outside, &link).await.unwrap();
+
+        let target = link.join("id").join("version");
+        let err = ensure_dir_under(&base, &target, "cache").await.unwrap_err();
+
+        assert!(err.to_string().contains("outside plugin directory"));
+        assert!(!outside.join("id").exists(), "must not create dirs through a symlink out of base");
     }
 
     #[tokio::test]
