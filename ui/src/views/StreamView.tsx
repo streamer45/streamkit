@@ -28,6 +28,7 @@ import {
   TechnicalDetails,
 } from '@/components/ui/ViewLayout';
 import { useAudioControls } from '@/hooks/useAudioControls';
+import { useMoqYamlSync } from '@/hooks/useMoqYamlSync';
 import { useStreamViewState } from '@/hooks/useStreamViewState';
 import { useVideoCanvas } from '@/hooks/useVideoCanvas';
 import { useWebSocket } from '@/hooks/useWebSocket';
@@ -38,7 +39,6 @@ import { useSchemaStore, ensureSchemasLoaded } from '@/stores/schemaStore';
 import { useSessionStore } from '@/stores/sessionStore';
 import type { Event } from '@/types/types';
 import { getLogger } from '@/utils/logger';
-import { extractMoqPeerSettings, applyMoqSettings } from '@/utils/moqPeerSettings';
 import { orderSamplePipelinesSystemFirst } from '@/utils/samplePipelineOrdering';
 
 import type {
@@ -53,16 +53,18 @@ import { useStreamStore } from '../stores/streamStore';
 const logger = getLogger('StreamView');
 
 /** Attempt MoQ auto-connect after session creation if the pipeline uses
- *  MoQ transport.  Fire-and-forget — errors are surfaced via viewState. */
+ *  MoQ transport.  Fire-and-forget — errors are surfaced via viewState.
+ *
+ *  Reads serverUrl/broadcasts from the store (not React state) so it observes
+ *  values just flushed by a synchronous derive, closing the window where a
+ *  direct YAML edit's debounce hadn't fired yet. */
 function autoConnectIfMoq(
   status: ConnectionStatus,
-  serverUrl: string,
   connect: () => Promise<boolean>,
   viewState: { setSessionCreationError: (msg: string) => void }
 ): void {
-  const hasMoqTransport = Boolean(
-    useStreamStore.getState().outputBroadcast || useStreamStore.getState().inputBroadcast
-  );
+  const { serverUrl, outputBroadcast, inputBroadcast } = useStreamStore.getState();
+  const hasMoqTransport = Boolean(outputBroadcast || inputBroadcast);
   if (status !== 'disconnected' || !serverUrl.trim() || !hasMoqTransport) return;
 
   void (async () => {
@@ -81,7 +83,7 @@ function autoConnectIfMoq(
 /** Load dynamic pipeline samples and auto-select the first one. */
 async function loadAndApplySamples(
   viewState: ReturnType<typeof useStreamViewState>,
-  storeActions: Parameters<typeof applyMoqSettings>[1]
+  deriveMoqFromYaml: (yaml: string) => void
 ): Promise<void> {
   try {
     viewState.setSamplesLoading(true);
@@ -94,8 +96,7 @@ async function loadAndApplySamples(
       const first = orderedSamples[0];
       viewState.setSelectedTemplateId(first.id);
       viewState.setPipelineYaml(first.yaml);
-      const moqSettings = extractMoqPeerSettings(first.yaml);
-      applyMoqSettings(moqSettings, storeActions, useStreamStore.getState().configServerUrl);
+      deriveMoqFromYaml(first.yaml);
     }
   } catch (error) {
     logger.error('Failed to load dynamic samples:', error);
@@ -563,6 +564,12 @@ const StreamView: React.FC = () => {
     ]
   );
 
+  const {
+    deriveMoqFromYaml,
+    handleYamlChange: handlePipelineYamlChange,
+    flushPendingDerive,
+  } = useMoqYamlSync(storeActions, viewState.setPipelineYaml);
+
   const videoContainerRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
@@ -640,7 +647,7 @@ const StreamView: React.FC = () => {
   }, [onMessage, activeSessionId, status, clearActiveSession, disconnect]);
 
   useEffect(() => {
-    loadAndApplySamples(viewState, storeActions);
+    loadAndApplySamples(viewState, deriveMoqFromYaml);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -650,12 +657,10 @@ const StreamView: React.FC = () => {
       if (template) {
         viewState.setSelectedTemplateId(templateId);
         viewState.setPipelineYaml(template.yaml);
-
-        const moqSettings = extractMoqPeerSettings(template.yaml);
-        applyMoqSettings(moqSettings, storeActions, useStreamStore.getState().configServerUrl);
+        deriveMoqFromYaml(template.yaml);
       }
     },
-    [viewState, storeActions]
+    [viewState, deriveMoqFromYaml]
   );
 
   const handleCreateSession = useCallback(async () => {
@@ -682,7 +687,8 @@ const StreamView: React.FC = () => {
       viewState.setSessionCreationStatus('success');
       logger.info('Session created successfully');
 
-      autoConnectIfMoq(status, serverUrl, connect, viewState);
+      flushPendingDerive();
+      autoConnectIfMoq(status, connect, viewState);
     } catch (error) {
       logger.error('Failed to create session:', error);
       viewState.setSessionCreationError(
@@ -690,7 +696,7 @@ const StreamView: React.FC = () => {
       );
       viewState.setSessionCreationStatus('error');
     }
-  }, [viewState, serverUrl, setActiveSession, connect, status]);
+  }, [viewState, setActiveSession, connect, status, flushPendingDerive]);
 
   const handleDestroySession = useCallback(() => {
     if (!activeSessionId) return;
@@ -858,7 +864,7 @@ const StreamView: React.FC = () => {
               activePipelineName={activePipelineName}
               streamStatus={status}
               onTemplateSelect={handleTemplateSelect}
-              onPipelineYamlChange={viewState.setPipelineYaml}
+              onPipelineYamlChange={handlePipelineYamlChange}
               onSessionNameChange={viewState.setSessionName}
               onCreateSession={handleCreateSession}
               onDisconnect={disconnect}
