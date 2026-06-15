@@ -369,3 +369,101 @@ async fn node_task_error_surfaces_failed_without_node_emitting_it() {
 
     handle.shutdown_and_wait().await.expect("shutdown");
 }
+
+/// A node that, on `Shutdown`, saturates the shared state channel with
+/// `try_send` so the wrapper's terminal backstop send (initialize_node) lands
+/// on a full channel.
+struct FloodOnShutdownNode;
+
+#[streamkit_core::async_trait]
+impl ProcessorNode for FloodOnShutdownNode {
+    fn input_pins(&self) -> Vec<streamkit_core::InputPin> {
+        Vec::new()
+    }
+    fn output_pins(&self) -> Vec<streamkit_core::OutputPin> {
+        vec![streamkit_core::OutputPin {
+            name: "out".to_string(),
+            produces_type: PacketType::Binary,
+            cardinality: streamkit_core::PinCardinality::Broadcast,
+        }]
+    }
+
+    async fn run(
+        self: Box<Self>,
+        mut ctx: streamkit_core::NodeContext,
+    ) -> Result<(), StreamKitError> {
+        const NODE_ID: &str = "flooder";
+
+        let _ =
+            ctx.state_tx.send(NodeStateUpdate::new(NODE_ID.to_string(), NodeState::Ready)).await;
+
+        loop {
+            match ctx.control_rx.recv().await {
+                Some(NodeControlMessage::Shutdown) | None => break,
+                Some(_) => {},
+            }
+        }
+
+        while ctx
+            .state_tx
+            .try_send(NodeStateUpdate::new(NODE_ID.to_string(), NodeState::Running))
+            .is_ok()
+        {}
+
+        Ok(())
+    }
+}
+
+fn build_flood_handle() -> DynamicEngineHandle {
+    let mut registry = NodeRegistry::new();
+    registry.register_dynamic(
+        "test::flooder",
+        |_p| Ok(Box::new(FloodOnShutdownNode) as Box<dyn ProcessorNode>),
+        serde_json::json!({}),
+        vec!["test".to_string()],
+        false,
+    );
+    let engine = Engine {
+        registry: Arc::new(std::sync::RwLock::new(registry)),
+        audio_pool: Arc::new(streamkit_core::AudioFramePool::audio_default()),
+        video_pool: Arc::new(streamkit_core::VideoFramePool::video_default()),
+    };
+    engine.start_dynamic_actor(DynamicEngineConfig::default())
+}
+
+/// Regression: the node-task terminal backstop must not stall shutdown. The
+/// actor stops draining the state channel while it joins node tasks, so a
+/// task whose backstop send hits a full channel would block until the 2s join
+/// timeout aborts it. The actor closes the state receiver on shutdown so the
+/// send fails fast; assert teardown finishes well under that timeout.
+#[tokio::test]
+async fn shutdown_does_not_stall_on_saturated_state_channel() {
+    let handle = build_flood_handle();
+    handle
+        .send_control(EngineControlMessage::AddNode {
+            node_id: "flooder".to_string(),
+            kind: "test::flooder".to_string(),
+            params: None,
+        })
+        .await
+        .expect("send AddNode");
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        if let Ok(states) = handle.get_node_states().await {
+            if matches!(states.get("flooder"), Some(NodeState::Ready | NodeState::Running)) {
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "flooder did not reach Ready in time");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let start = Instant::now();
+    handle.shutdown_and_wait().await.expect("shutdown");
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < Duration::from_millis(1500),
+        "shutdown stalled on a saturated state channel: {elapsed:?}"
+    );
+}

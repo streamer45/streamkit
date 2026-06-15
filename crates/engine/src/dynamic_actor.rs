@@ -252,6 +252,16 @@ impl DynamicEngine {
         loop {
             tokio::select! {
                 Some(control_msg) = self.control_rx.recv() => {
+                    // Shutdown pauses this select loop, so state_rx stops being
+                    // drained while the handler joins node tasks. Each task
+                    // awaits a terminal send on the state channel after run()
+                    // returns (the backstop in initialize_node); closing the
+                    // receiver makes a full channel fail those sends fast rather
+                    // than block until the join timeout. The terminal states are
+                    // discarded during shutdown anyway.
+                    if matches!(control_msg, EngineControlMessage::Shutdown) {
+                        state_rx.close();
+                    }
                     if !self.handle_engine_control(control_msg).await {
                         break; // Shutdown requested
                     }
