@@ -26,17 +26,6 @@ export function parseClientFromYaml(yamlContent: string): ClientSection | null {
   }
 }
 
-/**
- * Stable signature of a pipeline YAML's `client` section.
- *
- * Used to decide whether a direct YAML edit changed MoQ transport settings and
- * therefore warrants re-deriving the connection store, so edits to the rest of
- * the pipeline don't stomp values the user is mid-typing.
- */
-export function clientSectionSignature(yamlContent: string): string {
-  return JSON.stringify(parseClientFromYaml(yamlContent));
-}
-
 /** Convert a CSS-style `accept` attribute into lowercase format names; null = all accepted. */
 export function parseAcceptToFormats(accept: string | null | undefined): string[] | null {
   if (!accept) return null;

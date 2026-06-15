@@ -53,16 +53,18 @@ import { useStreamStore } from '../stores/streamStore';
 const logger = getLogger('StreamView');
 
 /** Attempt MoQ auto-connect after session creation if the pipeline uses
- *  MoQ transport.  Fire-and-forget — errors are surfaced via viewState. */
+ *  MoQ transport.  Fire-and-forget — errors are surfaced via viewState.
+ *
+ *  Reads serverUrl/broadcasts from the store (not React state) so it observes
+ *  values just flushed by a synchronous derive, closing the window where a
+ *  direct YAML edit's debounce hadn't fired yet. */
 function autoConnectIfMoq(
   status: ConnectionStatus,
-  serverUrl: string,
   connect: () => Promise<boolean>,
   viewState: { setSessionCreationError: (msg: string) => void }
 ): void {
-  const hasMoqTransport = Boolean(
-    useStreamStore.getState().outputBroadcast || useStreamStore.getState().inputBroadcast
-  );
+  const { serverUrl, outputBroadcast, inputBroadcast } = useStreamStore.getState();
+  const hasMoqTransport = Boolean(outputBroadcast || inputBroadcast);
   if (status !== 'disconnected' || !serverUrl.trim() || !hasMoqTransport) return;
 
   void (async () => {
@@ -684,7 +686,8 @@ const StreamView: React.FC = () => {
       viewState.setSessionCreationStatus('success');
       logger.info('Session created successfully');
 
-      autoConnectIfMoq(status, serverUrl, connect, viewState);
+      deriveMoqFromYaml(viewState.pipelineYaml);
+      autoConnectIfMoq(status, connect, viewState);
     } catch (error) {
       logger.error('Failed to create session:', error);
       viewState.setSessionCreationError(
@@ -692,7 +695,7 @@ const StreamView: React.FC = () => {
       );
       viewState.setSessionCreationStatus('error');
     }
-  }, [viewState, serverUrl, setActiveSession, connect, status]);
+  }, [viewState, setActiveSession, connect, status, deriveMoqFromYaml]);
 
   const handleDestroySession = useCallback(() => {
     if (!activeSessionId) return;

@@ -5,15 +5,18 @@
 import { useCallback, useEffect, useRef } from 'react';
 
 import { useStreamStore } from '@/stores/streamStore';
-import { clientSectionSignature } from '@/utils/clientSection';
+import type { ClientSection } from '@/types/types';
+import { parseClientFromYaml } from '@/utils/clientSection';
 import {
   applyMoqSettings,
-  extractMoqPeerSettings,
+  extractMoqSettingsFromClient,
   type MoqSettingsActions,
 } from '@/utils/moqPeerSettings';
 
 /** Debounce for re-deriving MoQ settings while the user edits the YAML editor. */
 const MOQ_DERIVE_DEBOUNCE_MS = 300;
+
+const clientSignature = (client: ClientSection | null): string => JSON.stringify(client);
 
 /**
  * Keep the MoQ connection store in sync with the Stream view's pipeline YAML.
@@ -37,17 +40,22 @@ export function useMoqYamlSync(
   // (e.g. "null" for non-MoQ YAML), so the first debounced edit always derives.
   const lastDerivedClientRef = useRef<string | null>(null);
 
-  const deriveMoqFromYaml = useCallback(
-    (yaml: string) => {
+  const applyFromClient = useCallback(
+    (client: ClientSection | null) => {
       if (timerRef.current) clearTimeout(timerRef.current);
-      lastDerivedClientRef.current = clientSectionSignature(yaml);
+      lastDerivedClientRef.current = clientSignature(client);
       applyMoqSettings(
-        extractMoqPeerSettings(yaml),
+        extractMoqSettingsFromClient(client),
         storeActions,
         useStreamStore.getState().configServerUrl
       );
     },
     [storeActions]
+  );
+
+  const deriveMoqFromYaml = useCallback(
+    (yaml: string) => applyFromClient(parseClientFromYaml(yaml)),
+    [applyFromClient]
   );
 
   const handleYamlChange = useCallback(
@@ -56,11 +64,12 @@ export function useMoqYamlSync(
 
       if (timerRef.current) clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => {
-        if (clientSectionSignature(yaml) === lastDerivedClientRef.current) return;
-        deriveMoqFromYaml(yaml);
+        const client = parseClientFromYaml(yaml);
+        if (clientSignature(client) === lastDerivedClientRef.current) return;
+        applyFromClient(client);
       }, MOQ_DERIVE_DEBOUNCE_MS);
     },
-    [setPipelineYaml, deriveMoqFromYaml]
+    [setPipelineYaml, applyFromClient]
   );
 
   useEffect(() => {
