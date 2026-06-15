@@ -95,4 +95,32 @@ describe('useMoqYamlSync', () => {
     expect(actions.setOutputBroadcast).toHaveBeenLastCalledWith('tmpl-out');
     expect(actions.setOutputBroadcast).not.toHaveBeenCalledWith('edited-out');
   });
+
+  it('flushPendingDerive applies an in-flight debounced edit immediately', () => {
+    const actions = makeActions();
+    const { result } = renderHook(() => useMoqYamlSync(actions, vi.fn()));
+
+    act(() => result.current.handleYamlChange(moqYaml('out-1')));
+    expect(actions.setOutputBroadcast).not.toHaveBeenCalled();
+
+    act(() => result.current.flushPendingDerive());
+    expect(actions.setOutputBroadcast).toHaveBeenLastCalledWith('out-1');
+
+    // The flushed timer must not fire again afterwards.
+    act(() => vi.advanceTimersByTime(300));
+    expect(actions.setOutputBroadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it('flushPendingDerive is a no-op when no edit is pending (preserves manual edits)', () => {
+    const actions = makeActions();
+    const { result } = renderHook(() => useMoqYamlSync(actions, vi.fn()));
+
+    act(() => result.current.deriveMoqFromYaml(moqYaml('out-1')));
+    const callsAfterDerive = (actions.setOutputBroadcast as ReturnType<typeof vi.fn>).mock.calls
+      .length;
+
+    act(() => result.current.flushPendingDerive());
+
+    expect(actions.setOutputBroadcast).toHaveBeenCalledTimes(callsAfterDerive);
+  });
 });

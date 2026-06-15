@@ -564,10 +564,11 @@ const StreamView: React.FC = () => {
     ]
   );
 
-  const { deriveMoqFromYaml, handleYamlChange: handlePipelineYamlChange } = useMoqYamlSync(
-    storeActions,
-    viewState.setPipelineYaml
-  );
+  const {
+    deriveMoqFromYaml,
+    handleYamlChange: handlePipelineYamlChange,
+    flushPendingDerive,
+  } = useMoqYamlSync(storeActions, viewState.setPipelineYaml);
 
   const videoContainerRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -686,7 +687,7 @@ const StreamView: React.FC = () => {
       viewState.setSessionCreationStatus('success');
       logger.info('Session created successfully');
 
-      deriveMoqFromYaml(viewState.pipelineYaml);
+      flushPendingDerive();
       autoConnectIfMoq(status, connect, viewState);
     } catch (error) {
       logger.error('Failed to create session:', error);
@@ -695,7 +696,7 @@ const StreamView: React.FC = () => {
       );
       viewState.setSessionCreationStatus('error');
     }
-  }, [viewState, setActiveSession, connect, status, deriveMoqFromYaml]);
+  }, [viewState, setActiveSession, connect, status, flushPendingDerive]);
 
   const handleDestroySession = useCallback(() => {
     if (!activeSessionId) return;

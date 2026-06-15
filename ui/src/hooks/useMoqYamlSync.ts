@@ -27,6 +27,11 @@ const clientSignature = (client: ClientSection | null): string => JSON.stringify
  * editing the rest of the pipeline doesn't stomp broadcast names the user is
  * mid-typing, and pasting a different (or non-MoQ) pipeline clears the broadcast
  * names carried over from the previously-selected sample (issue #550).
+ *
+ * {@link flushPendingDerive} applies an in-flight debounced edit immediately and
+ * is a no-op otherwise, so callers can settle the store before reading it (e.g.
+ * before auto-connect) without clobbering manual edits to the broadcast/server
+ * fields, which write to the store directly and never schedule a debounce.
  */
 export function useMoqYamlSync(
   storeActions: MoqSettingsActions,
@@ -34,15 +39,23 @@ export function useMoqYamlSync(
 ): {
   deriveMoqFromYaml: (yaml: string) => void;
   handleYamlChange: (yaml: string) => void;
+  flushPendingDerive: () => void;
 } {
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const pendingYamlRef = useRef<string | null>(null);
   // `null` is a "never derived" sentinel — it never equals a signature string
   // (e.g. "null" for non-MoQ YAML), so the first debounced edit always derives.
   const lastDerivedClientRef = useRef<string | null>(null);
 
+  const cancelPending = useCallback(() => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = undefined;
+    pendingYamlRef.current = null;
+  }, []);
+
   const applyFromClient = useCallback(
     (client: ClientSection | null) => {
-      if (timerRef.current) clearTimeout(timerRef.current);
+      cancelPending();
       lastDerivedClientRef.current = clientSignature(client);
       applyMoqSettings(
         extractMoqSettingsFromClient(client),
@@ -50,11 +63,20 @@ export function useMoqYamlSync(
         useStreamStore.getState().configServerUrl
       );
     },
-    [storeActions]
+    [storeActions, cancelPending]
   );
 
   const deriveMoqFromYaml = useCallback(
     (yaml: string) => applyFromClient(parseClientFromYaml(yaml)),
+    [applyFromClient]
+  );
+
+  const deriveIfClientChanged = useCallback(
+    (yaml: string) => {
+      const client = parseClientFromYaml(yaml);
+      if (clientSignature(client) === lastDerivedClientRef.current) return;
+      applyFromClient(client);
+    },
     [applyFromClient]
   );
 
@@ -63,14 +85,23 @@ export function useMoqYamlSync(
       setPipelineYaml(yaml);
 
       if (timerRef.current) clearTimeout(timerRef.current);
+      pendingYamlRef.current = yaml;
       timerRef.current = setTimeout(() => {
-        const client = parseClientFromYaml(yaml);
-        if (clientSignature(client) === lastDerivedClientRef.current) return;
-        applyFromClient(client);
+        const pending = pendingYamlRef.current;
+        timerRef.current = undefined;
+        pendingYamlRef.current = null;
+        if (pending !== null) deriveIfClientChanged(pending);
       }, MOQ_DERIVE_DEBOUNCE_MS);
     },
-    [setPipelineYaml, applyFromClient]
+    [setPipelineYaml, deriveIfClientChanged]
   );
+
+  const flushPendingDerive = useCallback(() => {
+    if (!timerRef.current) return;
+    const pending = pendingYamlRef.current;
+    cancelPending();
+    if (pending !== null) deriveIfClientChanged(pending);
+  }, [cancelPending, deriveIfClientChanged]);
 
   useEffect(() => {
     return () => {
@@ -78,5 +109,5 @@ export function useMoqYamlSync(
     };
   }, []);
 
-  return { deriveMoqFromYaml, handleYamlChange };
+  return { deriveMoqFromYaml, handleYamlChange, flushPendingDerive };
 }
