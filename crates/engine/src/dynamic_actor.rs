@@ -24,7 +24,7 @@ use streamkit_core::frame_pool::{AudioFramePool, VideoFramePool};
 use streamkit_core::node::{InitContext, NodeContext, OutputRouting, OutputSender};
 use streamkit_core::pins::PinUpdate;
 use streamkit_core::registry::NodeRegistry;
-use streamkit_core::state::{NodeState, NodeStateUpdate};
+use streamkit_core::state::{NodeState, NodeStateUpdate, StopReason};
 use streamkit_core::stats::{NodeStats, NodeStatsUpdate};
 use streamkit_core::telemetry::TelemetryEvent;
 use streamkit_core::view_data::NodeViewDataUpdate;
@@ -230,6 +230,10 @@ impl DynamicEngine {
         }
     }
 
+    const fn is_terminal(state: &NodeState) -> bool {
+        matches!(state, NodeState::Failed { .. } | NodeState::Stopped { .. })
+    }
+
     /// The main actor loop for the dynamic engine (Control Plane).
     pub(super) async fn run(mut self) {
         tracing::info!("Dynamic Engine actor started (Per-Pin Distributor Architecture).");
@@ -418,6 +422,22 @@ impl DynamicEngine {
                 node = %update.node_id,
                 state = ?update.state,
                 "Ignoring state update for removed node"
+            );
+            return;
+        }
+
+        // Once a node is terminal, a later terminal update carries no new
+        // information — it is the actor-level mirror of the task result that
+        // backstops a dropped best-effort emission (see initialize_node).
+        // Collapsing it avoids double-counting transitions and re-notifying
+        // subscribers with a state they already have.
+        if Self::is_terminal(&update.state)
+            && self.node_states.get(&update.node_id).is_some_and(Self::is_terminal)
+        {
+            tracing::trace!(
+                node = %update.node_id,
+                state = ?update.state,
+                "Ignoring redundant terminal state update"
             );
             return;
         }
@@ -680,12 +700,34 @@ impl DynamicEngine {
             asset_root: self.asset_root.clone(),
         };
 
-        let task_handle = tokio::spawn(node.run(context).instrument(tracing::info_span!(
+        let final_state_tx = context.state_tx.clone();
+        let node_id_for_task = node_id.to_string();
+        let run_span = tracing::info_span!(
             "node_run",
             session.id = %self.session_id.as_deref().unwrap_or("<unknown>"),
             node.name = %node_id,
             node.kind = %kind
-        )));
+        );
+        // A dead/panicked worker surfaces only as the task's `Err`; the node's
+        // own terminal `Failed` is a best-effort `try_send` that backpressure
+        // can drop, leaving the node stuck at its last good state. Mirror the
+        // task result onto the shared state channel with an awaited send (as
+        // graph_builder does for oneshot) so the terminal state is guaranteed.
+        // FIFO ordering means any terminal state the node already emitted is
+        // processed first; handle_state_update collapses the redundant follow-up.
+        let task_handle = tokio::spawn(
+            async move {
+                let result = node.run(context).await;
+                let final_state = match &result {
+                    Ok(()) => NodeState::Stopped { reason: StopReason::Completed },
+                    Err(e) => NodeState::Failed { reason: e.to_string() },
+                };
+                let _ =
+                    final_state_tx.send(NodeStateUpdate::new(node_id_for_task, final_state)).await;
+                result
+            }
+            .instrument(run_span),
+        );
         self.live_nodes
             .insert(node_id.to_string(), graph_builder::LiveNode { control_tx, task_handle });
         self.nodes_active_gauge

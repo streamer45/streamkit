@@ -400,33 +400,38 @@ impl Drop for InstanceState {
     }
 }
 
-/// Reason string for a dead worker channel — the worker thread has exited,
-/// either normally or via a panic.
-fn worker_died_reason(op: &str, node: &str) -> String {
-    format!("Worker thread for node {node} died during {op}")
+/// Best-effort terminal [`NodeState::Failed`] notification for a call that
+/// failed (timeout or dead worker).
+///
+/// `try_send` may drop the update when the state channel is full; that is
+/// acceptable because the engine backstops the terminal state from the node
+/// task's `Err` result — the dynamic actor mirrors it onto the state channel
+/// with an awaited send (`dynamic_actor::initialize_node`) and oneshot derives
+/// it the same way (`graph_builder`).
+fn emit_failed(
+    state_tx: Option<&tokio::sync::mpsc::Sender<NodeStateUpdate>>,
+    node: &str,
+    reason: &str,
+) {
+    if let Some(tx) = state_tx {
+        let _ = tx.try_send(NodeStateUpdate::new(
+            node.to_string(),
+            NodeState::Failed { reason: reason.to_string() },
+        ));
+    }
 }
 
-/// Error returned when the worker channel is closed while emitting a
-/// best-effort terminal [`NodeState::Failed`] update.
-///
-/// The reply-channel-dropped / send-failure paths are hit when the worker
-/// dies or panics rather than timing out; without this the coordinator would
-/// keep seeing the last good state (e.g. `Ready`) for a node that is already
-/// dead. Mirrors the timeout arms: the `try_send` is best-effort (a full
-/// state channel is tolerated) because the returned `Err` is the real
-/// guarantee the caller observes.
+/// Error for a worker channel closed because the worker thread exited
+/// (normally or via a panic), rather than timing out. Without the
+/// accompanying [`emit_failed`] the coordinator would keep seeing the last
+/// good state (e.g. `Ready`) for a node that is already dead.
 fn worker_died(
     op: &str,
     node: &str,
     state_tx: Option<&tokio::sync::mpsc::Sender<NodeStateUpdate>>,
 ) -> StreamKitError {
-    let reason = worker_died_reason(op, node);
-    if let Some(tx) = state_tx {
-        let _ = tx.try_send(NodeStateUpdate::new(
-            node.to_string(),
-            NodeState::Failed { reason: reason.clone() },
-        ));
-    }
+    let reason = format!("Worker thread for node {node} died during {op}");
+    emit_failed(state_tx, node, &reason);
     StreamKitError::Runtime(reason)
 }
 
@@ -1405,16 +1410,7 @@ impl NativeNodeWrapper {
                     }
                     global_metrics().record_timeout(metric_labels);
                     let reason = format!("Plugin {op} on node {node} timed out after {d:?}");
-                    // Best-effort notification — try_send may drop if the
-                    // state channel is full, but that is acceptable because
-                    // the Err returned from await_reply is the real guarantee
-                    // that the caller observes the timeout.
-                    if let Some(tx) = state_tx {
-                        let _ = tx.try_send(NodeStateUpdate::new(
-                            node.to_string(),
-                            NodeState::Failed { reason: reason.clone() },
-                        ));
-                    }
+                    emit_failed(state_tx, node, &reason);
                     if let Some(telemetry) = telemetry {
                         telemetry.emit("plugin.call_timeout", serde_json::json!({ "op": op }));
                     }
@@ -1428,12 +1424,7 @@ impl NativeNodeWrapper {
                         "Plugin {op} on node {node} timed out after {DEFAULT_CALL_TIMEOUT:?} (backstop)"
                     );
                     global_metrics().record_timeout(metric_labels);
-                    if let Some(tx) = state_tx {
-                        let _ = tx.try_send(NodeStateUpdate::new(
-                            node.to_string(),
-                            NodeState::Failed { reason: reason.clone() },
-                        ));
-                    }
+                    emit_failed(state_tx, node, &reason);
                     StreamKitError::Runtime(reason)
                 })?
                 .map_err(|_| worker_died(op, node, state_tx)),
@@ -1469,12 +1460,7 @@ impl NativeNodeWrapper {
                      (worker likely wedged in prior FFI call)",
                     call.op, call.node
                 );
-                if let Some(tx) = call.state_tx {
-                    let _ = tx.try_send(NodeStateUpdate::new(
-                        call.node.to_string(),
-                        NodeState::Failed { reason: reason.clone() },
-                    ));
-                }
+                emit_failed(call.state_tx, call.node, &reason);
                 if let Some(telemetry) = call.telemetry {
                     telemetry.emit(
                         "plugin.call_timeout",
