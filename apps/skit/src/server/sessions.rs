@@ -439,8 +439,25 @@ pub(super) async fn check_batch_node_id_uniqueness(
     session: &crate::session::Session,
     operations: &[streamkit_api::BatchOperation],
 ) -> Vec<String> {
-    let mut live_ids: std::collections::HashSet<String> =
-        session.pipeline.lock().await.nodes.keys().cloned().collect();
+    // Seed from both the live snapshot and the in-flight set: a node
+    // accepted by an earlier confirmed-add but not yet confirmed by the
+    // engine lives only in `creating_nodes`, and a second add for that id
+    // must still collide.  Lock order matches `reserve_node_id`.
+    let live_ids: std::collections::HashSet<String> = {
+        let pipeline = session.pipeline.lock().await;
+        let creating = session.creating_nodes.lock().await;
+        pipeline.nodes.keys().chain(creating.iter()).cloned().collect()
+    };
+    batch_node_id_duplicates(live_ids, operations)
+}
+
+/// Simulate a batch's Add/Remove sequence over an initial set of live node
+/// ids, returning the ids that would collide.  Pure: callers own the
+/// locking that produces `live_ids`.
+fn batch_node_id_duplicates(
+    mut live_ids: std::collections::HashSet<String>,
+    operations: &[streamkit_api::BatchOperation],
+) -> Vec<String> {
     let mut duplicates = Vec::new();
     for op in operations {
         match op {
@@ -503,11 +520,13 @@ pub async fn validate_batch_operations(
 /// session-level permission and ownership checks before calling this function.
 ///
 /// `AddNode` uses confirmed-add semantics, matching the single-node WS path
-/// (`handle_add_node`): the engine op is queued but `pipeline.nodes` is left
-/// untouched here.  The durable snapshot is reconciled by the session's
-/// `node-added` forwarder once the engine reports the node was constructed
-/// and initialized, so a creation that fails after validation leaves no
-/// orphan entry behind.
+/// (`handle_add_node`): the id is reserved in the session's in-flight set and
+/// the engine op is queued, but `pipeline.nodes` is left untouched here.  The
+/// durable snapshot is reconciled by the session's `node-added` forwarder once
+/// the engine reports the node was constructed and initialized, so a creation
+/// that fails after validation leaves no orphan entry behind.  The reservation
+/// closes the dispatch→confirmation gap so a concurrent add of the same id is
+/// rejected instead of being silently dropped by the engine's duplicate guard.
 ///
 /// # Errors
 ///
@@ -519,11 +538,6 @@ pub async fn apply_batch_operations(
     perms: &crate::permissions::Permissions,
     security_config: &crate::config::SecurityConfig,
 ) -> Result<(), String> {
-    let duplicates = check_batch_node_id_uniqueness(session, &operations).await;
-    if let Some(node_id) = duplicates.first() {
-        return Err(format!("Batch rejected: node '{node_id}' already exists in the pipeline"));
-    }
-
     for op in &operations {
         if let streamkit_api::BatchOperation::AddNode { kind, params, .. } = op {
             if let Some(message) = crate::websocket_handlers::validate_add_node_op(
@@ -539,10 +553,29 @@ pub async fn apply_batch_operations(
 
     let mut engine_operations = Vec::new();
     {
+        // Hold both guards across the uniqueness check and the reservation
+        // below.  Lock order matches `reserve_node_id` (pipeline, then
+        // creating_nodes).  Without the joint hold a concurrent add/batch
+        // could pass its own check and reach the engine for the same id,
+        // where the actor's duplicate guard would silently drop it with no
+        // observable signal to the client.
         let mut pipeline = session.pipeline.lock().await;
+        let mut creating = session.creating_nodes.lock().await;
+
+        let live: std::collections::HashSet<String> =
+            pipeline.nodes.keys().chain(creating.iter()).cloned().collect();
+        if let Some(node_id) = batch_node_id_duplicates(live, &operations).first() {
+            return Err(format!("Batch rejected: node '{node_id}' already exists in the pipeline"));
+        }
+
         for op in operations {
             match op {
                 streamkit_api::BatchOperation::AddNode { node_id, kind, params } => {
+                    // Confirmed-add: reserve the id in the in-flight set
+                    // (mirroring handle_add_node) but leave pipeline.nodes
+                    // untouched until the engine confirms via the node-added
+                    // forwarder.
+                    creating.insert(node_id.clone());
                     engine_operations.push(
                         streamkit_core::control::EngineControlMessage::AddNode {
                             node_id,
@@ -556,6 +589,12 @@ pub async fn apply_batch_operations(
                     pipeline
                         .connections
                         .retain(|conn| conn.from_node != node_id && conn.to_node != node_id);
+                    // Release any in-flight reservation: the engine's
+                    // cancel-while-Creating path emits no terminal state, so
+                    // without this an id removed mid-creation would stay
+                    // wedged in the in-flight set.  Mirrors
+                    // handle_remove_node.
+                    creating.remove(&node_id);
                     engine_operations.push(
                         streamkit_core::control::EngineControlMessage::RemoveNode { node_id },
                     );
@@ -615,6 +654,7 @@ pub async fn apply_batch_operations(
                 },
             }
         }
+        drop(creating);
         drop(pipeline);
     }
 
@@ -752,7 +792,10 @@ mod sessions_batch_tests {
     async fn fresh_session() -> (Session, broadcast::Receiver<BroadcastEvent>) {
         let engine = Engine::without_plugins();
         let config = crate::config::Config::default();
-        let (tx, rx) = broadcast::channel(16);
+        // Generous buffer so a burst of engine state/stats events cannot
+        // lag a slow test reader into dropping the one transition it waits
+        // for.
+        let (tx, rx) = broadcast::channel(1024);
         let session = Session::create(
             &engine,
             &config,
@@ -1140,10 +1183,8 @@ mod sessions_batch_tests {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut saw_failed = false;
         while tokio::time::Instant::now() < deadline {
-            if let Ok(Ok(BroadcastEvent { event, .. })) =
-                tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await
-            {
-                match &event.payload {
+            match tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await {
+                Ok(Ok(BroadcastEvent { event, .. })) => match &event.payload {
                     EventPayload::NodeStateChanged { node_id, state, .. }
                         if node_id == "ghost"
                             && matches!(state, streamkit_api::NodeState::Failed { .. }) =>
@@ -1155,7 +1196,16 @@ mod sessions_batch_tests {
                         assert_ne!(node_id, "ghost", "failed creation must not emit NodeAdded");
                     },
                     _ => {},
-                }
+                },
+                // Lagged would mean the buffer overflowed and an event was
+                // dropped; surface it loudly rather than masking it as "no
+                // Failed event seen" (the channel is sized to make this
+                // impossible for this test).
+                Ok(Err(broadcast::error::RecvError::Lagged(n))) => {
+                    panic!("event receiver lagged by {n}; increase the test channel capacity");
+                },
+                Ok(Err(broadcast::error::RecvError::Closed)) => break,
+                Err(_) => {},
             }
         }
         assert!(saw_failed, "expected a Failed state transition for 'ghost'");
@@ -1164,6 +1214,103 @@ mod sessions_batch_tests {
             !session.pipeline.lock().await.nodes.contains_key("ghost"),
             "a failed AddNode must not leave an orphan in pipeline.nodes",
         );
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn apply_batch_addnode_reserves_id_blocking_duplicate() {
+        let (session, _rx) = fresh_session().await;
+
+        // Confirmed-add leaves pipeline.nodes empty until the engine
+        // confirms, so the reservation in creating_nodes is what makes a
+        // second add for the same id collide instead of reaching the engine
+        // to be silently dropped by its duplicate guard.
+        apply_batch_operations(
+            &session,
+            vec![add_op("x", "core::passthrough")],
+            &passthrough_only_perms(),
+            &SecurityConfig::default(),
+        )
+        .await
+        .expect("first add must be accepted");
+
+        let result = apply_batch_operations(
+            &session,
+            vec![add_op("x", "core::passthrough")],
+            &passthrough_only_perms(),
+            &SecurityConfig::default(),
+        )
+        .await;
+
+        let err = result.expect_err("a duplicate in-flight id must be rejected");
+        assert!(err.contains("already exists"), "unexpected error: {err}");
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn apply_batch_removenode_releases_inflight_reservation() {
+        let (session, _rx) = fresh_session().await;
+
+        // Mimic an id still in flight (reserved, not yet engine-confirmed).
+        // The engine's cancel-while-Creating path emits no terminal state,
+        // so a batch RemoveNode must drain the reservation itself — else the
+        // id stays wedged and can never be re-added.
+        session.creating_nodes.lock().await.insert("inflight".to_string());
+
+        apply_batch_operations(
+            &session,
+            vec![remove_op("inflight")],
+            &passthrough_only_perms(),
+            &SecurityConfig::default(),
+        )
+        .await
+        .expect("RemoveNode must succeed");
+
+        assert!(
+            !session.creating_nodes.lock().await.contains("inflight"),
+            "batch RemoveNode must release the in-flight reservation",
+        );
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn apply_batch_failed_addnode_prunes_incident_connection() {
+        let (session, _rx) = fresh_session().await;
+
+        // "ghost" passes validation but has no engine factory, so creation
+        // fails after the batch is accepted.  The batch records the
+        // ghost->sink edge synchronously; once ghost fails, the state
+        // forwarder must prune that now-dangling connection.
+        let ops = vec![
+            add_op("ghost", "core::definitely_not_a_real_kind"),
+            add_op("sink", "core::passthrough"),
+            connect_op(("ghost", "out"), ("sink", "in")),
+        ];
+        apply_batch_operations(&session, ops, &Permissions::admin(), &SecurityConfig::default())
+            .await
+            .expect("batch is accepted; ghost's creation is what fails");
+
+        // The edge is recorded synchronously, before any async engine work.
+        assert!(
+            session.pipeline.lock().await.connections.iter().any(|c| c.from_node == "ghost"),
+            "the batch should record the ghost->sink connection synchronously",
+        );
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let dangling = {
+                let pipeline = session.pipeline.lock().await;
+                pipeline.connections.iter().any(|c| c.from_node == "ghost" || c.to_node == "ghost")
+            };
+            if !dangling {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "dangling connection to failed 'ghost' was never pruned",
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
         let _ = session.shutdown_and_wait().await;
     }
 

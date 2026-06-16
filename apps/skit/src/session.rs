@@ -327,11 +327,13 @@ impl Session {
         // confirmed entries; this set fills the gap for accepted-but-
         // not-yet-confirmed addnode requests.
         let creating_nodes: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+        let pipeline = Arc::new(Mutex::new(Pipeline::default()));
 
         // Spawn task to forward state updates to WebSocket clients
         let session_id_for_state = session_id.clone();
         let event_tx_for_state = event_tx.clone();
         let creating_nodes_for_state = creating_nodes.clone();
+        let pipeline_for_state = pipeline.clone();
         tokio::spawn(async move {
             while let Some(update) = state_rx.recv().await {
                 // Drain the in-flight entry as soon as a non-Creating
@@ -341,7 +343,21 @@ impl Session {
                 // creation.  The node-added forwarder also drains on
                 // success; the second remove is a no-op.
                 if !matches!(update.state, NodeState::Creating) {
-                    creating_nodes_for_state.lock().await.remove(&update.node_id);
+                    let was_in_flight =
+                        creating_nodes_for_state.lock().await.remove(&update.node_id);
+                    // A confirmed-add batch records connections eagerly,
+                    // before the engine confirms the endpoint nodes.  If an
+                    // in-flight node fails creation it never enters
+                    // `pipeline.nodes`, so drop any edge the batch recorded
+                    // for it — otherwise the snapshot keeps a connection to a
+                    // node that does not exist.  Runtime failures of an
+                    // already-confirmed node (not in flight) keep their edges.
+                    if was_in_flight && matches!(update.state, NodeState::Failed { .. }) {
+                        let mut pip = pipeline_for_state.lock().await;
+                        pip.connections.retain(|c| {
+                            c.from_node != update.node_id && c.to_node != update.node_id
+                        });
+                    }
                 }
                 let event = ApiEvent {
                     message_type: MessageType::Event,
@@ -456,7 +472,6 @@ impl Session {
         // can't have any nodes until something sends `AddNode`, and the
         // first `AddNode` can't arrive until `create` returns the
         // handle to its caller.
-        let pipeline = Arc::new(Mutex::new(Pipeline::default()));
         let mut node_added_rx = engine_handle
             .subscribe_node_added()
             .await
