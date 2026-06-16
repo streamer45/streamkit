@@ -296,7 +296,6 @@ impl ProcessorNode for VulkanVideoH264DecoderNode {
             &mut stats_tracker,
             Packet::Video,
             "VulkanVideoH264DecoderNode",
-            None,
         )
         .await;
 
