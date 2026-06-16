@@ -211,7 +211,6 @@ impl ProcessorNode for Dav1dDecoderNode {
             &mut stats_tracker,
             Packet::Video,
             "Dav1dDecoderNode",
-            None,
         )
         .await;
 

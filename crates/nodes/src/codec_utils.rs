@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#[cfg(any(feature = "svt_av1", test))]
 use std::time::Duration;
 
 use opentelemetry::KeyValue;
@@ -18,13 +19,9 @@ use tokio::sync::mpsc;
 /// drain: a codec that abandoned a blocking worker (e.g. SVT-AV1's wedged
 /// receive thread) leaves a live `result_tx` clone behind, and closing
 /// forwards any buffered results and then returns `None` instead of waiting
-/// on a sender that will never send again.
-///
-/// `flush_idle_timeout` is an optional safety net for a codec that can stall
-/// *before* its task ends: if no result arrives and the task never finishes
-/// for that long after input close, the stuck task is abandoned. The timer
-/// resets on every result, so a healthy flush never trips it. `None` waits
-/// for the task to finish (the bound every current codec relies on).
+/// on a sender that will never send again. A revived-but-abandoned worker can
+/// thus lose its trailing packets once the receiver closes — an accepted cost
+/// of the abandonment tradeoff (#539), far preferable to hanging.
 // clippy::too_many_arguments: mirrors the shared codec-loop state handles;
 // grouping them into a struct would only obscure the single call site.
 #[allow(clippy::too_many_arguments)]
@@ -36,17 +33,10 @@ async fn drain_codec_results<T: Send + 'static, F: Fn(T) -> Packet + Send + Sync
     stats: &mut NodeStatsTracker,
     to_packet: &F,
     label: &str,
-    flush_idle_timeout: Option<Duration>,
 ) {
     let mut codec_done = false;
     let mut drained = 0u64;
     loop {
-        let idle_guard = async {
-            match flush_idle_timeout {
-                Some(d) => tokio::time::sleep(d).await,
-                None => std::future::pending::<()>().await,
-            }
-        };
         tokio::select! {
             biased;
             // Drain results first (biased) to keep the channel
@@ -90,19 +80,6 @@ async fn drain_codec_results<T: Send + 'static, F: Fn(T) -> Packet + Send + Sync
                 // forwards any buffered results and then returns `None`,
                 // instead of waiting on a sender that will never send again.
             }
-            () = idle_guard, if !codec_done => {
-                // The codec task is still running but has gone silent past the
-                // idle budget — almost certainly deadlocked inside a blocking
-                // FFI flush. Abandon it (the blocking OS thread cannot be
-                // interrupted) so the node can finalize the output it already
-                // produced instead of hanging until the request times out.
-                tracing::error!(
-                    "{label} codec task stalled for {flush_idle_timeout:?} during EOS flush; \
-                     abandoning stuck task and finalizing (likely native encoder deadlock)"
-                );
-                codec_task.abort();
-                break;
-            }
         }
         if codec_done {
             result_rx.close();
@@ -124,11 +101,11 @@ pub(crate) enum ThreadJoin {
 
 /// Join a worker thread, bounded by `timeout`.
 ///
-/// The blocking-FFI analogue of [`drain_codec_results`]'s idle watchdog: some
-/// encoders (e.g. SVT-AV1) flush through a two-thread native boundary whose
-/// receive thread can deadlock under rare scheduling, and a plain
+/// Some encoders (e.g. SVT-AV1) flush through a two-thread native boundary that
+/// can deadlock under rare scheduling, and a plain
 /// [`std::thread::JoinHandle::join`] there is unbounded — it can hang the codec
-/// task until the client request times out.
+/// task until the client request times out. This bounds the wait so the codec
+/// task always finalizes.
 ///
 /// `done` is a channel the worker sends on immediately before returning; a
 /// disconnect (e.g. a panic that drops the sender) also counts as finished. If
@@ -154,11 +131,6 @@ pub(crate) fn bounded_thread_join(
 }
 
 /// Forward codec results downstream, draining the codec task on input close.
-///
-/// `flush_idle_timeout` arms an idle watchdog on the post-input drain (see
-/// [`drain_codec_results`]); pass `None` for the unbounded wait used by every
-/// codec that flushes promptly, or `Some` for codecs whose flush goes through
-/// a blocking FFI boundary that can deadlock (e.g. SVT-AV1).
 // clippy::too_many_arguments: these are the codec loop's distinct state
 // handles (channels, task handles, metrics); bundling them into a struct
 // would only obscure the call sites.
@@ -173,7 +145,6 @@ pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
     stats: &mut NodeStatsTracker,
     to_packet: impl Fn(T) -> Packet + Send + Sync,
     label: &str,
-    flush_idle_timeout: Option<Duration>,
 ) {
     async fn forward_one(
         packet: Packet,
@@ -241,17 +212,8 @@ pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
 
     if drain_pending {
         tracing::debug!("{label} waiting for codec task to finish before drain");
-        drain_codec_results(
-            result_rx,
-            codec_task,
-            context,
-            counter,
-            stats,
-            &to_packet,
-            label,
-            flush_idle_timeout,
-        )
-        .await;
+        drain_codec_results(result_rx, codec_task, context, counter, stats, &to_packet, label)
+            .await;
     } else {
         // Abort before awaiting: the codec task may be blocked on
         // `result_tx.blocking_send()` with a full channel since nobody
@@ -278,59 +240,8 @@ mod tests {
         Packet::Binary { data: bytes::Bytes::from(data), content_type: None, metadata: None }
     }
 
-    /// Regression: a codec task that deadlocks inside a blocking flush (never
-    /// completes, never closes its result channel) must be abandoned once the
-    /// idle budget elapses — not awaited forever — while still forwarding the
-    /// packets it produced before stalling.
-    ///
-    /// Uses paused (virtual) time so the assertion is deterministic: the only
-    /// timers are the 200ms watchdog and the 5s guard, and tokio auto-advances
-    /// to the watchdog first. If the watchdog regressed, the guard would fire
-    /// instead and fail the test rather than hang.
-    #[tokio::test(start_paused = true)]
-    async fn drain_abandons_stalled_codec_within_idle_budget() {
-        let (mut ctx, mock_out, _state_rx) = create_test_context(HashMap::new(), 1);
-        let mut stats = NodeStatsTracker::new("test".to_string(), ctx.stats_tx.clone());
-        let counter = test_counter();
-
-        let (result_tx, mut result_rx) = mpsc::channel::<Result<Vec<u8>, String>>(8);
-        result_tx.send(Ok(vec![1, 2, 3])).await.unwrap();
-        // Hold the sender so result_rx never closes — mimics the leaked
-        // receive-thread sender of a deadlocked SVT-AV1 codec task.
-        let _held = result_tx;
-
-        let codec_task = tokio::task::spawn(std::future::pending::<()>());
-
-        let start = tokio::time::Instant::now();
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            drain_codec_results(
-                &mut result_rx,
-                codec_task,
-                &mut ctx,
-                &counter,
-                &mut stats,
-                &to_binary,
-                "test",
-                Some(Duration::from_millis(200)),
-            ),
-        )
-        .await
-        .expect("drain must return once the idle watchdog fires");
-
-        let elapsed = start.elapsed();
-        assert!(
-            elapsed >= Duration::from_millis(200) && elapsed < Duration::from_secs(1),
-            "watchdog should fire at the idle budget, not the 5s guard; took {elapsed:?}"
-        );
-        assert!(
-            matches!(mock_out.try_recv().await, Some((_, _, Packet::Binary { .. }))),
-            "packet produced before the stall must still be forwarded"
-        );
-    }
-
-    /// Without a watchdog (`None`), the normal path must still terminate: the
-    /// codec finishes and closes its channel, so the drain returns promptly.
+    /// The normal path must terminate: the codec finishes and closes its
+    /// channel, so the drain returns promptly.
     #[tokio::test]
     async fn drain_returns_when_codec_finishes_and_channel_closes() {
         let (mut ctx, _mock_out, _state_rx) = create_test_context(HashMap::new(), 1);
@@ -353,7 +264,6 @@ mod tests {
                 &mut stats,
                 &to_binary,
                 "test",
-                None,
             ),
         )
         .await
@@ -362,9 +272,9 @@ mod tests {
 
     /// Regression for #540: an SVT-AV1 dimension change can abandon a wedged
     /// receive thread, leaking its `result_tx` clone, and the *final* flush can
-    /// still complete cleanly. With no watchdog (`None`), the drain must finish
-    /// anyway — forwarding buffered results, then closing the receiver on codec
-    /// completion so the leaked sender can't keep `recv()` pending forever.
+    /// still complete cleanly. The drain must finish anyway — forwarding
+    /// buffered results, then closing the receiver on codec completion so the
+    /// leaked sender can't keep `recv()` pending forever.
     #[tokio::test]
     async fn drain_returns_when_codec_finishes_despite_leaked_sender() {
         let (mut ctx, mock_out, _state_rx) = create_test_context(HashMap::new(), 1);
@@ -390,7 +300,6 @@ mod tests {
                 &mut stats,
                 &to_binary,
                 "test",
-                None,
             ),
         )
         .await
@@ -402,11 +311,10 @@ mod tests {
         );
     }
 
-    /// Regression for #540: a receive thread wedged in a blocking native flush
-    /// (never signals completion) must be abandoned once the budget elapses,
-    /// not joined forever. This bounds the SVT-AV1 in-task flushes (mid-stream
-    /// dimension change, shutdown) that the async EOS-flush watchdog can't
-    /// reach.
+    /// Regression for #540: a thread wedged in a blocking native flush (never
+    /// signals completion) must be abandoned once the budget elapses, not
+    /// joined forever. This is the single bound for every SVT-AV1 flush
+    /// (mid-stream dimension change, downstream-close, input-close).
     #[test]
     fn bounded_thread_join_abandons_wedged_worker() {
         let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();

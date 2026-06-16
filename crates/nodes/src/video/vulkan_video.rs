@@ -697,7 +697,6 @@ impl ProcessorNode for VulkanVideoH264EncoderNode {
                 metadata: encoded.metadata,
             },
             node_label,
-            None,
         )
         .await;
 
