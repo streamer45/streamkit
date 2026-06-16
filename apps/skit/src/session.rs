@@ -353,10 +353,21 @@ impl Session {
                     // node that does not exist.  Runtime failures of an
                     // already-confirmed node (not in flight) keep their edges.
                     if was_in_flight && matches!(update.state, NodeState::Failed { .. }) {
-                        let mut pip = pipeline_for_state.lock().await;
-                        pip.connections.retain(|c| {
-                            c.from_node != update.node_id && c.to_node != update.node_id
-                        });
+                        let pruned = {
+                            let mut pip = pipeline_for_state.lock().await;
+                            let before = pip.connections.len();
+                            pip.connections.retain(|c| {
+                                c.from_node != update.node_id && c.to_node != update.node_id
+                            });
+                            before - pip.connections.len()
+                        };
+                        if pruned > 0 {
+                            tracing::debug!(
+                                node_id = %update.node_id,
+                                pruned,
+                                "pruned dangling connections for failed in-flight node"
+                            );
+                        }
                     }
                 }
                 let event = ApiEvent {
