@@ -356,6 +356,16 @@ impl Session {
                     // pipeline, then creating_nodes) so a concurrent batch
                     // reusing this id cannot insert fresh connections between
                     // the check and the retain and have them wrongly pruned.
+                    //
+                    // Residual limitation (tracked in #607): a same-id batch
+                    // that fully completes between this update arriving and
+                    // the lock acquisition here is indistinguishable from the
+                    // failed incarnation, since `creating_nodes` carries no
+                    // per-incarnation epoch.  A clean fix needs engine-side
+                    // terminal-state correlation; out of scope for #455.
+                    // The prune mutates the snapshot without a
+                    // `ConnectionRemoved` event, mirroring the batch `Connect`
+                    // that records edges without `ConnectionAdded`.
                     let pruned = {
                         let mut pip = pipeline_for_state.lock().await;
                         let was_in_flight =
