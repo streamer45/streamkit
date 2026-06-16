@@ -400,10 +400,39 @@ impl Drop for InstanceState {
     }
 }
 
-/// Consistent error returned when the worker channel is closed (the worker
-/// thread has exited, either normally or via a panic).
-fn worker_died_error(op: &str, node: &str) -> StreamKitError {
-    StreamKitError::Runtime(format!("Worker thread for node {node} died during {op}"))
+/// Best-effort terminal [`NodeState::Failed`] notification for a call that
+/// failed (timeout or dead worker).
+///
+/// `try_send` may drop the update when the state channel is full; that is
+/// acceptable because the engine backstops the terminal state from the node
+/// task's `Err` result — the dynamic actor mirrors it onto the state channel
+/// with an awaited send (`dynamic_actor::initialize_node`) and oneshot derives
+/// it the same way (`graph_builder`).
+fn emit_failed(
+    state_tx: Option<&tokio::sync::mpsc::Sender<NodeStateUpdate>>,
+    node: &str,
+    reason: &str,
+) {
+    if let Some(tx) = state_tx {
+        let _ = tx.try_send(NodeStateUpdate::new(
+            node.to_string(),
+            NodeState::Failed { reason: reason.to_string() },
+        ));
+    }
+}
+
+/// Error for a worker channel closed because the worker thread exited
+/// (normally or via a panic), rather than timing out. Without the
+/// accompanying [`emit_failed`] the coordinator would keep seeing the last
+/// good state (e.g. `Ready`) for a node that is already dead.
+fn worker_died(
+    op: &str,
+    node: &str,
+    state_tx: Option<&tokio::sync::mpsc::Sender<NodeStateUpdate>>,
+) -> StreamKitError {
+    let reason = format!("Worker thread for node {node} died during {op}");
+    emit_failed(state_tx, node, &reason);
+    StreamKitError::Runtime(reason)
 }
 
 /// Message sent from the async side to the worker thread.
@@ -1381,22 +1410,13 @@ impl NativeNodeWrapper {
                     }
                     global_metrics().record_timeout(metric_labels);
                     let reason = format!("Plugin {op} on node {node} timed out after {d:?}");
-                    // Best-effort notification — try_send may drop if the
-                    // state channel is full, but that is acceptable because
-                    // the Err returned from await_reply is the real guarantee
-                    // that the caller observes the timeout.
-                    if let Some(tx) = state_tx {
-                        let _ = tx.try_send(NodeStateUpdate::new(
-                            node.to_string(),
-                            NodeState::Failed { reason: reason.clone() },
-                        ));
-                    }
+                    emit_failed(state_tx, node, &reason);
                     if let Some(telemetry) = telemetry {
                         telemetry.emit("plugin.call_timeout", serde_json::json!({ "op": op }));
                     }
                     StreamKitError::Runtime(reason)
                 })?
-                .map_err(|_| StreamKitError::Runtime("Worker reply channel dropped".into())),
+                .map_err(|_| worker_died(op, node, state_tx)),
             None => tokio::time::timeout(DEFAULT_CALL_TIMEOUT, reply_rx)
                 .await
                 .map_err(|_| {
@@ -1404,15 +1424,10 @@ impl NativeNodeWrapper {
                         "Plugin {op} on node {node} timed out after {DEFAULT_CALL_TIMEOUT:?} (backstop)"
                     );
                     global_metrics().record_timeout(metric_labels);
-                    if let Some(tx) = state_tx {
-                        let _ = tx.try_send(NodeStateUpdate::new(
-                            node.to_string(),
-                            NodeState::Failed { reason: reason.clone() },
-                        ));
-                    }
+                    emit_failed(state_tx, node, &reason);
                     StreamKitError::Runtime(reason)
                 })?
-                .map_err(|_| StreamKitError::Runtime("Worker reply channel dropped".into())),
+                .map_err(|_| worker_died(op, node, state_tx)),
         }
     }
 
@@ -1445,12 +1460,7 @@ impl NativeNodeWrapper {
                      (worker likely wedged in prior FFI call)",
                     call.op, call.node
                 );
-                if let Some(tx) = call.state_tx {
-                    let _ = tx.try_send(NodeStateUpdate::new(
-                        call.node.to_string(),
-                        NodeState::Failed { reason: reason.clone() },
-                    ));
-                }
+                emit_failed(call.state_tx, call.node, &reason);
                 if let Some(telemetry) = call.telemetry {
                     telemetry.emit(
                         "plugin.call_timeout",
@@ -1459,7 +1469,7 @@ impl NativeNodeWrapper {
                 }
                 StreamKitError::Runtime(reason)
             })?
-            .map_err(|_| worker_died_error(call.op, call.node))
+            .map_err(|_| worker_died(call.op, call.node, call.state_tx))
     }
 
     /// Input-driven processing loop (existing behaviour for processor plugins).
@@ -1577,7 +1587,7 @@ impl NativeNodeWrapper {
 
         // Run the main processing loop, capturing the result so that
         // input_tasks are always aborted on exit — including early returns
-        // from worker_died_error or timeout.
+        // from a dead worker (worker_died) or timeout.
         let loop_result: Result<(), StreamKitError> = async {
             loop {
                 tokio::select! {
@@ -1681,7 +1691,7 @@ impl NativeNodeWrapper {
         .await;
 
         // Always abort input-forwarder tasks — including on early-return
-        // from worker_died_error or timeout.
+        // from a dead worker (worker_died) or timeout.
         for handle in &input_tasks {
             handle.abort();
         }
@@ -3095,6 +3105,98 @@ mod ffi_guard_tests {
         let update = state_rx.recv().await.expect("failed state should be emitted");
         assert_eq!(update.node_id, "node-a");
         assert!(matches!(update.state, NodeState::Failed { .. }));
+    }
+
+    #[tokio::test]
+    async fn send_to_worker_worker_death_emits_single_failed_state() {
+        let wrapper = test_wrapper_with_timeout(Some(std::time::Duration::from_secs(5)));
+        let (tx, rx) = tokio::sync::mpsc::channel::<WorkerRequest>(1);
+        // A dead worker: the receive side is gone, so the send fails
+        // immediately rather than timing out.
+        drop(rx);
+        let (state_tx, mut state_rx) = tokio::sync::mpsc::channel::<NodeStateUpdate>(4);
+
+        let (reply_tx, _reply_rx) = tokio::sync::oneshot::channel();
+        let result = wrapper
+            .send_to_worker(
+                WorkerCallContext {
+                    op: "flush",
+                    node: "node-a",
+                    state_tx: Some(&state_tx),
+                    telemetry: None,
+                    metric_labels: &wrapper.state.labels_flush,
+                },
+                &tx,
+                WorkerRequest::Flush { reply: reply_tx },
+            )
+            .await;
+
+        assert!(result.is_err(), "send should fail when the worker is dead");
+        let update = state_rx.recv().await.expect("failed state should be emitted");
+        assert_eq!(update.node_id, "node-a");
+        assert!(matches!(update.state, NodeState::Failed { .. }));
+        assert!(
+            state_rx.try_recv().is_err(),
+            "exactly one Failed update should be emitted on worker death"
+        );
+    }
+
+    #[tokio::test]
+    async fn await_reply_worker_death_emits_single_failed_state() {
+        let wrapper = test_wrapper_with_timeout(Some(std::time::Duration::from_secs(5)));
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel::<()>();
+        // A worker that died without replying: dropping the sender closes the
+        // reply channel, which must surface as a Failed update rather than a
+        // silent error that leaves the node stuck in its last good state.
+        drop(reply_tx);
+        let (state_tx, mut state_rx) = tokio::sync::mpsc::channel::<NodeStateUpdate>(4);
+
+        let result = wrapper
+            .await_reply(
+                "update_params",
+                "node-a",
+                reply_rx,
+                Some(&state_tx),
+                None,
+                &wrapper.state.labels_update_params,
+            )
+            .await;
+
+        assert!(result.is_err(), "reply should fail when the worker is dead");
+        let update = state_rx.recv().await.expect("failed state should be emitted");
+        assert_eq!(update.node_id, "node-a");
+        assert!(matches!(update.state, NodeState::Failed { .. }));
+        assert!(
+            state_rx.try_recv().is_err(),
+            "exactly one Failed update should be emitted on worker death"
+        );
+    }
+
+    #[tokio::test]
+    async fn await_reply_worker_death_emits_failed_state_with_none_timeout() {
+        let wrapper = test_wrapper_with_timeout(None);
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel::<()>();
+        drop(reply_tx);
+        let (state_tx, mut state_rx) = tokio::sync::mpsc::channel::<NodeStateUpdate>(4);
+
+        let result = wrapper
+            .await_reply(
+                "update_params",
+                "node-a",
+                reply_rx,
+                Some(&state_tx),
+                None,
+                &wrapper.state.labels_update_params,
+            )
+            .await;
+
+        assert!(result.is_err(), "reply should fail when the worker is dead");
+        let update = state_rx.recv().await.expect("failed state should be emitted");
+        assert!(matches!(update.state, NodeState::Failed { .. }));
+        assert!(
+            state_rx.try_recv().is_err(),
+            "exactly one Failed update should be emitted on worker death"
+        );
     }
 
     #[tokio::test]
