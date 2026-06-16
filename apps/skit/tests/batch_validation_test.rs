@@ -451,9 +451,11 @@ async fn test_validate_batch_rejects_duplicate_node_id() {
     match payload {
         ResponsePayload::ValidationResult { errors } => {
             assert!(!errors.is_empty(), "Expected at least one error for duplicate node_id");
+            // 'dup1' exists only within the batch, so the message must say it
+            // is added more than once rather than falsely claim it pre-exists.
             assert!(
-                errors.iter().any(|e| e.message.contains("already exists")),
-                "Expected duplicate node_id error, got: {:?}",
+                errors.iter().any(|e| e.message.contains("added more than once in this batch")),
+                "Expected intra-batch duplicate node_id error, got: {:?}",
                 errors.iter().map(|e| &e.message).collect::<Vec<_>>()
             );
         },

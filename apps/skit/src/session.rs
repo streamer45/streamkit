@@ -20,6 +20,22 @@ use time::format_description::well_known::Rfc3339;
 use tokio::sync::{broadcast, Mutex};
 use uuid::Uuid;
 
+/// Label for an engine node lingering in a terminal state that the actor's
+/// duplicate-id guard treats as still occupied, or `None` if the state is
+/// not terminal.
+///
+/// The engine keeps `Failed`/`Stopped` nodes in `node_states` until an
+/// explicit `RemoveNode` and silently swallows any re-add of such an id, so
+/// both the single-node and batch add paths must consult this before
+/// reserving an id.  Shared between them so the labelling can't drift.
+pub const fn terminal_node_label(state: &NodeState) -> Option<&'static str> {
+    match state {
+        NodeState::Failed { .. } => Some("failed"),
+        NodeState::Stopped { .. } => Some("stopped"),
+        _ => None,
+    }
+}
+
 /// Convert SystemTime to ISO 8601 / RFC3339 format string using the time crate
 pub fn system_time_to_rfc3339(time: SystemTime) -> String {
     let offset_datetime = time::OffsetDateTime::from(time);
@@ -216,14 +232,6 @@ impl Session {
     /// already live or already in flight.
     #[allow(clippy::significant_drop_tightening)] // joint lock is the point
     pub async fn reserve_node_id(&self, node_id: &str) -> Result<(), String> {
-        // Snapshot the engine's terminal-node residue before taking the
-        // locks: the engine retains `Failed`/`Stopped` nodes in
-        // `node_states` until an explicit `RemoveNode`, and its duplicate
-        // guard would silently swallow a re-add of such an id (the session
-        // already dropped it from `pipeline.nodes`/`creating_nodes` on the
-        // failing transition).  Terminal residue is stable until removed,
-        // so a pre-lock snapshot is sound.
-        let engine_states = self.get_node_states().await.unwrap_or_default();
         let pipeline = self.pipeline.lock().await;
         if pipeline.nodes.contains_key(node_id) {
             return Err(format!("Node '{node_id}' already exists in the pipeline"));
@@ -232,13 +240,23 @@ impl Session {
         if creating.contains(node_id) {
             return Err(format!("Node '{node_id}' is already being added"));
         }
-        if let Some(state @ (NodeState::Failed { .. } | NodeState::Stopped { .. })) =
-            engine_states.get(node_id)
-        {
-            let label = match state {
-                NodeState::Stopped { .. } => "stopped",
-                _ => "failed",
-            };
+        // Consult the engine's terminal-node residue while holding the joint
+        // lock.  The engine retains `Failed`/`Stopped` nodes in `node_states`
+        // until an explicit `RemoveNode` and silently swallows a re-add of
+        // such an id (the session dropped it from `pipeline.nodes`/
+        // `creating_nodes` on the failing transition).  Querying *inside* the
+        // lock — rather than from a pre-lock snapshot — closes the window
+        // where a concurrent `Creating`→`Failed` transition lands between the
+        // snapshot and the reservation: `broadcast_state_update` writes
+        // `node_states` before sending the state update that drains
+        // `creating_nodes`, and no other creation for this id can be in flight
+        // while we hold `creating_nodes`, so the engine view is authoritative
+        // for this id.  Fail closed if the engine can't be queried.
+        let engine_states = self
+            .get_node_states()
+            .await
+            .map_err(|e| format!("Cannot verify availability of node '{node_id}': {e}"))?;
+        if let Some(label) = engine_states.get(node_id).and_then(terminal_node_label) {
             return Err(format!(
                 "Node '{node_id}' is still present in the engine in a {label} state; \
                  remove it before re-adding"
