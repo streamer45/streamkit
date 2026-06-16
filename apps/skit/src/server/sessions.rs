@@ -858,13 +858,13 @@ mod sessions_batch_tests {
     /// `apply_batch_operations`.  This is the unit-level analogue of the
     /// integration tests' `wait_for_node_added`.
     async fn wait_for_node(session: &Session, node_id: &str) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             if session.pipeline.lock().await.nodes.contains_key(node_id) {
                 return;
             }
             assert!(
-                std::time::Instant::now() < deadline,
+                tokio::time::Instant::now() < deadline,
                 "node '{node_id}' was never confirmed into pipeline.nodes",
             );
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
