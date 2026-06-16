@@ -168,6 +168,13 @@ impl EncoderNodeRunner for SvtAv1EncoderNode {
     const PACKETS_COUNTER_NAME: &'static str = "svt_av1_encoder_packets_processed";
     const DURATION_HISTOGRAM_NAME: &'static str = "svt_av1_send_duration";
 
+    // Catch-all bound for the input-close flush: it bounds the *whole* codec
+    // task (including a `send_eos` that blocks on a full input FIFO), which the
+    // per-join bound below cannot reach because it runs after `send_eos`. Same
+    // budget, single source of truth.
+    const EOS_FLUSH_IDLE_TIMEOUT: Option<std::time::Duration> =
+        Some(Self::RECEIVE_THREAD_JOIN_TIMEOUT);
+
     fn spawn_codec_task(
         self,
         mut encode_rx: mpsc::Receiver<(VideoFrame, Option<PacketMetadata>)>,
@@ -261,9 +268,19 @@ impl EncoderNodeRunner for SvtAv1EncoderNode {
                 }
             }
 
-            // Input channel closed — flush the encoder.
+            // Input channel closed — flush the encoder. This runs concurrently
+            // with `drain_codec_results`, so the join stays *unbounded*: the
+            // EOS_FLUSH_IDLE_TIMEOUT watchdog there bounds the whole flush
+            // (including a `send_eos` that blocks on a full input FIFO) by
+            // abandoning this task, which the per-join bound cannot reach.
             if let Some(enc) = encoder.take() {
-                Self::flush_and_join(enc, recv_thread.take());
+                send_eos(enc.handle);
+                if let Some(rt) = recv_thread.take() {
+                    let _ = rt.handle.join();
+                }
+                // The receive thread has exited and no longer touches the
+                // handle, so Drop (deinit + deinit_handle) is safe.
+                drop(enc);
             }
         })
     }
@@ -308,9 +325,12 @@ impl ReceiveThread {
 }
 
 impl SvtAv1EncoderNode {
-    /// Budget for every EOS flush teardown — the single deadline for the
-    /// blocking two-thread FFI flush, whether it runs on a mid-stream
-    /// dimension change, on shutdown, or on input close.
+    /// Deadline for a blocking receive-thread flush. Bounds the *in-task*
+    /// flushes — the mid-stream dimension change and the downstream-close
+    /// shutdown — which run while no drain is active, so the
+    /// `EOS_FLUSH_IDLE_TIMEOUT` watchdog can't reach them (#540). The
+    /// input-close flush is bounded by that watchdog instead; both share this
+    /// value via `EOS_FLUSH_IDLE_TIMEOUT`.
     const RECEIVE_THREAD_JOIN_TIMEOUT: Duration = Duration::from_secs(30);
 
     /// Flush `encoder` (send EOS) and wait for its receive thread to drain,
@@ -319,8 +339,9 @@ impl SvtAv1EncoderNode {
     /// SVT-AV1 flushes through a blocking two-thread FFI boundary
     /// (`send_picture` + `get_packet`) that, under rare scheduling, can
     /// deadlock inside the library (the hang #537 first hit on the input-close
-    /// flush). This is the one bound for all three flush sites, so the codec
-    /// task always finalizes instead of hanging to the request timeout.
+    /// flush). The in-task flushes run while no drain is active, so this bound
+    /// is what lets the codec task finalize instead of hanging to the request
+    /// timeout.
     ///
     /// A healthy flush drains in well under a second. If the receive thread is
     /// still wedged in `get_packet` after the budget it is abandoned, and the
@@ -329,10 +350,10 @@ impl SvtAv1EncoderNode {
     /// running `SvtAv1Encoder`'s `Drop` (`deinit` + `deinit_handle`) would free
     /// it underneath the live thread — a use-after-free. Leaking native
     /// resources is the deliberate, lesser evil (the tradeoff raised in #539);
-    /// the stall is logged at error level. A receive thread abandoned here
-    /// keeps its `result_tx` clone alive forever, so the post-input drain
-    /// closes its receiver once the codec task ends (see `drain_codec_results`)
-    /// rather than waiting on that sender.
+    /// the stall is logged at error level. An abandoned receive thread keeps
+    /// its `result_tx` clone alive forever; the later input-close drain closes
+    /// its receiver once the codec task ends (see `drain_codec_results`) so
+    /// that leaked sender can't stall it (#540).
     fn flush_and_join(encoder: SvtAv1Encoder, recv_thread: Option<ReceiveThread>) {
         send_eos(encoder.handle);
 

@@ -404,8 +404,9 @@ mod tests {
 
     /// Regression for #540: a receive thread wedged in a blocking native flush
     /// (never signals completion) must be abandoned once the budget elapses,
-    /// not joined forever. This is the bound for every SVT-AV1 EOS flush —
-    /// the mid-stream dimension change, shutdown, and input-close joins.
+    /// not joined forever. This bounds the SVT-AV1 in-task flushes (mid-stream
+    /// dimension change, shutdown) that the async EOS-flush watchdog can't
+    /// reach.
     #[test]
     fn bounded_thread_join_abandons_wedged_worker() {
         let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
