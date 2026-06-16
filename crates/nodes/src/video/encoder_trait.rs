@@ -166,10 +166,10 @@ pub trait EncoderNodeRunner: Send + 'static {
 
     /// Idle budget for the post-input-close flush. When set, the drain
     /// abandons the blocking codec task if it stops delivering packets for
-    /// this long, rather than waiting forever. Only needed by encoders whose
-    /// flush goes through a blocking FFI boundary that can deadlock (SVT-AV1).
-    /// `None` (the default) keeps the unbounded wait used by every other
-    /// encoder, which flush promptly.
+    /// this long, rather than waiting forever. `None` (the default, used by
+    /// every encoder) waits for the codec task to finish; encoders whose
+    /// flush can deadlock in an FFI boundary bound it themselves (SVT-AV1
+    /// bounds each receive-thread join directly).
     const EOS_FLUSH_IDLE_TIMEOUT: Option<std::time::Duration> = None;
 
     /// Spawn the blocking codec task.

@@ -168,14 +168,6 @@ impl EncoderNodeRunner for SvtAv1EncoderNode {
     const PACKETS_COUNTER_NAME: &'static str = "svt_av1_encoder_packets_processed";
     const DURATION_HISTOGRAM_NAME: &'static str = "svt_av1_send_duration";
 
-    // SVT-AV1 flushes through a blocking two-thread FFI boundary
-    // (send_picture + get_packet). Under rare scheduling, the EOS flush can
-    // deadlock inside the library; bound it so the node finalizes instead of
-    // hanging until the request times out. A healthy flush completes in well
-    // under a second, so this generous idle budget never trips in practice.
-    const EOS_FLUSH_IDLE_TIMEOUT: Option<std::time::Duration> =
-        Some(std::time::Duration::from_secs(30));
-
     fn spawn_codec_task(
         self,
         mut encode_rx: mpsc::Receiver<(VideoFrame, Option<PacketMetadata>)>,
@@ -269,22 +261,9 @@ impl EncoderNodeRunner for SvtAv1EncoderNode {
                 }
             }
 
-            // Input channel closed — flush the encoder. Unlike the in-task
-            // flushes above, this join must stay *unbounded*: it runs while
-            // `drain_codec_results` drains concurrently, and that async idle
-            // watchdog (`EOS_FLUSH_IDLE_TIMEOUT`) is what bounds a wedged flush
-            // here by aborting this task. Bounding the join instead would let
-            // the task finish, which clears `codec_done` and disables the
-            // watchdog while the abandoned receive thread's sender keeps the
-            // result channel open — the drain would then hang forever.
+            // Input channel closed — flush the encoder.
             if let Some(enc) = encoder.take() {
-                send_eos(enc.handle);
-                if let Some(rt) = recv_thread.take() {
-                    let _ = rt.handle.join();
-                }
-                // Reaching here means the receive thread exited and no longer
-                // touches the handle, so Drop (deinit + deinit_handle) is safe.
-                drop(enc);
+                Self::flush_and_join(enc, recv_thread.take());
             }
         })
     }
@@ -329,23 +308,31 @@ impl ReceiveThread {
 }
 
 impl SvtAv1EncoderNode {
-    // The blocking two-thread FFI flush also runs *inside* the codec task on a
-    // mid-stream dimension change and on shutdown, where the async EOS-flush
-    // watchdog (`EOS_FLUSH_IDLE_TIMEOUT`) does not reach. Bound those joins too.
+    /// Budget for every EOS flush teardown — the single deadline for the
+    /// blocking two-thread FFI flush, whether it runs on a mid-stream
+    /// dimension change, on shutdown, or on input close.
     const RECEIVE_THREAD_JOIN_TIMEOUT: Duration = Duration::from_secs(30);
 
     /// Flush `encoder` (send EOS) and wait for its receive thread to drain,
     /// bounded by [`Self::RECEIVE_THREAD_JOIN_TIMEOUT`].
     ///
+    /// SVT-AV1 flushes through a blocking two-thread FFI boundary
+    /// (`send_picture` + `get_packet`) that, under rare scheduling, can
+    /// deadlock inside the library (the hang #537 first hit on the input-close
+    /// flush). This is the one bound for all three flush sites, so the codec
+    /// task always finalizes instead of hanging to the request timeout.
+    ///
     /// A healthy flush drains in well under a second. If the receive thread is
-    /// still wedged in the native `get_packet` flush after the budget (the same
-    /// rare deadlock #537 bounds for the input-close drain), it is abandoned
-    /// and the encoder handle is **intentionally leaked** via [`std::mem::forget`]:
-    /// the detached thread may still be blocked in `get_packet` on that handle,
-    /// so running `SvtAv1Encoder`'s `Drop` (`deinit` + `deinit_handle`) would
-    /// free it underneath the live thread — a use-after-free. Leaking native
-    /// resources is the deliberate, lesser evil (see #540/#539); the stall is
-    /// logged at error level.
+    /// still wedged in `get_packet` after the budget it is abandoned, and the
+    /// encoder handle is **intentionally leaked** via [`std::mem::forget`]: the
+    /// detached thread may still be blocked in `get_packet` on that handle, so
+    /// running `SvtAv1Encoder`'s `Drop` (`deinit` + `deinit_handle`) would free
+    /// it underneath the live thread — a use-after-free. Leaking native
+    /// resources is the deliberate, lesser evil (the tradeoff raised in #539);
+    /// the stall is logged at error level. A receive thread abandoned here
+    /// keeps its `result_tx` clone alive forever, so the post-input drain
+    /// closes its receiver once the codec task ends (see `drain_codec_results`)
+    /// rather than waiting on that sender.
     fn flush_and_join(encoder: SvtAv1Encoder, recv_thread: Option<ReceiveThread>) {
         send_eos(encoder.handle);
 

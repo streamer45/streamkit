@@ -14,13 +14,17 @@ use tokio::sync::mpsc;
 /// uses `blocking_send` on a bounded channel, so awaiting the task
 /// without draining would deadlock.
 ///
-/// `flush_idle_timeout` arms a safety net for codecs that flush through a
-/// blocking FFI boundary (e.g. SVT-AV1's two-thread design): if the codec
-/// stops delivering results *and* never finishes for that long after input
-/// close, the stuck blocking task is abandoned so the node can finalize
-/// instead of hanging forever. The timer resets on every result, so a
-/// healthy flush never trips it. `None` keeps the unbounded wait used by
-/// every other codec.
+/// When the codec task ends, the receiver is closed before continuing to
+/// drain: a codec that abandoned a blocking worker (e.g. SVT-AV1's wedged
+/// receive thread) leaves a live `result_tx` clone behind, and closing
+/// forwards any buffered results and then returns `None` instead of waiting
+/// on a sender that will never send again.
+///
+/// `flush_idle_timeout` is an optional safety net for a codec that can stall
+/// *before* its task ends: if no result arrives and the task never finishes
+/// for that long after input close, the stuck task is abandoned. The timer
+/// resets on every result, so a healthy flush never trips it. `None` waits
+/// for the task to finish (the bound every current codec relies on).
 // clippy::too_many_arguments: mirrors the shared codec-loop state handles;
 // grouping them into a struct would only obscure the single call site.
 #[allow(clippy::too_many_arguments)]
@@ -78,8 +82,13 @@ async fn drain_codec_results<T: Send + 'static, F: Fn(T) -> Packet + Send + Sync
                         break;
                     }
                 }
-                // Codec task finished — result_tx is dropped.
-                // Continue draining any buffered results until recv() returns None.
+                // The codec task has exited, but it may have abandoned a
+                // receive thread during a bounded flush (e.g. SVT-AV1's
+                // dimension-change teardown): that detached thread is wedged
+                // in a native call and never drops its `result_tx` clone, so
+                // `recv()` would otherwise block forever. Closing the receiver
+                // forwards any buffered results and then returns `None`,
+                // instead of waiting on a sender that will never send again.
             }
             () = idle_guard, if !codec_done => {
                 // The codec task is still running but has gone silent past the
@@ -94,6 +103,9 @@ async fn drain_codec_results<T: Send + 'static, F: Fn(T) -> Packet + Send + Sync
                 codec_task.abort();
                 break;
             }
+        }
+        if codec_done {
+            result_rx.close();
         }
     }
     tracing::debug!("{label} drain complete: forwarded {drained} result(s)");
@@ -348,19 +360,64 @@ mod tests {
         .expect("drain must return when the codec finishes and closes the channel");
     }
 
+    /// Regression for #540: an SVT-AV1 dimension change can abandon a wedged
+    /// receive thread, leaking its `result_tx` clone, and the *final* flush can
+    /// still complete cleanly. With no watchdog (`None`), the drain must finish
+    /// anyway — forwarding buffered results, then closing the receiver on codec
+    /// completion so the leaked sender can't keep `recv()` pending forever.
+    #[tokio::test]
+    async fn drain_returns_when_codec_finishes_despite_leaked_sender() {
+        let (mut ctx, mock_out, _state_rx) = create_test_context(HashMap::new(), 1);
+        let mut stats = NodeStatsTracker::new("test".to_string(), ctx.stats_tx.clone());
+        let counter = test_counter();
+
+        let (result_tx, mut result_rx) = mpsc::channel::<Result<Vec<u8>, String>>(8);
+        result_tx.send(Ok(vec![4, 2])).await.unwrap();
+        // The clone an abandoned receive thread would hold forever; the codec
+        // task finishes without it ever being dropped.
+        let _leaked = result_tx.clone();
+        drop(result_tx);
+
+        let codec_task = tokio::task::spawn(async {});
+
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            drain_codec_results(
+                &mut result_rx,
+                codec_task,
+                &mut ctx,
+                &counter,
+                &mut stats,
+                &to_binary,
+                "test",
+                None,
+            ),
+        )
+        .await
+        .expect("drain must return once the codec finishes, even with a leaked sender");
+
+        assert!(
+            matches!(mock_out.try_recv().await, Some((_, _, Packet::Binary { .. }))),
+            "buffered result must still be forwarded before the drain closes"
+        );
+    }
+
     /// Regression for #540: a receive thread wedged in a blocking native flush
     /// (never signals completion) must be abandoned once the budget elapses,
-    /// not joined forever. This is the synchronous counterpart to the async
-    /// EOS-flush watchdog above, and guards the SVT-AV1 dimension-change /
-    /// shutdown joins that `drain_codec_results` does not cover.
+    /// not joined forever. This is the bound for every SVT-AV1 EOS flush —
+    /// the mid-stream dimension change, shutdown, and input-close joins.
     #[test]
     fn bounded_thread_join_abandons_wedged_worker() {
         let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
         let handle = std::thread::spawn(move || {
-            // Never unparked — stands in for a thread wedged in a blocking
-            // native call that the join can't interrupt.
-            std::thread::park();
-            let _ = done_tx.send(());
+            // Stands in for a thread wedged in a blocking native call the join
+            // can't interrupt. `park()` can wake spuriously, so loop to stay
+            // parked deterministically; holding `done_tx` keeps `done_rx` from
+            // disconnecting, so the join can only end via the timeout.
+            let _done_tx = done_tx;
+            loop {
+                std::thread::park();
+            }
         });
 
         let start = std::time::Instant::now();
