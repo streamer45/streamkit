@@ -342,9 +342,7 @@ impl Session {
                 // (Ready/Running/Degraded) confirms the node is past
                 // creation.  The node-added forwarder also drains on
                 // success; the second remove is a no-op.
-                if !matches!(update.state, NodeState::Creating) {
-                    let was_in_flight =
-                        creating_nodes_for_state.lock().await.remove(&update.node_id);
+                if matches!(update.state, NodeState::Failed { .. }) {
                     // A confirmed-add batch records connections eagerly,
                     // before the engine confirms the endpoint nodes.  If an
                     // in-flight node fails creation it never enters
@@ -352,23 +350,35 @@ impl Session {
                     // for it — otherwise the snapshot keeps a connection to a
                     // node that does not exist.  Runtime failures of an
                     // already-confirmed node (not in flight) keep their edges.
-                    if was_in_flight && matches!(update.state, NodeState::Failed { .. }) {
-                        let pruned = {
-                            let mut pip = pipeline_for_state.lock().await;
+                    //
+                    // Hold the pipeline lock across the in-flight check and
+                    // the prune (lock order matches `reserve_node_id`:
+                    // pipeline, then creating_nodes) so a concurrent batch
+                    // reusing this id cannot insert fresh connections between
+                    // the check and the retain and have them wrongly pruned.
+                    let pruned = {
+                        let mut pip = pipeline_for_state.lock().await;
+                        let was_in_flight =
+                            creating_nodes_for_state.lock().await.remove(&update.node_id);
+                        if was_in_flight {
                             let before = pip.connections.len();
                             pip.connections.retain(|c| {
                                 c.from_node != update.node_id && c.to_node != update.node_id
                             });
                             before - pip.connections.len()
-                        };
-                        if pruned > 0 {
-                            tracing::debug!(
-                                node_id = %update.node_id,
-                                pruned,
-                                "pruned dangling connections for failed in-flight node"
-                            );
+                        } else {
+                            0
                         }
+                    };
+                    if pruned > 0 {
+                        tracing::debug!(
+                            node_id = %update.node_id,
+                            pruned,
+                            "pruned dangling connections for failed in-flight node"
+                        );
                     }
+                } else if !matches!(update.state, NodeState::Creating) {
+                    creating_nodes_for_state.lock().await.remove(&update.node_id);
                 }
                 let event = ApiEvent {
                     message_type: MessageType::Event,
