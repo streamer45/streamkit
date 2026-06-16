@@ -216,6 +216,14 @@ impl Session {
     /// already live or already in flight.
     #[allow(clippy::significant_drop_tightening)] // joint lock is the point
     pub async fn reserve_node_id(&self, node_id: &str) -> Result<(), String> {
+        // Snapshot the engine's terminal-node residue before taking the
+        // locks: the engine retains `Failed`/`Stopped` nodes in
+        // `node_states` until an explicit `RemoveNode`, and its duplicate
+        // guard would silently swallow a re-add of such an id (the session
+        // already dropped it from `pipeline.nodes`/`creating_nodes` on the
+        // failing transition).  Terminal residue is stable until removed,
+        // so a pre-lock snapshot is sound.
+        let engine_states = self.get_node_states().await.unwrap_or_default();
         let pipeline = self.pipeline.lock().await;
         if pipeline.nodes.contains_key(node_id) {
             return Err(format!("Node '{node_id}' already exists in the pipeline"));
@@ -223,6 +231,18 @@ impl Session {
         let mut creating = self.creating_nodes.lock().await;
         if creating.contains(node_id) {
             return Err(format!("Node '{node_id}' is already being added"));
+        }
+        if let Some(state @ (NodeState::Failed { .. } | NodeState::Stopped { .. })) =
+            engine_states.get(node_id)
+        {
+            let label = match state {
+                NodeState::Stopped { .. } => "stopped",
+                _ => "failed",
+            };
+            return Err(format!(
+                "Node '{node_id}' is still present in the engine in a {label} state; \
+                 remove it before re-adding"
+            ));
         }
         creating.insert(node_id.to_string());
         Ok(())

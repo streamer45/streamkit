@@ -18,6 +18,7 @@ use crate::state::AppState;
 use streamkit_api::yaml::{compile, UserPipeline};
 use streamkit_api::{Event as ApiEvent, EventPayload, MessageType, Pipeline};
 use streamkit_core::control::EngineControlMessage;
+use streamkit_core::state::NodeState;
 
 use super::preview;
 use super::validation::{check_file_path_security, is_synthetic_kind};
@@ -433,22 +434,100 @@ pub async fn create_dynamic_session(
 /// Returns a list of validation errors.  An empty list means all operations
 /// are valid.  Callers must perform session-level permission and ownership
 /// checks before calling this function.
+const fn terminal_state_label(state: &NodeState) -> &'static str {
+    match state {
+        NodeState::Failed { .. } => "failed",
+        NodeState::Stopped { .. } => "stopped",
+        _ => "terminal",
+    }
+}
+
+/// Engine nodes lingering in a terminal (`Failed`/`Stopped`) state, mapped
+/// to a human-readable label.
+///
+/// The engine keeps terminal nodes in `node_states` until an explicit
+/// `RemoveNode`, and its duplicate guard rejects any add for an id already
+/// present there — silently, with no event. On the failing transition the
+/// session drops such ids from both `pipeline.nodes` and `creating_nodes`,
+/// so they survive only in the engine; a re-add must consult the engine to
+/// avoid being silently swallowed.
+async fn engine_terminal_node_ids(
+    session: &crate::session::Session,
+) -> std::collections::HashMap<String, &'static str> {
+    session
+        .get_node_states()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|(id, state)| match state {
+            NodeState::Failed { .. } | NodeState::Stopped { .. } => {
+                Some((id.clone(), terminal_state_label(state)))
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+fn batch_conflict_message(
+    node_id: &str,
+    live_ids: &std::collections::HashSet<String>,
+    terminal_ids: &std::collections::HashMap<String, &'static str>,
+) -> String {
+    if !live_ids.contains(node_id) {
+        if let Some(label) = terminal_ids.get(node_id) {
+            return format!(
+                "Batch rejected: node '{node_id}' is still present in the engine in a \
+                 {label} state; remove it before re-adding"
+            );
+        }
+    }
+    format!("Batch rejected: node '{node_id}' already exists in the pipeline")
+}
+
+/// A node-id collision found while validating a batch, paired with a
+/// caller-ready explanation.
+pub(super) struct BatchIdConflict {
+    pub node_id: String,
+    pub message: String,
+}
+
+/// Compute the node-id collisions for a batch, consulting the live
+/// snapshot, the in-flight set, and the engine's terminal-node residue.
+/// Lock order matches `reserve_node_id` (pipeline, then creating_nodes);
+/// the engine snapshot is taken before the locks since terminal residue is
+/// stable until an explicit `RemoveNode`.
+#[allow(clippy::significant_drop_tightening)] // joint lock is the point
+pub(super) async fn batch_id_conflicts(
+    session: &crate::session::Session,
+    operations: &[streamkit_api::BatchOperation],
+) -> Vec<BatchIdConflict> {
+    let terminal_ids = engine_terminal_node_ids(session).await;
+    let (live_ids, duplicates) = {
+        let pipeline = session.pipeline.lock().await;
+        let creating = session.creating_nodes.lock().await;
+        let live_ids: std::collections::HashSet<String> =
+            pipeline.nodes.keys().chain(creating.iter()).cloned().collect();
+        let combined: std::collections::HashSet<String> =
+            live_ids.iter().cloned().chain(terminal_ids.keys().cloned()).collect();
+        (live_ids, batch_node_id_duplicates(combined, operations))
+    };
+    duplicates
+        .into_iter()
+        .map(|node_id| {
+            let message = batch_conflict_message(&node_id, &live_ids, &terminal_ids);
+            BatchIdConflict { node_id, message }
+        })
+        .collect()
+}
+
 /// Check batch operations for duplicate node IDs by simulating the
 /// Add/Remove sequence.  Returns the IDs of nodes that would collide.
+#[cfg(test)]
 pub(super) async fn check_batch_node_id_uniqueness(
     session: &crate::session::Session,
     operations: &[streamkit_api::BatchOperation],
 ) -> Vec<String> {
-    // Seed from both the live snapshot and the in-flight set: a node
-    // accepted by an earlier confirmed-add but not yet confirmed by the
-    // engine lives only in `creating_nodes`, and a second add for that id
-    // must still collide.  Lock order matches `reserve_node_id`.
-    let live_ids: std::collections::HashSet<String> = {
-        let pipeline = session.pipeline.lock().await;
-        let creating = session.creating_nodes.lock().await;
-        pipeline.nodes.keys().chain(creating.iter()).cloned().collect()
-    };
-    batch_node_id_duplicates(live_ids, operations)
+    batch_id_conflicts(session, operations).await.into_iter().map(|c| c.node_id).collect()
 }
 
 /// Simulate a batch's Add/Remove sequence over an initial set of live node
@@ -483,11 +562,11 @@ pub async fn validate_batch_operations(
 ) -> Vec<streamkit_api::ValidationError> {
     let mut errors: Vec<streamkit_api::ValidationError> = Vec::new();
 
-    for node_id in check_batch_node_id_uniqueness(session, operations).await {
+    for conflict in batch_id_conflicts(session, operations).await {
         errors.push(streamkit_api::ValidationError {
             error_type: streamkit_api::ValidationErrorType::Error,
-            message: format!("Batch rejected: node '{node_id}' already exists in the pipeline"),
-            node_id: Some(node_id),
+            message: conflict.message,
+            node_id: Some(conflict.node_id),
             connection_id: None,
         });
     }
@@ -527,6 +606,10 @@ pub async fn validate_batch_operations(
 /// that fails after validation leaves no orphan entry behind.  The reservation
 /// closes the dispatch→confirmation gap so a concurrent add of the same id is
 /// rejected instead of being silently dropped by the engine's duplicate guard.
+/// The uniqueness check also consults the engine's terminal-node residue
+/// (`Failed`/`Stopped` nodes it keeps in `node_states` until an explicit
+/// `RemoveNode`), so re-adding such an id is rejected with guidance to remove
+/// it first rather than being silently swallowed by that same guard.
 ///
 /// # Errors
 ///
@@ -551,6 +634,12 @@ pub async fn apply_batch_operations(
         }
     }
 
+    // Snapshot the engine's terminal-node residue before taking the locks:
+    // a `Failed`/`Stopped` node the engine still holds in `node_states`
+    // would silently swallow a re-add at its duplicate guard, since the
+    // session already dropped that id from both `pipeline.nodes` and
+    // `creating_nodes` on the failing transition.
+    let terminal_ids = engine_terminal_node_ids(session).await;
     let mut engine_operations = Vec::new();
     {
         // Hold both guards across the uniqueness check and the reservation
@@ -564,8 +653,10 @@ pub async fn apply_batch_operations(
 
         let live: std::collections::HashSet<String> =
             pipeline.nodes.keys().chain(creating.iter()).cloned().collect();
-        if let Some(node_id) = batch_node_id_duplicates(live, &operations).first() {
-            return Err(format!("Batch rejected: node '{node_id}' already exists in the pipeline"));
+        let combined: std::collections::HashSet<String> =
+            live.iter().cloned().chain(terminal_ids.keys().cloned()).collect();
+        if let Some(node_id) = batch_node_id_duplicates(combined, &operations).first() {
+            return Err(batch_conflict_message(node_id, &live, &terminal_ids));
         }
 
         for op in operations {
@@ -1311,6 +1402,110 @@ mod sessions_batch_tests {
             );
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    /// Poll the engine's `node_states` until `node_id` is terminal
+    /// (`Failed`/`Stopped`) or the deadline elapses.  The engine retains a
+    /// terminal node here until an explicit `RemoveNode`.
+    async fn wait_for_terminal(session: &Session, node_id: &str) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let states = session.get_node_states().await.unwrap_or_default();
+            if matches!(
+                states.get(node_id),
+                Some(NodeState::Failed { .. } | NodeState::Stopped { .. })
+            ) {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "node '{node_id}' never reached a terminal state",
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_batch_readd_of_failed_node_is_rejected() {
+        let (session, _rx) = fresh_session().await;
+
+        // First add fails engine construction (no factory for this kind),
+        // so 'ghost' survives only in the engine's node_states as Failed —
+        // dropped from pipeline.nodes and creating_nodes.
+        apply_batch_operations(
+            &session,
+            vec![add_op("ghost", "core::definitely_not_a_real_kind")],
+            &Permissions::admin(),
+            &SecurityConfig::default(),
+        )
+        .await
+        .expect("batch is accepted; ghost's creation is what fails");
+        wait_for_terminal(&session, "ghost").await;
+
+        // Re-adding the same id without removing it first must be rejected
+        // loudly, not silently swallowed by the engine's duplicate guard.
+        let err = apply_batch_operations(
+            &session,
+            vec![add_op("ghost", "core::passthrough")],
+            &Permissions::admin(),
+            &SecurityConfig::default(),
+        )
+        .await
+        .expect_err("re-adding a failed id must be rejected");
+        assert!(err.contains("remove it before re-adding"), "unexpected error: {err}");
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn apply_batch_remove_then_readd_of_failed_node_succeeds() {
+        let (session, _rx) = fresh_session().await;
+
+        apply_batch_operations(
+            &session,
+            vec![add_op("ghost", "core::definitely_not_a_real_kind")],
+            &Permissions::admin(),
+            &SecurityConfig::default(),
+        )
+        .await
+        .expect("batch is accepted; ghost's creation is what fails");
+        wait_for_terminal(&session, "ghost").await;
+
+        // RemoveNode clears the engine's terminal residue, so a same-batch
+        // remove-then-add of the id is accepted.
+        apply_batch_operations(
+            &session,
+            vec![remove_op("ghost"), add_op("ghost", "core::passthrough")],
+            &Permissions::admin(),
+            &SecurityConfig::default(),
+        )
+        .await
+        .expect("remove-then-readd of a failed id must be accepted");
+        wait_for_node(&session, "ghost").await;
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn reserve_node_id_rejects_readd_of_failed_node() {
+        let (session, _rx) = fresh_session().await;
+
+        apply_batch_operations(
+            &session,
+            vec![add_op("ghost", "core::definitely_not_a_real_kind")],
+            &Permissions::admin(),
+            &SecurityConfig::default(),
+        )
+        .await
+        .expect("batch is accepted; ghost's creation is what fails");
+        wait_for_terminal(&session, "ghost").await;
+
+        // The single-node WS reservation path consults the same engine
+        // residue as the batch path, for parity.
+        let err = session
+            .reserve_node_id("ghost")
+            .await
+            .expect_err("re-adding a failed id must be rejected");
+        assert!(err.contains("remove it before re-adding"), "unexpected error: {err}");
         let _ = session.shutdown_and_wait().await;
     }
 
