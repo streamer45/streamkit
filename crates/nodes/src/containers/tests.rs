@@ -1490,10 +1490,10 @@ async fn test_webm_mux_av1_video_only() {
     let found_v_av1 = webm_bytes.windows(v_av1_bytes.len()).any(|w| w == v_av1_bytes);
     assert!(found_v_av1, "WebM output does not contain V_AV1 codec ID");
 
-    // Verify content type includes "av1"
+    // Verify content type carries the AV1 codec string
     if let Packet::Binary { content_type, .. } = &output_packets[0] {
         let ct = content_type.as_ref().expect("content_type should be set");
-        assert_eq!(ct.as_ref(), "video/webm; codecs=\"av1\"");
+        assert_eq!(ct.as_ref(), "video/webm; codecs=\"av01.0.08M.08\"");
     }
 
     println!(
@@ -1505,7 +1505,7 @@ async fn test_webm_mux_av1_video_only() {
 
 /// Verify that AV1 codec detection works via `InputTypeResolved` in a dynamic
 /// pipeline (empty `input_types`).  The muxer should set `video_is_av1 = true`
-/// from the resolved type info, producing content_type `"video/webm; codecs=\"av1,opus\""`.
+/// from the resolved type info, producing content_type `"video/webm; codecs=\"av01.0.08M.08,opus\""`.
 #[cfg(feature = "av1")]
 #[tokio::test]
 async fn test_webm_mux_av1_via_input_type_resolved() {
@@ -1616,7 +1616,7 @@ async fn test_webm_mux_av1_via_input_type_resolved() {
         let ct = content_type.as_ref().expect("content_type should be set");
         assert_eq!(
             ct.as_ref(),
-            "video/webm; codecs=\"av1,opus\"",
+            "video/webm; codecs=\"av01.0.08M.08,opus\"",
             "AV1 codec detection via InputTypeResolved should produce av1,opus content type"
         );
     } else {
