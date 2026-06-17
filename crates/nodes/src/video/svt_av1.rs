@@ -305,6 +305,13 @@ impl ReceiveThread {
     }
 }
 
+// The codec loop's idle watchdog must outlast this flush bound, else a healthy
+// in-task flush could be abandoned before it finishes.
+const _: () = assert!(
+    crate::codec_utils::CODEC_IDLE_TIMEOUT.as_nanos()
+        > SvtAv1EncoderNode::RECEIVE_THREAD_JOIN_TIMEOUT.as_nanos()
+);
+
 impl SvtAv1EncoderNode {
     /// Deadline for a blocking encoder flush. The single bound for every
     /// SVT-AV1 flush site — mid-stream dimension change, downstream-close, and

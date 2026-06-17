@@ -22,8 +22,9 @@ use tokio::sync::mpsc;
 /// idle or slow input (whose channel drains to empty) from tripping it. Must
 /// stay larger than any in-task flush bound (SVT-AV1's
 /// `RECEIVE_THREAD_JOIN_TIMEOUT`) so a flush that recovers within its own
-/// budget is not pre-empted.
-const CODEC_IDLE_TIMEOUT: Duration = Duration::from_mins(1);
+/// budget is not pre-empted (enforced at compile time, see
+/// `SvtAv1EncoderNode::RECEIVE_THREAD_JOIN_TIMEOUT`).
+pub(crate) const CODEC_IDLE_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// Result of [`bounded_thread_join`].
 #[cfg(any(feature = "svt_av1", test))]
