@@ -436,16 +436,26 @@ struct MuxTracks {
 
 /// Builds the MIME content-type string based on which tracks are present.
 ///
-/// When `video_is_av1` is `true` the video codec string is `"av1"` instead
-/// of `"vp9"`.  This is needed for MSE consumers that initialise
-/// SourceBuffers from the MIME type.
+/// When `video_is_av1` is `true` the video codec string is `av01.0.08M.08`
+/// (the RFC 6381 form of [`AV1_CODEC_PRIVATE`]: profile 0, level idx 8, Main
+/// tier, 8-bit) instead of `"vp9"`. The bare `"av1"` token is rejected by
+/// `MediaSource.isTypeSupported`, which forces MSE consumers to fall back to
+/// buffering the whole response instead of progressive playback.
+///
+/// Like [`AV1_CODEC_PRIVATE`], this string assumes the profile/level/bit-depth
+/// the encoders actually emit (see the level-4.0 ceiling note there). A
+/// non-conforming AV1 stream (10-bit, non-Main, or >2048×1152) would be
+/// mis-advertised: MSE would accept the type but throw on `appendBuffer`,
+/// whereas before it fell back to native blob decode. No node produces such a
+/// stream today; if one is added, both this string and `AV1_CODEC_PRIVATE`
+/// must track the real parameters.
 ///
 const fn webm_content_type(has_audio: bool, has_video: bool, video_is_av1: bool) -> &'static str {
     match (has_audio, has_video, video_is_av1) {
         (true, true, false) => "video/webm; codecs=\"vp9,opus\"",
-        (true, true, true) => "video/webm; codecs=\"av1,opus\"",
+        (true, true, true) => "video/webm; codecs=\"av01.0.08M.08,opus\"",
         (false, true, false) => "video/webm; codecs=\"vp9\"",
-        (false, true, true) => "video/webm; codecs=\"av1\"",
+        (false, true, true) => "video/webm; codecs=\"av01.0.08M.08\"",
         (true, false, _) => "audio/webm; codecs=\"opus\"",
         // Shouldn't happen - at least one track is required - but provide a safe fallback.
         (false, false, _) => "video/webm",
@@ -1746,8 +1756,11 @@ mod tests {
         assert_eq!(webm_content_type(true, false, false), "audio/webm; codecs=\"opus\"");
         assert_eq!(webm_content_type(false, false, false), "video/webm");
         // AV1 (video_is_av1 = true)
-        assert_eq!(webm_content_type(true, true, true), "video/webm; codecs=\"av1,opus\"");
-        assert_eq!(webm_content_type(false, true, true), "video/webm; codecs=\"av1\"");
+        assert_eq!(
+            webm_content_type(true, true, true),
+            "video/webm; codecs=\"av01.0.08M.08,opus\""
+        );
+        assert_eq!(webm_content_type(false, true, true), "video/webm; codecs=\"av01.0.08M.08\"");
         assert_eq!(webm_content_type(true, false, true), "audio/webm; codecs=\"opus\"");
         assert_eq!(webm_content_type(false, false, true), "video/webm");
     }

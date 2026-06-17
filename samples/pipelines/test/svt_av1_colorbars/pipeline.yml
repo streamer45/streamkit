@@ -50,5 +50,5 @@ nodes:
   http_output:
     kind: streamkit::http_output
     params:
-      content_type: 'video/webm; codecs="av1"'
+      content_type: 'video/webm; codecs="av01.0.08M.08"'
     needs: pacer
