@@ -442,6 +442,14 @@ struct MuxTracks {
 /// `MediaSource.isTypeSupported`, which forces MSE consumers to fall back to
 /// buffering the whole response instead of progressive playback.
 ///
+/// Like [`AV1_CODEC_PRIVATE`], this string assumes the profile/level/bit-depth
+/// the encoders actually emit (see the level-4.0 ceiling note there). A
+/// non-conforming AV1 stream (10-bit, non-Main, or >2048×1152) would be
+/// mis-advertised: MSE would accept the type but throw on `appendBuffer`,
+/// whereas before it fell back to native blob decode. No node produces such a
+/// stream today; if one is added, both this string and `AV1_CODEC_PRIVATE`
+/// must track the real parameters.
+///
 const fn webm_content_type(has_audio: bool, has_video: bool, video_is_av1: bool) -> &'static str {
     match (has_audio, has_video, video_is_av1) {
         (true, true, false) => "video/webm; codecs=\"vp9,opus\"",

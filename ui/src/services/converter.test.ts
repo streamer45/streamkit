@@ -200,17 +200,13 @@ describe('converter service', () => {
       return codecs.every((c) => c === 'opus' || c === 'vp9' || /^av01\./.test(c));
     }
 
+    // Unlike mp4Response, the WebM path never clones the response, so clone() is
+    // intentionally omitted here.
     function webmResponse(contentType: string): Response {
-      const body = new ReadableStream({
-        start(controller) {
-          controller.enqueue(new Uint8Array([0x1a, 0x45, 0xdf, 0xa3]));
-          controller.close();
-        },
-      });
       return {
         ok: true,
         headers: new Headers({ 'Content-Type': contentType }),
-        body,
+        body: streamOf(new Uint8Array([0x1a, 0x45, 0xdf, 0xa3])),
         blob: vi.fn().mockResolvedValue(new Blob([], { type: contentType })),
       } as unknown as Response;
     }
