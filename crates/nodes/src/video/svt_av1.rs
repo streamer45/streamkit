@@ -35,7 +35,7 @@ use bytes::Bytes;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::ffi::CString;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use streamkit_core::types::{
     EncodedVideoFormat, PacketMetadata, PacketType, PixelFormat, RawVideoFormat, VideoCodec,
     VideoFrame,
@@ -45,6 +45,8 @@ use streamkit_core::{
     StreamKitError,
 };
 use tokio::sync::mpsc;
+
+use crate::codec_utils::{bounded_thread_join, ThreadJoin};
 
 use super::svt_av1_ffi::{
     self, EbBufferHeaderType, EbComponentType, EbSvtAv1EncConfiguration, EbSvtIOFormat,
@@ -166,14 +168,6 @@ impl EncoderNodeRunner for SvtAv1EncoderNode {
     const PACKETS_COUNTER_NAME: &'static str = "svt_av1_encoder_packets_processed";
     const DURATION_HISTOGRAM_NAME: &'static str = "svt_av1_send_duration";
 
-    // SVT-AV1 flushes through a blocking two-thread FFI boundary
-    // (send_picture + get_packet). Under rare scheduling, the EOS flush can
-    // deadlock inside the library; bound it so the node finalizes instead of
-    // hanging until the request times out. A healthy flush completes in well
-    // under a second, so this generous idle budget never trips in practice.
-    const EOS_FLUSH_IDLE_TIMEOUT: Option<std::time::Duration> =
-        Some(std::time::Duration::from_secs(30));
-
     fn spawn_codec_task(
         self,
         mut encode_rx: mpsc::Receiver<(VideoFrame, Option<PacketMetadata>)>,
@@ -193,7 +187,7 @@ impl EncoderNodeRunner for SvtAv1EncoderNode {
         tokio::task::spawn_blocking(move || {
             let mut encoder: Option<SvtAv1Encoder> = None;
             let mut current_dimensions: Option<(u32, u32)> = None;
-            let mut recv_thread: Option<std::thread::JoinHandle<()>> = None;
+            let mut recv_thread: Option<ReceiveThread> = None;
             // Monitor send_picture latency as a proxy for encoder saturation.
             // The actual encode happens asynchronously on SVT-AV1's internal
             // threads; send_picture blocks when the input FIFO is full, which
@@ -202,15 +196,10 @@ impl EncoderNodeRunner for SvtAv1EncoderNode {
 
             while let Some((frame, metadata)) = encode_rx.blocking_recv() {
                 if result_tx.is_closed() {
-                    // Properly shut down the receive thread before returning,
-                    // otherwise the encoder handle will be freed while the
-                    // receive thread is still using it (use-after-free).
+                    // Drain the receive thread before returning so the encoder
+                    // handle is not freed while it is still in use.
                     if let Some(enc) = encoder.take() {
-                        send_eos(enc.handle);
-                        if let Some(t) = recv_thread.take() {
-                            let _ = t.join();
-                        }
-                        drop(enc);
+                        Self::flush_and_join(enc, recv_thread.take());
                     }
                     return;
                 }
@@ -226,26 +215,18 @@ impl EncoderNodeRunner for SvtAv1EncoderNode {
 
                 let frame_dimensions = (frame.width, frame.height);
                 if current_dimensions != Some(frame_dimensions) {
-                    // Stop old receive thread + flush old encoder.
+                    // Flush + stop the old receive thread before re-creating the
+                    // encoder at the new resolution.
                     if let Some(old_encoder) = encoder.take() {
-                        // Send EOS to the old encoder so the receive thread
-                        // sees the EOS-flagged packet and exits.
-                        send_eos(old_encoder.handle);
-                        if let Some(t) = recv_thread.take() {
-                            let _ = t.join();
-                        }
-                        // Drop old encoder (calls deinit + deinit_handle).
-                        drop(old_encoder);
+                        Self::flush_and_join(old_encoder, recv_thread.take());
                     }
 
                     match SvtAv1Encoder::new(frame.width, frame.height, &encoder_config) {
                         Ok(new_encoder) => {
-                            // Start a new receive thread for this encoder.
-                            let sendable_handle = SendableHandle(new_encoder.handle);
-                            let recv_result_tx = result_tx.clone();
-                            recv_thread = Some(std::thread::spawn(move || {
-                                receive_loop(sendable_handle, &recv_result_tx);
-                            }));
+                            recv_thread = Some(ReceiveThread::spawn(
+                                SendableHandle(new_encoder.handle),
+                                result_tx.clone(),
+                            ));
                             encoder = Some(new_encoder);
                             current_dimensions = Some(frame_dimensions);
                         },
@@ -280,14 +261,10 @@ impl EncoderNodeRunner for SvtAv1EncoderNode {
                 }
             }
 
-            // Input channel closed — flush the encoder.
+            // Input channel closed — flush the encoder, bounded like every
+            // other flush site so a wedged native flush can't hang the task.
             if let Some(enc) = encoder.take() {
-                send_eos(enc.handle);
-                if let Some(t) = recv_thread.take() {
-                    let _ = t.join();
-                }
-                // Drop encoder (calls deinit + deinit_handle).
-                drop(enc);
+                Self::flush_and_join(enc, recv_thread.take());
             }
         })
     }
@@ -309,6 +286,90 @@ struct SendableHandle(*mut EbComponentType);
 // `send_picture` / `get_packet` from different threads is the intended
 // usage pattern (see `SvtAv1EncApp`).
 unsafe impl Send for SendableHandle {}
+
+/// The OS thread that drains encoded packets out of the encoder via
+/// `get_packet`. Owned (and joined) by the flush helper thread.
+struct ReceiveThread {
+    handle: std::thread::JoinHandle<()>,
+}
+
+impl ReceiveThread {
+    fn spawn(
+        handle: SendableHandle,
+        result_tx: mpsc::Sender<Result<EncodedPacket, String>>,
+    ) -> Self {
+        let join_handle = std::thread::spawn(move || {
+            receive_loop(handle, &result_tx);
+        });
+        Self { handle: join_handle }
+    }
+}
+
+// The codec loop's idle watchdog must outlast this flush bound, else a healthy
+// in-task flush could be abandoned before it finishes.
+const _: () = assert!(
+    crate::codec_utils::CODEC_IDLE_TIMEOUT.as_nanos()
+        > SvtAv1EncoderNode::RECEIVE_THREAD_JOIN_TIMEOUT.as_nanos()
+);
+
+impl SvtAv1EncoderNode {
+    /// Deadline for a blocking encoder flush. The single bound for every
+    /// SVT-AV1 flush site — mid-stream dimension change, downstream-close, and
+    /// input-close (#540).
+    const RECEIVE_THREAD_JOIN_TIMEOUT: Duration = Duration::from_secs(30);
+
+    /// Flush `encoder` (send EOS), drain its receive thread, and drop the
+    /// encoder — the whole sequence bounded by
+    /// [`Self::RECEIVE_THREAD_JOIN_TIMEOUT`].
+    ///
+    /// SVT-AV1 flushes through a blocking two-thread FFI boundary
+    /// (`send_picture` + `get_packet`) that, under rare scheduling, can
+    /// deadlock inside the library (#537). *Both* halves can wedge — `send_eos`
+    /// on a full input FIFO and `get_packet` on the receive thread — so the
+    /// entire flush runs on a helper thread that this call joins with a bound.
+    /// This finalizes a *flush* wedge cleanly within the budget rather than
+    /// hanging to the request timeout (#540); bounding only the
+    /// receive-thread join would leave a wedged `send_eos` unguarded. A
+    /// *mid-stream* wedge (the encoder stops consuming before it ever reaches
+    /// the flush) is caught separately by the codec loop's idle watchdog (see
+    /// `codec_forward_loop`).
+    ///
+    /// A healthy flush drains in well under a second. If the helper thread is
+    /// still wedged after the budget it is abandoned (its `JoinHandle` dropped,
+    /// detaching it). Because that thread **owns** the encoder and its receive
+    /// thread, abandoning it leaks both: the encoder handle is never freed, so
+    /// the still-running native calls cannot hit a use-after-free (running
+    /// `Drop`'s `deinit` + `deinit_handle` would). Leaking native resources is
+    /// the deliberate, lesser evil (the tradeoff raised in #539); the stall is
+    /// logged at error level. An abandoned receive thread also keeps its
+    /// `result_tx` clone alive forever; the codec loop closes its receiver once
+    /// the codec task ends (see `codec_forward_loop`) so that leaked sender
+    /// can't stall it.
+    fn flush_and_join(encoder: SvtAv1Encoder, recv_thread: Option<ReceiveThread>) {
+        let (done_tx, done) = std::sync::mpsc::channel::<()>();
+        let flush = std::thread::spawn(move || {
+            send_eos(encoder.handle);
+            if let Some(rt) = recv_thread {
+                let _ = rt.handle.join();
+            }
+            // The receive thread has exited and no longer touches the handle,
+            // so dropping the encoder (deinit + deinit_handle) is safe.
+            drop(encoder);
+            let _ = done_tx.send(());
+        });
+
+        if bounded_thread_join(&done, flush, Self::RECEIVE_THREAD_JOIN_TIMEOUT)
+            == ThreadJoin::Abandoned
+        {
+            tracing::error!(
+                "SVT-AV1 EOS flush did not complete within {:?}; abandoning the flush \
+                 and leaking the encoder handle to avoid a use-after-free \
+                 (likely native encoder deadlock)",
+                Self::RECEIVE_THREAD_JOIN_TIMEOUT
+            );
+        }
+    }
+}
 
 // Receive loop (runs on its own OS thread)
 /// Blocking receive loop: calls `svt_av1_enc_get_packet` in a loop until
@@ -815,6 +876,7 @@ mod tests {
             crf: 35,
             parallelism: 1,
             low_latency: true,
+            fps: 30,
         };
         let encoder = SvtAv1EncoderNode::new(encoder_config);
 
@@ -874,6 +936,7 @@ mod tests {
             crf: 35,
             parallelism: 1,
             low_latency: true,
+            fps: 30,
         });
 
         let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
@@ -916,6 +979,7 @@ mod tests {
             crf: 35,
             parallelism: 1,
             low_latency: true,
+            fps: 30,
         });
         let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
 
@@ -941,6 +1005,76 @@ mod tests {
         assert!(
             !encoded_packets.is_empty(),
             "SVT-AV1 encoder produced no packets for {FRAME_COUNT} input frames"
+        );
+    }
+
+    /// Regression for #540: a mid-stream resolution change triggers an in-task
+    /// flush + receive-thread teardown of the old encoder. This drives that
+    /// path through the real encoder and asserts the node finalizes (rather
+    /// than hanging) and keeps producing packets across the change.
+    #[tokio::test]
+    async fn test_svt_av1_encode_dimension_change() {
+        let (enc_input_tx, enc_input_rx) = mpsc::channel(16);
+        let mut enc_inputs = HashMap::new();
+        enc_inputs.insert("in".to_string(), enc_input_rx);
+
+        let (enc_context, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 16);
+        let encoder = SvtAv1EncoderNode::new(SvtAv1EncoderConfig {
+            keyframe_interval: 1,
+            bitrate_kbps: 0,
+            preset: 12,
+            crf: 35,
+            parallelism: 1,
+            low_latency: true,
+            fps: 30,
+        });
+        let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
+
+        assert_state_initializing(&mut enc_state_rx).await;
+        assert_state_running(&mut enc_state_rx).await;
+
+        // Two frames at 64x64, then two at 128x128 to force a mid-stream
+        // re-create (and the old encoder's flush/join), then back to 64x64.
+        let dims = [(64, 64), (64, 64), (128, 128), (128, 128), (64, 64)];
+        for (index, (width, height)) in dims.into_iter().enumerate() {
+            let mut frame = create_test_video_frame(width, height, PixelFormat::Nv12, 16);
+            frame.metadata = Some(PacketMetadata {
+                timestamp_us: Some(33_333 * index as u64),
+                duration_us: Some(33_333),
+                sequence: Some(index as u64),
+                keyframe: Some(true),
+            });
+            enc_input_tx.send(Packet::Video(frame)).await.unwrap();
+        }
+        drop(enc_input_tx);
+
+        assert_state_stopped(&mut enc_state_rx).await;
+        enc_handle.await.unwrap().unwrap();
+
+        let encoded_packets = enc_sender.get_packets_for_pin("out").await;
+        let output_timestamps: Vec<u64> = encoded_packets
+            .iter()
+            .filter_map(|p| match p {
+                Packet::Binary { metadata, .. } => metadata.as_ref().and_then(|m| m.timestamp_us),
+                _ => None,
+            })
+            .collect();
+
+        // The encoder preserves each input frame's pts, so output timestamps
+        // identify which segment produced them. Asserting only `!is_empty()`
+        // would pass on the first (pre-change) encoder's packets alone — the
+        // exact #540 regression. Require output from the post-change segment
+        // and from the final segment after the second change.
+        let first_change_ts = 33_333 * 2;
+        let final_segment_ts = 33_333 * 4;
+        assert!(
+            output_timestamps.iter().any(|&ts| ts >= first_change_ts),
+            "no packets after the mid-stream dimension change; got {output_timestamps:?}"
+        );
+        assert!(
+            output_timestamps.iter().any(|&ts| ts >= final_segment_ts),
+            "no packets from the final segment after the second dimension change; \
+             got {output_timestamps:?}"
         );
     }
 }

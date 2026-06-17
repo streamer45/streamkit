@@ -332,7 +332,6 @@ impl ProcessorNode for Av1DecoderNode {
             &mut stats_tracker,
             Packet::Video,
             "Av1DecoderNode",
-            None,
         )
         .await;
 
