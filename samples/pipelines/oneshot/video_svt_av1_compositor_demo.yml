@@ -123,5 +123,5 @@ nodes:
       # time (resolved at runtime from the first video packet).  The oneshot
       # backward walk would otherwise set the HTTP response to "video/webm;
       # codecs="vp9,opus"" which is incorrect for AV1 output.
-      content_type: 'video/webm; codecs="av1"'
+      content_type: 'video/webm; codecs="av01.0.08M.08"'
     needs: pacer

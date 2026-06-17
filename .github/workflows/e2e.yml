@@ -79,6 +79,13 @@ jobs:
       - name: Build skit
         run: cargo build -p streamkit-server --bin skit --features "svt_av1 dav1d_static"
 
+      # The `svt_av1` module is feature-gated and off by default, so the
+      # workspace `cargo test` in skit.yml never compiles or runs its unit
+      # tests (e.g. the #540 dimension-change flush regression). Run them here
+      # where SVT-AV1 is already installed.
+      - name: Run SVT-AV1 node tests
+        run: cargo test --locked -p streamkit-nodes --features svt_av1
+
       - name: Start skit server
         run: |
           SK_SERVER__ADDRESS=127.0.0.1:4545 ./target/debug/skit &

@@ -279,7 +279,6 @@ impl ProcessorNode for Vp9DecoderNode {
             &mut stats_tracker,
             Packet::Video,
             "Vp9DecoderNode",
-            None,
         )
         .await;
 

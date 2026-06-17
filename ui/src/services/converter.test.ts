@@ -187,6 +187,56 @@ describe('converter service', () => {
     });
   });
 
+  // Regression for the AV1 WebM oneshot streaming bug: the muxer used to
+  // advertise the bare `codecs="av1"` token, which real browsers reject via
+  // MediaSource.isTypeSupported, silently demoting progressive MSE playback to
+  // full-response blob buffering. These tests emulate Chrome's acceptance (bare
+  // `av1` rejected, RFC 6381 `av01.P.LLT.DD` accepted) and pin the routing.
+  describe('convertFile - WebM AV1 codec-string routing', () => {
+    // Mirrors Chrome: only `opus`, `vp9`, and full `av01.*` codec tokens are
+    // valid; the bare `av1` token is not.
+    function browserIsTypeSupported(type: string): boolean {
+      const codecs = type.match(/codecs="([^"]*)"/)?.[1]?.split(',') ?? [];
+      return codecs.every((c) => c === 'opus' || c === 'vp9' || /^av01\./.test(c));
+    }
+
+    // Unlike mp4Response, the WebM path never clones the response, so clone() is
+    // intentionally omitted here.
+    function webmResponse(contentType: string): Response {
+      return {
+        ok: true,
+        headers: new Headers({ 'Content-Type': contentType }),
+        body: streamOf(new Uint8Array([0x1a, 0x45, 0xdf, 0xa3])),
+        blob: vi.fn().mockResolvedValue(new Blob([], { type: contentType })),
+      } as unknown as Response;
+    }
+
+    it('uses MSE streaming for a valid av01 WebM codec string', async () => {
+      vi.stubGlobal('MediaSource', { isTypeSupported: browserIsTypeSupported });
+      (fetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+        webmResponse('video/webm; codecs="av01.0.08M.08"')
+      );
+
+      const result = await convertFile(MOCK_YAML, MOCK_UPLOAD, 'playback');
+
+      expect(result.useStreaming).toBe(true);
+      expect(result.responseStream).toBeDefined();
+    });
+
+    it('falls back to blob playback for the invalid bare "av1" codec string', async () => {
+      vi.stubGlobal('MediaSource', { isTypeSupported: browserIsTypeSupported });
+      global.URL.createObjectURL = vi.fn().mockReturnValue('blob:mock-url');
+      (fetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+        webmResponse('video/webm; codecs="av1"')
+      );
+
+      const result = await convertFile(MOCK_YAML, MOCK_UPLOAD, 'playback');
+
+      expect(result.useStreaming).toBe(false);
+      expect(result.responseStream).toBeUndefined();
+    });
+  });
+
   describe('convertFile - Blob Playback (Fallback)', () => {
     it('should fall back to blob playback for non-streaming formats', async () => {
       const mockBlob = new Blob(['audio data'], { type: 'audio/ogg' });
