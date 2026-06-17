@@ -1,0 +1,11 @@
+{
+  ".tar": "w",
+  ".tgz": "w:gz",
+  ".tbz2": "w:bz2",
+  ".txz": "w:xz",
+  ".tzst": "w:zst",
+  ".tar.gz": "w:gz",
+  ".tar.bz2": "w:bz2",
+  ".tar.xz": "w:xz",
+  ".tar.zst": "w:zst"
+}

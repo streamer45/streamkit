@@ -1904,54 +1904,41 @@ enum ModelArchiveKind {
     TarZst,
 }
 
+/// Single-token archive extensions (e.g. `.tgz`) keyed by their trailing extension.
+const SINGLE_ARCHIVE_EXTENSIONS: &[(&str, ModelArchiveKind)] = &[
+    ("tar", ModelArchiveKind::Tar),
+    ("tgz", ModelArchiveKind::TarGz),
+    ("tbz2", ModelArchiveKind::TarBz2),
+    ("txz", ModelArchiveKind::TarXz),
+    ("tzst", ModelArchiveKind::TarZst),
+];
+
+/// Compression extensions that form an archive only on top of a `.tar` stem
+/// (e.g. `.tar.gz`), keyed by the trailing compression extension.
+const TAR_COMPRESSION_EXTENSIONS: &[(&str, ModelArchiveKind)] = &[
+    ("gz", ModelArchiveKind::TarGz),
+    ("bz2", ModelArchiveKind::TarBz2),
+    ("xz", ModelArchiveKind::TarXz),
+    ("zst", ModelArchiveKind::TarZst),
+];
+
 fn model_archive_kind(path: &Path) -> Option<ModelArchiveKind> {
     let ext = path.extension()?.to_str()?;
-    if ext.eq_ignore_ascii_case("tar") {
-        return Some(ModelArchiveKind::Tar);
-    }
-    if ext.eq_ignore_ascii_case("tgz") {
-        return Some(ModelArchiveKind::TarGz);
-    }
-    if ext.eq_ignore_ascii_case("tbz2") {
-        return Some(ModelArchiveKind::TarBz2);
-    }
-    if ext.eq_ignore_ascii_case("txz") {
-        return Some(ModelArchiveKind::TarXz);
-    }
-    if ext.eq_ignore_ascii_case("tzst") {
-        return Some(ModelArchiveKind::TarZst);
-    }
-    if ext.eq_ignore_ascii_case("gz")
-        && path
-            .file_stem()
-            .and_then(|stem| Path::new(stem).extension())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("tar"))
+    if let Some((_, kind)) =
+        SINGLE_ARCHIVE_EXTENSIONS.iter().find(|(token, _)| ext.eq_ignore_ascii_case(token))
     {
-        return Some(ModelArchiveKind::TarGz);
+        return Some(*kind);
     }
-    if ext.eq_ignore_ascii_case("bz2")
-        && path
-            .file_stem()
-            .and_then(|stem| Path::new(stem).extension())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("tar"))
-    {
-        return Some(ModelArchiveKind::TarBz2);
-    }
-    if ext.eq_ignore_ascii_case("xz")
-        && path
-            .file_stem()
-            .and_then(|stem| Path::new(stem).extension())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("tar"))
-    {
-        return Some(ModelArchiveKind::TarXz);
-    }
-    if ext.eq_ignore_ascii_case("zst")
-        && path
-            .file_stem()
-            .and_then(|stem| Path::new(stem).extension())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("tar"))
-    {
-        return Some(ModelArchiveKind::TarZst);
+    let stem_is_tar = path
+        .file_stem()
+        .and_then(|stem| Path::new(stem).extension())
+        .is_some_and(|stem_ext| stem_ext.eq_ignore_ascii_case("tar"));
+    if stem_is_tar {
+        if let Some((_, kind)) =
+            TAR_COMPRESSION_EXTENSIONS.iter().find(|(token, _)| ext.eq_ignore_ascii_case(token))
+        {
+            return Some(*kind);
+        }
     }
     None
 }
@@ -2892,6 +2879,43 @@ mod tests {
         for (name, expected) in cases {
             assert_eq!(model_archive_kind(Path::new(name)), expected, "{name}");
         }
+    }
+
+    fn tar_mode_for(kind: ModelArchiveKind) -> &'static str {
+        match kind {
+            ModelArchiveKind::Tar => "w",
+            ModelArchiveKind::TarGz => "w:gz",
+            ModelArchiveKind::TarBz2 => "w:bz2",
+            ModelArchiveKind::TarXz => "w:xz",
+            ModelArchiveKind::TarZst => "w:zst",
+        }
+    }
+
+    // Regression for #572: the installer's `model_archive_kind` and the marketplace uploader
+    // (`scripts/marketplace/upload_models_to_hf.py`) must agree on the suffix->mode mapping,
+    // otherwise a `.tar.zst` model installs fine here but fails to upload ("Missing local model
+    // file") there. Both consume `scripts/marketplace/archive_suffixes.json`; this asserts the
+    // Rust tables stay equal to that shared file, so a format added to one side but not the other
+    // (or out of sync with the JSON) fails the test.
+    #[test]
+    fn archive_suffix_mapping_matches_shared_table() {
+        let mut rust_modes: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        for &(token, kind) in SINGLE_ARCHIVE_EXTENSIONS {
+            rust_modes.insert(format!(".{token}"), tar_mode_for(kind).to_string());
+        }
+        for &(token, kind) in TAR_COMPRESSION_EXTENSIONS {
+            rust_modes.insert(format!(".tar.{token}"), tar_mode_for(kind).to_string());
+        }
+
+        let shared = include_str!("../../../scripts/marketplace/archive_suffixes.json");
+        let shared_modes: std::collections::BTreeMap<String, String> = serde_json::from_str(shared)
+            .unwrap_or_else(|err| panic!("failed to parse archive_suffixes.json: {err}"));
+
+        assert_eq!(
+            rust_modes, shared_modes,
+            "archive suffix tables diverge between model_archive_kind and archive_suffixes.json"
+        );
     }
 
     #[test]
