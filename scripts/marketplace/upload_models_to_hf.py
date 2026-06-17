@@ -28,26 +28,18 @@ def is_hidden_path(path: pathlib.Path) -> bool:
     return any(part.startswith(".") for part in path.parts)
 
 
-# Archive suffix -> tarfile open mode. This table must stay in parity with the
-# Rust installer's model_archive_kind (apps/skit/src/marketplace_installer.rs);
-# the parity test there compares the two by reading this very table.
-ARCHIVE_SUFFIX_MODES: tuple[tuple[str, str], ...] = (
-    (".tar.bz2", "w:bz2"),
-    (".tbz2", "w:bz2"),
-    (".tar.xz", "w:xz"),
-    (".txz", "w:xz"),
-    (".tar.gz", "w:gz"),
-    (".tgz", "w:gz"),
-    (".tar.zst", "w:zst"),
-    (".tzst", "w:zst"),
-    (".tar", "w"),
-)
+# Canonical archive suffix -> tarfile open mode table, shared verbatim with the
+# Rust installer's model_archive_kind (apps/skit/src/marketplace_installer.rs),
+# whose parity test reads this same file so the two can't silently diverge.
+ARCHIVE_SUFFIXES_PATH = pathlib.Path(__file__).with_name("archive_suffixes.json")
+ARCHIVE_SUFFIX_MODES: dict[str, str] = json.loads(ARCHIVE_SUFFIXES_PATH.read_text())
 
 
 def archive_mode(file_path: str) -> tuple[str, str] | None:
-    for suffix, mode in ARCHIVE_SUFFIX_MODES:
+    # Longest suffix first so e.g. `.tar.gz` wins over a bare `.tar`-style match.
+    for suffix in sorted(ARCHIVE_SUFFIX_MODES, key=len, reverse=True):
         if file_path.endswith(suffix):
-            return file_path[: -len(suffix)], mode
+            return file_path[: -len(suffix)], ARCHIVE_SUFFIX_MODES[suffix]
     return None
 
 

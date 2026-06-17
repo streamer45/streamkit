@@ -2891,13 +2891,14 @@ mod tests {
         }
     }
 
-    // Regression for #572: the Rust installer and `scripts/marketplace/upload_models_to_hf.py`
-    // each carry their own suffix->mode table. They must agree, otherwise a `.tar.zst` model
-    // installs fine here but fails to upload ("Missing local model file") there. We compare the
-    // two tables as sets, so a format added to one side but not the other fails the test
-    // regardless of which side it was added to.
+    // Regression for #572: the installer's `model_archive_kind` and the marketplace uploader
+    // (`scripts/marketplace/upload_models_to_hf.py`) must agree on the suffix->mode mapping,
+    // otherwise a `.tar.zst` model installs fine here but fails to upload ("Missing local model
+    // file") there. Both consume `scripts/marketplace/archive_suffixes.json`; this asserts the
+    // Rust tables stay equal to that shared file, so a format added to one side but not the other
+    // (or out of sync with the JSON) fails the test.
     #[test]
-    fn archive_suffix_mapping_matches_python_uploader() {
+    fn archive_suffix_mapping_matches_shared_table() {
         let mut rust_modes: std::collections::BTreeMap<String, String> =
             std::collections::BTreeMap::new();
         for &(token, kind) in SINGLE_ARCHIVE_EXTENSIONS {
@@ -2907,37 +2908,13 @@ mod tests {
             rust_modes.insert(format!(".tar.{token}"), tar_mode_for(kind).to_string());
         }
 
-        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../scripts/marketplace/upload_models_to_hf.py");
-        // Execute the uploader's own table rather than scraping its source, so the check
-        // survives any reformatting of the Python module.
-        let dump = "import importlib.util, sys\nspec = importlib.util.spec_from_file_location('uploader', sys.argv[1])\nmod = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(mod)\nfor suffix, mode in mod.ARCHIVE_SUFFIX_MODES:\n    print(suffix + '\\t' + mode)\n";
-        let output = std::process::Command::new("python3")
-            .arg("-c")
-            .arg(dump)
-            .arg(&script)
-            .output()
-            .unwrap_or_else(|err| panic!("failed to run python3: {err}"));
-        assert!(
-            output.status.success(),
-            "python3 failed to dump ARCHIVE_SUFFIX_MODES: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let stdout = String::from_utf8(output.stdout)
-            .unwrap_or_else(|err| panic!("python output is not utf8: {err}"));
-
-        let mut python_modes: std::collections::BTreeMap<String, String> =
-            std::collections::BTreeMap::new();
-        for line in stdout.lines().map(str::trim).filter(|line| !line.is_empty()) {
-            let (suffix, mode) =
-                line.split_once('\t').unwrap_or_else(|| panic!("malformed dump line: {line:?}"));
-            python_modes.insert(suffix.to_string(), mode.to_string());
-        }
-        assert!(!python_modes.is_empty(), "uploader exposed no ARCHIVE_SUFFIX_MODES entries");
+        let shared = include_str!("../../../scripts/marketplace/archive_suffixes.json");
+        let shared_modes: std::collections::BTreeMap<String, String> = serde_json::from_str(shared)
+            .unwrap_or_else(|err| panic!("failed to parse archive_suffixes.json: {err}"));
 
         assert_eq!(
-            rust_modes, python_modes,
-            "archive suffix tables diverge between the Rust installer and the Python uploader"
+            rust_modes, shared_modes,
+            "archive suffix tables diverge between model_archive_kind and archive_suffixes.json"
         );
     }
 
