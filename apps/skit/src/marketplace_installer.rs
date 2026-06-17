@@ -1904,54 +1904,41 @@ enum ModelArchiveKind {
     TarZst,
 }
 
+/// Single-token archive extensions (e.g. `.tgz`) keyed by their trailing extension.
+const SINGLE_ARCHIVE_EXTENSIONS: &[(&str, ModelArchiveKind)] = &[
+    ("tar", ModelArchiveKind::Tar),
+    ("tgz", ModelArchiveKind::TarGz),
+    ("tbz2", ModelArchiveKind::TarBz2),
+    ("txz", ModelArchiveKind::TarXz),
+    ("tzst", ModelArchiveKind::TarZst),
+];
+
+/// Compression extensions that form an archive only on top of a `.tar` stem
+/// (e.g. `.tar.gz`), keyed by the trailing compression extension.
+const TAR_COMPRESSION_EXTENSIONS: &[(&str, ModelArchiveKind)] = &[
+    ("gz", ModelArchiveKind::TarGz),
+    ("bz2", ModelArchiveKind::TarBz2),
+    ("xz", ModelArchiveKind::TarXz),
+    ("zst", ModelArchiveKind::TarZst),
+];
+
 fn model_archive_kind(path: &Path) -> Option<ModelArchiveKind> {
     let ext = path.extension()?.to_str()?;
-    if ext.eq_ignore_ascii_case("tar") {
-        return Some(ModelArchiveKind::Tar);
-    }
-    if ext.eq_ignore_ascii_case("tgz") {
-        return Some(ModelArchiveKind::TarGz);
-    }
-    if ext.eq_ignore_ascii_case("tbz2") {
-        return Some(ModelArchiveKind::TarBz2);
-    }
-    if ext.eq_ignore_ascii_case("txz") {
-        return Some(ModelArchiveKind::TarXz);
-    }
-    if ext.eq_ignore_ascii_case("tzst") {
-        return Some(ModelArchiveKind::TarZst);
-    }
-    if ext.eq_ignore_ascii_case("gz")
-        && path
-            .file_stem()
-            .and_then(|stem| Path::new(stem).extension())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("tar"))
+    if let Some((_, kind)) =
+        SINGLE_ARCHIVE_EXTENSIONS.iter().find(|(token, _)| ext.eq_ignore_ascii_case(token))
     {
-        return Some(ModelArchiveKind::TarGz);
+        return Some(*kind);
     }
-    if ext.eq_ignore_ascii_case("bz2")
-        && path
-            .file_stem()
-            .and_then(|stem| Path::new(stem).extension())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("tar"))
-    {
-        return Some(ModelArchiveKind::TarBz2);
-    }
-    if ext.eq_ignore_ascii_case("xz")
-        && path
-            .file_stem()
-            .and_then(|stem| Path::new(stem).extension())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("tar"))
-    {
-        return Some(ModelArchiveKind::TarXz);
-    }
-    if ext.eq_ignore_ascii_case("zst")
-        && path
-            .file_stem()
-            .and_then(|stem| Path::new(stem).extension())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("tar"))
-    {
-        return Some(ModelArchiveKind::TarZst);
+    let stem_is_tar = path
+        .file_stem()
+        .and_then(|stem| Path::new(stem).extension())
+        .is_some_and(|stem_ext| stem_ext.eq_ignore_ascii_case("tar"));
+    if stem_is_tar {
+        if let Some((_, kind)) =
+            TAR_COMPRESSION_EXTENSIONS.iter().find(|(token, _)| ext.eq_ignore_ascii_case(token))
+        {
+            return Some(*kind);
+        }
     }
     None
 }
@@ -2894,56 +2881,64 @@ mod tests {
         }
     }
 
+    fn tar_mode_for(kind: ModelArchiveKind) -> &'static str {
+        match kind {
+            ModelArchiveKind::Tar => "w",
+            ModelArchiveKind::TarGz => "w:gz",
+            ModelArchiveKind::TarBz2 => "w:bz2",
+            ModelArchiveKind::TarXz => "w:xz",
+            ModelArchiveKind::TarZst => "w:zst",
+        }
+    }
+
     // Regression for #572: the Rust installer and `scripts/marketplace/upload_models_to_hf.py`
-    // each carry their own suffix->format table. They must agree, otherwise a `.tar.zst`
-    // model installs fine here but fails to upload ("Missing local model file") there.
+    // each carry their own suffix->mode table. They must agree, otherwise a `.tar.zst` model
+    // installs fine here but fails to upload ("Missing local model file") there. We compare the
+    // two tables as sets, so a format added to one side but not the other fails the test
+    // regardless of which side it was added to.
     #[test]
     fn archive_suffix_mapping_matches_python_uploader() {
+        let mut rust_modes: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        for &(token, kind) in SINGLE_ARCHIVE_EXTENSIONS {
+            rust_modes.insert(format!(".{token}"), tar_mode_for(kind).to_string());
+        }
+        for &(token, kind) in TAR_COMPRESSION_EXTENSIONS {
+            rust_modes.insert(format!(".tar.{token}"), tar_mode_for(kind).to_string());
+        }
+
         let script = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../scripts/marketplace/upload_models_to_hf.py");
-        let src = std::fs::read_to_string(&script)
-            .unwrap_or_else(|err| panic!("failed to read {}: {err}", script.display()));
+        // Execute the uploader's own table rather than scraping its source, so the check
+        // survives any reformatting of the Python module.
+        let dump = "import importlib.util, sys\nspec = importlib.util.spec_from_file_location('uploader', sys.argv[1])\nmod = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(mod)\nfor suffix, mode in mod.ARCHIVE_SUFFIX_MODES:\n    print(suffix + '\\t' + mode)\n";
+        let output = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(dump)
+            .arg(&script)
+            .output()
+            .unwrap_or_else(|err| panic!("failed to run python3: {err}"));
+        assert!(
+            output.status.success(),
+            "python3 failed to dump ARCHIVE_SUFFIX_MODES: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout)
+            .unwrap_or_else(|err| panic!("python output is not utf8: {err}"));
 
         let mut python_modes: std::collections::BTreeMap<String, String> =
             std::collections::BTreeMap::new();
-        let mut pending_suffix: Option<String> = None;
-        for raw in src.lines() {
-            let line = raw.trim();
-            if let Some(rest) = line.strip_prefix("if file_path.endswith(\"") {
-                pending_suffix = rest.find("\")").map(|end| rest[..end].to_string());
-            } else if line.starts_with("return file_path[") {
-                if let Some(suffix) = pending_suffix.take() {
-                    let mode = line
-                        .rsplit('"')
-                        .nth(1)
-                        .unwrap_or_else(|| panic!("no archive mode parsed for `{suffix}`"));
-                    python_modes.insert(suffix, mode.to_string());
-                }
-            }
+        for line in stdout.lines().map(str::trim).filter(|line| !line.is_empty()) {
+            let (suffix, mode) =
+                line.split_once('\t').unwrap_or_else(|| panic!("malformed dump line: {line:?}"));
+            python_modes.insert(suffix.to_string(), mode.to_string());
         }
-        assert!(!python_modes.is_empty(), "failed to parse archive_mode from {}", script.display());
+        assert!(!python_modes.is_empty(), "uploader exposed no ARCHIVE_SUFFIX_MODES entries");
 
-        let candidates = [
-            ".tar", ".tgz", ".tbz2", ".txz", ".tzst", ".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst",
-            ".gz", ".bz2", ".xz", ".zst", ".zip",
-        ];
-        for suffix in candidates {
-            let rust_mode = model_archive_kind(Path::new(&format!("model{suffix}"))).map(|kind| {
-                match kind {
-                    ModelArchiveKind::Tar => "w",
-                    ModelArchiveKind::TarGz => "w:gz",
-                    ModelArchiveKind::TarBz2 => "w:bz2",
-                    ModelArchiveKind::TarXz => "w:xz",
-                    ModelArchiveKind::TarZst => "w:zst",
-                }
-                .to_string()
-            });
-            let python_mode = python_modes.get(suffix).cloned();
-            assert_eq!(
-                rust_mode, python_mode,
-                "archive suffix `{suffix}` diverges between Rust installer and Python uploader"
-            );
-        }
+        assert_eq!(
+            rust_modes, python_modes,
+            "archive suffix tables diverge between the Rust installer and the Python uploader"
+        );
     }
 
     #[test]

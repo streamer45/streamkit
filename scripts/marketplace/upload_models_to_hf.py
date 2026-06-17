@@ -28,25 +28,26 @@ def is_hidden_path(path: pathlib.Path) -> bool:
     return any(part.startswith(".") for part in path.parts)
 
 
+# Archive suffix -> tarfile open mode. This table must stay in parity with the
+# Rust installer's model_archive_kind (apps/skit/src/marketplace_installer.rs);
+# the parity test there compares the two by reading this very table.
+ARCHIVE_SUFFIX_MODES: tuple[tuple[str, str], ...] = (
+    (".tar.bz2", "w:bz2"),
+    (".tbz2", "w:bz2"),
+    (".tar.xz", "w:xz"),
+    (".txz", "w:xz"),
+    (".tar.gz", "w:gz"),
+    (".tgz", "w:gz"),
+    (".tar.zst", "w:zst"),
+    (".tzst", "w:zst"),
+    (".tar", "w"),
+)
+
+
 def archive_mode(file_path: str) -> tuple[str, str] | None:
-    if file_path.endswith(".tar.bz2"):
-        return file_path[: -len(".tar.bz2")], "w:bz2"
-    if file_path.endswith(".tbz2"):
-        return file_path[: -len(".tbz2")], "w:bz2"
-    if file_path.endswith(".tar.xz"):
-        return file_path[: -len(".tar.xz")], "w:xz"
-    if file_path.endswith(".txz"):
-        return file_path[: -len(".txz")], "w:xz"
-    if file_path.endswith(".tar.gz"):
-        return file_path[: -len(".tar.gz")], "w:gz"
-    if file_path.endswith(".tgz"):
-        return file_path[: -len(".tgz")], "w:gz"
-    if file_path.endswith(".tar.zst"):
-        return file_path[: -len(".tar.zst")], "w:zst"
-    if file_path.endswith(".tzst"):
-        return file_path[: -len(".tzst")], "w:zst"
-    if file_path.endswith(".tar"):
-        return file_path[: -len(".tar")], "w"
+    for suffix, mode in ARCHIVE_SUFFIX_MODES:
+        if file_path.endswith(suffix):
+            return file_path[: -len(suffix)], mode
     return None
 
 
@@ -164,7 +165,10 @@ def main() -> int:
     parser.add_argument(
         "--create-archives",
         action="store_true",
-        help="Create .tar/.tar.gz/.tar.bz2/.tar.xz/.tar.zst archives from model directories when missing",
+        help=(
+            "Create tar archives from model directories when missing "
+            "(.tar, .tgz/.tbz2/.txz/.tzst, .tar.gz/.tar.bz2/.tar.xz/.tar.zst)"
+        ),
     )
     args = parser.parse_args()
 
