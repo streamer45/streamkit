@@ -28,21 +28,18 @@ def is_hidden_path(path: pathlib.Path) -> bool:
     return any(part.startswith(".") for part in path.parts)
 
 
+# Canonical archive suffix -> tarfile open mode table, shared verbatim with the
+# Rust installer's model_archive_kind (apps/skit/src/marketplace_installer.rs),
+# whose parity test reads this same file so the two can't silently diverge.
+ARCHIVE_SUFFIXES_PATH = pathlib.Path(__file__).with_name("archive_suffixes.json")
+ARCHIVE_SUFFIX_MODES: dict[str, str] = json.loads(ARCHIVE_SUFFIXES_PATH.read_text())
+
+
 def archive_mode(file_path: str) -> tuple[str, str] | None:
-    if file_path.endswith(".tar.bz2"):
-        return file_path[: -len(".tar.bz2")], "w:bz2"
-    if file_path.endswith(".tbz2"):
-        return file_path[: -len(".tbz2")], "w:bz2"
-    if file_path.endswith(".tar.xz"):
-        return file_path[: -len(".tar.xz")], "w:xz"
-    if file_path.endswith(".txz"):
-        return file_path[: -len(".txz")], "w:xz"
-    if file_path.endswith(".tar.gz"):
-        return file_path[: -len(".tar.gz")], "w:gz"
-    if file_path.endswith(".tgz"):
-        return file_path[: -len(".tgz")], "w:gz"
-    if file_path.endswith(".tar"):
-        return file_path[: -len(".tar")], "w"
+    # Longest suffix first so e.g. `.tar.gz` wins over a bare `.tar`-style match.
+    for suffix in sorted(ARCHIVE_SUFFIX_MODES, key=len, reverse=True):
+        if file_path.endswith(suffix):
+            return file_path[: -len(suffix)], ARCHIVE_SUFFIX_MODES[suffix]
     return None
 
 
@@ -76,8 +73,23 @@ def maybe_create_archive(
             sys.exit("Python was built without lzma support; cannot create .tar.xz archives")
 
     print(f"Creating archive {archive_path} from {source_dir}...")
-    with tarfile.open(archive_path, tar_mode) as tar:
-        tar.add(source_dir, arcname=base_name, filter=filter_hidden)
+    # stdlib tarfile gains native zstd support only in Python 3.14, so route
+    # .tar.zst/.tzst through the `zstandard` package to stay in parity with the
+    # Rust installer's archive handling (see marketplace_installer::model_archive_kind).
+    if tar_mode == "w:zst":
+        try:
+            import zstandard
+        except ImportError:
+            sys.exit(
+                "Missing dependency for .tar.zst archives: pip install zstandard"
+            )
+        with archive_path.open("wb") as raw, zstandard.ZstdCompressor().stream_writer(
+            raw
+        ) as stream, tarfile.open(fileobj=stream, mode="w|") as tar:
+            tar.add(source_dir, arcname=base_name, filter=filter_hidden)
+    else:
+        with tarfile.open(archive_path, tar_mode) as tar:
+            tar.add(source_dir, arcname=base_name, filter=filter_hidden)
     return archive_path
 
 
@@ -145,7 +157,10 @@ def main() -> int:
     parser.add_argument(
         "--create-archives",
         action="store_true",
-        help="Create .tar.bz2/.tar.gz archives from model directories when missing",
+        help=(
+            "Create tar archives from model directories when missing "
+            "(.tar, .tgz/.tbz2/.txz/.tzst, .tar.gz/.tar.bz2/.tar.xz/.tar.zst)"
+        ),
     )
     args = parser.parse_args()
 
