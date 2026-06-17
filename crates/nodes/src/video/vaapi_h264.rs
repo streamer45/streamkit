@@ -217,7 +217,6 @@ impl ProcessorNode for VaapiH264DecoderNode {
             &mut stats_tracker,
             Packet::Video,
             "VaapiH264DecoderNode",
-            None,
         )
         .await;
 
