@@ -320,9 +320,12 @@ impl SvtAv1EncoderNode {
     /// deadlock inside the library (#537). *Both* halves can wedge — `send_eos`
     /// on a full input FIFO and `get_packet` on the receive thread — so the
     /// entire flush runs on a helper thread that this call joins with a bound.
-    /// That is the single mechanism that lets the codec task finalize instead
-    /// of hanging to the request timeout (#540); bounding only the
-    /// receive-thread join would leave a wedged `send_eos` unguarded.
+    /// This finalizes a *flush* wedge cleanly within the budget rather than
+    /// hanging to the request timeout (#540); bounding only the
+    /// receive-thread join would leave a wedged `send_eos` unguarded. A
+    /// *mid-stream* wedge (the encoder stops consuming before it ever reaches
+    /// the flush) is caught separately by the codec loop's idle watchdog (see
+    /// `codec_forward_loop`).
     ///
     /// A healthy flush drains in well under a second. If the helper thread is
     /// still wedged after the budget it is abandoned (its `JoinHandle` dropped,
@@ -332,9 +335,9 @@ impl SvtAv1EncoderNode {
     /// `Drop`'s `deinit` + `deinit_handle` would). Leaking native resources is
     /// the deliberate, lesser evil (the tradeoff raised in #539); the stall is
     /// logged at error level. An abandoned receive thread also keeps its
-    /// `result_tx` clone alive forever; the input-close drain closes its
-    /// receiver once the codec task ends (see `drain_codec_results`) so that
-    /// leaked sender can't stall it.
+    /// `result_tx` clone alive forever; the codec loop closes its receiver once
+    /// the codec task ends (see `codec_forward_loop`) so that leaked sender
+    /// can't stall it.
     fn flush_and_join(encoder: SvtAv1Encoder, recv_thread: Option<ReceiveThread>) {
         let (done_tx, done) = std::sync::mpsc::channel::<()>();
         let flush = std::thread::spawn(move || {

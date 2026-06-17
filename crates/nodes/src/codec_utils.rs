@@ -2,7 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-#[cfg(any(feature = "svt_av1", test))]
 use std::time::Duration;
 
 use opentelemetry::KeyValue;
@@ -11,82 +10,20 @@ use streamkit_core::types::Packet;
 use streamkit_core::NodeContext;
 use tokio::sync::mpsc;
 
-/// Must drain `result_rx` concurrently with the codec task: the codec
-/// uses `blocking_send` on a bounded channel, so awaiting the task
-/// without draining would deadlock.
+/// Bounds a codec's entire lifetime by output idleness.
 ///
-/// When the codec task ends, the receiver is closed before continuing to
-/// drain: a codec that abandoned a blocking worker (e.g. SVT-AV1's wedged
-/// receive thread) leaves a live `result_tx` clone behind, and closing
-/// forwards any buffered results and then returns `None` instead of waiting
-/// on a sender that will never send again. A revived-but-abandoned worker can
-/// thus lose its trailing packets once the receiver closes — an accepted cost
-/// of the abandonment tradeoff (#539), far preferable to hanging.
-// clippy::too_many_arguments: mirrors the shared codec-loop state handles;
-// grouping them into a struct would only obscure the single call site.
-#[allow(clippy::too_many_arguments)]
-async fn drain_codec_results<T: Send + 'static, F: Fn(T) -> Packet + Send + Sync>(
-    result_rx: &mut mpsc::Receiver<Result<T, String>>,
-    mut codec_task: tokio::task::JoinHandle<()>,
-    context: &mut NodeContext,
-    counter: &opentelemetry::metrics::Counter<u64>,
-    stats: &mut NodeStatsTracker,
-    to_packet: &F,
-    label: &str,
-) {
-    let mut codec_done = false;
-    let mut drained = 0u64;
-    loop {
-        tokio::select! {
-            biased;
-            // Drain results first (biased) to keep the channel
-            // flowing and unblock the codec task's blocking_send().
-            maybe_result = result_rx.recv() => {
-                match maybe_result {
-                    Some(Ok(item)) => {
-                        drained += 1;
-                        counter.add(1, &[KeyValue::new("status", "ok")]);
-                        stats.received();
-                        if context.output_sender.send("out", to_packet(item)).await.is_err() {
-                            tracing::debug!("Output channel closed during drain");
-                            break;
-                        }
-                        stats.sent();
-                        stats.maybe_send();
-                    }
-                    Some(Err(err)) => {
-                        counter.add(1, &[KeyValue::new("status", "error")]);
-                        stats.received();
-                        stats.errored();
-                        stats.maybe_send();
-                        tracing::warn!("{label} codec error: {err}");
-                    }
-                    None => break,  // channel closed — codec task dropped result_tx
-                }
-            }
-            res = &mut codec_task, if !codec_done => {
-                codec_done = true;
-                if let Err(e) = res {
-                    if e.is_panic() {
-                        tracing::error!("{label} codec task panicked: {e:?}");
-                        break;
-                    }
-                }
-                // The codec task has exited, but it may have abandoned a
-                // receive thread during a bounded flush (e.g. SVT-AV1's
-                // dimension-change teardown): that detached thread is wedged
-                // in a native call and never drops its `result_tx` clone, so
-                // `recv()` would otherwise block forever. Closing the receiver
-                // forwards any buffered results and then returns `None`,
-                // instead of waiting on a sender that will never send again.
-            }
-        }
-        if codec_done {
-            result_rx.close();
-        }
-    }
-    tracing::debug!("{label} drain complete: forwarded {drained} result(s)");
-}
+/// A codec task can wedge in an uninterruptible blocking FFI call (e.g.
+/// SVT-AV1's two-thread `send_picture`/`get_packet` deadlock) mid-stream or
+/// during a flush, going permanently silent. If results stall for this long
+/// while the codec is *demonstrably* stuck — its input channel is full (it has
+/// stopped consuming) or input has already closed (it should be flushing) —
+/// [`codec_forward_loop`] abandons the task so the node finalizes instead of
+/// hanging to the client request timeout. The "stuck" guard keeps a merely
+/// idle or slow input (whose channel drains to empty) from tripping it. Must
+/// stay larger than any in-task flush bound (SVT-AV1's
+/// `RECEIVE_THREAD_JOIN_TIMEOUT`) so a flush that recovers within its own
+/// budget is not pre-empted.
+const CODEC_IDLE_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// Result of [`bounded_thread_join`].
 #[cfg(any(feature = "svt_av1", test))]
@@ -130,7 +67,12 @@ pub(crate) fn bounded_thread_join(
     }
 }
 
-/// Forward codec results downstream, draining the codec task on input close.
+/// Forward codec results downstream until the codec finishes, input closes, or
+/// the output channel goes away.
+///
+/// A single idle watchdog ([`CODEC_IDLE_TIMEOUT`]) bounds the codec's whole
+/// lifetime: if it wedges in a blocking FFI call and stops producing results,
+/// the task is abandoned so the node finalizes instead of hanging.
 // clippy::too_many_arguments: these are the codec loop's distinct state
 // handles (channels, task handles, metrics); bundling them into a struct
 // would only obscure the call sites.
@@ -139,7 +81,7 @@ pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
     context: &mut NodeContext,
     result_rx: &mut mpsc::Receiver<Result<T, String>>,
     input_task: &mut tokio::task::JoinHandle<()>,
-    codec_task: tokio::task::JoinHandle<()>,
+    mut codec_task: tokio::task::JoinHandle<()>,
     codec_tx: mpsc::Sender<S>,
     counter: &opentelemetry::metrics::Counter<u64>,
     stats: &mut NodeStatsTracker,
@@ -177,50 +119,86 @@ pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
         tracing::warn!("{label} codec error: {err}");
     }
 
-    let mut drain_pending = false;
+    let mut input_done = false;
+    let mut codec_done = false;
+    // Held in an `Option` so the idle watchdog can observe the codec's input
+    // backpressure; taken (dropped) to signal end-of-input to the codec.
+    let mut codec_tx = Some(codec_tx);
+
+    let idle = tokio::time::sleep(CODEC_IDLE_TIMEOUT);
+    tokio::pin!(idle);
 
     loop {
         tokio::select! {
+            biased;
+            // Forward results first so active output always wins over the idle
+            // watchdog and keeps unblocking the codec's `blocking_send()`.
             maybe_result = result_rx.recv() => {
                 match maybe_result {
                     Some(Ok(item)) => {
+                        idle.as_mut().reset(tokio::time::Instant::now() + CODEC_IDLE_TIMEOUT);
                         if forward_one(to_packet(item), context, counter, stats).await {
                             break;
                         }
                     }
-                    Some(Err(err)) => handle_error(&err, counter, stats, label),
+                    Some(Err(err)) => {
+                        idle.as_mut().reset(tokio::time::Instant::now() + CODEC_IDLE_TIMEOUT);
+                        handle_error(&err, counter, stats, label);
+                    }
                     None => break,
                 }
             }
             Some(control_msg) = context.control_rx.recv() => {
                 if matches!(control_msg, streamkit_core::control::NodeControlMessage::Shutdown) {
                     tracing::info!("{label} received shutdown signal");
-                    input_task.abort();
-                    drop(codec_tx);
-                    codec_task.abort();
                     break;
                 }
             }
-            _ = &mut *input_task => {
-                tracing::debug!("{label} input task completed, starting drain");
-                drop(codec_tx);
-                drain_pending = true;
-                break;
+            _ = &mut *input_task, if !input_done => {
+                tracing::debug!("{label} input task completed, flushing codec");
+                input_done = true;
+                codec_tx = None;
+            }
+            res = &mut codec_task, if !codec_done => {
+                codec_done = true;
+                if let Err(e) = res {
+                    if e.is_panic() {
+                        tracing::error!("{label} codec task panicked: {e:?}");
+                        break;
+                    }
+                }
+                // The codec task may have abandoned a receive thread during a
+                // bounded flush (SVT-AV1 teardown): that detached thread is
+                // wedged in a native call and never drops its `result_tx`
+                // clone, so `recv()` would block forever. Closing forwards any
+                // buffered results and then returns `None`.
+                result_rx.close();
+            }
+            () = &mut idle, if !codec_done => {
+                let codec_input_full = codec_tx.as_ref().is_none_or(|tx| tx.capacity() == 0);
+                if input_done || codec_input_full {
+                    tracing::error!(
+                        "{label} produced no output for {CODEC_IDLE_TIMEOUT:?} while the codec \
+                         was stuck (input {}); abandoning the wedged codec worker and \
+                         finalizing instead of hanging (likely native encoder deadlock)",
+                        if input_done { "closed" } else { "backed up" }
+                    );
+                    break;
+                }
+                idle.as_mut().reset(tokio::time::Instant::now() + CODEC_IDLE_TIMEOUT);
             }
         }
     }
 
-    if drain_pending {
-        tracing::debug!("{label} waiting for codec task to finish before drain");
-        drain_codec_results(result_rx, codec_task, context, counter, stats, &to_packet, label)
-            .await;
-    } else {
-        // Abort before awaiting: the codec task may be blocked on
-        // `result_tx.blocking_send()` with a full channel since nobody
-        // is draining `result_rx` anymore (output closed or channel
-        // dropped).  Without the abort this would deadlock.
+    input_task.abort();
+    // Drop the input sender (if still held) so a healthy codec sees EOF, then
+    // abandon a codec task that hasn't finished. A wedged blocking task cannot
+    // be interrupted; `abort()` detaches it so the node finalizes, and the
+    // task keeps ownership of any native handle it is mid-call on so nothing
+    // is freed underneath it (the #539 leak tradeoff).
+    drop(codec_tx.take());
+    if !codec_done {
         codec_task.abort();
-        let _ = codec_task.await;
     }
 }
 
@@ -241,9 +219,9 @@ mod tests {
     }
 
     /// The normal path must terminate: the codec finishes and closes its
-    /// channel, so the drain returns promptly.
+    /// channel, so the loop finalizes promptly.
     #[tokio::test]
-    async fn drain_returns_when_codec_finishes_and_channel_closes() {
+    async fn forward_loop_finalizes_when_codec_finishes_and_channel_closes() {
         let (mut ctx, _mock_out, _state_rx) = create_test_context(HashMap::new(), 1);
         let mut stats = NodeStatsTracker::new("test".to_string(), ctx.stats_tx.clone());
         let counter = test_counter();
@@ -252,31 +230,35 @@ mod tests {
         result_tx.send(Ok(vec![9])).await.unwrap();
         drop(result_tx);
 
+        let mut input_task = tokio::task::spawn(std::future::pending::<()>());
         let codec_task = tokio::task::spawn(async {});
+        let (codec_tx, _codec_rx) = mpsc::channel::<Vec<u8>>(1);
 
         tokio::time::timeout(
             Duration::from_secs(5),
-            drain_codec_results(
-                &mut result_rx,
-                codec_task,
+            codec_forward_loop(
                 &mut ctx,
+                &mut result_rx,
+                &mut input_task,
+                codec_task,
+                codec_tx,
                 &counter,
                 &mut stats,
-                &to_binary,
+                to_binary,
                 "test",
             ),
         )
         .await
-        .expect("drain must return when the codec finishes and closes the channel");
+        .expect("loop must finalize when the codec finishes and closes the channel");
     }
 
     /// Regression for #540: an SVT-AV1 dimension change can abandon a wedged
-    /// receive thread, leaking its `result_tx` clone, and the *final* flush can
-    /// still complete cleanly. The drain must finish anyway — forwarding
+    /// receive thread, leaking its `result_tx` clone, while the codec task
+    /// still finishes cleanly. The loop must finalize anyway — forwarding
     /// buffered results, then closing the receiver on codec completion so the
     /// leaked sender can't keep `recv()` pending forever.
     #[tokio::test]
-    async fn drain_returns_when_codec_finishes_despite_leaked_sender() {
+    async fn forward_loop_finalizes_despite_leaked_sender() {
         let (mut ctx, mock_out, _state_rx) = create_test_context(HashMap::new(), 1);
         let mut stats = NodeStatsTracker::new("test".to_string(), ctx.stats_tx.clone());
         let counter = test_counter();
@@ -288,27 +270,106 @@ mod tests {
         let _leaked = result_tx.clone();
         drop(result_tx);
 
+        let mut input_task = tokio::task::spawn(std::future::pending::<()>());
         let codec_task = tokio::task::spawn(async {});
+        let (codec_tx, _codec_rx) = mpsc::channel::<Vec<u8>>(1);
 
         tokio::time::timeout(
             Duration::from_secs(5),
-            drain_codec_results(
-                &mut result_rx,
-                codec_task,
+            codec_forward_loop(
                 &mut ctx,
+                &mut result_rx,
+                &mut input_task,
+                codec_task,
+                codec_tx,
                 &counter,
                 &mut stats,
-                &to_binary,
+                to_binary,
                 "test",
             ),
         )
         .await
-        .expect("drain must return once the codec finishes, even with a leaked sender");
+        .expect("loop must finalize once the codec finishes, even with a leaked sender");
 
         assert!(
             matches!(mock_out.try_recv().await, Some((_, _, Packet::Binary { .. }))),
-            "buffered result must still be forwarded before the drain closes"
+            "buffered result must still be forwarded before finalizing"
         );
+    }
+
+    /// Regression for #540: a codec wedged *mid-stream* (no output, input
+    /// backed up, task never completes) must be abandoned by the idle watchdog
+    /// so the node finalizes instead of hanging to the request timeout.
+    #[tokio::test(start_paused = true)]
+    async fn forward_loop_abandons_codec_wedged_midstream() {
+        let (mut ctx, _mock_out, _state_rx) = create_test_context(HashMap::new(), 1);
+        let mut stats = NodeStatsTracker::new("test".to_string(), ctx.stats_tx.clone());
+        let counter = test_counter();
+
+        // The sender stays alive and never sends, so `recv()` never returns
+        // `None` on its own — only the watchdog can end the loop.
+        let (_result_tx, mut result_rx) = mpsc::channel::<Result<Vec<u8>, String>>(8);
+
+        let mut input_task = tokio::task::spawn(std::future::pending::<()>());
+        let codec_task = tokio::task::spawn(std::future::pending::<()>());
+
+        // A full input channel is the "codec stopped consuming" signal the
+        // watchdog keys on while input is still open.
+        let (codec_tx, _codec_rx) = mpsc::channel::<Vec<u8>>(1);
+        codec_tx.try_send(vec![0]).unwrap();
+        assert_eq!(codec_tx.capacity(), 0);
+
+        tokio::time::timeout(
+            Duration::from_mins(10),
+            codec_forward_loop(
+                &mut ctx,
+                &mut result_rx,
+                &mut input_task,
+                codec_task,
+                codec_tx,
+                &counter,
+                &mut stats,
+                to_binary,
+                "test",
+            ),
+        )
+        .await
+        .expect("idle watchdog must abandon the mid-stream-wedged codec instead of hanging");
+    }
+
+    /// The idle watchdog also bounds a flush that never completes: once input
+    /// has closed, a codec that produces no further output (wedged in its EOS
+    /// flush) is abandoned rather than awaited forever.
+    #[tokio::test(start_paused = true)]
+    async fn forward_loop_abandons_codec_wedged_after_input_close() {
+        let (mut ctx, _mock_out, _state_rx) = create_test_context(HashMap::new(), 1);
+        let mut stats = NodeStatsTracker::new("test".to_string(), ctx.stats_tx.clone());
+        let counter = test_counter();
+
+        let (_result_tx, mut result_rx) = mpsc::channel::<Result<Vec<u8>, String>>(8);
+
+        // Input completes immediately; the codec task is wedged in its flush
+        // and never finishes.
+        let mut input_task = tokio::task::spawn(async {});
+        let codec_task = tokio::task::spawn(std::future::pending::<()>());
+        let (codec_tx, _codec_rx) = mpsc::channel::<Vec<u8>>(1);
+
+        tokio::time::timeout(
+            Duration::from_mins(10),
+            codec_forward_loop(
+                &mut ctx,
+                &mut result_rx,
+                &mut input_task,
+                codec_task,
+                codec_tx,
+                &counter,
+                &mut stats,
+                to_binary,
+                "test",
+            ),
+        )
+        .await
+        .expect("idle watchdog must finalize a wedged post-input-close flush");
     }
 
     /// Regression for #540: a thread wedged in a blocking native flush (never
