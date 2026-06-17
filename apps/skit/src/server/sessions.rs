@@ -509,6 +509,16 @@ fn batch_has_add(operations: &[streamkit_api::BatchOperation]) -> bool {
     operations.iter().any(|op| matches!(op, streamkit_api::BatchOperation::AddNode { .. }))
 }
 
+/// Ids the session already treats as occupied: confirmed nodes in the durable
+/// snapshot plus accepted-but-not-yet-confirmed reservations.  Callers hold the
+/// joint pipeline+creating lock so the two views are consistent.
+fn live_node_ids(
+    pipeline: &streamkit_api::Pipeline,
+    creating: &std::collections::HashSet<String>,
+) -> std::collections::HashSet<String> {
+    pipeline.nodes.keys().chain(creating.iter()).cloned().collect()
+}
+
 /// Check batch operations for duplicate node IDs by simulating the
 /// Add/Remove sequence.  Returns the IDs of nodes that would collide.
 #[cfg(test)]
@@ -516,10 +526,10 @@ pub(super) async fn check_batch_node_id_uniqueness(
     session: &crate::session::Session,
     operations: &[streamkit_api::BatchOperation],
 ) -> Vec<String> {
-    let live: std::collections::HashSet<String> = {
+    let live = {
         let pipeline = session.pipeline.lock().await;
         let creating = session.creating_nodes.lock().await;
-        pipeline.nodes.keys().chain(creating.iter()).cloned().collect()
+        live_node_ids(&pipeline, &creating)
     };
     let terminal = if batch_has_add(operations) {
         engine_terminal_node_ids(session).await.unwrap_or_default()
@@ -537,10 +547,10 @@ pub async fn validate_batch_operations(
 ) -> Vec<streamkit_api::ValidationError> {
     let mut errors: Vec<streamkit_api::ValidationError> = Vec::new();
 
-    let live: std::collections::HashSet<String> = {
+    let live = {
         let pipeline = session.pipeline.lock().await;
         let creating = session.creating_nodes.lock().await;
-        pipeline.nodes.keys().chain(creating.iter()).cloned().collect()
+        live_node_ids(&pipeline, &creating)
     };
     let terminal = if batch_has_add(operations) {
         match engine_terminal_node_ids(session).await {
@@ -628,8 +638,7 @@ pub async fn apply_batch_operations(
         let mut pipeline = session.pipeline.lock().await;
         let mut creating = session.creating_nodes.lock().await;
 
-        let live: std::collections::HashSet<String> =
-            pipeline.nodes.keys().chain(creating.iter()).cloned().collect();
+        let live = live_node_ids(&pipeline, &creating);
         // Consult the engine's terminal-node residue *inside* the joint lock
         // (not from a pre-lock snapshot): a node going `Creating`→`Failed`
         // could otherwise slip between the snapshot and the reservation and
