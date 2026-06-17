@@ -461,13 +461,15 @@ pub(super) struct BatchIdConflict {
 }
 
 /// Simulate a batch's Add/Remove sequence and classify every node-id
-/// collision against the initial live set (`pipeline.nodes` ∪ in-flight),
-/// the engine's terminal residue, and earlier ops in the same batch.  Pure:
-/// callers own the locking that produces `live` and the engine query that
-/// produces `terminal`.  A `RemoveNode` clears an id from the running set so
-/// a same-batch remove-then-re-add is not flagged.
+/// collision against confirmed nodes (`live`), in-flight reservations
+/// (`in_flight`, a subset of `live`), the engine's terminal residue, and
+/// earlier ops in the same batch.  Pure: callers own the locking that produces
+/// `live`/`in_flight` and the engine query that produces `terminal`.  A
+/// `RemoveNode` clears an id from the running set so a same-batch
+/// remove-then-re-add is not flagged.
 fn batch_id_conflicts(
     live: &std::collections::HashSet<String>,
+    in_flight: &std::collections::HashSet<String>,
     terminal: &std::collections::HashMap<String, &'static str>,
     operations: &[streamkit_api::BatchOperation],
 ) -> Vec<BatchIdConflict> {
@@ -479,7 +481,9 @@ fn batch_id_conflicts(
             streamkit_api::BatchOperation::AddNode { node_id, .. }
                 if !present.insert(node_id.clone()) =>
             {
-                let message = if live.contains(node_id) {
+                let message = if in_flight.contains(node_id) {
+                    format!("Batch rejected: node '{node_id}' is already being added")
+                } else if live.contains(node_id) {
                     format!("Batch rejected: node '{node_id}' already exists in the pipeline")
                 } else if let Some(label) = terminal.get(node_id) {
                     format!(
@@ -509,14 +513,19 @@ fn batch_has_add(operations: &[streamkit_api::BatchOperation]) -> bool {
     operations.iter().any(|op| matches!(op, streamkit_api::BatchOperation::AddNode { .. }))
 }
 
-/// Ids the session already treats as occupied: confirmed nodes in the durable
-/// snapshot plus accepted-but-not-yet-confirmed reservations.  Callers hold the
-/// joint pipeline+creating lock so the two views are consistent.
-fn live_node_ids(
+/// Ids the session already treats as occupied, as `(live, in_flight)`: `live`
+/// is confirmed nodes in the durable snapshot plus accepted-but-not-yet-
+/// confirmed reservations, `in_flight` is just the reservations.  Splitting
+/// them lets a collision be worded precisely ("already exists" vs "already
+/// being added").  Callers hold the joint pipeline+creating lock so the two
+/// views are consistent.
+fn occupied_node_ids(
     pipeline: &streamkit_api::Pipeline,
     creating: &std::collections::HashSet<String>,
-) -> std::collections::HashSet<String> {
-    pipeline.nodes.keys().chain(creating.iter()).cloned().collect()
+) -> (std::collections::HashSet<String>, std::collections::HashSet<String>) {
+    let in_flight: std::collections::HashSet<String> = creating.iter().cloned().collect();
+    let live = pipeline.nodes.keys().cloned().chain(in_flight.iter().cloned()).collect();
+    (live, in_flight)
 }
 
 /// Check batch operations for duplicate node IDs by simulating the
@@ -526,17 +535,20 @@ pub(super) async fn check_batch_node_id_uniqueness(
     session: &crate::session::Session,
     operations: &[streamkit_api::BatchOperation],
 ) -> Vec<String> {
-    let live = {
+    let (live, in_flight) = {
         let pipeline = session.pipeline.lock().await;
         let creating = session.creating_nodes.lock().await;
-        live_node_ids(&pipeline, &creating)
+        occupied_node_ids(&pipeline, &creating)
     };
     let terminal = if batch_has_add(operations) {
         engine_terminal_node_ids(session).await.unwrap_or_default()
     } else {
         std::collections::HashMap::new()
     };
-    batch_id_conflicts(&live, &terminal, operations).into_iter().map(|c| c.node_id).collect()
+    batch_id_conflicts(&live, &in_flight, &terminal, operations)
+        .into_iter()
+        .map(|c| c.node_id)
+        .collect()
 }
 
 pub async fn validate_batch_operations(
@@ -547,10 +559,10 @@ pub async fn validate_batch_operations(
 ) -> Vec<streamkit_api::ValidationError> {
     let mut errors: Vec<streamkit_api::ValidationError> = Vec::new();
 
-    let live = {
+    let (live, in_flight) = {
         let pipeline = session.pipeline.lock().await;
         let creating = session.creating_nodes.lock().await;
-        live_node_ids(&pipeline, &creating)
+        occupied_node_ids(&pipeline, &creating)
     };
     let terminal = if batch_has_add(operations) {
         match engine_terminal_node_ids(session).await {
@@ -568,7 +580,7 @@ pub async fn validate_batch_operations(
     } else {
         std::collections::HashMap::new()
     };
-    for conflict in batch_id_conflicts(&live, &terminal, operations) {
+    for conflict in batch_id_conflicts(&live, &in_flight, &terminal, operations) {
         errors.push(streamkit_api::ValidationError {
             error_type: streamkit_api::ValidationErrorType::Error,
             message: conflict.message,
@@ -638,7 +650,7 @@ pub async fn apply_batch_operations(
         let mut pipeline = session.pipeline.lock().await;
         let mut creating = session.creating_nodes.lock().await;
 
-        let live = live_node_ids(&pipeline, &creating);
+        let (live, in_flight) = occupied_node_ids(&pipeline, &creating);
         // Consult the engine's terminal-node residue *inside* the joint lock
         // (not from a pre-lock snapshot): a node going `Creating`→`Failed`
         // could otherwise slip between the snapshot and the reservation and
@@ -655,7 +667,8 @@ pub async fn apply_batch_operations(
         } else {
             std::collections::HashMap::new()
         };
-        if let Some(conflict) = batch_id_conflicts(&live, &terminal, &operations).into_iter().next()
+        if let Some(conflict) =
+            batch_id_conflicts(&live, &in_flight, &terminal, &operations).into_iter().next()
         {
             return Err(conflict.message);
         }
@@ -1340,15 +1353,11 @@ mod sessions_batch_tests {
         // Confirmed-add leaves pipeline.nodes empty until the engine
         // confirms, so the reservation in creating_nodes is what makes a
         // second add for the same id collide instead of reaching the engine
-        // to be silently dropped by its duplicate guard.
-        apply_batch_operations(
-            &session,
-            vec![add_op("x", "core::passthrough")],
-            &passthrough_only_perms(),
-            &SecurityConfig::default(),
-        )
-        .await
-        .expect("first add must be accepted");
+        // to be silently dropped by its duplicate guard.  Seed the
+        // reservation directly so the collision is deterministically against
+        // an in-flight id (a real first add races the node-added forwarder,
+        // which could confirm it into pipeline.nodes first).
+        session.creating_nodes.lock().await.insert("x".to_string());
 
         let result = apply_batch_operations(
             &session,
@@ -1359,7 +1368,13 @@ mod sessions_batch_tests {
         .await;
 
         let err = result.expect_err("a duplicate in-flight id must be rejected");
-        assert!(err.contains("already exists"), "unexpected error: {err}");
+        // An in-flight reservation is not yet in pipeline.nodes, so the
+        // message must reflect "being added", matching the WS path's
+        // `reserve_node_id`, rather than claiming it already exists.
+        assert!(
+            err.contains("is already being added"),
+            "in-flight collision must say 'is already being added', got: {err}",
+        );
         let _ = session.shutdown_and_wait().await;
     }
 
