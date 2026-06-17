@@ -108,8 +108,7 @@ export function deriveSettingsFromClient(client: ClientSection): MoqPeerSettings
   };
 }
 
-export function extractMoqPeerSettings(yamlContent: string): MoqPeerSettings | null {
-  const client = parseClientFromYaml(yamlContent);
+export function extractMoqSettingsFromClient(client: ClientSection | null): MoqPeerSettings | null {
   if (!client) return null;
 
   if (!client.gateway_path && !client.relay_url && !client.publish && !client.watch) {
@@ -117,6 +116,10 @@ export function extractMoqPeerSettings(yamlContent: string): MoqPeerSettings | n
   }
 
   return deriveSettingsFromClient(client);
+}
+
+export function extractMoqPeerSettings(yamlContent: string): MoqPeerSettings | null {
+  return extractMoqSettingsFromClient(parseClientFromYaml(yamlContent));
 }
 
 export function updateUrlPath(baseUrl: string, newPath: string): string {

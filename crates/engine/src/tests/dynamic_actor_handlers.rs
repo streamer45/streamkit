@@ -279,3 +279,191 @@ async fn get_node_view_data_returns_emitter_payload() {
 
     handle.shutdown_and_wait().await.expect("shutdown");
 }
+
+/// A node that promotes itself to `Ready`, waits for `Start`, then returns
+/// `Err` WITHOUT emitting any terminal state — modelling a worker that dies
+/// and whose best-effort `Failed` `try_send` was dropped under backpressure.
+struct DyingNode;
+
+#[streamkit_core::async_trait]
+impl ProcessorNode for DyingNode {
+    fn input_pins(&self) -> Vec<streamkit_core::InputPin> {
+        Vec::new()
+    }
+    fn output_pins(&self) -> Vec<streamkit_core::OutputPin> {
+        vec![streamkit_core::OutputPin {
+            name: "out".to_string(),
+            produces_type: PacketType::Binary,
+            cardinality: streamkit_core::PinCardinality::Broadcast,
+        }]
+    }
+
+    async fn run(
+        self: Box<Self>,
+        mut ctx: streamkit_core::NodeContext,
+    ) -> Result<(), StreamKitError> {
+        const NODE_ID: &str = "dier";
+
+        let _ =
+            ctx.state_tx.send(NodeStateUpdate::new(NODE_ID.to_string(), NodeState::Ready)).await;
+
+        loop {
+            match ctx.control_rx.recv().await {
+                Some(NodeControlMessage::Start) => break,
+                Some(NodeControlMessage::Shutdown) | None => return Ok(()),
+                Some(_) => {},
+            }
+        }
+
+        Err(StreamKitError::Runtime("simulated worker death".to_string()))
+    }
+}
+
+fn build_dying_handle() -> DynamicEngineHandle {
+    let mut registry = NodeRegistry::new();
+    registry.register_dynamic(
+        "test::dier",
+        |_p| Ok(Box::new(DyingNode) as Box<dyn ProcessorNode>),
+        serde_json::json!({}),
+        vec!["test".to_string()],
+        false,
+    );
+    let engine = Engine {
+        registry: Arc::new(std::sync::RwLock::new(registry)),
+        audio_pool: Arc::new(streamkit_core::AudioFramePool::audio_default()),
+        video_pool: Arc::new(streamkit_core::VideoFramePool::video_default()),
+    };
+    engine.start_dynamic_actor(DynamicEngineConfig::default())
+}
+
+/// Regression for #570: a node task that returns `Err` must surface a terminal
+/// `Failed` to subscribers even when the node itself emitted no terminal state
+/// (the worker died and the best-effort notification was lost). The actor
+/// reconciles the task result onto the state channel as a backstop.
+#[tokio::test]
+async fn node_task_error_surfaces_failed_without_node_emitting_it() {
+    let handle = build_dying_handle();
+    let mut sub = handle.subscribe_state().await.expect("subscribe_state");
+    handle
+        .send_control(EngineControlMessage::AddNode {
+            node_id: "dier".to_string(),
+            kind: "test::dier".to_string(),
+            params: None,
+        })
+        .await
+        .expect("send AddNode");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut saw_failed = false;
+    while Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(200), sub.recv()).await {
+            Ok(Some(u)) if u.node_id == "dier" && matches!(u.state, NodeState::Failed { .. }) => {
+                saw_failed = true;
+                break;
+            },
+            Ok(Some(_)) | Err(_) => {},
+            Ok(None) => break,
+        }
+    }
+    assert!(saw_failed, "actor must surface Failed from the node task's Err result");
+
+    handle.shutdown_and_wait().await.expect("shutdown");
+}
+
+/// A node that, on `Shutdown`, saturates the shared state channel with
+/// `try_send` so the wrapper's terminal backstop send (initialize_node) lands
+/// on a full channel.
+struct FloodOnShutdownNode;
+
+#[streamkit_core::async_trait]
+impl ProcessorNode for FloodOnShutdownNode {
+    fn input_pins(&self) -> Vec<streamkit_core::InputPin> {
+        Vec::new()
+    }
+    fn output_pins(&self) -> Vec<streamkit_core::OutputPin> {
+        vec![streamkit_core::OutputPin {
+            name: "out".to_string(),
+            produces_type: PacketType::Binary,
+            cardinality: streamkit_core::PinCardinality::Broadcast,
+        }]
+    }
+
+    async fn run(
+        self: Box<Self>,
+        mut ctx: streamkit_core::NodeContext,
+    ) -> Result<(), StreamKitError> {
+        const NODE_ID: &str = "flooder";
+
+        let _ =
+            ctx.state_tx.send(NodeStateUpdate::new(NODE_ID.to_string(), NodeState::Ready)).await;
+
+        loop {
+            match ctx.control_rx.recv().await {
+                Some(NodeControlMessage::Shutdown) | None => break,
+                Some(_) => {},
+            }
+        }
+
+        while ctx
+            .state_tx
+            .try_send(NodeStateUpdate::new(NODE_ID.to_string(), NodeState::Running))
+            .is_ok()
+        {}
+
+        Ok(())
+    }
+}
+
+fn build_flood_handle() -> DynamicEngineHandle {
+    let mut registry = NodeRegistry::new();
+    registry.register_dynamic(
+        "test::flooder",
+        |_p| Ok(Box::new(FloodOnShutdownNode) as Box<dyn ProcessorNode>),
+        serde_json::json!({}),
+        vec!["test".to_string()],
+        false,
+    );
+    let engine = Engine {
+        registry: Arc::new(std::sync::RwLock::new(registry)),
+        audio_pool: Arc::new(streamkit_core::AudioFramePool::audio_default()),
+        video_pool: Arc::new(streamkit_core::VideoFramePool::video_default()),
+    };
+    engine.start_dynamic_actor(DynamicEngineConfig::default())
+}
+
+/// Regression: the node-task terminal backstop must not stall shutdown. The
+/// actor stops draining the state channel while it joins node tasks, so a
+/// task whose backstop send hits a full channel would block until the 2s join
+/// timeout aborts it. The actor closes the state receiver on shutdown so the
+/// send fails fast; assert teardown finishes well under that timeout.
+#[tokio::test]
+async fn shutdown_does_not_stall_on_saturated_state_channel() {
+    let handle = build_flood_handle();
+    handle
+        .send_control(EngineControlMessage::AddNode {
+            node_id: "flooder".to_string(),
+            kind: "test::flooder".to_string(),
+            params: None,
+        })
+        .await
+        .expect("send AddNode");
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        if let Ok(states) = handle.get_node_states().await {
+            if matches!(states.get("flooder"), Some(NodeState::Ready | NodeState::Running)) {
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "flooder did not reach Ready in time");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let start = Instant::now();
+    handle.shutdown_and_wait().await.expect("shutdown");
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < Duration::from_millis(1500),
+        "shutdown stalled on a saturated state channel: {elapsed:?}"
+    );
+}

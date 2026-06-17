@@ -25,29 +25,58 @@ const OVERLAY_CONTROLS_YAML = fs.readFileSync(
 );
 
 /**
+ * A minimal MoQ pipeline with distinctive broadcast names, used to prove that a
+ * direct YAML edit populates the broadcast fields (issue #550) before a second
+ * edit clears them.
+ */
+const MOQ_BROADCAST_YAML = [
+  'name: MoQ Derive Probe',
+  'mode: dynamic',
+  'client:',
+  '  gateway_path: /moq/derive-probe',
+  '  publish:',
+  '    broadcast: derive-in',
+  '    tracks:',
+  '      - kind: audio',
+  '        source: microphone',
+  '  watch:',
+  '    broadcast: derive-out',
+  '    audio: true',
+  'nodes:',
+  '  colorbars:',
+  '    kind: video::colorbars',
+  '  sink:',
+  '    kind: core::sink',
+  '    needs: colorbars',
+  '',
+].join('\n');
+
+/**
  * Replace the Stream view's pipeline YAML editor contents. The editor is
  * CodeMirror (contenteditable), so we select-all and `insertText` the fixture
  * as a single input event — avoiding per-keystroke autocomplete/auto-indent.
- *
- * Unlike picking a sample from the list (which re-derives MoQ settings from the
- * pipeline), editing the YAML directly leaves the broadcast names from the
- * auto-selected first sample in place. The fixture has no MoQ transport, so we
- * clear those names; otherwise the post-create auto-connect would attempt a MoQ
- * session and surface a connection error. The durable UI-side fix is tracked in
- * https://github.com/streamer45/streamkit/issues/550.
  */
-async function loadPipelineYaml(page: Page, yaml: string): Promise<void> {
+async function setEditorYaml(page: Page, yaml: string): Promise<void> {
   const editor = page.locator('.cm-content');
   await expect(editor).toBeVisible({ timeout: 15_000 });
   await editor.click();
   await page.keyboard.press('ControlOrMeta+A');
   await page.keyboard.press('Delete');
   await page.keyboard.insertText(yaml);
+}
 
-  for (const id of ['#input-broadcast', '#output-broadcast']) {
-    const input = page.locator(id);
-    if (await input.count()) await input.fill('');
-  }
+/**
+ * Load a non-MoQ pipeline into the editor. Editing the YAML directly re-derives
+ * MoQ settings (issue #550); the fixture has no MoQ transport, so the broadcast
+ * names carried over from the auto-selected first sample must clear. We wait for
+ * that before returning so the post-create auto-connect doesn't target a stale
+ * broadcast.
+ */
+async function loadPipelineYaml(page: Page, yaml: string): Promise<void> {
+  await setEditorYaml(page, yaml);
+
+  await expect(page.locator('#input-broadcast')).toHaveValue('');
+  await expect(page.locator('#output-broadcast')).toHaveValue('');
 }
 
 test.describe('Stream View - Overlay Controls', () => {
@@ -79,6 +108,19 @@ test.describe('Stream View - Overlay Controls', () => {
       await page.goto('/stream');
     }
     await expect(page.getByTestId('stream-view')).toBeVisible();
+  });
+
+  // Regression for #550: a direct YAML edit must re-derive MoQ broadcast
+  // settings. Self-contained — drives the populate and clear transitions
+  // explicitly rather than relying on whichever sample auto-selects first.
+  test('re-derives MoQ broadcasts on direct YAML edits (issue #550)', async ({ page }) => {
+    await setEditorYaml(page, MOQ_BROADCAST_YAML);
+    await expect(page.locator('#input-broadcast')).toHaveValue('derive-in');
+    await expect(page.locator('#output-broadcast')).toHaveValue('derive-out');
+
+    await setEditorYaml(page, OVERLAY_CONTROLS_YAML);
+    await expect(page.locator('#input-broadcast')).toHaveValue('');
+    await expect(page.locator('#output-broadcast')).toHaveValue('');
   });
 
   test('renders all control types and sends correct UpdateParams on interaction', async ({
