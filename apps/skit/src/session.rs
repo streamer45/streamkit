@@ -20,6 +20,22 @@ use time::format_description::well_known::Rfc3339;
 use tokio::sync::{broadcast, Mutex};
 use uuid::Uuid;
 
+/// Label for an engine node lingering in a terminal state that the actor's
+/// duplicate-id guard treats as still occupied, or `None` if the state is
+/// not terminal.
+///
+/// The engine keeps `Failed`/`Stopped` nodes in `node_states` until an
+/// explicit `RemoveNode` and silently swallows any re-add of such an id, so
+/// both the single-node and batch add paths must consult this before
+/// reserving an id.  Shared between them so the labelling can't drift.
+pub const fn terminal_node_label(state: &NodeState) -> Option<&'static str> {
+    match state {
+        NodeState::Failed { .. } => Some("failed"),
+        NodeState::Stopped { .. } => Some("stopped"),
+        _ => None,
+    }
+}
+
 /// Convert SystemTime to ISO 8601 / RFC3339 format string using the time crate
 pub fn system_time_to_rfc3339(time: SystemTime) -> String {
     let offset_datetime = time::OffsetDateTime::from(time);
@@ -224,6 +240,28 @@ impl Session {
         if creating.contains(node_id) {
             return Err(format!("Node '{node_id}' is already being added"));
         }
+        // Consult the engine's terminal-node residue while holding the joint
+        // lock.  The engine retains `Failed`/`Stopped` nodes in `node_states`
+        // until an explicit `RemoveNode` and silently swallows a re-add of
+        // such an id (the session dropped it from `pipeline.nodes`/
+        // `creating_nodes` on the failing transition).  Querying *inside* the
+        // lock — rather than from a pre-lock snapshot — closes the window
+        // where a concurrent `Creating`→`Failed` transition lands between the
+        // snapshot and the reservation: `broadcast_state_update` writes
+        // `node_states` before sending the state update that drains
+        // `creating_nodes`, and no other creation for this id can be in flight
+        // while we hold `creating_nodes`, so the engine view is authoritative
+        // for this id.  Fail closed if the engine can't be queried.
+        let engine_states = self
+            .get_node_states()
+            .await
+            .map_err(|e| format!("Cannot verify availability of node '{node_id}': {e}"))?;
+        if let Some(label) = engine_states.get(node_id).and_then(terminal_node_label) {
+            return Err(format!(
+                "Node '{node_id}' is still present in the engine in a {label} state; \
+                 remove it before re-adding"
+            ));
+        }
         creating.insert(node_id.to_string());
         Ok(())
     }
@@ -327,11 +365,13 @@ impl Session {
         // confirmed entries; this set fills the gap for accepted-but-
         // not-yet-confirmed addnode requests.
         let creating_nodes: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+        let pipeline = Arc::new(Mutex::new(Pipeline::default()));
 
         // Spawn task to forward state updates to WebSocket clients
         let session_id_for_state = session_id.clone();
         let event_tx_for_state = event_tx.clone();
         let creating_nodes_for_state = creating_nodes.clone();
+        let pipeline_for_state = pipeline.clone();
         tokio::spawn(async move {
             while let Some(update) = state_rx.recv().await {
                 // Drain the in-flight entry as soon as a non-Creating
@@ -340,7 +380,52 @@ impl Session {
                 // (Ready/Running/Degraded) confirms the node is past
                 // creation.  The node-added forwarder also drains on
                 // success; the second remove is a no-op.
-                if !matches!(update.state, NodeState::Creating) {
+                if matches!(update.state, NodeState::Failed { .. }) {
+                    // A confirmed-add batch records connections eagerly,
+                    // before the engine confirms the endpoint nodes.  If an
+                    // in-flight node fails creation it never enters
+                    // `pipeline.nodes`, so drop any edge the batch recorded
+                    // for it — otherwise the snapshot keeps a connection to a
+                    // node that does not exist.  Runtime failures of an
+                    // already-confirmed node (not in flight) keep their edges.
+                    //
+                    // Hold the pipeline lock across the in-flight check and
+                    // the prune (lock order matches `reserve_node_id`:
+                    // pipeline, then creating_nodes) so a concurrent batch
+                    // reusing this id cannot insert fresh connections between
+                    // the check and the retain and have them wrongly pruned.
+                    //
+                    // Residual limitation (tracked in #607): a same-id batch
+                    // that fully completes between this update arriving and
+                    // the lock acquisition here is indistinguishable from the
+                    // failed incarnation, since `creating_nodes` carries no
+                    // per-incarnation epoch.  A clean fix needs engine-side
+                    // terminal-state correlation; out of scope for #455.
+                    // The prune mutates the snapshot without a
+                    // `ConnectionRemoved` event, mirroring the batch `Connect`
+                    // that records edges without `ConnectionAdded`.
+                    let pruned = {
+                        let mut pip = pipeline_for_state.lock().await;
+                        let was_in_flight =
+                            creating_nodes_for_state.lock().await.remove(&update.node_id);
+                        if was_in_flight {
+                            let before = pip.connections.len();
+                            pip.connections.retain(|c| {
+                                c.from_node != update.node_id && c.to_node != update.node_id
+                            });
+                            before - pip.connections.len()
+                        } else {
+                            0
+                        }
+                    };
+                    if pruned > 0 {
+                        tracing::debug!(
+                            node_id = %update.node_id,
+                            pruned,
+                            "pruned dangling connections for failed in-flight node"
+                        );
+                    }
+                } else if !matches!(update.state, NodeState::Creating) {
                     creating_nodes_for_state.lock().await.remove(&update.node_id);
                 }
                 let event = ApiEvent {
@@ -456,7 +541,6 @@ impl Session {
         // can't have any nodes until something sends `AddNode`, and the
         // first `AddNode` can't arrive until `create` returns the
         // handle to its caller.
-        let pipeline = Arc::new(Mutex::new(Pipeline::default()));
         let mut node_added_rx = engine_handle
             .subscribe_node_added()
             .await

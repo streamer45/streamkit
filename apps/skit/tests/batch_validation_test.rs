@@ -451,9 +451,11 @@ async fn test_validate_batch_rejects_duplicate_node_id() {
     match payload {
         ResponsePayload::ValidationResult { errors } => {
             assert!(!errors.is_empty(), "Expected at least one error for duplicate node_id");
+            // 'dup1' exists only within the batch, so the message must say it
+            // is added more than once rather than falsely claim it pre-exists.
             assert!(
-                errors.iter().any(|e| e.message.contains("already exists")),
-                "Expected duplicate node_id error, got: {:?}",
+                errors.iter().any(|e| e.message.contains("added more than once in this batch")),
+                "Expected intra-batch duplicate node_id error, got: {:?}",
                 errors.iter().map(|e| &e.message).collect::<Vec<_>>()
             );
         },
@@ -839,5 +841,110 @@ async fn test_apply_batch_rejects_cross_role_ownership() {
             );
         },
         other => panic!("Expected Error for cross-role ownership in ApplyBatch, got: {:?}", other),
+    }
+}
+
+/// Confirmed-add regression test for the batch path (issue #455).
+///
+/// A batch whose `AddNode` ops mix a valid kind with one that passes
+/// validation but fails engine construction must not leave an orphan in
+/// `pipeline.nodes` for the failed node.  The valid node is confirmed and
+/// visible; the failed one surfaces only as a Failed node state and never
+/// lands in the durable snapshot.
+#[tokio::test]
+async fn test_apply_batch_failed_addnode_leaves_no_orphan() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let Some((addr, _server_handle)) = start_test_server().await else {
+        eprintln!("Skipping: local TCP bind not permitted");
+        return;
+    };
+
+    let (mut write, mut read, session_id) = setup_session(addr).await;
+
+    // `audio::*` is allowed for the default role, so the bogus kind passes
+    // validation (which never consults the node registry) but has no
+    // factory — the engine fails its creation after the batch is accepted.
+    let payload = send_apply_batch(
+        &mut write,
+        &mut read,
+        &session_id,
+        vec![
+            BatchOperation::AddNode {
+                node_id: "gain_ok".to_string(),
+                kind: "audio::gain".to_string(),
+                params: Some(json!({"gain": 1.0})),
+            },
+            BatchOperation::AddNode {
+                node_id: "ghost".to_string(),
+                kind: "audio::definitely_not_a_real_kind".to_string(),
+                params: None,
+            },
+        ],
+        "apply-partial-failure",
+    )
+    .await;
+
+    match payload {
+        ResponsePayload::BatchApplied { success, errors } => {
+            assert!(success, "batch should be accepted: validation does not consult the registry");
+            assert!(errors.is_empty(), "expected no validation errors, got: {errors:?}");
+        },
+        other => panic!("Expected BatchApplied, got: {:?}", other),
+    }
+
+    // Drain events until the valid node is confirmed and the bogus one
+    // reports Failed.  A `nodeadded` for the bogus id would mean an orphan.
+    let mut saw_ok_added = false;
+    let mut saw_ghost_failed = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while (!saw_ok_added || !saw_ghost_failed) && tokio::time::Instant::now() < deadline {
+        let Ok(Some(Ok(message))) = timeout(Duration::from_secs(5), read.next()).await else {
+            continue;
+        };
+        let Ok(text) = message.to_text() else { continue };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else { continue };
+        if value.get("type").and_then(|v| v.as_str()) != Some("event") {
+            continue;
+        }
+        let payload = value.get("payload");
+        let event = payload.and_then(|p| p.get("event")).and_then(|e| e.as_str());
+        let node_id = payload.and_then(|p| p.get("node_id")).and_then(|n| n.as_str());
+
+        if event == Some("nodeadded") {
+            assert_ne!(node_id, Some("ghost"), "failed creation must not emit nodeadded");
+            if node_id == Some("gain_ok") {
+                saw_ok_added = true;
+            }
+        } else if event == Some("nodestatechanged") && node_id == Some("ghost") {
+            let state = payload.and_then(|p| p.get("state"));
+            let is_failed = state.and_then(|s| s.as_str()) == Some("Failed")
+                || state.and_then(|s| s.as_object()).is_some_and(|m| m.contains_key("Failed"));
+            if is_failed {
+                saw_ghost_failed = true;
+            }
+        }
+    }
+    assert!(saw_ok_added, "valid node 'gain_ok' was never confirmed");
+    assert!(saw_ghost_failed, "bogus node 'ghost' never reported a Failed state");
+
+    // The durable snapshot must contain only the confirmed node.
+    let request = Request {
+        message_type: MessageType::Request,
+        correlation_id: Some("partial-failure-pipeline".to_string()),
+        payload: RequestPayload::GetPipeline { session_id: session_id.clone() },
+    };
+    write.send(WsMessage::Text(serde_json::to_string(&request).unwrap().into())).await.unwrap();
+
+    match read_response(&mut read, "partial-failure-pipeline").await.payload {
+        ResponsePayload::Pipeline { pipeline } => {
+            assert!(pipeline.nodes.contains_key("gain_ok"), "confirmed node must be present");
+            assert!(
+                !pipeline.nodes.contains_key("ghost"),
+                "failed AddNode must not leave an orphan, got nodes: {:?}",
+                pipeline.nodes.keys().collect::<Vec<_>>(),
+            );
+        },
+        other => panic!("Expected Pipeline response, got: {:?}", other),
     }
 }
