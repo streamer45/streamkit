@@ -1052,9 +1052,29 @@ mod tests {
         enc_handle.await.unwrap().unwrap();
 
         let encoded_packets = enc_sender.get_packets_for_pin("out").await;
+        let output_timestamps: Vec<u64> = encoded_packets
+            .iter()
+            .filter_map(|p| match p {
+                Packet::Binary { metadata, .. } => metadata.as_ref().and_then(|m| m.timestamp_us),
+                _ => None,
+            })
+            .collect();
+
+        // The encoder preserves each input frame's pts, so output timestamps
+        // identify which segment produced them. Asserting only `!is_empty()`
+        // would pass on the first (pre-change) encoder's packets alone — the
+        // exact #540 regression. Require output from the post-change segment
+        // and from the final segment after the second change.
+        let first_change_ts = 33_333 * 2;
+        let final_segment_ts = 33_333 * 4;
         assert!(
-            !encoded_packets.is_empty(),
-            "SVT-AV1 encoder produced no packets across a dimension change"
+            output_timestamps.iter().any(|&ts| ts >= first_change_ts),
+            "no packets after the mid-stream dimension change; got {output_timestamps:?}"
+        );
+        assert!(
+            output_timestamps.iter().any(|&ts| ts >= final_segment_ts),
+            "no packets from the final segment after the second dimension change; \
+             got {output_timestamps:?}"
         );
     }
 }

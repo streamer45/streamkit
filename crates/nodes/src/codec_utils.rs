@@ -61,7 +61,9 @@ pub(crate) fn bounded_thread_join(
 ) -> ThreadJoin {
     match done.recv_timeout(timeout) {
         Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            let _ = handle.join();
+            if handle.join().is_err() {
+                tracing::error!("bounded thread join: worker panicked before signaling completion");
+            }
             ThreadJoin::Joined
         },
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => ThreadJoin::Abandoned,
@@ -135,18 +137,15 @@ pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
             // Forward results first so active output always wins over the idle
             // watchdog and keeps unblocking the codec's `blocking_send()`.
             maybe_result = result_rx.recv() => {
-                match maybe_result {
-                    Some(Ok(item)) => {
-                        idle.as_mut().reset(tokio::time::Instant::now() + CODEC_IDLE_TIMEOUT);
+                let Some(result) = maybe_result else { break };
+                idle.as_mut().reset(tokio::time::Instant::now() + CODEC_IDLE_TIMEOUT);
+                match result {
+                    Ok(item) => {
                         if forward_one(to_packet(item), context, counter, stats).await {
                             break;
                         }
                     }
-                    Some(Err(err)) => {
-                        idle.as_mut().reset(tokio::time::Instant::now() + CODEC_IDLE_TIMEOUT);
-                        handle_error(&err, counter, stats, label);
-                    }
-                    None => break,
+                    Err(err) => handle_error(&err, counter, stats, label),
                 }
             }
             Some(control_msg) = context.control_rx.recv() => {
@@ -159,6 +158,11 @@ pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
                 tracing::debug!("{label} input task completed, flushing codec");
                 input_done = true;
                 codec_tx = None;
+                // Give the EOS flush a full idle budget rather than whatever
+                // residual time the timer happened to hold; otherwise a healthy
+                // flush could be abandoned within seconds, breaking the
+                // `CODEC_IDLE_TIMEOUT > RECEIVE_THREAD_JOIN_TIMEOUT` budget.
+                idle.as_mut().reset(tokio::time::Instant::now() + CODEC_IDLE_TIMEOUT);
             }
             res = &mut codec_task, if !codec_done => {
                 codec_done = true;
@@ -176,7 +180,7 @@ pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
                 result_rx.close();
             }
             () = &mut idle, if !codec_done => {
-                let codec_input_full = codec_tx.as_ref().is_none_or(|tx| tx.capacity() == 0);
+                let codec_input_full = codec_tx.as_ref().is_some_and(|tx| tx.capacity() == 0);
                 if input_done || codec_input_full {
                     tracing::error!(
                         "{label} produced no output for {CODEC_IDLE_TIMEOUT:?} while the codec \
@@ -371,6 +375,58 @@ mod tests {
         )
         .await
         .expect("idle watchdog must finalize a wedged post-input-close flush");
+    }
+
+    /// Regression for #540: closing input must re-arm the idle watchdog to a
+    /// full budget. Input here goes silent for nearly a whole idle period
+    /// before closing, leaving the timer with ~1s residual; the EOS flush then
+    /// emits a packet 2s after close. Without the re-arm the watchdog fires on
+    /// the stale residual and abandons a healthy flush, dropping that packet;
+    /// with it, the flush gets a full budget and the packet is forwarded.
+    #[tokio::test(start_paused = true)]
+    async fn forward_loop_rearms_idle_budget_on_input_close() {
+        let (mut ctx, mock_out, _state_rx) = create_test_context(HashMap::new(), 1);
+        let mut stats = NodeStatsTracker::new("test".to_string(), ctx.stats_tx.clone());
+        let counter = test_counter();
+
+        let (result_tx, mut result_rx) = mpsc::channel::<Result<Vec<u8>, String>>(8);
+        tokio::task::spawn(async move {
+            tokio::time::sleep(CODEC_IDLE_TIMEOUT + Duration::from_secs(1)).await;
+            let _ = result_tx.send(Ok(vec![7])).await;
+        });
+
+        // No output while input is open, then input closes ~1s before the
+        // watchdog's first deadline (residual ≈ 1s).
+        let mut input_task = tokio::task::spawn(async {
+            tokio::time::sleep(CODEC_IDLE_TIMEOUT.saturating_sub(Duration::from_secs(1))).await;
+        });
+        let codec_task = tokio::task::spawn(std::future::pending::<()>());
+        // Input channel stays non-full, so only the watchdog can end the loop
+        // early — exactly the path the re-arm must lengthen.
+        let (codec_tx, _codec_rx) = mpsc::channel::<Vec<u8>>(1);
+
+        tokio::time::timeout(
+            Duration::from_mins(10),
+            codec_forward_loop(
+                &mut ctx,
+                &mut result_rx,
+                &mut input_task,
+                codec_task,
+                codec_tx,
+                &counter,
+                &mut stats,
+                to_binary,
+                "test",
+            ),
+        )
+        .await
+        .expect("loop must finalize");
+
+        assert!(
+            matches!(mock_out.try_recv().await, Some((_, _, Packet::Binary { .. }))),
+            "a flush packet emitted after input close must be forwarded, not pre-empted \
+             by the watchdog firing on a stale residual budget"
+        );
     }
 
     /// Regression for #540: a thread wedged in a blocking native flush (never
