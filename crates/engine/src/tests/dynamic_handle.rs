@@ -287,7 +287,7 @@ async fn handle_subscribe_node_lifecycle_yields_added_then_removed() {
         panic!("expected node-removed notification within 3s");
     };
     assert_eq!(removed.node_id, "subscribed");
-    assert_eq!(removed.generation, added.generation);
+    assert_eq!(removed.generation, Some(added.generation));
 
     handle.shutdown_and_wait().await.expect("shutdown");
 }

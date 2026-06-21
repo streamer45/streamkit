@@ -1470,6 +1470,7 @@ impl DynamicEngine {
 
     /// Gracefully shut down a node and its associated actors.
     async fn shutdown_node(&mut self, node_id: &str) {
+        let existed_in_engine = self.node_states.contains_key(node_id);
         if let Some(state) = self.node_states.get(node_id) {
             self.zero_state_gauge(node_id, state);
         }
@@ -1523,18 +1524,20 @@ impl DynamicEngine {
         self.nodes_active_gauge
             .record(self.live_nodes.len() as u64, &self.node_attributes.pipeline);
 
-        // Only a node that was actually live (and thus emitted a
-        // NodeAddedNotification the session may have applied) needs a removal
-        // notification; a node torn down while still Creating was never
-        // inserted into the snapshot, so there is nothing to prune (#607).
-        if let Some(generation) = removed_generation {
+        // Notify for any node the engine actually held, not just live ones: a
+        // node torn down while still Creating (or left as Failed residue) was
+        // never in the snapshot so there is nothing to prune, but a client
+        // tracking it still needs a NodeRemoved. The session skips the prune
+        // when the id is absent yet still broadcasts (#607). `generation` is
+        // None for such a never-live node (it has no incarnation epoch).
+        if existed_in_engine || removed_generation.is_some() {
             let notification = NodeLifecycleNotification::Removed(NodeRemovedNotification {
                 node_id: node_id.to_string(),
-                generation,
+                generation: removed_generation,
             });
             tracing::info!(
                 node = %node_id,
-                generation,
+                generation = ?removed_generation,
                 subscribers = self.node_lifecycle_subscribers.len(),
                 "Emitting node-removed notification"
             );

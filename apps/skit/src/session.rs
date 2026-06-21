@@ -233,6 +233,14 @@ impl Session {
     /// forwarder) between the two checks and being silently dropped
     /// by the actor's duplicate-id guard later.
     ///
+    /// Removal is engine-authoritative (#607): a node stays in
+    /// `pipeline.nodes` until the engine confirms teardown, so a same-id
+    /// re-add issued as a *separate* request right after a `RemoveNode`
+    /// is transiently rejected here until that teardown lands. Replace a
+    /// node in a single batch (`disconnect → remove → add → connect`)
+    /// instead — `batch_id_conflicts` clears the id within the batch, so
+    /// the re-add is accepted regardless of teardown timing.
+    ///
     /// # Errors
     ///
     /// Returns `Err` with a human-readable reason when the id is
@@ -289,16 +297,10 @@ impl Session {
     /// `pipeline.nodes` until the engine confirms teardown via the
     /// node-lifecycle forwarder.
     pub fn prune_incident_connections(&self, pipeline: &mut Pipeline, node_id: &str) {
-        let dropped: Vec<streamkit_api::Connection> = pipeline
-            .connections
-            .iter()
-            .filter(|c| c.from_node == node_id || c.to_node == node_id)
-            .cloned()
-            .collect();
-        if dropped.is_empty() {
-            return;
-        }
-        pipeline.connections.retain(|c| c.from_node != node_id && c.to_node != node_id);
+        let (dropped, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut pipeline.connections)
+            .into_iter()
+            .partition(|c| c.from_node == node_id || c.to_node == node_id);
+        pipeline.connections = kept;
         for conn in dropped {
             tracing::debug!(
                 session_id = %self.id,
@@ -651,7 +653,7 @@ impl Session {
                         tracing::info!(
                             session_id = %session_id_for_lifecycle,
                             node_id = %removed.node_id,
-                            generation = removed.generation,
+                            generation = ?removed.generation,
                             "Node-removed notification received; pruning snapshot"
                         );
                         // Engine-authoritative *node membership* prune: pairing
@@ -665,15 +667,12 @@ impl Session {
                         // RemoveNode handlers, so pruning them off this async
                         // notification would clobber a node-replacement's
                         // reconnect (disconnect→remove→add→connect).
-                        let was_present = pipeline_for_lifecycle
-                            .lock()
-                            .await
-                            .nodes
-                            .shift_remove(&removed.node_id)
-                            .is_some();
-                        if !was_present {
-                            continue;
-                        }
+                        //
+                        // The NodeRemoved broadcast is independent of the prune:
+                        // a node that failed during creation was never in the
+                        // snapshot, but a client tracking it still needs the
+                        // clear event, so the engine emits Removed for it too.
+                        pipeline_for_lifecycle.lock().await.nodes.shift_remove(&removed.node_id);
                         let event = ApiEvent {
                             message_type: MessageType::Event,
                             correlation_id: None,
@@ -919,6 +918,33 @@ impl SessionManager {
     /// Lists all active sessions
     pub fn list_sessions(&self) -> Vec<Session> {
         self.sessions.values().cloned().collect()
+    }
+}
+
+#[cfg(test)]
+pub mod test_support {
+    /// Poll `predicate` until it holds or a 10s deadline elapses.
+    ///
+    /// Confirmed-add insertion and engine-driven removal reconcile the snapshot
+    /// asynchronously via the node-lifecycle forwarder (#607), so tests must
+    /// wait rather than read synchronously.
+    ///
+    /// # Panics
+    ///
+    /// Panics with `desc` if the deadline elapses before `predicate` holds.
+    pub async fn wait_until<F, Fut>(predicate: F, desc: &str)
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = bool>,
+    {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if predicate().await {
+                return;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "{desc}");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
     }
 }
 

@@ -986,17 +986,11 @@ mod sessions_batch_tests {
     /// `apply_batch_operations`.  This is the unit-level analogue of the
     /// integration tests' `wait_for_node_added`.
     async fn wait_for_node(session: &Session, node_id: &str) {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            if session.pipeline.lock().await.nodes.contains_key(node_id) {
-                return;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "node '{node_id}' was never confirmed into pipeline.nodes",
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        crate::session::test_support::wait_until(
+            || async { session.pipeline.lock().await.nodes.contains_key(node_id) },
+            &format!("node '{node_id}' was never confirmed into pipeline.nodes"),
+        )
+        .await;
     }
 
     /// Poll `pipeline.nodes` until `node_id` is gone or the deadline elapses.
@@ -1005,17 +999,11 @@ mod sessions_batch_tests {
     /// the engine tears the node down, not synchronously inside
     /// `apply_batch_operations` (#607).
     async fn wait_for_node_removed(session: &Session, node_id: &str) {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            if !session.pipeline.lock().await.nodes.contains_key(node_id) {
-                return;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "node '{node_id}' was never pruned from pipeline.nodes",
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        crate::session::test_support::wait_until(
+            || async { !session.pipeline.lock().await.nodes.contains_key(node_id) },
+            &format!("node '{node_id}' was never pruned from pipeline.nodes"),
+        )
+        .await;
     }
 
     /// Seed the session's durable pipeline model directly.  We bypass
@@ -1474,21 +1462,16 @@ mod sessions_batch_tests {
     /// (`Failed`/`Stopped`) or the deadline elapses.  The engine retains a
     /// terminal node here until an explicit `RemoveNode`.
     async fn wait_for_terminal(session: &Session, node_id: &str) {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            let states = session.get_node_states().await.unwrap_or_default();
-            if matches!(
-                states.get(node_id),
-                Some(NodeState::Failed { .. } | NodeState::Stopped { .. })
-            ) {
-                return;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "node '{node_id}' never reached a terminal state",
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        crate::session::test_support::wait_until(
+            || async {
+                matches!(
+                    session.get_node_states().await.unwrap_or_default().get(node_id),
+                    Some(NodeState::Failed { .. } | NodeState::Stopped { .. })
+                )
+            },
+            &format!("node '{node_id}' never reached a terminal state"),
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -1571,6 +1554,52 @@ mod sessions_batch_tests {
             .await
             .expect_err("re-adding a failed id must be rejected");
         assert!(err.contains("remove it before re-adding"), "unexpected error: {err}");
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn removenode_emits_node_removed_for_failed_residue() {
+        let (session, mut rx) = fresh_session().await;
+
+        apply_batch_operations(
+            &session,
+            vec![add_op("ghost", "core::definitely_not_a_real_kind")],
+            &Permissions::admin(),
+            &SecurityConfig::default(),
+        )
+        .await
+        .expect("batch accepted; ghost's creation is what fails");
+        wait_for_terminal(&session, "ghost").await;
+
+        // A node that failed during creation never entered pipeline.nodes, but
+        // clearing its engine residue must still broadcast NodeRemoved so a
+        // client tracking the failed node gets a clear event (#607 follow-up).
+        apply_batch_operations(
+            &session,
+            vec![remove_op("ghost")],
+            &Permissions::admin(),
+            &SecurityConfig::default(),
+        )
+        .await
+        .expect("RemoveNode must succeed");
+        wait_for_engine_removed(&session, "ghost").await;
+
+        let mut saw_node_removed = false;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline && !saw_node_removed {
+            match tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await {
+                Ok(Ok(BroadcastEvent { event, .. })) => {
+                    if matches!(
+                        &event.payload,
+                        EventPayload::NodeRemoved { node_id, .. } if node_id == "ghost"
+                    ) {
+                        saw_node_removed = true;
+                    }
+                },
+                _ => break,
+            }
+        }
+        assert!(saw_node_removed, "expected a NodeRemoved event for failed residue 'ghost'");
         let _ = session.shutdown_and_wait().await;
     }
 
@@ -1703,17 +1732,11 @@ mod sessions_batch_tests {
     /// Poll the engine's `node_states` until `node_id` is absent (the engine
     /// has torn it down and cleared its residue) or the deadline elapses.
     async fn wait_for_engine_removed(session: &Session, node_id: &str) {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            if !session.get_node_states().await.unwrap_or_default().contains_key(node_id) {
-                return;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "engine never tore down node '{node_id}'",
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        crate::session::test_support::wait_until(
+            || async { !session.get_node_states().await.unwrap_or_default().contains_key(node_id) },
+            &format!("engine never tore down node '{node_id}'"),
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -1788,8 +1811,9 @@ mod sessions_batch_tests {
         .expect("RemoveNode must succeed");
         wait_for_node_removed(&session, "b").await;
 
-        // The node-lifecycle forwarder must announce the dropped incident edge
-        // with a granular ConnectionRemoved before the NodeRemoved (#607).
+        // The incident edge's granular ConnectionRemoved (emitted synchronously
+        // by the RemoveNode handler) must arrive before the engine-driven
+        // NodeRemoved for 'b' (#607).
         let mut saw_connection_removed = false;
         let mut saw_node_removed = false;
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -1812,6 +1836,10 @@ mod sessions_batch_tests {
                         saw_connection_removed = true;
                     },
                     EventPayload::NodeRemoved { node_id, .. } if node_id == "b" => {
+                        assert!(
+                            saw_connection_removed,
+                            "NodeRemoved for 'b' arrived before its incident ConnectionRemoved",
+                        );
                         saw_node_removed = true;
                     },
                     _ => {},

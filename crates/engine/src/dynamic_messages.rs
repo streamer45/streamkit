@@ -68,11 +68,15 @@ pub struct NodeAddedNotification {
 /// re-insert and can leave a durable orphan (#607).
 ///
 /// `generation` is the torn-down incarnation's epoch (see #606), carried for
-/// observability and to correlate a removal with the add that created it.
+/// observability and to correlate a removal with the add that created it. It is
+/// `None` for a node that existed in the engine but never reached `live_nodes`
+/// (e.g. one that failed during creation/initialization), which has no
+/// incarnation epoch yet still warrants a `NodeRemoved` when its residue is
+/// cleared.
 #[derive(Clone, Debug)]
 pub struct NodeRemovedNotification {
     pub node_id: String,
-    pub generation: u64,
+    pub generation: Option<u64>,
 }
 
 /// Ordered node topology change emitted by the engine actor.

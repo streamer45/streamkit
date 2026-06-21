@@ -1751,17 +1751,11 @@ mod dispatcher_tests {
     /// removal reconcile the snapshot asynchronously via the node-lifecycle
     /// forwarder, so tests must wait rather than read synchronously.
     async fn wait_for_node_presence(session: &Session, node_id: &str, present: bool) {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            if session.pipeline.lock().await.nodes.contains_key(node_id) == present {
-                return;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "node '{node_id}' presence never became {present}",
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        crate::session::test_support::wait_until(
+            || async { session.pipeline.lock().await.nodes.contains_key(node_id) == present },
+            &format!("node '{node_id}' presence never became {present}"),
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -1769,9 +1763,9 @@ mod dispatcher_tests {
         let state = make_app_state();
         let session = fresh_session(&state, "admin").await;
 
-        // Add through the engine so the confirmed-add forwarder lands it in the
-        // snapshot, then assert the engine-driven removal forwarder prunes it
-        // (#607) — the WS handler no longer scrubs the snapshot optimistically.
+        // Snapshot membership is engine-authoritative on both edges (#607):
+        // the confirmed-add forwarder lands the node, the engine-driven removal
+        // forwarder prunes it. Both are async, hence the presence polling.
         let resp = dispatch(
             &state,
             &Permissions::admin(),
