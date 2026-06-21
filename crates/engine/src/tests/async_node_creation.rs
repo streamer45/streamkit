@@ -989,3 +989,54 @@ async fn test_tune_node_queued_while_creating() {
 
     handle.shutdown_and_wait().await.expect("shutdown");
 }
+
+#[tokio::test]
+#[allow(clippy::expect_used)]
+async fn removing_a_creating_node_emits_node_removed_notification() {
+    use crate::dynamic_messages::NodeLifecycleNotification;
+
+    let created = Arc::new(AtomicBool::new(false));
+    let mut registry = NodeRegistry::new();
+    registry.register_dynamic(
+        "test::slow",
+        SlowTestNode::factory(Duration::from_secs(1), created.clone()),
+        serde_json::json!({}),
+        vec!["test".to_string()],
+        false,
+    );
+
+    let (_engine, handle) = build_engine(registry);
+    let mut lifecycle_rx =
+        handle.subscribe_node_lifecycle().await.expect("subscribe_node_lifecycle");
+
+    handle
+        .send_control(EngineControlMessage::AddNode {
+            node_id: "slow".to_string(),
+            kind: "test::slow".to_string(),
+            params: None,
+        })
+        .await
+        .expect("add slow");
+
+    // Still Creating: the constructor sleeps 1s.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!created.load(Ordering::SeqCst), "node should still be creating");
+
+    handle
+        .send_control(EngineControlMessage::RemoveNode { node_id: "slow".to_string() })
+        .await
+        .expect("remove slow");
+
+    // Cancelling a Creating node must still announce teardown so clients
+    // tracking the Creating state get a clear event; it never reached
+    // live_nodes, so the generation is None.
+    let Ok(Some(NodeLifecycleNotification::Removed(removed))) =
+        tokio::time::timeout(Duration::from_secs(3), lifecycle_rx.recv()).await
+    else {
+        panic!("expected node-removed notification within 3s");
+    };
+    assert_eq!(removed.node_id, "slow");
+    assert_eq!(removed.generation, None);
+
+    handle.shutdown_and_wait().await.expect("shutdown");
+}

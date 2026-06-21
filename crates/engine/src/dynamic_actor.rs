@@ -1525,25 +1525,32 @@ impl DynamicEngine {
             .record(self.live_nodes.len() as u64, &self.node_attributes.pipeline);
 
         // Notify for any node the engine actually held, not just live ones: a
-        // node torn down while still Creating (or left as Failed residue) was
-        // never in the snapshot so there is nothing to prune, but a client
-        // tracking it still needs a NodeRemoved. The session skips the prune
-        // when the id is absent yet still broadcasts (#607). `generation` is
-        // None for such a never-live node (it has no incarnation epoch).
+        // node left as Failed residue was never in the snapshot so there is
+        // nothing to prune, but a client tracking it still needs a NodeRemoved.
+        // The session skips the prune when the id is absent yet still
+        // broadcasts (#607).
         if existed_in_engine || removed_generation.is_some() {
-            let notification = NodeLifecycleNotification::Removed(NodeRemovedNotification {
-                node_id: node_id.to_string(),
-                generation: removed_generation,
-            });
-            tracing::info!(
-                node = %node_id,
-                generation = ?removed_generation,
-                subscribers = self.node_lifecycle_subscribers.len(),
-                "Emitting node-removed notification"
-            );
-            self.node_lifecycle_subscribers
-                .retain(|subscriber| subscriber.send(notification.clone()).is_ok());
+            self.notify_node_removed(node_id, removed_generation);
         }
+    }
+
+    /// Broadcast a node-removed lifecycle notification, pruning subscribers that
+    /// have hung up.  `generation` is `None` for a node that never reached
+    /// `live_nodes` (Failed residue or one cancelled while still Creating) and
+    /// therefore has no incarnation epoch.
+    fn notify_node_removed(&mut self, node_id: &str, generation: Option<u64>) {
+        let notification = NodeLifecycleNotification::Removed(NodeRemovedNotification {
+            node_id: node_id.to_string(),
+            generation,
+        });
+        tracing::info!(
+            node = %node_id,
+            generation = ?generation,
+            subscribers = self.node_lifecycle_subscribers.len(),
+            "Emitting node-removed notification"
+        );
+        self.node_lifecycle_subscribers
+            .retain(|subscriber| subscriber.send(notification.clone()).is_ok());
     }
 
     /// Handles a completed background node creation.
@@ -1863,6 +1870,11 @@ impl DynamicEngine {
                     self.node_kinds.remove(&node_id);
                     self.node_metric_labels.remove(&node_id);
                     self.prune_pending_for(&node_id);
+                    // Clients saw this node's Creating state, so they still need
+                    // a NodeRemoved even though it never reached live_nodes and
+                    // has no incarnation epoch (mirrors shutdown_node's residue
+                    // path, #607).
+                    self.notify_node_removed(&node_id, None);
                 } else {
                     self.shutdown_node(&node_id).await;
                 }
