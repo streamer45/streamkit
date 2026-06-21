@@ -35,7 +35,9 @@ pub use dynamic_config::DynamicEngineConfig;
 #[cfg(feature = "dynamic")]
 pub use dynamic_handle::DynamicEngineHandle;
 #[cfg(feature = "dynamic")]
-pub use dynamic_messages::RuntimeSchemaUpdate;
+pub use dynamic_messages::{
+    NodeAddedNotification, NodeLifecycleNotification, NodeRemovedNotification, RuntimeSchemaUpdate,
+};
 pub use oneshot::{OneshotEngineConfig, OneshotInput, OneshotPipelineResult};
 
 #[cfg(feature = "dynamic")]
@@ -188,7 +190,7 @@ impl Engine {
             view_data_subscribers: Vec::new(),
             runtime_schemas: HashMap::new(),
             runtime_schema_subscribers: Vec::new(),
-            node_added_subscribers: Vec::new(),
+            node_lifecycle_subscribers: Vec::new(),
             nodes_active_gauge: meter
                 .u64_gauge("engine.nodes.active")
                 .with_description("Number of active nodes in the pipeline")

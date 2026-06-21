@@ -706,15 +706,21 @@ pub async fn apply_batch_operations(
                     );
                 },
                 streamkit_api::BatchOperation::RemoveNode { node_id } => {
-                    pipeline.nodes.shift_remove(&node_id);
-                    pipeline
-                        .connections
-                        .retain(|conn| conn.from_node != node_id && conn.to_node != node_id);
+                    // No optimistic `shift_remove` of the node: pruning
+                    // `pipeline.nodes` is the engine-driven node-lifecycle
+                    // forwarder's job, so a queued confirmed-add can never
+                    // re-insert a node the engine has torn down (#607).
+                    //
+                    // Incident connections ARE pruned synchronously here (and
+                    // announced via `ConnectionRemoved`) so they stay in-order
+                    // with this batch's own disconnect/reconnect — a node
+                    // replacement disconnects before this op, so nothing
+                    // survives to be wrongly dropped.
+                    session.prune_incident_connections(&mut pipeline, &node_id);
                     // Release any in-flight reservation: the engine's
                     // cancel-while-Creating path emits no terminal state, so
                     // without this an id removed mid-creation would stay
-                    // wedged in the in-flight set.  Mirrors
-                    // handle_remove_node.
+                    // wedged in the in-flight set.  Mirrors handle_remove_node.
                     creating.remove(&node_id);
                     engine_operations.push(
                         streamkit_core::control::EngineControlMessage::RemoveNode { node_id },
@@ -988,6 +994,25 @@ mod sessions_batch_tests {
             assert!(
                 tokio::time::Instant::now() < deadline,
                 "node '{node_id}' was never confirmed into pipeline.nodes",
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Poll `pipeline.nodes` until `node_id` is gone or the deadline elapses.
+    /// `RemoveNode` is engine-confirmed: the snapshot prune (and incident
+    /// connection pruning) is reconciled by the node-lifecycle forwarder once
+    /// the engine tears the node down, not synchronously inside
+    /// `apply_batch_operations` (#607).
+    async fn wait_for_node_removed(session: &Session, node_id: &str) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if !session.pipeline.lock().await.nodes.contains_key(node_id) {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "node '{node_id}' was never pruned from pipeline.nodes",
             );
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
@@ -1644,8 +1669,7 @@ mod sessions_batch_tests {
         assert_eq!(session.pipeline.lock().await.connections.len(), 2);
 
         // Confirmed-add: wait for the engine to confirm all three nodes
-        // before removing one, otherwise the node-added forwarder could
-        // re-insert 'b' after the synchronous removal below.
+        // before removing one.
         wait_for_node(&session, "a").await;
         wait_for_node(&session, "b").await;
         wait_for_node(&session, "c").await;
@@ -1660,8 +1684,11 @@ mod sessions_batch_tests {
         .await
         .expect("RemoveNode must succeed");
 
+        // RemoveNode is engine-confirmed (#607): the node-lifecycle forwarder
+        // prunes 'b' and its two incident edges once the engine tears it down.
+        wait_for_node_removed(&session, "b").await;
+
         let pipeline = session.pipeline.lock().await;
-        assert!(!pipeline.nodes.contains_key("b"), "'b' should be removed");
         assert!(pipeline.nodes.contains_key("a"));
         assert!(pipeline.nodes.contains_key("c"));
         assert!(
@@ -1670,6 +1697,130 @@ mod sessions_batch_tests {
             pipeline.connections,
         );
         drop(pipeline);
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    /// Poll the engine's `node_states` until `node_id` is absent (the engine
+    /// has torn it down and cleared its residue) or the deadline elapses.
+    async fn wait_for_engine_removed(session: &Session, node_id: &str) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if !session.get_node_states().await.unwrap_or_default().contains_key(node_id) {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "engine never tore down node '{node_id}'",
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn add_then_remove_cross_op_leaves_no_durable_orphan() {
+        let (session, _rx) = fresh_session().await;
+
+        // Add 'b' then immediately remove it WITHOUT waiting for the engine to
+        // confirm the add — the exact cross-op timing from #607. The engine
+        // emits Added then Removed on one ordered stream, so the forwarder
+        // inserts 'b' and then prunes it; a queued confirmed-add can never
+        // re-insert a node the engine has already torn down.
+        apply_batch_operations(
+            &session,
+            vec![add_op("b", "core::passthrough")],
+            &Permissions::admin(),
+            &SecurityConfig::default(),
+        )
+        .await
+        .expect("add batch must succeed");
+        apply_batch_operations(
+            &session,
+            vec![remove_op("b")],
+            &Permissions::admin(),
+            &SecurityConfig::default(),
+        )
+        .await
+        .expect("remove batch must succeed");
+
+        // Wait until the engine has fully processed both ops, then for the
+        // ordered forwarder to settle on the terminal (Removed) state.
+        wait_for_engine_removed(&session, "b").await;
+        wait_for_node_removed(&session, "b").await;
+
+        // Removed is the last lifecycle event for 'b', so once applied the
+        // snapshot stays clean — assert it does not get re-inserted.
+        for _ in 0..10 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            assert!(
+                !session.pipeline.lock().await.nodes.contains_key("b"),
+                "a queued confirmed-add must not re-insert a torn-down node",
+            );
+        }
+        let _ = session.shutdown_and_wait().await;
+    }
+
+    #[tokio::test]
+    async fn removenode_emits_connection_removed_for_incident_edges() {
+        let (session, mut rx) = fresh_session().await;
+        let setup = vec![
+            add_op("a", "core::passthrough"),
+            add_op("b", "core::passthrough"),
+            connect_op(("a", "out"), ("b", "in")),
+        ];
+        apply_batch_operations(
+            &session,
+            setup,
+            &passthrough_only_perms(),
+            &SecurityConfig::default(),
+        )
+        .await
+        .expect("setup batch must succeed");
+        wait_for_node(&session, "a").await;
+        wait_for_node(&session, "b").await;
+
+        apply_batch_operations(
+            &session,
+            vec![remove_op("b")],
+            &passthrough_only_perms(),
+            &SecurityConfig::default(),
+        )
+        .await
+        .expect("RemoveNode must succeed");
+        wait_for_node_removed(&session, "b").await;
+
+        // The node-lifecycle forwarder must announce the dropped incident edge
+        // with a granular ConnectionRemoved before the NodeRemoved (#607).
+        let mut saw_connection_removed = false;
+        let mut saw_node_removed = false;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline
+            && !(saw_connection_removed && saw_node_removed)
+        {
+            match tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await {
+                Ok(Ok(BroadcastEvent { event, .. })) => match &event.payload {
+                    EventPayload::ConnectionRemoved {
+                        from_node,
+                        from_pin,
+                        to_node,
+                        to_pin,
+                        ..
+                    } if from_node == "a"
+                        && from_pin == "out"
+                        && to_node == "b"
+                        && to_pin == "in" =>
+                    {
+                        saw_connection_removed = true;
+                    },
+                    EventPayload::NodeRemoved { node_id, .. } if node_id == "b" => {
+                        saw_node_removed = true;
+                    },
+                    _ => {},
+                },
+                _ => break,
+            }
+        }
+        assert!(saw_connection_removed, "expected a ConnectionRemoved event for the a->b edge");
+        assert!(saw_node_removed, "expected a NodeRemoved event for 'b'");
         let _ = session.shutdown_and_wait().await;
     }
 

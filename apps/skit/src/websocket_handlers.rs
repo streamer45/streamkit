@@ -560,29 +560,22 @@ async fn handle_remove_node(
         });
     }
 
-    {
-        let mut pipeline = session.pipeline.lock().await;
-        pipeline.nodes.shift_remove(&node_id);
-        pipeline.connections.retain(|conn| conn.from_node != node_id && conn.to_node != node_id);
-    }
     // Release any in-flight reservation: removing a node mid-creation
     // would otherwise leave the id wedged until the state forwarder
     // observed a Failed transition for the cancelled creation.
     session.release_node_id(&node_id).await;
 
-    let event = ApiEvent {
-        message_type: MessageType::Event,
-        correlation_id: None,
-        payload: EventPayload::NodeRemoved {
-            session_id: session.id.clone(),
-            node_id: node_id.clone(),
-        },
-    };
-    if let Err(e) = app_state.event_tx.send(BroadcastEvent::to_all(event)) {
-        error!("Failed to broadcast NodeRemoved event: {}", e);
+    // Prune incident connections synchronously (announcing `ConnectionRemoved`)
+    // so connection bookkeeping stays in-order with the request. The node
+    // itself is left in `pipeline.nodes` and pruned (with `NodeRemoved`) by the
+    // engine-driven node-lifecycle forwarder once teardown is confirmed —
+    // removing it optimistically raced a queued confirmed-add and could
+    // re-insert a durable orphan (#607).
+    {
+        let mut pipeline = session.pipeline.lock().await;
+        session.prune_incident_connections(&mut pipeline, &node_id);
     }
 
-    // Now safe to do async operations without holding session_manager lock
     let control_msg = EngineControlMessage::RemoveNode { node_id };
     session.send_control_message(control_msg).await;
     Some(ResponsePayload::Success)
@@ -1753,23 +1746,48 @@ mod dispatcher_tests {
         expect_error(resp, "not found");
     }
 
+    /// Poll `pipeline.nodes` until `node_id`'s presence matches `present` or
+    /// the deadline elapses.  Both confirmed-add insertion and engine-driven
+    /// removal reconcile the snapshot asynchronously via the node-lifecycle
+    /// forwarder, so tests must wait rather than read synchronously.
+    async fn wait_for_node_presence(session: &Session, node_id: &str, present: bool) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if session.pipeline.lock().await.nodes.contains_key(node_id) == present {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "node '{node_id}' presence never became {present}",
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
     #[tokio::test]
-    async fn remove_node_happy_path_returns_success() {
+    async fn remove_node_happy_path_prunes_snapshot_via_engine() {
         let state = make_app_state();
         let session = fresh_session(&state, "admin").await;
-        {
-            // Pre-insert a node directly into the durable pipeline model so the
-            // remove handler has something to scrub.
-            let mut pipeline = session.pipeline.lock().await;
-            pipeline.nodes.insert(
-                "alpha".to_string(),
-                streamkit_api::Node {
-                    kind: "core::passthrough".to_string(),
-                    params: None,
-                    state: None,
-                },
-            );
-        }
+
+        // Add through the engine so the confirmed-add forwarder lands it in the
+        // snapshot, then assert the engine-driven removal forwarder prunes it
+        // (#607) — the WS handler no longer scrubs the snapshot optimistically.
+        let resp = dispatch(
+            &state,
+            &Permissions::admin(),
+            "admin",
+            RequestPayload::AddNode {
+                session_id: session.id.clone(),
+                node_id: "alpha".into(),
+                kind: "core::passthrough".into(),
+                params: None,
+            },
+        )
+        .await
+        .expect("response");
+        assert!(matches!(resp, ResponsePayload::Success));
+        wait_for_node_presence(&session, "alpha", true).await;
+
         let resp = dispatch(
             &state,
             &Permissions::admin(),
@@ -1779,12 +1797,7 @@ mod dispatcher_tests {
         .await
         .expect("response");
         assert!(matches!(resp, ResponsePayload::Success));
-        // Node must be gone from the durable model.
-        let has_alpha = {
-            let pipeline = session.pipeline.lock().await;
-            pipeline.nodes.contains_key("alpha")
-        };
-        assert!(!has_alpha);
+        wait_for_node_presence(&session, "alpha", false).await;
     }
 
     fn connect_payload(session_id: &str) -> RequestPayload {

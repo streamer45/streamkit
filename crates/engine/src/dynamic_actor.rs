@@ -11,7 +11,10 @@
 use crate::{
     constants::DEFAULT_SUBSCRIBER_CHANNEL_CAPACITY,
     dynamic_config::CONTROL_CAPACITY,
-    dynamic_messages::{NodeAddedNotification, PinConfigMsg, QueryMessage, RuntimeSchemaUpdate},
+    dynamic_messages::{
+        NodeAddedNotification, NodeLifecycleNotification, NodeRemovedNotification, PinConfigMsg,
+        QueryMessage, RuntimeSchemaUpdate,
+    },
     dynamic_pin_distributor::PinDistributorActor,
     graph_builder,
 };
@@ -39,12 +42,9 @@ use tracing::Instrument;
 /// payload (`catch_unwind` yields `Box<dyn Any + Send>`).
 fn panic_reason(panic: &(dyn Any + Send)) -> String {
     if let Some(s) = panic.downcast_ref::<&str>() {
-        (*s).to_string()
-    } else if let Some(s) = panic.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "unknown panic".to_string()
+        return (*s).to_string();
     }
+    panic.downcast_ref::<String>().cloned().unwrap_or_else(|| "unknown panic".to_string())
 }
 
 /// Metadata about a node's pins, used for runtime type validation in dynamic pipelines.
@@ -185,19 +185,23 @@ pub struct DynamicEngine {
     /// a bounded channel risks silently dropping a notification that leaves
     /// the UI permanently stale.
     pub(super) runtime_schema_subscribers: Vec<mpsc::UnboundedSender<RuntimeSchemaUpdate>>,
-    /// Subscribers that want to receive a notification when a node is
-    /// fully created and initialized (i.e. transitioned from `Creating`
-    /// to `Initializing`).  This is what session-level forwarders turn
-    /// into the public `NodeAdded` event.  Failures are visible via the
-    /// existing state subscribers (`NodeState::Failed`) and never appear
-    /// here, so a `NodeAddedNotification` always means success.
+    /// Subscribers that receive an ordered stream of node add/remove events.
+    /// `Added` fires when a node is fully created and initialized; `Removed`
+    /// fires when the actor actually tears a node down. Session-level
+    /// forwarders turn these into the public `NodeAdded`/`NodeRemoved` events
+    /// and the `pipeline.nodes` insert/prune. `Added` always means success;
+    /// failures are visible via state subscribers (`NodeState::Failed`).
     ///
-    /// Unbounded because node creations are one-per-node and very
-    /// low-frequency; a bounded channel risks silently dropping a
-    /// notification that leaves the UI permanently without a
-    /// `nodeadded` event for that node.  Same model as
+    /// One stream (not two) so a single forwarder applies adds and removes in
+    /// the exact order the actor mutated `live_nodes`; independent channels
+    /// could reorder an add ahead of its later remove and re-insert a torn-down
+    /// node — the durable-orphan race in #607.
+    ///
+    /// Unbounded because node lifecycle events are one-per-node and very
+    /// low-frequency; a bounded channel risks silently dropping an event that
+    /// leaves the snapshot permanently inconsistent. Same model as
     /// `runtime_schema_subscribers` above.
-    pub(super) node_added_subscribers: Vec<mpsc::UnboundedSender<NodeAddedNotification>>,
+    pub(super) node_lifecycle_subscribers: Vec<mpsc::UnboundedSender<NodeLifecycleNotification>>,
     // Metrics
     pub(super) nodes_active_gauge: opentelemetry::metrics::Gauge<u64>,
     pub(super) node_state_transitions_counter: opentelemetry::metrics::Counter<u64>,
@@ -345,9 +349,9 @@ impl DynamicEngine {
                 self.runtime_schema_subscribers.push(tx);
                 let _ = response_tx.send(rx).await;
             },
-            QueryMessage::SubscribeNodeAdded { response_tx } => {
+            QueryMessage::SubscribeNodeLifecycle { response_tx } => {
                 let (tx, rx) = mpsc::unbounded_channel();
-                self.node_added_subscribers.push(tx);
+                self.node_lifecycle_subscribers.push(tx);
                 let _ = response_tx.send(rx).await;
             },
         }
@@ -772,7 +776,7 @@ impl DynamicEngine {
                 let result: Result<(), StreamKitError> = match run_result {
                     Ok(result) => result,
                     Err(panic) => {
-                        let reason = panic_reason(&panic);
+                        let reason = panic_reason(&*panic);
                         tracing::error!(
                             node = %node_id_for_task,
                             panic = %reason,
@@ -1470,7 +1474,9 @@ impl DynamicEngine {
             self.zero_state_gauge(node_id, state);
         }
 
+        let mut removed_generation: Option<u64> = None;
         if let Some(live_node) = self.live_nodes.remove(node_id) {
+            removed_generation = Some(live_node.generation);
             if live_node.control_tx.send(NodeControlMessage::Shutdown).await.is_ok() {
                 let mut task_handle = live_node.task_handle;
                 let shutdown_result =
@@ -1516,6 +1522,25 @@ impl DynamicEngine {
         self.node_metric_labels.remove(node_id);
         self.nodes_active_gauge
             .record(self.live_nodes.len() as u64, &self.node_attributes.pipeline);
+
+        // Only a node that was actually live (and thus emitted a
+        // NodeAddedNotification the session may have applied) needs a removal
+        // notification; a node torn down while still Creating was never
+        // inserted into the snapshot, so there is nothing to prune (#607).
+        if let Some(generation) = removed_generation {
+            let notification = NodeLifecycleNotification::Removed(NodeRemovedNotification {
+                node_id: node_id.to_string(),
+                generation,
+            });
+            tracing::info!(
+                node = %node_id,
+                generation,
+                subscribers = self.node_lifecycle_subscribers.len(),
+                "Emitting node-removed notification"
+            );
+            self.node_lifecycle_subscribers
+                .retain(|subscriber| subscriber.send(notification.clone()).is_ok());
+        }
     }
 
     /// Handles a completed background node creation.
@@ -1575,8 +1600,19 @@ impl DynamicEngine {
                 self.flush_pending_connections().await;
                 self.flush_pending_tunes(&node_id).await;
 
-                let notification = NodeAddedNotification { node_id: node_id.clone(), kind, params };
-                self.node_added_subscribers
+                let notification = NodeLifecycleNotification::Added(NodeAddedNotification {
+                    node_id: node_id.clone(),
+                    kind,
+                    params,
+                    generation: creation_id,
+                });
+                tracing::info!(
+                    node = %node_id,
+                    generation = creation_id,
+                    subscribers = self.node_lifecycle_subscribers.len(),
+                    "Emitting node-added notification"
+                );
+                self.node_lifecycle_subscribers
                     .retain(|subscriber| subscriber.send(notification.clone()).is_ok());
             },
             Err(e) => {

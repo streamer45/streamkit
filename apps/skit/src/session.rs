@@ -15,7 +15,9 @@ use streamkit_core::control::{ConnectionMode, EngineControlMessage};
 use streamkit_core::state::NodeState;
 use streamkit_core::stats::NodeStats;
 use streamkit_core::telemetry::TelemetryEvent;
-use streamkit_engine::{DynamicEngineConfig, DynamicEngineHandle, Engine};
+use streamkit_engine::{
+    DynamicEngineConfig, DynamicEngineHandle, Engine, NodeLifecycleNotification,
+};
 use time::format_description::well_known::Rfc3339;
 use tokio::sync::{broadcast, Mutex};
 use uuid::Uuid;
@@ -200,6 +202,11 @@ pub struct Session {
     /// success (node-added forwarder), on failure (state forwarder
     /// observes `Failed`), or when an in-flight node is removed.
     pub creating_nodes: Arc<Mutex<HashSet<String>>>,
+    /// Broadcast channel for this session's events. Held so synchronous
+    /// handlers (e.g. RemoveNode incident-connection pruning) can announce
+    /// `ConnectionRemoved` in-order with the snapshot mutation, rather than
+    /// from an async forwarder that would race the batch's reconnect.
+    event_tx: broadcast::Sender<BroadcastEvent>,
     /// Timestamp when the session was created
     pub created_at: SystemTime,
     /// User/role who created this session (for permission filtering)
@@ -270,6 +277,50 @@ impl Session {
     /// Used on explicit removal of a still-Creating node.  Idempotent.
     pub async fn release_node_id(&self, node_id: &str) {
         self.creating_nodes.lock().await.remove(node_id);
+    }
+
+    /// Removes connections incident on `node_id` from the held `pipeline`
+    /// guard and broadcasts a `ConnectionRemoved` for each dropped edge.
+    ///
+    /// Kept synchronous and in-order with the RemoveNode bookkeeping (rather
+    /// than pruned off the async node-removed notification) so a node
+    /// replacement's `disconnect → remove → add → connect` reconnect is not
+    /// clobbered by an out-of-order prune (#607).  The node itself stays in
+    /// `pipeline.nodes` until the engine confirms teardown via the
+    /// node-lifecycle forwarder.
+    pub fn prune_incident_connections(&self, pipeline: &mut Pipeline, node_id: &str) {
+        let dropped: Vec<streamkit_api::Connection> = pipeline
+            .connections
+            .iter()
+            .filter(|c| c.from_node == node_id || c.to_node == node_id)
+            .cloned()
+            .collect();
+        if dropped.is_empty() {
+            return;
+        }
+        pipeline.connections.retain(|c| c.from_node != node_id && c.to_node != node_id);
+        for conn in dropped {
+            tracing::debug!(
+                session_id = %self.id,
+                connection = %format!(
+                    "{}.{} -> {}.{}",
+                    conn.from_node, conn.from_pin, conn.to_node, conn.to_pin
+                ),
+                "Emitting ConnectionRemoved for pruned incident edge"
+            );
+            let event = ApiEvent {
+                message_type: MessageType::Event,
+                correlation_id: None,
+                payload: EventPayload::ConnectionRemoved {
+                    session_id: self.id.clone(),
+                    from_node: conn.from_node,
+                    from_pin: conn.from_pin,
+                    to_node: conn.to_node,
+                    to_pin: conn.to_pin,
+                },
+            };
+            let _ = self.event_tx.send(BroadcastEvent::to_all(event));
+        }
     }
 
     /// Forwards a control message to this session's specific engine actor.
@@ -527,65 +578,117 @@ impl Session {
             );
         });
 
-        // Subscribe to node-added notifications from the engine and use
-        // them as the trigger for both updating `pipeline.nodes` and
-        // emitting the public `NodeAdded` event.  Doing this here (and
-        // not in the WebSocket addnode handler) means clients only see
-        // `nodeadded` after the engine has confirmed the plugin's
-        // constructor and `initialize_node` returned Ok — never
-        // speculatively before the FFI call has even run.  Failures
-        // surface as `NodeStateChanged { state: Failed }` via the
-        // existing state forwarder above.
+        // Subscribe to the engine's ordered node-lifecycle stream and make it
+        // the single authority for mutating `pipeline.nodes`: an `Added` event
+        // inserts the node (and emits the public `NodeAdded`), a `Removed`
+        // event prunes it and its incident connections (and emits the public
+        // `NodeRemoved` / `ConnectionRemoved`).
         //
-        // Subscribing here (vs earlier in `create`) is safe: the engine
-        // can't have any nodes until something sends `AddNode`, and the
-        // first `AddNode` can't arrive until `create` returns the
-        // handle to its caller.
-        let mut node_added_rx = engine_handle
-            .subscribe_node_added()
+        // Driving both from one ordered stream — rather than an optimistic
+        // synchronous `shift_remove` on the RemoveNode request — keeps the
+        // snapshot consistent with the engine across the add/remove race: a
+        // `Removed` is always observed after its `Added`, so a confirmed-add
+        // notification can never re-insert a node the engine has torn down
+        // (the durable-orphan race in #607). Clients also only see `nodeadded`
+        // after the engine confirmed the plugin's constructor and
+        // `initialize_node` returned Ok; creation failures surface as
+        // `NodeStateChanged { state: Failed }` via the state forwarder above.
+        //
+        // Subscribing here (vs earlier in `create`) is safe: the engine can't
+        // have any nodes until something sends `AddNode`, and the first
+        // `AddNode` can't arrive until `create` returns the handle.
+        let mut node_lifecycle_rx = engine_handle
+            .subscribe_node_lifecycle()
             .await
-            .map_err(|e| format!("Failed to subscribe to node-added updates: {e}"))?;
-        let session_id_for_node_added = session_id.clone();
-        let event_tx_for_node_added = event_tx.clone();
-        let pipeline_for_node_added = pipeline.clone();
-        let creating_nodes_for_node_added = creating_nodes.clone();
+            .map_err(|e| format!("Failed to subscribe to node-lifecycle updates: {e}"))?;
+        let session_id_for_lifecycle = session_id.clone();
+        let event_tx_for_lifecycle = event_tx.clone();
+        let pipeline_for_lifecycle = pipeline.clone();
+        let creating_nodes_for_lifecycle = creating_nodes.clone();
         tokio::spawn(async move {
-            while let Some(notification) = node_added_rx.recv().await {
-                // Update the cached pipeline snapshot first, then
-                // broadcast — late subscribers (re-fetching the pipeline
-                // immediately after a `nodeadded` event) see a
-                // consistent view that already includes the new entry.
-                {
-                    let mut pip = pipeline_for_node_added.lock().await;
-                    pip.nodes.insert(
-                        notification.node_id.clone(),
-                        streamkit_api::Node {
-                            kind: notification.kind.clone(),
-                            params: notification.params.clone(),
-                            state: None,
-                        },
-                    );
-                }
-                // The node is now visible in pipeline.nodes — drop the
-                // in-flight reservation so a future addnode for this id
-                // (after a removenode) is gated only by the live
-                // pipeline check.
-                creating_nodes_for_node_added.lock().await.remove(&notification.node_id);
-                let event = ApiEvent {
-                    message_type: MessageType::Event,
-                    correlation_id: None,
-                    payload: EventPayload::NodeAdded {
-                        session_id: session_id_for_node_added.clone(),
-                        node_id: notification.node_id,
-                        kind: notification.kind,
-                        params: notification.params,
+            while let Some(notification) = node_lifecycle_rx.recv().await {
+                match notification {
+                    NodeLifecycleNotification::Added(added) => {
+                        tracing::info!(
+                            session_id = %session_id_for_lifecycle,
+                            node_id = %added.node_id,
+                            generation = added.generation,
+                            "Node-added notification received; inserting into snapshot"
+                        );
+                        // Update the cached snapshot first, then broadcast —
+                        // late subscribers re-fetching the pipeline right after
+                        // a `nodeadded` event see a view that already includes
+                        // the new entry.
+                        {
+                            let mut pip = pipeline_for_lifecycle.lock().await;
+                            pip.nodes.insert(
+                                added.node_id.clone(),
+                                streamkit_api::Node {
+                                    kind: added.kind.clone(),
+                                    params: added.params.clone(),
+                                    state: None,
+                                },
+                            );
+                        }
+                        // The node is now visible in pipeline.nodes — drop the
+                        // in-flight reservation so a future addnode for this id
+                        // (after a removenode) is gated only by the live
+                        // pipeline check.
+                        creating_nodes_for_lifecycle.lock().await.remove(&added.node_id);
+                        let event = ApiEvent {
+                            message_type: MessageType::Event,
+                            correlation_id: None,
+                            payload: EventPayload::NodeAdded {
+                                session_id: session_id_for_lifecycle.clone(),
+                                node_id: added.node_id,
+                                kind: added.kind,
+                                params: added.params,
+                            },
+                        };
+                        let _ = event_tx_for_lifecycle.send(BroadcastEvent::to_all(event));
                     },
-                };
-                let _ = event_tx_for_node_added.send(BroadcastEvent::to_all(event));
+                    NodeLifecycleNotification::Removed(removed) => {
+                        tracing::info!(
+                            session_id = %session_id_for_lifecycle,
+                            node_id = %removed.node_id,
+                            generation = removed.generation,
+                            "Node-removed notification received; pruning snapshot"
+                        );
+                        // Engine-authoritative *node membership* prune: pairing
+                        // it with the confirmed-add insertion above (vs an
+                        // optimistic `shift_remove` on the request) means a
+                        // queued `Added` can never re-insert a node the engine
+                        // has torn down — the durable-orphan race in #607.
+                        //
+                        // Incident *connections* are NOT pruned here: they are
+                        // synchronous session state mutated in-order by the
+                        // RemoveNode handlers, so pruning them off this async
+                        // notification would clobber a node-replacement's
+                        // reconnect (disconnect→remove→add→connect).
+                        let was_present = pipeline_for_lifecycle
+                            .lock()
+                            .await
+                            .nodes
+                            .shift_remove(&removed.node_id)
+                            .is_some();
+                        if !was_present {
+                            continue;
+                        }
+                        let event = ApiEvent {
+                            message_type: MessageType::Event,
+                            correlation_id: None,
+                            payload: EventPayload::NodeRemoved {
+                                session_id: session_id_for_lifecycle.clone(),
+                                node_id: removed.node_id,
+                            },
+                        };
+                        let _ = event_tx_for_lifecycle.send(BroadcastEvent::to_all(event));
+                    },
+                }
             }
             tracing::debug!(
-                session_id = %session_id_for_node_added,
-                "Node-added forwarding task ended"
+                session_id = %session_id_for_lifecycle,
+                "Node-lifecycle forwarding task ended"
             );
         });
 
@@ -624,6 +727,7 @@ impl Session {
             engine_handle: Arc::new(engine_handle),
             pipeline,
             creating_nodes,
+            event_tx,
             created_at: SystemTime::now(),
             created_by,
             #[cfg(feature = "moq")]
