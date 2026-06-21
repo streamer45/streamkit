@@ -58,6 +58,7 @@ export function useMoqYamlSync(
 
   const configServerUrl = useStreamStore((s) => s.configServerUrl);
   const prevConfigServerUrlRef = useRef(configServerUrl);
+  const configLoadHandledRef = useRef(false);
 
   const cancelPending = useCallback(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -116,8 +117,17 @@ export function useMoqYamlSync(
   useEffect(() => {
     const prev = prevConfigServerUrlRef.current;
     prevConfigServerUrlRef.current = configServerUrl;
-    if (prev || !configServerUrl) return;
-    const settings = lastSettingsRef.current;
+    // Fire only once, on the first load: a later reset of configServerUrl must
+    // not clobber a server URL the user has since edited by hand.
+    if (configLoadHandledRef.current || !configServerUrl) return;
+    configLoadHandledRef.current = true;
+    if (prev) return;
+    // A pending debounced edit hasn't updated lastSettingsRef yet, so re-resolve
+    // from the in-flight YAML to avoid briefly applying the prior derive's URL.
+    const settings =
+      pendingYamlRef.current !== null
+        ? extractMoqSettingsFromClient(parseClientFromYaml(pendingYamlRef.current))
+        : lastSettingsRef.current;
     if (!settings) return;
     const resolvedUrl = resolveServerUrl(settings, configServerUrl);
     if (resolvedUrl) storeActions.setServerUrl(resolvedUrl);

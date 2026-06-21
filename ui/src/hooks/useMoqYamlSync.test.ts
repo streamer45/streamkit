@@ -132,6 +132,18 @@ describe('useMoqYamlSync', () => {
     expect(actions.setServerUrl).toHaveBeenCalledWith('https://gw.example.com/moq/live');
   });
 
+  it('re-resolves from a pending debounced edit, not the prior derive (no stale URL)', () => {
+    const actions = makeActions();
+    const { result } = renderHook(() => useMoqYamlSync(actions, vi.fn()));
+
+    act(() => result.current.deriveMoqFromYaml(moqYaml('out-A', '/moq/A')));
+    act(() => result.current.handleYamlChange(moqYaml('out-B', '/moq/B')));
+    act(() => useStreamStore.setState({ configServerUrl: 'https://gw.example.com' }));
+
+    expect(actions.setServerUrl).toHaveBeenLastCalledWith('https://gw.example.com/moq/B');
+    expect(actions.setServerUrl).not.toHaveBeenCalledWith('https://gw.example.com/moq/A');
+  });
+
   it('does not re-resolve the server URL on later configServerUrl changes', () => {
     const actions = makeActions();
     useStreamStore.setState({ configServerUrl: 'https://gw.example.com' });
@@ -140,6 +152,20 @@ describe('useMoqYamlSync', () => {
     act(() => result.current.deriveMoqFromYaml(moqYaml('out-1', '/moq/live')));
     const callsAfterDerive = (actions.setServerUrl as ReturnType<typeof vi.fn>).mock.calls.length;
 
+    act(() => useStreamStore.setState({ configServerUrl: 'https://gw2.example.com' }));
+
+    expect(actions.setServerUrl).toHaveBeenCalledTimes(callsAfterDerive);
+  });
+
+  it('does not re-resolve on a set -> empty -> set configServerUrl cycle', () => {
+    const actions = makeActions();
+    useStreamStore.setState({ configServerUrl: 'https://gw.example.com' });
+    const { result } = renderHook(() => useMoqYamlSync(actions, vi.fn()));
+
+    act(() => result.current.deriveMoqFromYaml(moqYaml('out-1', '/moq/live')));
+    const callsAfterDerive = (actions.setServerUrl as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    act(() => useStreamStore.setState({ configServerUrl: '' }));
     act(() => useStreamStore.setState({ configServerUrl: 'https://gw2.example.com' }));
 
     expect(actions.setServerUrl).toHaveBeenCalledTimes(callsAfterDerive);
