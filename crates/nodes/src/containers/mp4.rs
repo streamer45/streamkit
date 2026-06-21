@@ -29,6 +29,7 @@ use shiguredo_mp4::descriptors::{
 };
 use shiguredo_mp4::mux::{Fmp4SegmentMuxer, Mp4FileMuxer, Sample};
 use shiguredo_mp4::{FixedPointNumber, TrackKind, Uint};
+use std::borrow::Cow;
 use std::io::{Seek, SeekFrom, Write};
 use std::num::{NonZeroU32, NonZeroUsize};
 use streamkit_core::pins::PinManagementMessage;
@@ -412,6 +413,63 @@ fn build_opus_sample_entry(sample_rate: u32, channels: u16) -> SampleEntry {
     })
 }
 
+/// The AV1 `av1C` configuration box written into every `av01` sample entry.
+///
+/// Its scalar fields (profile, level idx, tier, bit depth) are the single
+/// source of truth for the RFC 6381 `av01.P.LLT.DD` token advertised by
+/// [`mp4_content_type`] (via [`av1_codec_string`]), so the MIME codec can never
+/// drift from the bytes actually muxed into the container.
+///
+/// They are currently fixed at profile 0 / level idx 4 (3.0) / Main tier /
+/// 8-bit — what the AV1 encoders in this repo emit (the same debt is tracked on
+/// WebM's `AV1_CODEC_PRIVATE`). The `config_obus` payload carries the real
+/// sequence header OBU; if these scalars are ever derived from it,
+/// [`av1_codec_string`] picks up the change automatically.
+const fn av1c_config(config_obus: Vec<u8>) -> Av1cBox {
+    Av1cBox {
+        seq_profile: Uint::new(0),     // Main profile
+        seq_level_idx_0: Uint::new(4), // Level 3.0
+        seq_tier_0: Uint::new(0),      // Main tier
+        high_bitdepth: Uint::new(0),   // 8-bit
+        twelve_bit: Uint::new(0),
+        monochrome: Uint::new(0),
+        chroma_subsampling_x: Uint::new(1),   // 4:2:0
+        chroma_subsampling_y: Uint::new(1),   // 4:2:0
+        chroma_sample_position: Uint::new(0), // Unknown
+        initial_presentation_delay_minus_one: None,
+        config_obus,
+    }
+}
+
+/// Format the RFC 6381 codec string (`av01.P.LLT.DD`) for an `av1C` box:
+/// profile, two-digit level index, tier (`M` = Main / `H` = High) and
+/// two-digit bit depth.
+///
+/// The bare `av01` token is not a valid RFC 6381 string: `MediaSource.
+/// isTypeSupported` rejects it, silently demoting MSE consumers (the Convert
+/// view) from progressive playback to full-response blob buffering.
+fn av1_codec_string(av1c: &Av1cBox) -> String {
+    let bit_depth = if av1c.twelve_bit.get() == 1 {
+        12
+    } else if av1c.high_bitdepth.get() == 1 {
+        10
+    } else {
+        8
+    };
+    let tier = if av1c.seq_tier_0.get() == 0 { 'M' } else { 'H' };
+    format!(
+        "av01.{}.{:02}{tier}.{bit_depth:02}",
+        av1c.seq_profile.get(),
+        av1c.seq_level_idx_0.get(),
+    )
+}
+
+/// The `av01.P.LLT.DD` codec parameter advertised for AV1 MP4 output, derived
+/// from [`av1c_config`] so it always matches the muxed `av1C` box.
+fn av1_codec_param() -> String {
+    av1_codec_string(&av1c_config(Vec::new()))
+}
+
 /// Build an AV1 (`av01`) sample entry box.
 ///
 /// If `codec_private` is available it is stored as `config_obus` in the
@@ -431,19 +489,7 @@ fn build_av01_sample_entry(width: u16, height: u16, codec_private: Option<&[u8]>
             compressorname: VisualSampleEntryFields::NULL_COMPRESSORNAME,
             depth: VisualSampleEntryFields::DEFAULT_DEPTH,
         },
-        av1c_box: Av1cBox {
-            seq_profile: Uint::new(0),     // Main profile
-            seq_level_idx_0: Uint::new(4), // Level 3.0
-            seq_tier_0: Uint::new(0),      // Main tier
-            high_bitdepth: Uint::new(0),   // 8-bit
-            twelve_bit: Uint::new(0),
-            monochrome: Uint::new(0),
-            chroma_subsampling_x: Uint::new(1),   // 4:2:0
-            chroma_subsampling_y: Uint::new(1),   // 4:2:0
-            chroma_sample_position: Uint::new(0), // Unknown
-            initial_presentation_delay_minus_one: None,
-            config_obus,
-        },
+        av1c_box: av1c_config(config_obus),
         unknown_boxes: vec![],
     })
 }
@@ -583,12 +629,24 @@ fn classify_packet(packet: Packet) -> Option<MuxFrame> {
 ///
 /// `audio` and `video` are `None` when the respective track is absent.
 ///
-/// **Future-proofing note:** Any video codec that is not `Av1` currently maps
-/// to `avc1` in the codecs parameter, and any audio codec that is not `Opus`
-/// maps to `mp4a`.  When new codecs are added (e.g. VP9, HEVC), the match
-/// arms below must be extended — the fallback will log a warning so the
-/// mismatch is visible.
-fn mp4_content_type(audio: Option<AudioCodec>, video: Option<VideoCodec>) -> &'static str {
+/// AV1 is advertised with the full RFC 6381 token (`av01.P.LLT.DD`) derived
+/// from [`av1c_config`] — the bare `av01` token is rejected by
+/// `MediaSource.isTypeSupported`, demoting the Convert view to blob buffering.
+///
+/// **Known limitation (H.264):** the `avc1` token is emitted bare, which is
+/// likewise not a valid RFC 6381 string for MSE. The full `avc1.PPCCLL` form
+/// is derived from the SPS, but the SPS only becomes available once the video
+/// bitstream is parsed during muxing (see [`rebuild_avc1_entry_from_params`]),
+/// whereas this content type is resolved up-front to set the oneshot HTTP
+/// `Content-Type` header before any packet arrives. Pipelines that need H.264
+/// MSE playback should set the full token via the downstream node's
+/// `content_type` override (the H.264 sample pipelines already do, e.g.
+/// `avc1.42c01f`).
+///
+/// **Future-proofing note:** Any video codec that is not `Av1`/`H264`, and any
+/// audio codec that is not `Opus`/`Aac`, falls through to a warning and is
+/// omitted from the codecs parameter so the mismatch is visible.
+fn mp4_content_type(audio: Option<AudioCodec>, video: Option<VideoCodec>) -> Cow<'static, str> {
     if let Some(vc) = &video {
         if !matches!(vc, VideoCodec::H264 | VideoCodec::Av1) {
             tracing::warn!(
@@ -601,30 +659,40 @@ fn mp4_content_type(audio: Option<AudioCodec>, video: Option<VideoCodec>) -> &'s
     // Match on (audio_codec, video_codec) to produce a precise MIME codecs string.
     match (audio, video) {
         // Audio + Video
-        (Some(AudioCodec::Opus), Some(VideoCodec::Av1)) => "video/mp4; codecs=\"av01,opus\"",
-        (Some(AudioCodec::Opus), Some(VideoCodec::H264)) => "video/mp4; codecs=\"avc1,opus\"",
-        (Some(AudioCodec::Aac), Some(VideoCodec::Av1)) => "video/mp4; codecs=\"av01,mp4a\"",
-        (Some(AudioCodec::Aac), Some(VideoCodec::H264)) => "video/mp4; codecs=\"avc1,mp4a\"",
+        (Some(AudioCodec::Opus), Some(VideoCodec::Av1)) => {
+            Cow::Owned(format!("video/mp4; codecs=\"{},opus\"", av1_codec_param()))
+        },
+        (Some(AudioCodec::Opus), Some(VideoCodec::H264)) => {
+            Cow::Borrowed("video/mp4; codecs=\"avc1,opus\"")
+        },
+        (Some(AudioCodec::Aac), Some(VideoCodec::Av1)) => {
+            Cow::Owned(format!("video/mp4; codecs=\"{},mp4a\"", av1_codec_param()))
+        },
+        (Some(AudioCodec::Aac), Some(VideoCodec::H264)) => {
+            Cow::Borrowed("video/mp4; codecs=\"avc1,mp4a\"")
+        },
         // Audio + unknown/future video codec
-        (Some(AudioCodec::Opus), Some(_)) => "video/mp4; codecs=\"opus\"",
-        (Some(AudioCodec::Aac), Some(_)) => "video/mp4; codecs=\"mp4a\"",
+        (Some(AudioCodec::Opus), Some(_)) => Cow::Borrowed("video/mp4; codecs=\"opus\""),
+        (Some(AudioCodec::Aac), Some(_)) => Cow::Borrowed("video/mp4; codecs=\"mp4a\""),
         // Audio-only
-        (Some(AudioCodec::Opus), None) => "audio/mp4; codecs=\"opus\"",
-        (Some(AudioCodec::Aac), None) => "audio/mp4; codecs=\"mp4a\"",
+        (Some(AudioCodec::Opus), None) => Cow::Borrowed("audio/mp4; codecs=\"opus\""),
+        (Some(AudioCodec::Aac), None) => Cow::Borrowed("audio/mp4; codecs=\"mp4a\""),
         // Future audio codec — warn and omit codecs param.
         (Some(_), Some(_)) => {
             tracing::warn!("mp4_content_type: unrecognised audio codec — omitting codecs param");
-            "video/mp4"
+            Cow::Borrowed("video/mp4")
         },
         (Some(_), None) => {
             tracing::warn!("mp4_content_type: unrecognised audio codec — omitting codecs param");
-            "audio/mp4"
+            Cow::Borrowed("audio/mp4")
         },
         // Video-only
-        (None, Some(VideoCodec::Av1)) => "video/mp4; codecs=\"av01\"",
-        (None, Some(VideoCodec::H264)) => "video/mp4; codecs=\"avc1\"",
+        (None, Some(VideoCodec::Av1)) => {
+            Cow::Owned(format!("video/mp4; codecs=\"{}\"", av1_codec_param()))
+        },
+        (None, Some(VideoCodec::H264)) => Cow::Borrowed("video/mp4; codecs=\"avc1\""),
         // Fallback
-        (None, Some(_) | None) => "video/mp4",
+        (None, Some(_) | None) => Cow::Borrowed("video/mp4"),
     }
 }
 
@@ -658,7 +726,7 @@ struct TrackProgress {
 struct MuxSession<'a> {
     config: &'a Mp4MuxerConfig,
     node_name: &'a str,
-    content_type: &'static str,
+    content_type: Cow<'static, str>,
     audio_codec: AudioCodec,
     video_codec: VideoCodec,
 }
@@ -1392,7 +1460,7 @@ async fn flush_fmp4_segment(
         segment_bytes.extend_from_slice(payload);
     }
 
-    let ct = Some(session.content_type.into());
+    let ct = Some(session.content_type.clone());
 
     if seg.init_sent {
         // Subsequent segment — send media segment only.
@@ -1563,7 +1631,7 @@ async fn run_file_mode(
         &mut state.muxer,
         &mut state.file_buf,
         context,
-        session.content_type,
+        session.content_type.clone(),
         stats_tracker,
         session.node_name,
         session.config.finalize_chunk_size(),
@@ -1704,7 +1772,7 @@ async fn finalize_file_mode(
     muxer: &mut Mp4FileMuxer,
     file_buf: &mut FileBackedBuffer,
     context: &mut NodeContext,
-    content_type: &'static str,
+    content_type: Cow<'static, str>,
     stats_tracker: &mut NodeStatsTracker,
     node_name: &str,
     chunk_size: usize,
@@ -1730,8 +1798,7 @@ async fn finalize_file_mode(
         StreamKitError::Runtime(msg)
     })?;
 
-    emit_file_in_chunks(context, file, chunk_size, content_type.into(), stats_tracker, node_name)
-        .await
+    emit_file_in_chunks(context, file, chunk_size, content_type, stats_tracker, node_name).await
 }
 
 /// Receive the next frame from audio/video inputs or the control channel.
@@ -1931,16 +1998,17 @@ mod tests {
         use VideoCodec::{Av1, Vp9, H264};
 
         // Vp9 stands in for an unrecognised/future video codec: it is neither
-        // Av1 nor H264, so it is dropped from the codecs param.
+        // Av1 nor H264, so it is dropped from the codecs param. AV1 is
+        // advertised with the full RFC 6381 token (see `av1_codec_param`).
         let cases: &[(Option<AudioCodec>, Option<VideoCodec>, &str)] = &[
             (Some(Opus), Some(H264), "video/mp4; codecs=\"avc1,opus\""),
             (Some(Aac), Some(H264), "video/mp4; codecs=\"avc1,mp4a\""),
-            (Some(Opus), Some(Av1), "video/mp4; codecs=\"av01,opus\""),
-            (Some(Aac), Some(Av1), "video/mp4; codecs=\"av01,mp4a\""),
+            (Some(Opus), Some(Av1), "video/mp4; codecs=\"av01.0.04M.08,opus\""),
+            (Some(Aac), Some(Av1), "video/mp4; codecs=\"av01.0.04M.08,mp4a\""),
             (Some(Opus), Some(Vp9), "video/mp4; codecs=\"opus\""),
             (Some(Aac), Some(Vp9), "video/mp4; codecs=\"mp4a\""),
             (None, Some(H264), "video/mp4; codecs=\"avc1\""),
-            (None, Some(Av1), "video/mp4; codecs=\"av01\""),
+            (None, Some(Av1), "video/mp4; codecs=\"av01.0.04M.08\""),
             (None, Some(Vp9), "video/mp4"),
             (Some(Opus), None, "audio/mp4; codecs=\"opus\""),
             (Some(Aac), None, "audio/mp4; codecs=\"mp4a\""),
@@ -1948,11 +2016,71 @@ mod tests {
         ];
         for (audio, video, expected) in cases {
             assert_eq!(
-                mp4_content_type(*audio, *video),
+                mp4_content_type(*audio, *video).as_ref(),
                 *expected,
                 "audio={audio:?} video={video:?}"
             );
         }
+    }
+
+    /// The advertised AV1 codec parameter must be a full RFC 6381 token
+    /// (`av01.P.LLT.DD`), matching the muxed `av1C` box, and never the bare
+    /// `av01` that `MediaSource.isTypeSupported` rejects.
+    #[test]
+    fn av1_codec_param_is_full_rfc6381_token() {
+        let token = av1_codec_param();
+        assert_eq!(token, "av01.0.04M.08");
+
+        // Derived from the same box that `build_av01_sample_entry` writes.
+        if let SampleEntry::Av01(av01) = build_av01_sample_entry(1280, 720, None) {
+            assert_eq!(av1_codec_string(&av01.av1c_box), token);
+        } else {
+            panic!("expected an av01 sample entry");
+        }
+
+        for ct in [
+            mp4_content_type(None, Some(VideoCodec::Av1)),
+            mp4_content_type(Some(AudioCodec::Opus), Some(VideoCodec::Av1)),
+            mp4_content_type(Some(AudioCodec::Aac), Some(VideoCodec::Av1)),
+        ] {
+            assert!(ct.contains("av01.0.04M.08"), "{ct} must carry the full token");
+            assert!(
+                !ct.contains("\"av01\"") && !ct.contains("av01,") && !ct.contains("av01\""),
+                "{ct} must not advertise the bare av01 token"
+            );
+        }
+    }
+
+    /// `av1_codec_string` must derive profile/level/tier/bit-depth from the
+    /// `av1C` box so non-default configurations are labelled correctly.
+    #[test]
+    fn av1_codec_string_derives_from_av1c_box() {
+        // Profile 1, level idx 13 (5.1), High tier, 10-bit.
+        let av1c = Av1cBox {
+            seq_profile: Uint::new(1),
+            seq_level_idx_0: Uint::new(13),
+            seq_tier_0: Uint::new(1),
+            high_bitdepth: Uint::new(1),
+            twelve_bit: Uint::new(0),
+            monochrome: Uint::new(0),
+            chroma_subsampling_x: Uint::new(1),
+            chroma_subsampling_y: Uint::new(1),
+            chroma_sample_position: Uint::new(0),
+            initial_presentation_delay_minus_one: None,
+            config_obus: Vec::new(),
+        };
+        assert_eq!(av1_codec_string(&av1c), "av01.1.13H.10");
+
+        // Profile 2, level idx 8 (4.0), Main tier, 12-bit.
+        let twelve_bit = Av1cBox {
+            seq_profile: Uint::new(2),
+            seq_level_idx_0: Uint::new(8),
+            seq_tier_0: Uint::new(0),
+            high_bitdepth: Uint::new(1),
+            twelve_bit: Uint::new(1),
+            ..av1c_config(Vec::new())
+        };
+        assert_eq!(av1_codec_string(&twelve_bit), "av01.2.08M.12");
     }
 
     #[test]
@@ -2934,7 +3062,7 @@ mod tests {
         let av =
             Mp4MuxerNode::new(Mp4MuxerConfig { video_width: 640, video_height: 480, ..default() });
         // No explicit codecs → AV1 video hint + Opus audio default.
-        assert_eq!(av.content_type().unwrap(), "video/mp4; codecs=\"av01,opus\"");
+        assert_eq!(av.content_type().unwrap(), "video/mp4; codecs=\"av01.0.04M.08,opus\"");
 
         let h264_aac = Mp4MuxerNode::new(Mp4MuxerConfig {
             video_width: 640,
