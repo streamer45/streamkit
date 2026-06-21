@@ -15,8 +15,11 @@ use crate::{
     dynamic_pin_distributor::PinDistributorActor,
     graph_builder,
 };
+use futures::future::FutureExt;
 use opentelemetry::KeyValue;
+use std::any::Any;
 use std::collections::HashMap;
+use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, RwLock};
 use streamkit_core::control::{EngineControlMessage, NodeControlMessage};
 use streamkit_core::error::StreamKitError;
@@ -31,6 +34,18 @@ use streamkit_core::view_data::NodeViewDataUpdate;
 use streamkit_core::PinCardinality;
 use tokio::sync::mpsc;
 use tracing::Instrument;
+
+/// Best-effort extraction of a human-readable message from a caught panic
+/// payload (`catch_unwind` yields `Box<dyn Any + Send>`).
+fn panic_reason(panic: &(dyn Any + Send)) -> String {
+    if let Some(s) = panic.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
 
 /// Metadata about a node's pins, used for runtime type validation in dynamic pipelines.
 #[derive(Debug, Clone)]
@@ -725,9 +740,27 @@ impl DynamicEngine {
         // graph_builder does for oneshot) so the terminal state is guaranteed.
         // FIFO ordering means any terminal state the node already emitted is
         // processed first; handle_state_update collapses the redundant follow-up.
+        //
+        // `run()` is wrapped in `catch_unwind` so a panic *inside the node
+        // future itself* (as opposed to a native worker thread, which is caught
+        // at the FFI boundary and surfaces as `Err`) is converted into a
+        // terminal `Failed` instead of unwinding the task before the
+        // reconciliation send below ever runs (#605).
         let task_handle = tokio::spawn(
             async move {
-                let result = node.run(context).await;
+                let run_result = AssertUnwindSafe(node.run(context)).catch_unwind().await;
+                let result: Result<(), StreamKitError> = match run_result {
+                    Ok(result) => result,
+                    Err(panic) => {
+                        let reason = panic_reason(&panic);
+                        tracing::error!(
+                            node = %node_id_for_task,
+                            panic = %reason,
+                            "node.run() future panicked; reporting terminal Failed"
+                        );
+                        Err(StreamKitError::Runtime(format!("node panicked: {reason}")))
+                    },
+                };
                 let final_state = match &result {
                     Ok(()) => NodeState::Stopped { reason: StopReason::Completed },
                     Err(e) => NodeState::Failed { reason: e.to_string() },
