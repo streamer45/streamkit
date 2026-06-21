@@ -201,7 +201,7 @@ impl ProcessorNode for Dav1dDecoderNode {
             tracing::info!("Dav1dDecoderNode input stream closed");
         });
 
-        crate::codec_utils::codec_forward_loop(
+        let outcome = crate::codec_utils::codec_forward_loop(
             &mut context,
             &mut result_rx,
             &mut input_task,
@@ -214,9 +214,12 @@ impl ProcessorNode for Dav1dDecoderNode {
         )
         .await;
 
-        state_helpers::emit_stopped(&context.state_tx, &node_name, "input_closed");
-        tracing::info!("Dav1dDecoderNode finished");
-        Ok(())
+        crate::codec_utils::finalize_codec_run(
+            outcome,
+            &context.state_tx,
+            &node_name,
+            "Dav1dDecoderNode",
+        )
     }
 }
 

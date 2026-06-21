@@ -7,7 +7,7 @@ use std::time::Duration;
 use opentelemetry::KeyValue;
 use streamkit_core::stats::NodeStatsTracker;
 use streamkit_core::types::Packet;
-use streamkit_core::NodeContext;
+use streamkit_core::{state_helpers, NodeContext, NodeStateUpdate, StreamKitError};
 use tokio::sync::mpsc;
 
 /// Bounds a codec's entire lifetime by output idleness.
@@ -25,6 +25,63 @@ use tokio::sync::mpsc;
 /// budget is not pre-empted (enforced at compile time, see
 /// `SvtAv1EncoderNode::RECEIVE_THREAD_JOIN_TIMEOUT`).
 pub(crate) const CODEC_IDLE_TIMEOUT: Duration = Duration::from_mins(1);
+
+/// How a [`codec_forward_loop`] run terminated.
+///
+/// Distinguishes a clean finish (input/codec/downstream closed, or shutdown)
+/// from an idle-watchdog abandonment, which leaves the output truncated. The
+/// latter must surface as a node failure rather than a successful
+/// `Stopped("input_closed")` so callers and state subscribers can tell a
+/// degraded encode from a complete one (see #539).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+pub enum CodecLoopOutcome {
+    /// The loop finalized cleanly: the codec finished, input or the downstream
+    /// channel closed, or a shutdown was requested.
+    Completed,
+    /// The idle watchdog abandoned a wedged codec worker mid-stream or
+    /// mid-flush. Any output already forwarded is truncated, and the worker's
+    /// native handle was intentionally leaked (it may still be in a blocking
+    /// FFI call), so the run is degraded, not successful.
+    WatchdogAbandoned,
+}
+
+/// Emit the terminal node state and return the run result for a codec node,
+/// based on how its [`codec_forward_loop`] ended.
+///
+/// A clean finish emits `Stopped("input_closed")` and returns `Ok(())`. A
+/// watchdog abandonment emits a terminal `Failed` state and returns an `Err`,
+/// making the truncated output observable to callers and state subscribers
+/// instead of masquerading as a successful encode (#539).
+///
+/// # Errors
+///
+/// Returns [`StreamKitError::Codec`] when `outcome` is
+/// [`CodecLoopOutcome::WatchdogAbandoned`], i.e. the idle watchdog abandoned a
+/// wedged codec and the encoded output is truncated.
+pub fn finalize_codec_run(
+    outcome: CodecLoopOutcome,
+    state_tx: &mpsc::Sender<NodeStateUpdate>,
+    node_id: &str,
+    label: &str,
+) -> Result<(), StreamKitError> {
+    match outcome {
+        CodecLoopOutcome::Completed => {
+            state_helpers::emit_stopped(state_tx, node_id, "input_closed");
+            tracing::info!("{label} finished");
+            Ok(())
+        },
+        CodecLoopOutcome::WatchdogAbandoned => {
+            let reason = format!(
+                "{label} abandoned a wedged codec worker after {CODEC_IDLE_TIMEOUT:?} of \
+                 output idleness; encoded output is truncated"
+            );
+            tracing::error!("{reason}");
+            state_helpers::emit_failed(state_tx, node_id, reason.clone());
+            Err(StreamKitError::Codec(reason))
+        },
+    }
+}
 
 /// Result of [`bounded_thread_join`].
 #[cfg(any(feature = "svt_av1", test))]
@@ -90,7 +147,7 @@ pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
     stats: &mut NodeStatsTracker,
     to_packet: impl Fn(T) -> Packet + Send + Sync,
     label: &str,
-) {
+) -> CodecLoopOutcome {
     async fn forward_one(
         packet: Packet,
         context: &mut NodeContext,
@@ -124,6 +181,7 @@ pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
 
     let mut input_done = false;
     let mut codec_done = false;
+    let mut outcome = CodecLoopOutcome::Completed;
     // Held in an `Option` so the idle watchdog can observe the codec's input
     // backpressure; taken (dropped) to signal end-of-input to the codec.
     let mut codec_tx = Some(codec_tx);
@@ -188,6 +246,7 @@ pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
                          finalizing instead of hanging (likely native encoder deadlock)",
                         if input_done { "closed" } else { "backed up" }
                     );
+                    outcome = CodecLoopOutcome::WatchdogAbandoned;
                     break;
                 }
                 idle.as_mut().reset(tokio::time::Instant::now() + CODEC_IDLE_TIMEOUT);
@@ -205,6 +264,8 @@ pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
     if !codec_done {
         codec_task.abort();
     }
+
+    outcome
 }
 
 #[cfg(test)]
@@ -239,7 +300,7 @@ mod tests {
         let codec_task = tokio::task::spawn(async {});
         let (codec_tx, _codec_rx) = mpsc::channel::<Vec<u8>>(1);
 
-        tokio::time::timeout(
+        let outcome = tokio::time::timeout(
             Duration::from_secs(5),
             codec_forward_loop(
                 &mut ctx,
@@ -255,6 +316,12 @@ mod tests {
         )
         .await
         .expect("loop must finalize when the codec finishes and closes the channel");
+
+        assert_eq!(
+            outcome,
+            CodecLoopOutcome::Completed,
+            "a clean finish must report Completed, not a watchdog abandonment"
+        );
     }
 
     /// Regression for #540: an SVT-AV1 dimension change can abandon a wedged
@@ -279,7 +346,7 @@ mod tests {
         let codec_task = tokio::task::spawn(async {});
         let (codec_tx, _codec_rx) = mpsc::channel::<Vec<u8>>(1);
 
-        tokio::time::timeout(
+        let outcome = tokio::time::timeout(
             Duration::from_secs(5),
             codec_forward_loop(
                 &mut ctx,
@@ -296,6 +363,11 @@ mod tests {
         .await
         .expect("loop must finalize once the codec finishes, even with a leaked sender");
 
+        assert_eq!(
+            outcome,
+            CodecLoopOutcome::Completed,
+            "a leaked sender that the codec finishes around is still a clean finish"
+        );
         assert!(
             matches!(mock_out.try_recv().await, Some((_, _, Packet::Binary { .. }))),
             "buffered result must still be forwarded before finalizing"
@@ -324,7 +396,7 @@ mod tests {
         codec_tx.try_send(vec![0]).unwrap();
         assert_eq!(codec_tx.capacity(), 0);
 
-        tokio::time::timeout(
+        let outcome = tokio::time::timeout(
             Duration::from_mins(10),
             codec_forward_loop(
                 &mut ctx,
@@ -340,6 +412,12 @@ mod tests {
         )
         .await
         .expect("idle watchdog must abandon the mid-stream-wedged codec instead of hanging");
+
+        assert_eq!(
+            outcome,
+            CodecLoopOutcome::WatchdogAbandoned,
+            "a watchdog-abandoned codec must surface as a degraded run, not a clean finish"
+        );
     }
 
     /// The idle watchdog also bounds a flush that never completes: once input
@@ -359,7 +437,7 @@ mod tests {
         let codec_task = tokio::task::spawn(std::future::pending::<()>());
         let (codec_tx, _codec_rx) = mpsc::channel::<Vec<u8>>(1);
 
-        tokio::time::timeout(
+        let outcome = tokio::time::timeout(
             Duration::from_mins(10),
             codec_forward_loop(
                 &mut ctx,
@@ -375,6 +453,12 @@ mod tests {
         )
         .await
         .expect("idle watchdog must finalize a wedged post-input-close flush");
+
+        assert_eq!(
+            outcome,
+            CodecLoopOutcome::WatchdogAbandoned,
+            "an EOS flush abandoned by the watchdog is a truncated, degraded run"
+        );
     }
 
     /// Regression for #540: closing input must re-arm the idle watchdog to a
@@ -405,7 +489,7 @@ mod tests {
         // early — exactly the path the re-arm must lengthen.
         let (codec_tx, _codec_rx) = mpsc::channel::<Vec<u8>>(1);
 
-        tokio::time::timeout(
+        let outcome = tokio::time::timeout(
             Duration::from_mins(10),
             codec_forward_loop(
                 &mut ctx,
@@ -422,6 +506,11 @@ mod tests {
         .await
         .expect("loop must finalize");
 
+        assert_eq!(
+            outcome,
+            CodecLoopOutcome::Completed,
+            "a healthy flush that completes within its re-armed budget is a clean finish"
+        );
         assert!(
             matches!(mock_out.try_recv().await, Some((_, _, Packet::Binary { .. }))),
             "a flush packet emitted after input close must be forwarded, not pre-empted \
@@ -469,6 +558,45 @@ mod tests {
         assert_eq!(
             bounded_thread_join(&done_rx, handle, Duration::from_secs(5)),
             ThreadJoin::Joined
+        );
+    }
+
+    /// #539: a clean finish emits `Stopped("input_closed")` and returns `Ok`,
+    /// so a normal end of input is reported as success.
+    #[test]
+    fn finalize_maps_clean_finish_to_stopped_ok() {
+        let (state_tx, mut state_rx) = mpsc::channel::<NodeStateUpdate>(4);
+
+        let result = finalize_codec_run(CodecLoopOutcome::Completed, &state_tx, "node", "Label");
+
+        assert!(result.is_ok(), "a clean finish must return Ok");
+        let update = state_rx.try_recv().expect("a terminal state must be emitted");
+        assert!(
+            matches!(update.state, streamkit_core::NodeState::Stopped { .. }),
+            "a clean finish must emit Stopped, got {:?}",
+            update.state
+        );
+    }
+
+    /// #539: a watchdog abandonment emits a terminal `Failed` state and returns
+    /// `Err`, so a truncated encode is programmatically distinguishable from a
+    /// complete one instead of masquerading as `Stopped("input_closed")` + `Ok`.
+    #[test]
+    fn finalize_maps_watchdog_abandonment_to_failed_err() {
+        let (state_tx, mut state_rx) = mpsc::channel::<NodeStateUpdate>(4);
+
+        let result =
+            finalize_codec_run(CodecLoopOutcome::WatchdogAbandoned, &state_tx, "node", "Label");
+
+        assert!(
+            matches!(result, Err(StreamKitError::Codec(_))),
+            "a watchdog-abandoned run must return a codec error, not Ok"
+        );
+        let update = state_rx.try_recv().expect("a terminal state must be emitted");
+        assert!(
+            matches!(update.state, streamkit_core::NodeState::Failed { .. }),
+            "a truncated encode must surface as Failed, got {:?}",
+            update.state
         );
     }
 }
