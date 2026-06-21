@@ -5,14 +5,14 @@
 use opentelemetry::{global, KeyValue};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Instant, SystemTime};
+use std::time::Instant;
 use streamkit_core::control::NodeControlMessage;
 use streamkit_core::error::StreamKitError;
 use streamkit_core::frame_pool::{AudioFramePool, VideoFramePool};
 use streamkit_core::node::{InitContext, NodeContext, OutputRouting, OutputSender, ProcessorNode};
 use streamkit_core::packet_meta::{can_connect, packet_type_registry};
 use streamkit_core::pins::PinUpdate;
-use streamkit_core::state::{NodeState, NodeStateUpdate, StopReason};
+use streamkit_core::state::{NodeState, NodeStateSender, NodeStateUpdate, StopReason};
 use streamkit_core::stats::NodeStatsUpdate;
 use streamkit_core::types::{Packet, PacketType};
 use streamkit_core::PinCardinality;
@@ -26,6 +26,10 @@ use crate::constants::{DEFAULT_ONESHOT_CONTROL_CAPACITY, DEFAULT_STATE_CHANNEL_C
 pub struct LiveNode {
     pub control_tx: mpsc::Sender<NodeControlMessage>,
     pub task_handle: JoinHandle<Result<(), StreamKitError>>,
+    /// Per-incarnation epoch used to discard state updates from a prior
+    /// instance of a reused node id (#606). Oneshot nodes are never recycled,
+    /// so they use `0`.
+    pub generation: u64,
 }
 
 /// Wires up and spawns all nodes for a given pipeline definition.
@@ -80,7 +84,10 @@ pub async fn wire_and_spawn_graph(
     let init_state_tx = state_tx.clone().unwrap_or(init_state_tx);
 
     for (node_id, node) in &mut nodes {
-        let init_ctx = InitContext { node_id: node_id.clone(), state_tx: init_state_tx.clone() };
+        let init_ctx = InitContext {
+            node_id: node_id.clone(),
+            state_tx: NodeStateSender::new(init_state_tx.clone(), 0),
+        };
 
         match node.initialize(&init_ctx).await {
             Ok(PinUpdate::NoChange) => {
@@ -332,7 +339,7 @@ pub async fn wire_and_spawn_graph(
             control_rx,
             output_sender: OutputSender::new(name.clone(), OutputRouting::Direct(direct_outputs)),
             batch_size,
-            state_tx: node_state_tx.clone(),
+            state_tx: NodeStateSender::new(node_state_tx.clone(), 0),
             stats_tx: stats_tx.clone(),
             telemetry_tx: None,
             session_id: None,
@@ -397,25 +404,20 @@ pub async fn wire_and_spawn_graph(
                     Err(e) => NodeState::Failed { reason: e.to_string() },
                 };
 
-                let _ = node_state_tx.send(NodeStateUpdate {
-                    node_id: name_for_state.clone(),
-                    state: final_state.clone(),
-                    timestamp: SystemTime::now(),
-                }).await;
+                let _ = node_state_tx
+                    .send(NodeStateUpdate::new(name_for_state.clone(), final_state.clone()))
+                    .await;
 
                 if let Some(global_tx) = state_tx_clone {
-                    let _ = global_tx.send(NodeStateUpdate {
-                        node_id: name_for_state,
-                        state: final_state,
-                        timestamp: SystemTime::now(),
-                    }).await;
+                    let _ =
+                        global_tx.send(NodeStateUpdate::new(name_for_state, final_state)).await;
                 }
 
                 result
             }
             .instrument(tracing::info_span!("node_run", node.name = %name_for_span, node.kind = %kind_for_span)),
         );
-        live_nodes.insert(name_for_hashmap, LiveNode { control_tx, task_handle });
+        live_nodes.insert(name_for_hashmap, LiveNode { control_tx, task_handle, generation: 0 });
         tracing::debug!("Successfully spawned node '{}'", name_for_debug);
     }
 

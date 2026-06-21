@@ -2642,6 +2642,7 @@ mod tests {
     async fn test_initialize_falls_back_to_default_pin_on_discovery_error() {
         let mut node = MoqPullNode::new(MoqPullConfig::default());
         let (state_tx, _state_rx) = mpsc::channel(10);
+        let state_tx = streamkit_core::state::NodeStateSender::new(state_tx, 0);
         let ctx = streamkit_core::InitContext { node_id: "node".to_string(), state_tx };
 
         let update = node.initialize(&ctx).await.unwrap();

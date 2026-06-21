@@ -27,7 +27,7 @@ use streamkit_core::frame_pool::{AudioFramePool, VideoFramePool};
 use streamkit_core::node::{InitContext, NodeContext, OutputRouting, OutputSender};
 use streamkit_core::pins::PinUpdate;
 use streamkit_core::registry::NodeRegistry;
-use streamkit_core::state::{NodeState, NodeStateUpdate, StopReason};
+use streamkit_core::state::{NodeState, NodeStateSender, NodeStateUpdate, StopReason};
 use streamkit_core::stats::{NodeStats, NodeStatsUpdate};
 use streamkit_core::telemetry::TelemetryEvent;
 use streamkit_core::view_data::NodeViewDataUpdate;
@@ -442,11 +442,26 @@ impl DynamicEngine {
     }
 
     pub(crate) fn handle_state_update(&mut self, update: &NodeStateUpdate) {
-        if !self.live_nodes.contains_key(&update.node_id) {
+        let Some(live_node) = self.live_nodes.get(&update.node_id) else {
             tracing::trace!(
                 node = %update.node_id,
                 state = ?update.state,
                 "Ignoring state update for removed node"
+            );
+            return;
+        };
+
+        // Discard updates stamped for a previous incarnation of this id: a
+        // terminal update enqueued by an old instance (guaranteed in flight by
+        // the #600 backstop) must not be applied to a new node that reused the
+        // id after a remove → re-add (#606).
+        if update.generation != live_node.generation {
+            tracing::debug!(
+                node = %update.node_id,
+                state = ?update.state,
+                update_generation = update.generation,
+                live_generation = live_node.generation,
+                "Discarding state update from a stale node generation"
             );
             return;
         }
@@ -626,17 +641,22 @@ impl DynamicEngine {
     }
 
     /// Initialize a node and spawn its I/O actors (Pin Distributors).
+    ///
+    /// `generation` is the node instance's epoch (its `creation_id`); it is
+    /// stamped onto every state emission so a stale update from a prior
+    /// incarnation can be discarded by `handle_state_update` (#606).
     async fn initialize_node(
         &mut self,
         node: Box<dyn streamkit_core::ProcessorNode>,
         node_id: &str,
         kind: &str,
+        generation: u64,
         channels: &NodeChannels,
     ) -> Result<(), StreamKitError> {
         let mut node = node;
 
-        let init_ctx =
-            InitContext { node_id: node_id.to_string(), state_tx: channels.state.clone() };
+        let state_tx = NodeStateSender::new(channels.state.clone(), generation);
+        let init_ctx = InitContext { node_id: node_id.to_string(), state_tx: state_tx.clone() };
         match node.initialize(&init_ctx).await {
             Ok(PinUpdate::NoChange | PinUpdate::Updated { .. }) => {},
             Err(e) => {
@@ -711,7 +731,7 @@ impl DynamicEngine {
                 OutputRouting::Direct(node_outputs_map),
             ),
             batch_size: self.batch_size,
-            state_tx: channels.state.clone(),
+            state_tx,
             stats_tx: Some(channels.stats.clone()),
             telemetry_tx: Some(channels.telemetry.clone()),
             session_id: self.session_id.clone(),
@@ -771,8 +791,10 @@ impl DynamicEngine {
             }
             .instrument(run_span),
         );
-        self.live_nodes
-            .insert(node_id.to_string(), graph_builder::LiveNode { control_tx, task_handle });
+        self.live_nodes.insert(
+            node_id.to_string(),
+            graph_builder::LiveNode { control_tx, task_handle, generation },
+        );
         self.nodes_active_gauge
             .record(self.live_nodes.len() as u64, &self.node_attributes.pipeline);
         Ok(())
@@ -1530,7 +1552,9 @@ impl DynamicEngine {
             Ok(node) => {
                 tracing::info!(node = %node_id, kind = %kind, "Node created successfully, initializing");
 
-                if let Err(e) = self.initialize_node(node, &node_id, &kind, channels).await {
+                if let Err(e) =
+                    self.initialize_node(node, &node_id, &kind, creation_id, channels).await
+                {
                     tracing::error!(
                         node_id = %node_id,
                         kind = %kind,
