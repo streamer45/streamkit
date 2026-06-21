@@ -5,6 +5,7 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { useStreamStore } from '@/stores/streamStore';
 import type { MoqSettingsActions } from '@/utils/moqPeerSettings';
 
 import { useMoqYamlSync } from './useMoqYamlSync';
@@ -38,8 +39,14 @@ const moqYaml = (broadcast: string, gateway = '/moq/test') =>
 const nonMoqYaml = 'nodes:\n  colorbars:\n    kind: video::colorbars\n';
 
 describe('useMoqYamlSync', () => {
-  beforeEach(() => vi.useFakeTimers());
-  afterEach(() => vi.useRealTimers());
+  beforeEach(() => {
+    vi.useFakeTimers();
+    useStreamStore.setState({ configServerUrl: '' });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    useStreamStore.setState({ configServerUrl: '' });
+  });
 
   it('re-derives MoQ settings on a debounce after a direct YAML edit', () => {
     const actions = makeActions();
@@ -109,6 +116,33 @@ describe('useMoqYamlSync', () => {
     // The flushed timer must not fire again afterwards.
     act(() => vi.advanceTimersByTime(300));
     expect(actions.setOutputBroadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-resolves the server URL when config loads after the sample (cold load)', () => {
+    const actions = makeActions();
+    const { result } = renderHook(() => useMoqYamlSync(actions, vi.fn()));
+
+    // Samples resolve before loadConfig populates configServerUrl: a
+    // gateway_path-only pipeline can't resolve the server URL yet.
+    act(() => result.current.deriveMoqFromYaml(moqYaml('out-1', '/moq/live')));
+    expect(actions.setServerUrl).not.toHaveBeenCalled();
+
+    act(() => useStreamStore.setState({ configServerUrl: 'https://gw.example.com' }));
+
+    expect(actions.setServerUrl).toHaveBeenCalledWith('https://gw.example.com/moq/live');
+  });
+
+  it('does not re-resolve the server URL on later configServerUrl changes', () => {
+    const actions = makeActions();
+    useStreamStore.setState({ configServerUrl: 'https://gw.example.com' });
+    const { result } = renderHook(() => useMoqYamlSync(actions, vi.fn()));
+
+    act(() => result.current.deriveMoqFromYaml(moqYaml('out-1', '/moq/live')));
+    const callsAfterDerive = (actions.setServerUrl as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    act(() => useStreamStore.setState({ configServerUrl: 'https://gw2.example.com' }));
+
+    expect(actions.setServerUrl).toHaveBeenCalledTimes(callsAfterDerive);
   });
 
   it('flushPendingDerive is a no-op when no edit is pending (preserves manual edits)', () => {
