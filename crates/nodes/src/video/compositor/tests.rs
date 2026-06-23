@@ -2482,6 +2482,7 @@ async fn test_compositor_output_format_runtime_change() {
     // Build context manually so we keep a handle to the control channel.
     let (ctrl_tx, control_rx) = mpsc::channel(10);
     let (state_tx, mut state_rx) = mpsc::channel(10);
+    let state_tx = streamkit_core::state::NodeStateSender::new(state_tx, 0);
     let (stats_tx, _stats_rx) = mpsc::channel(10);
     let (pin_mgmt_tx, pin_mgmt_rx) = mpsc::channel(10);
     drop(pin_mgmt_tx);

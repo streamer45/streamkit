@@ -1125,7 +1125,7 @@ struct ClockedThreadConfig {
     generate_silence: bool,
     sync_timeout: Option<std::time::Duration>,
     audio_pool: Option<Arc<AudioFramePool>>,
-    state_tx: tokio::sync::mpsc::Sender<streamkit_core::state::NodeStateUpdate>,
+    state_tx: streamkit_core::state::NodeStateSender,
     input_event_tx: mpsc::Sender<InputEvent>,
     output_mailbox: Arc<OutputMailbox>,
     cmd_rx: std::sync::mpsc::Receiver<AudioThreadCommand>,

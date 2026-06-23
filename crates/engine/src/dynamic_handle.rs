@@ -4,7 +4,7 @@
 
 //! Public client handle for controlling a running dynamic engine.
 
-use crate::dynamic_messages::{NodeAddedNotification, QueryMessage, RuntimeSchemaUpdate};
+use crate::dynamic_messages::{NodeLifecycleNotification, QueryMessage, RuntimeSchemaUpdate};
 use std::collections::HashMap;
 use std::sync::Arc;
 use streamkit_core::control::EngineControlMessage;
@@ -152,17 +152,19 @@ impl DynamicEngineHandle {
         response_rx.recv().await.ok_or_else(|| "Failed to receive response from engine".to_string())
     }
 
-    /// One `NodeAddedNotification` per successfully created node.
-    /// Failures appear on `subscribe_state` as `NodeState::Failed`.
+    /// Ordered stream of node add/remove events. `Added` fires once a node is
+    /// successfully created; `Removed` fires when the actor tears it down.
+    /// Failures appear on `subscribe_state` as `NodeState::Failed`. A single
+    /// stream guarantees a removal is observed after its add — see #607.
     ///
     /// # Errors
     /// Returns an error if the engine actor has shut down or fails to respond.
-    pub async fn subscribe_node_added(
+    pub async fn subscribe_node_lifecycle(
         &self,
-    ) -> Result<mpsc::UnboundedReceiver<NodeAddedNotification>, String> {
+    ) -> Result<mpsc::UnboundedReceiver<NodeLifecycleNotification>, String> {
         let (response_tx, mut response_rx) = mpsc::channel(1);
         self.query_tx
-            .send(QueryMessage::SubscribeNodeAdded { response_tx })
+            .send(QueryMessage::SubscribeNodeLifecycle { response_tx })
             .await
             .map_err(|_| "Engine actor has shut down".to_string())?;
 

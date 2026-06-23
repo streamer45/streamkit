@@ -11,12 +11,18 @@
 use crate::{
     constants::DEFAULT_SUBSCRIBER_CHANNEL_CAPACITY,
     dynamic_config::CONTROL_CAPACITY,
-    dynamic_messages::{NodeAddedNotification, PinConfigMsg, QueryMessage, RuntimeSchemaUpdate},
+    dynamic_messages::{
+        NodeAddedNotification, NodeLifecycleNotification, NodeRemovedNotification, PinConfigMsg,
+        QueryMessage, RuntimeSchemaUpdate,
+    },
     dynamic_pin_distributor::PinDistributorActor,
     graph_builder,
 };
+use futures::future::FutureExt;
 use opentelemetry::KeyValue;
+use std::any::Any;
 use std::collections::HashMap;
+use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, RwLock};
 use streamkit_core::control::{EngineControlMessage, NodeControlMessage};
 use streamkit_core::error::StreamKitError;
@@ -24,13 +30,22 @@ use streamkit_core::frame_pool::{AudioFramePool, VideoFramePool};
 use streamkit_core::node::{InitContext, NodeContext, OutputRouting, OutputSender};
 use streamkit_core::pins::PinUpdate;
 use streamkit_core::registry::NodeRegistry;
-use streamkit_core::state::{NodeState, NodeStateUpdate, StopReason};
+use streamkit_core::state::{NodeState, NodeStateSender, NodeStateUpdate, StopReason};
 use streamkit_core::stats::{NodeStats, NodeStatsUpdate};
 use streamkit_core::telemetry::TelemetryEvent;
 use streamkit_core::view_data::NodeViewDataUpdate;
 use streamkit_core::PinCardinality;
 use tokio::sync::mpsc;
 use tracing::Instrument;
+
+/// Best-effort extraction of a human-readable message from a caught panic
+/// payload (`catch_unwind` yields `Box<dyn Any + Send>`).
+fn panic_reason(panic: &(dyn Any + Send)) -> String {
+    if let Some(s) = panic.downcast_ref::<&str>() {
+        return (*s).to_string();
+    }
+    panic.downcast_ref::<String>().cloned().unwrap_or_else(|| "unknown panic".to_string())
+}
 
 /// Metadata about a node's pins, used for runtime type validation in dynamic pipelines.
 #[derive(Debug, Clone)]
@@ -170,19 +185,23 @@ pub struct DynamicEngine {
     /// a bounded channel risks silently dropping a notification that leaves
     /// the UI permanently stale.
     pub(super) runtime_schema_subscribers: Vec<mpsc::UnboundedSender<RuntimeSchemaUpdate>>,
-    /// Subscribers that want to receive a notification when a node is
-    /// fully created and initialized (i.e. transitioned from `Creating`
-    /// to `Initializing`).  This is what session-level forwarders turn
-    /// into the public `NodeAdded` event.  Failures are visible via the
-    /// existing state subscribers (`NodeState::Failed`) and never appear
-    /// here, so a `NodeAddedNotification` always means success.
+    /// Subscribers that receive an ordered stream of node add/remove events.
+    /// `Added` fires when a node is fully created and initialized; `Removed`
+    /// fires when the actor actually tears a node down. Session-level
+    /// forwarders turn these into the public `NodeAdded`/`NodeRemoved` events
+    /// and the `pipeline.nodes` insert/prune. `Added` always means success;
+    /// failures are visible via state subscribers (`NodeState::Failed`).
     ///
-    /// Unbounded because node creations are one-per-node and very
-    /// low-frequency; a bounded channel risks silently dropping a
-    /// notification that leaves the UI permanently without a
-    /// `nodeadded` event for that node.  Same model as
+    /// One stream (not two) so a single forwarder applies adds and removes in
+    /// the exact order the actor mutated `live_nodes`; independent channels
+    /// could reorder an add ahead of its later remove and re-insert a torn-down
+    /// node — the durable-orphan race in #607.
+    ///
+    /// Unbounded because node lifecycle events are one-per-node and very
+    /// low-frequency; a bounded channel risks silently dropping an event that
+    /// leaves the snapshot permanently inconsistent. Same model as
     /// `runtime_schema_subscribers` above.
-    pub(super) node_added_subscribers: Vec<mpsc::UnboundedSender<NodeAddedNotification>>,
+    pub(super) node_lifecycle_subscribers: Vec<mpsc::UnboundedSender<NodeLifecycleNotification>>,
     // Metrics
     pub(super) nodes_active_gauge: opentelemetry::metrics::Gauge<u64>,
     pub(super) node_state_transitions_counter: opentelemetry::metrics::Counter<u64>,
@@ -330,9 +349,9 @@ impl DynamicEngine {
                 self.runtime_schema_subscribers.push(tx);
                 let _ = response_tx.send(rx).await;
             },
-            QueryMessage::SubscribeNodeAdded { response_tx } => {
+            QueryMessage::SubscribeNodeLifecycle { response_tx } => {
                 let (tx, rx) = mpsc::unbounded_channel();
-                self.node_added_subscribers.push(tx);
+                self.node_lifecycle_subscribers.push(tx);
                 let _ = response_tx.send(rx).await;
             },
         }
@@ -427,11 +446,26 @@ impl DynamicEngine {
     }
 
     pub(crate) fn handle_state_update(&mut self, update: &NodeStateUpdate) {
-        if !self.live_nodes.contains_key(&update.node_id) {
+        let Some(live_node) = self.live_nodes.get(&update.node_id) else {
             tracing::trace!(
                 node = %update.node_id,
                 state = ?update.state,
                 "Ignoring state update for removed node"
+            );
+            return;
+        };
+
+        // Discard updates stamped for a previous incarnation of this id: a
+        // terminal update enqueued by an old instance (guaranteed in flight by
+        // the #600 backstop) must not be applied to a new node that reused the
+        // id after a remove → re-add (#606).
+        if update.generation != live_node.generation {
+            tracing::debug!(
+                node = %update.node_id,
+                state = ?update.state,
+                update_generation = update.generation,
+                live_generation = live_node.generation,
+                "Discarding state update from a stale node generation"
             );
             return;
         }
@@ -611,17 +645,22 @@ impl DynamicEngine {
     }
 
     /// Initialize a node and spawn its I/O actors (Pin Distributors).
+    ///
+    /// `generation` is the node instance's epoch (its `creation_id`); it is
+    /// stamped onto every state emission so a stale update from a prior
+    /// incarnation can be discarded by `handle_state_update` (#606).
     async fn initialize_node(
         &mut self,
         node: Box<dyn streamkit_core::ProcessorNode>,
         node_id: &str,
         kind: &str,
+        generation: u64,
         channels: &NodeChannels,
     ) -> Result<(), StreamKitError> {
         let mut node = node;
 
-        let init_ctx =
-            InitContext { node_id: node_id.to_string(), state_tx: channels.state.clone() };
+        let state_tx = NodeStateSender::new(channels.state.clone(), generation);
+        let init_ctx = InitContext { node_id: node_id.to_string(), state_tx: state_tx.clone() };
         match node.initialize(&init_ctx).await {
             Ok(PinUpdate::NoChange | PinUpdate::Updated { .. }) => {},
             Err(e) => {
@@ -696,7 +735,7 @@ impl DynamicEngine {
                 OutputRouting::Direct(node_outputs_map),
             ),
             batch_size: self.batch_size,
-            state_tx: channels.state.clone(),
+            state_tx,
             stats_tx: Some(channels.stats.clone()),
             telemetry_tx: Some(channels.telemetry.clone()),
             session_id: self.session_id.clone(),
@@ -725,9 +764,27 @@ impl DynamicEngine {
         // graph_builder does for oneshot) so the terminal state is guaranteed.
         // FIFO ordering means any terminal state the node already emitted is
         // processed first; handle_state_update collapses the redundant follow-up.
+        //
+        // `run()` is wrapped in `catch_unwind` so a panic *inside the node
+        // future itself* (as opposed to a native worker thread, which is caught
+        // at the FFI boundary and surfaces as `Err`) is converted into a
+        // terminal `Failed` instead of unwinding the task before the
+        // reconciliation send below ever runs (#605).
         let task_handle = tokio::spawn(
             async move {
-                let result = node.run(context).await;
+                let run_result = AssertUnwindSafe(node.run(context)).catch_unwind().await;
+                let result: Result<(), StreamKitError> = match run_result {
+                    Ok(result) => result,
+                    Err(panic) => {
+                        let reason = panic_reason(&*panic);
+                        tracing::error!(
+                            node = %node_id_for_task,
+                            panic = %reason,
+                            "node.run() future panicked; reporting terminal Failed"
+                        );
+                        Err(StreamKitError::Runtime(format!("node panicked: {reason}")))
+                    },
+                };
                 let final_state = match &result {
                     Ok(()) => NodeState::Stopped { reason: StopReason::Completed },
                     Err(e) => NodeState::Failed { reason: e.to_string() },
@@ -738,8 +795,10 @@ impl DynamicEngine {
             }
             .instrument(run_span),
         );
-        self.live_nodes
-            .insert(node_id.to_string(), graph_builder::LiveNode { control_tx, task_handle });
+        self.live_nodes.insert(
+            node_id.to_string(),
+            graph_builder::LiveNode { control_tx, task_handle, generation },
+        );
         self.nodes_active_gauge
             .record(self.live_nodes.len() as u64, &self.node_attributes.pipeline);
         Ok(())
@@ -1411,11 +1470,14 @@ impl DynamicEngine {
 
     /// Gracefully shut down a node and its associated actors.
     async fn shutdown_node(&mut self, node_id: &str) {
+        let existed_in_engine = self.node_states.contains_key(node_id);
         if let Some(state) = self.node_states.get(node_id) {
             self.zero_state_gauge(node_id, state);
         }
 
+        let mut removed_generation: Option<u64> = None;
         if let Some(live_node) = self.live_nodes.remove(node_id) {
+            removed_generation = Some(live_node.generation);
             if live_node.control_tx.send(NodeControlMessage::Shutdown).await.is_ok() {
                 let mut task_handle = live_node.task_handle;
                 let shutdown_result =
@@ -1461,6 +1523,34 @@ impl DynamicEngine {
         self.node_metric_labels.remove(node_id);
         self.nodes_active_gauge
             .record(self.live_nodes.len() as u64, &self.node_attributes.pipeline);
+
+        // Notify for any node the engine actually held, not just live ones: a
+        // node left as Failed residue was never in the snapshot so there is
+        // nothing to prune, but a client tracking it still needs a NodeRemoved.
+        // The session skips the prune when the id is absent yet still
+        // broadcasts (#607).
+        if existed_in_engine || removed_generation.is_some() {
+            self.notify_node_removed(node_id, removed_generation);
+        }
+    }
+
+    /// Broadcast a node-removed lifecycle notification, pruning subscribers that
+    /// have hung up.  `generation` is `None` for a node that never reached
+    /// `live_nodes` (Failed residue or one cancelled while still Creating) and
+    /// therefore has no incarnation epoch.
+    fn notify_node_removed(&mut self, node_id: &str, generation: Option<u64>) {
+        let notification = NodeLifecycleNotification::Removed(NodeRemovedNotification {
+            node_id: node_id.to_string(),
+            generation,
+        });
+        tracing::info!(
+            node = %node_id,
+            generation = ?generation,
+            subscribers = self.node_lifecycle_subscribers.len(),
+            "Emitting node-removed notification"
+        );
+        self.node_lifecycle_subscribers
+            .retain(|subscriber| subscriber.send(notification.clone()).is_ok());
     }
 
     /// Handles a completed background node creation.
@@ -1497,7 +1587,9 @@ impl DynamicEngine {
             Ok(node) => {
                 tracing::info!(node = %node_id, kind = %kind, "Node created successfully, initializing");
 
-                if let Err(e) = self.initialize_node(node, &node_id, &kind, channels).await {
+                if let Err(e) =
+                    self.initialize_node(node, &node_id, &kind, creation_id, channels).await
+                {
                     tracing::error!(
                         node_id = %node_id,
                         kind = %kind,
@@ -1518,8 +1610,19 @@ impl DynamicEngine {
                 self.flush_pending_connections().await;
                 self.flush_pending_tunes(&node_id).await;
 
-                let notification = NodeAddedNotification { node_id: node_id.clone(), kind, params };
-                self.node_added_subscribers
+                let notification = NodeLifecycleNotification::Added(NodeAddedNotification {
+                    node_id: node_id.clone(),
+                    kind,
+                    params,
+                    generation: creation_id,
+                });
+                tracing::info!(
+                    node = %node_id,
+                    generation = creation_id,
+                    subscribers = self.node_lifecycle_subscribers.len(),
+                    "Emitting node-added notification"
+                );
+                self.node_lifecycle_subscribers
                     .retain(|subscriber| subscriber.send(notification.clone()).is_ok());
             },
             Err(e) => {
@@ -1767,6 +1870,11 @@ impl DynamicEngine {
                     self.node_kinds.remove(&node_id);
                     self.node_metric_labels.remove(&node_id);
                     self.prune_pending_for(&node_id);
+                    // Clients saw this node's Creating state, so they still need
+                    // a NodeRemoved even though it never reached live_nodes and
+                    // has no incarnation epoch (mirrors shutdown_node's residue
+                    // path, #607).
+                    self.notify_node_removed(&node_id, None);
                 } else {
                     self.shutdown_node(&node_id).await;
                 }

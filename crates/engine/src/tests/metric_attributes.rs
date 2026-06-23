@@ -157,7 +157,9 @@ async fn dynamic_node_packets_carry_pipeline_attribute() {
 
     let (control_tx, _control_rx) = tokio::sync::mpsc::channel(8);
     let task_handle = tokio::spawn(async { Ok(()) });
-    engine.live_nodes.insert(node_id.to_string(), LiveNode { control_tx, task_handle });
+    engine
+        .live_nodes
+        .insert(node_id.to_string(), LiveNode { control_tx, task_handle, generation: 0 });
     engine.node_kinds.insert(node_id.to_string(), "test::node".to_string());
 
     engine.handle_stats_update(&NodeStatsUpdate {
@@ -190,7 +192,9 @@ async fn dynamic_node_state_transitions_carry_pipeline_attribute() {
 
     let (control_tx, _control_rx) = tokio::sync::mpsc::channel(8);
     let task_handle = tokio::spawn(async { Ok(()) });
-    engine.live_nodes.insert(node_id.to_string(), LiveNode { control_tx, task_handle });
+    engine
+        .live_nodes
+        .insert(node_id.to_string(), LiveNode { control_tx, task_handle, generation: 0 });
     engine.node_metric_labels.insert(
         node_id.to_string(),
         NodeMetricLabels {
@@ -207,6 +211,7 @@ async fn dynamic_node_state_transitions_carry_pipeline_attribute() {
         node_id: node_id.to_string(),
         state: NodeState::Running,
         timestamp: std::time::SystemTime::now(),
+        generation: 0,
     });
 
     h.provider.force_flush().expect("force_flush should succeed");
@@ -237,12 +242,15 @@ async fn dynamic_node_state_carries_attribute_without_cached_labels() {
 
     let (control_tx, _control_rx) = tokio::sync::mpsc::channel(8);
     let task_handle = tokio::spawn(async { Ok(()) });
-    engine.live_nodes.insert(node_id.to_string(), LiveNode { control_tx, task_handle });
+    engine
+        .live_nodes
+        .insert(node_id.to_string(), LiveNode { control_tx, task_handle, generation: 0 });
 
     engine.handle_state_update(&NodeStateUpdate {
         node_id: node_id.to_string(),
         state: NodeState::Failed { reason: "test".to_string() },
         timestamp: std::time::SystemTime::now(),
+        generation: 0,
     });
 
     h.provider.force_flush().expect("force_flush should succeed");

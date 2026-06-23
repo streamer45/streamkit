@@ -20,6 +20,7 @@ pub fn create_test_context(
 ) -> (NodeContext, MockOutputSender, mpsc::Receiver<NodeStateUpdate>) {
     let (_control_tx, control_rx) = mpsc::channel(10);
     let (state_tx, state_rx) = mpsc::channel(10);
+    let state_tx = streamkit_core::state::NodeStateSender::new(state_tx, 0);
     let (stats_tx, _stats_rx) = mpsc::channel(10);
     let (pin_mgmt_tx, pin_mgmt_rx) = mpsc::channel(10);
     drop(pin_mgmt_tx);
@@ -73,6 +74,7 @@ pub fn create_test_context_with_pin_mgmt(
 ) {
     let (_control_tx, control_rx) = mpsc::channel(10);
     let (state_tx, state_rx) = mpsc::channel(10);
+    let state_tx = streamkit_core::state::NodeStateSender::new(state_tx, 0);
     let (stats_tx, _stats_rx) = mpsc::channel(10);
     let (pin_mgmt_tx, pin_mgmt_rx) = mpsc::channel(10);
 
