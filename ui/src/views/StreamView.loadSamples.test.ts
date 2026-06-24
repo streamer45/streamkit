@@ -2,9 +2,10 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { useStreamViewState } from '@/hooks/useStreamViewState';
+import { useStreamStore } from '@/stores/streamStore';
 import type { SamplePipeline } from '@/types/generated/api-types';
 
 import { loadAndApplySamples } from './StreamView';
@@ -36,26 +37,53 @@ function makeViewState(): ReturnType<typeof useStreamViewState> {
 }
 
 describe('loadAndApplySamples (cold-load ordering)', () => {
-  it('defers the first derive until config is ready', async () => {
+  beforeEach(() => {
+    listDynamicSamples.mockReset();
+  });
+
+  afterEach(() => {
+    useStreamStore.setState({ configLoaded: false });
+  });
+
+  it('defers the first derive until config finishes loading', async () => {
     listDynamicSamples.mockResolvedValue([sample('a')]);
     const viewState = makeViewState();
     const deriveMoqFromYaml = vi.fn();
 
     let resolveConfig!: () => void;
-    const configReady = new Promise<void>((resolve) => {
-      resolveConfig = resolve;
-    });
+    const loadConfig = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveConfig = () => resolve();
+        })
+    );
+    useStreamStore.setState({ configLoaded: false, loadConfig });
 
-    const done = loadAndApplySamples(viewState, deriveMoqFromYaml, configReady);
+    const done = loadAndApplySamples(viewState, deriveMoqFromYaml);
 
     // The sample list resolves first; the derive must wait for config so the
     // server URL is never resolved against an empty configServerUrl (#604).
     await Promise.resolve();
+    expect(loadConfig).toHaveBeenCalledTimes(1);
     expect(viewState.setPipelineYaml).toHaveBeenCalledWith(sample('a').yaml);
     expect(deriveMoqFromYaml).not.toHaveBeenCalled();
 
     resolveConfig();
     await done;
+    expect(deriveMoqFromYaml).toHaveBeenCalledWith(sample('a').yaml);
+  });
+
+  it('does not reload config when it is already loaded (warm load)', async () => {
+    listDynamicSamples.mockResolvedValue([sample('a')]);
+    const viewState = makeViewState();
+    const deriveMoqFromYaml = vi.fn();
+
+    const loadConfig = vi.fn(() => Promise.resolve());
+    useStreamStore.setState({ configLoaded: true, loadConfig });
+
+    await loadAndApplySamples(viewState, deriveMoqFromYaml);
+
+    expect(loadConfig).not.toHaveBeenCalled();
     expect(deriveMoqFromYaml).toHaveBeenCalledWith(sample('a').yaml);
   });
 });

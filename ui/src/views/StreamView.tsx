@@ -83,16 +83,18 @@ function autoConnectIfMoq(
 /**
  * Load dynamic pipeline samples and auto-select the first one.
  *
- * The first derive resolves the MoQ server URL from `configServerUrl`, which a
- * separate `loadConfig()` populates asynchronously. Awaiting `configReady`
- * before deriving guarantees the URL is present even when the sample list
- * resolves first, so the field is never left blank on a cold load (issue #604).
+ * The first derive resolves the MoQ server URL from `configServerUrl`, which
+ * `loadConfig()` populates asynchronously. Config and samples are fetched in
+ * parallel, but the derive waits for config so the URL is present even when the
+ * sample list resolves first — otherwise the field is left blank on a cold load
+ * until the user edits the client section (issue #604).
  */
 export async function loadAndApplySamples(
   viewState: ReturnType<typeof useStreamViewState>,
-  deriveMoqFromYaml: (yaml: string) => void,
-  configReady: Promise<unknown>
+  deriveMoqFromYaml: (yaml: string) => void
 ): Promise<void> {
+  const { configLoaded, loadConfig } = useStreamStore.getState();
+  const configReady = configLoaded ? Promise.resolve() : loadConfig();
   try {
     viewState.setSamplesLoading(true);
     viewState.setSamplesError(null);
@@ -482,7 +484,6 @@ const StreamView: React.FC = () => {
     setMsePath,
     setActiveSession,
     clearActiveSession,
-    loadConfig,
     connect,
     disconnect,
     toggleMicrophone,
@@ -533,7 +534,6 @@ const StreamView: React.FC = () => {
       setMsePath: s.setMsePath,
       setActiveSession: s.setActiveSession,
       clearActiveSession: s.clearActiveSession,
-      loadConfig: s.loadConfig,
       connect: s.connect,
       disconnect: s.disconnect,
       toggleMicrophone: s.toggleMicrophone,
@@ -652,8 +652,7 @@ const StreamView: React.FC = () => {
   }, [onMessage, activeSessionId, status, clearActiveSession, disconnect]);
 
   useEffect(() => {
-    const configReady = configLoaded ? Promise.resolve() : loadConfig();
-    void loadAndApplySamples(viewState, deriveMoqFromYaml, configReady);
+    void loadAndApplySamples(viewState, deriveMoqFromYaml);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
