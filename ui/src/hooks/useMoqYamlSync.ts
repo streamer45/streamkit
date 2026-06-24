@@ -10,8 +10,6 @@ import { parseClientFromYaml } from '@/utils/clientSection';
 import {
   applyMoqSettings,
   extractMoqSettingsFromClient,
-  resolveServerUrl,
-  type MoqPeerSettings,
   type MoqSettingsActions,
 } from '@/utils/moqPeerSettings';
 
@@ -34,12 +32,6 @@ const clientSignature = (client: ClientSection | null): string => JSON.stringify
  * is a no-op otherwise, so callers can settle the store before reading it (e.g.
  * before auto-connect) without clobbering manual edits to the broadcast/server
  * fields, which write to the store directly and never schedule a debounce.
- *
- * On a cold load the sample list can resolve before `loadConfig()` populates
- * `configServerUrl`, so the first derive of a `gateway_path`-only pipeline can't
- * resolve the server URL yet. When `configServerUrl` later transitions from empty
- * to set, the server URL is re-resolved from the last derived settings so the
- * field populates without manual interaction (issue #604).
  */
 export function useMoqYamlSync(
   storeActions: MoqSettingsActions,
@@ -54,11 +46,6 @@ export function useMoqYamlSync(
   // `null` is a "never derived" sentinel — it never equals a signature string
   // (e.g. "null" for non-MoQ YAML), so the first debounced edit always derives.
   const lastDerivedClientRef = useRef<string | null>(null);
-  const lastSettingsRef = useRef<MoqPeerSettings | null>(null);
-
-  const configServerUrl = useStreamStore((s) => s.configServerUrl);
-  const prevConfigServerUrlRef = useRef(configServerUrl);
-  const configLoadHandledRef = useRef(false);
 
   const cancelPending = useCallback(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -70,9 +57,11 @@ export function useMoqYamlSync(
     (client: ClientSection | null) => {
       cancelPending();
       lastDerivedClientRef.current = clientSignature(client);
-      const settings = extractMoqSettingsFromClient(client);
-      lastSettingsRef.current = settings;
-      applyMoqSettings(settings, storeActions, useStreamStore.getState().configServerUrl);
+      applyMoqSettings(
+        extractMoqSettingsFromClient(client),
+        storeActions,
+        useStreamStore.getState().configServerUrl
+      );
     },
     [storeActions, cancelPending]
   );
@@ -113,25 +102,6 @@ export function useMoqYamlSync(
     cancelPending();
     if (pending !== null) deriveIfClientChanged(pending);
   }, [cancelPending, deriveIfClientChanged]);
-
-  useEffect(() => {
-    const prev = prevConfigServerUrlRef.current;
-    prevConfigServerUrlRef.current = configServerUrl;
-    // Fire only once, on the first load: a later reset of configServerUrl must
-    // not clobber a server URL the user has since edited by hand.
-    if (configLoadHandledRef.current || !configServerUrl) return;
-    configLoadHandledRef.current = true;
-    if (prev) return;
-    // A pending debounced edit hasn't updated lastSettingsRef yet, so re-resolve
-    // from the in-flight YAML to avoid briefly applying the prior derive's URL.
-    const settings =
-      pendingYamlRef.current !== null
-        ? extractMoqSettingsFromClient(parseClientFromYaml(pendingYamlRef.current))
-        : lastSettingsRef.current;
-    if (!settings) return;
-    const resolvedUrl = resolveServerUrl(settings, configServerUrl);
-    if (resolvedUrl) storeActions.setServerUrl(resolvedUrl);
-  }, [configServerUrl, storeActions]);
 
   useEffect(() => {
     return () => {

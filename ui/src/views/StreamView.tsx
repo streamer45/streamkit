@@ -80,10 +80,18 @@ function autoConnectIfMoq(
   })();
 }
 
-/** Load dynamic pipeline samples and auto-select the first one. */
-async function loadAndApplySamples(
+/**
+ * Load dynamic pipeline samples and auto-select the first one.
+ *
+ * The first derive resolves the MoQ server URL from `configServerUrl`, which a
+ * separate `loadConfig()` populates asynchronously. Awaiting `configReady`
+ * before deriving guarantees the URL is present even when the sample list
+ * resolves first, so the field is never left blank on a cold load (issue #604).
+ */
+export async function loadAndApplySamples(
   viewState: ReturnType<typeof useStreamViewState>,
-  deriveMoqFromYaml: (yaml: string) => void
+  deriveMoqFromYaml: (yaml: string) => void,
+  configReady: Promise<unknown>
 ): Promise<void> {
   try {
     viewState.setSamplesLoading(true);
@@ -96,6 +104,7 @@ async function loadAndApplySamples(
       const first = orderedSamples[0];
       viewState.setSelectedTemplateId(first.id);
       viewState.setPipelineYaml(first.yaml);
+      await configReady;
       deriveMoqFromYaml(first.yaml);
     }
   } catch (error) {
@@ -584,10 +593,6 @@ const StreamView: React.FC = () => {
     };
   }, []);
 
-  useEffect(() => {
-    if (!configLoaded) loadConfig();
-  }, [configLoaded, loadConfig]);
-
   const [mseError, setMseError] = useState<string | null>(null);
   const mseUrl = React.useMemo(() => {
     if (!activeSessionId || !msePath) return null;
@@ -647,7 +652,8 @@ const StreamView: React.FC = () => {
   }, [onMessage, activeSessionId, status, clearActiveSession, disconnect]);
 
   useEffect(() => {
-    loadAndApplySamples(viewState, deriveMoqFromYaml);
+    const configReady = configLoaded ? Promise.resolve() : loadConfig();
+    void loadAndApplySamples(viewState, deriveMoqFromYaml, configReady);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
