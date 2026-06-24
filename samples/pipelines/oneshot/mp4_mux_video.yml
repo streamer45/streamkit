@@ -51,5 +51,5 @@ nodes:
   http_output:
     kind: streamkit::http_output
     params:
-      content_type: 'video/mp4; codecs="av01.0.04M.08"'
+      content_type: 'video/mp4; codecs="av01.0.08M.08"'
     needs: mp4_muxer

@@ -420,15 +420,17 @@ fn build_opus_sample_entry(sample_rate: u32, channels: u16) -> SampleEntry {
 /// [`mp4_content_type`] (via [`av1_codec_string`]), so the MIME codec can never
 /// drift from the bytes actually muxed into the container.
 ///
-/// They are currently fixed at profile 0 / level idx 4 (3.0) / Main tier /
-/// 8-bit — what the AV1 encoders in this repo emit (the same debt is tracked on
-/// WebM's `AV1_CODEC_PRIVATE`). The `config_obus` payload carries the real
-/// sequence header OBU; if these scalars are ever derived from it,
-/// [`av1_codec_string`] picks up the change automatically.
+/// They are currently fixed at profile 0 / level idx 8 (4.0) / Main tier /
+/// 8-bit — matching WebM's `AV1_CODEC_PRIVATE` and the UI encoder default so a
+/// given AV1 stream advertises the same codec string regardless of container.
+/// Level 4.0 covers up to 2048×1152; >4K output would under-declare the level
+/// (the same debt is documented on `AV1_CODEC_PRIVATE`). The `config_obus`
+/// payload carries the real sequence header OBU; if these scalars are ever
+/// derived from it, [`av1_codec_string`] picks up the change automatically.
 const fn av1c_config(config_obus: Vec<u8>) -> Av1cBox {
     Av1cBox {
         seq_profile: Uint::new(0),     // Main profile
-        seq_level_idx_0: Uint::new(4), // Level 3.0
+        seq_level_idx_0: Uint::new(8), // Level 4.0
         seq_tier_0: Uint::new(0),      // Main tier
         high_bitdepth: Uint::new(0),   // 8-bit
         twelve_bit: Uint::new(0),
@@ -2003,12 +2005,12 @@ mod tests {
         let cases: &[(Option<AudioCodec>, Option<VideoCodec>, &str)] = &[
             (Some(Opus), Some(H264), "video/mp4; codecs=\"avc1,opus\""),
             (Some(Aac), Some(H264), "video/mp4; codecs=\"avc1,mp4a\""),
-            (Some(Opus), Some(Av1), "video/mp4; codecs=\"av01.0.04M.08,opus\""),
-            (Some(Aac), Some(Av1), "video/mp4; codecs=\"av01.0.04M.08,mp4a\""),
+            (Some(Opus), Some(Av1), "video/mp4; codecs=\"av01.0.08M.08,opus\""),
+            (Some(Aac), Some(Av1), "video/mp4; codecs=\"av01.0.08M.08,mp4a\""),
             (Some(Opus), Some(Vp9), "video/mp4; codecs=\"opus\""),
             (Some(Aac), Some(Vp9), "video/mp4; codecs=\"mp4a\""),
             (None, Some(H264), "video/mp4; codecs=\"avc1\""),
-            (None, Some(Av1), "video/mp4; codecs=\"av01.0.04M.08\""),
+            (None, Some(Av1), "video/mp4; codecs=\"av01.0.08M.08\""),
             (None, Some(Vp9), "video/mp4"),
             (Some(Opus), None, "audio/mp4; codecs=\"opus\""),
             (Some(Aac), None, "audio/mp4; codecs=\"mp4a\""),
@@ -2029,7 +2031,7 @@ mod tests {
     #[test]
     fn av1_codec_param_is_full_rfc6381_token() {
         let token = av1_codec_param();
-        assert_eq!(token, "av01.0.04M.08");
+        assert_eq!(token, "av01.0.08M.08");
 
         // Derived from the same box that `build_av01_sample_entry` writes.
         if let SampleEntry::Av01(av01) = build_av01_sample_entry(1280, 720, None) {
@@ -2043,7 +2045,7 @@ mod tests {
             mp4_content_type(Some(AudioCodec::Opus), Some(VideoCodec::Av1)),
             mp4_content_type(Some(AudioCodec::Aac), Some(VideoCodec::Av1)),
         ] {
-            assert!(ct.contains("av01.0.04M.08"), "{ct} must carry the full token");
+            assert!(ct.contains("av01.0.08M.08"), "{ct} must carry the full token");
             assert!(
                 !ct.contains("\"av01\"") && !ct.contains("av01,") && !ct.contains("av01\""),
                 "{ct} must not advertise the bare av01 token"
@@ -3062,7 +3064,7 @@ mod tests {
         let av =
             Mp4MuxerNode::new(Mp4MuxerConfig { video_width: 640, video_height: 480, ..default() });
         // No explicit codecs → AV1 video hint + Opus audio default.
-        assert_eq!(av.content_type().unwrap(), "video/mp4; codecs=\"av01.0.04M.08,opus\"");
+        assert_eq!(av.content_type().unwrap(), "video/mp4; codecs=\"av01.0.08M.08,opus\"");
 
         let h264_aac = Mp4MuxerNode::new(Mp4MuxerConfig {
             video_width: 640,
