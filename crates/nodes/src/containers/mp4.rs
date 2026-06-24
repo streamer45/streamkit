@@ -423,8 +423,8 @@ fn build_opus_sample_entry(sample_rate: u32, channels: u16) -> SampleEntry {
 /// They are currently fixed at profile 0 / level idx 8 (4.0) / Main tier /
 /// 8-bit — matching WebM's `AV1_CODEC_PRIVATE` and the UI encoder default so a
 /// given AV1 stream advertises the same codec string regardless of container.
-/// Level 4.0 covers up to 2048×1152; >4K output would under-declare the level
-/// (the same debt is documented on `AV1_CODEC_PRIVATE`). The `config_obus`
+/// Level 4.0 covers up to 2048×1152; output above 1080p/2K would under-declare
+/// the level (the same debt is documented on `AV1_CODEC_PRIVATE`). The `config_obus`
 /// payload carries the real sequence header OBU; if these scalars are ever
 /// derived from it, [`av1_codec_string`] picks up the change automatically.
 const fn av1c_config(config_obus: Vec<u8>) -> Av1cBox {
