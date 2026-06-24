@@ -46,6 +46,7 @@ fn test_node_context_with_output_observer(
     mpsc::Receiver<RoutedPacketMessage>,
 ) {
     let (state_tx, state_rx) = mpsc::channel(16);
+    let state_tx = streamkit_core::NodeStateSender::new(state_tx, 0);
     let (control_tx, control_rx) = mpsc::channel(16);
 
     let (routed_tx, routed_rx) = mpsc::channel(64);

@@ -185,7 +185,7 @@ async fn runtime_schema_discovery_reaches_get_and_subscribe() {
 async fn node_added_not_emitted_on_creation_failure() {
     let handle = build_handle_with_schema_and_failing();
 
-    let mut added_rx = handle.subscribe_node_added().await.expect("subscribe");
+    let mut added_rx = handle.subscribe_node_lifecycle().await.expect("subscribe");
 
     handle
         .send_control(EngineControlMessage::AddNode {
@@ -220,7 +220,7 @@ async fn node_added_not_emitted_on_creation_failure() {
 async fn init_failure_transitions_to_failed() {
     let handle = build_handle_with_schema_and_failing();
 
-    let mut added_rx = handle.subscribe_node_added().await.expect("subscribe");
+    let mut added_rx = handle.subscribe_node_lifecycle().await.expect("subscribe");
 
     handle
         .send_control(EngineControlMessage::AddNode {

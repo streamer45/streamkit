@@ -180,6 +180,7 @@ struct TestHarness {
 
 fn node_context() -> (NodeContext, TestHarness) {
     let (state_tx, state_rx) = mpsc::channel(32);
+    let state_tx = streamkit_core::NodeStateSender::new(state_tx, 0);
     let (control_tx, control_rx) = mpsc::channel(16);
     let (routed_tx, routed_rx) = mpsc::channel(64);
     // Keep the output side open for the duration of the test.

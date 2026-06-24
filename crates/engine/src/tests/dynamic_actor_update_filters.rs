@@ -38,7 +38,10 @@ fn add_live_node(
 ) -> mpsc::Receiver<streamkit_core::control::NodeControlMessage> {
     let (control_tx, control_rx) = mpsc::channel(8);
     let task_handle = tokio::spawn(async { Ok(()) });
-    engine.live_nodes.insert(name.to_string(), graph_builder::LiveNode { control_tx, task_handle });
+    engine.live_nodes.insert(
+        name.to_string(),
+        graph_builder::LiveNode { control_tx, task_handle, generation: 0 },
+    );
     engine.node_pin_metadata.insert(
         name.to_string(),
         NodePinMetadata {
@@ -64,6 +67,40 @@ fn add_live_node(
     );
     std::sync::Arc::make_mut(&mut engine.node_states).insert(name.to_string(), state);
     control_rx
+}
+
+#[tokio::test]
+async fn stale_generation_state_update_is_discarded() {
+    let mut engine = create_test_engine();
+    let _rx = add_live_node(&mut engine, "recycled", NodeState::Running);
+    // Simulate a re-added node whose live incarnation is generation 7.
+    engine.live_nodes.get_mut("recycled").expect("live node").generation = 7;
+
+    let (sub_tx, mut sub_rx) = mpsc::channel(16);
+    engine.state_subscribers.push(sub_tx);
+
+    // A terminal update enqueued by the PREVIOUS instance (generation 6) must
+    // not clobber the live node's state nor reach subscribers (#606).
+    let stale =
+        NodeStateUpdate::new("recycled".to_string(), NodeState::Failed { reason: "old".into() })
+            .with_generation(6);
+    engine.handle_state_update(&stale);
+    assert!(
+        matches!(engine.node_states.get("recycled"), Some(NodeState::Running)),
+        "stale-generation update must not change live state"
+    );
+    assert!(sub_rx.try_recv().is_err(), "stale-generation update must not reach subscribers");
+
+    // The matching generation IS applied.
+    let fresh =
+        NodeStateUpdate::new("recycled".to_string(), NodeState::Failed { reason: "new".into() })
+            .with_generation(7);
+    engine.handle_state_update(&fresh);
+    assert!(
+        matches!(engine.node_states.get("recycled"), Some(NodeState::Failed { .. })),
+        "matching-generation update must be applied"
+    );
+    assert!(sub_rx.try_recv().is_ok(), "matching-generation update must reach subscribers");
 }
 
 #[tokio::test]
@@ -272,9 +309,10 @@ async fn stats_fallback_labels_when_cache_missing() {
     // so the fallback path synthesises labels from node_kinds.
     let (control_tx, _control_rx) = mpsc::channel(8);
     let task_handle = tokio::spawn(async { Ok(()) });
-    engine
-        .live_nodes
-        .insert("uncached".to_string(), graph_builder::LiveNode { control_tx, task_handle });
+    engine.live_nodes.insert(
+        "uncached".to_string(),
+        graph_builder::LiveNode { control_tx, task_handle, generation: 0 },
+    );
     engine.node_kinds.insert("uncached".to_string(), "test::special".to_string());
     std::sync::Arc::make_mut(&mut engine.node_states)
         .insert("uncached".to_string(), NodeState::Running);

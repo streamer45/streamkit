@@ -65,6 +65,15 @@ Supported `action` values:
 
 If `mode` is omitted, it defaults to `reliable`.
 
+**Re-adding a removed node id:** `removenode` is asynchronous — the engine
+tears the node down in the background and the id stays in the pipeline until
+a `noderemoved` event is broadcast. A separate `addnode` reusing the same id
+before that event is rejected with "already exists in the pipeline". To
+replace a node, either wait for its `noderemoved` event before re-adding, or
+do the whole replacement in a single `applybatch` (`disconnect → removenode →
+addnode → connect`), which resolves the id within the batch regardless of
+teardown timing.
+
 ### Batch Operations
 
 Batch operations allow multiple graph modifications to be validated or applied atomically.

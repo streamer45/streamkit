@@ -88,7 +88,7 @@ pub use pins::{InputPin, OutputPin, PinCardinality};
 pub use registry::{NodeDefinition, NodeRegistry};
 pub use resource_manager::{Resource, ResourceError, ResourceKey, ResourceManager, ResourcePolicy};
 pub use state::state_helpers;
-pub use state::{NodeState, NodeStateUpdate, StopReason};
+pub use state::{NodeState, NodeStateSender, NodeStateUpdate, StopReason};
 pub use stats::{NodeStats, NodeStatsUpdate};
 pub use telemetry::telemetry_helpers;
 pub use telemetry::{TelemetryConfig, TelemetryEmitter, TelemetryEvent};
