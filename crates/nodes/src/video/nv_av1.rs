@@ -282,7 +282,7 @@ impl ProcessorNode for NvAv1DecoderNode {
             tracing::info!("NvAv1DecoderNode input stream closed");
         });
 
-        crate::codec_utils::codec_forward_loop(
+        let outcome = crate::codec_utils::codec_forward_loop(
             &mut context,
             &mut result_rx,
             &mut input_task,
@@ -295,9 +295,12 @@ impl ProcessorNode for NvAv1DecoderNode {
         )
         .await;
 
-        state_helpers::emit_stopped(&context.state_tx, &node_name, "input_closed");
-        tracing::info!("NvAv1DecoderNode finished");
-        Ok(())
+        crate::codec_utils::finalize_codec_run(
+            outcome,
+            &context.state_tx,
+            &node_name,
+            "NvAv1DecoderNode",
+        )
     }
 }
 

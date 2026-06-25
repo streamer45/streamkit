@@ -207,7 +207,7 @@ impl ProcessorNode for VaapiH264DecoderNode {
             tracing::info!("VaapiH264DecoderNode input stream closed");
         });
 
-        crate::codec_utils::codec_forward_loop(
+        let outcome = crate::codec_utils::codec_forward_loop(
             &mut context,
             &mut result_rx,
             &mut input_task,
@@ -220,9 +220,12 @@ impl ProcessorNode for VaapiH264DecoderNode {
         )
         .await;
 
-        state_helpers::emit_stopped(&context.state_tx, &node_name, "input_closed");
-        tracing::info!("VaapiH264DecoderNode finished");
-        Ok(())
+        crate::codec_utils::finalize_codec_run(
+            outcome,
+            &context.state_tx,
+            &node_name,
+            "VaapiH264DecoderNode",
+        )
     }
 }
 

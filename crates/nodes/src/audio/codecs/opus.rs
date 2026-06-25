@@ -188,7 +188,7 @@ impl ProcessorNode for OpusDecoderNode {
             tracing::info!("OpusDecoderNode input stream closed");
         });
 
-        crate::codec_utils::codec_forward_loop(
+        let outcome = crate::codec_utils::codec_forward_loop(
             &mut context,
             &mut result_rx,
             &mut input_task,
@@ -201,10 +201,12 @@ impl ProcessorNode for OpusDecoderNode {
         )
         .await;
 
-        state_helpers::emit_stopped(&context.state_tx, &node_name, "input_closed");
-
-        tracing::info!("OpusDecoderNode finished");
-        Ok(())
+        crate::codec_utils::finalize_codec_run(
+            outcome,
+            &context.state_tx,
+            &node_name,
+            "OpusDecoderNode",
+        )
     }
 }
 
@@ -408,7 +410,7 @@ impl ProcessorNode for OpusEncoderNode {
             tracing::info!("OpusEncoderNode input stream closed after {} frames", frame_count);
         });
 
-        crate::codec_utils::codec_forward_loop(
+        let outcome = crate::codec_utils::codec_forward_loop(
             &mut context,
             &mut result_rx,
             &mut input_task,
@@ -430,10 +432,12 @@ impl ProcessorNode for OpusEncoderNode {
         )
         .await;
 
-        state_helpers::emit_stopped(&context.state_tx, &node_name, "input_closed");
-
-        tracing::info!("OpusEncoderNode finished");
-        Ok(())
+        crate::codec_utils::finalize_codec_run(
+            outcome,
+            &context.state_tx,
+            &node_name,
+            "OpusEncoderNode",
+        )
     }
 }
 

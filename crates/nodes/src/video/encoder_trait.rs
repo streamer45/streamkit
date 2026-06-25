@@ -233,7 +233,7 @@ pub async fn run_encoder<E: EncoderNodeRunner>(
         tracing::info!("{node_label} input stream closed");
     });
 
-    crate::codec_utils::codec_forward_loop(
+    let outcome = crate::codec_utils::codec_forward_loop(
         &mut context,
         &mut result_rx,
         &mut input_task,
@@ -250,9 +250,7 @@ pub async fn run_encoder<E: EncoderNodeRunner>(
     )
     .await;
 
-    state_helpers::emit_stopped(&context.state_tx, &node_name, "input_closed");
-    tracing::info!("{} finished", E::NODE_LABEL);
-    Ok(())
+    crate::codec_utils::finalize_codec_run(outcome, &context.state_tx, &node_name, E::NODE_LABEL)
 }
 
 // Layer 2: Codec-level trait (single-thread encoders: VP9, AV1)
@@ -546,5 +544,68 @@ mod tests {
         assert!(monitor.warned);
         // The repeat path is exercised because consecutive_slow
         // is a multiple of WARN_REPEAT_INTERVAL while warned is true.
+    }
+
+    /// #539 end-to-end: when the EOS-flush idle watchdog abandons a wedged
+    /// codec, `run_encoder` must surface a terminal `Failed` state and return
+    /// `Err` — not `Stopped("input_closed")` + `Ok` — so a truncated encode is
+    /// observable to callers and state subscribers.
+    #[tokio::test(start_paused = true)]
+    #[allow(clippy::expect_used)] // tests should fail loudly on setup errors
+    async fn run_encoder_surfaces_watchdog_trip_as_failure() {
+        use crate::test_utils::create_test_context;
+        use std::collections::HashMap;
+
+        struct StuckEncoder;
+
+        impl EncoderNodeRunner for StuckEncoder {
+            const CONTENT_TYPE: &'static str = "video/test";
+            const NODE_LABEL: &'static str = "StuckEncoderNode";
+            const PACKETS_COUNTER_NAME: &'static str = "test_stuck_packets";
+            const DURATION_HISTOGRAM_NAME: &'static str = "test_stuck_duration";
+
+            fn spawn_codec_task(
+                self,
+                encode_rx: mpsc::Receiver<(VideoFrame, Option<PacketMetadata>)>,
+                result_tx: mpsc::Sender<Result<EncodedPacket, String>>,
+                _duration_histogram: opentelemetry::metrics::Histogram<f64>,
+            ) -> tokio::task::JoinHandle<()> {
+                // Hold both channel ends so the result receiver never closes,
+                // and never produce output or finish: stands in for a codec
+                // wedged in a blocking flush that only the watchdog can end.
+                tokio::spawn(async move {
+                    let _held = (encode_rx, result_tx);
+                    std::future::pending::<()>().await;
+                })
+            }
+        }
+
+        // Input "in" is already closed, so the encoder goes straight to its
+        // EOS flush, which here never produces output.
+        let (in_tx, in_rx) = mpsc::channel::<Packet>(1);
+        drop(in_tx);
+        let mut inputs = HashMap::new();
+        inputs.insert("in".to_string(), in_rx);
+
+        let (context, _mock_out, mut state_rx) = create_test_context(inputs, 1);
+
+        let result =
+            tokio::time::timeout(Duration::from_mins(10), run_encoder(StuckEncoder, context))
+                .await
+                .expect("run_encoder must finalize once the watchdog abandons the codec");
+
+        assert!(
+            matches!(result, Err(StreamKitError::Codec(_))),
+            "a watchdog-abandoned flush must return a codec error, got {result:?}"
+        );
+
+        let mut terminal = None;
+        while let Ok(update) = state_rx.try_recv() {
+            terminal = Some(update.state);
+        }
+        assert!(
+            matches!(terminal, Some(streamkit_core::NodeState::Failed { .. })),
+            "the terminal state must be Failed, got {terminal:?}"
+        );
     }
 }
