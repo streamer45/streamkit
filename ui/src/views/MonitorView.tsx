@@ -237,7 +237,7 @@ const MonitorViewContent: React.FC = () => {
   const clearSessionPositions = useNodePositionStore((s) => s.clearSession);
 
   const onNodeDragStop = useCallback(
-    (_event: React.MouseEvent, node: RFNode) => {
+    (_event: MouseEvent | TouchEvent, node: RFNode) => {
       if (selectedSessionId) {
         updateNodePosition(selectedSessionId, node.id, node.position);
       }
