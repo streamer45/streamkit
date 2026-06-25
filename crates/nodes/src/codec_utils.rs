@@ -7,7 +7,7 @@ use std::time::Duration;
 use opentelemetry::KeyValue;
 use streamkit_core::stats::NodeStatsTracker;
 use streamkit_core::types::Packet;
-use streamkit_core::{state_helpers, NodeContext, NodeStateUpdate, StreamKitError};
+use streamkit_core::{state_helpers, NodeContext, NodeStateSender, StreamKitError};
 use tokio::sync::mpsc;
 
 /// Bounds a codec's entire lifetime by output idleness.
@@ -66,7 +66,7 @@ pub enum CodecLoopOutcome {
 /// i.e. the codec was abandoned or panicked and its output is truncated.
 pub fn finalize_codec_run(
     outcome: CodecLoopOutcome,
-    state_tx: &mpsc::Sender<NodeStateUpdate>,
+    state_tx: &NodeStateSender,
     node_id: &str,
     label: &str,
 ) -> Result<(), StreamKitError> {
@@ -282,6 +282,7 @@ mod tests {
     use crate::test_utils::create_test_context;
     use std::collections::HashMap;
     use streamkit_core::stats::NodeStatsTracker;
+    use streamkit_core::NodeStateUpdate;
 
     fn test_counter() -> opentelemetry::metrics::Counter<u64> {
         opentelemetry::global::meter("test").u64_counter("test_drain_packets").build()
@@ -573,6 +574,7 @@ mod tests {
     #[test]
     fn finalize_maps_clean_finish_to_stopped_ok() {
         let (state_tx, mut state_rx) = mpsc::channel::<NodeStateUpdate>(4);
+        let state_tx = NodeStateSender::new(state_tx, 0);
 
         let result = finalize_codec_run(CodecLoopOutcome::Completed, &state_tx, "node", "Label");
 
@@ -591,6 +593,7 @@ mod tests {
     #[test]
     fn finalize_maps_watchdog_abandonment_to_failed_err() {
         let (state_tx, mut state_rx) = mpsc::channel::<NodeStateUpdate>(4);
+        let state_tx = NodeStateSender::new(state_tx, 0);
 
         let result =
             finalize_codec_run(CodecLoopOutcome::WatchdogAbandoned, &state_tx, "node", "Label");
@@ -612,6 +615,7 @@ mod tests {
     #[test]
     fn finalize_maps_codec_panic_to_failed_err() {
         let (state_tx, mut state_rx) = mpsc::channel::<NodeStateUpdate>(4);
+        let state_tx = NodeStateSender::new(state_tx, 0);
 
         let result =
             finalize_codec_run(CodecLoopOutcome::CodecPanicked, &state_tx, "node", "Label");
