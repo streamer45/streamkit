@@ -29,10 +29,10 @@ pub(crate) const CODEC_IDLE_TIMEOUT: Duration = Duration::from_mins(1);
 /// How a [`codec_forward_loop`] run terminated.
 ///
 /// Distinguishes a clean finish (input/codec/downstream closed, or shutdown)
-/// from an idle-watchdog abandonment, which leaves the output truncated. The
-/// latter must surface as a node failure rather than a successful
-/// `Stopped("input_closed")` so callers and state subscribers can tell a
-/// degraded encode from a complete one (see #539).
+/// from a degraded one that leaves the output truncated — an idle-watchdog
+/// abandonment or a codec-task panic. A degraded run must surface as a node
+/// failure rather than a successful `Stopped("input_closed")` so callers and
+/// state subscribers can tell it from a complete one (see #539).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
 pub enum CodecLoopOutcome {
@@ -44,43 +44,49 @@ pub enum CodecLoopOutcome {
     /// native handle was intentionally leaked (it may still be in a blocking
     /// FFI call), so the run is degraded, not successful.
     WatchdogAbandoned,
+    /// The codec task panicked, so the loop ended before the stream was fully
+    /// processed. Any output already forwarded is truncated, exactly like a
+    /// watchdog abandonment, so the run is degraded, not successful.
+    CodecPanicked,
 }
 
 /// Emit the terminal node state and return the run result for a codec node,
 /// based on how its [`codec_forward_loop`] ended.
 ///
 /// A clean finish emits `Stopped("input_closed")` and returns `Ok(())`. A
-/// watchdog abandonment emits a terminal `Failed` state and returns an `Err`,
-/// making the truncated output observable to callers and state subscribers
-/// instead of masquerading as a successful encode (#539).
+/// degraded finish (watchdog abandonment or codec panic) emits a terminal
+/// `Failed` state and returns an `Err`, making the truncated output observable
+/// to callers and state subscribers instead of masquerading as a successful
+/// run (#539).
 ///
 /// # Errors
 ///
 /// Returns [`StreamKitError::Codec`] when `outcome` is
-/// [`CodecLoopOutcome::WatchdogAbandoned`], i.e. the idle watchdog abandoned a
-/// wedged codec and the encoded output is truncated.
+/// [`CodecLoopOutcome::WatchdogAbandoned`] or [`CodecLoopOutcome::CodecPanicked`],
+/// i.e. the codec was abandoned or panicked and its output is truncated.
 pub fn finalize_codec_run(
     outcome: CodecLoopOutcome,
     state_tx: &mpsc::Sender<NodeStateUpdate>,
     node_id: &str,
     label: &str,
 ) -> Result<(), StreamKitError> {
-    match outcome {
+    let reason = match outcome {
         CodecLoopOutcome::Completed => {
             state_helpers::emit_stopped(state_tx, node_id, "input_closed");
             tracing::info!("{label} finished");
-            Ok(())
+            return Ok(());
         },
-        CodecLoopOutcome::WatchdogAbandoned => {
-            let reason = format!(
-                "{label} abandoned a wedged codec worker after {CODEC_IDLE_TIMEOUT:?} of \
-                 output idleness; encoded output is truncated"
-            );
-            tracing::error!("{reason}");
-            state_helpers::emit_failed(state_tx, node_id, reason.clone());
-            Err(StreamKitError::Codec(reason))
+        CodecLoopOutcome::WatchdogAbandoned => format!(
+            "{label} abandoned a wedged codec worker after {CODEC_IDLE_TIMEOUT:?} of output \
+             idleness; output is truncated"
+        ),
+        CodecLoopOutcome::CodecPanicked => {
+            format!("{label} codec task panicked mid-stream; output is truncated")
         },
-    }
+    };
+    tracing::error!("{reason}");
+    state_helpers::emit_failed(state_tx, node_id, reason.clone());
+    Err(StreamKitError::Codec(reason))
 }
 
 /// Result of [`bounded_thread_join`].
@@ -227,6 +233,7 @@ pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
                 if let Err(e) = res {
                     if e.is_panic() {
                         tracing::error!("{label} codec task panicked: {e:?}");
+                        outcome = CodecLoopOutcome::CodecPanicked;
                         break;
                     }
                 }
@@ -597,6 +604,65 @@ mod tests {
             matches!(update.state, streamkit_core::NodeState::Failed { .. }),
             "a truncated encode must surface as Failed, got {:?}",
             update.state
+        );
+    }
+
+    /// #539: a codec-task panic truncates output exactly like a watchdog
+    /// abandonment, so it must surface as `Failed` + `Err`, not a clean stop.
+    #[test]
+    fn finalize_maps_codec_panic_to_failed_err() {
+        let (state_tx, mut state_rx) = mpsc::channel::<NodeStateUpdate>(4);
+
+        let result = finalize_codec_run(CodecLoopOutcome::CodecPanicked, &state_tx, "node", "Label");
+
+        assert!(
+            matches!(result, Err(StreamKitError::Codec(_))),
+            "a panicked codec run must return a codec error, not Ok"
+        );
+        let update = state_rx.try_recv().expect("a terminal state must be emitted");
+        assert!(
+            matches!(update.state, streamkit_core::NodeState::Failed { .. }),
+            "a panicked codec run must surface as Failed, got {:?}",
+            update.state
+        );
+    }
+
+    /// #539: a panicking codec task must end the loop with `CodecPanicked`, not
+    /// the default `Completed` — otherwise a panic-truncated stream would be
+    /// finalized as a clean `Stopped("input_closed")` success.
+    #[tokio::test]
+    async fn forward_loop_reports_panic_as_degraded() {
+        let (mut ctx, _mock_out, _state_rx) = create_test_context(HashMap::new(), 1);
+        let mut stats = NodeStatsTracker::new("test".to_string(), ctx.stats_tx.clone());
+        let counter = test_counter();
+
+        // No results ever arrive; the codec task panics, which must end the loop.
+        let (_result_tx, mut result_rx) = mpsc::channel::<Result<Vec<u8>, String>>(8);
+        let mut input_task = tokio::task::spawn(std::future::pending::<()>());
+        let codec_task = tokio::task::spawn(async { panic!("codec worker blew up") });
+        let (codec_tx, _codec_rx) = mpsc::channel::<Vec<u8>>(1);
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            codec_forward_loop(
+                &mut ctx,
+                &mut result_rx,
+                &mut input_task,
+                codec_task,
+                codec_tx,
+                &counter,
+                &mut stats,
+                to_binary,
+                "test",
+            ),
+        )
+        .await
+        .expect("loop must finalize when the codec task panics");
+
+        assert_eq!(
+            outcome,
+            CodecLoopOutcome::CodecPanicked,
+            "a panicked codec task must surface as a degraded run, not a clean finish"
         );
     }
 }
