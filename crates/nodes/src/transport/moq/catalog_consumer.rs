@@ -127,20 +127,17 @@ mod tests {
         }
 
         let mut updated = hang::catalog::Catalog::default();
-        updated.audio.renditions.insert(
-            "audio/data".to_string(),
-            hang::catalog::AudioConfig {
-                codec: super::super::constants::catalog_audio_codec(
+        updated.audio.renditions.insert("audio/data".to_string(), {
+            let mut cfg = hang::catalog::AudioConfig::new(
+                super::super::constants::catalog_audio_codec(
                     streamkit_core::types::AudioCodec::Opus,
                 ),
-                sample_rate: 48000,
-                channel_count: 2,
-                bitrate: Some(128_000),
-                description: None,
-                container: hang::catalog::Container::default(),
-                jitter: None,
-            },
-        );
+                48000,
+                2,
+            );
+            cfg.bitrate = Some(128_000);
+            cfg
+        });
         write_catalog(&mut producer, &updated);
 
         let result = cc.next().await.expect("late next").expect("late catalog after cancellation");
