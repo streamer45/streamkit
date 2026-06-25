@@ -501,7 +501,7 @@ impl ProcessorNode for MoqPullNode {
         );
 
         // Connect to the MoQ server and fetch the catalog
-        let tracks = match self.discover_tracks().await {
+        let tracks = match Box::pin(self.discover_tracks()).await {
             Ok(tracks) => tracks,
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to discover tracks; using default output pin");
@@ -759,7 +759,7 @@ impl MoqPullNode {
         let origin = moq_lite::Origin::random().produce();
         let consumer = origin.consume();
         let _consumer_session =
-            client.clone().with_consume(origin).connect(url).await.map_err(|e| {
+            Box::pin(client.clone().with_consume(origin).connect(url)).await.map_err(|e| {
                 StreamKitError::Runtime(format!("Failed to create consumer session: {e}"))
             })?;
 
@@ -935,7 +935,7 @@ impl MoqPullNode {
         let origin = moq_lite::Origin::random().produce();
         let consumer = origin.consume();
         let _consumer_session =
-            client.clone().with_consume(origin).connect(url).await.map_err(|e| {
+            Box::pin(client.clone().with_consume(origin).connect(url)).await.map_err(|e| {
                 StreamKitError::Runtime(format!("Failed to create consumer session: {e}"))
             })?;
 

@@ -223,9 +223,8 @@ fn decode_mp3_streaming_incremental(
         .default_track(TrackType::Audio)
         .ok_or_else(|| "No default track found in MP3".to_string())?;
 
-    let codec_params = match track.codec_params.as_ref() {
-        Some(CodecParameters::Audio(params)) => params,
-        _ => return Err("No audio codec parameters found in MP3".to_string()),
+    let Some(CodecParameters::Audio(codec_params)) = track.codec_params.as_ref() else {
+        return Err("No audio codec parameters found in MP3".to_string());
     };
     let sample_rate =
         codec_params.sample_rate.ok_or_else(|| "No sample rate found in MP3".to_string())?;

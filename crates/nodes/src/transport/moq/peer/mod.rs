@@ -2278,7 +2278,6 @@ impl MoqPeerNode {
                 rotation: None,
                 flip: None,
             },
-            ..Default::default()
         };
 
         let mut catalog_producer = broadcast_producer

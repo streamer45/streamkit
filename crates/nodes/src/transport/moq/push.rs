@@ -189,7 +189,9 @@ impl ProcessorNode for MoqPushNode {
 
         let publisher_origin = moq_lite::Origin::random().produce();
         let _publisher_session =
-            match client.clone().with_publish(publisher_origin.consume()).connect(url).await {
+            match Box::pin(client.clone().with_publish(publisher_origin.consume()).connect(url))
+                .await
+            {
                 Ok(session) => session,
                 Err(e) => {
                     let err_msg = format!("Failed to create publisher session: {e}");
@@ -300,7 +302,6 @@ impl ProcessorNode for MoqPushNode {
                 rotation: None,
                 flip: None,
             },
-            ..Default::default()
         };
 
         // Create catalog track and publish the catalog data
