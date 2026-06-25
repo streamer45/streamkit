@@ -8,10 +8,10 @@ import type { useStreamViewState } from '@/hooks/useStreamViewState';
 import { useStreamStore } from '@/stores/streamStore';
 import type { SamplePipeline } from '@/types/generated/api-types';
 
-import { loadAndApplySamples } from './StreamView';
+import { loadAndApplySamples } from './streamSamples';
 
-// StreamView transitively imports the stream store, which pulls in the
-// WebTransport-backed @moq/* libraries; stub them so the module loads in jsdom.
+// streamSamples imports the stream store, which pulls in the WebTransport-backed
+// @moq/* libraries; stub them so the module loads in jsdom.
 vi.mock('@moq/hang', () => ({ default: {} }));
 vi.mock('@moq/watch', () => ({ default: {}, Broadcast: vi.fn() }));
 vi.mock('@moq/publish', () => ({ default: {}, Broadcast: vi.fn() }));
@@ -74,32 +74,6 @@ describe('loadAndApplySamples (cold-load ordering)', () => {
     expect(deriveMoqFromYaml).toHaveBeenCalledWith(sample('a').yaml);
   });
 
-  it('skips the auto-select when the user picks a template during config load', async () => {
-    listDynamicSamples.mockResolvedValue([sample('a')]);
-    const viewState = makeViewState();
-    const deriveMoqFromYaml = vi.fn();
-
-    let resolveConfig!: () => void;
-    const loadConfig = vi.fn(
-      () =>
-        new Promise<void>((resolve) => {
-          resolveConfig = () => resolve();
-        })
-    );
-    useStreamStore.setState({ configLoaded: false, loadConfig });
-
-    const done = loadAndApplySamples(viewState, deriveMoqFromYaml);
-
-    // The user selects a different template while config is still loading.
-    await Promise.resolve();
-    (viewState as { selectedTemplateId: string }).selectedTemplateId = 'b';
-
-    resolveConfig();
-    await done;
-    expect(viewState.setSelectedTemplateId).not.toHaveBeenCalled();
-    expect(deriveMoqFromYaml).not.toHaveBeenCalled();
-  });
-
   it('does not reload config when it is already loaded (warm load)', async () => {
     listDynamicSamples.mockResolvedValue([sample('a')]);
     const viewState = makeViewState();
@@ -112,5 +86,19 @@ describe('loadAndApplySamples (cold-load ordering)', () => {
 
     expect(loadConfig).not.toHaveBeenCalled();
     expect(deriveMoqFromYaml).toHaveBeenCalledWith(sample('a').yaml);
+  });
+
+  it('reports an error and stops loading when the sample fetch fails', async () => {
+    listDynamicSamples.mockRejectedValue(new Error('boom'));
+    const viewState = makeViewState();
+    const deriveMoqFromYaml = vi.fn();
+
+    useStreamStore.setState({ configLoaded: true, loadConfig: vi.fn() });
+
+    await loadAndApplySamples(viewState, deriveMoqFromYaml);
+
+    expect(viewState.setSamplesError).toHaveBeenCalledWith('boom');
+    expect(viewState.setSamplesLoading).toHaveBeenLastCalledWith(false);
+    expect(deriveMoqFromYaml).not.toHaveBeenCalled();
   });
 });

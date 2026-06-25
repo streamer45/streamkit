@@ -33,13 +33,12 @@ import { useStreamViewState } from '@/hooks/useStreamViewState';
 import { useVideoCanvas } from '@/hooks/useVideoCanvas';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { getApiUrl } from '@/services/base';
-import { listDynamicSamples } from '@/services/samples';
 import { createSession, listSessions } from '@/services/sessions';
 import { useSchemaStore, ensureSchemasLoaded } from '@/stores/schemaStore';
 import { useSessionStore } from '@/stores/sessionStore';
 import type { Event } from '@/types/types';
 import { getLogger } from '@/utils/logger';
-import { orderSamplePipelinesSystemFirst } from '@/utils/samplePipelineOrdering';
+import { loadAndApplySamples } from '@/views/streamSamples';
 
 import type {
   CameraStatus,
@@ -78,47 +77,6 @@ function autoConnectIfMoq(
       );
     }
   })();
-}
-
-/**
- * Load dynamic pipeline samples and auto-select the first one.
- *
- * The first derive resolves the MoQ server URL from `configServerUrl`, which
- * `loadConfig()` populates asynchronously. Config and samples are fetched in
- * parallel, but config is awaited first so the auto-select applies the template
- * and derives its MoQ settings synchronously — the URL is present even when the
- * sample list resolves first (otherwise the field stays blank on a cold load
- * until the user edits the client section, issue #604), and no await sits
- * between the selection and the derive where a user template switch could be
- * clobbered.
- */
-export async function loadAndApplySamples(
-  viewState: ReturnType<typeof useStreamViewState>,
-  deriveMoqFromYaml: (yaml: string) => void
-): Promise<void> {
-  const { configLoaded, loadConfig } = useStreamStore.getState();
-  try {
-    viewState.setSamplesLoading(true);
-    viewState.setSamplesError(null);
-    const samplesPromise = listDynamicSamples();
-    if (!configLoaded) await loadConfig();
-    const orderedSamples = orderSamplePipelinesSystemFirst(await samplesPromise);
-    viewState.setSamples(orderedSamples);
-
-    if (orderedSamples.length > 0 && !viewState.selectedTemplateId) {
-      const first = orderedSamples[0];
-      viewState.setSelectedTemplateId(first.id);
-      viewState.setPipelineYaml(first.yaml);
-      deriveMoqFromYaml(first.yaml);
-    }
-  } catch (error) {
-    logger.error('Failed to load dynamic samples:', error);
-    viewState.setSamplesError(
-      error instanceof Error ? error.message : 'Failed to load pipeline templates'
-    );
-  } finally {
-    viewState.setSamplesLoading(false);
-  }
 }
 
 /** Build the relay connection status label for the streaming status bar. */
