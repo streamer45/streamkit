@@ -63,7 +63,7 @@ reqwest = { version = "0.13", optional = true, default-features = false, feature
 ] }
 tempfile = { version = "3.27", optional = true }
 uuid = { version = "1", optional = true, features = ["v4"] }
-rubato = { version = "2.0", optional = true }
+rubato = { version = "3.0", optional = true }
 audioadapter-buffers = { version = "3.0", optional = true }
 symphonia = { version = "0.5.5", optional = true, default-features = false, features = [
   "mp3",
