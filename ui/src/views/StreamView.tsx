@@ -85,28 +85,30 @@ function autoConnectIfMoq(
  *
  * The first derive resolves the MoQ server URL from `configServerUrl`, which
  * `loadConfig()` populates asynchronously. Config and samples are fetched in
- * parallel, but the derive waits for config so the URL is present even when the
- * sample list resolves first — otherwise the field is left blank on a cold load
- * until the user edits the client section (issue #604).
+ * parallel, but config is awaited first so the auto-select applies the template
+ * and derives its MoQ settings synchronously — the URL is present even when the
+ * sample list resolves first (otherwise the field stays blank on a cold load
+ * until the user edits the client section, issue #604), and no await sits
+ * between the selection and the derive where a user template switch could be
+ * clobbered.
  */
 export async function loadAndApplySamples(
   viewState: ReturnType<typeof useStreamViewState>,
   deriveMoqFromYaml: (yaml: string) => void
 ): Promise<void> {
   const { configLoaded, loadConfig } = useStreamStore.getState();
-  const configReady = configLoaded ? Promise.resolve() : loadConfig();
   try {
     viewState.setSamplesLoading(true);
     viewState.setSamplesError(null);
-    const samples = await listDynamicSamples();
-    const orderedSamples = orderSamplePipelinesSystemFirst(samples);
+    const samplesPromise = listDynamicSamples();
+    if (!configLoaded) await loadConfig();
+    const orderedSamples = orderSamplePipelinesSystemFirst(await samplesPromise);
     viewState.setSamples(orderedSamples);
 
     if (orderedSamples.length > 0 && !viewState.selectedTemplateId) {
       const first = orderedSamples[0];
       viewState.setSelectedTemplateId(first.id);
       viewState.setPipelineYaml(first.yaml);
-      await configReady;
       deriveMoqFromYaml(first.yaml);
     }
   } catch (error) {
@@ -652,7 +654,7 @@ const StreamView: React.FC = () => {
   }, [onMessage, activeSessionId, status, clearActiveSession, disconnect]);
 
   useEffect(() => {
-    void loadAndApplySamples(viewState, deriveMoqFromYaml);
+    loadAndApplySamples(viewState, deriveMoqFromYaml);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

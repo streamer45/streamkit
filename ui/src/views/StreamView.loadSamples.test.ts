@@ -27,7 +27,7 @@ const sample = (id: string): SamplePipeline =>
 
 function makeViewState(): ReturnType<typeof useStreamViewState> {
   return {
-    selectedTemplateId: null,
+    selectedTemplateId: '',
     setSamples: vi.fn(),
     setSamplesLoading: vi.fn(),
     setSamplesError: vi.fn(),
@@ -61,16 +61,43 @@ describe('loadAndApplySamples (cold-load ordering)', () => {
 
     const done = loadAndApplySamples(viewState, deriveMoqFromYaml);
 
-    // The sample list resolves first; the derive must wait for config so the
-    // server URL is never resolved against an empty configServerUrl (#604).
+    // The sample list resolves first, but nothing is applied until config
+    // loads, so the derive never resolves against an empty configServerUrl (#604).
     await Promise.resolve();
     expect(loadConfig).toHaveBeenCalledTimes(1);
-    expect(viewState.setPipelineYaml).toHaveBeenCalledWith(sample('a').yaml);
+    expect(viewState.setPipelineYaml).not.toHaveBeenCalled();
     expect(deriveMoqFromYaml).not.toHaveBeenCalled();
 
     resolveConfig();
     await done;
+    expect(viewState.setPipelineYaml).toHaveBeenCalledWith(sample('a').yaml);
     expect(deriveMoqFromYaml).toHaveBeenCalledWith(sample('a').yaml);
+  });
+
+  it('skips the auto-select when the user picks a template during config load', async () => {
+    listDynamicSamples.mockResolvedValue([sample('a')]);
+    const viewState = makeViewState();
+    const deriveMoqFromYaml = vi.fn();
+
+    let resolveConfig!: () => void;
+    const loadConfig = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveConfig = () => resolve();
+        })
+    );
+    useStreamStore.setState({ configLoaded: false, loadConfig });
+
+    const done = loadAndApplySamples(viewState, deriveMoqFromYaml);
+
+    // The user selects a different template while config is still loading.
+    await Promise.resolve();
+    (viewState as { selectedTemplateId: string }).selectedTemplateId = 'b';
+
+    resolveConfig();
+    await done;
+    expect(viewState.setSelectedTemplateId).not.toHaveBeenCalled();
+    expect(deriveMoqFromYaml).not.toHaveBeenCalled();
   });
 
   it('does not reload config when it is already loaded (warm load)', async () => {
