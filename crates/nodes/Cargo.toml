@@ -44,7 +44,7 @@ futures = { workspace = true }
 ogg = { version = "0.9.2", optional = true, features = ["async"] }
 opus = { version = "0.3.1", optional = true }
 url = { version = "2.5.8", optional = true, features = ["serde"] }
-rquickjs = { version = "0.11", features = ["array-buffer", "futures", "loader", "parallel"], optional = true }
+rquickjs = { version = "0.12", features = ["array-buffer", "futures", "loader", "parallel"], optional = true }
 wildmatch = { version = "2.6", optional = true }
 
 moq-native = { version = "0.14.0", optional = true }
