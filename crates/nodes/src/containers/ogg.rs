@@ -625,7 +625,7 @@ impl ProcessorNode for SymphoniaOggDemuxerNode {
             // Bypass Symphonia's probe: it can false-positive match MP3 markers in Ogg/Opus
             // streams, producing noisy logs and incorrect demuxing.
             let mut format_reader =
-                match symphonia::default::formats::OggReader::try_new(mss, &format_opts) {
+                match symphonia::default::formats::OggReader::try_new(mss, format_opts) {
                     Ok(reader) => reader,
                     Err(e) => {
                         state_helpers::emit_failed(
@@ -654,15 +654,16 @@ impl ProcessorNode for SymphoniaOggDemuxerNode {
                 }
 
                 match format_reader.next_packet() {
-                    Ok(packet) => {
+                    Ok(Some(packet)) => {
                         packets_extracted += 1;
                         stats_tracker.received();
 
                         // Extract timing metadata
-                        let metadata = if packet.ts() > 0 {
+                        let pts = packet.pts.get();
+                        let metadata = if pts > 0 {
                             // Opus uses 48kHz timebase
-                            let timestamp_us = (packet.ts() * 1_000_000) / 48000;
-                            let duration_us = (packet.dur() * 1_000_000) / 48000;
+                            let timestamp_us = (pts.unsigned_abs() * 1_000_000) / 48000;
+                            let duration_us = (packet.dur.get() * 1_000_000) / 48000;
 
                             Some(streamkit_core::types::PacketMetadata {
                                 timestamp_us: Some(timestamp_us),
@@ -688,9 +689,7 @@ impl ProcessorNode for SymphoniaOggDemuxerNode {
                         stats_tracker.sent();
                         stats_tracker.maybe_send();
                     },
-                    Err(symphonia::core::errors::Error::IoError(e))
-                        if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-                    {
+                    Ok(None) => {
                         tracing::info!(
                             "Reached end of Ogg stream after {} packets",
                             packets_extracted

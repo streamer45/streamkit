@@ -15,13 +15,12 @@ use streamkit_core::{
     get_stream_channel_capacity, state_helpers, InputPin, NodeContext, NodeRegistry, OutputPin,
     PinCardinality, ProcessorNode, StreamKitError,
 };
-use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::DecoderOptions;
-use symphonia::core::errors::Error;
-use symphonia::core::formats::FormatOptions;
+use symphonia::core::codecs::audio::AudioDecoderOptions;
+use symphonia::core::codecs::CodecParameters;
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::{FormatOptions, TrackType};
 use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions, ReadOnlySource};
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
 use tokio::sync::mpsc;
 
 const DEMUXER_CHANNEL_CAPACITY: usize = 32;
@@ -223,20 +222,25 @@ fn demux_wav_streaming_incremental(
 
     let format_opts = FormatOptions::default();
     let metadata_opts = MetadataOptions::default();
-    let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &format_opts, &metadata_opts)
+    let mut format_reader = symphonia::default::get_probe()
+        .probe(&hint, mss, format_opts, metadata_opts)
         .map_err(|e| format!("Failed to probe WAV format: {e}"))?;
 
-    let mut format_reader = probed.format;
+    let track = format_reader
+        .default_track(TrackType::Audio)
+        .ok_or_else(|| "No default track found in WAV".to_string())?;
 
-    let track =
-        format_reader.default_track().ok_or_else(|| "No default track found in WAV".to_string())?;
-
-    let codec_params = &track.codec_params;
+    let codec_params = match track.codec_params.as_ref() {
+        Some(CodecParameters::Audio(params)) => params,
+        _ => return Err("No audio codec parameters found in WAV".to_string()),
+    };
     let sample_rate =
         codec_params.sample_rate.ok_or_else(|| "No sample rate found in WAV".to_string())?;
-    let channel_count =
-        codec_params.channels.ok_or_else(|| "No channel info found in WAV".to_string())?.count();
+    let channel_count = codec_params
+        .channels
+        .as_ref()
+        .ok_or_else(|| "No channel info found in WAV".to_string())?
+        .count();
     let channels = u16::try_from(channel_count)
         .map_err(|_| format!("Channel count {channel_count} exceeds u16::MAX"))?;
 
@@ -246,21 +250,20 @@ fn demux_wav_streaming_incremental(
         channels
     );
 
-    let decoder_opts = DecoderOptions::default();
+    let decoder_opts = AudioDecoderOptions::default();
     let mut decoder = symphonia::default::get_codecs()
-        .make(codec_params, &decoder_opts)
+        .make_audio_decoder(codec_params, &decoder_opts)
         .map_err(|e| format!("Failed to create WAV decoder: {e}"))?;
 
     let track_id = track.id;
 
-    let mut sample_buf: Option<SampleBuffer<f32>> = None;
     let mut rechunk_buffer: VecDeque<f32> = VecDeque::new();
     let mut frame_count = 0;
 
     loop {
         let packet = match format_reader.next_packet() {
-            Ok(packet) => packet,
-            Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+            Ok(Some(packet)) => packet,
+            Ok(None) => {
                 tracing::debug!("Reached end of WAV stream after {} frames", frame_count);
                 break;
             },
@@ -270,46 +273,39 @@ fn demux_wav_streaming_incremental(
             },
         };
 
-        if packet.track_id() != track_id {
+        if packet.track_id != track_id {
             continue;
         }
 
         match decoder.decode(&packet) {
             Ok(audio_buf) => {
-                if sample_buf.is_none() {
-                    let spec = *audio_buf.spec();
-                    let duration = audio_buf.capacity() as u64;
-                    sample_buf = Some(SampleBuffer::<f32>::new(duration, spec));
-                }
+                let mut interleaved: Vec<f32> = Vec::new();
+                audio_buf.copy_to_vec_interleaved(&mut interleaved);
+                rechunk_buffer.extend(interleaved.iter().copied());
 
-                if let Some(buf) = &mut sample_buf {
-                    buf.copy_interleaved_ref(audio_buf);
-                    rechunk_buffer.extend(buf.samples().iter().copied());
+                while rechunk_buffer.len() >= OUTPUT_FRAME_SIZE {
+                    let chunk: Vec<f32> = rechunk_buffer.drain(..OUTPUT_FRAME_SIZE).collect();
 
-                    while rechunk_buffer.len() >= OUTPUT_FRAME_SIZE {
-                        let chunk: Vec<f32> = rechunk_buffer.drain(..OUTPUT_FRAME_SIZE).collect();
+                    if result_tx.blocking_send(Ok((chunk, sample_rate, channels))).is_err() {
+                        tracing::info!(
+                            "Result channel closed after sending {} frames ({} samples total). Stopping demux.",
+                            frame_count,
+                            frame_count * OUTPUT_FRAME_SIZE
+                        );
+                        return Ok(());
+                    }
 
-                        if result_tx.blocking_send(Ok((chunk, sample_rate, channels))).is_err() {
-                            tracing::info!(
-                                "Result channel closed after sending {} frames ({} samples total). Stopping demux.",
-                                frame_count,
-                                frame_count * OUTPUT_FRAME_SIZE
-                            );
-                            return Ok(());
-                        }
-
-                        frame_count += 1;
-                        if frame_count % 100 == 0 {
-                            tracing::debug!(
-                                "Sent {} WAV frames so far ({} samples)",
-                                frame_count,
-                                frame_count * OUTPUT_FRAME_SIZE
-                            );
-                        }
+                    frame_count += 1;
+                    if frame_count % 100 == 0 {
+                        tracing::debug!(
+                            "Sent {} WAV frames so far ({} samples)",
+                            frame_count,
+                            frame_count * OUTPUT_FRAME_SIZE
+                        );
                     }
                 }
             },
-            Err(Error::DecodeError(err)) => {
+            Err(symphonia::core::errors::Error::DecodeError(err)) => {
                 tracing::warn!("WAV decode error (continuing): {}", err);
             },
             Err(e) => {
