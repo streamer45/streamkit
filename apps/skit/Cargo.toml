@@ -106,11 +106,11 @@ pprof = { version = "0.15", features = [
 ], optional = true }
 
 # For heap profiling (optional)
-tikv-jemallocator = { version = "0.6", features = [
+tikv-jemallocator = { version = "0.7", features = [
   "profiling",
   "unprefixed_malloc_on_supported_platforms",
 ], optional = true }
-jemalloc_pprof = { version = "0.8", features = ["symbolize"], optional = true }
+jemalloc_pprof = { version = "0.9", features = ["symbolize"], optional = true }
 
 # For allocation rate profiling (optional, mutually exclusive with profiling feature)
 dhat = { version = "0.3", optional = true }
