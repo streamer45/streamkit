@@ -613,7 +613,8 @@ mod tests {
     fn finalize_maps_codec_panic_to_failed_err() {
         let (state_tx, mut state_rx) = mpsc::channel::<NodeStateUpdate>(4);
 
-        let result = finalize_codec_run(CodecLoopOutcome::CodecPanicked, &state_tx, "node", "Label");
+        let result =
+            finalize_codec_run(CodecLoopOutcome::CodecPanicked, &state_tx, "node", "Label");
 
         assert!(
             matches!(result, Err(StreamKitError::Codec(_))),
