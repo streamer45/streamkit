@@ -109,7 +109,9 @@ bytemuck = { version = "1.22", optional = true, features = ["derive"] }
 # HW-accelerated video codecs (optional, behind respective features)
 vk-video = { version = "0.3", optional = true }            # vulkan_video feature — Vulkan Video H.264 HW codec
 cros-codecs = { version = "0.0.6", optional = true, features = ["vaapi"] }  # vaapi feature — requires libva-dev system package
-shiguredo_nvcodec = { version = "2026.1", optional = true }
+# Pinned to 2026.1: 2026.2.0 reworked the Encoder/Decoder API (generic handler
+# params, Option-based frame retrieval) and needs a non-trivial GPU-code migration.
+shiguredo_nvcodec = { version = "=2026.1.0", optional = true }
 
 futures-util = "0.3"
 
