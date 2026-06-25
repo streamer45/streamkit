@@ -49,6 +49,15 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-22.04
+    env:
+      # Three sequential debug test builds (default, moq, mcp) of an ever-growing
+      # workspace overflow the hosted runner's disk during the mcp link step, even
+      # after free-disk-aggressive. Disk-freeing is maxed out, so the only durable
+      # lever left is artifact size: dropping debuginfo roughly halves target/.
+      # Panic/assert locations survive via #[track_caller]; only deep backtrace
+      # frames lose source lines, recoverable in a local full-debug build.
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       - uses: actions/checkout@v5
 
