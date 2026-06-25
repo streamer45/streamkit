@@ -75,19 +75,19 @@ mime_guess = "2.0"
 
 # For OpenTelemetry OTLP integration
 opentelemetry = { workspace = true, features = ["metrics", "trace"] }
-opentelemetry_sdk = { version = "0.31.0", features = [
+opentelemetry_sdk = { version = "0.32.0", features = [
   "rt-tokio",
   "metrics",
   "trace",
 ] }
-opentelemetry-otlp = { version = "0.31.0", features = [
+opentelemetry-otlp = { version = "0.32.0", features = [
   "http-proto",
   "metrics",
   "trace",
   "grpc-tonic",
 ] }
-opentelemetry-http = "0.31.0"
-tracing-opentelemetry = "0.32.1"
+opentelemetry-http = "0.32.0"
+tracing-opentelemetry = "0.33.0"
 
 # For system metrics collection
 sysinfo = "0.39"

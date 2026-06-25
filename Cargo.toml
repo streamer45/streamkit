@@ -43,7 +43,7 @@ serde-saphyr = "0.0.28"
 serde_json = "1.0"
 indexmap = { version = "2.14", features = ["serde"] }
 
-opentelemetry = "0.31.0"
+opentelemetry = "0.32.0"
 
 criterion = { version = "0.8", default-features = false }
 
