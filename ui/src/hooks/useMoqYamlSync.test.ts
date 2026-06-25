@@ -38,8 +38,12 @@ const moqYaml = (broadcast: string, gateway = '/moq/test') =>
 const nonMoqYaml = 'nodes:\n  colorbars:\n    kind: video::colorbars\n';
 
 describe('useMoqYamlSync', () => {
-  beforeEach(() => vi.useFakeTimers());
-  afterEach(() => vi.useRealTimers());
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
   it('re-derives MoQ settings on a debounce after a direct YAML edit', () => {
     const actions = makeActions();

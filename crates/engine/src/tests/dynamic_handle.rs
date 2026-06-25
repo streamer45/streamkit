@@ -250,11 +250,14 @@ async fn handle_subscribe_runtime_schemas_returns_live_receiver() {
 }
 
 #[tokio::test]
-async fn handle_subscribe_node_added_yields_on_success() {
+async fn handle_subscribe_node_lifecycle_yields_added_then_removed() {
+    use crate::dynamic_messages::NodeLifecycleNotification;
+
     let counter = Arc::new(AtomicU32::new(0));
     let handle = make_handle(counter);
 
-    let mut added_rx = handle.subscribe_node_added().await.expect("subscribe_node_added");
+    let mut lifecycle_rx =
+        handle.subscribe_node_lifecycle().await.expect("subscribe_node_lifecycle");
 
     handle
         .send_control(EngineControlMessage::AddNode {
@@ -265,12 +268,26 @@ async fn handle_subscribe_node_added_yields_on_success() {
         .await
         .expect("send AddNode");
 
-    let Ok(Some(notif)) = tokio::time::timeout(Duration::from_secs(3), added_rx.recv()).await
+    let Ok(Some(NodeLifecycleNotification::Added(added))) =
+        tokio::time::timeout(Duration::from_secs(3), lifecycle_rx.recv()).await
     else {
-        panic!("expected node_added notification within 3s");
+        panic!("expected node-added notification within 3s");
     };
-    assert_eq!(notif.node_id, "subscribed");
-    assert_eq!(notif.kind, "test::echo");
+    assert_eq!(added.node_id, "subscribed");
+    assert_eq!(added.kind, "test::echo");
+
+    handle
+        .send_control(EngineControlMessage::RemoveNode { node_id: "subscribed".to_string() })
+        .await
+        .expect("send RemoveNode");
+
+    let Ok(Some(NodeLifecycleNotification::Removed(removed))) =
+        tokio::time::timeout(Duration::from_secs(3), lifecycle_rx.recv()).await
+    else {
+        panic!("expected node-removed notification within 3s");
+    };
+    assert_eq!(removed.node_id, "subscribed");
+    assert_eq!(removed.generation, Some(added.generation));
 
     handle.shutdown_and_wait().await.expect("shutdown");
 }

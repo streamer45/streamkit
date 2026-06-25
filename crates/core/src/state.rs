@@ -202,61 +202,119 @@ pub struct NodeStateUpdate {
     pub node_id: String,
     pub state: NodeState,
     pub timestamp: SystemTime,
+    /// Per-incarnation epoch assigned by the engine when a node instance is
+    /// created. Stamped onto every emission via [`NodeStateSender`] so a stale
+    /// update enqueued by an old instance can be discarded rather than applied
+    /// to a new node reusing the same id (#606). `0` for emissions not bound to
+    /// a generation (oneshot, direct construction in tests).
+    pub generation: u64,
 }
 
 impl NodeStateUpdate {
     #[inline]
     pub fn new(node_id: String, state: NodeState) -> Self {
-        Self { node_id, state, timestamp: SystemTime::now() }
+        Self { node_id, state, timestamp: SystemTime::now(), generation: 0 }
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn with_generation(mut self, generation: u64) -> Self {
+        self.generation = generation;
+        self
+    }
+}
+
+/// A node-bound state sender that stamps every [`NodeStateUpdate`] with the
+/// node instance's `generation` (epoch).
+///
+/// The engine assigns a fresh generation to each node incarnation and stores
+/// it alongside the live node, so `handle_state_update` can discard updates an
+/// older instance enqueued before a same-id node replaced it. Wrapping the raw
+/// channel guarantees *every* emission site — node-internal transitions and the
+/// engine's terminal backstop alike — carries the correct generation without
+/// threading it through every call (#606).
+#[derive(Debug, Clone)]
+pub struct NodeStateSender {
+    tx: tokio::sync::mpsc::Sender<NodeStateUpdate>,
+    generation: u64,
+}
+
+impl NodeStateSender {
+    #[inline]
+    #[must_use]
+    pub fn new(tx: tokio::sync::mpsc::Sender<NodeStateUpdate>, generation: u64) -> Self {
+        Self { tx, generation }
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Stamps `update` with this sender's generation and forwards it.
+    ///
+    /// # Errors
+    /// Returns the (stamped) update if the receiver has been dropped.
+    #[inline]
+    pub async fn send(
+        &self,
+        update: NodeStateUpdate,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeStateUpdate>> {
+        self.tx.send(update.with_generation(self.generation)).await
+    }
+
+    /// Stamps `update` with this sender's generation and forwards it without
+    /// blocking.
+    ///
+    /// # Errors
+    /// Returns the (stamped) update if the channel is full or closed.
+    #[inline]
+    pub fn try_send(
+        &self,
+        update: NodeStateUpdate,
+    ) -> Result<(), tokio::sync::mpsc::error::TrySendError<NodeStateUpdate>> {
+        self.tx.try_send(update.with_generation(self.generation))
     }
 }
 
 pub mod state_helpers {
-    use super::{NodeState, NodeStateUpdate, StopReason};
-    use tokio::sync::mpsc;
+    use super::{NodeState, NodeStateSender, NodeStateUpdate, StopReason};
 
     /// Best-effort: failures are silently ignored.
     #[inline]
-    pub fn emit_state(state_tx: &mpsc::Sender<NodeStateUpdate>, node_id: &str, state: NodeState) {
+    pub fn emit_state(state_tx: &NodeStateSender, node_id: &str, state: NodeState) {
         let _ = state_tx.try_send(NodeStateUpdate::new(node_id.to_string(), state));
     }
 
     #[inline]
-    pub fn emit_initializing(state_tx: &mpsc::Sender<NodeStateUpdate>, node_id: &str) {
+    pub fn emit_initializing(state_tx: &NodeStateSender, node_id: &str) {
         emit_state(state_tx, node_id, NodeState::Initializing);
     }
 
     #[inline]
-    pub fn emit_ready(state_tx: &mpsc::Sender<NodeStateUpdate>, node_id: &str) {
+    pub fn emit_ready(state_tx: &NodeStateSender, node_id: &str) {
         emit_state(state_tx, node_id, NodeState::Ready);
     }
 
     #[inline]
-    pub fn emit_running(state_tx: &mpsc::Sender<NodeStateUpdate>, node_id: &str) {
+    pub fn emit_running(state_tx: &NodeStateSender, node_id: &str) {
         emit_state(state_tx, node_id, NodeState::Running);
     }
 
     #[inline]
-    pub fn emit_stopped(
-        state_tx: &mpsc::Sender<NodeStateUpdate>,
-        node_id: &str,
-        reason: impl Into<StopReason>,
-    ) {
+    pub fn emit_stopped(state_tx: &NodeStateSender, node_id: &str, reason: impl Into<StopReason>) {
         emit_state(state_tx, node_id, NodeState::Stopped { reason: reason.into() });
     }
 
     #[inline]
-    pub fn emit_failed(
-        state_tx: &mpsc::Sender<NodeStateUpdate>,
-        node_id: &str,
-        error: impl Into<String>,
-    ) {
+    pub fn emit_failed(state_tx: &NodeStateSender, node_id: &str, error: impl Into<String>) {
         emit_state(state_tx, node_id, NodeState::Failed { reason: error.into() });
     }
 
     #[inline]
     pub fn emit_recovering(
-        state_tx: &mpsc::Sender<NodeStateUpdate>,
+        state_tx: &NodeStateSender,
         node_name: &str,
         reason: impl Into<String>,
         details: Option<serde_json::Value>,
@@ -269,8 +327,9 @@ pub mod state_helpers {
     /// # Example
     /// ```no_run
     /// # use streamkit_core::state::state_helpers::emit_recovering_with_retry;
+    /// # use streamkit_core::state::NodeStateSender;
     /// # use tokio::sync::mpsc;
-    /// # let state_tx = mpsc::channel(1).0;
+    /// # let state_tx = NodeStateSender::new(mpsc::channel(1).0, 0);
     /// emit_recovering_with_retry(
     ///     &state_tx,
     ///     "websocket_client",
@@ -283,7 +342,7 @@ pub mod state_helpers {
     /// ```
     #[inline]
     pub fn emit_recovering_with_retry(
-        state_tx: &mpsc::Sender<NodeStateUpdate>,
+        state_tx: &NodeStateSender,
         node_name: &str,
         reason: impl Into<String>,
         attempt: u32,
@@ -298,7 +357,7 @@ pub mod state_helpers {
 
     #[inline]
     pub fn emit_degraded(
-        state_tx: &mpsc::Sender<NodeStateUpdate>,
+        state_tx: &NodeStateSender,
         node_name: &str,
         reason: impl Into<String>,
         details: Option<serde_json::Value>,

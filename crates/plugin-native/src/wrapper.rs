@@ -75,8 +75,8 @@ use streamkit_core::control::NodeControlMessage;
 use streamkit_core::telemetry::{TelemetryEmitter, TelemetryEvent};
 use streamkit_core::types::Packet;
 use streamkit_core::{
-    AudioFramePool, InputPin, NodeContext, NodeState, NodeStateUpdate, OutputPin, ProcessorNode,
-    StopReason, StreamKitError, VideoFramePool,
+    AudioFramePool, InputPin, NodeContext, NodeState, NodeStateSender, NodeStateUpdate, OutputPin,
+    ProcessorNode, StopReason, StreamKitError, VideoFramePool,
 };
 use streamkit_plugin_sdk_native::{
     conversions,
@@ -408,11 +408,7 @@ impl Drop for InstanceState {
 /// task's `Err` result — the dynamic actor mirrors it onto the state channel
 /// with an awaited send (`dynamic_actor::initialize_node`) and oneshot derives
 /// it the same way (`graph_builder`).
-fn emit_failed(
-    state_tx: Option<&tokio::sync::mpsc::Sender<NodeStateUpdate>>,
-    node: &str,
-    reason: &str,
-) {
+fn emit_failed(state_tx: Option<&NodeStateSender>, node: &str, reason: &str) {
     if let Some(tx) = state_tx {
         let _ = tx.try_send(NodeStateUpdate::new(
             node.to_string(),
@@ -425,11 +421,7 @@ fn emit_failed(
 /// (normally or via a panic), rather than timing out. Without the
 /// accompanying [`emit_failed`] the coordinator would keep seeing the last
 /// good state (e.g. `Ready`) for a node that is already dead.
-fn worker_died(
-    op: &str,
-    node: &str,
-    state_tx: Option<&tokio::sync::mpsc::Sender<NodeStateUpdate>>,
-) -> StreamKitError {
+fn worker_died(op: &str, node: &str, state_tx: Option<&NodeStateSender>) -> StreamKitError {
     let reason = format!("Worker thread for node {node} died during {op}");
     emit_failed(state_tx, node, &reason);
     StreamKitError::Runtime(reason)
@@ -1146,7 +1138,7 @@ pub struct NativeNodeWrapper {
 struct WorkerCallContext<'a> {
     op: &'a str,
     node: &'a str,
-    state_tx: Option<&'a tokio::sync::mpsc::Sender<NodeStateUpdate>>,
+    state_tx: Option<&'a NodeStateSender>,
     telemetry: Option<&'a TelemetryEmitter>,
     metric_labels: &'a [KeyValue; 2],
 }
@@ -1394,7 +1386,7 @@ impl NativeNodeWrapper {
         op: &str,
         node: &str,
         reply_rx: tokio::sync::oneshot::Receiver<T>,
-        state_tx: Option<&tokio::sync::mpsc::Sender<NodeStateUpdate>>,
+        state_tx: Option<&NodeStateSender>,
         telemetry: Option<&TelemetryEmitter>,
         metric_labels: &[KeyValue; 2],
     ) -> Result<T, StreamKitError> {
@@ -2165,7 +2157,7 @@ impl NativeNodeWrapper {
         node_name: &str,
         params_value: &serde_json::Value,
         worker_tx: &tokio::sync::mpsc::Sender<WorkerRequest>,
-        state_tx: &tokio::sync::mpsc::Sender<NodeStateUpdate>,
+        state_tx: &NodeStateSender,
         telemetry: Option<&TelemetryEmitter>,
     ) -> Result<(), StreamKitError> {
         let params_json = match serde_json::to_string(params_value) {
@@ -3057,6 +3049,7 @@ mod ffi_guard_tests {
         let wrapper = test_wrapper_with_timeout(Some(std::time::Duration::from_millis(10)));
         let (tx, mut rx) = tokio::sync::mpsc::channel::<WorkerRequest>(1);
         let (state_tx, mut state_rx) = tokio::sync::mpsc::channel::<NodeStateUpdate>(1);
+        let state_tx = streamkit_core::NodeStateSender::new(state_tx, 0);
 
         let (first_reply, _first_rx) = tokio::sync::oneshot::channel();
         tx.send(WorkerRequest::Flush { reply: first_reply }).await.unwrap();
@@ -3089,6 +3082,7 @@ mod ffi_guard_tests {
         let wrapper = test_wrapper_with_timeout(Some(std::time::Duration::from_millis(10)));
         let (_reply_tx, reply_rx) = tokio::sync::oneshot::channel::<()>();
         let (state_tx, mut state_rx) = tokio::sync::mpsc::channel::<NodeStateUpdate>(1);
+        let state_tx = streamkit_core::NodeStateSender::new(state_tx, 0);
 
         let result = wrapper
             .await_reply(
@@ -3115,6 +3109,7 @@ mod ffi_guard_tests {
         // immediately rather than timing out.
         drop(rx);
         let (state_tx, mut state_rx) = tokio::sync::mpsc::channel::<NodeStateUpdate>(4);
+        let state_tx = streamkit_core::NodeStateSender::new(state_tx, 0);
 
         let (reply_tx, _reply_rx) = tokio::sync::oneshot::channel();
         let result = wrapper
@@ -3150,6 +3145,7 @@ mod ffi_guard_tests {
         // silent error that leaves the node stuck in its last good state.
         drop(reply_tx);
         let (state_tx, mut state_rx) = tokio::sync::mpsc::channel::<NodeStateUpdate>(4);
+        let state_tx = streamkit_core::NodeStateSender::new(state_tx, 0);
 
         let result = wrapper
             .await_reply(
@@ -3178,6 +3174,7 @@ mod ffi_guard_tests {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel::<()>();
         drop(reply_tx);
         let (state_tx, mut state_rx) = tokio::sync::mpsc::channel::<NodeStateUpdate>(4);
+        let state_tx = streamkit_core::NodeStateSender::new(state_tx, 0);
 
         let result = wrapper
             .await_reply(

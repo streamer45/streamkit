@@ -33,13 +33,12 @@ import { useStreamViewState } from '@/hooks/useStreamViewState';
 import { useVideoCanvas } from '@/hooks/useVideoCanvas';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { getApiUrl } from '@/services/base';
-import { listDynamicSamples } from '@/services/samples';
 import { createSession, listSessions } from '@/services/sessions';
 import { useSchemaStore, ensureSchemasLoaded } from '@/stores/schemaStore';
 import { useSessionStore } from '@/stores/sessionStore';
 import type { Event } from '@/types/types';
 import { getLogger } from '@/utils/logger';
-import { orderSamplePipelinesSystemFirst } from '@/utils/samplePipelineOrdering';
+import { loadAndApplySamples } from '@/views/streamSamples';
 
 import type {
   CameraStatus,
@@ -78,34 +77,6 @@ function autoConnectIfMoq(
       );
     }
   })();
-}
-
-/** Load dynamic pipeline samples and auto-select the first one. */
-async function loadAndApplySamples(
-  viewState: ReturnType<typeof useStreamViewState>,
-  deriveMoqFromYaml: (yaml: string) => void
-): Promise<void> {
-  try {
-    viewState.setSamplesLoading(true);
-    viewState.setSamplesError(null);
-    const samples = await listDynamicSamples();
-    const orderedSamples = orderSamplePipelinesSystemFirst(samples);
-    viewState.setSamples(orderedSamples);
-
-    if (orderedSamples.length > 0 && !viewState.selectedTemplateId) {
-      const first = orderedSamples[0];
-      viewState.setSelectedTemplateId(first.id);
-      viewState.setPipelineYaml(first.yaml);
-      deriveMoqFromYaml(first.yaml);
-    }
-  } catch (error) {
-    logger.error('Failed to load dynamic samples:', error);
-    viewState.setSamplesError(
-      error instanceof Error ? error.message : 'Failed to load pipeline templates'
-    );
-  } finally {
-    viewState.setSamplesLoading(false);
-  }
 }
 
 /** Build the relay connection status label for the streaming status bar. */
@@ -473,7 +444,6 @@ const StreamView: React.FC = () => {
     setMsePath,
     setActiveSession,
     clearActiveSession,
-    loadConfig,
     connect,
     disconnect,
     toggleMicrophone,
@@ -524,7 +494,6 @@ const StreamView: React.FC = () => {
       setMsePath: s.setMsePath,
       setActiveSession: s.setActiveSession,
       clearActiveSession: s.clearActiveSession,
-      loadConfig: s.loadConfig,
       connect: s.connect,
       disconnect: s.disconnect,
       toggleMicrophone: s.toggleMicrophone,
@@ -583,10 +552,6 @@ const StreamView: React.FC = () => {
       document.removeEventListener('webkitfullscreenchange', handler);
     };
   }, []);
-
-  useEffect(() => {
-    if (!configLoaded) loadConfig();
-  }, [configLoaded, loadConfig]);
 
   const [mseError, setMseError] = useState<string | null>(null);
   const mseUrl = React.useMemo(() => {

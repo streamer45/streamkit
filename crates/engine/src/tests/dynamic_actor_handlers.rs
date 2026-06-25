@@ -370,6 +370,97 @@ async fn node_task_error_surfaces_failed_without_node_emitting_it() {
     handle.shutdown_and_wait().await.expect("shutdown");
 }
 
+/// A node whose `run()` future panics after reaching `Running` — models a
+/// bug in the node future itself (not a native worker thread, which is caught
+/// at the FFI boundary and surfaces as `Err`).
+struct PanickingNode;
+
+#[streamkit_core::async_trait]
+impl ProcessorNode for PanickingNode {
+    fn input_pins(&self) -> Vec<streamkit_core::InputPin> {
+        Vec::new()
+    }
+    fn output_pins(&self) -> Vec<streamkit_core::OutputPin> {
+        vec![streamkit_core::OutputPin {
+            name: "out".to_string(),
+            produces_type: PacketType::Binary,
+            cardinality: streamkit_core::PinCardinality::Broadcast,
+        }]
+    }
+
+    async fn run(
+        self: Box<Self>,
+        mut ctx: streamkit_core::NodeContext,
+    ) -> Result<(), StreamKitError> {
+        const NODE_ID: &str = "panicker";
+
+        let _ =
+            ctx.state_tx.send(NodeStateUpdate::new(NODE_ID.to_string(), NodeState::Ready)).await;
+
+        loop {
+            match ctx.control_rx.recv().await {
+                Some(NodeControlMessage::Start) => break,
+                Some(NodeControlMessage::Shutdown) | None => return Ok(()),
+                Some(_) => {},
+            }
+        }
+
+        panic!("simulated node future panic");
+    }
+}
+
+fn build_panicking_handle() -> DynamicEngineHandle {
+    let mut registry = NodeRegistry::new();
+    registry.register_dynamic(
+        "test::panicker",
+        |_p| Ok(Box::new(PanickingNode) as Box<dyn ProcessorNode>),
+        serde_json::json!({}),
+        vec!["test".to_string()],
+        false,
+    );
+    let engine = Engine {
+        registry: Arc::new(std::sync::RwLock::new(registry)),
+        audio_pool: Arc::new(streamkit_core::AudioFramePool::audio_default()),
+        video_pool: Arc::new(streamkit_core::VideoFramePool::video_default()),
+    };
+    engine.start_dynamic_actor(DynamicEngineConfig::default())
+}
+
+/// Regression for #605: a panic *inside the node future* must surface a
+/// terminal `Failed` to subscribers. `catch_unwind` converts the panic into
+/// an `Err` so the task's reconciliation backstop still runs.
+#[tokio::test]
+async fn node_future_panic_surfaces_terminal_failed() {
+    let handle = build_panicking_handle();
+    let mut sub = handle.subscribe_state().await.expect("subscribe_state");
+    handle
+        .send_control(EngineControlMessage::AddNode {
+            node_id: "panicker".to_string(),
+            kind: "test::panicker".to_string(),
+            params: None,
+        })
+        .await
+        .expect("send AddNode");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut saw_failed = false;
+    while Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(200), sub.recv()).await {
+            Ok(Some(u))
+                if u.node_id == "panicker" && matches!(u.state, NodeState::Failed { .. }) =>
+            {
+                saw_failed = true;
+                break;
+            },
+            Ok(Some(_)) | Err(_) => {},
+            Ok(None) => break,
+        }
+    }
+    assert!(saw_failed, "a panic in the node future must surface a terminal Failed (#605)");
+
+    handle.shutdown_and_wait().await.expect("shutdown");
+}
+
 /// A node that, on `Shutdown`, saturates the shared state channel with
 /// `try_send` so the wrapper's terminal backstop send (initialize_node) lands
 /// on a full channel.

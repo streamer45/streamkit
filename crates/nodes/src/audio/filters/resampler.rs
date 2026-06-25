@@ -702,6 +702,7 @@ mod tests {
         let (mock_sender, mut packet_rx) = mpsc::channel::<RoutedPacketMessage>(10);
         let (_control_tx, control_rx) = mpsc::channel(10);
         let (state_tx, mut state_rx) = mpsc::channel(10);
+        let state_tx = streamkit_core::state::NodeStateSender::new(state_tx, 0);
         let (stats_tx, _stats_rx) = mpsc::channel::<NodeStatsUpdate>(10);
 
         let output_sender = streamkit_core::OutputSender::new(
@@ -777,6 +778,7 @@ mod tests {
         let (mock_sender, mut packet_rx) = mpsc::channel::<RoutedPacketMessage>(10);
         let (_control_tx, control_rx) = mpsc::channel(10);
         let (state_tx, mut state_rx) = mpsc::channel(10);
+        let state_tx = streamkit_core::state::NodeStateSender::new(state_tx, 0);
         let (stats_tx, _stats_rx) = mpsc::channel::<NodeStatsUpdate>(10);
 
         let output_sender = streamkit_core::OutputSender::new(

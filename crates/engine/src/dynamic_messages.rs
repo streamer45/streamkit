@@ -55,6 +55,41 @@ pub struct NodeAddedNotification {
     pub node_id: String,
     pub kind: String,
     pub params: Option<serde_json::Value>,
+    /// Incarnation epoch of the added instance (see #606), carried for
+    /// observability and to correlate an add with its later removal.
+    pub generation: u64,
+}
+
+/// Emitted once a node is actually torn down by the engine actor.
+///
+/// Its run task is aborted and its bookkeeping removed, then the session prunes
+/// its pipeline snapshot from this authoritative teardown rather than
+/// optimistically on the RemoveNode request, which races a confirmed-add
+/// re-insert and can leave a durable orphan (#607).
+///
+/// `generation` is the torn-down incarnation's epoch (see #606), carried for
+/// observability and to correlate a removal with the add that created it. It is
+/// `None` for a node that existed in the engine but never reached `live_nodes`
+/// (e.g. one that failed during creation/initialization), which has no
+/// incarnation epoch yet still warrants a `NodeRemoved` when its residue is
+/// cleared.
+#[derive(Clone, Debug)]
+pub struct NodeRemovedNotification {
+    pub node_id: String,
+    pub generation: Option<u64>,
+}
+
+/// Ordered node topology change emitted by the engine actor.
+///
+/// Added and removed events share ONE stream so a single session forwarder
+/// applies them to the pipeline snapshot in the exact order the engine mutated
+/// `live_nodes`. Separate channels would let an `Added(b)` and a later
+/// `Removed(b)` be drained out of order by independent tasks, re-inserting a
+/// node the engine has already torn down — the durable-orphan race in #607.
+#[derive(Clone, Debug)]
+pub enum NodeLifecycleNotification {
+    Added(NodeAddedNotification),
+    Removed(NodeRemovedNotification),
 }
 
 /// Query messages for retrieving information from the engine without modifying state.
@@ -86,8 +121,8 @@ pub enum QueryMessage {
     SubscribeRuntimeSchemas {
         response_tx: mpsc::Sender<mpsc::UnboundedReceiver<RuntimeSchemaUpdate>>,
     },
-    SubscribeNodeAdded {
-        response_tx: mpsc::Sender<mpsc::UnboundedReceiver<NodeAddedNotification>>,
+    SubscribeNodeLifecycle {
+        response_tx: mpsc::Sender<mpsc::UnboundedReceiver<NodeLifecycleNotification>>,
     },
 }
 

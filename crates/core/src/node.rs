@@ -13,7 +13,7 @@
 use crate::control::NodeControlMessage;
 use crate::error::StreamKitError;
 use crate::pins::{InputPin, OutputPin, PinManagementMessage, PinUpdate};
-use crate::state::NodeStateUpdate;
+use crate::state::NodeStateSender;
 use crate::stats::NodeStatsUpdate;
 use crate::telemetry::TelemetryEvent;
 use crate::types::{Packet, PacketType};
@@ -248,7 +248,7 @@ impl OutputSender {
 /// Context for async initialization before pipeline execution.
 pub struct InitContext {
     pub node_id: String,
-    pub state_tx: tokio::sync::mpsc::Sender<NodeStateUpdate>,
+    pub state_tx: NodeStateSender,
 }
 
 pub struct NodeContext {
@@ -265,7 +265,7 @@ pub struct NodeContext {
     pub control_rx: mpsc::Receiver<NodeControlMessage>,
     pub output_sender: OutputSender,
     pub batch_size: usize,
-    pub state_tx: mpsc::Sender<NodeStateUpdate>,
+    pub state_tx: NodeStateSender,
     pub stats_tx: Option<mpsc::Sender<NodeStatsUpdate>>,
     pub telemetry_tx: Option<mpsc::Sender<TelemetryEvent>>,
     pub session_id: Option<String>,
@@ -566,6 +566,7 @@ mod tests {
     #[test]
     fn init_context_field_access() {
         let (state_tx, _rx) = mpsc::channel(4);
+        let state_tx = NodeStateSender::new(state_tx, 0);
         let ctx = InitContext { node_id: "my_node".into(), state_tx };
         assert_eq!(ctx.node_id, "my_node");
     }

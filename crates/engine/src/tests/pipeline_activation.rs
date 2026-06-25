@@ -24,7 +24,10 @@ fn add_source_node(
 ) -> mpsc::Receiver<NodeControlMessage> {
     let (control_tx, control_rx) = mpsc::channel(8);
     let task_handle = tokio::spawn(async { Ok(()) });
-    engine.live_nodes.insert(name.to_string(), graph_builder::LiveNode { control_tx, task_handle });
+    engine.live_nodes.insert(
+        name.to_string(),
+        graph_builder::LiveNode { control_tx, task_handle, generation: 0 },
+    );
     engine.node_pin_metadata.insert(
         name.to_string(),
         NodePinMetadata {
@@ -44,7 +47,10 @@ fn add_source_node(
 fn add_processor_node(engine: &mut DynamicEngine, name: &str, state: NodeState) {
     let (control_tx, _) = mpsc::channel(8);
     let task_handle = tokio::spawn(async { Ok(()) });
-    engine.live_nodes.insert(name.to_string(), graph_builder::LiveNode { control_tx, task_handle });
+    engine.live_nodes.insert(
+        name.to_string(),
+        graph_builder::LiveNode { control_tx, task_handle, generation: 0 },
+    );
     engine.node_pin_metadata.insert(
         name.to_string(),
         NodePinMetadata {
@@ -150,9 +156,10 @@ async fn test_activation_only_starts_source_nodes() {
     // Processor node also in Ready — should NOT get Start (it has input pins)
     let (control_tx, mut processor_rx) = mpsc::channel(8);
     let task_handle = tokio::spawn(async { Ok(()) });
-    engine
-        .live_nodes
-        .insert("processor".to_string(), graph_builder::LiveNode { control_tx, task_handle });
+    engine.live_nodes.insert(
+        "processor".to_string(),
+        graph_builder::LiveNode { control_tx, task_handle, generation: 0 },
+    );
     engine.node_pin_metadata.insert(
         "processor".to_string(),
         NodePinMetadata {
