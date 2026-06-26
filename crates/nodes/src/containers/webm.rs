@@ -1795,6 +1795,16 @@ mod tests {
     /// change is reflected here and stays consistent with the MP4 `av1C` box.
     #[test]
     fn av1_codec_private_matches_spec() {
+        assert_eq!(
+            av1_codec_private(
+                AV1_PROFILE,
+                AV1_LEVEL,
+                AV1_BIT_DEPTH,
+                AV1_CHROMA_SUBSAMPLING_X,
+                AV1_CHROMA_SUBSAMPLING_Y,
+            ),
+            [0x81, 0x08, 0x0C, 0x00],
+        );
         assert_eq!(AV1_CODEC_PRIVATE, [0x81, 0x08, 0x0C, 0x00]);
     }
 
