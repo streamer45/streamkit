@@ -508,6 +508,15 @@ impl DynamicEngine {
 
         Arc::make_mut(&mut self.node_states).insert(update.node_id.clone(), update.state.clone());
 
+        // A node that failed/stopped at runtime will never accept the
+        // connections/tunes deferred while it was Creating, and a deferred
+        // edge referencing it must not be replayed into a dead node (#289).
+        // The terminal state still reaches state subscribers below; node
+        // removal stays on the separate lifecycle notification path.
+        if Self::is_terminal(&update.state) {
+            self.prune_pending_for(&update.node_id);
+        }
+
         self.check_and_activate_pipeline();
 
         // State updates are retried on backpressure (not dropped) to avoid
@@ -1768,9 +1777,15 @@ impl DynamicEngine {
         matches!(self.node_states.get(node_id), Some(NodeState::Creating))
     }
 
+    /// Returns `true` if the node has reached a terminal state (`Failed`/`Stopped`)
+    /// but has not yet been removed from the graph.
+    fn is_node_terminal(&self, node_id: &str) -> bool {
+        self.node_states.get(node_id).is_some_and(Self::is_terminal)
+    }
+
     /// Returns `true` to continue running, `false` on shutdown.
     #[allow(clippy::cognitive_complexity)]
-    async fn handle_engine_control(&mut self, msg: EngineControlMessage) -> bool {
+    pub(crate) async fn handle_engine_control(&mut self, msg: EngineControlMessage) -> bool {
         match msg {
             EngineControlMessage::AddNode { node_id, kind, params } => {
                 self.engine_operations_counter.add(1, &[KeyValue::new("operation", "add_node")]);
@@ -1942,7 +1957,12 @@ impl DynamicEngine {
                 self.disconnect_nodes(from_node, from_pin, to_node, to_pin).await;
             },
             EngineControlMessage::TuneNode { node_id, message } => {
-                if let Some(node) = self.live_nodes.get(&node_id) {
+                if self.is_node_terminal(&node_id) {
+                    tracing::warn!(
+                        node_id = %node_id,
+                        "Dropping TuneNode: node has reached a terminal state"
+                    );
+                } else if let Some(node) = self.live_nodes.get(&node_id) {
                     if node.control_tx.send(message).await.is_err() {
                         tracing::warn!(
                             "Could not send control message to node '{}' as it may have shut down.",
