@@ -340,10 +340,6 @@ impl KeyProvider for FileKeyProvider {
             .map(|public_key| VerificationKeyMaterial { public_key: public_key.clone() })
     }
 
-    fn valid_kids(&self) -> Vec<String> {
-        lock_read(&self.public_keys).keys().cloned().collect()
-    }
-
     fn jwks(&self) -> Jwks {
         lock_read(&self.jwks).clone()
     }
@@ -934,10 +930,19 @@ mod tests {
 
         // All three kids (original + both rotations) must be verifiable.
         let p = provider.clone();
-        let kids = tokio::task::spawn_blocking(move || p.valid_kids()).await.unwrap();
-        assert!(kids.contains(&original_kid), "original kid lost after concurrent rotate");
-        assert!(kids.contains(&key1.kid), "key1 kid lost after concurrent rotate");
-        assert!(kids.contains(&key2.kid), "key2 kid lost after concurrent rotate");
+        let (k1, k2) = (key1.kid.clone(), key2.kid.clone());
+        let (has_original, has_key1, has_key2) = tokio::task::spawn_blocking(move || {
+            (
+                p.verification_key(&original_kid).is_some(),
+                p.verification_key(&k1).is_some(),
+                p.verification_key(&k2).is_some(),
+            )
+        })
+        .await
+        .unwrap();
+        assert!(has_original, "original kid lost after concurrent rotate");
+        assert!(has_key1, "key1 kid lost after concurrent rotate");
+        assert!(has_key2, "key2 kid lost after concurrent rotate");
     }
 
     #[tokio::test(flavor = "multi_thread")]

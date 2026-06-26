@@ -68,6 +68,9 @@ pub enum AuthError {
     #[error("JWT error: {0}")]
     Jwt(#[from] jsonwebtoken::errors::Error),
 
+    #[error("Token is missing the `kid` header")]
+    MissingKid,
+
     #[error("Claims validation error: {0}")]
     Claims(#[from] claims::ClaimsValidationError),
 
@@ -221,41 +224,19 @@ impl AuthState {
         validation.set_audience(&[AUD_API]);
         validation.set_required_spec_claims(&["exp", "aud", "jti"]);
 
-        // Prefer `kid` from the header; fall back to trying all known keys.
-        let header = decode_header(token)?;
-        let mut candidates: Vec<String> = Vec::new();
+        // Every token we mint stamps a `kid`, so the verification key is
+        // resolved by a direct lookup. A kid-less token was not minted here;
+        // reject it instead of probing the whole (post-rotation) key set.
+        let kid = decode_header(token)?.kid.ok_or(AuthError::MissingKid)?;
+        let key_material = key_provider.verification_key(&kid).ok_or_else(|| {
+            AuthError::Jwt(jsonwebtoken::errors::ErrorKind::InvalidSignature.into())
+        })?;
 
-        if let Some(kid) = header.kid {
-            candidates.push(kid);
-        } else {
-            candidates.extend(key_provider.valid_kids());
-        }
-
-        let mut last_error = None;
-
-        for kid in candidates {
-            let Some(key_material) = key_provider.verification_key(&kid) else {
-                continue;
-            };
-
-            let decoding_key = DecodingKey::from_ed_der(&key_material.public_key);
-            match decode::<ApiClaims>(token, &decoding_key, &validation) {
-                Ok(token_data) => {
-                    let claims = token_data.claims;
-                    claims.validate()?;
-                    debug!(jti = %claims.jti, role = %claims.role, kid = %kid, "API token validated");
-                    return Ok(claims);
-                },
-                Err(e) => {
-                    last_error = Some(e);
-                },
-            }
-        }
-
-        Err(last_error.map_or_else(
-            || AuthError::Jwt(jsonwebtoken::errors::ErrorKind::InvalidSignature.into()),
-            AuthError::Jwt,
-        ))
+        let decoding_key = DecodingKey::from_ed_der(&key_material.public_key);
+        let claims = decode::<ApiClaims>(token, &decoding_key, &validation)?.claims;
+        claims.validate()?;
+        debug!(jti = %claims.jti, role = %claims.role, kid = %kid, "API token validated");
+        Ok(claims)
     }
 
     /// Validate a MoQ token and return its claims.
@@ -272,40 +253,16 @@ impl AuthState {
         validation.set_audience(&[AUD_MOQ]);
         validation.set_required_spec_claims(&["exp", "aud", "jti"]);
 
-        let header = decode_header(token)?;
-        let mut candidates: Vec<String> = Vec::new();
+        let kid = decode_header(token)?.kid.ok_or(AuthError::MissingKid)?;
+        let key_material = key_provider.verification_key(&kid).ok_or_else(|| {
+            AuthError::Jwt(jsonwebtoken::errors::ErrorKind::InvalidSignature.into())
+        })?;
 
-        if let Some(kid) = header.kid {
-            candidates.push(kid);
-        } else {
-            candidates.extend(key_provider.valid_kids());
-        }
-
-        let mut last_error = None;
-
-        for kid in candidates {
-            let Some(key_material) = key_provider.verification_key(&kid) else {
-                continue;
-            };
-
-            let decoding_key = DecodingKey::from_ed_der(&key_material.public_key);
-            match decode::<MoqClaims>(token, &decoding_key, &validation) {
-                Ok(token_data) => {
-                    let claims = token_data.claims;
-                    claims.validate()?;
-                    debug!(jti = %claims.jti, root = %claims.root, kid = %kid, "MoQ token validated");
-                    return Ok(claims);
-                },
-                Err(e) => {
-                    last_error = Some(e);
-                },
-            }
-        }
-
-        Err(last_error.map_or_else(
-            || AuthError::Jwt(jsonwebtoken::errors::ErrorKind::InvalidSignature.into()),
-            AuthError::Jwt,
-        ))
+        let decoding_key = DecodingKey::from_ed_der(&key_material.public_key);
+        let claims = decode::<MoqClaims>(token, &decoding_key, &validation)?.claims;
+        claims.validate()?;
+        debug!(jti = %claims.jti, root = %claims.root, kid = %kid, "MoQ token validated");
+        Ok(claims)
     }
 
     /// Mint a new API token.
@@ -607,6 +564,36 @@ mod tests {
                 .unwrap();
         assert_eq!(claims.jti, meta.jti);
         assert_eq!(claims.role, "admin");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn validate_api_token_rejects_token_without_kid() {
+        let (state, _temp_dir) = create_test_auth_state().await;
+        let state = Arc::new(state);
+
+        let result = tokio::task::spawn_blocking(move || {
+            let active = state.key_provider().unwrap().active_key();
+            let now = now_secs().unwrap();
+            let claims = ApiClaims {
+                aud: AUD_API.to_string(),
+                sub: "token:test".to_string(),
+                role: "admin".to_string(),
+                iat: now,
+                exp: now + 3600,
+                jti: uuid::Uuid::new_v4().to_string(),
+            };
+            let token = encode(
+                &Header::new(Algorithm::EdDSA),
+                &claims,
+                &EncodingKey::from_ed_der(&active.pkcs8),
+            )
+            .unwrap();
+            state.validate_api_token(&token)
+        })
+        .await
+        .unwrap();
+
+        assert!(matches!(result, Err(AuthError::MissingKid)));
     }
 
     #[tokio::test(flavor = "multi_thread")]
