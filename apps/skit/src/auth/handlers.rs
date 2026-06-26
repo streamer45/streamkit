@@ -1144,6 +1144,7 @@ mod tests {
             )
             .await
             .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
         let viewer_token =
             serde_json::from_str::<CreateTokenResponse>(&body_to_string(resp.into_body()).await)
                 .unwrap()

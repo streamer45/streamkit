@@ -49,6 +49,7 @@ use crate::config::{AuthConfig, AuthMode};
 use jsonwebtoken::{
     decode, decode_header, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation,
 };
+use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -101,6 +102,25 @@ pub enum AuthError {
     #[cfg(feature = "moq")]
     #[error("MoQ auth error: {0}")]
     Moq(String),
+}
+
+/// Resolve the verification key from the token's `kid` header and decode it.
+///
+/// Every token we mint stamps a `kid`, so the key is resolved by a direct
+/// lookup. A kid-less token was not minted here; reject it instead of probing
+/// the whole (post-rotation) key set. Returns the decoded claims and the `kid`.
+fn decode_with_kid<T: DeserializeOwned>(
+    key_provider: &dyn KeyProvider,
+    token: &str,
+    validation: &Validation,
+) -> Result<(T, String), AuthError> {
+    let kid = decode_header(token)?.kid.ok_or(AuthError::MissingKid)?;
+    let key_material = key_provider
+        .verification_key(&kid)
+        .ok_or_else(|| AuthError::Jwt(jsonwebtoken::errors::ErrorKind::InvalidSignature.into()))?;
+    let decoding_key = DecodingKey::from_ed_der(&key_material.public_key);
+    let claims = decode::<T>(token, &decoding_key, validation)?.claims;
+    Ok((claims, kid))
 }
 
 /// Central authentication state (key material, revocation, token metadata).
@@ -224,16 +244,8 @@ impl AuthState {
         validation.set_audience(&[AUD_API]);
         validation.set_required_spec_claims(&["exp", "aud", "jti"]);
 
-        // Every token we mint stamps a `kid`, so the verification key is
-        // resolved by a direct lookup. A kid-less token was not minted here;
-        // reject it instead of probing the whole (post-rotation) key set.
-        let kid = decode_header(token)?.kid.ok_or(AuthError::MissingKid)?;
-        let key_material = key_provider.verification_key(&kid).ok_or_else(|| {
-            AuthError::Jwt(jsonwebtoken::errors::ErrorKind::InvalidSignature.into())
-        })?;
-
-        let decoding_key = DecodingKey::from_ed_der(&key_material.public_key);
-        let claims = decode::<ApiClaims>(token, &decoding_key, &validation)?.claims;
+        let (claims, kid) =
+            decode_with_kid::<ApiClaims>(key_provider.as_ref(), token, &validation)?;
         claims.validate()?;
         debug!(jti = %claims.jti, role = %claims.role, kid = %kid, "API token validated");
         Ok(claims)
@@ -253,13 +265,8 @@ impl AuthState {
         validation.set_audience(&[AUD_MOQ]);
         validation.set_required_spec_claims(&["exp", "aud", "jti"]);
 
-        let kid = decode_header(token)?.kid.ok_or(AuthError::MissingKid)?;
-        let key_material = key_provider.verification_key(&kid).ok_or_else(|| {
-            AuthError::Jwt(jsonwebtoken::errors::ErrorKind::InvalidSignature.into())
-        })?;
-
-        let decoding_key = DecodingKey::from_ed_der(&key_material.public_key);
-        let claims = decode::<MoqClaims>(token, &decoding_key, &validation)?.claims;
+        let (claims, kid) =
+            decode_with_kid::<MoqClaims>(key_provider.as_ref(), token, &validation)?;
         claims.validate()?;
         debug!(jti = %claims.jti, root = %claims.root, kid = %kid, "MoQ token validated");
         Ok(claims)
@@ -589,6 +596,38 @@ mod tests {
             )
             .unwrap();
             state.validate_api_token(&token)
+        })
+        .await
+        .unwrap();
+
+        assert!(matches!(result, Err(AuthError::MissingKid)));
+    }
+
+    #[cfg(feature = "moq")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn validate_moq_token_rejects_token_without_kid() {
+        let (state, _temp_dir) = create_test_auth_state().await;
+        let state = Arc::new(state);
+
+        let result = tokio::task::spawn_blocking(move || {
+            let active = state.key_provider().unwrap().active_key();
+            let now = now_secs().unwrap();
+            let claims = MoqClaims {
+                aud: AUD_MOQ.to_string(),
+                root: "/moq/test".to_string(),
+                subscribe: vec![String::new()],
+                publish: vec![],
+                iat: now,
+                exp: now + 3600,
+                jti: uuid::Uuid::new_v4().to_string(),
+            };
+            let token = encode(
+                &Header::new(Algorithm::EdDSA),
+                &claims,
+                &EncodingKey::from_ed_der(&active.pkcs8),
+            )
+            .unwrap();
+            state.validate_moq_token(&token)
         })
         .await
         .unwrap();
