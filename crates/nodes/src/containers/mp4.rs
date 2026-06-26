@@ -44,7 +44,10 @@ use streamkit_core::{
 };
 
 use super::file_stream::{emit_file_in_chunks, resolve_finalize_chunk_size, FileBackedBuffer};
-use crate::video::DEFAULT_VIDEO_FRAME_DURATION_US;
+use crate::video::{
+    AV1_BIT_DEPTH, AV1_CHROMA_SUBSAMPLING_X, AV1_CHROMA_SUBSAMPLING_Y, AV1_LEVEL, AV1_PROFILE,
+    AV1_TIER, DEFAULT_VIDEO_FRAME_DURATION_US,
+};
 
 /// Default video timescale (90 kHz — standard for MPEG transport streams / MP4).
 const DEFAULT_VIDEO_TIMESCALE: NonZeroU32 = match NonZeroU32::new(90_000) {
@@ -429,14 +432,14 @@ fn build_opus_sample_entry(sample_rate: u32, channels: u16) -> SampleEntry {
 /// derived from it, [`av1_codec_string`] picks up the change automatically.
 const fn av1c_config(config_obus: Vec<u8>) -> Av1cBox {
     Av1cBox {
-        seq_profile: Uint::new(0),     // Main profile
-        seq_level_idx_0: Uint::new(8), // Level 4.0
-        seq_tier_0: Uint::new(0),      // Main tier
-        high_bitdepth: Uint::new(0),   // 8-bit
-        twelve_bit: Uint::new(0),
+        seq_profile: Uint::new(AV1_PROFILE),
+        seq_level_idx_0: Uint::new(AV1_LEVEL),
+        seq_tier_0: Uint::new((AV1_TIER == 'H') as u8),
+        high_bitdepth: Uint::new((AV1_BIT_DEPTH > 8) as u8),
+        twelve_bit: Uint::new((AV1_BIT_DEPTH == 12) as u8),
         monochrome: Uint::new(0),
-        chroma_subsampling_x: Uint::new(1),   // 4:2:0
-        chroma_subsampling_y: Uint::new(1),   // 4:2:0
+        chroma_subsampling_x: Uint::new(AV1_CHROMA_SUBSAMPLING_X),
+        chroma_subsampling_y: Uint::new(AV1_CHROMA_SUBSAMPLING_Y),
         chroma_sample_position: Uint::new(0), // Unknown
         initial_presentation_delay_minus_one: None,
         config_obus,
