@@ -6,6 +6,7 @@ import { defineConfig, type Plugin } from 'vitest/config';
 import react, { reactCompilerPreset } from '@vitejs/plugin-react';
 import { transformAsync } from '@babel/core';
 import babelPresetTypescript from '@babel/preset-typescript';
+import babelSyntaxJsx from '@babel/plugin-syntax-jsx';
 import path from 'path';
 import { reactCompilerOptions } from './reactCompilerOptions';
 
@@ -40,10 +41,10 @@ const reactCompilerForTests = (): Plugin => ({
       filename: file,
       babelrc: false,
       configFile: false,
-      presets: [
-        [babelPresetTypescript, { isTSX: file.endsWith('.tsx'), allExtensions: true }],
-        compilerPreset,
-      ],
+      presets: [babelPresetTypescript, compilerPreset],
+      // Babel 8's preset-typescript dropped the isTSX option; enable JSX parsing
+      // only for .tsx so .ts type-assertion syntax (`<T>x`) still parses.
+      plugins: file.endsWith('.tsx') ? [babelSyntaxJsx] : [],
       sourceMaps: true,
     });
     if (!result?.code) {

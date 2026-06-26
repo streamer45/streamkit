@@ -44,12 +44,12 @@ futures = { workspace = true }
 ogg = { version = "0.9.2", optional = true, features = ["async"] }
 opus = { version = "0.3.1", optional = true }
 url = { version = "2.5.8", optional = true, features = ["serde"] }
-rquickjs = { version = "0.11", features = ["array-buffer", "futures", "loader", "parallel"], optional = true }
+rquickjs = { version = "0.12", features = ["array-buffer", "futures", "loader", "parallel"], optional = true }
 wildmatch = { version = "2.6", optional = true }
 
-moq-native = { version = "0.14.0", optional = true }
-moq-lite = { version = "0.16.0", optional = true }
-hang = { version = "0.16.0", optional = true }
+moq-native = { version = "0.17.4", optional = true }
+moq-lite = { version = "0.17.0", optional = true }
+hang = { version = "0.19.2", optional = true }
 
 # For local dev, debugging moq stuff
 # moq-native = { path = "../../moq/rs/moq-native", optional = true }
@@ -63,9 +63,9 @@ reqwest = { version = "0.13", optional = true, default-features = false, feature
 ] }
 tempfile = { version = "3.27", optional = true }
 uuid = { version = "1", optional = true, features = ["v4"] }
-rubato = { version = "2.0", optional = true }
+rubato = { version = "3.0", optional = true }
 audioadapter-buffers = { version = "3.0", optional = true }
-symphonia = { version = "0.5.5", optional = true, default-features = false, features = [
+symphonia = { version = "0.6.0", optional = true, default-features = false, features = [
   "mp3",
   "wav",
   "flac",
@@ -97,7 +97,7 @@ rav1e = { version = "0.8", optional = true, default-features = false, features =
 rav1d = { version = "1.1", optional = true, default-features = false, features = ["bitdepth_8", "bitdepth_16", "asm"] }
 
 # Object storage (optional, behind `object_store` feature)
-opendal = { version = "0.56", optional = true, default-features = false, features = [
+opendal = { version = "0.57", optional = true, default-features = false, features = [
   "services-s3",
 ] }
 
@@ -109,7 +109,9 @@ bytemuck = { version = "1.22", optional = true, features = ["derive"] }
 # HW-accelerated video codecs (optional, behind respective features)
 vk-video = { version = "0.3", optional = true }            # vulkan_video feature — Vulkan Video H.264 HW codec
 cros-codecs = { version = "0.0.6", optional = true, features = ["vaapi"] }  # vaapi feature — requires libva-dev system package
-shiguredo_nvcodec = { version = "2026.1", optional = true }
+# Pinned to 2026.1: 2026.2.0 reworked the Encoder/Decoder API (generic handler
+# params, Option-based frame retrieval) and needs a non-trivial GPU-code migration.
+shiguredo_nvcodec = { version = "=2026.1.0", optional = true }
 
 futures-util = "0.3"
 

@@ -14,7 +14,7 @@ pub(super) fn start_moq_webtransport_acceptor(
     app_state: &Arc<AppState>,
     config: &Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use moq_native::{ServerConfig as MoqServerConfig, ServerTlsConfig};
+    use moq_native::{tls::Server as ServerTlsConfig, ServerConfig as MoqServerConfig};
 
     let gateway = if let Some(gw) = &app_state.moq_gateway {
         Arc::clone(gw)

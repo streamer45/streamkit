@@ -501,7 +501,7 @@ impl ProcessorNode for MoqPullNode {
         );
 
         // Connect to the MoQ server and fetch the catalog
-        let tracks = match self.discover_tracks().await {
+        let tracks = match Box::pin(self.discover_tracks()).await {
             Ok(tracks) => tracks,
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to discover tracks; using default output pin");
@@ -759,7 +759,7 @@ impl MoqPullNode {
         let origin = moq_lite::Origin::random().produce();
         let consumer = origin.consume();
         let _consumer_session =
-            client.clone().with_consume(origin).connect(url).await.map_err(|e| {
+            Box::pin(client.clone().with_consume(origin).connect(url)).await.map_err(|e| {
                 StreamKitError::Runtime(format!("Failed to create consumer session: {e}"))
             })?;
 
@@ -935,7 +935,7 @@ impl MoqPullNode {
         let origin = moq_lite::Origin::random().produce();
         let consumer = origin.consume();
         let _consumer_session =
-            client.clone().with_consume(origin).connect(url).await.map_err(|e| {
+            Box::pin(client.clone().with_consume(origin).connect(url)).await.map_err(|e| {
                 StreamKitError::Runtime(format!("Failed to create consumer session: {e}"))
             })?;
 
@@ -1911,18 +1911,15 @@ mod tests {
         let consumer_track = bc.subscribe_track(&track).unwrap();
 
         let mut audio_renditions = std::collections::BTreeMap::new();
-        audio_renditions.insert(
-            "audio/data".to_string(),
-            hang::catalog::AudioConfig {
-                codec: super::super::constants::catalog_audio_codec(AudioCodec::Opus),
-                sample_rate: 48000,
-                channel_count: 2,
-                bitrate: Some(128_000),
-                description: None,
-                container: hang::catalog::Container::default(),
-                jitter: None,
-            },
-        );
+        audio_renditions.insert("audio/data".to_string(), {
+            let mut cfg = hang::catalog::AudioConfig::new(
+                super::super::constants::catalog_audio_codec(AudioCodec::Opus),
+                48000,
+                2,
+            );
+            cfg.bitrate = Some(128_000);
+            cfg
+        });
         let catalog = hang::catalog::Catalog {
             audio: hang::catalog::Audio { renditions: audio_renditions },
             ..Default::default()
@@ -1950,18 +1947,15 @@ mod tests {
 
     fn audio_only_catalog() -> hang::catalog::Catalog {
         let mut audio_renditions = std::collections::BTreeMap::new();
-        audio_renditions.insert(
-            "audio/data".to_string(),
-            hang::catalog::AudioConfig {
-                codec: super::super::constants::catalog_audio_codec(AudioCodec::Opus),
-                sample_rate: 48000,
-                channel_count: 2,
-                bitrate: Some(128_000),
-                description: None,
-                container: hang::catalog::Container::default(),
-                jitter: None,
-            },
-        );
+        audio_renditions.insert("audio/data".to_string(), {
+            let mut cfg = hang::catalog::AudioConfig::new(
+                super::super::constants::catalog_audio_codec(AudioCodec::Opus),
+                48000,
+                2,
+            );
+            cfg.bitrate = Some(128_000);
+            cfg
+        });
         hang::catalog::Catalog {
             audio: hang::catalog::Audio { renditions: audio_renditions },
             ..Default::default()
@@ -1970,22 +1964,14 @@ mod tests {
 
     fn video_catalog(codec: VideoCodec) -> hang::catalog::Catalog {
         let mut catalog = audio_only_catalog();
-        catalog.video.renditions.insert(
-            "video/data".to_string(),
-            hang::catalog::VideoConfig {
-                codec: super::super::constants::catalog_video_codec(codec),
-                coded_width: None,
-                coded_height: None,
-                display_ratio_width: None,
-                display_ratio_height: None,
-                framerate: Some(30.0),
-                bitrate: None,
-                description: None,
-                optimize_for_latency: Some(true),
-                container: hang::catalog::Container::default(),
-                jitter: None,
-            },
-        );
+        catalog.video.renditions.insert("video/data".to_string(), {
+            let mut cfg = hang::catalog::VideoConfig::new(
+                super::super::constants::catalog_video_codec(codec),
+            );
+            cfg.framerate = Some(30.0);
+            cfg.optimize_for_latency = Some(true);
+            cfg
+        });
         catalog
     }
 
@@ -2486,10 +2472,8 @@ mod tests {
         let mut group: Option<moq_lite::GroupConsumer> = None;
         let mut is_first = false;
 
-        let first =
-            MoqPullNode::read_next_raw_moq(&mut consumer, &mut group, &mut is_first).await.unwrap();
-        assert_eq!(first.as_deref(), Some(&b"a"[..]));
-
+        // Aborting a group drops its cached frames (moq-net), so a consumer that
+        // hasn't drained surfaces the abort error instead of the buffered frame.
         let err = MoqPullNode::read_next_raw_moq(&mut consumer, &mut group, &mut is_first).await;
         assert!(err.is_err(), "an aborted group should surface as an error");
         assert!(group.is_none(), "the errored group is cleared");
@@ -2537,31 +2521,15 @@ mod tests {
         let mut catalog = audio_only_catalog();
         catalog.audio.renditions.insert(
             "audio/aac-he".to_string(),
-            hang::catalog::AudioConfig {
-                codec: hang::catalog::AudioCodec::AAC(hang::catalog::AAC { profile: 5 }),
-                sample_rate: 48000,
-                channel_count: 2,
-                bitrate: None,
-                description: None,
-                container: hang::catalog::Container::default(),
-                jitter: None,
-            },
+            hang::catalog::AudioConfig::new(
+                hang::catalog::AudioCodec::AAC(hang::catalog::AAC { profile: 5 }),
+                48000,
+                2,
+            ),
         );
         catalog.video.renditions.insert(
             "video/vp8".to_string(),
-            hang::catalog::VideoConfig {
-                codec: hang::catalog::VideoCodec::VP8,
-                coded_width: None,
-                coded_height: None,
-                display_ratio_width: None,
-                display_ratio_height: None,
-                framerate: None,
-                bitrate: None,
-                description: None,
-                optimize_for_latency: None,
-                container: hang::catalog::Container::default(),
-                jitter: None,
-            },
+            hang::catalog::VideoConfig::new(hang::catalog::VideoCodec::VP8),
         );
 
         let tracks = MoqPullNode::extract_tracks(&catalog);

@@ -15,13 +15,12 @@ use streamkit_core::{
     get_stream_channel_capacity, state_helpers, InputPin, NodeContext, NodeRegistry, OutputPin,
     PinCardinality, ProcessorNode, StreamKitError,
 };
-use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::DecoderOptions;
-use symphonia::core::errors::Error;
-use symphonia::core::formats::FormatOptions;
+use symphonia::core::codecs::audio::AudioDecoderOptions;
+use symphonia::core::codecs::CodecParameters;
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::{FormatOptions, TrackType};
 use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions, ReadOnlySource};
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
 use tokio::sync::mpsc;
 
 use crate::streaming_utils::StreamingReader;
@@ -216,20 +215,24 @@ fn decode_mp3_streaming_incremental(
 
     let format_opts = FormatOptions::default();
     let metadata_opts = MetadataOptions::default();
-    let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &format_opts, &metadata_opts)
+    let mut format_reader = symphonia::default::get_probe()
+        .probe(&hint, mss, format_opts, metadata_opts)
         .map_err(|e| format!("Failed to probe MP3 format: {e}"))?;
 
-    let mut format_reader = probed.format;
+    let track = format_reader
+        .default_track(TrackType::Audio)
+        .ok_or_else(|| "No default track found in MP3".to_string())?;
 
-    let track =
-        format_reader.default_track().ok_or_else(|| "No default track found in MP3".to_string())?;
-
-    let codec_params = &track.codec_params;
+    let Some(CodecParameters::Audio(codec_params)) = track.codec_params.as_ref() else {
+        return Err("No audio codec parameters found in MP3".to_string());
+    };
     let sample_rate =
         codec_params.sample_rate.ok_or_else(|| "No sample rate found in MP3".to_string())?;
-    let channel_count =
-        codec_params.channels.ok_or_else(|| "No channel info found in MP3".to_string())?.count();
+    let channel_count = codec_params
+        .channels
+        .as_ref()
+        .ok_or_else(|| "No channel info found in MP3".to_string())?
+        .count();
     let channels = u16::try_from(channel_count)
         .map_err(|_| format!("Channel count {channel_count} exceeds u16::MAX"))?;
 
@@ -239,22 +242,21 @@ fn decode_mp3_streaming_incremental(
         channels
     );
 
-    let decoder_opts = DecoderOptions::default();
+    let decoder_opts = AudioDecoderOptions::default();
     let mut decoder = symphonia::default::get_codecs()
-        .make(codec_params, &decoder_opts)
+        .make_audio_decoder(codec_params, &decoder_opts)
         .map_err(|e| format!("Failed to create MP3 decoder: {e}"))?;
 
     let track_id = track.id;
 
-    let mut sample_buf: Option<SampleBuffer<f32>> = None;
     let mut rechunk_buffer: VecDeque<f32> = VecDeque::new();
     let mut frame_count = 0u64;
     let mut cumulative_timestamp_us = 0u64;
 
     loop {
         let packet = match format_reader.next_packet() {
-            Ok(packet) => packet,
-            Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+            Ok(Some(packet)) => packet,
+            Ok(None) => {
                 tracing::debug!("Reached end of MP3 stream after {} frames", frame_count);
                 break;
             },
@@ -264,49 +266,42 @@ fn decode_mp3_streaming_incremental(
             },
         };
 
-        if packet.track_id() != track_id {
+        if packet.track_id != track_id {
             continue;
         }
 
         match decoder.decode(&packet) {
             Ok(audio_buf) => {
-                if sample_buf.is_none() {
-                    let spec = *audio_buf.spec();
-                    let duration = audio_buf.capacity() as u64;
-                    sample_buf = Some(SampleBuffer::<f32>::new(duration, spec));
-                }
+                let mut interleaved: Vec<f32> = Vec::new();
+                audio_buf.copy_to_vec_interleaved(&mut interleaved);
+                rechunk_buffer.extend(interleaved.iter().copied());
 
-                if let Some(buf) = &mut sample_buf {
-                    buf.copy_interleaved_ref(audio_buf);
-                    rechunk_buffer.extend(buf.samples().iter().copied());
+                while rechunk_buffer.len() >= OUTPUT_FRAME_SIZE {
+                    let chunk: Vec<f32> = rechunk_buffer.drain(..OUTPUT_FRAME_SIZE).collect();
+                    let samples_per_channel = chunk.len() / channels as usize;
+                    let duration_us =
+                        (samples_per_channel as u64 * 1_000_000) / u64::from(sample_rate);
 
-                    while rechunk_buffer.len() >= OUTPUT_FRAME_SIZE {
-                        let chunk: Vec<f32> = rechunk_buffer.drain(..OUTPUT_FRAME_SIZE).collect();
-                        let samples_per_channel = chunk.len() / channels as usize;
-                        let duration_us =
-                            (samples_per_channel as u64 * 1_000_000) / u64::from(sample_rate);
+                    let metadata = streamkit_core::types::PacketMetadata {
+                        timestamp_us: Some(cumulative_timestamp_us),
+                        duration_us: Some(duration_us),
+                        sequence: Some(frame_count),
+                        keyframe: None,
+                    };
 
-                        let metadata = streamkit_core::types::PacketMetadata {
-                            timestamp_us: Some(cumulative_timestamp_us),
-                            duration_us: Some(duration_us),
-                            sequence: Some(frame_count),
-                            keyframe: None,
-                        };
-
-                        if result_tx
-                            .blocking_send(Ok((chunk, sample_rate, channels, metadata)))
-                            .is_err()
-                        {
-                            tracing::debug!("Result channel closed, stopping decode");
-                            return Ok(());
-                        }
-
-                        frame_count += 1;
-                        cumulative_timestamp_us += duration_us;
+                    if result_tx
+                        .blocking_send(Ok((chunk, sample_rate, channels, metadata)))
+                        .is_err()
+                    {
+                        tracing::debug!("Result channel closed, stopping decode");
+                        return Ok(());
                     }
+
+                    frame_count += 1;
+                    cumulative_timestamp_us += duration_us;
                 }
             },
-            Err(Error::DecodeError(err)) => {
+            Err(symphonia::core::errors::Error::DecodeError(err)) => {
                 tracing::warn!("MP3 decode error (continuing): {}", err);
             },
             Err(e) => {

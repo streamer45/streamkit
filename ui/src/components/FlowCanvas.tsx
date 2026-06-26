@@ -37,7 +37,7 @@ function computeReactFlowProps<NodeData extends Record<string, unknown>>(
     onDrop?: (event: React.DragEvent) => void;
     onDragOver?: (event: React.DragEvent) => void;
     onNodeDragStop?: (
-      event: React.MouseEvent,
+      event: MouseEvent | TouchEvent,
       node: Node<NodeData>,
       nodes: Node<NodeData>[]
     ) => void;
@@ -133,7 +133,11 @@ export const FlowCanvas = <NodeData extends Record<string, unknown> = Record<str
   onPaneClick: () => void;
   onPaneContextMenu: (event: React.MouseEvent | MouseEvent) => void;
   onNodeContextMenu: (event: React.MouseEvent, node: Node<NodeData>) => void;
-  onNodeDragStop?: (event: React.MouseEvent, node: Node<NodeData>, nodes: Node<NodeData>[]) => void;
+  onNodeDragStop?: (
+    event: MouseEvent | TouchEvent,
+    node: Node<NodeData>,
+    nodes: Node<NodeData>[]
+  ) => void;
   onDrop?: (event: React.DragEvent) => void;
   onDragOver?: (event: React.DragEvent) => void;
   reactFlowWrapper: React.RefObject<HTMLDivElement | null>;

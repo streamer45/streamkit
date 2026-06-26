@@ -2240,44 +2240,34 @@ impl MoqPeerNode {
     ) -> Result<moq_lite::TrackProducer, StreamKitError> {
         let mut audio_renditions = std::collections::BTreeMap::new();
         if let Some(audio_track) = audio_track {
-            audio_renditions.insert(
-                audio_track.name.clone(),
-                hang::catalog::AudioConfig {
-                    codec: catalog_audio_codec(audio_codec),
-                    sample_rate: 48000,
-                    // AAC-LC encoder always outputs stereo (upmixing mono
-                    // input), so advertise 2 channels when the subscriber
-                    // codec is AAC.  Opus uses mono by default.
-                    channel_count: match audio_codec {
-                        AudioCodec::Aac => 2,
-                        _ => 1,
-                    },
-                    bitrate: Some(64_000),
-                    description: None,
-                    container: hang::catalog::Container::default(),
-                    jitter: None,
-                },
-            );
+            audio_renditions.insert(audio_track.name.clone(), {
+                // AAC-LC encoder always outputs stereo (upmixing mono
+                // input), so advertise 2 channels when the subscriber
+                // codec is AAC.  Opus uses mono by default.
+                let channel_count = match audio_codec {
+                    AudioCodec::Aac => 2,
+                    _ => 1,
+                };
+                let mut cfg = hang::catalog::AudioConfig::new(
+                    catalog_audio_codec(audio_codec),
+                    48000,
+                    channel_count,
+                );
+                cfg.bitrate = Some(64_000);
+                cfg
+            });
         }
 
         let mut video_renditions = std::collections::BTreeMap::new();
         if let Some(video_track) = video_track {
-            video_renditions.insert(
-                video_track.name.clone(),
-                hang::catalog::VideoConfig {
-                    codec: catalog_video_codec(video_codec),
-                    coded_width: Some(video_width),
-                    coded_height: Some(video_height),
-                    display_ratio_width: None,
-                    display_ratio_height: None,
-                    framerate: Some(30.0),
-                    bitrate: None,
-                    description: None,
-                    optimize_for_latency: Some(true),
-                    container: hang::catalog::Container::default(),
-                    jitter: None,
-                },
-            );
+            video_renditions.insert(video_track.name.clone(), {
+                let mut cfg = hang::catalog::VideoConfig::new(catalog_video_codec(video_codec));
+                cfg.coded_width = Some(video_width);
+                cfg.coded_height = Some(video_height);
+                cfg.framerate = Some(30.0);
+                cfg.optimize_for_latency = Some(true);
+                cfg
+            });
         }
 
         let catalog = hang::catalog::Catalog {
@@ -2288,7 +2278,6 @@ impl MoqPeerNode {
                 rotation: None,
                 flip: None,
             },
-            ..Default::default()
         };
 
         let mut catalog_producer = broadcast_producer
@@ -4070,22 +4059,14 @@ mod tests {
     #[tokio::test]
     async fn subscribe_catalog_tracks_records_per_rendition_codec() {
         let mut catalog = hang::catalog::Catalog::default();
-        catalog.video.renditions.insert(
-            "video/hd".to_string(),
-            hang::catalog::VideoConfig {
-                codec: crate::transport::moq::constants::catalog_video_codec(VideoCodec::H264),
-                coded_width: None,
-                coded_height: None,
-                display_ratio_width: None,
-                display_ratio_height: None,
-                framerate: Some(30.0),
-                bitrate: None,
-                description: None,
-                optimize_for_latency: Some(true),
-                container: hang::catalog::Container::default(),
-                jitter: None,
-            },
-        );
+        catalog.video.renditions.insert("video/hd".to_string(), {
+            let mut cfg = hang::catalog::VideoConfig::new(
+                crate::transport::moq::constants::catalog_video_codec(VideoCodec::H264),
+            );
+            cfg.framerate = Some(30.0);
+            cfg.optimize_for_latency = Some(true);
+            cfg
+        });
 
         let origin = moq_lite::Origin::random().produce();
         let mut broadcast = origin.create_broadcast("input").unwrap();
@@ -4137,15 +4118,7 @@ mod tests {
         let mut catalog = hang::catalog::Catalog::default();
         catalog.audio.renditions.insert(
             "audio/data".to_string(),
-            hang::catalog::AudioConfig {
-                codec: catalog_audio_codec(AudioCodec::Aac),
-                sample_rate: 48000,
-                channel_count: 2,
-                bitrate: None,
-                description: None,
-                container: hang::catalog::Container::default(),
-                jitter: None,
-            },
+            hang::catalog::AudioConfig::new(catalog_audio_codec(AudioCodec::Aac), 48000, 2),
         );
 
         let origin = moq_lite::Origin::random().produce();

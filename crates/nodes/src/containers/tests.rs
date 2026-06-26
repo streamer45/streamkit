@@ -45,9 +45,9 @@ fn test_symphonia_ogg_reader_opens_opus_file() {
 
     let format_opts = symphonia::core::formats::FormatOptions::default();
     let mut reader =
-        symphonia::default::formats::OggReader::try_new(mss, &format_opts).expect("open Ogg/Opus");
+        symphonia::default::formats::OggReader::try_new(mss, format_opts).expect("open Ogg/Opus");
 
-    let packet = reader.next_packet().expect("read first packet");
+    let packet = reader.next_packet().expect("read first packet").expect("first packet present");
     assert!(!packet.data.is_empty(), "first packet should contain data");
 }
 

@@ -189,7 +189,9 @@ impl ProcessorNode for MoqPushNode {
 
         let publisher_origin = moq_lite::Origin::random().produce();
         let _publisher_session =
-            match client.clone().with_publish(publisher_origin.consume()).connect(url).await {
+            match Box::pin(client.clone().with_publish(publisher_origin.consume()).connect(url))
+                .await
+            {
                 Ok(session) => session,
                 Err(e) => {
                     let err_msg = format!("Failed to create publisher session: {e}");
@@ -271,38 +273,25 @@ impl ProcessorNode for MoqPushNode {
         // Build catalog with connected renditions
         let mut audio_renditions = std::collections::BTreeMap::new();
         if let Some(ref at) = audio_track {
-            audio_renditions.insert(
-                at.name.clone(),
-                hang::catalog::AudioConfig {
-                    codec: catalog_audio_codec(audio_codec),
-                    sample_rate: 48000,
-                    channel_count: self.config.channels,
-                    bitrate: Some(128_000),
-                    description: None,
-                    container: hang::catalog::Container::default(),
-                    jitter: None,
-                },
-            );
+            audio_renditions.insert(at.name.clone(), {
+                let mut cfg = hang::catalog::AudioConfig::new(
+                    catalog_audio_codec(audio_codec),
+                    48000,
+                    self.config.channels,
+                );
+                cfg.bitrate = Some(128_000);
+                cfg
+            });
         }
 
         let mut video_renditions = std::collections::BTreeMap::new();
         if let Some(ref vt) = video_track {
-            video_renditions.insert(
-                vt.name.clone(),
-                hang::catalog::VideoConfig {
-                    codec: catalog_video_codec(video_codec),
-                    coded_width: None,
-                    coded_height: None,
-                    display_ratio_width: None,
-                    display_ratio_height: None,
-                    framerate: Some(30.0),
-                    bitrate: None,
-                    description: None,
-                    optimize_for_latency: Some(true),
-                    container: hang::catalog::Container::default(),
-                    jitter: None,
-                },
-            );
+            video_renditions.insert(vt.name.clone(), {
+                let mut cfg = hang::catalog::VideoConfig::new(catalog_video_codec(video_codec));
+                cfg.framerate = Some(30.0);
+                cfg.optimize_for_latency = Some(true);
+                cfg
+            });
         }
 
         let mut catalog = hang::catalog::Catalog {
@@ -313,7 +302,6 @@ impl ProcessorNode for MoqPushNode {
                 rotation: None,
                 flip: None,
             },
-            ..Default::default()
         };
 
         // Create catalog track and publish the catalog data
@@ -855,35 +843,22 @@ impl MoqPushNode {
         audio_codec: AudioCodec,
     ) {
         if is_video {
-            catalog.video.renditions.insert(
-                track_name.to_string(),
-                hang::catalog::VideoConfig {
-                    codec: catalog_video_codec(video_codec),
-                    coded_width: None,
-                    coded_height: None,
-                    display_ratio_width: None,
-                    display_ratio_height: None,
-                    framerate: Some(30.0),
-                    bitrate: None,
-                    description: None,
-                    optimize_for_latency: Some(true),
-                    container: hang::catalog::Container::default(),
-                    jitter: None,
-                },
-            );
+            catalog.video.renditions.insert(track_name.to_string(), {
+                let mut cfg = hang::catalog::VideoConfig::new(catalog_video_codec(video_codec));
+                cfg.framerate = Some(30.0);
+                cfg.optimize_for_latency = Some(true);
+                cfg
+            });
         } else {
-            catalog.audio.renditions.insert(
-                track_name.to_string(),
-                hang::catalog::AudioConfig {
-                    codec: catalog_audio_codec(audio_codec),
-                    sample_rate: 48000,
-                    channel_count: channels,
-                    bitrate: Some(128_000),
-                    description: None,
-                    container: hang::catalog::Container::default(),
-                    jitter: None,
-                },
-            );
+            catalog.audio.renditions.insert(track_name.to_string(), {
+                let mut cfg = hang::catalog::AudioConfig::new(
+                    catalog_audio_codec(audio_codec),
+                    48000,
+                    channels,
+                );
+                cfg.bitrate = Some(128_000);
+                cfg
+            });
         }
     }
 
