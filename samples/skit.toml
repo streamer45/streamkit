@@ -161,6 +161,11 @@ enable = true
 # Enable tokio-console for async debugging (requires 'tokio-console' feature)
 tokio_console = false
 
+# Maximum characters retained per text field in session telemetry events
+# forwarded to WebSocket clients. Longer strings are truncated server-side
+# to avoid leaking large payloads (e.g. full transcripts). Default: 100
+# max_text_chars = 100
+
 [engine]
 # Performance tuning preset for dynamic sessions (long-running pipelines).
 # Presets provide sensible defaults; explicit capacities below override them.
