@@ -29,7 +29,9 @@ const DEFAULT_FRAME_DURATION_US: u64 = 20_000;
 
 use super::file_stream::{emit_file_in_chunks, resolve_finalize_chunk_size, FileBackedBuffer};
 use crate::video::{
-    DEFAULT_VIDEO_FRAME_DURATION_US, VP9_BIT_DEPTH, VP9_CHROMA_SUBSAMPLING, VP9_LEVEL, VP9_PROFILE,
+    av1_codec_string, AV1_BIT_DEPTH, AV1_CHROMA_SUBSAMPLING_X, AV1_CHROMA_SUBSAMPLING_Y, AV1_LEVEL,
+    AV1_PROFILE, DEFAULT_VIDEO_FRAME_DURATION_US, VP9_BIT_DEPTH, VP9_CHROMA_SUBSAMPLING, VP9_LEVEL,
+    VP9_PROFILE,
 };
 
 /// Bit reader for parsing VP9 uncompressed headers (MSB-first).
@@ -165,21 +167,49 @@ const fn vp9_codec_private(
 const VP9_CODEC_PRIVATE: [u8; 8] =
     vp9_codec_private(VP9_PROFILE, VP9_LEVEL, VP9_BIT_DEPTH, VP9_CHROMA_SUBSAMPLING);
 
-/// AV1CodecConfigurationRecord for WebM/Matroska (4 bytes).
+/// Build an AV1CodecConfigurationRecord (`av1C`) for WebM/Matroska CodecPrivate.
 ///
-/// Byte layout:
-///   [0] marker(1)=1 | version(7)=1        → 0x81
-///   [1] seq_profile(3)=0 | seq_level_idx_0(5)=8  → 0x08  (Main profile, level 4.0)
-///   [2] seq_tier_0(1)=0 | high_bitdepth(1)=0 | twelve_bit(1)=0 | monochrome(1)=0
-///       | chroma_subsampling_x(1)=1 | chroma_subsampling_y(1)=1
-///       | chroma_sample_position(2)=0     → 0x0C  (8-bit, 4:2:0)
-///   [3] reserved(8)=0                     → 0x00
+/// Byte layout (Main tier, `chroma_sample_position` unknown):
+///   [0] marker(1)=1 | version(7)=1                              → 0x81
+///   [1] seq_profile(3) | seq_level_idx_0(5)
+///   [2] seq_tier_0(1)=0 | high_bitdepth(1) | twelve_bit(1)
+///       | monochrome(1)=0 | chroma_subsampling_x(1)
+///       | chroma_subsampling_y(1) | chroma_sample_position(2)=0
+///   [3] reserved(8)=0
 ///
 /// Reference: <https://aomediacodec.github.io/av1-isobmff/#av1codecconfigurationbox>
+const fn av1_codec_private(
+    profile: u8,
+    level_idx: u8,
+    bit_depth: u8,
+    chroma_subsampling_x: u8,
+    chroma_subsampling_y: u8,
+) -> [u8; 4] {
+    let high_bitdepth = (bit_depth > 8) as u8;
+    let twelve_bit = (bit_depth == 12) as u8;
+    [
+        0x81,
+        ((profile & 0x07) << 5) | (level_idx & 0x1F),
+        (high_bitdepth << 6)
+            | (twelve_bit << 5)
+            | ((chroma_subsampling_x & 0x01) << 3)
+            | ((chroma_subsampling_y & 0x01) << 2),
+        0x00,
+    ]
+}
+
+/// Pre-computed AV1 codec-private data for the default encoder config
+/// (profile 0, level 4.0, Main tier, 8-bit, 4:2:0).
 ///
 /// NOTE: level 4.0 supports resolutions up to 2048×1152.  If 4K+ output is
-/// ever needed, `seq_level_idx_0` must be bumped (same debt exists on VP9).
-const AV1_CODEC_PRIVATE: [u8; 4] = [0x81, 0x08, 0x0C, 0x00];
+/// ever needed, [`AV1_LEVEL`] must be bumped (same debt exists on VP9).
+const AV1_CODEC_PRIVATE: [u8; 4] = av1_codec_private(
+    AV1_PROFILE,
+    AV1_LEVEL,
+    AV1_BIT_DEPTH,
+    AV1_CHROMA_SUBSAMPLING_X,
+    AV1_CHROMA_SUBSAMPLING_Y,
+);
 
 /// Opus codec lookahead at 48kHz in samples (typical libopus default).
 ///
@@ -436,29 +466,23 @@ struct MuxTracks {
 
 /// Builds the MIME content-type string based on which tracks are present.
 ///
-/// When `video_is_av1` is `true` the video codec string is `av01.0.08M.08`
-/// (the RFC 6381 form of [`AV1_CODEC_PRIVATE`]: profile 0, level idx 8, Main
-/// tier, 8-bit) instead of `"vp9"`. The bare `"av1"` token is rejected by
-/// `MediaSource.isTypeSupported`, which forces MSE consumers to fall back to
-/// buffering the whole response instead of progressive playback.
+/// When `video_is_av1` is `true` the video codec string is the RFC 6381
+/// [`av1_codec_string`] (e.g. `av01.0.08M.08`) instead of `"vp9"`. The bare
+/// `"av1"` token is rejected by `MediaSource.isTypeSupported`, which forces MSE
+/// consumers to fall back to buffering the whole response instead of
+/// progressive playback.
 ///
-/// Like [`AV1_CODEC_PRIVATE`], this string assumes the profile/level/bit-depth
-/// the encoders actually emit (see the level-4.0 ceiling note there). A
-/// non-conforming AV1 stream (10-bit, non-Main, or >2048×1152) would be
-/// mis-advertised: MSE would accept the type but throw on `appendBuffer`,
-/// whereas before it fell back to native blob decode. No node produces such a
-/// stream today; if one is added, both this string and `AV1_CODEC_PRIVATE`
-/// must track the real parameters.
-///
-const fn webm_content_type(has_audio: bool, has_video: bool, video_is_av1: bool) -> &'static str {
-    match (has_audio, has_video, video_is_av1) {
-        (true, true, false) => "video/webm; codecs=\"vp9,opus\"",
-        (true, true, true) => "video/webm; codecs=\"av01.0.08M.08,opus\"",
-        (false, true, false) => "video/webm; codecs=\"vp9\"",
-        (false, true, true) => "video/webm; codecs=\"av01.0.08M.08\"",
-        (true, false, _) => "audio/webm; codecs=\"opus\"",
+/// The AV1 token, [`AV1_CODEC_PRIVATE`], and the MP4 `av1C` box all derive from
+/// the shared encoder constants in `crate::video`, so the advertised codec can
+/// never drift from the bytes actually muxed.
+fn webm_content_type(has_audio: bool, has_video: bool, video_is_av1: bool) -> String {
+    let video = if video_is_av1 { av1_codec_string() } else { "vp9".to_string() };
+    match (has_audio, has_video) {
+        (true, true) => format!("video/webm; codecs=\"{video},opus\""),
+        (false, true) => format!("video/webm; codecs=\"{video}\""),
+        (true, false) => "audio/webm; codecs=\"opus\"".to_string(),
         // Shouldn't happen - at least one track is required - but provide a safe fallback.
-        (false, false, _) => "video/webm",
+        (false, false) => "video/webm".to_string(),
     }
 }
 
@@ -539,7 +563,7 @@ impl ProcessorNode for WebMMuxerNode {
         // default to VP9 for the static hint.  The actual content_type is
         // resolved at runtime once the first video packet arrives.
         let has_video = self.config.video_width > 0 && self.config.video_height > 0;
-        Some(webm_content_type(true, has_video, false).to_string())
+        Some(webm_content_type(true, has_video, false))
     }
 
     async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
@@ -686,7 +710,7 @@ impl ProcessorNode for WebMMuxerNode {
         tracing::info!("WebMMuxerNode tracks: audio={}, video={}", has_audio, has_video);
 
         let content_type_str: Cow<'static, str> =
-            Cow::Borrowed(webm_content_type(has_audio, has_video, video_is_av1));
+            Cow::Owned(webm_content_type(has_audio, has_video, video_is_av1));
 
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
 
@@ -1763,6 +1787,15 @@ mod tests {
         assert_eq!(webm_content_type(false, true, true), "video/webm; codecs=\"av01.0.08M.08\"");
         assert_eq!(webm_content_type(true, false, true), "audio/webm; codecs=\"opus\"");
         assert_eq!(webm_content_type(false, false, true), "video/webm");
+    }
+
+    /// The AV1 CodecPrivate derived from the shared encoder constants must match
+    /// the known-good `av1C` record (profile 0, level 4.0, Main tier, 8-bit,
+    /// 4:2:0). This pins the bit-packing in [`av1_codec_private`] so a constant
+    /// change is reflected here and stays consistent with the MP4 `av1C` box.
+    #[test]
+    fn av1_codec_private_matches_spec() {
+        assert_eq!(AV1_CODEC_PRIVATE, [0x81, 0x08, 0x0C, 0x00]);
     }
 
     /// Verify that the `webm` crate in Live mode with a non-seek writer

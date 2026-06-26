@@ -32,7 +32,9 @@ pub const VP9_BIT_DEPTH: u8 = 8;
 pub const VP9_CHROMA_SUBSAMPLING: u8 = 1;
 
 //
-// Shared across MoQ catalog creation for AV1 tracks.
+// Single source of truth for the AV1 encoder configuration. Shared across MoQ
+// catalog creation, the MP4 `av1C` box, and the WebM AV1 CodecPrivate so every
+// container advertises the same profile/level/tier/bit-depth.
 
 /// AV1 Main profile (4:2:0, 8/10-bit).
 pub const AV1_PROFILE: u8 = 0;
@@ -42,6 +44,19 @@ pub const AV1_LEVEL: u8 = 8;
 pub const AV1_BIT_DEPTH: u8 = 8;
 /// AV1 Main tier.
 pub const AV1_TIER: char = 'M';
+/// 4:2:0 chroma subsampling — horizontal (1 = subsampled, per AV1CodecConfigurationRecord).
+pub const AV1_CHROMA_SUBSAMPLING_X: u8 = 1;
+/// 4:2:0 chroma subsampling — vertical (1 = subsampled, per AV1CodecConfigurationRecord).
+pub const AV1_CHROMA_SUBSAMPLING_Y: u8 = 1;
+
+/// RFC 6381 codec string (`av01.P.LLT.DD`) for StreamKit's AV1 output, formatted
+/// from the shared profile/level/tier/bit-depth constants.
+///
+/// The bare `av01` token is not a valid RFC 6381 string — `MediaSource.
+/// isTypeSupported` rejects it — so container muxers advertise this full form.
+pub fn av1_codec_string() -> String {
+    format!("av01.{AV1_PROFILE}.{AV1_LEVEL:02}{AV1_TIER}.{AV1_BIT_DEPTH:02}")
+}
 
 //
 // OpenH264 produces Constrained Baseline profile. These are shared across
@@ -691,4 +706,17 @@ pub fn register_video_nodes(registry: &mut NodeRegistry, constraints: &GlobalNod
 
     #[cfg(feature = "nvcodec")]
     nv_av1::register_nv_av1_nodes(registry);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pins the RFC 6381 token derived from the shared AV1 constants. The WebM
+    /// and MP4 muxers and the UI all advertise this string; a value change here
+    /// must be intentional and coordinated across all sites.
+    #[test]
+    fn av1_codec_string_matches_shared_constants() {
+        assert_eq!(av1_codec_string(), "av01.0.08M.08");
+    }
 }
