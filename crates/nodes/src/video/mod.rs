@@ -719,4 +719,32 @@ mod tests {
     fn av1_codec_string_matches_shared_constants() {
         assert_eq!(av1_codec_string(), "av01.0.08M.08");
     }
+
+    /// Cross-language guard: the UI hard-codes the same AV1 token in
+    /// `ui/src/constants/codecs.ts` because WebCodecs configs can't import the
+    /// Rust value. This fails if the Rust source of truth changes without the TS
+    /// constant being updated in lockstep, which no UI test can catch on its own.
+    #[test]
+    fn ui_av1_codec_constant_matches_rust_source() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../ui/src/constants/codecs.ts");
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+
+        let Some((_, after)) = source.split_once("AV1_CODEC_STRING") else {
+            panic!("ui/src/constants/codecs.ts must declare AV1_CODEC_STRING");
+        };
+        let Some(quote_at) = after.find(['\'', '"']) else {
+            panic!("AV1_CODEC_STRING must be assigned a quoted literal");
+        };
+        let quote = after.as_bytes()[quote_at];
+        let literal = after[quote_at + 1..].split(|c| c as u8 == quote).next().unwrap_or("");
+
+        assert_eq!(
+            literal,
+            av1_codec_string(),
+            "ui/src/constants/codecs.ts AV1_CODEC_STRING is out of sync with the Rust \
+             av1_codec_string(); update the TS constant to match"
+        );
+    }
 }

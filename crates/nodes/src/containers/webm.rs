@@ -480,10 +480,10 @@ struct MuxTracks {
 /// the shared encoder constants in `crate::video`, so the advertised codec can
 /// never drift from the bytes actually muxed.
 fn webm_content_type(has_audio: bool, has_video: bool, video_is_av1: bool) -> String {
-    let video = if video_is_av1 { av1_codec_string() } else { "vp9".to_string() };
+    let video = || if video_is_av1 { av1_codec_string() } else { "vp9".to_string() };
     match (has_audio, has_video) {
-        (true, true) => format!("video/webm; codecs=\"{video},opus\""),
-        (false, true) => format!("video/webm; codecs=\"{video}\""),
+        (true, true) => format!("video/webm; codecs=\"{},opus\"", video()),
+        (false, true) => format!("video/webm; codecs=\"{}\"", video()),
         (true, false) => "audio/webm; codecs=\"opus\"".to_string(),
         // Shouldn't happen - at least one track is required - but provide a safe fallback.
         (false, false) => "video/webm".to_string(),
