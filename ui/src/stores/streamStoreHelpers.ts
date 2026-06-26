@@ -10,6 +10,7 @@ import type { Getter } from '@moq/signals';
 import { Effect, Signal } from '@moq/signals';
 import * as Watch from '@moq/watch';
 
+import { AV1_CODEC_STRING } from '@/constants/codecs';
 import type { PublishTrackConfig } from '@/types/types';
 
 import type {
@@ -33,10 +34,7 @@ function mapCodecToWebCodecs(codec: string): string {
     case 'vp9':
       return 'vp09';
     case 'av1':
-      // Main profile, Level 4.0 Main tier, 8-bit.
-      // Coupled with Rust encoder constants: bit_depth=8, ChromaSampling::Cs420.
-      // Both sides must be updated together if profile/level changes.
-      return 'av01.0.08M.08';
+      return AV1_CODEC_STRING;
     default:
       throw new Error(
         `Unsupported video codec '${codec}'. Supported codecs: ${SUPPORTED_VIDEO_CODECS.join(', ')}.`
