@@ -8,6 +8,7 @@ import { Effect, type Getter } from '@moq/signals';
 import * as Watch from '@moq/watch';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { AV1_CODEC_STRING } from '@/constants/codecs';
 import type { PublishTrackConfig } from '@/types/types';
 
 import {
@@ -673,9 +674,9 @@ describe('buildVideoEncoderConfig', () => {
     expect(result.encoderConfig.codec).toBe('vp09');
   });
 
-  it('maps av1 to av01.0.08M.08 WebCodecs codec string', () => {
+  it('maps av1 to the shared AV1_CODEC_STRING WebCodecs codec string', () => {
     const result = buildVideoEncoderConfig(makeTrack({ codec: 'av1' }));
-    expect(result.encoderConfig.codec).toBe('av01.0.08M.08');
+    expect(result.encoderConfig.codec).toBe(AV1_CODEC_STRING);
   });
 
   it('throws for unrecognized codec values', () => {

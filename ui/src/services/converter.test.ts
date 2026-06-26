@@ -5,6 +5,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 
 import { convertFile, getExtensionFromContentType } from './converter';
+import { AV1_CODEC_STRING } from '../constants/codecs';
 import { FTYP, concatBytes, mp4Box, streamOf } from '../test/mp4Fixtures';
 
 const FRAGMENTED_MP4_HEAD = concatBytes(FTYP, mp4Box('moov', mp4Box('mvex', new Uint8Array(0))));
@@ -214,7 +215,7 @@ describe('converter service', () => {
     it('uses MSE streaming for a valid av01 WebM codec string', async () => {
       vi.stubGlobal('MediaSource', { isTypeSupported: browserIsTypeSupported });
       (fetch as ReturnType<typeof vi.fn>).mockResolvedValue(
-        webmResponse('video/webm; codecs="av01.0.08M.08"')
+        webmResponse(`video/webm; codecs="${AV1_CODEC_STRING}"`)
       );
 
       const result = await convertFile(MOCK_YAML, MOCK_UPLOAD, 'playback');
