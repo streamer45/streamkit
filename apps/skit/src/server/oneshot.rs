@@ -548,9 +548,21 @@ pub(super) async fn process_oneshot_pipeline_handler(
         }
     }
 
-    super::validation::validate_file_reader_paths(&pipeline_def, &app_state.config.security)?;
-    super::validation::validate_file_writer_paths(&pipeline_def, &app_state.config.security)?;
-    super::validation::validate_script_paths(&pipeline_def, &app_state.config.security)?;
+    super::validation::validate_file_reader_paths(
+        &pipeline_def,
+        &app_state.config.security,
+        &app_state.asset_root,
+    )?;
+    super::validation::validate_file_writer_paths(
+        &pipeline_def,
+        &app_state.config.security,
+        &app_state.asset_root,
+    )?;
+    super::validation::validate_script_paths(
+        &pipeline_def,
+        &app_state.config.security,
+        &app_state.asset_root,
+    )?;
 
     tracing::info!(
         "Pipeline validation passed: mode={}, has_http_input={}, has_file_read={}, has_http_output={}",

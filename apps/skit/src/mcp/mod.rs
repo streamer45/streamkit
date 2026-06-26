@@ -633,6 +633,7 @@ impl StreamKitMcp {
             &args.operations,
             &perms,
             &self.app_state.config.security,
+            &self.app_state.asset_root,
         )
         .await;
 
@@ -670,6 +671,7 @@ impl StreamKitMcp {
             args.operations,
             &perms,
             &self.app_state.config.security,
+            &self.app_state.asset_root,
         )
         .await
         .map_err(|e| McpError::invalid_params(e, None))?;
@@ -858,6 +860,7 @@ impl StreamKitMcp {
             args.node_id.clone(),
             args.message,
             &self.app_state.config.security,
+            &self.app_state.asset_root,
             &self.app_state.event_tx,
         )
         .await
@@ -977,6 +980,7 @@ impl StreamKitMcp {
                 diff.operations.clone(),
                 &perms,
                 &self.app_state.config.security,
+                &self.app_state.asset_root,
             )
             .await
             .map_err(|e| McpError::invalid_params(e, None))?;
@@ -995,6 +999,7 @@ impl StreamKitMcp {
                     node_id.clone(),
                     streamkit_core::control::NodeControlMessage::UpdateParams(new_params.clone()),
                     &self.app_state.config.security,
+                    &self.app_state.asset_root,
                     &self.app_state.event_tx,
                 )
                 .await

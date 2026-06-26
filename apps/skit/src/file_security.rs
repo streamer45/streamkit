@@ -8,7 +8,9 @@ use glob::Pattern;
 /// Validates that a file path is safe for reading by file_read nodes.
 /// This prevents directory traversal attacks and ensures paths are within allowed directories.
 ///
-/// Relative paths are resolved against the server's current working directory.
+/// Relative paths are resolved against `asset_root` (the server's configured
+/// `[server].asset_root`, which defaults to the process working directory), matching
+/// how `core::file_reader` resolves paths at read time.
 /// The resolved path must:
 /// 1. Exist and be a regular file
 /// 2. Be readable by the server process
@@ -17,22 +19,21 @@ use glob::Pattern;
 /// # Errors
 ///
 /// Returns an error string if:
-/// - The current working directory cannot be determined
 /// - The path cannot be canonicalized (missing/inaccessible file, or permission issues)
 /// - The resolved path is outside `security.allowed_file_paths`
 /// - The resolved path does not exist or is not a regular file
-pub fn validate_file_path(path: &str, security_config: &SecurityConfig) -> Result<(), String> {
+pub fn validate_file_path(
+    path: &str,
+    security_config: &SecurityConfig,
+    asset_root: &std::path::Path,
+) -> Result<(), String> {
     use std::path::{Path, PathBuf};
 
     let path_obj = Path::new(path);
 
-    // Get current working directory for resolving relative paths
-    let cwd = std::env::current_dir()
-        .map_err(|e| format!("Failed to get current working directory: {e}"))?;
-
-    // Convert relative paths to absolute by joining with current working directory
+    // Convert relative paths to absolute by joining with the asset root
     let absolute_path: PathBuf =
-        if path_obj.is_absolute() { path_obj.to_path_buf() } else { cwd.join(path_obj) };
+        if path_obj.is_absolute() { path_obj.to_path_buf() } else { asset_root.join(path_obj) };
 
     // Canonicalize path to resolve symlinks and ".." components
     // This is critical for security - prevents directory traversal
@@ -41,7 +42,8 @@ pub fn validate_file_path(path: &str, security_config: &SecurityConfig) -> Resul
     })?;
 
     // Security: Check if path matches any allowed pattern
-    let is_allowed = check_path_allowed(&canonical_path, &cwd, &security_config.allowed_file_paths);
+    let is_allowed =
+        check_path_allowed(&canonical_path, asset_root, &security_config.allowed_file_paths);
 
     if !is_allowed {
         return Err(format!(
@@ -81,11 +83,14 @@ pub fn validate_file_path(path: &str, security_config: &SecurityConfig) -> Resul
 /// # Errors
 ///
 /// Returns an error string if:
-/// - The current working directory cannot be determined
 /// - The path contains `..` components
 /// - The parent directory cannot be canonicalized (missing/inaccessible dir)
 /// - The resolved target path is outside `security.allowed_write_paths`
-pub fn validate_write_path(path: &str, security_config: &SecurityConfig) -> Result<(), String> {
+pub fn validate_write_path(
+    path: &str,
+    security_config: &SecurityConfig,
+    asset_root: &std::path::Path,
+) -> Result<(), String> {
     use std::path::{Component, Path, PathBuf};
 
     // Empty list means nothing is allowed (secure by default)
@@ -98,11 +103,8 @@ pub fn validate_write_path(path: &str, security_config: &SecurityConfig) -> Resu
 
     let path_obj = Path::new(path);
 
-    let cwd = std::env::current_dir()
-        .map_err(|e| format!("Failed to get current working directory: {e}"))?;
-
     let absolute_path: PathBuf =
-        if path_obj.is_absolute() { path_obj.to_path_buf() } else { cwd.join(path_obj) };
+        if path_obj.is_absolute() { path_obj.to_path_buf() } else { asset_root.join(path_obj) };
 
     // Reject parent-dir traversal for writes (canonicalize may not be possible if file doesn't exist).
     if absolute_path.components().any(|c| matches!(c, Component::ParentDir)) {
@@ -129,7 +131,7 @@ pub fn validate_write_path(path: &str, security_config: &SecurityConfig) -> Resu
     let canonical_target = canonical_parent.join(file_name);
 
     let is_allowed =
-        check_path_allowed(&canonical_target, &cwd, &security_config.allowed_write_paths);
+        check_path_allowed(&canonical_target, asset_root, &security_config.allowed_write_paths);
     if !is_allowed {
         return Err(format!(
             "Write path '{}' resolves to '{}' which is outside allowed write paths. \
@@ -149,10 +151,10 @@ pub fn validate_write_path(path: &str, security_config: &SecurityConfig) -> Resu
 /// - `**` - Allow all paths (not recommended for production)
 /// - `samples/**` - Allow all files under the samples directory
 /// - `/absolute/path/**` - Allow all files under an absolute path
-/// - Relative patterns are resolved against the current working directory
+/// - Relative patterns are resolved against `asset_root`
 fn check_path_allowed(
     canonical_path: &std::path::Path,
-    cwd: &std::path::Path,
+    asset_root: &std::path::Path,
     allowed_patterns: &[String],
 ) -> bool {
     for pattern_str in allowed_patterns {
@@ -166,8 +168,8 @@ fn check_path_allowed(
         let absolute_pattern = if pattern_path.is_absolute() {
             pattern_str.clone()
         } else {
-            // Make relative patterns absolute by prepending cwd
-            cwd.join(pattern_str).to_string_lossy().to_string()
+            // Make relative patterns absolute by prepending the asset root
+            asset_root.join(pattern_str).to_string_lossy().to_string()
         };
 
         // Try to match using glob pattern
@@ -235,7 +237,7 @@ mod tests {
         fs::write(&file, b"x").unwrap();
 
         let cfg = read_config(&[&glob_under(&root)]);
-        assert!(validate_file_path(file.to_str().unwrap(), &cfg).is_ok());
+        assert!(validate_file_path(file.to_str().unwrap(), &cfg, &root).is_ok());
     }
 
     #[test]
@@ -247,7 +249,7 @@ mod tests {
         fs::write(&file, b"x").unwrap();
 
         let cfg = read_config(&[&glob_under(&root)]);
-        assert!(validate_file_path(file.to_str().unwrap(), &cfg).is_ok());
+        assert!(validate_file_path(file.to_str().unwrap(), &cfg, &root).is_ok());
     }
 
     #[test]
@@ -256,7 +258,7 @@ mod tests {
         let missing = root.join("missing.yml");
 
         let cfg = read_config(&[&glob_under(&root)]);
-        let err = validate_file_path(missing.to_str().unwrap(), &cfg)
+        let err = validate_file_path(missing.to_str().unwrap(), &cfg, &root)
             .expect_err("missing file must be rejected");
         assert!(err.contains("Cannot resolve path"), "unexpected error: {err}");
     }
@@ -268,7 +270,7 @@ mod tests {
         fs::create_dir(&sub).unwrap();
 
         let cfg = read_config(&[&glob_under(&root)]);
-        let err = validate_file_path(sub.to_str().unwrap(), &cfg)
+        let err = validate_file_path(sub.to_str().unwrap(), &cfg, &root)
             .expect_err("directory must be rejected");
         assert!(err.contains("not a file"), "unexpected error: {err}");
     }
@@ -281,7 +283,7 @@ mod tests {
         fs::write(&file, b"x").unwrap();
 
         let cfg = read_config(&[&glob_under(&root_allowed)]);
-        let err = validate_file_path(file.to_str().unwrap(), &cfg)
+        let err = validate_file_path(file.to_str().unwrap(), &cfg, &root_allowed)
             .expect_err("path outside allowlist must be rejected");
         assert!(err.contains("outside allowed directories"), "unexpected error: {err}");
     }
@@ -298,7 +300,8 @@ mod tests {
 
         let cfg = read_config(&[&glob_under(&allowed)]);
         let traversal = format!("{}/../forbidden/a.yml", allowed.display());
-        let err = validate_file_path(&traversal, &cfg).expect_err("`..` escape must be rejected");
+        let err = validate_file_path(&traversal, &cfg, &allowed)
+            .expect_err("`..` escape must be rejected");
         assert!(err.contains("outside allowed directories"), "unexpected error: {err}");
     }
 
@@ -318,7 +321,7 @@ mod tests {
         symlink(&target, &link).unwrap();
 
         let cfg = read_config(&[&glob_under(&allowed)]);
-        let err = validate_file_path(link.to_str().unwrap(), &cfg)
+        let err = validate_file_path(link.to_str().unwrap(), &cfg, &allowed)
             .expect_err("symlink escaping allowlist must be rejected");
         assert!(err.contains("outside allowed directories"), "unexpected error: {err}");
     }
@@ -330,7 +333,7 @@ mod tests {
         fs::write(&file, b"x").unwrap();
 
         let cfg = read_config(&[]);
-        let err = validate_file_path(file.to_str().unwrap(), &cfg)
+        let err = validate_file_path(file.to_str().unwrap(), &cfg, &root)
             .expect_err("empty allowlist must deny");
         assert!(err.contains("outside allowed directories"), "unexpected error: {err}");
     }
@@ -338,7 +341,7 @@ mod tests {
     #[test]
     fn validate_write_path_empty_allowlist_returns_disabled_message() {
         let cfg = write_config(&[]);
-        let err = validate_write_path("/tmp/out.txt", &cfg)
+        let err = validate_write_path("/tmp/out.txt", &cfg, Path::new("/tmp"))
             .expect_err("empty write allowlist must disable writes");
         assert!(
             err.starts_with("File writes are disabled by configuration"),
@@ -352,8 +355,8 @@ mod tests {
         let cfg = write_config(&[&glob_under(&root)]);
         let target = format!("{}/sub/../escape.yml", root.display());
 
-        let err =
-            validate_write_path(&target, &cfg).expect_err("`..` in write path must be rejected");
+        let err = validate_write_path(&target, &cfg, &root)
+            .expect_err("`..` in write path must be rejected");
         assert!(err.contains("must not contain '..' components"), "unexpected error: {err}");
     }
 
@@ -364,7 +367,7 @@ mod tests {
         assert!(!target.exists(), "test precondition: target must not exist");
 
         let cfg = write_config(&[&glob_under(&root)]);
-        assert!(validate_write_path(target.to_str().unwrap(), &cfg).is_ok());
+        assert!(validate_write_path(target.to_str().unwrap(), &cfg, &root).is_ok());
     }
 
     #[test]
@@ -373,7 +376,7 @@ mod tests {
         let target = root.join("does_not_exist").join("new.yml");
 
         let cfg = write_config(&[&glob_under(&root)]);
-        let err = validate_write_path(target.to_str().unwrap(), &cfg)
+        let err = validate_write_path(target.to_str().unwrap(), &cfg, &root)
             .expect_err("missing parent dir must be rejected");
         assert!(err.contains("Cannot resolve parent directory"), "unexpected error: {err}");
     }
@@ -393,7 +396,7 @@ mod tests {
 
         let cfg = write_config(&[&glob_under(&allowed)]);
         let target = format!("{}/written.yml", link.display());
-        let err = validate_write_path(&target, &cfg)
+        let err = validate_write_path(&target, &cfg, &allowed)
             .expect_err("symlinked parent escaping allowlist must be rejected");
         assert!(err.contains("outside allowed write paths"), "unexpected error: {err}");
     }
@@ -405,7 +408,7 @@ mod tests {
 
         // `/` has no file name; this exercises the `file_name() == None` branch
         // without needing a `..` (which would trip the earlier ParentDir check).
-        let err = validate_write_path("/", &cfg).expect_err("root path has no file name");
+        let err = validate_write_path("/", &cfg, &root).expect_err("root path has no file name");
         assert!(err.contains("must include a file name"), "unexpected error: {err}");
     }
 
@@ -481,5 +484,49 @@ mod tests {
         let pattern = glob_under(&link_dir);
         let cwd = std::env::current_dir().unwrap();
         assert!(check_path_allowed(&canonical, &cwd, &[pattern]));
+    }
+
+    // Regression for #521: relative paths and relative allow-list patterns must
+    // resolve against the configured `asset_root`, not the process CWD, matching
+    // how `core::file_reader` resolves paths at read time. A custom asset_root
+    // (≠ CWD) must accept a relative path that lives under it.
+    #[test]
+    fn validate_file_path_resolves_relative_path_against_asset_root() {
+        let (_tmp, asset_root) = canonical_tempdir();
+        let file = asset_root.join("samples").join("a.yml");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, b"x").unwrap();
+
+        let cfg = read_config(&[&glob_under(&asset_root)]);
+        assert!(validate_file_path("samples/a.yml", &cfg, &asset_root).is_ok());
+
+        // The same relative path resolved against a different asset_root misses.
+        let (_other_tmp, other_root) = canonical_tempdir();
+        assert!(validate_file_path("samples/a.yml", &cfg, &other_root).is_err());
+    }
+
+    #[test]
+    fn validate_file_path_resolves_relative_pattern_against_asset_root() {
+        let (_tmp, asset_root) = canonical_tempdir();
+        let file = asset_root.join("samples").join("a.yml");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, b"x").unwrap();
+
+        // A relative allow-list pattern is resolved against asset_root.
+        let cfg = read_config(&["samples/**"]);
+        assert!(validate_file_path(file.to_str().unwrap(), &cfg, &asset_root).is_ok());
+
+        let (_other_tmp, other_root) = canonical_tempdir();
+        assert!(validate_file_path(file.to_str().unwrap(), &cfg, &other_root).is_err());
+    }
+
+    #[test]
+    fn validate_write_path_resolves_relative_path_against_asset_root() {
+        let (_tmp, asset_root) = canonical_tempdir();
+        let out_dir = asset_root.join("out");
+        fs::create_dir_all(&out_dir).unwrap();
+
+        let cfg = write_config(&[&glob_under(&asset_root)]);
+        assert!(validate_write_path("out/new.yml", &cfg, &asset_root).is_ok());
     }
 }
