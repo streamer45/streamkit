@@ -1094,6 +1094,77 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reload_keys_rejects_missing_token() {
+        let (state, _admin_token, _temp) = make_state_auth_enabled().await;
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder().method("POST").uri("/reload-keys").body(Body::empty()).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reload_keys_rejects_invalid_token() {
+        let (state, _admin_token, _temp) = make_state_auth_enabled().await;
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/reload-keys")
+                    .header(REQ_AUTHORIZATION, "Bearer not-a-real-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reload_keys_rejects_non_admin_token() {
+        let (state, admin_token, _temp) = make_state_auth_enabled().await;
+
+        let app = build_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/tokens")
+                    .header(REQ_AUTHORIZATION, format!("Bearer {admin_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"role":"viewer"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let viewer_token =
+            serde_json::from_str::<CreateTokenResponse>(&body_to_string(resp.into_body()).await)
+                .unwrap()
+                .token;
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/reload-keys")
+                    .header(REQ_AUTHORIZATION, format!("Bearer {viewer_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
     #[cfg(feature = "moq")]
     #[tokio::test(flavor = "multi_thread")]
     async fn create_moq_token_round_trip() {
