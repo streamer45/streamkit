@@ -30,8 +30,8 @@ const DEFAULT_FRAME_DURATION_US: u64 = 20_000;
 use super::file_stream::{emit_file_in_chunks, resolve_finalize_chunk_size, FileBackedBuffer};
 use crate::video::{
     av1_codec_string, AV1_BIT_DEPTH, AV1_CHROMA_SUBSAMPLING_X, AV1_CHROMA_SUBSAMPLING_Y, AV1_LEVEL,
-    AV1_PROFILE, DEFAULT_VIDEO_FRAME_DURATION_US, VP9_BIT_DEPTH, VP9_CHROMA_SUBSAMPLING, VP9_LEVEL,
-    VP9_PROFILE,
+    AV1_PROFILE, AV1_TIER, DEFAULT_VIDEO_FRAME_DURATION_US, VP9_BIT_DEPTH, VP9_CHROMA_SUBSAMPLING,
+    VP9_LEVEL, VP9_PROFILE,
 };
 
 /// Bit reader for parsing VP9 uncompressed headers (MSB-first).
@@ -169,10 +169,10 @@ const VP9_CODEC_PRIVATE: [u8; 8] =
 
 /// Build an AV1CodecConfigurationRecord (`av1C`) for WebM/Matroska CodecPrivate.
 ///
-/// Byte layout (Main tier, `chroma_sample_position` unknown):
+/// Byte layout (`chroma_sample_position` unknown):
 ///   [0] marker(1)=1 | version(7)=1                              → 0x81
 ///   [1] seq_profile(3) | seq_level_idx_0(5)
-///   [2] seq_tier_0(1)=0 | high_bitdepth(1) | twelve_bit(1)
+///   [2] seq_tier_0(1) | high_bitdepth(1) | twelve_bit(1)
 ///       | monochrome(1)=0 | chroma_subsampling_x(1)
 ///       | chroma_subsampling_y(1) | chroma_sample_position(2)=0
 ///   [3] reserved(8)=0
@@ -181,16 +181,19 @@ const VP9_CODEC_PRIVATE: [u8; 8] =
 const fn av1_codec_private(
     profile: u8,
     level_idx: u8,
+    tier: char,
     bit_depth: u8,
     chroma_subsampling_x: u8,
     chroma_subsampling_y: u8,
 ) -> [u8; 4] {
+    let seq_tier_0 = (tier == 'H') as u8;
     let high_bitdepth = (bit_depth > 8) as u8;
     let twelve_bit = (bit_depth == 12) as u8;
     [
         0x81,
         ((profile & 0x07) << 5) | (level_idx & 0x1F),
-        (high_bitdepth << 6)
+        (seq_tier_0 << 7)
+            | (high_bitdepth << 6)
             | (twelve_bit << 5)
             | ((chroma_subsampling_x & 0x01) << 3)
             | ((chroma_subsampling_y & 0x01) << 2),
@@ -206,6 +209,7 @@ const fn av1_codec_private(
 const AV1_CODEC_PRIVATE: [u8; 4] = av1_codec_private(
     AV1_PROFILE,
     AV1_LEVEL,
+    AV1_TIER,
     AV1_BIT_DEPTH,
     AV1_CHROMA_SUBSAMPLING_X,
     AV1_CHROMA_SUBSAMPLING_Y,
@@ -1799,6 +1803,7 @@ mod tests {
             av1_codec_private(
                 AV1_PROFILE,
                 AV1_LEVEL,
+                AV1_TIER,
                 AV1_BIT_DEPTH,
                 AV1_CHROMA_SUBSAMPLING_X,
                 AV1_CHROMA_SUBSAMPLING_Y,
