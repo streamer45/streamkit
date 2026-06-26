@@ -475,9 +475,7 @@ impl DynamicEngine {
         // backstops a dropped best-effort emission (see initialize_node).
         // Collapsing it avoids double-counting transitions and re-notifying
         // subscribers with a state they already have.
-        if Self::is_terminal(&update.state)
-            && self.node_states.get(&update.node_id).is_some_and(Self::is_terminal)
-        {
+        if Self::is_terminal(&update.state) && self.is_node_terminal(&update.node_id) {
             tracing::trace!(
                 node = %update.node_id,
                 state = ?update.state,
@@ -1912,6 +1910,18 @@ impl DynamicEngine {
                         to_pin,
                         from_exists,
                         to_exists
+                    );
+                    return true;
+                }
+
+                // A node that has gone terminal will never wire up the
+                // distributors/pins this edge needs, so reject rather than
+                // routing into a dead node (#290).
+                if self.is_node_terminal(&from_node) || self.is_node_terminal(&to_node) {
+                    tracing::warn!(
+                        from_node = %from_node,
+                        to_node = %to_node,
+                        "Dropping Connect: endpoint has reached a terminal state"
                     );
                     return true;
                 }

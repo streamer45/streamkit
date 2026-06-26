@@ -14,10 +14,6 @@
 //! `dynamic_actor_update_filters.rs`) for deterministic control over
 //! internal state without timing dependencies.
 
-// Reason: tests use `.expect(...)` to surface helpful panic messages on
-// assertion failures. No production code.
-#![allow(clippy::expect_used)]
-
 use super::super::*;
 use super::create_test_engine;
 use std::sync::Arc;
@@ -118,5 +114,25 @@ async fn tune_for_running_node_is_forwarded() {
     assert!(
         matches!(control_rx.try_recv(), Ok(NodeControlMessage::UpdateParams(_))),
         "TuneNode for a running node must reach its control channel"
+    );
+}
+
+#[tokio::test]
+async fn connect_to_terminal_node_is_dropped() {
+    let mut engine = create_test_engine();
+
+    // "a" is live/running; "b" has gone terminal but is not yet removed.
+    let _rx_a = add_live_node(&mut engine, "a", NodeState::Running);
+    let _rx_b = add_live_node(&mut engine, "b", NodeState::Failed { reason: "dead".into() });
+
+    defer_connection(&mut engine, "a", "b").await;
+
+    assert!(
+        engine.pending_connections.is_empty(),
+        "Connect targeting a terminal node must be dropped, not deferred"
+    );
+    assert!(
+        engine.node_inputs.is_empty(),
+        "Connect targeting a terminal node must not wire any input pin"
     );
 }
