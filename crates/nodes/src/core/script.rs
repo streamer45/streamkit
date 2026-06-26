@@ -51,7 +51,8 @@ pub struct ScriptConfig {
 
     /// Optional path to a JavaScript file to load as the script.
     ///
-    /// If set, the file contents are loaded at node creation time.
+    /// If set, the file contents are loaded at run time, resolved against the
+    /// pipeline's `asset_root` (matching how `core::file_reader` resolves paths).
     /// For security, the StreamKit server validates this path against `security.allowed_file_paths`.
     #[serde(default)]
     pub script_path: Option<String>,
@@ -265,7 +266,7 @@ impl ScriptNode {
         global_config: Option<GlobalScriptConfig>,
     ) -> Result<Self, StreamKitError> {
         // For dynamic nodes, allow None to create a default instance for pin inspection
-        let mut config: ScriptConfig = if params.is_none() {
+        let config: ScriptConfig = if params.is_none() {
             // Dummy config for pin inspection only (used by NodeRegistry::definitions())
             ScriptConfig {
                 script: "function process(p) { return p; }".to_string(),
@@ -290,39 +291,6 @@ impl ScriptNode {
                 return Err(StreamKitError::Configuration(
                     "Script cannot be empty (set 'script' or 'script_path')".to_string(),
                 ));
-            }
-
-            if has_path {
-                let path = config
-                    .script_path
-                    .as_ref()
-                    .ok_or_else(|| {
-                        StreamKitError::Configuration("script_path missing".to_string())
-                    })?
-                    .trim();
-
-                let bytes = std::fs::read(path).map_err(|e| {
-                    StreamKitError::Configuration(format!(
-                        "Failed to read script file '{path}': {e}",
-                    ))
-                })?;
-
-                if bytes.len() > Self::MAX_SCRIPT_BYTES {
-                    return Err(StreamKitError::Configuration(format!(
-                        "Script file '{}' is too large ({} bytes > {} bytes)",
-                        path,
-                        bytes.len(),
-                        Self::MAX_SCRIPT_BYTES
-                    )));
-                }
-
-                let loaded = String::from_utf8(bytes).map_err(|e| {
-                    StreamKitError::Configuration(format!(
-                        "Script file '{path}' is not valid UTF-8: {e}",
-                    ))
-                })?;
-
-                config.script = loaded;
             }
         }
 
@@ -349,6 +317,37 @@ impl ScriptNode {
         // Basic validation - we'll do full validation in run() when we create the runtime
         // For now, just check script is non-empty and headers reference valid secrets
         Ok(Self { config, global_config })
+    }
+
+    /// Loads a script file, resolving relative paths against `asset_root`.
+    ///
+    /// Resolution mirrors `apps/skit/src/file_security.rs::validate_file_path`, so the
+    /// path validated by the server matches the path actually read here.
+    fn load_script_from_path(
+        path: &str,
+        asset_root: &std::path::Path,
+    ) -> Result<String, StreamKitError> {
+        let path = path.trim();
+        let path_obj = std::path::Path::new(path);
+        let resolved =
+            if path_obj.is_absolute() { path_obj.to_path_buf() } else { asset_root.join(path_obj) };
+
+        let bytes = std::fs::read(&resolved).map_err(|e| {
+            StreamKitError::Configuration(format!("Failed to read script file '{path}': {e}"))
+        })?;
+
+        if bytes.len() > Self::MAX_SCRIPT_BYTES {
+            return Err(StreamKitError::Configuration(format!(
+                "Script file '{}' is too large ({} bytes > {} bytes)",
+                path,
+                bytes.len(),
+                Self::MAX_SCRIPT_BYTES
+            )));
+        }
+
+        String::from_utf8(bytes).map_err(|e| {
+            StreamKitError::Configuration(format!("Script file '{path}' is not valid UTF-8: {e}"))
+        })
     }
 
     /// Factory function for dynamic node registration
@@ -1426,9 +1425,14 @@ impl ProcessorNode for ScriptNode {
         }]
     }
 
-    async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
+    async fn run(mut self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
         let node_name = context.output_sender.node_name().to_string();
         state_helpers::emit_initializing(&context.state_tx, &node_name);
+
+        let script_path = self.config.script_path.clone().filter(|p| !p.trim().is_empty());
+        if let Some(path) = script_path {
+            self.config.script = Self::load_script_from_path(&path, &context.asset_root)?;
+        }
 
         let state_tx = context.state_tx.clone();
 
@@ -1554,6 +1558,38 @@ mod tests {
         let result = ScriptNode::new(Some(&config), None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Script cannot be empty"));
+    }
+
+    // Regression for #521: a relative `script_path` must resolve against the
+    // pipeline's `asset_root` (matching `validate_file_path` and `core::file_reader`),
+    // not the process CWD. Otherwise the server validates the script under
+    // `asset_root/<path>` while the node reads it from `CWD/<path>`.
+    #[test]
+    fn load_script_from_path_resolves_relative_against_asset_root() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let asset_root = dir.path();
+        std::fs::create_dir_all(asset_root.join("scripts")).unwrap();
+        std::fs::write(
+            asset_root.join("scripts/p.js"),
+            b"function process(packet) { return packet; }",
+        )
+        .unwrap();
+
+        let loaded = ScriptNode::load_script_from_path("scripts/p.js", asset_root).unwrap();
+        assert!(loaded.contains("function process"));
+
+        let other = tempfile::TempDir::new().unwrap();
+        assert!(ScriptNode::load_script_from_path("scripts/p.js", other.path()).is_err());
+    }
+
+    #[test]
+    fn load_script_from_path_rejects_oversized_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let big = vec![b'a'; ScriptNode::MAX_SCRIPT_BYTES + 1];
+        std::fs::write(dir.path().join("big.js"), &big).unwrap();
+
+        let err = ScriptNode::load_script_from_path("big.js", dir.path()).unwrap_err();
+        assert!(err.to_string().contains("too large"), "got: {err}");
     }
 
     #[test]
