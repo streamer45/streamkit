@@ -517,9 +517,14 @@ allowed_nodes = [
 allowed_plugins = ["plugin::*"]
 
 # Users can list bundled system assets and their uploaded assets
+# (mirrors the built-in Permissions::user(): audio, images and fonts).
 allowed_assets = [
     "samples/audio/system/*",
     "samples/audio/user/*",
+    "samples/images/system/*",
+    "samples/images/user/*",
+    "samples/fonts/system/*",
+    "samples/fonts/user/*",
 ]
 
 [permissions.roles.gateway]

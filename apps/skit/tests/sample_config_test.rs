@@ -69,6 +69,10 @@ fn samples_skit_toml_parses_and_matches_expected_defaults() {
     assert!(!user.is_node_allowed("transport::http::fetcher"));
     assert!(!user.is_node_allowed("core::file_writer"));
     assert!(!user.is_node_allowed("core::object_store_writer"));
+    // Asset policy also mirrors the built-in: audio, images and fonts.
+    assert!(user.is_asset_allowed("samples/audio/system/beep.wav"));
+    assert!(user.is_asset_allowed("samples/images/system/logo.png"));
+    assert!(user.is_asset_allowed("samples/fonts/system/inter.ttf"));
 
     // The gateway role is least-privilege but must actually be able to build the
     // servo -> encode -> mux -> serve pipeline. Crucially the plugin kind has to
