@@ -109,6 +109,35 @@ allowed_assets = ["*"]
 > [!NOTE]
 > Role permissions are deny-by-default. If you define a custom role in `skit.toml`, any permission you omit defaults to `false`.
 
+> [!NOTE]
+> The built-in `user` role allows the safe HTTP sink/IO nodes — `transport::http::mse` (live-cast playback), `streamkit::http_input` and `streamkit::http_output` (oneshot request body/response) — but **not** `transport::http::fetcher`, which can fetch arbitrary URLs (SSRF risk). A trusted gateway that only serves or receives over the caller's own request therefore does not need `admin`.
+
+## Example: Least-privilege gateway role
+
+Trusted intermediaries (e.g. the `web-capture` or `speech-gateway` examples) build a small set of fixed pipelines and should run with a scoped token instead of `admin`. This role can create/destroy sessions and use the HTTP-transport sink/IO nodes plus a specific plugin, but cannot load/delete plugins or touch other users' sessions:
+
+```toml
+[permissions.roles.gateway]
+create_sessions = true
+destroy_sessions = true
+modify_sessions = true
+tune_nodes = true
+list_sessions = true
+list_nodes = true
+access_all_sessions = false  # Only its own sessions
+load_plugins = false
+delete_plugins = false
+upload_assets = false
+delete_assets = false
+allowed_nodes = [
+  "transport::http::mse",   # serve live casts to the browser (MSE)
+  "streamkit::http_input",  # oneshot request body
+  "streamkit::http_output", # oneshot response
+  "core::*",
+]
+allowed_plugins = ["plugin::native::servo"] # only what the gateway needs
+```
+
 ## Permission reference
 
 | Permission | Description |

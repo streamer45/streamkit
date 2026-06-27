@@ -162,6 +162,13 @@ impl Permissions {
                 "containers::*".to_string(),
                 // Transport: allow MoQ, deny HTTP fetcher by default (SSRF risk)
                 "transport::moq::*".to_string(),
+                // Transport HTTP: allow the sink/IO nodes that serve or receive over the
+                // client's own request (no arbitrary-URL fetch), but keep
+                // `transport::http::fetcher` denied (SSRF risk). This lets least-privilege
+                // gateways serve live casts (mse) and run oneshots without admin.
+                "transport::http::mse".to_string(),
+                "streamkit::http_input".to_string(),
+                "streamkit::http_output".to_string(),
                 // Core: explicitly allow safe-ish nodes; deny core::file_writer by default (arbitrary write risk)
                 "core::passthrough".to_string(),
                 "core::file_reader".to_string(),
@@ -509,6 +516,17 @@ mod tests {
         assert!(user.is_node_allowed("plugin::native::whisper"));
         assert!(user.is_node_allowed("plugin::native::kokoro"));
         assert!(user.is_node_allowed("plugin::wasm::gain_filter_rust"));
+    }
+
+    #[test]
+    fn test_default_user_allows_http_sink_and_io_nodes() {
+        let user = Permissions::user();
+        // Sink/IO HTTP nodes are safe (serve/receive over the client's own request).
+        assert!(user.is_node_allowed("transport::http::mse"));
+        assert!(user.is_node_allowed("streamkit::http_input"));
+        assert!(user.is_node_allowed("streamkit::http_output"));
+        // The HTTP fetcher remains denied (arbitrary-URL fetch / SSRF risk).
+        assert!(!user.is_node_allowed("transport::http::fetcher"));
     }
 
     #[test]
