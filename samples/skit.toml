@@ -483,21 +483,32 @@ allowed_samples = [
     "user/*.yaml",
 ]
 
-# Users can use most nodes except potentially dangerous ones.
-# Note: transport::http::fetcher is intentionally excluded (it fetches arbitrary
-# URLs - SSRF risk). The safe HTTP sink/IO nodes are allowed instead.
+# Users can use most nodes except potentially dangerous ones. Mirrors the
+# built-in Permissions::user() default: transport::http::fetcher is excluded
+# (arbitrary-URL fetch - SSRF risk) and core::file_writer is excluded
+# (arbitrary-write risk), while the safe HTTP sink/IO nodes are allowed.
 allowed_nodes = [
     "audio::*",
+    "video::*",
+    "containers::*",
     "transport::moq::*",
     "transport::http::mse",   # serve live casts to the browser (MSE)
     "streamkit::http_input",  # oneshot request body
     "streamkit::http_output", # oneshot response
-    "core::*",
-    "containers::*",
+    "core::passthrough",
+    "core::file_reader",
+    "core::pacer",
+    "core::json_serialize",
+    "core::text_chunker",
+    "core::script",
+    "core::telemetry_tap",
+    "core::telemetry_out",
+    "core::sink",
+    "plugin::*",
 ]
 
-# Users cannot load plugins, so this list is empty
-allowed_plugins = []
+# Users cannot load/delete plugins, but may use plugins an admin has already loaded.
+allowed_plugins = ["plugin::*"]
 
 # Users can list bundled system assets and their uploaded assets
 allowed_assets = [

@@ -50,6 +50,7 @@ fn samples_skit_toml_parses_and_matches_expected_defaults() {
     assert!(config.permissions.roles.contains_key("admin"));
     assert!(config.permissions.roles.contains_key("demo"));
     assert!(config.permissions.roles.contains_key("user"));
+    assert!(config.permissions.roles.contains_key("gateway"));
     assert!(config.permissions.roles.contains_key("readonly"));
 
     let readonly = config.permissions.get_role("readonly");
@@ -57,6 +58,24 @@ fn samples_skit_toml_parses_and_matches_expected_defaults() {
     assert!(!readonly.modify_sessions);
     assert!(!readonly.upload_assets);
     assert!(!readonly.delete_assets);
+
+    // The user role allows the safe HTTP sink/IO nodes but not the SSRF-risk
+    // fetcher or the arbitrary-write file_writer (mirrors Permissions::user()).
+    let user = config.permissions.get_role("user");
+    assert!(user.is_node_allowed("transport::http::mse"));
+    assert!(user.is_node_allowed("streamkit::http_input"));
+    assert!(user.is_node_allowed("streamkit::http_output"));
+    assert!(!user.is_node_allowed("transport::http::fetcher"));
+    assert!(!user.is_node_allowed("core::file_writer"));
+
+    // The gateway role is least-privilege: HTTP sink/IO nodes and its plugin
+    // only, no fetcher, no plugin loading.
+    let gateway = config.permissions.get_role("gateway");
+    assert!(gateway.create_sessions);
+    assert!(!gateway.load_plugins);
+    assert!(gateway.is_node_allowed("transport::http::mse"));
+    assert!(!gateway.is_node_allowed("transport::http::fetcher"));
+    assert!(gateway.is_plugin_allowed("plugin::native::servo"));
 
     assert!(config.script.global_fetch_allowlist.is_empty());
 }
