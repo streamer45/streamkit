@@ -971,7 +971,7 @@ const fn default_allowed_write_paths() -> Vec<String> {
 pub struct SecurityConfig {
     /// Allowed file paths for file_reader nodes.
     /// Supports glob patterns (e.g., "samples/**", "/data/media/*").
-    /// Relative paths are resolved against the server's working directory.
+    /// Relative paths are resolved against `[server].asset_root`.
     /// Default: `["samples/**"]` - only allow reading from the samples directory.
     /// Set to `["**"]` to allow all paths (not recommended for production).
     #[serde(default = "default_allowed_file_paths")]

@@ -1764,6 +1764,12 @@ pub fn create_app_state(
             );
         });
     }
+    // Canonicalize so the allow-list patterns in `file_security` (which join this
+    // root then glob-match canonicalized paths) resolve in the same path-space for
+    // relative or symlinked asset roots.
+    let asset_root = asset_root.canonicalize().unwrap_or_else(|e| {
+        panic!("failed to canonicalize asset_root '{}': {e}", asset_root.display());
+    });
     tracing::info!(asset_root = %asset_root.display(), "Asset root resolved");
 
     Arc::new(AppState {

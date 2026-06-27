@@ -529,4 +529,35 @@ mod tests {
         let cfg = write_config(&[&glob_under(&asset_root)]);
         assert!(validate_write_path("out/new.yml", &cfg, &asset_root).is_ok());
     }
+
+    // Regression for #521 follow-up: allow-list patterns without a trailing `/**`
+    // are glob-matched (no prefix-canonicalize fallback), so they only match when
+    // `asset_root` is already absolute + canonical. The server canonicalizes it
+    // before threading it here; a relative root leaves the joined pattern relative
+    // and it can never match the absolute canonical path.
+    #[test]
+    fn validate_file_path_matches_bare_pattern_against_canonical_asset_root() {
+        let (_tmp, asset_root) = canonical_tempdir();
+        let file = asset_root.join("samples").join("a.yml");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, b"x").unwrap();
+
+        let cfg = read_config(&["samples/*.yml"]);
+        assert!(validate_file_path("samples/a.yml", &cfg, &asset_root).is_ok());
+    }
+
+    #[test]
+    fn check_path_allowed_needs_canonical_asset_root_for_bare_patterns() {
+        let (_tmp, asset_root) = canonical_tempdir();
+        let file = asset_root.join("samples").join("a.yml");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, b"x").unwrap();
+        let canonical = file.canonicalize().unwrap();
+        let patterns = ["samples/*.yml".to_string()];
+
+        assert!(check_path_allowed(&canonical, &asset_root, &patterns));
+
+        let relative_root = Path::new("some/relative/root");
+        assert!(!check_path_allowed(&canonical, relative_root, &patterns));
+    }
 }
