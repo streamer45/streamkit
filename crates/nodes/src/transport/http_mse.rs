@@ -27,6 +27,9 @@ pub struct HttpMseConfig {
     /// Defaults to `video/webm; codecs="vp9,opus"`.
     /// For best MSE compatibility, include the codecs parameter
     /// (e.g., `video/webm; codecs="vp9,opus"` or `video/webm; codecs="vp9"`).
+    /// For fragmented-MP4 input set this to the matching `video/mp4` type
+    /// (e.g., `video/mp4; codecs="avc1.640028,mp4a.40.2"`); the container
+    /// format itself is auto-detected from the stream.
     #[serde(default)]
     pub content_type: Option<String>,
 }
@@ -52,6 +55,105 @@ const WEBM_CLUSTER_ID: [u8; 4] = [0x1F, 0x43, 0xB6, 0x75];
 /// so the init segment can be truncated before any SimpleBlock data
 /// that the muxer may emit prior to opening the first Cluster.
 const WEBM_TRACKS_ID: [u8; 4] = [0x16, 0x54, 0xAE, 0x6B];
+
+/// EBML header magic (0x1A45DFA3) — first bytes of every WebM/Matroska stream.
+const EBML_HEADER_ID: [u8; 4] = [0x1A, 0x45, 0xDF, 0xA3];
+
+/// ISO-BMFF `ftyp` box type — the first box of an fMP4 init segment.
+const FMP4_FTYP: [u8; 4] = *b"ftyp";
+
+/// ISO-BMFF `moof` (Movie Fragment) box type — marks the start of each fMP4
+/// media segment, the fMP4 analogue of a WebM Cluster.
+const FMP4_MOOF: [u8; 4] = *b"moof";
+
+/// Generous cap on the fMP4 init segment (ftyp + moov) buffer.  A single
+/// audio+video `moov` is only a few KB; this bounds memory in the pathological
+/// case where a `moof` box never arrives.
+const MAX_FMP4_INIT_SEGMENT_SIZE: usize = 256 * 1024;
+
+/// Container format of the stream served to MSE clients.  Detected from the
+/// first bytes of the upstream muxer's output so the node can locate init
+/// segment / media segment boundaries the right way for each format.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum MseFormat {
+    /// VP8/VP9/AV1-in-WebM — media segments are EBML Clusters.
+    WebM,
+    /// H.264/AV1-in-fragmented-MP4 — media segments are `moof`+`mdat` boxes.
+    Fmp4,
+}
+
+/// Detect the container format from the leading bytes of the stream.
+///
+/// WebM starts with the EBML header magic; fMP4 starts with an `ftyp` box
+/// (`[size: u32][b"ftyp"]`).  Returns `None` when the format is not yet
+/// recognisable, in which case the caller defaults to WebM for backward
+/// compatibility.
+fn detect_mse_format(data: &[u8]) -> Option<MseFormat> {
+    if data.starts_with(&EBML_HEADER_ID) {
+        return Some(MseFormat::WebM);
+    }
+    if data.len() >= 8 && data[4..8] == FMP4_FTYP {
+        return Some(MseFormat::Fmp4);
+    }
+    None
+}
+
+/// Walk the top-level ISO-BMFF boxes in `data` and return the byte offset of
+/// the first `moof` (Movie Fragment) box.
+///
+/// A box is laid out as `[size: u32 BE][type: 4 bytes][body]`.  `size == 1`
+/// means a 64-bit `largesize` follows the type; `size == 0` means the box runs
+/// to EOF.  Because every non-`moof` box is skipped by its declared size, byte
+/// sequences inside an `mdat` payload are never mistaken for a box header —
+/// unlike the literal scan used for WebM Clusters.
+///
+/// Returns `None` when no `moof` is present in the fully-parseable prefix
+/// (e.g. the `moov` box is not yet completely buffered), signalling the caller
+/// to buffer more data and retry.
+fn fmp4_find_first_moof(data: &[u8]) -> Option<usize> {
+    let mut offset = 0usize;
+    loop {
+        if offset + 8 > data.len() {
+            return None;
+        }
+
+        let size32 = u32::from_be_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]);
+
+        if data[offset + 4..offset + 8] == FMP4_MOOF {
+            return Some(offset);
+        }
+
+        let (header_len, box_size) = match size32 {
+            1 => {
+                if offset + 16 > data.len() {
+                    return None;
+                }
+                let large = u64::from_be_bytes(data[offset + 8..offset + 16].try_into().ok()?);
+                (16u64, large)
+            },
+            // `size == 0` means "to end of file": no further top-level box can
+            // follow, so there is no `moof` beyond this point.
+            0 => return None,
+            n => (8u64, u64::from(n)),
+        };
+
+        if box_size < header_len {
+            return None; // Malformed: box smaller than its own header.
+        }
+
+        let next = (offset as u64).checked_add(box_size)?;
+        let next = usize::try_from(next).ok()?;
+        if next > data.len() {
+            return None; // Box body not fully buffered yet.
+        }
+        offset = next;
+    }
+}
 
 /// Hard cap on the rolling GOP buffer to prevent unbounded growth when
 /// keyframes are infrequent (e.g. 10 s interval at high bitrate).
@@ -169,18 +271,22 @@ impl ProcessorNode for HttpMseNode {
 
         let mut clients: Vec<mpsc::Sender<Bytes>> = Vec::new();
 
-        // Init segment: accumulates until the first WebM Cluster ID, then
-        // truncated to header only (EBML + Segment + Info + Tracks).
-        // Rolling GOP buffer: data since the most recent Cluster start;
+        // Init segment: accumulates until the first media-segment boundary
+        // (WebM Cluster / fMP4 `moof`), then truncated to the container header
+        // (WebM: EBML+Segment+Info+Tracks; fMP4: ftyp+moov).
+        // Rolling GOP buffer: data since the most recent segment boundary;
         // late-joining clients receive init + GOP buffer.
         let mut init_segment: Vec<u8> = Vec::new();
         let mut gop_buffer: Vec<u8> = Vec::new();
         let mut init_complete = false;
 
         // Overlap buffer: last 3 bytes of previous chunk, for detecting
-        // a 4-byte Cluster ID that straddles chunk boundaries.
+        // a 4-byte Cluster ID that straddles chunk boundaries (WebM only).
         let mut overlap: Vec<u8> = Vec::new();
         let mut overlap_bytes_in_init: usize = 0;
+
+        // Container format, detected from the first non-empty packet.
+        let mut format: Option<MseFormat> = None;
 
         let cancellation_token = context.cancellation_token.clone();
 
@@ -267,126 +373,194 @@ impl ProcessorNode for HttpMseNode {
                         continue;
                     }
 
-                    let mut cluster_start_in_data: Option<usize> = None;
-                    let mut cluster_prefix: Vec<u8> = Vec::new();
+                    let stream_format = *format.get_or_insert_with(|| {
+                        let detected = detect_mse_format(&data).unwrap_or(MseFormat::WebM);
+                        tracing::info!(
+                            format = ?detected,
+                            "HTTP MSE: container format detected from upstream muxer"
+                        );
+                        detected
+                    });
 
-                    if !init_complete {
-                        let cluster_found = if overlap.is_empty() {
-                            false
-                        } else {
-                            let mut combined = overlap.clone();
-                            combined.extend_from_slice(&data[..data.len().min(WEBM_CLUSTER_ID.len())]);
-                            find_cluster_id(&combined).is_some_and(|pos| {
-                                let overlap_len = overlap.len();
-                                if pos < overlap_len {
-                                    // Only truncate bytes that were actually appended to
-                                    // init_segment — the overlap may extend past what was
-                                    // buffered if the init_segment hit MAX_INIT_SEGMENT_SIZE.
-                                    let bytes_to_remove = (overlap_len - pos).min(overlap_bytes_in_init);
-                                    init_segment.truncate(init_segment.len() - bytes_to_remove);
-                                    cluster_prefix = overlap[pos..].to_vec();
-                                    cluster_start_in_data = Some(0);
-                                } else {
-                                    let extra = pos - overlap_len;
-                                    let remaining_capacity = MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
-                                    let to_append = extra.min(remaining_capacity);
-                                    init_segment.extend_from_slice(&data[..to_append]);
-                                    cluster_start_in_data = Some(extra);
-                                }
-                                true
-                            })
-                        };
+                    // Bytes to forward to clients / the rolling GOP buffer for
+                    // this packet (empty while the init segment is still being
+                    // assembled).
+                    let forward_data: Bytes;
 
-                        if cluster_found {
-                            init_complete = true;
-                        } else if let Some(cluster_offset) = find_cluster_id(&data) {
-                            if cluster_offset > 0 {
-                                let remaining_capacity = MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
-                                let to_append = cluster_offset.min(remaining_capacity);
-                                init_segment.extend_from_slice(&data[..to_append]);
-                            }
-                            init_complete = true;
-                            cluster_start_in_data = Some(cluster_offset);
-                        } else {
-                            let remaining_capacity = MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
-                            let appended = if remaining_capacity > 0 {
-                                let to_append = data.len().min(remaining_capacity);
-                                init_segment.extend_from_slice(&data[..to_append]);
-                                to_append
+                    match stream_format {
+                        MseFormat::Fmp4 => {
+                            if init_complete {
+                                forward_data = data.clone();
                             } else {
-                                0
-                            };
-                            let keep = data.len().min(WEBM_CLUSTER_ID.len() - 1);
-                            overlap.clear();
-                            overlap.extend_from_slice(&data[data.len() - keep..]);
-                            overlap_bytes_in_init = appended.saturating_sub(data.len() - keep);
-                        }
-
-                        if init_complete {
-                            // Truncate to WebM header (EBML + Segment + Info + Tracks).
-                            // Pre-Cluster SimpleBlock data is invalid for MSE.
-                            if let Some(tracks_end) = find_tracks_end(&init_segment) {
-                                if tracks_end < init_segment.len() {
-                                    tracing::debug!(
-                                        raw_size = init_segment.len(),
-                                        tracks_end,
-                                        stripped = init_segment.len() - tracks_end,
-                                        "Stripping pre-Cluster SimpleBlock data from init segment"
+                                init_segment.extend_from_slice(&data);
+                                if init_segment.len() > MAX_FMP4_INIT_SEGMENT_SIZE {
+                                    tracing::warn!(
+                                        size = init_segment.len(),
+                                        "HTTP MSE: fMP4 init segment exceeded {}B before a moof box; truncating (bounded-memory guard)",
+                                        MAX_FMP4_INIT_SEGMENT_SIZE
                                     );
-                                    init_segment.truncate(tracks_end);
+                                    init_segment.truncate(MAX_FMP4_INIT_SEGMENT_SIZE);
                                 }
-                            }
 
-                            let elapsed_ms = u64::try_from(node_start.elapsed().as_millis())
-                                .unwrap_or(u64::MAX);
-                            tracing::info!(
-                                init_segment_size = init_segment.len(),
-                                elapsed_ms,
-                                "WebM init segment captured"
-                            );
-                            overlap.clear();
+                                let Some(moof_off) = fmp4_find_first_moof(&init_segment) else {
+                                    continue;
+                                };
 
-                            if !clients.is_empty() && !init_segment.is_empty() {
-                                let init_bytes = Bytes::copy_from_slice(&init_segment);
-                                let mut i = 0;
-                                while i < clients.len() {
-                                    match clients[i].try_send(init_bytes.clone()) {
-                                        Ok(()) => { i += 1; }
-                                        Err(mpsc::error::TrySendError::Closed(_) | mpsc::error::TrySendError::Full(_)) => {
-                                            clients.swap_remove(i);
+                                // Everything before the first `moof` is the init
+                                // segment (ftyp + moov); the rest is media.
+                                forward_data = Bytes::copy_from_slice(&init_segment[moof_off..]);
+                                init_segment.truncate(moof_off);
+                                init_complete = true;
+
+                                let elapsed_ms = u64::try_from(node_start.elapsed().as_millis())
+                                    .unwrap_or(u64::MAX);
+                                tracing::info!(
+                                    init_segment_size = init_segment.len(),
+                                    elapsed_ms,
+                                    "fMP4 init segment (ftyp+moov) captured"
+                                );
+
+                                if !clients.is_empty() && !init_segment.is_empty() {
+                                    let init_bytes = Bytes::copy_from_slice(&init_segment);
+                                    let mut i = 0;
+                                    while i < clients.len() {
+                                        match clients[i].try_send(init_bytes.clone()) {
+                                            Ok(()) => { i += 1; }
+                                            Err(mpsc::error::TrySendError::Closed(_) | mpsc::error::TrySendError::Full(_)) => {
+                                                clients.swap_remove(i);
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
-                    }
+                        MseFormat::WebM => {
+                            let mut cluster_start_in_data: Option<usize> = None;
+                            let mut cluster_prefix: Vec<u8> = Vec::new();
 
-                    if !init_complete {
-                        continue;
-                    }
+                            if !init_complete {
+                                let cluster_found = if overlap.is_empty() {
+                                    false
+                                } else {
+                                    let mut combined = overlap.clone();
+                                    combined.extend_from_slice(&data[..data.len().min(WEBM_CLUSTER_ID.len())]);
+                                    find_cluster_id(&combined).is_some_and(|pos| {
+                                        let overlap_len = overlap.len();
+                                        if pos < overlap_len {
+                                            // Only truncate bytes that were actually appended to
+                                            // init_segment — the overlap may extend past what was
+                                            // buffered if the init_segment hit MAX_INIT_SEGMENT_SIZE.
+                                            let bytes_to_remove = (overlap_len - pos).min(overlap_bytes_in_init);
+                                            init_segment.truncate(init_segment.len() - bytes_to_remove);
+                                            cluster_prefix = overlap[pos..].to_vec();
+                                            cluster_start_in_data = Some(0);
+                                        } else {
+                                            let extra = pos - overlap_len;
+                                            let remaining_capacity = MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
+                                            let to_append = extra.min(remaining_capacity);
+                                            init_segment.extend_from_slice(&data[..to_append]);
+                                            cluster_start_in_data = Some(extra);
+                                        }
+                                        true
+                                    })
+                                };
 
-                    let forward_data = match cluster_start_in_data {
-                        Some(offset) if offset < data.len() => {
-                            if cluster_prefix.is_empty() {
-                                data.slice(offset..)
-                            } else {
-                                let mut combined = cluster_prefix;
-                                combined.extend_from_slice(&data[offset..]);
-                                Bytes::from(combined)
+                                if cluster_found {
+                                    init_complete = true;
+                                } else if let Some(cluster_offset) = find_cluster_id(&data) {
+                                    if cluster_offset > 0 {
+                                        let remaining_capacity = MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
+                                        let to_append = cluster_offset.min(remaining_capacity);
+                                        init_segment.extend_from_slice(&data[..to_append]);
+                                    }
+                                    init_complete = true;
+                                    cluster_start_in_data = Some(cluster_offset);
+                                } else {
+                                    let remaining_capacity = MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
+                                    let appended = if remaining_capacity > 0 {
+                                        let to_append = data.len().min(remaining_capacity);
+                                        init_segment.extend_from_slice(&data[..to_append]);
+                                        to_append
+                                    } else {
+                                        0
+                                    };
+                                    let keep = data.len().min(WEBM_CLUSTER_ID.len() - 1);
+                                    overlap.clear();
+                                    overlap.extend_from_slice(&data[data.len() - keep..]);
+                                    overlap_bytes_in_init = appended.saturating_sub(data.len() - keep);
+                                }
+
+                                if init_complete {
+                                    // Truncate to WebM header (EBML + Segment + Info + Tracks).
+                                    // Pre-Cluster SimpleBlock data is invalid for MSE.
+                                    if let Some(tracks_end) = find_tracks_end(&init_segment) {
+                                        if tracks_end < init_segment.len() {
+                                            tracing::debug!(
+                                                raw_size = init_segment.len(),
+                                                tracks_end,
+                                                stripped = init_segment.len() - tracks_end,
+                                                "Stripping pre-Cluster SimpleBlock data from init segment"
+                                            );
+                                            init_segment.truncate(tracks_end);
+                                        }
+                                    }
+
+                                    let elapsed_ms = u64::try_from(node_start.elapsed().as_millis())
+                                        .unwrap_or(u64::MAX);
+                                    tracing::info!(
+                                        init_segment_size = init_segment.len(),
+                                        elapsed_ms,
+                                        "WebM init segment captured"
+                                    );
+                                    overlap.clear();
+
+                                    if !clients.is_empty() && !init_segment.is_empty() {
+                                        let init_bytes = Bytes::copy_from_slice(&init_segment);
+                                        let mut i = 0;
+                                        while i < clients.len() {
+                                            match clients[i].try_send(init_bytes.clone()) {
+                                                Ok(()) => { i += 1; }
+                                                Err(mpsc::error::TrySendError::Closed(_) | mpsc::error::TrySendError::Full(_)) => {
+                                                    clients.swap_remove(i);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
+
+                            if !init_complete {
+                                continue;
+                            }
+
+                            forward_data = match cluster_start_in_data {
+                                Some(offset) if offset < data.len() => {
+                                    if cluster_prefix.is_empty() {
+                                        data.slice(offset..)
+                                    } else {
+                                        let mut combined = cluster_prefix;
+                                        combined.extend_from_slice(&data[offset..]);
+                                        Bytes::from(combined)
+                                    }
+                                }
+                                Some(_) => continue,
+                                None => data.clone(),
+                            };
                         }
-                        Some(_) => continue,
-                        None => data.clone(),
-                    };
+                    }
 
                     if !forward_data.is_empty() {
-                        if find_cluster_id(&forward_data).is_some() {
+                        let new_segment = match stream_format {
+                            MseFormat::Fmp4 => fmp4_find_first_moof(&forward_data).is_some(),
+                            MseFormat::WebM => find_cluster_id(&forward_data).is_some(),
+                        };
+                        if new_segment {
                             let elapsed_ms = u64::try_from(node_start.elapsed().as_millis())
                                 .unwrap_or(u64::MAX);
                             tracing::debug!(
                                 gop_size = gop_buffer.len(),
                                 elapsed_ms,
-                                "HTTP MSE: new Cluster (GOP reset)"
+                                "HTTP MSE: new media segment (GOP reset)"
                             );
                             gop_buffer.clear();
                         }
@@ -592,9 +766,10 @@ pub fn register_http_mse_nodes(registry: &mut streamkit_core::NodeRegistry) {
         HttpMseNode,
         HttpMseConfig,
         ["transport", "http", "mse"],
-        "Serves WebM streams to HTTP clients for MSE (Media Source Extensions) playback. \
-         Accepts binary data from an upstream WebM muxer and broadcasts to multiple \
-         concurrent HTTP clients with init segment replay for late-joiners.",
+        "Serves WebM or fragmented-MP4 (fMP4) streams to HTTP clients for MSE (Media \
+         Source Extensions) playback. Accepts binary data from an upstream WebM or MP4 \
+         muxer (container format auto-detected) and broadcasts to multiple concurrent \
+         HTTP clients with init segment replay for late-joiners.",
     );
 }
 
@@ -1103,5 +1278,165 @@ mod tests {
         }
         assert_eq!(truncated.len(), tracks_end);
         assert_eq!(truncated, header);
+    }
+
+    /// Build a top-level ISO-BMFF box: `[size: u32 BE][type][body]`.
+    fn mp4_box(box_type: [u8; 4], body: &[u8]) -> Vec<u8> {
+        let size = u32::try_from(8 + body.len()).expect("test box fits in u32");
+        let mut out = size.to_be_bytes().to_vec();
+        out.extend_from_slice(&box_type);
+        out.extend_from_slice(body);
+        out
+    }
+
+    #[test]
+    fn test_detect_mse_format() {
+        assert_eq!(detect_mse_format(&[0x1A, 0x45, 0xDF, 0xA3, 0x00]), Some(MseFormat::WebM));
+
+        let ftyp = mp4_box(*b"ftyp", b"isom");
+        assert_eq!(detect_mse_format(&ftyp), Some(MseFormat::Fmp4));
+
+        assert_eq!(detect_mse_format(b"random bytes here"), None);
+        assert_eq!(detect_mse_format(&[0x00, 0x01]), None);
+        assert_eq!(detect_mse_format(&[]), None);
+    }
+
+    #[test]
+    fn test_fmp4_find_first_moof_after_init() {
+        let ftyp = mp4_box(*b"ftyp", b"isom\x00\x00\x02\x00");
+        let moov = mp4_box(*b"moov", &[0xAB; 64]);
+        let fragment = mp4_box(*b"moof", &[0xCD; 16]);
+
+        let mut stream = ftyp.clone();
+        stream.extend_from_slice(&moov);
+        stream.extend_from_slice(&fragment);
+        stream.extend_from_slice(&mp4_box(*b"mdat", &[0xEE; 32]));
+
+        assert_eq!(fmp4_find_first_moof(&stream), Some(ftyp.len() + moov.len()));
+    }
+
+    #[test]
+    fn test_fmp4_find_first_moof_at_start() {
+        let fragment = mp4_box(*b"moof", &[0x00; 8]);
+        assert_eq!(fmp4_find_first_moof(&fragment), Some(0));
+    }
+
+    #[test]
+    fn test_fmp4_find_first_moof_none_without_moof() {
+        let mut stream = mp4_box(*b"ftyp", b"isom");
+        stream.extend_from_slice(&mp4_box(*b"moov", &[0x11; 20]));
+        assert_eq!(fmp4_find_first_moof(&stream), None);
+    }
+
+    #[test]
+    fn test_fmp4_find_first_moof_waits_for_incomplete_moov() {
+        // moov declares 64 body bytes but only 10 are buffered, so the parser
+        // cannot yet see whether a moof follows.
+        let ftyp = mp4_box(*b"ftyp", b"isom");
+        let mut moov_header = ((8 + 64u32).to_be_bytes()).to_vec();
+        moov_header.extend_from_slice(b"moov");
+        moov_header.extend_from_slice(&[0x22; 10]); // partial body
+
+        let mut stream = ftyp;
+        stream.extend_from_slice(&moov_header);
+        assert_eq!(fmp4_find_first_moof(&stream), None);
+    }
+
+    #[test]
+    fn test_fmp4_find_first_moof_ignores_moof_bytes_in_mdat() {
+        // The literal bytes b"moof" inside an mdat payload must not be mistaken
+        // for a box header — box-length walking skips the whole mdat body.
+        let ftyp = mp4_box(*b"ftyp", b"isom");
+        let moov = mp4_box(*b"moov", &[0x33; 16]);
+        let mut mdat_body = vec![0x00; 4];
+        mdat_body.extend_from_slice(b"moof"); // decoy inside payload
+        mdat_body.extend_from_slice(&[0x00; 8]);
+        let mdat = mp4_box(*b"mdat", &mdat_body);
+
+        let mut stream = ftyp;
+        stream.extend_from_slice(&moov);
+        stream.extend_from_slice(&mdat);
+
+        // No real moof box exists, despite the decoy bytes in mdat.
+        assert_eq!(fmp4_find_first_moof(&stream), None);
+    }
+
+    #[test]
+    fn test_fmp4_find_first_moof_skips_largesize_box() {
+        // A box using the 64-bit `largesize` form (size32 == 1) before moof.
+        let mut big = vec![0x00, 0x00, 0x00, 0x01]; // size32 = 1 → largesize follows
+        big.extend_from_slice(b"free");
+        let body_len = 24u64;
+        big.extend_from_slice(&(16 + body_len).to_be_bytes()); // largesize
+        big.extend_from_slice(&[0x44; 24]);
+
+        let fragment = mp4_box(*b"moof", &[0x00; 8]);
+        let mut stream = big.clone();
+        stream.extend_from_slice(&fragment);
+
+        assert_eq!(fmp4_find_first_moof(&stream), Some(big.len()));
+    }
+
+    /// Simulate the fMP4 init-segment branch of `HttpMseNode::run`: accumulate
+    /// chunks until the first `moof`, returning the init segment (ftyp+moov)
+    /// and the forwarded media bytes for the chunk that completed init.
+    fn simulate_fmp4_init_and_forward(chunks: &[&[u8]]) -> (Vec<u8>, Option<Vec<u8>>) {
+        let mut init_segment: Vec<u8> = Vec::new();
+        let mut init_complete = false;
+        let mut forward_data: Option<Vec<u8>> = None;
+
+        for data in chunks {
+            if data.is_empty() || init_complete {
+                continue;
+            }
+            init_segment.extend_from_slice(data);
+            if let Some(moof_off) = fmp4_find_first_moof(&init_segment) {
+                forward_data = Some(init_segment[moof_off..].to_vec());
+                init_segment.truncate(moof_off);
+                init_complete = true;
+            }
+        }
+
+        (init_segment, forward_data)
+    }
+
+    #[test]
+    fn test_fmp4_init_single_chunk() {
+        let ftyp = mp4_box(*b"ftyp", b"isom\x00\x00\x02\x00");
+        let moov = mp4_box(*b"moov", &[0xAB; 40]);
+        let fragment = mp4_box(*b"moof", &[0xCD; 12]);
+        let mdat = mp4_box(*b"mdat", &[0xEE; 24]);
+
+        let mut init = ftyp;
+        init.extend_from_slice(&moov);
+        let mut media = fragment;
+        media.extend_from_slice(&mdat);
+        let mut stream = init.clone();
+        stream.extend_from_slice(&media);
+
+        let (init_seg, fwd) = simulate_fmp4_init_and_forward(&[&stream]);
+        assert_eq!(init_seg, init, "init segment must be exactly ftyp+moov");
+        let fwd = fwd.expect("forward data should be present");
+        assert_eq!(fwd, media, "forwarded media must start at the moof box");
+        assert_eq!(fmp4_find_first_moof(&fwd), Some(0));
+    }
+
+    #[test]
+    fn test_fmp4_init_split_across_chunks() {
+        let ftyp = mp4_box(*b"ftyp", b"isom");
+        let moov = mp4_box(*b"moov", &[0x55; 48]);
+        let fragment = mp4_box(*b"moof", &[0x66; 16]);
+
+        let split = ftyp.len() + 12;
+        let mut init = ftyp;
+        init.extend_from_slice(&moov);
+
+        // Split the init segment mid-moov, with moof arriving in a later chunk.
+        let chunk1 = &init[..split];
+        let chunk2 = &init[split..];
+
+        let (init_seg, fwd) = simulate_fmp4_init_and_forward(&[chunk1, chunk2, &fragment]);
+        assert_eq!(init_seg, init);
+        assert_eq!(fwd.expect("forward present"), fragment);
     }
 }
