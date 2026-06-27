@@ -1703,6 +1703,7 @@ pub fn create_app_state(
         wasm_plugin_dir,
         native_plugin_dir,
         config.plugins.native_call_timeout_secs.map(std::time::Duration::from_secs),
+        config.plugins.wasm_call_timeout_secs.map(std::time::Duration::from_secs),
     )
     .expect("Failed to initialize unified plugin manager");
     let plugin_manager = Arc::new(tokio::sync::Mutex::new(plugin_manager));

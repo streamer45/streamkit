@@ -34,6 +34,14 @@ use crate::{
 const ERR_ALREADY_LOADED: &str = "already loaded";
 const ERR_ALREADY_REGISTERED: &str = "already registered";
 
+/// Resolves a configured WASM call timeout into the `Duration` expected by the
+/// plugin runtime. `None` (timeout disabled) maps to `Duration::MAX`, which the
+/// runtime treats as no deadline because it cannot be represented as an
+/// `Instant`.
+fn wasm_call_timeout_or_unbounded(timeout: Option<std::time::Duration>) -> std::time::Duration {
+    timeout.unwrap_or(std::time::Duration::MAX)
+}
+
 /// The type of plugin
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -144,6 +152,7 @@ pub struct UnifiedPluginManager {
     wasm_directory: PathBuf,
     native_directory: PathBuf,
     native_call_timeout: Option<std::time::Duration>,
+    wasm_call_timeout: Option<std::time::Duration>,
     engine: Arc<Engine>,
     #[allow(dead_code)] // Will be used when plugins are migrated to new resource system
     resource_manager: Arc<streamkit_core::ResourceManager>,
@@ -167,6 +176,7 @@ impl UnifiedPluginManager {
         wasm_directory: PathBuf,
         native_directory: PathBuf,
         native_call_timeout: Option<std::time::Duration>,
+        wasm_call_timeout: Option<std::time::Duration>,
     ) -> Result<Self> {
         if !wasm_directory.exists() {
             std::fs::create_dir_all(&wasm_directory).with_context(|| {
@@ -191,6 +201,7 @@ impl UnifiedPluginManager {
             wasm_directory,
             native_directory,
             native_call_timeout,
+            wasm_call_timeout,
             engine,
             resource_manager,
             plugins_loaded_gauge: meter
@@ -698,7 +709,7 @@ impl UnifiedPluginManager {
             return Err(anyhow!("Plugin file {} does not exist", path.to_string_lossy()));
         }
 
-        let plugin = self
+        let mut plugin = self
             .wasm_runtime
             .load_plugin(path)
             .map_err(|e| {
@@ -706,6 +717,7 @@ impl UnifiedPluginManager {
                 e
             })
             .with_context(|| format!("failed to compile WASM plugin {}", path.to_string_lossy()))?;
+        plugin.set_call_timeout(wasm_call_timeout_or_unbounded(self.wasm_call_timeout));
 
         let metadata = plugin.metadata().clone();
         let original_kind = metadata.kind.clone();
@@ -1272,8 +1284,34 @@ mod tests {
             }));
         let engine =
             Arc::new(streamkit_engine::Engine::with_resource_manager(resource_manager.clone()));
-        UnifiedPluginManager::new(engine, resource_manager, base, wasm, native, None)
+        UnifiedPluginManager::new(engine, resource_manager, base, wasm, native, None, None)
             .expect("manager builds from a fresh tmpdir")
+    }
+
+    fn make_manager_with_wasm_timeout(
+        tmp: &TempDir,
+        wasm_call_timeout: Option<std::time::Duration>,
+    ) -> UnifiedPluginManager {
+        let base = tmp.path().to_path_buf();
+        let wasm = base.join("wasm");
+        let native = base.join("native");
+        let resource_manager =
+            Arc::new(streamkit_core::ResourceManager::new(streamkit_core::ResourcePolicy {
+                keep_loaded: true,
+                max_memory_mb: None,
+            }));
+        let engine =
+            Arc::new(streamkit_engine::Engine::with_resource_manager(resource_manager.clone()));
+        UnifiedPluginManager::new(
+            engine,
+            resource_manager,
+            base,
+            wasm,
+            native,
+            None,
+            wasm_call_timeout,
+        )
+        .expect("manager builds from a fresh tmpdir")
     }
 
     /// Returns the cached `.so` path, panicking in CI when the fixture
@@ -1387,6 +1425,28 @@ mod tests {
         let mgr = make_manager(&tmp);
         assert!(mgr.list_plugins().is_empty());
         assert!(!mgr.is_plugin_loaded("plugin::native::panicking"));
+    }
+
+    #[test]
+    fn wasm_call_timeout_or_unbounded_maps_none_to_max() {
+        assert_eq!(wasm_call_timeout_or_unbounded(None), std::time::Duration::MAX);
+        let timeout = std::time::Duration::from_secs(7);
+        assert_eq!(wasm_call_timeout_or_unbounded(Some(timeout)), timeout);
+    }
+
+    #[test]
+    fn new_stores_configured_wasm_call_timeout() {
+        let tmp = TempDir::new().unwrap();
+        let timeout = std::time::Duration::from_secs(42);
+        let mgr = make_manager_with_wasm_timeout(&tmp, Some(timeout));
+        assert_eq!(mgr.wasm_call_timeout, Some(timeout));
+    }
+
+    #[test]
+    fn new_allows_disabling_wasm_call_timeout() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = make_manager_with_wasm_timeout(&tmp, None);
+        assert_eq!(mgr.wasm_call_timeout, None);
     }
 
     #[test]
