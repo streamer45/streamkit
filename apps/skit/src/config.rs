@@ -528,7 +528,9 @@ pub struct PluginConfig {
     /// Bounds a single guest invocation; a plugin that exceeds it is
     /// interrupted via wasmtime epoch interruption and the node fails.
     ///
-    /// Set to `null` to disable the per-call deadline entirely.
+    /// Set to `null` to disable the per-call deadline for node processing
+    /// calls. The load-time metadata-extraction call remains bounded by the
+    /// runtime's built-in default and is unaffected by this setting.
     ///
     /// Values below 1 are clamped to 1 to prevent instant timeouts.
     #[serde(
