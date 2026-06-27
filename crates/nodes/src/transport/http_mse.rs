@@ -98,6 +98,23 @@ fn detect_mse_format(data: &[u8]) -> Option<MseFormat> {
     None
 }
 
+/// Derive the container format from the configured `content_type` MIME string.
+///
+/// The `content_type` is what the gateway actually serves to clients, so it is
+/// the authoritative source of truth for how the stream must be parsed — byte
+/// sniffing is only a fallback when the MIME type is ambiguous. Returns `None`
+/// for unrecognised MIME types.
+fn format_from_content_type(content_type: &str) -> Option<MseFormat> {
+    let ct = content_type.to_ascii_lowercase();
+    if ct.contains("mp4") {
+        Some(MseFormat::Fmp4)
+    } else if ct.contains("webm") || ct.contains("matroska") {
+        Some(MseFormat::WebM)
+    } else {
+        None
+    }
+}
+
 /// Walk the top-level ISO-BMFF boxes in `data` and return the byte offset of
 /// the first `moof` (Movie Fragment) box.
 ///
@@ -158,6 +175,38 @@ fn fmp4_find_first_moof(data: &[u8]) -> Option<usize> {
 /// Hard cap on the rolling GOP buffer to prevent unbounded growth when
 /// keyframes are infrequent (e.g. 10 s interval at high bitrate).
 const MAX_GOP_BUFFER_SIZE: usize = 2 * 1024 * 1024; // 2 MB
+
+/// Send `chunk` to every connected client, dropping any whose channel is
+/// closed or full, and return the number that received it.
+///
+/// A full channel means the client can't keep up; since dropping bytes
+/// mid-stream corrupts the MSE container (the `SourceBuffer` throws an
+/// unrecoverable decode error), the slow client is disconnected rather than
+/// sent a partial stream.
+fn broadcast_to_clients(clients: &mut Vec<mpsc::Sender<Bytes>>, chunk: &Bytes) -> usize {
+    let mut delivered = 0usize;
+    let mut i = 0;
+    while i < clients.len() {
+        match clients[i].try_send(chunk.clone()) {
+            Ok(()) => {
+                delivered += 1;
+                i += 1;
+            },
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                clients.swap_remove(i);
+                tracing::debug!(client_count = clients.len(), "MSE client disconnected");
+            },
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                clients.swap_remove(i);
+                tracing::warn!(
+                    client_count = clients.len(),
+                    "MSE client too slow, disconnecting to avoid corrupt stream"
+                );
+            },
+        }
+    }
+    delivered
+}
 
 /// Buffers the WebM init segment and replays it to late-joining HTTP clients.
 pub struct HttpMseNode {
@@ -230,6 +279,10 @@ impl ProcessorNode for HttpMseNode {
         let content_type =
             self.config.content_type.clone().unwrap_or_else(|| DEFAULT_CONTENT_TYPE.to_string());
 
+        // The served content_type is the authoritative source of truth for how
+        // the stream must be parsed; byte sniffing is only a fallback.
+        let configured_format = format_from_content_type(&content_type);
+
         let path_suffix = if self.config.path.starts_with('/') {
             self.config.path.clone()
         } else {
@@ -285,8 +338,13 @@ impl ProcessorNode for HttpMseNode {
         let mut overlap: Vec<u8> = Vec::new();
         let mut overlap_bytes_in_init: usize = 0;
 
-        // Container format, detected from the first non-empty packet.
+        // Container format: the configured content_type when recognised,
+        // otherwise sniffed from the first non-empty packet.
         let mut format: Option<MseFormat> = None;
+
+        // Set once the fMP4 init buffer is frozen at its cap without a moof,
+        // so the bounded-memory warning is logged only a single time.
+        let mut fmp4_init_capped = false;
 
         let cancellation_token = context.cancellation_token.clone();
 
@@ -374,12 +432,23 @@ impl ProcessorNode for HttpMseNode {
                     }
 
                     let stream_format = *format.get_or_insert_with(|| {
-                        let detected = detect_mse_format(&data).unwrap_or(MseFormat::WebM);
+                        let sniffed = detect_mse_format(&data);
+                        if let (Some(cfg), Some(det)) = (configured_format, sniffed) {
+                            if cfg != det {
+                                tracing::warn!(
+                                    configured = ?cfg,
+                                    sniffed = ?det,
+                                    "HTTP MSE: configured content_type disagrees with the stream's bytes; trusting content_type"
+                                );
+                            }
+                        }
+                        let chosen = configured_format.or(sniffed).unwrap_or(MseFormat::WebM);
                         tracing::info!(
-                            format = ?detected,
-                            "HTTP MSE: container format detected from upstream muxer"
+                            format = ?chosen,
+                            from_content_type = configured_format.is_some(),
+                            "HTTP MSE: container format selected"
                         );
-                        detected
+                        chosen
                     });
 
                     // Bytes to forward to clients / the rolling GOP buffer for
@@ -392,20 +461,30 @@ impl ProcessorNode for HttpMseNode {
                             if init_complete {
                                 forward_data = data.clone();
                             } else {
-                                init_segment.extend_from_slice(&data);
-
+                                // Grow the buffer only while it's under the cap.
                                 // The first packet usually carries ftyp+moov AND
-                                // the first moof+mdat together, so the moof search
-                                // must run before the memory guard — truncating
-                                // first would corrupt the first media segment.
+                                // the first moof+mdat together, so the whole
+                                // packet must be appended and searched before any
+                                // size guard — truncating first would corrupt the
+                                // first media segment. Once the buffer reaches the
+                                // cap without a moof, freeze it (stop appending)
+                                // rather than truncate-then-append: truncating
+                                // leaves a gap that box-walking can never
+                                // re-align past, permanently mangling the stream.
+                                if init_segment.len() < MAX_FMP4_INIT_SEGMENT_SIZE {
+                                    init_segment.extend_from_slice(&data);
+                                }
+
                                 let Some(moof_off) = fmp4_find_first_moof(&init_segment) else {
-                                    if init_segment.len() > MAX_FMP4_INIT_SEGMENT_SIZE {
+                                    if init_segment.len() >= MAX_FMP4_INIT_SEGMENT_SIZE
+                                        && !fmp4_init_capped
+                                    {
+                                        fmp4_init_capped = true;
                                         tracing::warn!(
                                             size = init_segment.len(),
-                                            "HTTP MSE: fMP4 init segment exceeded {}B before a moof box; truncating (bounded-memory guard)",
+                                            "HTTP MSE: fMP4 init segment reached {}B before a moof box; freezing buffer (bounded-memory guard) — stream cannot start",
                                             MAX_FMP4_INIT_SEGMENT_SIZE
                                         );
-                                        init_segment.truncate(MAX_FMP4_INIT_SEGMENT_SIZE);
                                     }
                                     continue;
                                 };
@@ -426,15 +505,7 @@ impl ProcessorNode for HttpMseNode {
 
                                 if !clients.is_empty() && !init_segment.is_empty() {
                                     let init_bytes = Bytes::copy_from_slice(&init_segment);
-                                    let mut i = 0;
-                                    while i < clients.len() {
-                                        match clients[i].try_send(init_bytes.clone()) {
-                                            Ok(()) => { i += 1; }
-                                            Err(mpsc::error::TrySendError::Closed(_) | mpsc::error::TrySendError::Full(_)) => {
-                                                clients.swap_remove(i);
-                                            }
-                                        }
-                                    }
+                                    broadcast_to_clients(&mut clients, &init_bytes);
                                 }
                             }
                         }
@@ -520,15 +591,7 @@ impl ProcessorNode for HttpMseNode {
 
                                     if !clients.is_empty() && !init_segment.is_empty() {
                                         let init_bytes = Bytes::copy_from_slice(&init_segment);
-                                        let mut i = 0;
-                                        while i < clients.len() {
-                                            match clients[i].try_send(init_bytes.clone()) {
-                                                Ok(()) => { i += 1; }
-                                                Err(mpsc::error::TrySendError::Closed(_) | mpsc::error::TrySendError::Full(_)) => {
-                                                    clients.swap_remove(i);
-                                                }
-                                            }
-                                        }
+                                        broadcast_to_clients(&mut clients, &init_bytes);
                                     }
                                 }
                             }
@@ -580,36 +643,10 @@ impl ProcessorNode for HttpMseNode {
                     }
 
                     if !clients.is_empty() && !forward_data.is_empty() {
-                        let chunk = forward_data;
-                        let mut i = 0;
-                        while i < clients.len() {
-                            match clients[i].try_send(chunk.clone()) {
-                                Ok(()) => {
-                                    // This differs from single-output nodes but accurately reflects
-                                    // the total number of chunk deliveries across all clients.
-                                    stats_tracker.sent();
-                                    i += 1;
-                                }
-                                Err(mpsc::error::TrySendError::Closed(_)) => {
-                                    clients.swap_remove(i);
-                                    tracing::debug!(
-                                        client_count = clients.len(),
-                                        "MSE client disconnected"
-                                    );
-                                }
-                                Err(mpsc::error::TrySendError::Full(_)) => {
-                                    // Dropping chunks from a WebM stream corrupts the container
-                                    // format — MSE SourceBuffer will throw decode errors with
-                                    // no recovery path. Disconnect the slow client entirely
-                                    // rather than silently dropping data.
-                                    clients.swap_remove(i);
-                                    tracing::warn!(
-                                        client_count = clients.len(),
-                                        "MSE client too slow, disconnecting to avoid corrupt stream"
-                                    );
-                                }
-                            }
-                        }
+                        // Counts total chunk deliveries across all clients, which
+                        // differs from single-output nodes but reflects fan-out.
+                        let delivered = broadcast_to_clients(&mut clients, &forward_data);
+                        stats_tracker.sent_n(u64::try_from(delivered).unwrap_or(u64::MAX));
                     }
 
                     stats_tracker.maybe_send();
@@ -1306,6 +1343,22 @@ mod tests {
     }
 
     #[test]
+    fn test_format_from_content_type() {
+        assert_eq!(
+            format_from_content_type("video/mp4; codecs=\"avc1.42c01f\""),
+            Some(MseFormat::Fmp4)
+        );
+        assert_eq!(
+            format_from_content_type("video/webm; codecs=\"vp9,opus\""),
+            Some(MseFormat::WebM)
+        );
+        assert_eq!(format_from_content_type("VIDEO/MP4"), Some(MseFormat::Fmp4));
+        assert_eq!(format_from_content_type("video/x-matroska"), Some(MseFormat::WebM));
+        assert_eq!(format_from_content_type("application/octet-stream"), None);
+        assert_eq!(format_from_content_type(""), None);
+    }
+
+    #[test]
     fn test_fmp4_find_first_moof_after_init() {
         let ftyp = mp4_box(*b"ftyp", b"isom\x00\x00\x02\x00");
         let moov = mp4_box(*b"moov", &[0xAB; 64]);
@@ -1385,8 +1438,10 @@ mod tests {
     /// chunks until the first `moof`, returning the init segment (ftyp+moov)
     /// and the forwarded media bytes for the chunk that completed init.
     ///
-    /// Mirrors the real loop's ordering: the `moof` search runs before the
-    /// bounded-memory guard so an oversized first packet is never truncated.
+    /// Mirrors the real loop: the whole packet is appended and searched before
+    /// any size guard (so an oversized first packet is never truncated), and
+    /// once the buffer reaches the cap without a moof it is frozen rather than
+    /// truncated (truncate-then-append would corrupt the box chain).
     fn simulate_fmp4_init_and_forward(chunks: &[&[u8]]) -> (Vec<u8>, Option<Vec<u8>>) {
         let mut init_segment: Vec<u8> = Vec::new();
         let mut init_complete = false;
@@ -1396,11 +1451,10 @@ mod tests {
             if data.is_empty() || init_complete {
                 continue;
             }
-            init_segment.extend_from_slice(data);
+            if init_segment.len() < MAX_FMP4_INIT_SEGMENT_SIZE {
+                init_segment.extend_from_slice(data);
+            }
             let Some(moof_off) = fmp4_find_first_moof(&init_segment) else {
-                if init_segment.len() > MAX_FMP4_INIT_SEGMENT_SIZE {
-                    init_segment.truncate(MAX_FMP4_INIT_SEGMENT_SIZE);
-                }
                 continue;
             };
             forward_data = Some(init_segment[moof_off..].to_vec());
@@ -1475,6 +1529,40 @@ mod tests {
             fwd.expect("forward data should be present"),
             media,
             "the full first media segment must be forwarded uncorrupted"
+        );
+    }
+
+    #[test]
+    fn test_fmp4_init_moov_exceeds_cap_freezes_without_corruption() {
+        // Pathological: ftyp+moov ALONE exceeds the cap before any moof arrives,
+        // delivered across many chunks. The buffer must freeze at the cap (never
+        // truncate-then-append, which would leave a gap the box-walker can never
+        // re-align past) so init never completes — but memory stays bounded and
+        // nothing is forwarded.
+        let ftyp = mp4_box(*b"ftyp", b"isom");
+        let moov = mp4_box(*b"moov", &vec![0x55; MAX_FMP4_INIT_SEGMENT_SIZE]);
+        let fragment = mp4_box(*b"moof", &[0x88; 32]);
+        let mdat = mp4_box(*b"mdat", &[0x99; 64]);
+
+        let mut stream = ftyp;
+        stream.extend_from_slice(&moov);
+        stream.extend_from_slice(&fragment);
+        stream.extend_from_slice(&mdat);
+
+        let chunk_size = 64 * 1024;
+        let chunks: Vec<&[u8]> = stream.chunks(chunk_size).collect();
+        let (init_seg, fwd) = simulate_fmp4_init_and_forward(&chunks);
+
+        assert!(fwd.is_none(), "no media should be forwarded when init never completes");
+        assert!(
+            init_seg.len() <= MAX_FMP4_INIT_SEGMENT_SIZE + chunk_size,
+            "frozen init buffer must stay bounded (was {})",
+            init_seg.len()
+        );
+        assert_eq!(
+            init_seg,
+            stream[..init_seg.len()],
+            "buffer must be an uncorrupted prefix of the stream (no truncate-then-append gap)"
         );
     }
 }

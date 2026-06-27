@@ -29,12 +29,14 @@ use tokio::fs;
 use tokio::net::TcpListener;
 use tokio::time::{sleep, timeout, Duration, Instant};
 
-async fn start_test_server() -> Option<(SocketAddr, tokio::task::JoinHandle<()>)> {
-    let listener = match TcpListener::bind("127.0.0.1:0").await {
-        Ok(listener) => listener,
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return None,
-        Err(e) => panic!("Failed to bind test server listener: {e}"),
-    };
+async fn start_test_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    // Bind must succeed: a silent skip here would turn this regression guard
+    // green without exercising a single assertion. CI runs other server tests
+    // that bind 127.0.0.1, so a bind failure is a real problem, not an
+    // environment quirk to tolerate.
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Failed to bind test server listener on 127.0.0.1:0");
     let addr = listener.local_addr().unwrap();
 
     let server_handle = tokio::spawn(async move {
@@ -44,7 +46,7 @@ async fn start_test_server() -> Option<(SocketAddr, tokio::task::JoinHandle<()>)
 
     sleep(Duration::from_millis(100)).await;
 
-    Some((addr, server_handle))
+    (addr, server_handle)
 }
 
 /// Walk top-level ISO-BMFF boxes by declared size and collect their four-byte
@@ -97,10 +99,7 @@ fn iso_bmff_box_types(data: &[u8]) -> Vec<[u8; 4]> {
 async fn fmp4_mse_pipeline_serves_fragmented_mp4() {
     let _ = tracing_subscriber::fmt::try_init();
 
-    let Some((addr, _server_handle)) = start_test_server().await else {
-        eprintln!("Skipping fMP4 MSE validation: local TCP bind not permitted");
-        return;
-    };
+    let (addr, _server_handle) = start_test_server().await;
 
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
