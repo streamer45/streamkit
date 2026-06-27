@@ -471,6 +471,13 @@ delete_plugins = false
 list_nodes = true
 access_all_sessions = false
 
+# Sample management (mirrors the built-in Permissions::user()); without these
+# flags the allowed_samples list below would be unreachable.
+list_samples = true
+read_samples = true
+write_samples = true
+delete_samples = true
+
 # Users can access standard samples (mirrors the built-in Permissions::user()).
 allowed_samples = [
     "oneshot/*.yml",
@@ -482,20 +489,21 @@ allowed_samples = [
 ]
 
 # Users can use most nodes except potentially dangerous ones. Mirrors the
-# built-in Permissions::user() default: transport::http::fetcher is excluded
-# (arbitrary-URL fetch - SSRF risk) and core::file_writer is excluded
-# (arbitrary-write risk), while the safe HTTP sink/IO nodes are allowed.
+# built-in Permissions::user() default. Allowed: MoQ + the HTTP `mse` sink
+# (serves over the caller's own request). Denied by omission:
+# transport::http::fetcher (SSRF), core::file_writer / core::object_store_writer
+# (arbitrary/external write). The oneshot streamkit::http_input/http_output
+# markers are implicitly allowed on the oneshot path and need no entry here.
 allowed_nodes = [
     "audio::*",
     "video::*",
     "containers::*",
     "transport::moq::*",
-    "transport::http::mse",   # serve live casts to the browser (MSE)
-    "streamkit::http_input",  # oneshot request body
-    "streamkit::http_output", # oneshot response
+    "transport::http::mse",
     "core::passthrough",
     "core::file_reader",
     "core::pacer",
+    "core::param_bridge",
     "core::json_serialize",
     "core::text_chunker",
     "core::script",
@@ -532,14 +540,17 @@ delete_assets = false
 
 allowed_samples = []
 
-# Only the HTTP sink/IO nodes the gateway needs plus the safe core plumbing
-# nodes - no fetcher (SSRF risk) and no core::file_writer (arbitrary-write risk).
+# Exactly the node kinds the web-capture / live-cast pipeline needs, nothing more.
+# A plugin kind must be allowed here too: is_node_allowed() runs before the
+# allowed_plugins check, so a plugin missing from allowed_nodes is rejected first.
+# No fetcher (SSRF) and no file_writer (arbitrary write). The oneshot
+# streamkit::http_output marker is implicitly allowed and needs no entry.
 allowed_nodes = [
-    "transport::http::mse",   # serve live casts to the browser (MSE)
-    "streamkit::http_input",  # oneshot request body
-    "streamkit::http_output", # oneshot response
-    "core::passthrough",
-    "core::file_reader",
+    "plugin::native::servo",     # render the page (web-capture)
+    "video::pixel_convert",      # servo RGBA -> encoder input format
+    "video::vp9::encoder",       # encode to VP9
+    "containers::webm::muxer",   # mux into WebM for MSE / http_output
+    "transport::http::mse",      # serve the live cast to the browser (MSE)
     "core::pacer",
     "core::sink",
 ]

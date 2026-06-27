@@ -110,11 +110,14 @@ allowed_assets = ["*"]
 > Role permissions are deny-by-default. If you define a custom role in `skit.toml`, any permission you omit defaults to `false`.
 
 > [!NOTE]
-> The built-in `user` role allows the safe HTTP sink/IO nodes — `transport::http::mse` (live-cast playback), `streamkit::http_input` and `streamkit::http_output` (oneshot request body/response) — but **not** `transport::http::fetcher`, which can fetch arbitrary URLs (SSRF risk). A trusted gateway that only serves or receives over the caller's own request therefore does not need `admin`.
+> The built-in `user` role allows `transport::http::mse` (live-cast playback over the caller's own request) but **not** `transport::http::fetcher`, which can fetch arbitrary URLs (SSRF risk). The oneshot `streamkit::http_input` / `streamkit::http_output` markers are always permitted on the oneshot path regardless of `allowed_nodes`, so they need no allowlist entry. A trusted gateway that only serves or receives over the caller's own request therefore does not need `admin`.
 
 ## Example: Least-privilege gateway role
 
-Trusted intermediaries (e.g. the `web-capture` or `speech-gateway` examples) build a small set of fixed pipelines and should run with a scoped token instead of `admin`. This role can create/destroy sessions and use the HTTP-transport sink/IO nodes plus a specific plugin, but cannot load/delete plugins or touch other users' sessions:
+Trusted intermediaries (e.g. the `web-capture` or `speech-gateway` examples) build a small set of fixed pipelines and should run with a scoped token instead of `admin`. The role below grants exactly the node kinds the web-capture pipeline (`servo → encode → mux → serve`) needs and nothing more.
+
+> [!IMPORTANT]
+> A plugin must appear in **both** `allowed_nodes` and `allowed_plugins`. Enforcement calls `is_node_allowed(kind)` *before* the plugin check, so a plugin kind missing from `allowed_nodes` is rejected before `allowed_plugins` is ever consulted.
 
 ```toml
 [permissions.roles.gateway]
@@ -130,16 +133,17 @@ delete_plugins = false
 upload_assets = false
 delete_assets = false
 allowed_nodes = [
-  "transport::http::mse",   # serve live casts to the browser (MSE)
-  "streamkit::http_input",  # oneshot request body
-  "streamkit::http_output", # oneshot response
-  # Safe core plumbing only - no core::file_writer (arbitrary-write risk).
-  "core::passthrough",
-  "core::file_reader",
+  "plugin::native::servo",   # render the page (web-capture)
+  "video::pixel_convert",    # servo RGBA -> encoder input format
+  "video::vp9::encoder",     # encode to VP9
+  "containers::webm::muxer", # mux into WebM for MSE / http_output
+  "transport::http::mse",    # serve the live cast to the browser (MSE)
   "core::pacer",
   "core::sink",
+  # No core::file_writer (arbitrary-write risk) and no transport::http::fetcher (SSRF).
+  # The oneshot streamkit::http_output marker is implicitly allowed.
 ]
-allowed_plugins = ["plugin::native::servo"] # only what the gateway needs
+allowed_plugins = ["plugin::native::servo"] # must also be listed in allowed_nodes (see note above)
 ```
 
 ## Permission reference
