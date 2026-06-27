@@ -13,6 +13,8 @@ mod dynamic_actor_edges;
 #[cfg(feature = "dynamic")]
 mod dynamic_actor_handlers;
 #[cfg(feature = "dynamic")]
+mod dynamic_actor_pending_cleanup;
+#[cfg(feature = "dynamic")]
 mod dynamic_actor_runtime_schemas;
 #[cfg(feature = "dynamic")]
 mod dynamic_actor_update_filters;
