@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Dynamic pipeline: render a web page to a live WebM stream over HTTP MSE.
+# Placeholders are substituted by renderCastPipeline (see pipelines.go); the
+# encoder node is injected per selected profile (see encoders.go).
+# The stream is unbounded (no frame limit); the WebM muxer auto-detects VP9/AV1.
+name: web-cast
+description: Render a web page to a live WebM stream
+mode: dynamic
+attributes:
+  service: web-capture
+  mode: cast
+client:
+  watch:
+    mse_path: /video
+    video: true
+nodes:
+  web:
+    kind: plugin::native::servo
+    params:
+      url: {{URL}}
+      width: {{WIDTH}}
+      height: {{HEIGHT}}
+      fps: {{FPS}}
+  pixel_convert:
+    kind: video::pixel_convert
+    params:
+      output_format: nv12
+    needs: web
+{{ENCODER_BLOCK}}
+  muxer:
+    kind: containers::webm::muxer
+    params:
+      video_width: {{WIDTH}}
+      video_height: {{HEIGHT}}
+      streaming_mode: live
+    needs: encoder
+  http_mse:
+    kind: transport::http::mse
+    params:
+      path: /video
+      max_clients: {{MAX_CLIENTS}}
+      content_type: {{CONTENT_TYPE}}
+    needs: muxer

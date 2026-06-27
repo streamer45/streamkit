@@ -57,7 +57,7 @@ func TestCastEncoderProfiles(t *testing.T) {
 				t.Errorf("%s: missing %q", name, w)
 			}
 		}
-		if strings.Contains(out, "frame_count") {
+		if strings.Contains(out, "frame_count:") {
 			t.Errorf("%s: cast must not bound frame_count", name)
 		}
 	}

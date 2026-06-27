@@ -65,7 +65,7 @@ func TestRenderCastPipeline(t *testing.T) {
 			t.Errorf("cast pipeline missing %q", want)
 		}
 	}
-	if strings.Contains(out, "frame_count") {
+	if strings.Contains(out, "frame_count:") {
 		t.Error("cast pipeline must not bound frame_count (live is infinite)")
 	}
 }
