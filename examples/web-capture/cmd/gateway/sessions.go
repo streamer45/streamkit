@@ -19,7 +19,10 @@ import (
 	"time"
 )
 
-var errOverCapacity = errors.New("session capacity reached")
+var (
+	errOverCapacity = errors.New("session capacity reached")
+	errShuttingDown = errors.New("gateway shutting down")
+)
 
 // skitClient talks to the skit dynamic-session REST API.
 type skitClient struct {
@@ -113,6 +116,7 @@ type sessionManager struct {
 	mu          sync.Mutex
 	sessions    map[string]*liveSession // key (normalized URL) -> session
 	byID        map[string]*liveSession
+	closed      bool
 	skit        *skitClient
 	maxSessions int
 	maxViewers  int
@@ -148,8 +152,12 @@ func (m *sessionManager) updateGaugesLocked() {
 // acquire returns a ready session for key, creating one (and the skit pipeline)
 // if none exists. The caller must call release exactly once when its viewer
 // connection ends.
-func (m *sessionManager) acquire(ctx context.Context, key, yaml string) (*liveSession, error) {
+func (m *sessionManager) acquire(ctx context.Context, key string, renderYAML func() string) (*liveSession, error) {
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil, errShuttingDown
+	}
 	if s := m.sessions[key]; s != nil {
 		if s.viewers >= m.maxViewers {
 			m.mu.Unlock()
@@ -185,7 +193,7 @@ func (m *sessionManager) acquire(ctx context.Context, key, yaml string) (*liveSe
 	// deduped waiters (and createErr must not masquerade as context.Canceled).
 	cctx, cancel := context.WithTimeout(context.Background(), m.createTO)
 	defer cancel()
-	id, err := m.skit.createSession(cctx, yaml)
+	id, err := m.skit.createSession(cctx, renderYAML())
 
 	m.mu.Lock()
 	if err != nil {
@@ -275,12 +283,10 @@ func (m *sessionManager) runReaper(ctx context.Context, interval time.Duration) 
 // Servo pipelines.
 func (m *sessionManager) shutdownAll(ctx context.Context) {
 	m.mu.Lock()
+	m.closed = true // reject new acquires; in-flight creates self-report via ready
 	all := make([]*liveSession, 0, len(m.sessions))
 	for _, s := range m.sessions {
-		if s.id != "" {
-			s.reapReason = "shutdown"
-			all = append(all, s)
-		}
+		all = append(all, s)
 	}
 	m.sessions = make(map[string]*liveSession)
 	m.byID = make(map[string]*liveSession)
@@ -288,6 +294,16 @@ func (m *sessionManager) shutdownAll(ctx context.Context) {
 	m.mu.Unlock()
 
 	for _, s := range all {
-		m.destroy(ctx, s)
+		// Wait for an in-flight creation to resolve so we have an id to DELETE;
+		// tearing down only id-bearing sessions would leak the rest's pipelines.
+		select {
+		case <-s.ready:
+		case <-ctx.Done():
+			return
+		}
+		if s.id != "" && s.createErr == nil {
+			s.reapReason = "shutdown"
+			m.destroy(ctx, s)
+		}
 	}
 }

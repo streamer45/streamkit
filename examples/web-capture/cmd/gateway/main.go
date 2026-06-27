@@ -299,16 +299,20 @@ func (gw *gateway) serveCast(w http.ResponseWriter, r *http.Request, u *url.URL,
 		return
 	}
 
-	// Viewport is part of the render, so it keys the shared session: viewers of
-	// the same URL+viewport share one pipeline; a different viewport is its own.
+	// Resolution is part of the render, so it keys the shared session: viewers of
+	// the same URL+resolution share one pipeline; a different resolution is its
+	// own. The YAML renders lazily — only a session-creating acquire uses it.
 	key := fmt.Sprintf("%s|%dx%d", u.String(), opts.resW, opts.resH)
-	yaml := renderCastPipeline(u.String(), opts.resW, opts.resH, captureFPS, gw.maxViewers, gw.castBitrate, gw.castEnc)
-	s, err := gw.sessions.acquire(r.Context(), key, yaml)
+	s, err := gw.sessions.acquire(r.Context(), key, func() string {
+		return renderCastPipeline(u.String(), opts.resW, opts.resH, captureFPS, gw.maxViewers, gw.castBitrate, gw.castEnc)
+	})
 	if err != nil {
 		switch {
 		case errors.Is(err, errOverCapacity):
 			recordRejection("cast", reasonOverCapacity)
 			http.Error(w, "server at capacity, try again shortly", http.StatusServiceUnavailable)
+		case errors.Is(err, errShuttingDown):
+			http.Error(w, "server shutting down", http.StatusServiceUnavailable)
 		case errors.Is(err, context.Canceled):
 			// client gave up before the stream was ready
 		default:

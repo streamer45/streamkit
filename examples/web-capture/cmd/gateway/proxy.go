@@ -113,7 +113,7 @@ func (gw *gateway) proxyOneshot(w http.ResponseWriter, r *http.Request, pipeline
 		w.Header().Set("Content-Type", "video/mp4")
 	}
 	w.WriteHeader(resp.StatusCode)
-	streamCopy(w, resp.Body, "clip")
+	streamCopy(ctx, w, resp.Body, "clip")
 }
 
 // proxyMSE streams a live WebM session to the viewer. The http_mse path only
@@ -177,17 +177,20 @@ func (gw *gateway) proxyMSE(w http.ResponseWriter, r *http.Request, s *liveSessi
 		w.Header().Set("Content-Type", "video/webm")
 	}
 	w.WriteHeader(http.StatusOK)
-	streamCopy(w, resp.Body, "cast")
+	streamCopy(ctx, w, resp.Body, "cast")
 }
 
 // streamCopy forwards an upstream body to the client, flushing each chunk so
 // live/progressive playback starts without waiting for the whole response.
-func streamCopy(w http.ResponseWriter, src io.Reader, endpoint string) {
+func streamCopy(ctx context.Context, w http.ResponseWriter, src io.Reader, endpoint string) {
 	var dst io.Writer = w
 	if flusher, ok := w.(http.Flusher); ok {
 		dst = flushWriter{w: w, f: flusher}
 	}
-	if _, err := io.Copy(dst, src); err != nil && !errors.Is(err, context.Canceled) {
+	// A client disconnect (ctx canceled, which also closes the upstream body) is
+	// the normal way a live stream ends; only log a copy error that happened
+	// while the client was still connected.
+	if _, err := io.Copy(dst, src); err != nil && ctx.Err() == nil {
 		log.Printf("%s copy response error: %v", endpoint, err)
 	}
 }
@@ -225,9 +228,24 @@ func acceptsHTML(r *http.Request) bool {
 	return strings.Contains(r.Header.Get("Accept"), "text/html")
 }
 
+// hopByHop headers are connection-scoped and must not be forwarded by a proxy
+// (RFC 7230 §6.1); Content-Length is also dropped since Go sets it from the
+// streamed body.
+var hopByHop = map[string]bool{
+	"connection":          true,
+	"keep-alive":          true,
+	"proxy-authenticate":  true,
+	"proxy-authorization": true,
+	"te":                  true,
+	"trailer":             true,
+	"transfer-encoding":   true,
+	"upgrade":             true,
+	"content-length":      true,
+}
+
 func copyHeaders(dst, src http.Header) {
 	for k, vv := range src {
-		if strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Transfer-Encoding") {
+		if hopByHop[strings.ToLower(k)] {
 			continue
 		}
 		for _, v := range vv {

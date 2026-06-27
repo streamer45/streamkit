@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -86,11 +87,11 @@ func TestSessionManagerDedupeAndIdleReap(t *testing.T) {
 	m, clock := newTestManager(srv, 4, 30*time.Second, time.Hour)
 	ctx := context.Background()
 
-	s1, err := m.acquire(ctx, "https://a.example", "yaml")
+	s1, err := m.acquire(ctx, "https://a.example", testYAML)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s2, err := m.acquire(ctx, "https://a.example", "yaml")
+	s2, err := m.acquire(ctx, "https://a.example", testYAML)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,10 +133,10 @@ func TestSessionManagerOverCapacity(t *testing.T) {
 	m, _ := newTestManager(srv, 1, time.Hour, time.Hour)
 	ctx := context.Background()
 
-	if _, err := m.acquire(ctx, "https://a.example", "y"); err != nil {
+	if _, err := m.acquire(ctx, "https://a.example", testYAML); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.acquire(ctx, "https://b.example", "y"); !errors.Is(err, errOverCapacity) {
+	if _, err := m.acquire(ctx, "https://b.example", testYAML); !errors.Is(err, errOverCapacity) {
 		t.Fatalf("expected errOverCapacity, got %v", err)
 	}
 	if c, _ := ms.counts(); c != 1 {
@@ -151,7 +152,7 @@ func TestSessionManagerMaxLifetimeReapsActiveViewer(t *testing.T) {
 
 	// Acquire and keep the viewer (never release): the max-lifetime cap must
 	// still tear the session down.
-	if _, err := m.acquire(ctx, "https://a.example", "y"); err != nil {
+	if _, err := m.acquire(ctx, "https://a.example", testYAML); err != nil {
 		t.Fatal(err)
 	}
 	clock.advance(11 * time.Second)
@@ -167,14 +168,87 @@ func TestSessionManagerMaxViewers(t *testing.T) {
 	m := newSessionManager(&skitClient{client: srv.Client(), baseURL: srv.URL}, 4, 2, time.Hour, time.Hour)
 	ctx := context.Background()
 
-	if _, err := m.acquire(ctx, "https://a.example", "y"); err != nil { // creator (viewers=1)
+	if _, err := m.acquire(ctx, "https://a.example", testYAML); err != nil { // creator (viewers=1)
 		t.Fatal(err)
 	}
-	if _, err := m.acquire(ctx, "https://a.example", "y"); err != nil { // 2nd viewer (=2)
+	if _, err := m.acquire(ctx, "https://a.example", testYAML); err != nil { // 2nd viewer (=2)
 		t.Fatalf("2nd viewer: %v", err)
 	}
-	if _, err := m.acquire(ctx, "https://a.example", "y"); !errors.Is(err, errOverCapacity) {
+	if _, err := m.acquire(ctx, "https://a.example", testYAML); !errors.Is(err, errOverCapacity) {
 		t.Fatalf("3rd viewer: expected errOverCapacity, got %v", err)
+	}
+}
+
+func testYAML() string { return "pipeline: yaml" }
+
+func TestSessionManagerRejectsAfterShutdown(t *testing.T) {
+	_, srv := newMockSkit()
+	defer srv.Close()
+	m := newSessionManager(&skitClient{client: srv.Client(), baseURL: srv.URL}, 4, 10, time.Hour, time.Hour)
+	m.closed = true
+	if _, err := m.acquire(context.Background(), "https://a.example", testYAML); !errors.Is(err, errShuttingDown) {
+		t.Fatalf("expected errShuttingDown, got %v", err)
+	}
+}
+
+// A session whose creation is in flight when shutdownAll runs must still be torn
+// down once creation resolves — otherwise its backend pipeline leaks.
+func TestSessionManagerShutdownDuringCreate(t *testing.T) {
+	release := make(chan struct{})
+	var created, destroyed atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions":
+			<-release // block so the create is in flight when shutdownAll runs
+			created.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"session_id":"sess-inflight"}`)
+		case r.Method == http.MethodDelete:
+			destroyed.Add(1)
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	m := newSessionManager(&skitClient{client: srv.Client(), baseURL: srv.URL}, 4, 10, time.Hour, time.Hour)
+
+	acquireDone := make(chan struct{})
+	go func() {
+		_, _ = m.acquire(context.Background(), "https://a.example", testYAML)
+		close(acquireDone)
+	}()
+
+	// Wait until acquire has reserved the session and is blocked in createSession.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		m.mu.Lock()
+		n := len(m.sessions)
+		m.mu.Unlock()
+		if n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("acquire never reserved the session")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		m.shutdownAll(context.Background())
+		close(shutdownDone)
+	}()
+
+	close(release) // let creation finish
+	<-acquireDone
+	<-shutdownDone
+
+	if created.Load() != 1 {
+		t.Fatalf("created=%d want 1", created.Load())
+	}
+	if destroyed.Load() != 1 {
+		t.Fatalf("in-flight session not torn down on shutdown: destroyed=%d", destroyed.Load())
 	}
 }
 
@@ -184,10 +258,10 @@ func TestSessionManagerShutdownAll(t *testing.T) {
 	m, _ := newTestManager(srv, 4, time.Hour, time.Hour)
 	ctx := context.Background()
 
-	if _, err := m.acquire(ctx, "https://a.example", "y"); err != nil {
+	if _, err := m.acquire(ctx, "https://a.example", testYAML); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.acquire(ctx, "https://b.example", "y"); err != nil {
+	if _, err := m.acquire(ctx, "https://b.example", testYAML); err != nil {
 		t.Fatal(err)
 	}
 	m.shutdownAll(ctx)
