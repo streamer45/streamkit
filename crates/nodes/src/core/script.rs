@@ -51,9 +51,11 @@ pub struct ScriptConfig {
 
     /// Optional path to a JavaScript file to load as the script.
     ///
-    /// If set, the file contents are loaded at run time, resolved against the
-    /// pipeline's `asset_root` (matching how `core::file_reader` resolves paths).
-    /// For security, the StreamKit server validates this path against `security.allowed_file_paths`.
+    /// Relative to `[server].asset_root` (matching `core::file_reader`);
+    /// absolute paths and `..` components are rejected. The file is loaded once
+    /// when the node is constructed, so an oversized, binary, or missing file is
+    /// reported as a clean validation error rather than mid-run. The StreamKit
+    /// server also validates this path against `security.allowed_file_paths`.
     #[serde(default)]
     pub script_path: Option<String>,
 
@@ -264,9 +266,10 @@ impl ScriptNode {
     pub fn new(
         params: Option<&serde_json::Value>,
         global_config: Option<GlobalScriptConfig>,
+        asset_root: Option<&std::path::Path>,
     ) -> Result<Self, StreamKitError> {
         // For dynamic nodes, allow None to create a default instance for pin inspection
-        let config: ScriptConfig = if params.is_none() {
+        let mut config: ScriptConfig = if params.is_none() {
             // Dummy config for pin inspection only (used by NodeRegistry::definitions())
             ScriptConfig {
                 script: "function process(p) { return p; }".to_string(),
@@ -291,6 +294,21 @@ impl ScriptNode {
                 return Err(StreamKitError::Configuration(
                     "Script cannot be empty (set 'script' or 'script_path')".to_string(),
                 ));
+            }
+
+            // Resolve `script_path` once at construction so an oversized, binary,
+            // or missing file is rejected when the node is built (a clean
+            // validation error) rather than mid-run. The server validates the
+            // path against the allow-list before construction.
+            if let Some(path) = config.script_path.take().filter(|p| !p.trim().is_empty()) {
+                let asset_root = asset_root.ok_or_else(|| {
+                    StreamKitError::Configuration(
+                        "script_path requires an asset_root; this node must be constructed by the \
+                         StreamKit server"
+                            .to_string(),
+                    )
+                })?;
+                config.script = Self::load_script_from_path(path.trim(), asset_root)?;
             }
         }
 
@@ -321,16 +339,17 @@ impl ScriptNode {
 
     /// Loads a script file, resolving relative paths against `asset_root`.
     ///
-    /// Resolution mirrors `apps/skit/src/file_security.rs::validate_file_path`, so the
-    /// path validated by the server matches the path actually read here.
+    /// Uses the shared `path_helpers::resolve_existing_asset_path` resolver so
+    /// the path validated by the server's `file_security` matches the path
+    /// actually read here: relative to `asset_root`, absolute paths and `..`
+    /// rejected, and re-checked to stay within `asset_root` after symlink
+    /// resolution.
     fn load_script_from_path(
         path: &str,
         asset_root: &std::path::Path,
     ) -> Result<String, StreamKitError> {
-        let path = path.trim();
-        let path_obj = std::path::Path::new(path);
-        let resolved =
-            if path_obj.is_absolute() { path_obj.to_path_buf() } else { asset_root.join(path_obj) };
+        let resolved = streamkit_core::path_helpers::resolve_existing_asset_path(path, asset_root)
+            .map_err(StreamKitError::Configuration)?;
 
         let bytes = std::fs::read(&resolved).map_err(|e| {
             StreamKitError::Configuration(format!("Failed to read script file '{path}': {e}"))
@@ -350,10 +369,18 @@ impl ScriptNode {
         })
     }
 
-    /// Factory function for dynamic node registration
-    /// Accepts optional global script configuration from server config
-    pub fn factory(global_config: Option<GlobalScriptConfig>) -> streamkit_core::node::NodeFactory {
-        std::sync::Arc::new(move |params| Ok(Box::new(Self::new(params, global_config.clone())?)))
+    /// Factory function for dynamic node registration.
+    ///
+    /// Captures the server's global script configuration and `asset_root` so a
+    /// `script_path` is resolved (and the file loaded) at construction time,
+    /// matching the path-space the server validated against.
+    pub fn factory(
+        global_config: Option<GlobalScriptConfig>,
+        asset_root: Option<std::path::PathBuf>,
+    ) -> streamkit_core::node::NodeFactory {
+        std::sync::Arc::new(move |params| {
+            Ok(Box::new(Self::new(params, global_config.clone(), asset_root.as_deref())?))
+        })
     }
 
     /// Validates the script: checks syntax and verifies process() function exists
@@ -1425,14 +1452,9 @@ impl ProcessorNode for ScriptNode {
         }]
     }
 
-    async fn run(mut self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
+    async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
         let node_name = context.output_sender.node_name().to_string();
         state_helpers::emit_initializing(&context.state_tx, &node_name);
-
-        let script_path = self.config.script_path.clone().filter(|p| !p.trim().is_empty());
-        if let Some(path) = script_path {
-            self.config.script = Self::load_script_from_path(&path, &context.asset_root)?;
-        }
 
         let state_tx = context.state_tx.clone();
 
@@ -1555,7 +1577,7 @@ mod tests {
             serde_json::to_value(ScriptConfig { script: "".to_string(), ..Default::default() })
                 .unwrap();
 
-        let result = ScriptNode::new(Some(&config), None);
+        let result = ScriptNode::new(Some(&config), None, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Script cannot be empty"));
     }
@@ -1593,6 +1615,42 @@ mod tests {
     }
 
     #[test]
+    fn load_script_from_path_rejects_non_utf8_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("bin.js"), [0xff, 0xfe, 0x00]).unwrap();
+
+        let err = ScriptNode::load_script_from_path("bin.js", dir.path()).unwrap_err();
+        assert!(err.to_string().contains("not valid UTF-8"), "got: {err}");
+    }
+
+    #[test]
+    fn load_script_from_path_rejects_absolute_and_traversal_paths() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("p.js"), b"x").unwrap();
+
+        assert!(ScriptNode::load_script_from_path("/etc/passwd", dir.path()).is_err());
+        assert!(ScriptNode::load_script_from_path("../p.js", dir.path()).is_err());
+    }
+
+    // Regression for #1/#6: an oversized or non-existent `script_path` must fail
+    // at construction (`new`) — a clean validation error — rather than mid-run.
+    #[test]
+    fn new_rejects_oversized_script_path_at_construction() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let big = vec![b'a'; ScriptNode::MAX_SCRIPT_BYTES + 1];
+        std::fs::write(dir.path().join("big.js"), &big).unwrap();
+
+        let config = serde_json::to_value(ScriptConfig {
+            script_path: Some("big.js".to_string()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let err = ScriptNode::new(Some(&config), None, Some(dir.path())).unwrap_err();
+        assert!(err.to_string().contains("too large"), "got: {err}");
+    }
+
+    #[test]
     fn test_whitespace_only_script_rejected() {
         let config = serde_json::to_value(ScriptConfig {
             script: "   \n\t  ".to_string(),
@@ -1600,7 +1658,7 @@ mod tests {
         })
         .unwrap();
 
-        let result = ScriptNode::new(Some(&config), None);
+        let result = ScriptNode::new(Some(&config), None, None);
         assert!(result.is_err());
     }
 
@@ -2157,6 +2215,7 @@ mod tests {
         let node = ScriptNode::new(
             Some(&serde_saphyr::from_str(&format!("script: |{script}")).unwrap()),
             None,
+            None,
         )
         .unwrap();
 
@@ -2217,7 +2276,7 @@ mod tests {
         )
         .unwrap();
 
-        let node = ScriptNode::new(Some(&config), None).unwrap();
+        let node = ScriptNode::new(Some(&config), None, None).unwrap();
         let node_handle = tokio::spawn(async move { Box::new(node).run(context).await });
 
         // Verify state transitions
@@ -2269,7 +2328,7 @@ mod tests {
         )
         .unwrap();
 
-        let node = ScriptNode::new(Some(&config), None).unwrap();
+        let node = ScriptNode::new(Some(&config), None, None).unwrap();
         let node_handle = tokio::spawn(async move { Box::new(node).run(context).await });
 
         assert_state_initializing(&mut state_rx).await;
@@ -2317,7 +2376,7 @@ mod tests {
         )
         .unwrap();
 
-        let node = ScriptNode::new(Some(&config), None).unwrap();
+        let node = ScriptNode::new(Some(&config), None, None).unwrap();
         let node_handle = tokio::spawn(async move { Box::new(node).run(context).await });
 
         assert_state_initializing(&mut state_rx).await;
@@ -2365,7 +2424,7 @@ mod tests {
         )
         .unwrap();
 
-        let node = ScriptNode::new(Some(&config), None).unwrap();
+        let node = ScriptNode::new(Some(&config), None, None).unwrap();
         let node_handle = tokio::spawn(async move { Box::new(node).run(context).await });
 
         assert_state_initializing(&mut state_rx).await;
@@ -2440,7 +2499,7 @@ mod tests {
         )
         .unwrap();
 
-        let node = ScriptNode::new(Some(&config), None).unwrap();
+        let node = ScriptNode::new(Some(&config), None, None).unwrap();
         let node_handle = tokio::spawn(async move { Box::new(node).run(context).await });
 
         assert_state_initializing(&mut state_rx).await;
@@ -2511,7 +2570,7 @@ mod tests {
         )
         .unwrap();
 
-        let node = ScriptNode::new(Some(&config), None).unwrap();
+        let node = ScriptNode::new(Some(&config), None, None).unwrap();
         let node_handle = tokio::spawn(async move { Box::new(node).run(context).await });
 
         assert_state_initializing(&mut state_rx).await;
@@ -2561,7 +2620,7 @@ mod tests {
         )
         .unwrap();
 
-        let node = ScriptNode::new(Some(&config), None).unwrap();
+        let node = ScriptNode::new(Some(&config), None, None).unwrap();
         let node_handle = tokio::spawn(async move { Box::new(node).run(context).await });
 
         assert_state_initializing(&mut state_rx).await;
@@ -2673,7 +2732,7 @@ mod tests {
         )
         .unwrap();
 
-        let node = ScriptNode::new(Some(&config), None).unwrap();
+        let node = ScriptNode::new(Some(&config), None, None).unwrap();
         let node_handle = tokio::spawn(async move { Box::new(node).run(context).await });
 
         assert_state_initializing(&mut state_rx).await;

@@ -26,7 +26,7 @@ Execute custom JavaScript code for API integration, webhooks, text transformatio
 | `headers` | `array<object>` | no | `[]` | Header mappings for fetch() calls<br />Maps secret names to HTTP headers with optional templates |
 | `memory_limit_mb` | `integer (uint)` | no | `64` | QuickJS memory limit in MB (default: 64MB)<br />min: `0` |
 | `script` | `string` | no | — | JavaScript code (must define a process(packet) function) |
-| `script_path` | `null | string` | no | `null` | Optional path to a JavaScript file to load as the script.<br /><br />If set, the file contents are loaded at node creation time.<br />For security, the StreamKit server validates this path against `security.allowed_file_paths`. |
+| `script_path` | `null | string` | no | `null` | Optional path to a JavaScript file to load as the script.<br /><br />Relative to `[server].asset_root` (matching `core::file_reader`);<br />absolute paths and `..` components are rejected. The file is loaded once<br />when the node is constructed, so an oversized, binary, or missing file is<br />reported as a clean validation error rather than mid-run. The StreamKit<br />server also validates this path against `security.allowed_file_paths`. |
 | `timeout_ms` | `integer (uint64)` | no | `100` | Per-packet timeout in milliseconds (default: 100ms)<br />min: `0` |
 
 ### `headers` fields
@@ -94,7 +94,7 @@ Execute custom JavaScript code for API integration, webhooks, text transformatio
     },
     "script_path": {
       "default": null,
-      "description": "Optional path to a JavaScript file to load as the script.\n\nIf set, the file contents are loaded at node creation time.\nFor security, the StreamKit server validates this path against `security.allowed_file_paths`.",
+      "description": "Optional path to a JavaScript file to load as the script.\n\nRelative to `[server].asset_root` (matching `core::file_reader`);\nabsolute paths and `..` components are rejected. The file is loaded once\nwhen the node is constructed, so an oversized, binary, or missing file is\nreported as a clean validation error rather than mid-run. The StreamKit\nserver also validates this path against `security.allowed_file_paths`.",
       "type": [
         "string",
         "null"

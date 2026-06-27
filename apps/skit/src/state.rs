@@ -127,6 +127,14 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// The file-security policy (allow-lists + `asset_root`) for this server,
+    /// borrowed as one value so callers can't thread the config without its
+    /// matching `asset_root`.
+    #[must_use]
+    pub fn file_security_policy(&self) -> crate::file_security::FileSecurityPolicy<'_> {
+        crate::file_security::FileSecurityPolicy::new(&self.config.security, &self.asset_root)
+    }
+
     /// Resolve a pipeline's declared `attributes` against the operator policy.
     ///
     /// The single owner of the `pipeline attributes + server.metrics policy`

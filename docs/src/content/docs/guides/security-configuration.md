@@ -30,7 +30,11 @@ allowed_file_paths = [
 ]
 ```
 
-Paths use glob patterns. Files outside these patterns cannot be read.
+Paths use glob patterns. Files outside these patterns cannot be read. Relative
+patterns (and the node `path`/`script_path` fields they guard) are resolved
+against `[server].asset_root` — the same path-space the file nodes read from —
+so validation and runtime always agree. Node paths must be relative to
+`asset_root`; absolute paths and `..` components are rejected.
 
 ### File writes (core::file_writer)
 

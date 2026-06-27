@@ -72,7 +72,7 @@ pub mod config_helpers {
 }
 
 pub mod path_helpers {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     /// Returns `true` if `path` contains traversal or absolute components
     /// (`..`, `/`, or a Windows drive prefix) that would escape `asset_root`
@@ -86,6 +86,83 @@ pub mod path_helpers {
                     | std::path::Component::Prefix(_)
             )
         })
+    }
+
+    /// Resolves a node asset path against `asset_root` without touching the
+    /// filesystem.
+    ///
+    /// Asset paths are always relative to `asset_root`: absolute paths and `..`
+    /// components are rejected. This is the single source of truth shared by the
+    /// `core::file_reader`/`file_writer`/`script` nodes and the server's
+    /// `file_security` validation, so the path that is validated is exactly the
+    /// path that is read.
+    ///
+    /// # Errors
+    /// Returns an error string if `path` is absolute or contains `..`.
+    pub fn resolve_asset_path(path: &str, asset_root: &Path) -> Result<PathBuf, String> {
+        let path_obj = Path::new(path);
+        if has_path_traversal(path_obj) {
+            return Err(format!(
+                "path must be relative to asset_root and must not contain '..': '{path}'"
+            ));
+        }
+        Ok(asset_root.join(path_obj))
+    }
+
+    /// Resolves an existing asset path and canonicalizes it, ensuring the result
+    /// stays within `asset_root` after symlink resolution.
+    ///
+    /// `asset_root` must already be canonical (the server canonicalizes it at
+    /// startup). Canonicalizing at read time and re-checking containment closes
+    /// the validate→read symlink-swap window for relative paths.
+    ///
+    /// # Errors
+    /// Returns an error string if `path` is absolute / contains `..`, cannot be
+    /// canonicalized, or resolves (via symlinks) outside `asset_root`.
+    pub fn resolve_existing_asset_path(path: &str, asset_root: &Path) -> Result<PathBuf, String> {
+        let joined = resolve_asset_path(path, asset_root)?;
+        let canonical = joined.canonicalize().map_err(|e| {
+            format!("cannot resolve path '{path}' (file may not exist or is not accessible): {e}")
+        })?;
+        if !canonical.starts_with(asset_root) {
+            return Err(format!(
+                "path '{path}' resolves to '{}' which is outside asset_root '{}'",
+                canonical.display(),
+                asset_root.display()
+            ));
+        }
+        Ok(canonical)
+    }
+
+    /// Resolves an asset path whose target may not exist yet (file writes),
+    /// canonicalizing the parent directory and ensuring it stays within
+    /// `asset_root` after symlink resolution.
+    ///
+    /// `asset_root` must already be canonical.
+    ///
+    /// # Errors
+    /// Returns an error string if `path` is absolute / contains `..`, lacks a
+    /// file name, or whose parent cannot be canonicalized or resolves outside
+    /// `asset_root`.
+    pub fn resolve_new_asset_path(path: &str, asset_root: &Path) -> Result<PathBuf, String> {
+        let joined = resolve_asset_path(path, asset_root)?;
+        let file_name = Path::new(path)
+            .file_name()
+            .ok_or_else(|| format!("write path must include a file name: '{path}'"))?
+            .to_owned();
+        let parent = joined
+            .parent()
+            .ok_or_else(|| format!("write path must have a parent directory: '{path}'"))?;
+        let canonical_parent = parent
+            .canonicalize()
+            .map_err(|e| format!("cannot resolve parent directory for write path '{path}': {e}"))?;
+        if !canonical_parent.starts_with(asset_root) {
+            return Err(format!(
+                "write path '{path}' resolves outside asset_root '{}'",
+                asset_root.display()
+            ));
+        }
+        Ok(canonical_parent.join(file_name))
     }
 }
 
