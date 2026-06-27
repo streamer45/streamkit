@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -96,11 +97,11 @@ func main() {
 		log.Fatalf("invalid --cast-encoder: %v", err)
 	}
 
-	ctrlClient := newHTTPClient()
+	ctrlClient := newHTTPClient(false)
 	skit := &skitClient{client: ctrlClient, baseURL: cfg.skitURL, token: cfg.authToken}
 	gw := &gateway{
 		client:          ctrlClient,
-		streamClient:    newStreamClient(),
+		streamClient:    newHTTPClient(true),
 		skitURL:         cfg.skitURL,
 		authToken:       cfg.authToken,
 		clipSem:         make(chan struct{}, cfg.maxConcurrency),
@@ -115,7 +116,7 @@ func main() {
 		maxViewers:      cfg.maxViewers,
 		mseReadyTimeout: 8 * time.Second,
 		skit:            skit,
-		sessions:        newSessionManager(skit, cfg.maxSessions, cfg.idleTTL, cfg.maxLifetime),
+		sessions:        newSessionManager(skit, cfg.maxSessions, cfg.maxViewers, cfg.idleTTL, cfg.maxLifetime),
 	}
 	log.Printf("encoders: clip=%s cast=%s", cfg.clipEncoder, cfg.castEncoder)
 
@@ -280,14 +281,13 @@ func (gw *gateway) serveClip(w http.ResponseWriter, r *http.Request, u *url.URL,
 	if dur <= 0 {
 		dur = gw.clipDefaultDur
 	}
-	release := gw.acquireClip()
+	release, ok := gw.acquireClip(r.Context())
+	if !ok {
+		return // client disconnected while queued for a slot
+	}
 	defer release()
 
-	frames := int(dur.Seconds()) * captureFPS
-	if frames < 1 {
-		frames = captureFPS
-	}
-	yaml := renderClipPipeline(u.String(), opts.resW, opts.resH, captureFPS, frames, gw.clipBitrate, gw.clipEnc)
+	yaml := renderClipPipeline(u.String(), opts.resW, opts.resH, captureFPS, clipFrames(dur), gw.clipBitrate, gw.clipEnc)
 	gw.proxyOneshot(w, r, yaml)
 }
 
@@ -321,7 +321,20 @@ func (gw *gateway) serveCast(w http.ResponseWriter, r *http.Request, u *url.URL,
 	gw.proxyMSE(w, r, s)
 }
 
-func (gw *gateway) acquireClip() func() {
-	gw.clipSem <- struct{}{}
-	return func() { <-gw.clipSem }
+// clipFrames rounds a duration to a whole number of frames (parseDuration
+// accepts sub-second values, so truncation would skew the clip length).
+func clipFrames(dur time.Duration) int {
+	frames := int(math.Round(dur.Seconds() * float64(captureFPS)))
+	return max(frames, 1)
+}
+
+// acquireClip takes a concurrency slot but bails if the client disconnects
+// while queued — otherwise abandoned requests pile up on a full channel.
+func (gw *gateway) acquireClip(ctx context.Context) (release func(), ok bool) {
+	select {
+	case gw.clipSem <- struct{}{}:
+		return func() { <-gw.clipSem }, true
+	case <-ctx.Done():
+		return func() {}, false
+	}
 }

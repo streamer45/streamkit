@@ -227,21 +227,55 @@ func validateTarget(ctx context.Context, raw string) (*url.URL, error) {
 }
 
 func isBlockedIP(ip net.IP) bool {
-	return ip.IsLoopback() ||
+	if ip.IsLoopback() ||
 		ip.IsPrivate() ||
 		ip.IsUnspecified() ||
 		ip.IsLinkLocalUnicast() ||
 		ip.IsLinkLocalMulticast() ||
 		ip.IsInterfaceLocalMulticast() ||
-		ip.IsMulticast() ||
-		isCGNAT(ip)
-}
-
-// isCGNAT reports whether ip is in the carrier-grade NAT range 100.64.0.0/10,
-// which net.IP.IsPrivate does not cover.
-func isCGNAT(ip net.IP) bool {
+		ip.IsMulticast() {
+		return true
+	}
 	if v4 := ip.To4(); v4 != nil {
-		return v4[0] == 100 && v4[1]&0xc0 == 64
+		return blockedV4(v4)
+	}
+	// IPv6 forms that embed an internal IPv4 (NAT64, 6to4) dodge the v4 checks
+	// above — extract the embedded address and re-check it.
+	if v4 := embeddedV4(ip); v4 != nil {
+		return isBlockedIP(v4)
 	}
 	return false
+}
+
+// blockedV4 covers reserved IPv4 ranges that the net.IP predicates miss.
+func blockedV4(v4 net.IP) bool {
+	switch {
+	case v4[0] == 0: // 0.0.0.0/8 "this host" — 0.0.0.1 reaches localhost on Linux
+		return true
+	case v4[0] == 100 && v4[1]&0xc0 == 64: // 100.64.0.0/10 CGNAT
+		return true
+	case v4[0] == 198 && v4[1]&0xfe == 18: // 198.18.0.0/15 benchmarking
+		return true
+	default:
+		return false
+	}
+}
+
+// embeddedV4 returns the IPv4 embedded in a NAT64 (64:ff9b::/96) or 6to4
+// (2002::/16) address, or nil for anything else.
+func embeddedV4(ip net.IP) net.IP {
+	v6 := ip.To16()
+	if v6 == nil || ip.To4() != nil {
+		return nil
+	}
+	nat64 := v6[0] == 0x00 && v6[1] == 0x64 && v6[2] == 0xff && v6[3] == 0x9b &&
+		v6[4] == 0 && v6[5] == 0 && v6[6] == 0 && v6[7] == 0 &&
+		v6[8] == 0 && v6[9] == 0 && v6[10] == 0 && v6[11] == 0
+	if nat64 {
+		return net.IPv4(v6[12], v6[13], v6[14], v6[15])
+	}
+	if v6[0] == 0x20 && v6[1] == 0x02 { // 6to4
+		return net.IPv4(v6[2], v6[3], v6[4], v6[5])
+	}
+	return nil
 }

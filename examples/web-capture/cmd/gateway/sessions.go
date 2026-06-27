@@ -88,33 +88,6 @@ func (c *skitClient) destroySession(ctx context.Context, id string) error {
 	return nil
 }
 
-func (c *skitClient) listSessionIDs(ctx context.Context) (map[string]bool, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/v1/sessions", nil)
-	if err != nil {
-		return nil, err
-	}
-	c.auth(req)
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("list sessions: status %d", resp.StatusCode)
-	}
-	var arr []struct {
-		ID string `json:"id"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&arr); err != nil {
-		return nil, err
-	}
-	ids := make(map[string]bool, len(arr))
-	for _, s := range arr {
-		ids[s.ID] = true
-	}
-	return ids, nil
-}
-
 func (c *skitClient) streamURL(id string) string {
 	return c.baseURL + "/mse/" + url.PathEscape(id) + "/video"
 }
@@ -142,18 +115,20 @@ type sessionManager struct {
 	byID        map[string]*liveSession
 	skit        *skitClient
 	maxSessions int
+	maxViewers  int
 	idleTTL     time.Duration
 	maxLifetime time.Duration
 	createTO    time.Duration
 	now         func() time.Time
 }
 
-func newSessionManager(skit *skitClient, maxSessions int, idleTTL, maxLifetime time.Duration) *sessionManager {
+func newSessionManager(skit *skitClient, maxSessions, maxViewers int, idleTTL, maxLifetime time.Duration) *sessionManager {
 	return &sessionManager{
 		sessions:    make(map[string]*liveSession),
 		byID:        make(map[string]*liveSession),
 		skit:        skit,
 		maxSessions: maxSessions,
+		maxViewers:  maxViewers,
 		idleTTL:     idleTTL,
 		maxLifetime: maxLifetime,
 		createTO:    15 * time.Second,
@@ -176,6 +151,10 @@ func (m *sessionManager) updateGaugesLocked() {
 func (m *sessionManager) acquire(ctx context.Context, key, yaml string) (*liveSession, error) {
 	m.mu.Lock()
 	if s := m.sessions[key]; s != nil {
+		if s.viewers >= m.maxViewers {
+			m.mu.Unlock()
+			return nil, errOverCapacity // reject now rather than fail downstream at max_clients
+		}
 		s.viewers++
 		s.idleSince = time.Time{}
 		m.updateGaugesLocked()
@@ -201,8 +180,10 @@ func (m *sessionManager) acquire(ctx context.Context, key, yaml string) (*liveSe
 	m.updateGaugesLocked()
 	m.mu.Unlock()
 
-	// Bound the create call independently of the (possibly long-lived) viewer ctx.
-	cctx, cancel := context.WithTimeout(ctx, m.createTO)
+	// Create on a background context, NOT the first viewer's: if that viewer
+	// disconnects mid-create, the pipeline must still come up for the other
+	// deduped waiters (and createErr must not masquerade as context.Canceled).
+	cctx, cancel := context.WithTimeout(context.Background(), m.createTO)
 	defer cancel()
 	id, err := m.skit.createSession(cctx, yaml)
 
@@ -236,8 +217,7 @@ func (m *sessionManager) release(s *liveSession) {
 	log.Printf("cast: viewer left %s (viewers=%d)", s.id, s.viewers)
 }
 
-// reap tears down idle and over-aged sessions, then reconciles bookkeeping
-// against the server's actual session list.
+// reap tears down idle and over-aged sessions.
 func (m *sessionManager) reap(ctx context.Context) {
 	now := m.now()
 	var toDestroy []*liveSession
@@ -265,7 +245,6 @@ func (m *sessionManager) reap(ctx context.Context) {
 	for _, s := range toDestroy {
 		m.destroy(ctx, s)
 	}
-	m.reconcile(ctx)
 }
 
 func (m *sessionManager) destroy(ctx context.Context, s *liveSession) {
@@ -277,30 +256,6 @@ func (m *sessionManager) destroy(ctx context.Context, s *liveSession) {
 	sessionsReaped.WithLabelValues(s.reapReason).Inc()
 	sessionLifetime.Observe(m.now().Sub(s.createdAt).Seconds())
 	log.Printf("cast: reaped session %s (reason=%s)", s.id, s.reapReason)
-}
-
-// reconcile drops sessions the server no longer has (e.g. it failed or was
-// removed out of band), so the gateway's view self-heals.
-func (m *sessionManager) reconcile(ctx context.Context) {
-	lctx, cancel := context.WithTimeout(ctx, m.createTO)
-	defer cancel()
-	ids, err := m.skit.listSessionIDs(lctx)
-	if err != nil {
-		return // best effort
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for key, s := range m.sessions {
-		if s.id == "" {
-			continue
-		}
-		if !ids[s.id] {
-			log.Printf("reconcile: session %s gone server-side, dropping", s.id)
-			delete(m.sessions, key)
-			delete(m.byID, s.id)
-		}
-	}
-	m.updateGaugesLocked()
 }
 
 func (m *sessionManager) runReaper(ctx context.Context, interval time.Duration) {

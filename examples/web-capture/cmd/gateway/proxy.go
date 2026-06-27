@@ -19,32 +19,21 @@ import (
 	"time"
 )
 
-// newHTTPClient is used for oneshot renders and skit control calls. It has no
-// overall timeout (a clip render legitimately takes seconds) but disables
-// keep-alives so each call gets a fresh connection.
-func newHTTPClient() *http.Client {
-	tr := &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout:   5 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		DisableKeepAlives: true,
-		ForceAttemptHTTP2: false,
+// newHTTPClient builds a client with no overall timeout (oneshot renders take
+// seconds; MSE streams run until the viewer leaves). keepAlives is off for the
+// one-shot control/render calls so each gets a fresh connection, and on for the
+// long-lived MSE proxy.
+func newHTTPClient(keepAlives bool) *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   5 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			DisableKeepAlives: !keepAlives,
+			ForceAttemptHTTP2: false,
+		},
 	}
-	return &http.Client{Transport: tr}
-}
-
-// newStreamClient proxies long-lived MSE streams: keep-alives on, no overall
-// timeout (the stream ends when the viewer disconnects).
-func newStreamClient() *http.Client {
-	tr := &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout:   5 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		ForceAttemptHTTP2: false,
-	}
-	return &http.Client{Transport: tr}
 }
 
 func (gw *gateway) authReq(req *http.Request) {
@@ -104,6 +93,9 @@ func (gw *gateway) proxyOneshot(w http.ResponseWriter, r *http.Request, pipeline
 	upstreamDuration.WithLabelValues("clip").Observe(time.Since(start).Seconds())
 	defer func() { _ = resp.Body.Close() }()
 
+	// A status outside [100,999] would panic w.WriteHeader below (Go rejects
+	// such codes), so treat a malformed upstream status as a backend fault
+	// before forwarding it.
 	if resp.StatusCode < 100 || resp.StatusCode > 999 {
 		gw.failUpstream(w, "clip", fmt.Errorf("invalid upstream status %d", resp.StatusCode))
 		return
@@ -131,6 +123,8 @@ func (gw *gateway) proxyMSE(w http.ResponseWriter, r *http.Request, s *liveSessi
 	ctx := r.Context()
 	streamURL := gw.skit.streamURL(s.id)
 	deadline := time.Now().Add(gw.mseReadyTimeout)
+	retry := time.NewTicker(200 * time.Millisecond)
+	defer retry.Stop()
 
 	var resp *http.Response
 	for {
@@ -163,7 +157,7 @@ func (gw *gateway) proxyMSE(w http.ResponseWriter, r *http.Request, s *liveSessi
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(200 * time.Millisecond):
+		case <-retry.C:
 		}
 	}
 	defer func() { _ = resp.Body.Close() }()

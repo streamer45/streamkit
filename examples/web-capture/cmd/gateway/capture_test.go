@@ -106,6 +106,20 @@ func TestDetectModeThenParseWithOptions(t *testing.T) {
 	}
 }
 
+func TestClipFrames(t *testing.T) {
+	cases := map[time.Duration]int{
+		10 * time.Second:        300,
+		1500 * time.Millisecond: 45, // would truncate to 30 (1s) without rounding
+		500 * time.Millisecond:  15,
+		5 * time.Millisecond:    1, // rounds to 0 -> clamped to 1
+	}
+	for dur, want := range cases {
+		if got := clipFrames(dur); got != want {
+			t.Errorf("clipFrames(%v)=%d want %d", dur, got, want)
+		}
+	}
+}
+
 func TestValidateTarget(t *testing.T) {
 	// IP literals resolve without DNS, so these run offline.
 	cases := []struct {
@@ -119,6 +133,11 @@ func TestValidateTarget(t *testing.T) {
 		{"http://172.16.0.1", true},
 		{"http://100.64.0.1", true}, // CGNAT
 		{"http://0.0.0.0", true},
+		{"http://0.0.0.1", true},              // 0.0.0.0/8 "this host"
+		{"http://198.18.0.1", true},           // 198.18.0.0/15 benchmarking
+		{"http://[64:ff9b::7f00:1]", true},    // NAT64 of 127.0.0.1
+		{"http://[2002:7f00:1::]", true},      // 6to4 embedding 127.0.0.1
+		{"https://[64:ff9b::808:808]", false}, // NAT64 of public 8.8.8.8 — allowed
 		{"http://[::1]", true},
 		{"ftp://8.8.8.8", true}, // scheme
 		{"https://8.8.8.8", false},

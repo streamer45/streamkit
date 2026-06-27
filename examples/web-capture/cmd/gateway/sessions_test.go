@@ -74,7 +74,7 @@ func (c *fakeClock) now() time.Time          { return c.t }
 func (c *fakeClock) advance(d time.Duration) { c.t = c.t.Add(d) }
 
 func newTestManager(srv *httptest.Server, maxSessions int, idle, maxLife time.Duration) (*sessionManager, *fakeClock) {
-	m := newSessionManager(&skitClient{client: srv.Client(), baseURL: srv.URL}, maxSessions, idle, maxLife)
+	m := newSessionManager(&skitClient{client: srv.Client(), baseURL: srv.URL}, maxSessions, 100, idle, maxLife)
 	clock := &fakeClock{t: time.Unix(1_000_000, 0)}
 	m.now = clock.now
 	return m, clock
@@ -158,6 +158,23 @@ func TestSessionManagerMaxLifetimeReapsActiveViewer(t *testing.T) {
 	m.reap(ctx)
 	if _, d := ms.counts(); d != 1 {
 		t.Fatalf("expected max-lifetime reap, got %d destroys", d)
+	}
+}
+
+func TestSessionManagerMaxViewers(t *testing.T) {
+	_, srv := newMockSkit()
+	defer srv.Close()
+	m := newSessionManager(&skitClient{client: srv.Client(), baseURL: srv.URL}, 4, 2, time.Hour, time.Hour)
+	ctx := context.Background()
+
+	if _, err := m.acquire(ctx, "https://a.example", "y"); err != nil { // creator (viewers=1)
+		t.Fatal(err)
+	}
+	if _, err := m.acquire(ctx, "https://a.example", "y"); err != nil { // 2nd viewer (=2)
+		t.Fatalf("2nd viewer: %v", err)
+	}
+	if _, err := m.acquire(ctx, "https://a.example", "y"); !errors.Is(err, errOverCapacity) {
+		t.Fatalf("3rd viewer: expected errOverCapacity, got %v", err)
 	}
 }
 

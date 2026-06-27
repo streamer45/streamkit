@@ -85,7 +85,7 @@ xdg-open 'http://127.0.0.1:8080/cast/example.com'
 | `GATEWAY_CLIP_MAX_SECS` | `--clip-max-secs` | 60 | Maximum clip duration |
 | `GATEWAY_MAX_SESSIONS` | `--max-sessions` | 8 | Max concurrent live cast sessions |
 | `GATEWAY_MAX_VIEWERS` | `--max-viewers` | 10 | Max viewers per cast stream |
-| `GATEWAY_SESSION_IDLE_SECS` | `--session-idle-secs` | 45 | Idle grace before a viewerless session is reaped |
+| `GATEWAY_SESSION_IDLE_SECS` | `--session-idle-secs` | 30 | Idle grace before a viewerless session is reaped |
 | `GATEWAY_SESSION_MAX_SECS` | `--session-max-secs` | 1800 | Hard cap on a session's lifetime |
 | `GATEWAY_RESOLUTION` | `--resolution` | `1920x1080` | Capture resolution WxH (render = encode, 1:1) |
 | `GATEWAY_CLIP_BITRATE_KBPS` | `--clip-bitrate-kbps` | `10000` | Clip video bitrate (kbps) |
