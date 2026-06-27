@@ -689,8 +689,8 @@ fn create_webview(
         basic_auth: config.auth.as_ref().and_then(|a| a.basic.clone()),
     });
 
-    let parsed_url =
-        url::Url::parse(&config.url).map_err(|e| format!("Invalid URL '{}': {e}", config.url))?;
+    let parsed_url = url::Url::parse(&config.url)
+        .map_err(|e| format!("Invalid URL '{}': {e}", crate::config::redact_url(&config.url)))?;
 
     // Surface malformed auth here even though `validate` already checked it,
     // so a bad config fails registration rather than silently dropping headers.

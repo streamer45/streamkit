@@ -282,7 +282,8 @@ impl ServoConfig {
             return Err("load_timeout_secs must be > 0".to_string());
         }
         // Validate that the URL is parseable.
-        url::Url::parse(&self.url).map_err(|e| format!("invalid url '{}': {e}", self.url))?;
+        url::Url::parse(&self.url)
+            .map_err(|e| format!("invalid url '{}': {e}", redact_url(&self.url)))?;
         // Validate auth: reject malformed header names/values and a
         // bearer_token / explicit-Authorization conflict.
         if let Some(ref auth) = self.auth {
