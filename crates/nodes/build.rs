@@ -392,9 +392,9 @@ fn build_dav1d_static() -> Vec<std::path::PathBuf> {
         assert!(ninja_status.success(), "ninja install failed (exit status: {ninja_status})");
     }
 
-    println!("cargo:warning=dav1d_static: build complete, linking statically");
+    println!("cargo:warning=dav1d_static: build complete, isolating symbols + linking statically");
 
-    // 4. Emit linker directives.
+    // 4. Locate the static archive.
     // The lib directory may be `lib/`, `lib64/`, or `lib/x86_64-linux-gnu/`
     // depending on the distro and meson version.
     let lib_dir = if install_dir.join("lib/x86_64-linux-gnu").exists() {
@@ -404,16 +404,71 @@ fn build_dav1d_static() -> Vec<std::path::PathBuf> {
     } else {
         install_dir.join("lib")
     };
+    let original_lib = lib_dir.join("libdav1d.a");
 
-    // NOTE: unlike SVT-AV1, dav1d does NOT need `+whole-archive` because
-    // rav1d (a Rust dav1d port in the dependency tree) already provides the
-    // same table symbols (dav1d_mc_warp_filter, dav1d_mc_subpel_filters,
-    // etc.).  Using --whole-archive here would cause "multiple definition"
-    // linker errors.
-    println!("cargo:rustc-link-search=native={}", lib_dir.display());
-    println!("cargo:rustc-link-lib=static=dav1d");
+    // 5. Isolate dav1d's symbols by renaming every exported `dav1d_*` symbol to a
+    // `skit_dav1d_*` prefix.  rav1d (the pure-Rust dav1d port pulled in by the
+    // `av1` feature) re-exports the identical `dav1d_*` C ABI; without the rename
+    // both implementations define the same symbols and the binary fails to link
+    // with duplicate-symbol errors.  Renaming makes the C library fully
+    // self-contained — the FFI in dav1d_ffi.rs binds to the prefixed names via
+    // `#[link_name]` — so it can be linked `+whole-archive` regardless of the
+    // dependency/link order that previously made the collision intermittent.
+    let renamed_dir = out_dir.join("dav1d-renamed");
+    std::fs::create_dir_all(&renamed_dir).expect("failed to create dav1d-renamed dir");
+    let renamed_lib = renamed_dir.join("libdav1d.a");
+    rename_dav1d_symbols(&original_lib, &renamed_lib, &out_dir);
+
+    // 6. Emit linker directives.
+    println!("cargo:rustc-link-search=native={}", renamed_dir.display());
+    println!("cargo:rustc-link-lib=static:+whole-archive,-bundle=dav1d");
     println!("cargo:rustc-link-lib=pthread");
 
-    // 5. Return include paths for the ABI check.
+    // 7. Return include paths for the ABI check.
     vec![install_dir.join("include")]
+}
+
+/// Rename every exported `dav1d_*` symbol in `src` to a `skit_dav1d_*` prefix,
+/// writing the isolated archive to `dst`.  See the call site for the rationale.
+#[cfg(feature = "dav1d_static")]
+fn rename_dav1d_symbols(src: &std::path::Path, dst: &std::path::Path, out_dir: &std::path::Path) {
+    let nm_output = std::process::Command::new("nm")
+        .args(["-g", "--defined-only"])
+        .arg(src)
+        .output()
+        .expect("failed to run nm — is binutils installed?");
+    assert!(
+        nm_output.status.success(),
+        "nm failed on {} (exit status: {})",
+        src.display(),
+        nm_output.status
+    );
+
+    // nm prints `<addr> <type> <name>` per symbol; archive member headers and
+    // blank lines have fewer fields and are skipped by the `nth(2)` lookup.
+    let mut symbols = std::collections::BTreeSet::new();
+    for line in String::from_utf8_lossy(&nm_output.stdout).lines() {
+        if let Some(name) = line.split_whitespace().nth(2) {
+            if name.starts_with("dav1d_") {
+                symbols.insert(name.to_string());
+            }
+        }
+    }
+    assert!(
+        !symbols.is_empty(),
+        "no dav1d_* symbols found in {} — dav1d build layout changed?",
+        src.display()
+    );
+
+    let map_path = out_dir.join("dav1d-redefine-syms.txt");
+    let map: String = symbols.iter().map(|s| format!("{s} skit_{s}\n")).collect();
+    std::fs::write(&map_path, map).expect("failed to write dav1d symbol map");
+
+    let status = std::process::Command::new("objcopy")
+        .arg(format!("--redefine-syms={}", map_path.display()))
+        .arg(src)
+        .arg(dst)
+        .status()
+        .expect("failed to run objcopy — is binutils installed?");
+    assert!(status.success(), "objcopy symbol rename failed (exit status: {status})");
 }

@@ -201,44 +201,61 @@ impl Dav1dPicture {
     }
 }
 
-// Extern functions
+// Extern functions.
+//
+// Under the `dav1d_static` feature the C libdav1d is statically linked with all
+// its `dav1d_*` symbols renamed to a `skit_dav1d_*` prefix (see build.rs).  The
+// rename is required because the rav1d crate (the pure-Rust dav1d port behind the
+// `av1` feature) re-exports the identical `dav1d_*` C ABI, and linking both into
+// one binary otherwise produces duplicate-symbol errors.  `link_name` maps the
+// Rust-side names to the prefixed symbols so call sites stay unchanged; the
+// dynamic (pkg-config) path keeps the original symbols from the system library.
 extern "C" {
     /// Initialize settings to default values.
+    #[cfg_attr(feature = "dav1d_static", link_name = "skit_dav1d_default_settings")]
     pub fn dav1d_default_settings(s: *mut Dav1dSettings);
 
     /// Allocate and open a decoder instance.
     ///
     /// Returns 0 on success, or a negative `DAV1D_ERR` code on error.
+    #[cfg_attr(feature = "dav1d_static", link_name = "skit_dav1d_open")]
     pub fn dav1d_open(c_out: *mut *mut c_void, s: *const Dav1dSettings) -> c_int;
 
     /// Feed bitstream data to the decoder.
     ///
     /// Returns 0 on success (data consumed), `DAV1D_ERR(EAGAIN)` if the
     /// caller must drain pictures first, or another negative error code.
+    #[cfg_attr(feature = "dav1d_static", link_name = "skit_dav1d_send_data")]
     pub fn dav1d_send_data(c: *mut c_void, data: *mut Dav1dData) -> c_int;
 
     /// Return a decoded picture.
     ///
     /// Returns 0 on success, `DAV1D_ERR(EAGAIN)` if not enough data to
     /// produce a picture, or another negative error code.
+    #[cfg_attr(feature = "dav1d_static", link_name = "skit_dav1d_get_picture")]
     pub fn dav1d_get_picture(c: *mut c_void, out: *mut Dav1dPicture) -> c_int;
 
     /// Flush all delayed frames and clear internal decoder state.
+    #[cfg_attr(feature = "dav1d_static", link_name = "skit_dav1d_flush")]
     pub fn dav1d_flush(c: *mut c_void);
 
     /// Close a decoder instance and free all associated memory.
     ///
     /// `*c_out` is set to NULL after this call.
+    #[cfg_attr(feature = "dav1d_static", link_name = "skit_dav1d_close")]
     pub fn dav1d_close(c_out: *mut *mut c_void);
 
     /// Allocate a `Dav1dData` buffer of `sz` bytes.
     ///
     /// Returns a pointer to the allocated buffer, or NULL on error.
+    #[cfg_attr(feature = "dav1d_static", link_name = "skit_dav1d_data_create")]
     pub fn dav1d_data_create(data: *mut Dav1dData, sz: usize) -> *mut u8;
 
     /// Free the data reference.
+    #[cfg_attr(feature = "dav1d_static", link_name = "skit_dav1d_data_unref")]
     pub fn dav1d_data_unref(data: *mut Dav1dData);
 
     /// Release reference to a decoded picture.
+    #[cfg_attr(feature = "dav1d_static", link_name = "skit_dav1d_picture_unref")]
     pub fn dav1d_picture_unref(p: *mut Dav1dPicture);
 }
