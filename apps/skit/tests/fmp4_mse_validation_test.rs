@@ -211,6 +211,17 @@ async fn fmp4_mse_pipeline_serves_fragmented_mp4() {
     );
 
     let types = iso_bmff_box_types(&collected);
+
+    // Every box type must be printable ASCII. If a media segment were
+    // truncated (e.g. the bounded-memory guard dropping the tail of the first
+    // moof+mdat), the walk would land mid-payload and read garbage box types —
+    // so this guards against the corruption a presence-only check would miss.
+    assert!(
+        types.iter().all(|t| t.iter().all(|b| b.is_ascii_alphanumeric() || *b == b' ')),
+        "Box chain misaligned — a segment was truncated/corrupted (boxes: {:?})",
+        types.iter().map(|t| String::from_utf8_lossy(t).into_owned()).collect::<Vec<_>>()
+    );
+
     assert!(
         types.iter().any(|t| t == b"moov"),
         "fMP4 init segment is missing the 'moov' box (boxes: {:?})",

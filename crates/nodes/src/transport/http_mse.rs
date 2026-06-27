@@ -393,16 +393,20 @@ impl ProcessorNode for HttpMseNode {
                                 forward_data = data.clone();
                             } else {
                                 init_segment.extend_from_slice(&data);
-                                if init_segment.len() > MAX_FMP4_INIT_SEGMENT_SIZE {
-                                    tracing::warn!(
-                                        size = init_segment.len(),
-                                        "HTTP MSE: fMP4 init segment exceeded {}B before a moof box; truncating (bounded-memory guard)",
-                                        MAX_FMP4_INIT_SEGMENT_SIZE
-                                    );
-                                    init_segment.truncate(MAX_FMP4_INIT_SEGMENT_SIZE);
-                                }
 
+                                // The first packet usually carries ftyp+moov AND
+                                // the first moof+mdat together, so the moof search
+                                // must run before the memory guard — truncating
+                                // first would corrupt the first media segment.
                                 let Some(moof_off) = fmp4_find_first_moof(&init_segment) else {
+                                    if init_segment.len() > MAX_FMP4_INIT_SEGMENT_SIZE {
+                                        tracing::warn!(
+                                            size = init_segment.len(),
+                                            "HTTP MSE: fMP4 init segment exceeded {}B before a moof box; truncating (bounded-memory guard)",
+                                            MAX_FMP4_INIT_SEGMENT_SIZE
+                                        );
+                                        init_segment.truncate(MAX_FMP4_INIT_SEGMENT_SIZE);
+                                    }
                                     continue;
                                 };
 
@@ -1380,6 +1384,9 @@ mod tests {
     /// Simulate the fMP4 init-segment branch of `HttpMseNode::run`: accumulate
     /// chunks until the first `moof`, returning the init segment (ftyp+moov)
     /// and the forwarded media bytes for the chunk that completed init.
+    ///
+    /// Mirrors the real loop's ordering: the `moof` search runs before the
+    /// bounded-memory guard so an oversized first packet is never truncated.
     fn simulate_fmp4_init_and_forward(chunks: &[&[u8]]) -> (Vec<u8>, Option<Vec<u8>>) {
         let mut init_segment: Vec<u8> = Vec::new();
         let mut init_complete = false;
@@ -1390,11 +1397,15 @@ mod tests {
                 continue;
             }
             init_segment.extend_from_slice(data);
-            if let Some(moof_off) = fmp4_find_first_moof(&init_segment) {
-                forward_data = Some(init_segment[moof_off..].to_vec());
-                init_segment.truncate(moof_off);
-                init_complete = true;
-            }
+            let Some(moof_off) = fmp4_find_first_moof(&init_segment) else {
+                if init_segment.len() > MAX_FMP4_INIT_SEGMENT_SIZE {
+                    init_segment.truncate(MAX_FMP4_INIT_SEGMENT_SIZE);
+                }
+                continue;
+            };
+            forward_data = Some(init_segment[moof_off..].to_vec());
+            init_segment.truncate(moof_off);
+            init_complete = true;
         }
 
         (init_segment, forward_data)
@@ -1438,5 +1449,32 @@ mod tests {
         let (init_seg, fwd) = simulate_fmp4_init_and_forward(&[chunk1, chunk2, &fragment]);
         assert_eq!(init_seg, init);
         assert_eq!(fwd.expect("forward present"), fragment);
+    }
+
+    #[test]
+    fn test_fmp4_init_oversized_first_packet_not_truncated() {
+        // The muxer emits ftyp+moov AND the first moof+mdat as one packet that
+        // can exceed MAX_FMP4_INIT_SEGMENT_SIZE. The media segment must survive
+        // intact — the memory guard only applies before a moof is found.
+        let ftyp = mp4_box(*b"ftyp", b"isom");
+        let moov = mp4_box(*b"moov", &[0x77; 256]);
+        let fragment = mp4_box(*b"moof", &[0x88; 32]);
+        let mdat = mp4_box(*b"mdat", &vec![0x99; MAX_FMP4_INIT_SEGMENT_SIZE]);
+
+        let mut init = ftyp;
+        init.extend_from_slice(&moov);
+        let mut media = fragment;
+        media.extend_from_slice(&mdat);
+        let mut stream = init.clone();
+        stream.extend_from_slice(&media);
+        assert!(stream.len() > MAX_FMP4_INIT_SEGMENT_SIZE);
+
+        let (init_seg, fwd) = simulate_fmp4_init_and_forward(&[&stream]);
+        assert_eq!(init_seg, init, "init segment must be exactly ftyp+moov");
+        assert_eq!(
+            fwd.expect("forward data should be present"),
+            media,
+            "the full first media segment must be forwarded uncorrupted"
+        );
     }
 }
