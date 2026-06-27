@@ -471,14 +471,12 @@ delete_plugins = false
 list_nodes = true
 access_all_sessions = false
 
-# Users can access all samples except admin-only ones
+# Users can access standard samples (mirrors the built-in Permissions::user()).
 allowed_samples = [
     "oneshot/*.yml",
     "oneshot/*.yaml",
     "dynamic/*.yml",
     "dynamic/*.yaml",
-    "demo/*.yml",
-    "demo/*.yaml",
     "user/*.yml",
     "user/*.yaml",
 ]
@@ -534,12 +532,16 @@ delete_assets = false
 
 allowed_samples = []
 
-# Only the HTTP sink/IO nodes the gateway needs - no fetcher (SSRF risk).
+# Only the HTTP sink/IO nodes the gateway needs plus the safe core plumbing
+# nodes - no fetcher (SSRF risk) and no core::file_writer (arbitrary-write risk).
 allowed_nodes = [
     "transport::http::mse",   # serve live casts to the browser (MSE)
     "streamkit::http_input",  # oneshot request body
     "streamkit::http_output", # oneshot response
-    "core::*",
+    "core::passthrough",
+    "core::file_reader",
+    "core::pacer",
+    "core::sink",
 ]
 
 # Only the specific plugin(s) the gateway needs (example: servo for web-capture).

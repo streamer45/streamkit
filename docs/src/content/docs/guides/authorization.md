@@ -133,7 +133,11 @@ allowed_nodes = [
   "transport::http::mse",   # serve live casts to the browser (MSE)
   "streamkit::http_input",  # oneshot request body
   "streamkit::http_output", # oneshot response
-  "core::*",
+  # Safe core plumbing only - no core::file_writer (arbitrary-write risk).
+  "core::passthrough",
+  "core::file_reader",
+  "core::pacer",
+  "core::sink",
 ]
 allowed_plugins = ["plugin::native::servo"] # only what the gateway needs
 ```
