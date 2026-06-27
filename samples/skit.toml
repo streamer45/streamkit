@@ -483,10 +483,15 @@ allowed_samples = [
     "user/*.yaml",
 ]
 
-# Users can use most nodes except potentially dangerous ones
+# Users can use most nodes except potentially dangerous ones.
+# Note: transport::http::fetcher is intentionally excluded (it fetches arbitrary
+# URLs - SSRF risk). The safe HTTP sink/IO nodes are allowed instead.
 allowed_nodes = [
     "audio::*",
-    "transport::*",
+    "transport::moq::*",
+    "transport::http::mse",   # serve live casts to the browser (MSE)
+    "streamkit::http_input",  # oneshot request body
+    "streamkit::http_output", # oneshot response
     "core::*",
     "containers::*",
 ]
@@ -499,6 +504,37 @@ allowed_assets = [
     "samples/audio/system/*",
     "samples/audio/user/*",
 ]
+
+[permissions.roles.gateway]
+# Least-privilege role for trusted intermediaries (e.g. the speech-gateway or
+# web-capture examples) that build a small set of fixed pipelines. Avoids
+# granting admin just to use HTTP-transport nodes.
+create_sessions = true
+destroy_sessions = true
+list_sessions = true
+modify_sessions = true
+tune_nodes = true
+load_plugins = false
+delete_plugins = false
+list_nodes = true
+access_all_sessions = false  # Only its own sessions
+upload_assets = false
+delete_assets = false
+
+allowed_samples = []
+
+# Only the HTTP sink/IO nodes the gateway needs - no fetcher (SSRF risk).
+allowed_nodes = [
+    "transport::http::mse",   # serve live casts to the browser (MSE)
+    "streamkit::http_input",  # oneshot request body
+    "streamkit::http_output", # oneshot response
+    "core::*",
+]
+
+# Only the specific plugin(s) the gateway needs (example: servo for web-capture).
+allowed_plugins = ["plugin::native::servo"]
+
+allowed_assets = []
 
 [permissions.roles.readonly]
 # Read-only role - can only view, not modify
