@@ -528,9 +528,10 @@ allowed_assets = [
 ]
 
 [permissions.roles.gateway]
-# Least-privilege role for trusted intermediaries (e.g. the speech-gateway or
-# web-capture examples) that build a small set of fixed pipelines. Avoids
-# granting admin just to use HTTP-transport nodes.
+# Least-privilege role for trusted intermediaries that build a small set of
+# fixed pipelines, so they need not run as admin. The node/plugin lists below
+# are scoped to the web-capture example; a different gateway (e.g. speech-gateway)
+# would swap in its own nodes and plugins (audio nodes, whisper/kokoro, etc.).
 create_sessions = true
 destroy_sessions = true
 list_sessions = true
