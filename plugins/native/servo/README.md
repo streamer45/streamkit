@@ -120,14 +120,17 @@ build.
 
 ### Authentication
 
-The optional `auth` object loads private pages non-interactively. It is applied
-once at WebView creation and is **not** hot-swappable at runtime (changing it
-requires recreating the node). **Credentials are never logged**, and any
-`user:password@` userinfo is stripped from URLs before they are logged.
+The optional `auth` object loads private pages non-interactively. The
+credentials themselves are bound at WebView creation and are **not**
+hot-swappable at runtime (changing them requires recreating the node), but the
+configured request headers / bearer token are re-applied whenever the `url`
+parameter is tuned at runtime, so navigating to another private page keeps
+working. **Credentials are never logged**, and any `user:password@` userinfo is
+stripped from URLs before they are logged.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `headers` | object (string→string) | Arbitrary request headers attached to the initial navigation (e.g. `Authorization`, `Cookie`, custom `X-…`). |
+| `headers` | object (string→string) | Arbitrary request headers attached to every navigation, including runtime `url` changes (e.g. `Authorization`, `Cookie`, custom `X-…`). |
 | `bearer_token` | string | Convenience for `Authorization: Bearer <token>`. Conflicts with an explicit `Authorization` entry in `headers`. |
 | `basic` | object | HTTP Basic/Digest credentials (`username` + `password`) answered non-interactively when the page or proxy issues an auth challenge. |
 | `user_agent` | string | Custom User-Agent string. |

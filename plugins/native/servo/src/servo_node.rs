@@ -109,7 +109,7 @@ impl NativeSourceNode for ServoSourcePlugin {
                         "properties": {
                             "headers": {
                                 "type": "object",
-                                "description": "Arbitrary request headers attached to the initial navigation (e.g. Authorization, Cookie). Values are credentials.",
+                                "description": "Arbitrary request headers attached to every navigation, including runtime URL changes (e.g. Authorization, Cookie). Values are credentials.",
                                 "additionalProperties": { "type": "string" }
                             },
                             "bearer_token": {

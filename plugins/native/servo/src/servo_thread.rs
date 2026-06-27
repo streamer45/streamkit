@@ -591,7 +591,7 @@ fn handle_update_config(
 
     if url_changed {
         if let Ok(parsed) = url::Url::parse(&new_config.url) {
-            state.webview.load(parsed);
+            navigate_with_auth(&state.webview, state.config.auth.as_ref(), parsed);
             state.delegate.loaded.set(false);
             // Reset the one-shot post-load gate so the new page gets
             // its custom-CSS injection (if any) once it finishes
@@ -692,29 +692,38 @@ fn create_webview(
     let parsed_url =
         url::Url::parse(&config.url).map_err(|e| format!("Invalid URL '{}': {e}", config.url))?;
 
-    let request_headers = config
-        .auth
-        .as_ref()
-        .map(ServoAuth::build_request_headers)
-        .transpose()
-        .map_err(|e| format!("invalid auth config: {e}"))?;
+    // Surface malformed auth here even though `validate` already checked it,
+    // so a bad config fails registration rather than silently dropping headers.
+    if let Some(auth) = config.auth.as_ref() {
+        auth.build_request_headers().map_err(|e| format!("invalid auth config: {e}"))?;
+    }
 
-    let builder = WebViewBuilder::new(servo, rendering_context.clone())
+    let webview: WebView = WebViewBuilder::new(servo, rendering_context.clone())
         .hidpi_scale_factor(Scale::new(1.0))
-        .delegate(delegate.clone() as Rc<dyn WebViewDelegate>);
+        .delegate(delegate.clone() as Rc<dyn WebViewDelegate>)
+        .build();
 
-    // When request headers are configured, the initial navigation must go
-    // through `load_request` (the builder's `.url()` cannot carry headers).
-    let webview: WebView = match request_headers {
-        Some(headers) if !headers.is_empty() => {
-            let webview = builder.build();
-            webview.load_request(UrlRequest::new(parsed_url).headers(headers));
-            webview
-        },
-        _ => builder.url(parsed_url).build(),
-    };
+    navigate_with_auth(&webview, config.auth.as_ref(), parsed_url);
 
     Ok((webview, rendering_context, delegate))
+}
+
+/// Navigate `webview` to `url`, re-applying the configured custom request
+/// headers / bearer token so authenticated pages keep loading on runtime URL
+/// changes — not just the initial navigation.
+///
+/// Falls back to a plain navigation when no headers are configured (or, defensively,
+/// when they fail to build; `validate` already rejects malformed auth at config time).
+fn navigate_with_auth(webview: &WebView, auth: Option<&ServoAuth>, url: url::Url) {
+    let headers = auth.and_then(|a| a.build_request_headers().ok());
+    match headers {
+        Some(headers) if !headers.is_empty() => {
+            webview.load_request(UrlRequest::new(url).headers(headers));
+        },
+        _ => {
+            webview.load(url);
+        },
+    }
 }
 
 /// Inject custom CSS into a loaded page via JavaScript.
