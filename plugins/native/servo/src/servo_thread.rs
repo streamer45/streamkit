@@ -39,13 +39,13 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use dpi::PhysicalSize;
-use euclid::{Box2D, Point2D, Scale};
+use euclid::Scale;
 use servo::{
-    LoadStatus, RenderingContext, Servo, ServoBuilder, SoftwareRenderingContext, WebView,
-    WebViewBuilder, WebViewDelegate,
+    AuthenticationRequest, DeviceIntPoint, DeviceIntRect, LoadStatus, RenderingContext, Servo,
+    ServoBuilder, SoftwareRenderingContext, UrlRequest, WebView, WebViewBuilder, WebViewDelegate,
 };
 
-use crate::config::ServoConfig;
+use crate::config::{ServoAuth, ServoBasicAuth, ServoConfig};
 
 /// Number of consecutive render panics before an instance is marked as
 /// poisoned and Servo calls are skipped entirely.
@@ -132,9 +132,14 @@ pub fn send_work(item: ServoWorkItem) -> Result<(), String> {
 /// `loaded` is read by `handle_render`'s post-load gate to fire one-shot
 /// post-load actions (custom CSS injection) on the first tick after the
 /// page reaches `LoadStatus::Complete`.
+///
+/// `basic_auth` answers HTTP Basic/Digest (and proxy) authentication
+/// challenges non-interactively.  It is bound at WebView creation and never
+/// logged.
 #[derive(Default)]
 struct FrameDelegate {
     loaded: Cell<bool>,
+    basic_auth: Option<ServoBasicAuth>,
 }
 
 impl WebViewDelegate for FrameDelegate {
@@ -142,7 +147,7 @@ impl WebViewDelegate for FrameDelegate {
         if status == LoadStatus::Complete {
             self.loaded.set(true);
         }
-        // Servo 0.1.0 does not expose a Failed variant.  Load failures
+        // Servo does not expose a Failed variant.  Load failures
         // would manifest as the page never reaching Complete; there is
         // no synchronous wait at register time, so failures simply
         // leave the page in its loading state and `handle_render`
@@ -151,6 +156,14 @@ impl WebViewDelegate for FrameDelegate {
 
     fn notify_new_frame_ready(&self, webview: WebView) {
         webview.paint();
+    }
+
+    fn request_authentication(&self, _webview: WebView, request: AuthenticationRequest) {
+        if let Some(ref basic) = self.basic_auth {
+            request.authenticate(basic.username.clone(), basic.password.clone());
+        }
+        // Without configured credentials the request is dropped, which
+        // yields no authentication (the default embedder behavior).
     }
 }
 
@@ -272,7 +285,7 @@ fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
                         if state.poisoned {
                             tracing::info!(
                                 node_id = %node_id,
-                                new_url = %config.url,
+                                new_url = %crate::config::redact_url(&config.url),
                                 "Resetting poisoned state on URL change",
                             );
                         }
@@ -404,11 +417,16 @@ fn handle_register(
     result_tx: std::sync::mpsc::SyncSender<ServoThreadResult>,
 ) {
     let servo_ref = servo.get_or_insert_with(|| {
-        let prefs = servo::Preferences {
+        let mut prefs = servo::Preferences {
             network_http_proxy_uri: String::new(),
             network_https_proxy_uri: String::new(),
             ..servo::Preferences::default()
         };
+        // `Preferences` is a process-global singleton, so the User-Agent of
+        // the first registered node applies to every servo node thereafter.
+        if let Some(user_agent) = config.auth.as_ref().and_then(|a| a.user_agent.as_ref()) {
+            prefs.user_agent.clone_from(user_agent);
+        }
         let s: Servo = ServoBuilder::default().preferences(prefs).build();
         s.setup_logging();
         s
@@ -418,7 +436,7 @@ fn handle_register(
         Ok((webview, rendering_context, delegate)) => {
             tracing::info!(
                 node_id = %node_id,
-                url = %config.url,
+                url = %crate::config::redact_url(&config.url),
                 output = %format_args!("{}x{}", config.width, config.height),
                 viewport = %format_args!("{}x{}", config.effective_viewport_width(), config.effective_viewport_height()),
                 scaling = config.needs_scaling(),
@@ -485,7 +503,7 @@ fn handle_render(
         state.post_load_done = true;
         tracing::info!(
             node_id = %node_id,
-            url = %state.config.url,
+            url = %crate::config::redact_url(&state.config.url),
             "Page reached LoadStatus::Complete — post-load actions applied",
         );
     }
@@ -494,9 +512,9 @@ fn handle_render(
     // this is the native size Servo is currently rendering at.  These
     // stay constant under `Resize` hints (output-only) but are updated
     // under `UpdateConfig` when the viewport resolution changes.
-    let rect = Box2D::new(
-        Point2D::new(0, 0),
-        Point2D::new(
+    let rect = DeviceIntRect::new(
+        DeviceIntPoint::new(0, 0),
+        DeviceIntPoint::new(
             i32::try_from(state.rc_width).unwrap_or(i32::MAX),
             i32::try_from(state.rc_height).unwrap_or(i32::MAX),
         ),
@@ -666,16 +684,35 @@ fn create_webview(
 
     let _ = rendering_context.make_current();
 
-    let delegate: Rc<FrameDelegate> = Rc::new(FrameDelegate::default());
+    let delegate: Rc<FrameDelegate> = Rc::new(FrameDelegate {
+        loaded: Cell::new(false),
+        basic_auth: config.auth.as_ref().and_then(|a| a.basic.clone()),
+    });
 
     let parsed_url =
         url::Url::parse(&config.url).map_err(|e| format!("Invalid URL '{}': {e}", config.url))?;
 
-    let webview: WebView = WebViewBuilder::new(servo, rendering_context.clone())
-        .url(parsed_url)
+    let request_headers = config
+        .auth
+        .as_ref()
+        .map(ServoAuth::build_request_headers)
+        .transpose()
+        .map_err(|e| format!("invalid auth config: {e}"))?;
+
+    let builder = WebViewBuilder::new(servo, rendering_context.clone())
         .hidpi_scale_factor(Scale::new(1.0))
-        .delegate(delegate.clone() as Rc<dyn WebViewDelegate>)
-        .build();
+        .delegate(delegate.clone() as Rc<dyn WebViewDelegate>);
+
+    // When request headers are configured, the initial navigation must go
+    // through `load_request` (the builder's `.url()` cannot carry headers).
+    let webview: WebView = match request_headers {
+        Some(headers) if !headers.is_empty() => {
+            let webview = builder.build();
+            webview.load_request(UrlRequest::new(parsed_url).headers(headers));
+            webview
+        },
+        _ => builder.url(parsed_url).build(),
+    };
 
     Ok((webview, rendering_context, delegate))
 }

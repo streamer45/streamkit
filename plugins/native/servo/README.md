@@ -7,7 +7,7 @@ SPDX-License-Identifier: MPL-2.0
 # Servo Web Renderer Plugin
 
 Renders web pages to RGBA8 video frames via the [Servo](https://servo.org/)
-browser engine (v0.1.0). This is a **native plugin** — it builds as a shared
+browser engine (v0.3.0). This is a **native plugin** — it builds as a shared
 library (`.so`) loaded by StreamKit at runtime.
 
 ## Architecture
@@ -116,6 +116,46 @@ build.
 | `custom_css`   | string  | —       | Optional CSS injected into the page |
 | `frame_count`  | integer | 0       | Total frames to generate (0 = infinite) |
 | `load_timeout_secs` | integer | 30 | Maximum seconds to wait for page load |
+| `auth`         | object  | —       | Optional init-time authentication for private pages (see below) |
+
+### Authentication
+
+The optional `auth` object loads private pages non-interactively. It is applied
+once at WebView creation and is **not** hot-swappable at runtime (changing it
+requires recreating the node). **Credentials are never logged**, and any
+`user:password@` userinfo is stripped from URLs before they are logged.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `headers` | object (string→string) | Arbitrary request headers attached to the initial navigation (e.g. `Authorization`, `Cookie`, custom `X-…`). |
+| `bearer_token` | string | Convenience for `Authorization: Bearer <token>`. Conflicts with an explicit `Authorization` entry in `headers`. |
+| `basic` | object | HTTP Basic/Digest credentials (`username` + `password`) answered non-interactively when the page or proxy issues an auth challenge. |
+| `user_agent` | string | Custom User-Agent string. |
+
+```yaml
+nodes:
+  web:
+    kind: plugin::native::servo
+    params:
+      url: "https://private.example.com"
+      auth:
+        headers:
+          X-Api-Key: "…"
+        bearer_token: "…"            # → Authorization: Bearer …
+        basic:
+          username: "user"
+          password: "…"
+        user_agent: "StreamKit/1.0"
+```
+
+> **Global User-Agent caveat:** Servo's `Preferences` are a **process-global
+> singleton**, so `auth.user_agent` is taken from the *first* registered servo
+> node and applies to **all** servo nodes in the process. Per-node User-Agent
+> is not currently supported. The `headers`, `bearer_token`, and `basic` fields
+> are per-node.
+>
+> Credentials flow through pipeline YAML/params — prefer sourcing them from
+> host secrets rather than committing them inline.
 
 ### Viewport Emulation
 

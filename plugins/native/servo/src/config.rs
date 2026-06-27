@@ -4,6 +4,9 @@
 
 //! Configuration for the Servo web renderer plugin.
 
+use std::collections::HashMap;
+
+use http::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION};
 use serde::Deserialize;
 
 // -- Defaults ----------------------------------------------------------------
@@ -30,6 +33,95 @@ const fn default_frame_count() -> u32 {
 
 const fn default_load_timeout_secs() -> u32 {
     30
+}
+
+// -- Authentication ----------------------------------------------------------
+
+/// HTTP Basic/Digest credentials answered non-interactively when the page
+/// (or proxy) issues an authentication challenge.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ServoBasicAuth {
+    pub username: String,
+    pub password: String,
+}
+
+/// Optional, init-time authentication settings for loading private pages
+/// non-interactively.
+///
+/// All fields are credentials and must never be logged.  Auth is applied
+/// once at WebView creation and is **not** hot-swappable via `UpdateConfig`
+/// (see [`ServoConfig::merge_update`]).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ServoAuth {
+    /// Arbitrary request headers attached to the initial navigation
+    /// (e.g. `Authorization`, `Cookie`, custom `X-…` headers).
+    pub headers: Option<HashMap<String, String>>,
+    /// Convenience for `Authorization: Bearer <token>`.  Conflicts with an
+    /// explicit `Authorization` entry in `headers`.
+    pub bearer_token: Option<String>,
+    /// HTTP Basic/Digest credentials answered via the delegate auth hook.
+    pub basic: Option<ServoBasicAuth>,
+    /// Custom User-Agent string.  Applied to the process-global Servo
+    /// preferences, so it affects **all** servo nodes in the process.
+    pub user_agent: Option<String>,
+}
+
+impl ServoAuth {
+    /// Build the request `HeaderMap` for the initial navigation from
+    /// `headers` plus a synthesized `Authorization: Bearer …` when
+    /// `bearer_token` is set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a header name or value is malformed, or if
+    /// `bearer_token` and an explicit `Authorization` header are both set.
+    pub fn build_request_headers(&self) -> Result<HeaderMap, String> {
+        let mut map = HeaderMap::new();
+        let mut has_authorization = false;
+
+        if let Some(ref headers) = self.headers {
+            for (name, value) in headers {
+                let header_name = HeaderName::try_from(name)
+                    .map_err(|e| format!("invalid header name '{name}': {e}"))?;
+                let header_value = HeaderValue::try_from(value)
+                    .map_err(|e| format!("invalid header value for '{name}': {e}"))?;
+                if header_name == AUTHORIZATION {
+                    has_authorization = true;
+                }
+                map.append(header_name, header_value);
+            }
+        }
+
+        if let Some(ref token) = self.bearer_token {
+            if has_authorization {
+                return Err("auth.bearer_token conflicts with an explicit 'Authorization' header"
+                    .to_string());
+            }
+            let value = HeaderValue::try_from(format!("Bearer {token}"))
+                .map_err(|e| format!("invalid bearer_token: {e}"))?;
+            map.insert(AUTHORIZATION, value);
+        }
+
+        Ok(map)
+    }
+}
+
+/// Strip any `user:password@` userinfo from a URL so it is safe to log.
+///
+/// Returns a redacted placeholder if the input cannot be parsed, to avoid
+/// leaking credentials embedded in a malformed URL.
+pub fn redact_url(raw: &str) -> String {
+    url::Url::parse(raw).map_or_else(
+        |_| "<unparseable url>".to_string(),
+        |mut parsed| {
+            if !parsed.username().is_empty() || parsed.password().is_some() {
+                let _ = parsed.set_username("");
+                let _ = parsed.set_password(None);
+            }
+            parsed.to_string()
+        },
+    )
 }
 
 // -- Configuration -----------------------------------------------------------
@@ -84,6 +176,10 @@ pub struct ServoConfig {
     /// Maximum seconds to wait for the initial page load.
     #[serde(default = "default_load_timeout_secs")]
     pub load_timeout_secs: u32,
+    /// Optional authentication settings for loading private pages.
+    /// Applied once at WebView creation; not hot-swappable at runtime.
+    #[serde(default)]
+    pub auth: Option<ServoAuth>,
 }
 
 impl Default for ServoConfig {
@@ -99,6 +195,7 @@ impl Default for ServoConfig {
             custom_css: None,
             frame_count: default_frame_count(),
             load_timeout_secs: default_load_timeout_secs(),
+            auth: None,
         }
     }
 }
@@ -186,15 +283,25 @@ impl ServoConfig {
         }
         // Validate that the URL is parseable.
         url::Url::parse(&self.url).map_err(|e| format!("invalid url '{}': {e}", self.url))?;
+        // Validate auth: reject malformed header names/values and a
+        // bearer_token / explicit-Authorization conflict.
+        if let Some(ref auth) = self.auth {
+            auth.build_request_headers().map_err(|e| format!("invalid auth config: {e}"))?;
+        }
         Ok(())
     }
 
     /// Merge runtime parameter changes from an `UpdateParams` payload.
     ///
     /// Tunable fields: `url`, `custom_css`, `viewport_resolution`.
-    /// Init-time fields (`width`, `height`, `fps`, `frame_count`) are left
-    /// unchanged.  `viewport_width`/`viewport_height` are updated only
+    /// Init-time fields (`width`, `height`, `fps`, `frame_count`, `auth`) are
+    /// left unchanged.  `viewport_width`/`viewport_height` are updated only
     /// when `viewport_resolution` is provided (parsed from a `"WxH"` string).
+    ///
+    /// `auth` is deliberately **not** merged: credentials are bound to the
+    /// WebView at creation time, so hot-swapping them on a live navigation
+    /// would have no well-defined effect.  Changing auth requires recreating
+    /// the node.
     ///
     /// Returns `true` if the viewport dimensions changed (requiring a
     /// rendering context resize).
@@ -508,5 +615,135 @@ mod tests {
         assert_eq!(cfg.width, 640);
         assert_eq!(cfg.height, 480);
         assert_eq!(cfg.url, "https://new.example.com");
+    }
+
+    // -- auth -------------------------------------------------------------
+
+    #[test]
+    fn auth_deserializes_all_fields() {
+        let cfg: ServoConfig = serde_json::from_value(serde_json::json!({
+            "url": "https://example.com",
+            "auth": {
+                "headers": { "X-Api-Key": "secret" },
+                "bearer_token": "abc123",
+                "basic": { "username": "user", "password": "pass" },
+                "user_agent": "StreamKit/1.0"
+            }
+        }))
+        .expect("auth config should deserialize");
+        let auth = cfg.auth.expect("auth present");
+        assert_eq!(
+            auth.headers.as_ref().and_then(|h| h.get("X-Api-Key")).map(String::as_str),
+            Some("secret")
+        );
+        assert_eq!(auth.bearer_token.as_deref(), Some("abc123"));
+        let basic = auth.basic.expect("basic present");
+        assert_eq!(basic.username, "user");
+        assert_eq!(basic.password, "pass");
+        assert_eq!(auth.user_agent.as_deref(), Some("StreamKit/1.0"));
+    }
+
+    #[test]
+    fn auth_absent_by_default() {
+        let cfg: ServoConfig = serde_json::from_value(serde_json::json!({
+            "url": "https://example.com"
+        }))
+        .expect("config should deserialize");
+        assert!(cfg.auth.is_none());
+    }
+
+    #[test]
+    fn validate_bearer_token_conflicts_with_authorization_header() {
+        let mut headers = HashMap::new();
+        headers.insert("Authorization".to_string(), "Basic xxx".to_string());
+        let cfg = ServoConfig {
+            auth: Some(ServoAuth {
+                headers: Some(headers),
+                bearer_token: Some("abc".to_string()),
+                ..ServoAuth::default()
+            }),
+            ..valid_config()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("conflicts"));
+    }
+
+    #[test]
+    fn validate_rejects_invalid_header_name() {
+        let mut headers = HashMap::new();
+        headers.insert("Invalid Header".to_string(), "value".to_string());
+        let cfg = ServoConfig {
+            auth: Some(ServoAuth { headers: Some(headers), ..ServoAuth::default() }),
+            ..valid_config()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("invalid header name"));
+    }
+
+    #[test]
+    fn validate_rejects_invalid_header_value() {
+        let mut headers = HashMap::new();
+        headers.insert("X-Custom".to_string(), "bad\nvalue".to_string());
+        let cfg = ServoConfig {
+            auth: Some(ServoAuth { headers: Some(headers), ..ServoAuth::default() }),
+            ..valid_config()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("invalid header value"));
+    }
+
+    #[test]
+    fn build_request_headers_synthesizes_bearer() {
+        let auth = ServoAuth { bearer_token: Some("tok".to_string()), ..ServoAuth::default() };
+        let map = auth.build_request_headers().expect("headers build");
+        assert_eq!(map.get(AUTHORIZATION).and_then(|v| v.to_str().ok()), Some("Bearer tok"));
+    }
+
+    #[test]
+    fn build_request_headers_empty_without_auth_fields() {
+        let auth = ServoAuth::default();
+        assert!(auth.build_request_headers().expect("headers build").is_empty());
+    }
+
+    #[test]
+    fn merge_update_does_not_mutate_auth() {
+        let mut cfg = ServoConfig {
+            auth: Some(ServoAuth {
+                bearer_token: Some("original".to_string()),
+                ..ServoAuth::default()
+            }),
+            ..valid_config()
+        };
+        let update = ServoConfig {
+            url: "https://new.example.com".to_string(),
+            auth: Some(ServoAuth {
+                bearer_token: Some("changed".to_string()),
+                ..ServoAuth::default()
+            }),
+            ..ServoConfig::default()
+        };
+        cfg.merge_update(&update);
+        assert_eq!(
+            cfg.auth.and_then(|a| a.bearer_token).as_deref(),
+            Some("original"),
+            "auth must be init-time only"
+        );
+    }
+
+    // -- redact_url -------------------------------------------------------
+
+    #[test]
+    fn redact_url_strips_userinfo() {
+        assert_eq!(redact_url("https://user:pass@example.com/path"), "https://example.com/path");
+    }
+
+    #[test]
+    fn redact_url_passes_through_clean_url() {
+        assert_eq!(redact_url("https://example.com/"), "https://example.com/");
+    }
+
+    #[test]
+    fn redact_url_handles_unparseable() {
+        assert_eq!(redact_url("not a url"), "<unparseable url>");
     }
 }
