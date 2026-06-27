@@ -199,6 +199,10 @@ const fn default_native_call_timeout_value() -> u64 {
     300
 }
 
+const fn default_wasm_call_timeout_value() -> u64 {
+    300
+}
+
 fn default_cors_allowed_origins() -> Vec<String> {
     vec![
         // Portless localhost (e.g., reverse proxy on 80/443)
@@ -519,6 +523,21 @@ pub struct PluginConfig {
         deserialize_with = "deserialize_clamp_timeout"
     )]
     pub native_call_timeout_secs: Option<u64>,
+    /// WASM plugin per-call execution timeout in seconds (default: 300, minimum: 1).
+    ///
+    /// Bounds a single guest invocation; a plugin that exceeds it is
+    /// interrupted via wasmtime epoch interruption and the node fails.
+    ///
+    /// Set to `null` to disable the per-call deadline for node processing
+    /// calls. The load-time metadata-extraction call remains bounded by the
+    /// runtime's built-in default and is unaffected by this setting.
+    ///
+    /// Values below 1 are clamped to 1 to prevent instant timeouts.
+    #[serde(
+        default = "PluginConfig::default_wasm_call_timeout_secs",
+        deserialize_with = "deserialize_clamp_timeout"
+    )]
+    pub wasm_call_timeout_secs: Option<u64>,
     #[serde(flatten, default)]
     pub http_management: PluginHttpConfig,
     #[serde(flatten, default)]
@@ -616,6 +635,7 @@ impl Default for PluginConfig {
         Self {
             directory: ".plugins".to_string(),
             native_call_timeout_secs: Some(default_native_call_timeout_value()),
+            wasm_call_timeout_secs: Some(default_wasm_call_timeout_value()),
             http_management: PluginHttpConfig::default(),
             marketplace: PluginMarketplaceConfig::default(),
             trusted_pubkeys: Vec::new(),
@@ -632,6 +652,13 @@ impl PluginConfig {
     #[allow(clippy::unnecessary_wraps)]
     const fn default_native_call_timeout_secs() -> Option<u64> {
         Some(default_native_call_timeout_value())
+    }
+
+    // Serde default hooks must return the exact field type; the wrapped value
+    // distinguishes missing config from explicit null.
+    #[allow(clippy::unnecessary_wraps)]
+    const fn default_wasm_call_timeout_secs() -> Option<u64> {
+        Some(default_wasm_call_timeout_value())
     }
 }
 
@@ -1292,6 +1319,34 @@ mod tests {
     fn deserialize_clamp_timeout_preserves_large_values() {
         let w: ClampWrapper = serde_json::from_str(r#"{"v": 60000}"#).unwrap();
         assert_eq!(w.v, Some(60_000));
+    }
+
+    #[test]
+    fn plugin_config_default_sets_wasm_call_timeout() {
+        let cfg = PluginConfig::default();
+        assert_eq!(cfg.wasm_call_timeout_secs, Some(300));
+    }
+
+    #[test]
+    fn plugin_config_omitted_wasm_timeout_uses_default() {
+        let cfg: PluginConfig = serde_json::from_str(r#"{"directory": ".plugins"}"#).unwrap();
+        assert_eq!(cfg.wasm_call_timeout_secs, Some(300));
+    }
+
+    #[test]
+    fn plugin_config_clamps_zero_wasm_timeout() {
+        let cfg: PluginConfig =
+            serde_json::from_str(r#"{"directory": ".plugins", "wasm_call_timeout_secs": 0}"#)
+                .unwrap();
+        assert_eq!(cfg.wasm_call_timeout_secs, Some(1));
+    }
+
+    #[test]
+    fn plugin_config_null_wasm_timeout_disables() {
+        let cfg: PluginConfig =
+            serde_json::from_str(r#"{"directory": ".plugins", "wasm_call_timeout_secs": null}"#)
+                .unwrap();
+        assert_eq!(cfg.wasm_call_timeout_secs, None);
     }
 
     #[test]

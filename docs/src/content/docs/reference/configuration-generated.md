@@ -123,6 +123,7 @@ Plugin directory configuration.
 | `native_call_timeout_secs` | integer | null (uint64) | `300` | Native plugin FFI call timeout in seconds (default: 300, minimum: 1). Set to `null` to use only the default backstop timeout on the reply side; the send-side backpressure guard remains bounded regardless. Values below 1 are clamped to 1 to prevent instant timeouts. |
 | `registries` | array<string> | `[]` | Registry index URLs (e.g., `https://example.com/index.json`). |
 | `trusted_pubkeys` | array<string> | `[]` | Minisign public keys (contents of `.pub` files) trusted for marketplace manifests. |
+| `wasm_call_timeout_secs` | integer | null (uint64) | `300` | WASM plugin per-call execution timeout in seconds (default: 300, minimum: 1). Bounds a single guest invocation; a plugin that exceeds it is interrupted via wasmtime epoch interruption and the node fails. Set to `null` to disable the per-call deadline for node processing calls. The load-time metadata-extraction call remains bounded by the runtime's built-in default and is unaffected by this setting. Values below 1 are clamped to 1 to prevent instant timeouts. |
 
 ## `[resources]`
 
@@ -1010,6 +1011,16 @@ Telemetry and observability configuration (OpenTelemetry, tokio-console).
             "type": "string"
           },
           "type": "array"
+        },
+        "wasm_call_timeout_secs": {
+          "default": 300,
+          "description": "WASM plugin per-call execution timeout in seconds (default: 300, minimum: 1).\n\nBounds a single guest invocation; a plugin that exceeds it is\ninterrupted via wasmtime epoch interruption and the node fails.\n\nSet to `null` to disable the per-call deadline for node processing\ncalls. The load-time metadata-extraction call remains bounded by the\nruntime's built-in default and is unaffected by this setting.\n\nValues below 1 are clamped to 1 to prevent instant timeouts.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "required": [
@@ -1552,7 +1563,8 @@ Telemetry and observability configuration (OpenTelemetry, tokio-console).
         "models_dir": null,
         "native_call_timeout_secs": 300,
         "registries": [],
-        "trusted_pubkeys": []
+        "trusted_pubkeys": [],
+        "wasm_call_timeout_secs": 300
       }
     },
     "resources": {
