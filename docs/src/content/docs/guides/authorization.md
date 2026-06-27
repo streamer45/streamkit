@@ -146,6 +146,10 @@ allowed_nodes = [
 allowed_plugins = ["plugin::native::servo"] # must also be listed in allowed_nodes (see note above)
 ```
 
+This role serves a **video-only** WebM cast. To also carry page audio (the `mse`
+node advertises `codecs="vp9,opus"`), add the audio encoder — e.g.
+`"audio::opus::encoder"` — to `allowed_nodes`.
+
 ## Permission reference
 
 | Permission | Description |
