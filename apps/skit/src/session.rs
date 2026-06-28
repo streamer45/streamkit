@@ -700,14 +700,13 @@ impl Session {
         // Spawn task to forward telemetry events to WebSocket clients
         let session_id_for_telemetry = session_id.clone();
         let event_tx_for_telemetry = event_tx.clone();
-        let max_text_chars = streamkit_core::telemetry::TelemetryConfig::default().max_text_chars;
+        let max_text_chars = config.telemetry.max_text_chars;
         tokio::spawn(async move {
             while let Some(telemetry_event) = telemetry_rx.recv().await {
                 // Apply server-side redaction/truncation before forwarding
                 let event = create_telemetry_api_event(
                     &session_id_for_telemetry,
                     &telemetry_event,
-                    // TODO: Make this configurable via a session-level pipeline telemetry config.
                     max_text_chars,
                 );
                 // broadcast::send() returns Err when there are no active receivers,
@@ -1347,5 +1346,37 @@ mod tests {
         assert_eq!(ts_us, Some(0));
         assert!(ts_str.starts_with("1970-01-01T00:00:00"));
         assert_eq!(data, serde_json::json!("this is ...[truncated]"));
+    }
+
+    // Mirrors the telemetry-forwarding wiring in `Session::create`: the
+    // configured `telemetry.max_text_chars` must govern the redaction window
+    // applied by `create_telemetry_api_event`, not the hard-coded default.
+    #[test]
+    fn telemetry_redaction_window_comes_from_config() {
+        let config = Config {
+            telemetry: crate::config::TelemetryConfig {
+                max_text_chars: 2,
+                ..crate::config::TelemetryConfig::default()
+            },
+            ..Config::default()
+        };
+        assert_ne!(
+            config.telemetry.max_text_chars,
+            crate::config::TelemetryConfig::default().max_text_chars,
+            "test must exercise a non-default limit"
+        );
+
+        let event = make_event(
+            "node-cfg",
+            "core::telemetry/event@1",
+            serde_json::json!({ "text": "abcdef" }),
+            Some(0),
+        );
+
+        let api_event =
+            create_telemetry_api_event("sess-cfg", &event, config.telemetry.max_text_chars);
+        let (data, _ts_us, _ts_str) =
+            assert_node_telemetry(&api_event, "sess-cfg", "node-cfg", "core::telemetry/event@1");
+        assert_eq!(data["text"], serde_json::json!("ab...[truncated]"));
     }
 }
