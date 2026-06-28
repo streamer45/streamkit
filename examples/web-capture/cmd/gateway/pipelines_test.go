@@ -24,6 +24,7 @@ func TestRenderClipPipeline(t *testing.T) {
 		"video_codec: h264",
 		"bitrate_kbps: 10000",
 		"max_frame_rate: 30.0",
+		"gop_size: 30",
 		"plugin::native::servo",
 		"output_format: nv12",
 		"streamkit::http_output",

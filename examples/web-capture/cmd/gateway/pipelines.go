@@ -30,6 +30,7 @@ func renderClipPipeline(targetURL string, resW, resH, fps, frameCount, brKbps in
 		"{{WIDTH}}", strconv.Itoa(resW),
 		"{{HEIGHT}}", strconv.Itoa(resH),
 		"{{FPS}}", strconv.Itoa(fps),
+		"{{GOP}}", strconv.Itoa(gopForFPS(fps)),
 		"{{FRAME_COUNT}}", strconv.Itoa(frameCount),
 		"{{BR_KBPS}}", strconv.Itoa(brKbps),
 		"{{BR_BPS}}", strconv.Itoa(brKbps*1000),
@@ -46,9 +47,21 @@ func renderCastPipeline(targetURL string, resW, resH, fps, maxClients, brKbps in
 		"{{WIDTH}}", strconv.Itoa(resW),
 		"{{HEIGHT}}", strconv.Itoa(resH),
 		"{{FPS}}", strconv.Itoa(fps),
+		"{{GOP}}", strconv.Itoa(gopForFPS(fps)),
 		"{{MAX_CLIENTS}}", strconv.Itoa(maxClients),
 		"{{BR_KBPS}}", strconv.Itoa(brKbps),
 		"{{BR_BPS}}", strconv.Itoa(brKbps*1000),
 		"{{CONTENT_TYPE}}", enc.contentType,
 	).Replace(tmpl)
+}
+
+// gopForFPS picks a keyframe interval of ~1 second (one IDR per fps frames) so
+// the fragmented-MP4 muxer flushes its first playable fragment quickly. Only
+// the OpenH264 (software) block reads {{GOP}}; the Vulkan block forces its own
+// keyframe at frame 0, so the substitution is a harmless no-op there.
+func gopForFPS(fps int) int {
+	if fps < 1 {
+		return 1
+	}
+	return fps
 }

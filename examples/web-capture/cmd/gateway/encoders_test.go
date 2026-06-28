@@ -25,7 +25,7 @@ func TestLookupEncoder(t *testing.T) {
 // kbps, hardware = bits/sec) and leave no unreplaced placeholders.
 func TestClipEncoderProfiles(t *testing.T) {
 	cases := map[string][]string{
-		"h264-sw": {"video::openh264::encoder", "bitrate_kbps: 10000", "max_frame_rate: 30.0", "video_codec: h264"},
+		"h264-sw": {"video::openh264::encoder", "bitrate_kbps: 10000", "max_frame_rate: 30.0", "gop_size: 30", "video_codec: h264"},
 		"h264-hw": {"video::vulkan_video::h264_encoder", "bitrate: 10000000", "framerate: 30", "video_codec: h264"},
 	}
 	for name, wants := range cases {

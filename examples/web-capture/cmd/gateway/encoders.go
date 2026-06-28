@@ -23,11 +23,15 @@ type encoderProfile struct {
 
 // Shared encoder node blocks; placeholders are filled at render time.
 const (
+	// gop_size = {{GOP}} (one keyframe per second) keeps the first fMP4
+	// fragment short so playback starts within ~1s of first paint instead
+	// of waiting a full default GOP (2s) for the muxer to flush.
 	openh264Block = `  encoder:
     kind: video::openh264::encoder
     params:
       bitrate_kbps: {{BR_KBPS}}
       max_frame_rate: {{FPS}}.0
+      gop_size: {{GOP}}
     needs: pixel_convert`
 
 	vulkanH264Block = `  encoder:

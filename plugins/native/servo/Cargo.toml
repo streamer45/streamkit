@@ -10,7 +10,10 @@ license = "MPL-2.0"
 
 [lib]
 name = "servo_web"
-crate-type = ["cdylib"]
+# `rlib` (in addition to the `cdylib` the host loads) lets the
+# integration test in `tests/` link the crate and exercise the real
+# Servo engine through the public `send_work` API.
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 streamkit-plugin-sdk-native = { path = "../../../sdks/plugin-sdk/native" }
@@ -32,6 +35,14 @@ tracing = "0.1"
 # Enabling `disable_initial_exec_tls` makes jemalloc use the slower but
 # dlopen-safe global-dynamic TLS model.
 tikv-jemalloc-sys = { version = "0.6", features = ["disable_initial_exec_tls"] }
+
+[dev-dependencies]
+# The cross-session leak integration test drives the real Servo engine,
+# which has no clean global-shutdown path: at process exit mozjs' C++
+# destructors race the still-live renderer thread and SIGSEGV.  The test
+# calls `libc::_exit` after asserting to bypass that teardown.
+libc = "0.2"
+uuid = { version = "1", features = ["v4"] }
 
 [lints.clippy]
 # Categories

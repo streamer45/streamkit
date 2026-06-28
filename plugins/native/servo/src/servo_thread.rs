@@ -132,9 +132,17 @@ pub fn send_work(item: ServoWorkItem) -> Result<(), String> {
 /// `loaded` is read by `handle_render`'s post-load gate to fire one-shot
 /// post-load actions (custom CSS injection) on the first tick after the
 /// page reaches `LoadStatus::Complete`.
+///
+/// `painted` gates surface reads: surfman reuses the underlying
+/// `SoftwareRenderingContext` surface across instances, so before Servo
+/// has painted the current page at least once the surface may still hold
+/// a previous (unrelated) capture's pixels.  Until the first paint,
+/// `handle_render` emits a fully transparent frame rather than leaking
+/// stale pixels.  Reset on URL change in `handle_update_config`.
 #[derive(Default)]
 struct FrameDelegate {
     loaded: Cell<bool>,
+    painted: Cell<bool>,
 }
 
 impl WebViewDelegate for FrameDelegate {
@@ -151,6 +159,7 @@ impl WebViewDelegate for FrameDelegate {
 
     fn notify_new_frame_ready(&self, webview: WebView) {
         webview.paint();
+        self.painted.set(true);
     }
 }
 
@@ -470,6 +479,11 @@ fn handle_render(
 
     let render_start = Instant::now();
 
+    // Bind this instance's context before pumping so its own paint targets
+    // its own surface.  `SoftwareRenderingContext`/surfman share GL state
+    // process-wide, so the read below additionally re-binds (see there).
+    let _ = state.rendering_context.make_current();
+
     // Pump the event loop to let Servo process pending work — this is
     // also what advances the deferred page load registered in
     // `handle_register`.
@@ -490,6 +504,22 @@ fn handle_render(
         );
     }
 
+    // Until Servo has painted the current page at least once, the surfman
+    // surface backing this rendering context may still contain a previous,
+    // unrelated capture's pixels (surfman reuses surfaces across contexts).
+    // Emit a fully transparent frame instead of reading stale content, so a
+    // freshly-opened clip/cast never leaks another session's page.
+    if !state.delegate.painted.get() {
+        let len = (state.config.width as usize) * (state.config.height as usize) * 4;
+        let rgba_data = vec![0u8; len];
+        state.render_count += 1;
+        state.render_duration_sum += render_start.elapsed();
+        if state.result_tx.send(ServoThreadResult::Frame { rgba_data }).is_err() {
+            instances.remove(node_id);
+        }
+        return;
+    }
+
     // Always read the full rendering context (rc_width × rc_height) —
     // this is the native size Servo is currently rendering at.  These
     // stay constant under `Resize` hints (output-only) but are updated
@@ -506,6 +536,12 @@ fn handle_render(
     let needs_scaling =
         state.rc_width != state.config.width || state.rc_height != state.config.height;
 
+    // `read_to_image` reads whichever surfman context is currently bound
+    // process-wide.  `spin_event_loop` paints every webview and leaves the
+    // last-painted instance's context current, so re-bind ours immediately
+    // before the read to guarantee we capture this instance's surface and
+    // never a concurrent node's (the cross-session pixel leak).
+    let _ = state.rendering_context.make_current();
     let rgba_data = if let Some(img) = state.rendering_context.read_to_image(rect) {
         let raw = if needs_scaling {
             let scaled = image::imageops::resize(
@@ -575,6 +611,10 @@ fn handle_update_config(
         if let Ok(parsed) = url::Url::parse(&new_config.url) {
             state.webview.load(parsed);
             state.delegate.loaded.set(false);
+            // Re-arm the first-paint gate so `handle_render` emits
+            // transparent frames until the new page paints, preventing the
+            // outgoing page's pixels from bleeding into the new capture.
+            state.delegate.painted.set(false);
             // Reset the one-shot post-load gate so the new page gets
             // its custom-CSS injection (if any) once it finishes
             // loading.  Render ticks will run `handle_render`'s
