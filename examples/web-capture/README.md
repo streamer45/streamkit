@@ -6,41 +6,34 @@ SPDX-License-Identifier: MPL-2.0
 
 # Web Capture Gateway
 
-Render any web page to video through a StreamKit backend. Paste a target URL straight onto the gateway host — no flags, no JSON:
+Render any web page to video through a StreamKit backend. The first path segment picks the output; paste the target URL after it — no flags, no JSON:
 
-- **clip** — a finite MP4 file (oneshot pipeline): `clip.streamkit.dev/example.com`
-- **cast** — a live stream, WebM or fMP4 (dynamic session): `cast.streamkit.dev/example.com`
+- **clip** — a finite MP4 file (oneshot pipeline): `web.streamkit.dev/clip/example.com`
+- **cast** — a live stream, WebM or fMP4 (dynamic session): `web.streamkit.dev/cast/example.com`
 
 The page is rendered by the [Servo](../../plugins/native/servo) browser engine on the backend. The gateway turns a pasteable URL into the multipart oneshot / dynamic-session calls the backend expects and, for `cast`, owns the session lifetime so abandoned streams are torn down instead of leaking a renderer.
 
 ## URL shape
 
 ```
-{host}/[options/]{target-url}
+{host}/{clip|cast}/[options/]{target-url}
 ```
 
-The target URL is taken **verbatim** as the path suffix (scheme optional, `https` assumed), so its own query string just rides along — no percent-encoding:
+The first segment is the output (`clip` or `cast`); the target URL follows **verbatim** (scheme optional, `https` assumed), so its own query string just rides along — no percent-encoding:
 
 ```
-clip.streamkit.dev/grafana.example/d/abc?panel=3&from=now-6h
+web.streamkit.dev/clip/grafana.example/d/abc?panel=3&from=now-6h
 ```
 
-Options are an optional comma-separated `key=value` **first segment**:
+Options are an optional comma-separated `key=value` segment between the output and the URL:
 
 ```
-clip.streamkit.dev/dur=30s/example.com                # clip length (default 10s, capped at 60s)
-cast.streamkit.dev/res=2560x1440/example.com          # capture resolution (default 1920x1080)
-clip.streamkit.dev/res=1280x720,dur=15s/example.com   # combine, comma-separated
+web.streamkit.dev/clip/dur=30s/example.com                # clip length (default 10s, capped at 60s)
+web.streamkit.dev/cast/res=2560x1440/example.com          # capture resolution (default 1920x1080)
+web.streamkit.dev/clip/res=1280x720,dur=15s/example.com   # combine, comma-separated
 ```
 
-`dur` is `clip`-only; `res` (the capture resolution) applies to both modes.
-
-Locally there are no subdomains, so select the mode with a path prefix instead:
-
-```
-http://127.0.0.1:8080/clip/dur=5s/example.com
-http://127.0.0.1:8080/cast/example.com
-```
+`dur` is `clip`-only; `res` (the capture resolution) applies to both modes. The scheme is identical locally, e.g. `http://127.0.0.1:8080/clip/dur=5s/example.com`.
 
 The same URL serves a browser and a player/script: an address-bar visit (`Accept: text/html`) to a `cast` URL returns a tiny autoplay page; anything else (a `<video src>`, `curl`, `ffplay`) gets the raw stream/file.
 

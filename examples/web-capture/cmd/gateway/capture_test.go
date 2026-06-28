@@ -12,29 +12,29 @@ import (
 
 func TestDetectMode(t *testing.T) {
 	cases := []struct {
-		host, rawTarget string
-		wantMode        captureMode
-		wantRest        string
-		wantOK          bool
+		rawTarget string
+		wantMode  captureMode
+		wantRest  string
+		wantOK    bool
 	}{
-		{"clip.streamkit.dev", "/example.com", modeClip, "example.com", true},
-		{"cast.streamkit.dev", "/dur=5s/example.com", modeCast, "dur=5s/example.com", true},
-		{"clip.streamkit.dev:8080", "/x", modeClip, "x", true},
-		{"localhost:8080", "/clip/example.com", modeClip, "example.com", true},
-		{"localhost:8080", "/cast/example.com", modeCast, "example.com", true},
-		{"localhost", "/example.com", modeClip, "example.com", false},
+		{"/clip/example.com", modeClip, "example.com", true},
+		{"/cast/dur=5s/example.com", modeCast, "dur=5s/example.com", true},
+		{"/clip/dur=30s/example.com", modeClip, "dur=30s/example.com", true},
+		{"/cast/example.com", modeCast, "example.com", true},
+		{"/example.com", modeClip, "", false}, // no mode segment
+		{"/", modeClip, "", false},
 	}
 	for _, c := range cases {
-		mode, rest, ok := detectMode(c.host, c.rawTarget)
+		mode, rest, ok := detectMode(c.rawTarget)
 		if ok != c.wantOK {
-			t.Errorf("detectMode(%q,%q) ok=%v want %v", c.host, c.rawTarget, ok, c.wantOK)
+			t.Errorf("detectMode(%q) ok=%v want %v", c.rawTarget, ok, c.wantOK)
 			continue
 		}
 		if !ok {
 			continue
 		}
 		if mode != c.wantMode || rest != c.wantRest {
-			t.Errorf("detectMode(%q,%q) = (%v,%q) want (%v,%q)", c.host, c.rawTarget, mode, rest, c.wantMode, c.wantRest)
+			t.Errorf("detectMode(%q) = (%v,%q) want (%v,%q)", c.rawTarget, mode, rest, c.wantMode, c.wantRest)
 		}
 	}
 }
@@ -89,7 +89,7 @@ func TestParseTargetAndOptions(t *testing.T) {
 // The exact shape a local path-prefix request produces, end to end through
 // detectMode + parseTargetAndOptions.
 func TestDetectModeThenParseWithOptions(t *testing.T) {
-	mode, rest, ok := detectMode("127.0.0.1:8080", "/clip/dur=5s,res=1920x1080/streamkit.dev")
+	mode, rest, ok := detectMode("/clip/dur=5s,res=1920x1080/streamkit.dev")
 	if !ok || mode != modeClip {
 		t.Fatalf("detectMode = (%v, %q, %v)", mode, rest, ok)
 	}

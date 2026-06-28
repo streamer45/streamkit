@@ -210,13 +210,14 @@ const usagePage = `<!doctype html><html><head><meta charset="utf-8"><title>Strea
 	`<style>body{font:16px/1.5 system-ui,sans-serif;max-width:42rem;margin:3rem auto;padding:0 1rem;color:#222}` +
 	`code{background:#f2f2f2;padding:.1em .3em;border-radius:.2em}</style></head><body>` +
 	`<h1>StreamKit web-capture</h1>` +
-	`<p>Render any web page to video. Paste a target URL straight after the host:</p>` +
+	`<p>Render any web page to video. The path is <code>/{output}/[config]/{url}</code> — ` +
+	`the first segment picks the output, then optional config, then the target URL:</p>` +
 	`<ul>` +
-	`<li><strong>Clip</strong> (MP4 file): <code>clip.streamkit.dev/example.com</code></li>` +
-	`<li><strong>Clip</strong> with duration: <code>clip.streamkit.dev/dur=30s/example.com</code></li>` +
-	`<li><strong>Cast</strong> (live stream): <code>cast.streamkit.dev/example.com</code></li>` +
+	`<li><strong>Clip</strong> (MP4 file): <code>web.streamkit.dev/clip/example.com</code></li>` +
+	`<li><strong>Clip</strong> with duration: <code>web.streamkit.dev/clip/dur=30s/example.com</code></li>` +
+	`<li><strong>Cast</strong> (live stream): <code>web.streamkit.dev/cast/example.com</code></li>` +
+	`<li><strong>Cast</strong> at a resolution: <code>web.streamkit.dev/cast/res=2560x1440/example.com</code></li>` +
 	`</ul>` +
-	`<p>Locally, use a path prefix instead of a subdomain: <code>/clip/…</code> or <code>/cast/…</code>.</p>` +
 	`</body></html>`
 
 func (gw *gateway) handleUsage(w http.ResponseWriter, _ *http.Request) {

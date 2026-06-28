@@ -242,7 +242,7 @@ func (gw *gateway) router() http.Handler {
 }
 
 func (gw *gateway) handleCapture(w http.ResponseWriter, r *http.Request) {
-	mode, rest, ok := detectMode(r.Host, r.RequestURI)
+	mode, rest, ok := detectMode(r.RequestURI)
 	if !ok {
 		gw.handleUsage(w, r)
 		return

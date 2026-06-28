@@ -59,24 +59,12 @@ type captureOpts struct {
 // so a first segment that matches this is unambiguously options, not the target.
 var optionsSegmentRe = regexp.MustCompile(`^[a-z]+=[^,/]+(,[a-z]+=[^,/]+)*$`)
 
-// detectMode resolves clip/cast from the host subdomain (clip./cast.) or, for
-// local/single-host use, a leading /clip//cast/ path prefix. It returns the rest
-// of the raw request target with the mode prefix (if any) stripped.
-func detectMode(host, rawTarget string) (mode captureMode, rest string, ok bool) {
-	h := host
-	if i := strings.IndexByte(h, ':'); i >= 0 {
-		h = h[:i]
-	}
-	h = strings.ToLower(h)
+// detectMode resolves the output mode from the first path segment — `clip` or
+// `cast` — so a single host (web.streamkit.dev) serves both: the path is
+// /{mode}/[options]/{target-url}. It returns the rest of the raw request target
+// with the mode segment stripped, and ok=false when neither matches.
+func detectMode(rawTarget string) (mode captureMode, rest string, ok bool) {
 	rest = strings.TrimPrefix(rawTarget, "/")
-
-	switch {
-	case strings.HasPrefix(h, "clip."):
-		return modeClip, rest, true
-	case strings.HasPrefix(h, "cast."):
-		return modeCast, rest, true
-	}
-
 	switch {
 	case rest == "clip" || strings.HasPrefix(rest, "clip/"):
 		return modeClip, strings.TrimPrefix(strings.TrimPrefix(rest, "clip"), "/"), true
