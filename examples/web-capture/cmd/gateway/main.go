@@ -277,6 +277,14 @@ func (gw *gateway) handleCapture(w http.ResponseWriter, r *http.Request) {
 }
 
 func (gw *gateway) serveClip(w http.ResponseWriter, r *http.Request, u *url.URL, opts captureOpts) {
+	// A browser address-bar paste (Accept: text/html) gets an autoplay page; the
+	// page's <video> then re-requests this same URL (Accept: */*) and is served
+	// the raw MP4. Serving the page first avoids consuming a render slot for it.
+	if acceptsHTML(r) {
+		gw.writePlayerPage(w, r, "clip", u)
+		return
+	}
+
 	dur := opts.dur
 	if dur <= 0 {
 		dur = gw.clipDefaultDur
@@ -295,7 +303,7 @@ func (gw *gateway) serveCast(w http.ResponseWriter, r *http.Request, u *url.URL,
 	// A browser address-bar paste (Accept: text/html) gets an autoplay page; the
 	// page's <video> then re-requests this same URL (Accept: */*) and is streamed.
 	if acceptsHTML(r) {
-		gw.writeCastPage(w, r, u)
+		gw.writePlayerPage(w, r, "cast", u)
 		return
 	}
 

@@ -195,15 +195,18 @@ func streamCopy(ctx context.Context, w http.ResponseWriter, src io.Reader, endpo
 	}
 }
 
-const castPageTemplate = `<!doctype html><html><head><meta charset="utf-8">` +
-	`<title>web-cast · %s</title>` +
+// playerPageTemplate wraps the capture in a full-window autoplay <video>. The
+// <video> re-requests this same URL with `Accept: */*`, which the clip/cast
+// handlers serve as raw video, so CLI clients (curl/ffmpeg) bypass this page.
+const playerPageTemplate = `<!doctype html><html><head><meta charset="utf-8">` +
+	`<title>web-%s · %s</title>` +
 	`<style>html,body{margin:0;height:100%%;background:#000}video{width:100%%;height:100%%;object-fit:contain}</style>` +
 	`</head><body><video src="%s" autoplay muted playsinline controls></video></body></html>`
 
-func (gw *gateway) writeCastPage(w http.ResponseWriter, r *http.Request, target *url.URL) {
+func (gw *gateway) writePlayerPage(w http.ResponseWriter, r *http.Request, kind string, target *url.URL) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = fmt.Fprintf(w, castPageTemplate, html.EscapeString(target.String()), html.EscapeString(r.RequestURI))
+	_, _ = fmt.Fprintf(w, playerPageTemplate, kind, html.EscapeString(target.String()), html.EscapeString(r.RequestURI))
 }
 
 const usagePage = `<!doctype html><html><head><meta charset="utf-8"><title>StreamKit web-capture</title>` +
