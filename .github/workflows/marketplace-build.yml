@@ -345,6 +345,10 @@ jobs:
   publish-registry:
     name: Publish Registry (PR)
     needs: [build-marketplace, build-marketplace-cuda]
+    # build-marketplace-cuda is optional (skipped when build_cuda=false); don't let
+    # a skipped CUDA job block CPU registry publishing. Require the CPU build to
+    # have succeeded and the CUDA build to not have failed.
+    if: ${{ always() && needs.build-marketplace.result == 'success' && needs.build-marketplace-cuda.result != 'failure' }}
     runs-on: ubuntu-22.04
     permissions:
       contents: write
