@@ -10,76 +10,100 @@ import (
 	"strings"
 )
 
-// encoderProfile is a swappable encoder choice: the YAML for the `encoder` node
-// (named so the muxer can `needs: encoder`), the mp4 `video_codec` it implies
-// (ignored by the auto-detecting WebM muxer used for cast), and the content_type
-// advertised to the client. Blocks carry {{FPS}}/{{BR_KBPS}}/{{BR_BPS}} — note
-// the software encoders take a kbps bitrate while the HW encoders take bits/sec.
+// encoderProfile is a swappable encoder choice. block is the `encoder` node.
+// Clip pipelines use their fixed mp4 muxer (muxCodec = its video_codec); cast
+// pipelines inject muxer (WebM for VP9/AV1, fMP4 for H.264). Software encoders
+// take a kbps bitrate; the HW ones take bits/sec + framerate.
 type encoderProfile struct {
 	block       string
-	muxCodec    string
+	muxer       string // cast only
+	muxCodec    string // clip only
 	contentType string
 }
 
-// clipEncoders stay H.264 so downloaded clips remain universally playable
-// (incl. Safari/iOS). Software is the default; hardware is Vulkan Video, which
-// works on NVIDIA/AMD/Intel (NVENC exposes AV1 only, not H.264).
-var clipEncoders = map[string]encoderProfile{
-	"h264-sw": {
-		block: `  encoder:
+// Shared encoder node blocks; placeholders are filled at render time.
+const (
+	openh264Block = `  encoder:
     kind: video::openh264::encoder
     params:
       bitrate_kbps: {{BR_KBPS}}
       max_frame_rate: {{FPS}}.0
-    needs: pixel_convert`,
-		muxCodec:    "h264",
-		contentType: `'video/mp4; codecs="avc1.42c01f"'`,
-	},
-	"h264-hw": {
-		block: `  encoder:
+    needs: pixel_convert`
+
+	vulkanH264Block = `  encoder:
     kind: video::vulkan_video::h264_encoder
     params:
       bitrate: {{BR_BPS}}
       framerate: {{FPS}}
-    needs: pixel_convert`,
-		muxCodec:    "h264",
-		contentType: `'video/mp4; codecs="avc1.42c01f"'`,
-	},
-}
+    needs: pixel_convert`
 
-// castEncoders: VP9 (software, default) or AV1 — software (svt, for local
-// testing without a GPU) or hardware (NVENC). The WebM muxer auto-detects the
-// codec from the packets, so only the encoder and advertised codec string vary.
-var castEncoders = map[string]encoderProfile{
-	"vp9-sw": {
-		block: `  encoder:
+	vp9Block = `  encoder:
     kind: video::vp9::encoder
     params:
       bitrate_kbps: {{BR_KBPS}}
-    needs: pixel_convert`,
-		contentType: `'video/webm; codecs="vp9"'`,
-	},
-	"av1-sw": {
-		// CRF, not a target bitrate: SVT-AV1 rejects VBR in its low-delay mode
-		// (required for live), so a bitrate_kbps>0 fails. CRF works in low-delay.
-		block: `  encoder:
+    needs: pixel_convert`
+
+	// CRF, not a target bitrate: SVT-AV1 rejects VBR in its low-delay mode
+	// (required for live), so a bitrate_kbps>0 fails.
+	svtAv1Block = `  encoder:
     kind: video::svt_av1::encoder
     params:
       bitrate_kbps: 0
       crf: 32
       fps: {{FPS}}
-    needs: pixel_convert`,
-		contentType: `'video/webm; codecs="av01.0.08M.08"'`,
-	},
-	"av1-hw": {
-		block: `  encoder:
+    needs: pixel_convert`
+
+	nvAv1Block = `  encoder:
     kind: video::nv::av1_encoder
     params:
       bitrate: {{BR_BPS}}
       framerate: {{FPS}}
-    needs: pixel_convert`,
-		contentType: `'video/webm; codecs="av01.0.08M.08"'`,
-	},
+    needs: pixel_convert`
+)
+
+// Cast muxer blocks. WebM auto-detects VP9 vs AV1 from the packets; fMP4 (mp4
+// mode:stream) carries H.264 and — since the http::mse fMP4 support landed —
+// plays in Safari/iOS over a plain <video>.
+const (
+	webmMuxerBlock = `  muxer:
+    kind: containers::webm::muxer
+    params:
+      video_width: {{WIDTH}}
+      video_height: {{HEIGHT}}
+      streaming_mode: live
+    needs: encoder`
+
+	fmp4MuxerBlock = `  muxer:
+    kind: containers::mp4::muxer
+    params:
+      mode: stream
+      video_width: {{WIDTH}}
+      video_height: {{HEIGHT}}
+      video_codec: h264
+    needs: encoder`
+)
+
+const (
+	h264ContentType = `'video/mp4; codecs="avc1.42c01f"'`
+	vp9ContentType  = `'video/webm; codecs="vp9"'`
+	av1ContentType  = `'video/webm; codecs="av01.0.08M.08"'`
+)
+
+// clipEncoders stay H.264 so downloaded clips play everywhere; software is the
+// default, hardware (Vulkan; NVIDIA/AMD/Intel) is opt-in.
+var clipEncoders = map[string]encoderProfile{
+	"h264-sw": {block: openh264Block, muxCodec: "h264", contentType: h264ContentType},
+	"h264-hw": {block: vulkanH264Block, muxCodec: "h264", contentType: h264ContentType},
+}
+
+// castEncoders: VP9/AV1-in-WebM (crisper/efficient, Chromium + Firefox) or
+// H.264-in-fMP4 (universal, including Safari/iOS).
+var castEncoders = map[string]encoderProfile{
+	"vp9-sw":  {block: vp9Block, muxer: webmMuxerBlock, contentType: vp9ContentType},
+	"av1-sw":  {block: svtAv1Block, muxer: webmMuxerBlock, contentType: av1ContentType},
+	"av1-hw":  {block: nvAv1Block, muxer: webmMuxerBlock, contentType: av1ContentType},
+	"h264-sw": {block: openh264Block, muxer: fmp4MuxerBlock, contentType: h264ContentType},
+	"h264-hw": {block: vulkanH264Block, muxer: fmp4MuxerBlock, contentType: h264ContentType},
 }
 
 func lookupEncoder(profiles map[string]encoderProfile, name string) (encoderProfile, error) {

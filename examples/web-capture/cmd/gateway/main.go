@@ -172,7 +172,7 @@ func loadConfig() config {
 	clipBitrate := flag.Int("clip-bitrate-kbps", envInt("GATEWAY_CLIP_BITRATE_KBPS", defaultClipBitrateKbps), "Clip video bitrate (kbps)")
 	castBitrate := flag.Int("cast-bitrate-kbps", envInt("GATEWAY_CAST_BITRATE_KBPS", defaultCastBitrateKbps), "Cast video bitrate (kbps)")
 	clipEncoder := flag.String("clip-encoder", getEnvDefault("GATEWAY_CLIP_ENCODER", defaultClipEncoder), "Clip encoder: h264-sw, h264-hw")
-	castEncoder := flag.String("cast-encoder", getEnvDefault("GATEWAY_CAST_ENCODER", defaultCastEncoder), "Cast encoder: vp9-sw, av1-sw, av1-hw")
+	castEncoder := flag.String("cast-encoder", getEnvDefault("GATEWAY_CAST_ENCODER", defaultCastEncoder), "Cast encoder: vp9-sw, av1-sw, av1-hw, h264-sw, h264-hw (h264 = fMP4, plays in Safari/iOS)")
 
 	flag.Parse()
 

@@ -40,6 +40,7 @@ func renderClipPipeline(targetURL string, resW, resH, fps, frameCount, brKbps in
 
 func renderCastPipeline(targetURL string, resW, resH, fps, maxClients, brKbps int, enc encoderProfile) string {
 	tmpl := strings.Replace(castPipelineTemplate, "{{ENCODER_BLOCK}}", enc.block, 1)
+	tmpl = strings.Replace(tmpl, "{{MUXER_BLOCK}}", enc.muxer, 1)
 	return strings.NewReplacer(
 		"{{URL}}", strconv.Quote(targetURL),
 		"{{WIDTH}}", strconv.Itoa(resW),

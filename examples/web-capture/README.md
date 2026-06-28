@@ -9,7 +9,7 @@ SPDX-License-Identifier: MPL-2.0
 Render any web page to video through a StreamKit backend. Paste a target URL straight onto the gateway host — no flags, no JSON:
 
 - **clip** — a finite MP4 file (oneshot pipeline): `clip.streamkit.dev/example.com`
-- **cast** — a live WebM stream (dynamic session): `cast.streamkit.dev/example.com`
+- **cast** — a live stream, WebM or fMP4 (dynamic session): `cast.streamkit.dev/example.com`
 
 The page is rendered by the [Servo](../../plugins/native/servo) browser engine on the backend. The gateway turns a pasteable URL into the multipart oneshot / dynamic-session calls the backend expects and, for `cast`, owns the session lifetime so abandoned streams are torn down instead of leaking a renderer.
 
@@ -49,15 +49,15 @@ The same URL serves a browser and a player/script: an address-bar visit (`Accept
 | Mode | Format | Plays in |
 |------|--------|----------|
 | `clip` | MP4 / H.264, fragmented (plays inline as it renders) | Everywhere, including Safari/iOS |
-| `cast` | WebM / VP9 (the only container the MSE transport emits) | Chromium & Firefox — **Safari/iOS may not play the live stream** |
+| `cast` | VP9 / WebM by default; H.264 / fMP4 via `cast-encoder=h264-sw` | VP9: Chromium & Firefox. H.264/fMP4: everywhere, including Safari/iOS |
 
-Universal live playback would require the backend's `transport::http::mse` node to emit fragmented MP4; that's a possible follow-up, not part of v1.
+The cast default (VP9/WebM) is crisper for screen text but plays only in Chromium/Firefox. For universal live playback (incl. Safari/iOS), set `cast-encoder=h264-sw` (or `h264-hw`): `transport::http::mse` serves fragmented MP4, which a plain `<video>` plays everywhere.
 
 ## Prereqs
 
 - A StreamKit server with the **Servo plugin** built and loaded:
   `just build-plugin-native-servo && just copy-plugins-native`.
-- The gateway's token/role must be allowed to **create and destroy sessions** and to use the `plugin::native::servo` node.
+- A non-admin **`user`** token suffices (it may create/destroy sessions and use `transport::http::mse`, `plugin::native::servo`, and the video/container nodes) — no admin needed. Pass it via `--token` / `SKIT_TOKEN`.
 - Go 1.24+.
 
 ## Run
@@ -91,7 +91,7 @@ xdg-open 'http://127.0.0.1:8080/cast/example.com'
 | `GATEWAY_CLIP_BITRATE_KBPS` | `--clip-bitrate-kbps` | `10000` | Clip video bitrate (kbps) |
 | `GATEWAY_CAST_BITRATE_KBPS` | `--cast-bitrate-kbps` | `6000` | Cast video bitrate (kbps) |
 | `GATEWAY_CLIP_ENCODER` | `--clip-encoder` | `h264-sw` | `h264-sw`, or `h264-hw` (Vulkan Video) |
-| `GATEWAY_CAST_ENCODER` | `--cast-encoder` | `vp9-sw` | `vp9-sw`, `av1-sw` (SVT-AV1), or `av1-hw` (NVENC) |
+| `GATEWAY_CAST_ENCODER` | `--cast-encoder` | `vp9-sw` | `vp9-sw`, `av1-sw`, `av1-hw`, `h264-sw`, `h264-hw` |
 
 Capture runs at **1080p30** by default: the page renders **and** encodes at the same resolution (1:1, no downscale), so text stays crisp and the page gets a real desktop layout. Drop to `res=1280x720` for less bandwidth or raise to `res=2560x1440` for more detail (capped at 4K); frame rate is fixed at 30.
 
@@ -99,15 +99,15 @@ Capture runs at **1080p30** by default: the page renders **and** encodes at the 
 
 Software encoders are the default, so the gateway runs anywhere with no GPU — ideal for local dev. Hardware is opt-in per mode:
 
-| Profile | Encoder | Notes |
-|---|---|---|
-| `h264-sw` | OpenH264 | clip default; universal |
-| `h264-hw` | Vulkan Video H.264 | NVIDIA/AMD/Intel (NVENC exposes no H.264) |
-| `vp9-sw` | libvpx VP9 | cast default |
-| `av1-sw` | SVT-AV1 | software AV1 — exercise the AV1 path without a GPU |
-| `av1-hw` | NVENC AV1 | NVIDIA; crisper than VP9 for cast |
+| Profile | Codec / container | Modes | Notes |
+|---|---|---|---|
+| `h264-sw` | H.264 — MP4 (clip) / fMP4 (cast) | clip, cast | universal incl. Safari/iOS; OpenH264 (software) |
+| `h264-hw` | H.264 — MP4 / fMP4 | clip, cast | Vulkan Video (NVIDIA/AMD/Intel; NVENC has no H.264) |
+| `vp9-sw` | VP9 — WebM | cast | cast default; crisp screen text; Chromium/Firefox |
+| `av1-sw` | AV1 — WebM | cast | SVT-AV1 (software) — exercise AV1 without a GPU |
+| `av1-hw` | AV1 — WebM | cast | NVENC AV1 (NVIDIA); efficient + crisp; Chromium/Firefox |
 
-Clips stay H.264 so they play everywhere; cast AV1 plays in Chromium/Firefox (the same browsers that already handle the WebM stream). Hardware profiles require the matching runtime in the **backend** (Vulkan for `h264-hw`, CUDA + NVENC for `av1-hw`) — the gateway only selects the node, so a missing runtime surfaces as a backend pipeline error, not a gateway one.
+Clips are always H.264/MP4 (universal download). Cast defaults to VP9/WebM (crisp, Chromium/Firefox); switch to `h264-sw`/`h264-hw` for H.264/fMP4 that also plays in Safari/iOS, or `av1-*` for AV1/WebM. Hardware profiles require the matching runtime in the **backend** (Vulkan for `h264-hw`, CUDA + NVENC for `av1-hw`) — the gateway only selects the node, so a missing runtime surfaces as a backend pipeline error, not a gateway one.
 
 ## Lifetime & teardown (cast)
 
@@ -121,4 +121,4 @@ Prometheus metrics at `GET /metrics` (not gated by the concurrency limit). Beyon
 
 - **Public / URL-only.** Targets that resolve to loopback/private/link-local/CGNAT/cloud-metadata addresses are rejected (SSRF guard). Auth-gated pages (cookies/headers) are intentionally out of scope — a future self-hosted feature, never the public path. DNS rebinding between the gateway's check and Servo's own fetch is a known gap.
 - **Servo is view-only and software-rendered**: static/CSS pages render at full frame rate; heavy WebGL is ~15–20 fps. No clicking, scrolling, or login.
-- **`cast` in Safari/iOS** may not play (WebM/VP9), see above.
+- **`cast` in Safari/iOS**: the default VP9/WebM is Chromium/Firefox-only; use `cast-encoder=h264-sw` for fMP4/H.264 that plays in Safari/iOS.

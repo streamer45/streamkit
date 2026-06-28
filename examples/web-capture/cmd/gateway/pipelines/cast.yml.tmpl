@@ -4,8 +4,8 @@
 
 # Dynamic pipeline: render a web page to a live WebM stream over HTTP MSE.
 # Placeholders are substituted by renderCastPipeline (see pipelines.go); the
-# encoder node is injected per selected profile (see encoders.go).
-# The stream is unbounded (no frame limit); the WebM muxer auto-detects VP9/AV1.
+# encoder and muxer nodes are injected per selected profile (WebM for VP9/AV1,
+# fMP4 for H.264 — see encoders.go). The stream is unbounded (no frame limit).
 name: web-cast
 description: Render a web page to a live WebM stream
 mode: dynamic
@@ -30,13 +30,7 @@ nodes:
       output_format: nv12
     needs: web
 {{ENCODER_BLOCK}}
-  muxer:
-    kind: containers::webm::muxer
-    params:
-      video_width: {{WIDTH}}
-      video_height: {{HEIGHT}}
-      streaming_mode: live
-    needs: encoder
+{{MUXER_BLOCK}}
   http_mse:
     kind: transport::http::mse
     params:
