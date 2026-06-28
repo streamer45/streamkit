@@ -74,6 +74,7 @@ func (gw *gateway) proxyOneshot(w http.ResponseWriter, r *http.Request, pipeline
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, gw.skitURL+"/api/v1/process", bodyReader)
 	if err != nil {
+		_ = bodyReader.Close()
 		gw.failUpstream(w, "clip", fmt.Errorf("create skit request: %w", err))
 		return
 	}
