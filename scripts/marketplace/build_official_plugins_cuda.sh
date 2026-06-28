@@ -21,7 +21,7 @@ import pathlib
 metadata = json.loads(pathlib.Path("marketplace/official-plugins.json").read_text())
 for plugin in metadata.get("plugins", []):
     if "cuda" in plugin.get("accelerators", []):
-        print(plugin["id"])
+        print(f"{plugin['id']}\t{plugin['artifact']}")
 PY
 )
 
@@ -32,7 +32,7 @@ fi
 
 target_dir="${CARGO_TARGET_DIR:-$(pwd)/target/plugins}"
 
-while IFS= read -r plugin; do
+while IFS=$'\t' read -r plugin artifact; do
   if [ -z "${plugin}" ]; then
     continue
   fi
@@ -43,8 +43,10 @@ while IFS= read -r plugin; do
   fi
 
   features=()
+  has_cuda_feature=0
   if grep -qE '^[[:space:]]*cuda[[:space:]]*=' "${plugin_dir}/Cargo.toml"; then
     features=(--features cuda)
+    has_cuda_feature=1
   fi
 
   echo "Building CUDA plugin: ${plugin} ${features[*]:-}"
@@ -52,4 +54,23 @@ while IFS= read -r plugin; do
     cd "${plugin_dir}"
     CARGO_TARGET_DIR="${target_dir}" cargo build --release ${features[@]+"${features[@]}"}
   )
+
+  # Guard against silently shipping an unaccelerated CPU build as a `cuda`
+  # variant. A cuda-declared plugin must either compile its own `cuda` feature
+  # or link the (execution-provider-agnostic) sherpa-onnx runtime that
+  # build_registry.py later packages against the GPU sherpa libs. If neither
+  # holds, the produced .so is a plain CPU build masquerading as cuda.
+  artifact_path="${target_dir}/release/$(basename "${artifact}")"
+  if [ "${has_cuda_feature}" -eq 0 ]; then
+    if [ ! -f "${artifact_path}" ]; then
+      echo "ERROR: expected artifact not found after build: ${artifact_path}" >&2
+      exit 1
+    fi
+    if ! readelf -d "${artifact_path}" 2>/dev/null | grep -q 'libsherpa-onnx-c-api.so'; then
+      echo "ERROR: plugin '${plugin}' declares the 'cuda' accelerator but has" \
+           "neither a 'cuda' Cargo feature nor sherpa-onnx linkage; refusing to" \
+           "package a plain CPU build as a cuda variant." >&2
+      exit 1
+    fi
+  fi
 done <<< "${cuda_plugins}"

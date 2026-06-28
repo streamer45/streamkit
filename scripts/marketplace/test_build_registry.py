@@ -114,6 +114,63 @@ class TestBuildManifestVariants:
         assert built == checked
 
 
+SAMPLE_ASSET = {
+    "type_id": "slint",
+    "label": "Slint Files",
+    "extensions": ["slint"],
+    "max_size_bytes": 1048576,
+    "content_type": "text",
+    "icon_hint": "code",
+    "node_param": "slint_file",
+    "system_dir": "samples/slint/system",
+}
+
+
+class TestBuildManifestAssets:
+    """Asset-type declarations must survive into manifest.json (and the embedded
+    plugin.yml) so the server can rediscover them after install/extraction."""
+
+    def test_assets_included_when_present(self):
+        plugin = {**SAMPLE_PLUGIN, "assets": [SAMPLE_ASSET]}
+        manifest = build_registry.build_manifest(plugin, "1.0.0", bundle_block=None)
+        assert manifest["assets"] == [SAMPLE_ASSET]
+
+    def test_assets_omitted_when_absent(self):
+        manifest = build_registry.build_manifest(SAMPLE_PLUGIN, "1.0.0", bundle_block=None)
+        assert "assets" not in manifest
+
+    def test_assets_omitted_when_empty(self):
+        plugin = {**SAMPLE_PLUGIN, "assets": []}
+        manifest = build_registry.build_manifest(plugin, "1.0.0", bundle_block=None)
+        assert "assets" not in manifest
+
+    def test_build_and_check_manifests_match_with_assets(self):
+        plugin = {**SAMPLE_PLUGIN, "assets": [SAMPLE_ASSET]}
+        built = build_registry.build_manifest(plugin, "1.0.0", SAMPLE_BUNDLE)
+        checked = check_registry_versions.build_manifest_from_plugin(
+            {**plugin, "version": "1.0.0"}, SAMPLE_BUNDLE
+        )
+        assert built == checked
+
+
+class TestWritePluginYml:
+    """build_bundle embeds a plugin.yml so raw-extraction consumers (the demo)
+    recover asset types the server only reads from plugin.yml."""
+
+    def test_writes_parseable_yaml_with_assets(self, tmp_path):
+        import yaml
+
+        plugin = {**SAMPLE_PLUGIN, "assets": [SAMPLE_ASSET]}
+        manifest = build_registry.build_manifest(plugin, "1.0.0", bundle_block=None)
+        build_registry.write_plugin_yml(tmp_path, manifest)
+
+        yml_path = tmp_path / "plugin.yml"
+        assert yml_path.exists()
+        parsed = yaml.safe_load(yml_path.read_text())
+        assert parsed["assets"] == [SAMPLE_ASSET]
+        assert parsed["id"] == "test-plugin"
+
+
 class TestEnsureSherpaRuntime:
     """ensure_sherpa_runtime copies extra GPU libs for cuda variants."""
 

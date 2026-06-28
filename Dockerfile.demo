@@ -508,6 +508,12 @@ COPY --chown=app:app --from=supertonic-bundle /bundle/extracted /opt/streamkit/p
 COPY --chown=app:app --from=supertonic-bundle /models/supertonic-v2-onnx /opt/streamkit/models/supertonic-v2-onnx
 
 COPY --chown=app:app --from=slint-bundle /bundle/extracted /opt/streamkit/plugins/native/slint
+# The pinned slint bundle predates self-describing bundles (no embedded
+# plugin.yml), so the server cannot rediscover Slint's asset type from the
+# extracted bundle alone. Inject the source plugin.yml so the demo keeps the
+# "Slint Files" asset type + /api/v1/assets/plugin/slint endpoints. Drop this
+# once SLINT_PLUGIN_VERSION points at a bundle built with an embedded plugin.yml.
+COPY --chown=app:app plugins/native/slint/plugin.yml /opt/streamkit/plugins/native/slint/plugin.yml
 
 COPY --chown=app:app --from=aac-encoder-bundle /bundle/extracted /opt/streamkit/plugins/native/aac-encoder
 

@@ -61,6 +61,7 @@ def build_manifest_from_plugin(
         "bundle": bundle_block,
         "compatibility": plugin.get("compatibility"),
         "models": plugin.get("models", []),
+        "assets": plugin.get("assets") or None,
     }
     manifest = strip_none(manifest)
     if variants:

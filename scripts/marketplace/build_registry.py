@@ -134,6 +134,7 @@ def build_bundle(
 
     if embedded_manifest is not None:
         write_json(work_dir / "manifest.json", embedded_manifest)
+        write_plugin_yml(entrypoint_path.parent, embedded_manifest)
 
     if accelerator == "cpu":
         bundle_name = f"{plugin_id}-{version}-bundle.tar.zst"
@@ -166,6 +167,29 @@ def build_bundle(
 def write_json(path: pathlib.Path, payload: dict) -> None:
     ensure_dir(path.parent)
     path.write_text(json.dumps(payload, indent=2, sort_keys=False))
+
+
+def write_plugin_yml(yml_dir: pathlib.Path, manifest: dict) -> None:
+    """Embed a `plugin.yml` next to the entrypoint so the bundle is
+    self-describing.
+
+    The server's `read_local_plugin_manifest` discovers a plugin's asset types
+    (and other metadata) from a `plugin.yml`/`plugin.yaml` beside the `.so`, not
+    from `manifest.json`. Consumers that extract a bundle directly (e.g. the demo
+    image) therefore need this file to recover declarations like Slint's asset
+    type. The marketplace installer writes the same file from the downloaded
+    manifest; embedding it keeps raw-extraction consumers in parity.
+    """
+    try:
+        import yaml
+    except ImportError as exc:
+        raise RuntimeError(
+            "PyYAML is required. Install python3-yaml or pip install pyyaml."
+        ) from exc
+    ensure_dir(yml_dir)
+    (yml_dir / "plugin.yml").write_text(
+        yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True)
+    )
 
 
 def strip_none(payload: dict) -> dict:
@@ -205,6 +229,7 @@ def build_manifest(
         "bundle": bundle_block,
         "compatibility": plugin.get("compatibility"),
         "models": plugin.get("models", []),
+        "assets": plugin.get("assets") or None,
     }
     manifest = strip_none(manifest)
     if variants:
@@ -557,6 +582,21 @@ def main() -> int:
                     tofile="would-be",
                 )
                 print("".join(diff), file=sys.stderr)
+                return 1
+
+            if not verify_existing_signature(
+                existing["manifest_path"],
+                existing["signature_path"],
+                public_key_path,
+            ):
+                print(
+                    f"ERROR: {plugin_id}@{plugin_version} — existing manifest "
+                    f"signature verification failed before attaching the "
+                    f"'{accelerator}' variant. The manifest may have been "
+                    f"modified after signing; revert the changes or bump the "
+                    f"version to trigger re-signing.",
+                    file=sys.stderr,
+                )
                 return 1
 
             manifest_dir = registry_out / "plugins" / plugin_id / plugin_version
