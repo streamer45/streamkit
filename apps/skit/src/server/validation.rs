@@ -518,13 +518,13 @@ fn app_error_message(err: AppError) -> String {
 /// helpers automatically apply to the validate endpoint.
 fn collect_file_path_errors(
     pipeline: &Pipeline,
-    security_config: &crate::config::SecurityConfig,
+    policy: crate::file_security::FileSecurityPolicy<'_>,
     errors: &mut Vec<ValidateDiagnostic>,
 ) {
     for result in [
-        validate_file_reader_paths(pipeline, security_config),
-        validate_file_writer_paths(pipeline, security_config),
-        validate_script_paths(pipeline, security_config),
+        validate_file_reader_paths(pipeline, policy),
+        validate_file_writer_paths(pipeline, policy),
+        validate_script_paths(pipeline, policy),
     ] {
         if let Err(e) = result {
             errors.push(ValidateDiagnostic {
@@ -578,20 +578,18 @@ pub(super) fn validate_pipeline_nodes(
 /// Validate file paths in all file_reader nodes to prevent path traversal attacks.
 pub(super) fn validate_file_reader_paths(
     pipeline_def: &Pipeline,
-    security_config: &crate::config::SecurityConfig,
+    policy: crate::file_security::FileSecurityPolicy<'_>,
 ) -> Result<(), AppError> {
     for (node_id, node_def) in &pipeline_def.nodes {
         if node_def.kind == "core::file_reader" {
             if let Some(params) = &node_def.params {
                 if let Some(path_value) = params.get("path") {
                     if let Some(path_str) = path_value.as_str() {
-                        file_security::validate_file_path(path_str, security_config).map_err(
-                            |e| {
-                                AppError::BadRequest(format!(
-                                    "Invalid file path in node '{node_id}': {e}"
-                                ))
-                            },
-                        )?;
+                        file_security::validate_file_path(path_str, policy).map_err(|e| {
+                            AppError::BadRequest(format!(
+                                "Invalid file path in node '{node_id}': {e}"
+                            ))
+                        })?;
                     }
                 }
             }
@@ -604,7 +602,7 @@ pub(super) fn validate_file_reader_paths(
 /// Validate write paths in all file_writer nodes to prevent arbitrary file writes.
 pub(super) fn validate_file_writer_paths(
     pipeline_def: &Pipeline,
-    security_config: &crate::config::SecurityConfig,
+    policy: crate::file_security::FileSecurityPolicy<'_>,
 ) -> Result<(), AppError> {
     for (node_id, node_def) in &pipeline_def.nodes {
         if node_def.kind == "core::file_writer" {
@@ -620,7 +618,7 @@ pub(super) fn validate_file_writer_paths(
                 )));
             };
 
-            crate::file_security::validate_write_path(path_str, security_config).map_err(|e| {
+            crate::file_security::validate_write_path(path_str, policy).map_err(|e| {
                 AppError::BadRequest(format!("Invalid write path in node '{node_id}': {e}"))
             })?;
         }
@@ -631,7 +629,7 @@ pub(super) fn validate_file_writer_paths(
 /// Validate script file paths in all core::script nodes to prevent path traversal attacks.
 pub(super) fn validate_script_paths(
     pipeline_def: &Pipeline,
-    security_config: &crate::config::SecurityConfig,
+    policy: crate::file_security::FileSecurityPolicy<'_>,
 ) -> Result<(), AppError> {
     for (node_id, node_def) in &pipeline_def.nodes {
         if node_def.kind == "core::script" {
@@ -639,12 +637,13 @@ pub(super) fn validate_script_paths(
                 if let Some(path_value) = params.get("script_path") {
                     if let Some(path_str) = path_value.as_str() {
                         if !path_str.trim().is_empty() {
-                            crate::file_security::validate_file_path(path_str, security_config)
-                                .map_err(|e| {
+                            crate::file_security::validate_file_path(path_str, policy).map_err(
+                                |e| {
                                     AppError::BadRequest(format!(
                                         "Invalid script_path in node '{node_id}': {e}"
                                     ))
-                                })?;
+                                },
+                            )?;
                         }
                     }
                 }
@@ -761,7 +760,7 @@ pub fn validate_pipeline_yaml(
 
     check_mode(&pipeline, mode, &mut errors);
     validate_connections(&pipeline, &node_defs, &mut errors);
-    collect_file_path_errors(&pipeline, &app_state.config.security, &mut errors);
+    collect_file_path_errors(&pipeline, app_state.file_security_policy(), &mut errors);
 
     let graph = Some(ValidateGraph {
         nodes: pipeline
@@ -797,13 +796,13 @@ pub fn validate_pipeline_yaml(
 /// policy.
 pub fn check_file_path_security(
     pipeline: &Pipeline,
-    security_config: &crate::config::SecurityConfig,
+    policy: crate::file_security::FileSecurityPolicy<'_>,
 ) -> Result<(), String> {
     let mut msgs = Vec::new();
     for result in [
-        validate_file_reader_paths(pipeline, security_config),
-        validate_file_writer_paths(pipeline, security_config),
-        validate_script_paths(pipeline, security_config),
+        validate_file_reader_paths(pipeline, policy),
+        validate_file_writer_paths(pipeline, policy),
+        validate_script_paths(pipeline, policy),
     ] {
         if let Err(e) = result {
             msgs.push(app_error_message(e));
@@ -1314,7 +1313,11 @@ mod helper_tests {
     #[test]
     fn validate_file_reader_paths_ignores_non_file_reader_nodes() {
         let pipe = pipeline_from("nodes:\n  output:\n    kind: streamkit::http_output\n");
-        validate_file_reader_paths(&pipe, &dummy_security_config()).unwrap();
+        validate_file_reader_paths(
+            &pipe,
+            crate::file_security::cwd_policy(&dummy_security_config()),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -1322,7 +1325,11 @@ mod helper_tests {
         let pipe = pipeline_from(
             "nodes:\n  reader:\n    kind: core::file_reader\n    params:\n      path: /nonexistent/not-allowed/file.txt\n",
         );
-        let err = validate_file_reader_paths(&pipe, &dummy_security_config()).unwrap_err();
+        let err = validate_file_reader_paths(
+            &pipe,
+            crate::file_security::cwd_policy(&dummy_security_config()),
+        )
+        .unwrap_err();
         match err {
             AppError::BadRequest(msg) => assert!(msg.contains("reader"), "got: {msg}"),
             other => panic!("expected BadRequest, got {other:?}"),
@@ -1332,13 +1339,21 @@ mod helper_tests {
     #[test]
     fn validate_file_reader_paths_ignores_missing_params() {
         let pipe = pipeline_from("nodes:\n  reader:\n    kind: core::file_reader\n");
-        validate_file_reader_paths(&pipe, &dummy_security_config()).unwrap();
+        validate_file_reader_paths(
+            &pipe,
+            crate::file_security::cwd_policy(&dummy_security_config()),
+        )
+        .unwrap();
     }
 
     #[test]
     fn validate_file_writer_paths_rejects_missing_params() {
         let pipe = pipeline_from("nodes:\n  writer:\n    kind: core::file_writer\n");
-        let err = validate_file_writer_paths(&pipe, &dummy_security_config()).unwrap_err();
+        let err = validate_file_writer_paths(
+            &pipe,
+            crate::file_security::cwd_policy(&dummy_security_config()),
+        )
+        .unwrap_err();
         match err {
             AppError::BadRequest(msg) => {
                 assert!(msg.contains("file_writer params"), "got: {msg}");
@@ -1353,7 +1368,11 @@ mod helper_tests {
         let pipe = pipeline_from(
             "nodes:\n  writer:\n    kind: core::file_writer\n    params:\n      path: 42\n",
         );
-        let err = validate_file_writer_paths(&pipe, &dummy_security_config()).unwrap_err();
+        let err = validate_file_writer_paths(
+            &pipe,
+            crate::file_security::cwd_policy(&dummy_security_config()),
+        )
+        .unwrap_err();
         match err {
             AppError::BadRequest(msg) => assert!(msg.contains("path to be a string"), "got: {msg}"),
             other => panic!("expected BadRequest, got {other:?}"),
@@ -1365,7 +1384,11 @@ mod helper_tests {
         let pipe = pipeline_from(
             "nodes:\n  writer:\n    kind: core::file_writer\n    params:\n      path: /tmp/out.mp4\n",
         );
-        let err = validate_file_writer_paths(&pipe, &dummy_security_config()).unwrap_err();
+        let err = validate_file_writer_paths(
+            &pipe,
+            crate::file_security::cwd_policy(&dummy_security_config()),
+        )
+        .unwrap_err();
         match err {
             AppError::BadRequest(msg) => {
                 assert!(msg.contains("Invalid write path"), "got: {msg}");
@@ -1381,7 +1404,8 @@ mod helper_tests {
         let pipe = pipeline_from(
             "nodes:\n  s:\n    kind: core::script\n    params:\n      script_path: \"   \"\n",
         );
-        validate_script_paths(&pipe, &dummy_security_config()).unwrap();
+        validate_script_paths(&pipe, crate::file_security::cwd_policy(&dummy_security_config()))
+            .unwrap();
     }
 
     #[cfg(feature = "script")]
@@ -1390,7 +1414,11 @@ mod helper_tests {
         let pipe = pipeline_from(
             "nodes:\n  s:\n    kind: core::script\n    params:\n      script_path: /etc/passwd\n",
         );
-        let err = validate_script_paths(&pipe, &dummy_security_config()).unwrap_err();
+        let err = validate_script_paths(
+            &pipe,
+            crate::file_security::cwd_policy(&dummy_security_config()),
+        )
+        .unwrap_err();
         match err {
             AppError::BadRequest(msg) => {
                 assert!(msg.contains("Invalid script_path"), "got: {msg}");
@@ -1404,13 +1432,15 @@ mod helper_tests {
     #[test]
     fn validate_script_paths_ignores_non_script_nodes() {
         let pipe = pipeline_from("nodes:\n  output:\n    kind: streamkit::http_output\n");
-        validate_script_paths(&pipe, &dummy_security_config()).unwrap();
+        validate_script_paths(&pipe, crate::file_security::cwd_policy(&dummy_security_config()))
+            .unwrap();
     }
 
     #[test]
     fn check_file_path_security_ok_for_clean_pipeline() {
         let pipe = pipeline_from("nodes:\n  output:\n    kind: streamkit::http_output\n");
-        check_file_path_security(&pipe, &dummy_security_config()).unwrap();
+        check_file_path_security(&pipe, crate::file_security::cwd_policy(&dummy_security_config()))
+            .unwrap();
     }
 
     #[test]
@@ -1419,7 +1449,11 @@ mod helper_tests {
             "nodes:\n  reader:\n    kind: core::file_reader\n    params:\n      path: /etc/passwd\n  \
              writer:\n    kind: core::file_writer\n    params:\n      path: /tmp/out.mp4\n",
         );
-        let msg = check_file_path_security(&pipe, &dummy_security_config()).unwrap_err();
+        let msg = check_file_path_security(
+            &pipe,
+            crate::file_security::cwd_policy(&dummy_security_config()),
+        )
+        .unwrap_err();
         // The combined error contains both nodes' diagnostics separated by '; '.
         assert!(msg.contains("reader"), "got: {msg}");
         assert!(msg.contains("writer"), "got: {msg}");

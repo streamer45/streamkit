@@ -152,7 +152,7 @@ Security configuration for file access and other security-sensitive settings.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `allowed_file_paths` | array<string> | `["samples/**"]` | Allowed file paths for file_reader nodes. Supports glob patterns (e.g., "samples/**", "/data/media/*"). Relative paths are resolved against the server's working directory. Default: `["samples/**"]` - only allow reading from the samples directory. Set to `["**"]` to allow all paths (not recommended for production). |
+| `allowed_file_paths` | array<string> | `["samples/**"]` | Allowed file paths for file_reader nodes. Supports glob patterns (e.g., "samples/**", "media/*.wav"). Patterns are resolved against `[server].asset_root`, matching the relative-only contract enforced on node `path` fields. Default: `["samples/**"]` - only allow reading from the samples directory. Set to `["**"]` to allow all paths (not recommended for production). |
 | `allowed_write_paths` | array<string> | `[]` | Allowed file paths for file_writer nodes. Default: empty (deny all writes). This is intentional: arbitrary file writes from user-provided pipelines are a high-risk capability. Patterns follow the same rules as `allowed_file_paths` and are matched against the resolved absolute target path. |
 
 ## `[server]`
@@ -1195,7 +1195,7 @@ Telemetry and observability configuration (OpenTelemetry, tokio-console).
           "default": [
             "samples/**"
           ],
-          "description": "Allowed file paths for file_reader nodes.\nSupports glob patterns (e.g., \"samples/**\", \"/data/media/*\").\nRelative paths are resolved against the server's working directory.\nDefault: `[\"samples/**\"]` - only allow reading from the samples directory.\nSet to `[\"**\"]` to allow all paths (not recommended for production).",
+          "description": "Allowed file paths for file_reader nodes.\nSupports glob patterns (e.g., \"samples/**\", \"media/*.wav\").\nPatterns are resolved against `[server].asset_root`, matching the\nrelative-only contract enforced on node `path` fields.\nDefault: `[\"samples/**\"]` - only allow reading from the samples directory.\nSet to `[\"**\"]` to allow all paths (not recommended for production).",
           "items": {
             "type": "string"
           },

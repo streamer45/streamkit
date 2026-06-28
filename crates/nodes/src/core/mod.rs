@@ -25,6 +25,20 @@ pub mod text_chunker;
 use passthrough::PassthroughNode;
 use streamkit_core::registry::StaticPins;
 
+/// The pipeline's canonical asset root, supplied by the server.
+///
+/// Node factories that read files at construction time (e.g. `core::script`
+/// with a `script_path`) resolve paths in the same path-space the server
+/// validated against.
+#[derive(Debug, Clone)]
+pub struct AssetRoot(pub std::path::PathBuf);
+
+impl streamkit_core::constraints::NodeConstraint for AssetRoot {
+    fn constraint_name() -> &'static str {
+        "core::asset_root"
+    }
+}
+
 /// # Panics
 /// Panics if default configs or JSON schemas fail to serialize.
 #[allow(clippy::expect_used)] // Schema serialization should never fail
@@ -119,9 +133,10 @@ pub fn register_core_nodes(registry: &mut NodeRegistry, constraints: &GlobalNode
     #[cfg(feature = "script")]
     {
         let global_config = constraints.get::<script::GlobalScriptConfig>().cloned();
+        let asset_root = constraints.get::<AssetRoot>().map(|a| a.0.clone());
 
         // Parametrized factory — not suitable for register_dynamic_node! macro
-        let factory = script::ScriptNode::factory(global_config);
+        let factory = script::ScriptNode::factory(global_config, asset_root);
         registry.register_dynamic_with_description(
             "core::script",
             move |params| (factory)(params),

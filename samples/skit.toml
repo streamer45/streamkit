@@ -19,6 +19,11 @@ key_path = ""
 # Directory containing sample pipelines
 samples_dir = "./samples/pipelines"
 
+# Root directory that file_reader/file_writer/script node paths resolve against.
+# All node `path`/`script_path` fields are relative to this directory; absolute
+# paths and `..` are rejected. Defaults to the server's working directory.
+# asset_root = "."
+
 # Optional base path for subpath deployments (e.g. "/skit")
 # Used to inject a <base> tag into the embedded UI so it works behind a reverse proxy.
 # base_path = "/skit"
@@ -268,17 +273,20 @@ registries = ["https://streamkit.dev/registry/index.json"]
 # Security configuration for file access and other security-sensitive settings
 
 # Allowed file paths for file_reader nodes.
-# Supports glob patterns (e.g., "samples/**", "/data/media/*").
-# Relative paths are resolved against the server's working directory.
+# Supports glob patterns (e.g., "samples/**", "media/*.wav").
+# Node `path` fields are always relative to `[server].asset_root` (which
+# defaults to the working directory); absolute paths and `..` are rejected.
+# Allow-list patterns are likewise resolved against `asset_root`, so they
+# should be written relative to it.
 # Default: `["samples/**"]` - only allow reading from the samples directory.
 # Set to `["**"]` to allow all paths (not recommended for production).
 allowed_file_paths = ["samples/**"]
 
-# Example: Allow multiple directories
+# Example: Allow multiple directories under asset_root
 # allowed_file_paths = [
 #     "samples/**",
 #     "media/**",
-#     "/data/audio/**",
+#     "audio/**",
 # ]
 
 [resources]
