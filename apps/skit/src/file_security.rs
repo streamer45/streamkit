@@ -4,6 +4,7 @@
 
 use crate::config::SecurityConfig;
 use glob::Pattern;
+use streamkit_core::path_helpers::CanonicalAssetRoot;
 
 /// Bundles the file-security configuration with the `asset_root` it is always
 /// used together with.
@@ -17,12 +18,12 @@ use glob::Pattern;
 #[derive(Clone, Copy)]
 pub struct FileSecurityPolicy<'a> {
     pub config: &'a SecurityConfig,
-    pub asset_root: &'a std::path::Path,
+    pub asset_root: &'a CanonicalAssetRoot,
 }
 
 impl<'a> FileSecurityPolicy<'a> {
     #[must_use]
-    pub const fn new(config: &'a SecurityConfig, asset_root: &'a std::path::Path) -> Self {
+    pub const fn new(config: &'a SecurityConfig, asset_root: &'a CanonicalAssetRoot) -> Self {
         Self { config, asset_root }
     }
 }
@@ -53,8 +54,11 @@ pub fn validate_file_path(path: &str, policy: FileSecurityPolicy<'_>) -> Result<
         streamkit_core::path_helpers::resolve_existing_asset_path(path, policy.asset_root)?;
 
     // Security: Check if path matches any allowed pattern
-    let is_allowed =
-        check_path_allowed(&canonical_path, policy.asset_root, &policy.config.allowed_file_paths);
+    let is_allowed = check_path_allowed(
+        &canonical_path,
+        policy.asset_root.as_path(),
+        &policy.config.allowed_file_paths,
+    );
 
     if !is_allowed {
         return Err(format!(
@@ -97,7 +101,7 @@ pub fn validate_write_path(path: &str, policy: FileSecurityPolicy<'_>) -> Result
 
     let is_allowed = check_path_allowed(
         &canonical_target,
-        policy.asset_root,
+        policy.asset_root.as_path(),
         &policy.config.allowed_write_paths,
     );
     if !is_allowed {
@@ -132,8 +136,11 @@ fn check_path_allowed(
 ) -> bool {
     // Escape `asset_root`'s glob metacharacters once so a root like
     // `/srv/media[prod]` isn't parsed as a character class (which would silently
-    // deny everything) when prepended to relative patterns.
+    // deny everything) when prepended to relative patterns. A trailing separator
+    // (e.g. `asset_root` == `/`) is trimmed so the join doesn't produce an empty
+    // path component (`//samples/*.yml`) that never matches.
     let escaped_root = Pattern::escape(&asset_root.to_string_lossy());
+    let escaped_root = escaped_root.strip_suffix('/').unwrap_or(&escaped_root);
 
     for pattern_str in allowed_patterns {
         // Special case: "**" allows everything
@@ -143,8 +150,6 @@ fn check_path_allowed(
 
         let pattern_path = std::path::Path::new(pattern_str);
 
-        // Build the glob string. For relative patterns we prepend the escaped
-        // `asset_root`.
         let glob_str = if pattern_path.is_absolute() {
             pattern_str.clone()
         } else {
@@ -187,9 +192,18 @@ fn check_path_allowed(
 /// This is the convention used by the validation/session/websocket
 /// batch-operation tests; centralizing it keeps those call sites from
 /// re-inlining the root choice.
+// Test-only helper: a failure to canonicalize the current directory is a broken
+// test environment that should surface as a panic, matching the tests module's
+// `unwrap`/`expect` idiom.
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::missing_panics_doc)]
 pub fn cwd_policy(config: &SecurityConfig) -> FileSecurityPolicy<'_> {
-    FileSecurityPolicy::new(config, std::path::Path::new("."))
+    use std::sync::OnceLock;
+    static CWD_ROOT: OnceLock<CanonicalAssetRoot> = OnceLock::new();
+    let root = CWD_ROOT.get_or_init(|| {
+        CanonicalAssetRoot::new(std::path::Path::new(".")).expect("cwd canonicalizes")
+    });
+    FileSecurityPolicy::new(config, root)
 }
 
 // `unwrap`/`expect` in tests: fixture setup failures should surface as panics at
@@ -229,13 +243,17 @@ mod tests {
         format!("{}/**", dir.display())
     }
 
+    fn car(path: &Path) -> CanonicalAssetRoot {
+        CanonicalAssetRoot::new(path).expect("canonicalize asset_root")
+    }
+
     #[test]
     fn validate_file_path_accepts_file_inside_allowed_dir() {
         let (_tmp, root) = canonical_tempdir();
         fs::write(root.join("a.yml"), b"x").unwrap();
 
         let cfg = read_config(&[&glob_under(&root)]);
-        assert!(validate_file_path("a.yml", FileSecurityPolicy::new(&cfg, &root)).is_ok());
+        assert!(validate_file_path("a.yml", FileSecurityPolicy::new(&cfg, &car(&root))).is_ok());
     }
 
     #[test]
@@ -246,9 +264,11 @@ mod tests {
         fs::write(nested.join("a.yml"), b"x").unwrap();
 
         let cfg = read_config(&[&glob_under(&root)]);
-        assert!(
-            validate_file_path("nested/deeply/a.yml", FileSecurityPolicy::new(&cfg, &root)).is_ok()
-        );
+        assert!(validate_file_path(
+            "nested/deeply/a.yml",
+            FileSecurityPolicy::new(&cfg, &car(&root))
+        )
+        .is_ok());
     }
 
     #[test]
@@ -256,7 +276,7 @@ mod tests {
         let (_tmp, root) = canonical_tempdir();
 
         let cfg = read_config(&[&glob_under(&root)]);
-        let err = validate_file_path("missing.yml", FileSecurityPolicy::new(&cfg, &root))
+        let err = validate_file_path("missing.yml", FileSecurityPolicy::new(&cfg, &car(&root)))
             .expect_err("missing file must be rejected");
         assert!(err.contains("cannot resolve path"), "unexpected error: {err}");
     }
@@ -267,7 +287,7 @@ mod tests {
         fs::create_dir(root.join("subdir")).unwrap();
 
         let cfg = read_config(&[&glob_under(&root)]);
-        let err = validate_file_path("subdir", FileSecurityPolicy::new(&cfg, &root))
+        let err = validate_file_path("subdir", FileSecurityPolicy::new(&cfg, &car(&root)))
             .expect_err("directory must be rejected");
         assert!(err.contains("not a regular file"), "unexpected error: {err}");
     }
@@ -289,7 +309,7 @@ mod tests {
         // recognized as inside the root rather than false-rejected as outside.
         let cfg = read_config(&["**"]);
         assert!(
-            validate_file_path("a.yml", FileSecurityPolicy::new(&cfg, &link)).is_ok(),
+            validate_file_path("a.yml", FileSecurityPolicy::new(&cfg, &car(&link))).is_ok(),
             "file under a symlinked asset_root must validate"
         );
     }
@@ -304,7 +324,7 @@ mod tests {
         // The allow-list only covers `<root>/allowed/**`; an existing file under a
         // sibling dir resolves within asset_root but is not allow-listed.
         let cfg = read_config(&[&glob_under(&root.join("allowed"))]);
-        let err = validate_file_path("other/a.yml", FileSecurityPolicy::new(&cfg, &root))
+        let err = validate_file_path("other/a.yml", FileSecurityPolicy::new(&cfg, &car(&root)))
             .expect_err("path outside allowlist must be rejected");
         assert!(err.contains("outside allowed directories"), "unexpected error: {err}");
     }
@@ -319,9 +339,11 @@ mod tests {
         fs::write(forbidden.join("a.yml"), b"secret").unwrap();
 
         let cfg = read_config(&[&glob_under(&allowed)]);
-        let err =
-            validate_file_path("allowed/../forbidden/a.yml", FileSecurityPolicy::new(&cfg, &root))
-                .expect_err("`..` escape must be rejected");
+        let err = validate_file_path(
+            "allowed/../forbidden/a.yml",
+            FileSecurityPolicy::new(&cfg, &car(&root)),
+        )
+        .expect_err("`..` escape must be rejected");
         assert!(err.contains("must not contain '..'"), "unexpected error: {err}");
     }
 
@@ -340,8 +362,9 @@ mod tests {
         symlink(&target, allowed.join("link.yml")).unwrap();
 
         let cfg = read_config(&[&glob_under(&allowed)]);
-        let err = validate_file_path("allowed/link.yml", FileSecurityPolicy::new(&cfg, &root))
-            .expect_err("symlink escaping allowlist must be rejected");
+        let err =
+            validate_file_path("allowed/link.yml", FileSecurityPolicy::new(&cfg, &car(&root)))
+                .expect_err("symlink escaping allowlist must be rejected");
         assert!(err.contains("outside allowed directories"), "unexpected error: {err}");
     }
 
@@ -351,7 +374,7 @@ mod tests {
         fs::write(root.join("a.yml"), b"x").unwrap();
 
         let cfg = read_config(&[]);
-        let err = validate_file_path("a.yml", FileSecurityPolicy::new(&cfg, &root))
+        let err = validate_file_path("a.yml", FileSecurityPolicy::new(&cfg, &car(&root)))
             .expect_err("empty allowlist must deny");
         assert!(err.contains("outside allowed directories"), "unexpected error: {err}");
     }
@@ -365,16 +388,18 @@ mod tests {
         // The contract is relative-to-asset_root: absolute paths are rejected
         // outright, matching `core::file_reader`'s runtime `has_path_traversal`.
         let cfg = read_config(&[&glob_under(&root)]);
-        let err = validate_file_path(file.to_str().unwrap(), FileSecurityPolicy::new(&cfg, &root))
-            .expect_err("absolute path must be rejected");
+        let err =
+            validate_file_path(file.to_str().unwrap(), FileSecurityPolicy::new(&cfg, &car(&root)))
+                .expect_err("absolute path must be rejected");
         assert!(err.contains("must be relative to asset_root"), "unexpected error: {err}");
     }
 
     #[test]
     fn validate_write_path_empty_allowlist_returns_disabled_message() {
         let cfg = write_config(&[]);
-        let err = validate_write_path("out.txt", FileSecurityPolicy::new(&cfg, Path::new("/tmp")))
-            .expect_err("empty write allowlist must disable writes");
+        let err =
+            validate_write_path("out.txt", FileSecurityPolicy::new(&cfg, &car(Path::new("/tmp"))))
+                .expect_err("empty write allowlist must disable writes");
         assert!(
             err.starts_with("File writes are disabled by configuration"),
             "unexpected error: {err}",
@@ -386,8 +411,9 @@ mod tests {
         let (_tmp, root) = canonical_tempdir();
         let cfg = write_config(&[&glob_under(&root)]);
 
-        let err = validate_write_path("sub/../escape.yml", FileSecurityPolicy::new(&cfg, &root))
-            .expect_err("`..` in write path must be rejected");
+        let err =
+            validate_write_path("sub/../escape.yml", FileSecurityPolicy::new(&cfg, &car(&root)))
+                .expect_err("`..` in write path must be rejected");
         assert!(err.contains("must not contain '..'"), "unexpected error: {err}");
     }
 
@@ -400,8 +426,11 @@ mod tests {
         );
 
         let cfg = write_config(&[&glob_under(&root)]);
-        assert!(validate_write_path("not_yet_created.yml", FileSecurityPolicy::new(&cfg, &root))
-            .is_ok());
+        assert!(validate_write_path(
+            "not_yet_created.yml",
+            FileSecurityPolicy::new(&cfg, &car(&root))
+        )
+        .is_ok());
     }
 
     #[test]
@@ -409,9 +438,11 @@ mod tests {
         let (_tmp, root) = canonical_tempdir();
 
         let cfg = write_config(&[&glob_under(&root)]);
-        let err =
-            validate_write_path("does_not_exist/new.yml", FileSecurityPolicy::new(&cfg, &root))
-                .expect_err("missing parent dir must be rejected");
+        let err = validate_write_path(
+            "does_not_exist/new.yml",
+            FileSecurityPolicy::new(&cfg, &car(&root)),
+        )
+        .expect_err("missing parent dir must be rejected");
         assert!(err.contains("cannot resolve parent directory"), "unexpected error: {err}");
     }
 
@@ -428,9 +459,11 @@ mod tests {
         symlink(&outside, allowed.join("escape")).unwrap();
 
         let cfg = write_config(&[&glob_under(&allowed)]);
-        let err =
-            validate_write_path("allowed/escape/written.yml", FileSecurityPolicy::new(&cfg, &root))
-                .expect_err("symlinked parent escaping allowlist must be rejected");
+        let err = validate_write_path(
+            "allowed/escape/written.yml",
+            FileSecurityPolicy::new(&cfg, &car(&root)),
+        )
+        .expect_err("symlinked parent escaping allowlist must be rejected");
         assert!(err.contains("outside allowed write paths"), "unexpected error: {err}");
     }
 
@@ -441,7 +474,7 @@ mod tests {
 
         // `.` resolves to a path with no file name, exercising the
         // `file_name() == None` branch without an absolute path or `..`.
-        let err = validate_write_path(".", FileSecurityPolicy::new(&cfg, &root))
+        let err = validate_write_path(".", FileSecurityPolicy::new(&cfg, &car(&root)))
             .expect_err("path with no file name must be rejected");
         assert!(err.contains("must include a file name"), "unexpected error: {err}");
     }
@@ -532,14 +565,19 @@ mod tests {
         fs::write(&file, b"x").unwrap();
 
         let cfg = read_config(&[&glob_under(&asset_root)]);
-        assert!(
-            validate_file_path("samples/a.yml", FileSecurityPolicy::new(&cfg, &asset_root)).is_ok()
-        );
+        assert!(validate_file_path(
+            "samples/a.yml",
+            FileSecurityPolicy::new(&cfg, &car(&asset_root))
+        )
+        .is_ok());
 
         // The same relative path resolved against a different asset_root misses.
         let (_other_tmp, other_root) = canonical_tempdir();
-        assert!(validate_file_path("samples/a.yml", FileSecurityPolicy::new(&cfg, &other_root))
-            .is_err());
+        assert!(validate_file_path(
+            "samples/a.yml",
+            FileSecurityPolicy::new(&cfg, &car(&other_root))
+        )
+        .is_err());
     }
 
     #[test]
@@ -551,13 +589,18 @@ mod tests {
 
         // A relative allow-list pattern is resolved against asset_root.
         let cfg = read_config(&["samples/**"]);
-        assert!(
-            validate_file_path("samples/a.yml", FileSecurityPolicy::new(&cfg, &asset_root)).is_ok()
-        );
+        assert!(validate_file_path(
+            "samples/a.yml",
+            FileSecurityPolicy::new(&cfg, &car(&asset_root))
+        )
+        .is_ok());
 
         let (_other_tmp, other_root) = canonical_tempdir();
-        assert!(validate_file_path("samples/a.yml", FileSecurityPolicy::new(&cfg, &other_root))
-            .is_err());
+        assert!(validate_file_path(
+            "samples/a.yml",
+            FileSecurityPolicy::new(&cfg, &car(&other_root))
+        )
+        .is_err());
     }
 
     #[test]
@@ -567,9 +610,11 @@ mod tests {
         fs::create_dir_all(&out_dir).unwrap();
 
         let cfg = write_config(&[&glob_under(&asset_root)]);
-        assert!(
-            validate_write_path("out/new.yml", FileSecurityPolicy::new(&cfg, &asset_root)).is_ok()
-        );
+        assert!(validate_write_path(
+            "out/new.yml",
+            FileSecurityPolicy::new(&cfg, &car(&asset_root))
+        )
+        .is_ok());
     }
 
     // Regression for #521 follow-up: allow-list patterns without a trailing `/**`
@@ -585,9 +630,11 @@ mod tests {
         fs::write(&file, b"x").unwrap();
 
         let cfg = read_config(&["samples/*.yml"]);
-        assert!(
-            validate_file_path("samples/a.yml", FileSecurityPolicy::new(&cfg, &asset_root)).is_ok()
-        );
+        assert!(validate_file_path(
+            "samples/a.yml",
+            FileSecurityPolicy::new(&cfg, &car(&asset_root))
+        )
+        .is_ok());
     }
 
     #[test]
@@ -621,5 +668,36 @@ mod tests {
 
         let patterns = ["samples/*.yml".to_string()];
         assert!(check_path_allowed(&canonical, &asset_root, &patterns));
+    }
+
+    // Regression for the trailing-separator finding: an `asset_root` of `/`
+    // would otherwise join to `//samples/*.yml`, whose empty path component never
+    // matches, silently denying every bare-pattern read.
+    #[test]
+    fn check_path_allowed_trims_trailing_separator_in_root() {
+        let patterns = ["samples/*.yml".to_string()];
+        assert!(check_path_allowed(Path::new("/samples/a.yml"), Path::new("/"), &patterns));
+    }
+
+    // Regression for the write-symlink finding: a write target that already
+    // exists as a symlink escaping `asset_root` must be rejected, otherwise
+    // `File::create` would follow the link and truncate a file outside the root.
+    #[cfg(unix)]
+    #[test]
+    fn validate_write_path_rejects_preexisting_symlink_target_escaping_root() {
+        use std::os::unix::fs::symlink;
+
+        let (_tmp, root) = canonical_tempdir();
+        let out = root.join("out");
+        fs::create_dir_all(&out).unwrap();
+        let (_outside_tmp, outside) = canonical_tempdir();
+        let payload = outside.join("payload");
+        fs::write(&payload, b"x").unwrap();
+        symlink(&payload, out.join("report.txt")).unwrap();
+
+        let cfg = write_config(&[&glob_under(&root)]);
+        let err = validate_write_path("out/report.txt", FileSecurityPolicy::new(&cfg, &car(&root)))
+            .expect_err("symlinked write target escaping root must be rejected");
+        assert!(err.contains("symlink resolving to"), "unexpected error: {err}");
     }
 }

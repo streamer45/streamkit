@@ -1692,6 +1692,30 @@ pub fn create_app_state(
     });
     tracing::info!(asset_root = %asset_root.display(), "Asset root resolved");
 
+    let canonical_asset_root = streamkit_core::path_helpers::CanonicalAssetRoot::new(&asset_root)
+        .unwrap_or_else(|e| {
+            panic!("failed to canonicalize asset_root '{}': {e}", asset_root.display());
+        });
+
+    // Allow-list patterns are matched against paths that always resolve under
+    // `asset_root`, so a bare absolute pattern can never match. Warn rather than
+    // silently denying every read/write for operators carrying old configs.
+    for (label, patterns) in [
+        ("allowed_file_paths", &config.security.allowed_file_paths),
+        ("allowed_write_paths", &config.security.allowed_write_paths),
+    ] {
+        for pattern in patterns {
+            if std::path::Path::new(pattern).is_absolute() {
+                tracing::warn!(
+                    pattern = %pattern,
+                    setting = label,
+                    "absolute allow-list pattern will only match if it overlaps asset_root; \
+                     paths are now resolved relative to [server].asset_root — use a relative pattern",
+                );
+            }
+        }
+    }
+
     let mut constraints = streamkit_core::GlobalNodeConstraints::new();
     constraints.insert(streamkit_nodes::core::AssetRoot(asset_root.clone()));
 
@@ -1789,6 +1813,7 @@ pub fn create_app_state(
         shutdown_tracker: crate::state::ShutdownTracker::default(),
         plugin_asset_registry,
         asset_root,
+        canonical_asset_root,
         #[cfg(feature = "moq")]
         moq_gateway,
         mse_gateway,

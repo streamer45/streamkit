@@ -121,6 +121,10 @@ pub struct AppState {
     /// Root directory for sample assets.  All `samples/` paths are resolved
     /// relative to this directory instead of the process working directory.
     pub asset_root: std::path::PathBuf,
+    /// `asset_root` canonicalized once at startup, so the file-security policy
+    /// hands the path resolvers an already-canonical root instead of
+    /// re-canonicalizing on every validation call.
+    pub canonical_asset_root: streamkit_core::path_helpers::CanonicalAssetRoot,
     #[cfg(feature = "moq")]
     pub moq_gateway: Option<Arc<MoqGateway>>,
     pub mse_gateway: Arc<MseGateway>,
@@ -132,7 +136,10 @@ impl AppState {
     /// matching `asset_root`.
     #[must_use]
     pub fn file_security_policy(&self) -> crate::file_security::FileSecurityPolicy<'_> {
-        crate::file_security::FileSecurityPolicy::new(&self.config.security, &self.asset_root)
+        crate::file_security::FileSecurityPolicy::new(
+            &self.config.security,
+            &self.canonical_asset_root,
+        )
     }
 
     /// Resolve a pipeline's declared `attributes` against the operator policy.

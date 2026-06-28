@@ -65,11 +65,17 @@ impl ProcessorNode for FileReadNode {
         let node_name = context.output_sender.node_name().to_string();
         state_helpers::emit_initializing(&context.state_tx, &node_name);
 
-        let resolved_path = streamkit_core::path_helpers::resolve_existing_asset_path(
-            &self.config.path,
-            &context.asset_root,
-        )
-        .map_err(StreamKitError::Runtime)?;
+        let resolved_path = {
+            let asset_root = context.asset_root.clone();
+            let path = self.config.path.clone();
+            tokio::task::spawn_blocking(move || {
+                let root = streamkit_core::path_helpers::CanonicalAssetRoot::new(&asset_root)?;
+                streamkit_core::path_helpers::resolve_existing_asset_path(&path, &root)
+            })
+            .await
+            .map_err(|e| StreamKitError::Runtime(format!("path resolution task failed: {e}")))?
+            .map_err(StreamKitError::Runtime)?
+        };
         let mut file = tokio::fs::File::open(&resolved_path).await.map_err(|e| {
             StreamKitError::Runtime(format!(
                 "Failed to open file '{}': {e}",

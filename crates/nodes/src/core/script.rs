@@ -348,7 +348,9 @@ impl ScriptNode {
         path: &str,
         asset_root: &std::path::Path,
     ) -> Result<String, StreamKitError> {
-        let resolved = streamkit_core::path_helpers::resolve_existing_asset_path(path, asset_root)
+        let root = streamkit_core::path_helpers::CanonicalAssetRoot::new(asset_root)
+            .map_err(StreamKitError::Configuration)?;
+        let resolved = streamkit_core::path_helpers::resolve_existing_asset_path(path, &root)
             .map_err(StreamKitError::Configuration)?;
 
         let bytes = std::fs::read(&resolved).map_err(|e| {
