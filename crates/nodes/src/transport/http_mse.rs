@@ -57,7 +57,165 @@ const WEBM_TRACKS_ID: [u8; 4] = [0x16, 0x54, 0xAE, 0x6B];
 /// keyframes are infrequent (e.g. 10 s interval at high bitrate).
 const MAX_GOP_BUFFER_SIZE: usize = 2 * 1024 * 1024; // 2 MB
 
-/// Buffers the WebM init segment and replays it to late-joining HTTP clients.
+/// Container framing of the upstream byte stream.
+///
+/// The node forwards two structurally different live containers. WebM uses
+/// the Cluster element to delimit the init segment and each GOP; fragmented
+/// MP4 (fMP4, used for the H.264 cast path) uses `ftyp`+`moov` as the init
+/// segment and a repeating `moof`+`mdat` per media fragment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Framing {
+    WebM,
+    Fmp4,
+}
+
+/// Detect the container framing from the first bytes of the stream.
+///
+/// fMP4 starts with an `ftyp` (or `styp`) box, whose 4-byte type sits at
+/// offset 4 after the box size. Anything else is treated as WebM, preserving
+/// the original behaviour for the vp9/av1 paths.
+fn detect_framing(data: &[u8]) -> Framing {
+    if data.len() >= 8 && (&data[4..8] == b"ftyp" || &data[4..8] == b"styp") {
+        Framing::Fmp4
+    } else {
+        Framing::WebM
+    }
+}
+
+/// Find the byte offset of the first top-level MP4 box of `box_type`.
+///
+/// Scans length-prefixed boxes (32-bit size, or 64-bit largesize when
+/// size == 1; size == 0 means "to end of stream"). Returns `None` if the
+/// box is not present or a header is truncated mid-stream.
+fn find_mp4_box(data: &[u8], box_type: [u8; 4]) -> Option<usize> {
+    let mut pos = 0usize;
+    while pos + 8 <= data.len() {
+        let size32 = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+        if data[pos + 4..pos + 8] == box_type {
+            return Some(pos);
+        }
+        let box_size = match size32 {
+            1 => {
+                if pos + 16 > data.len() {
+                    return None;
+                }
+                let large = u64::from_be_bytes([
+                    data[pos + 8],
+                    data[pos + 9],
+                    data[pos + 10],
+                    data[pos + 11],
+                    data[pos + 12],
+                    data[pos + 13],
+                    data[pos + 14],
+                    data[pos + 15],
+                ]);
+                usize::try_from(large).ok()?
+            },
+            0 => return None,
+            n => n as usize,
+        };
+        if box_size < 8 {
+            return None;
+        }
+        pos = pos.checked_add(box_size)?;
+    }
+    None
+}
+
+/// Outcome of feeding one fMP4 packet to the framer.
+enum Fmp4Step {
+    /// Still buffering the init segment; nothing to forward yet.
+    NeedMore,
+    /// Init segment (`ftyp`+`moov`) just completed; `forward` is the first
+    /// media fragment that followed it in the same packet.
+    Started { forward: Bytes },
+    /// A subsequent media fragment to forward.
+    Fragment { forward: Bytes },
+}
+
+/// Drive the fMP4 init/fragment state machine for one input packet.
+///
+/// The cast muxer emits the init segment prepended to the first media
+/// fragment, then one `moof`+`mdat` fragment per packet. Init bytes are
+/// split off into `init_segment` (for late-joiner replay); `gop_buffer`
+/// holds the most recent fragment so late joiners start at a keyframe.
+fn fmp4_process_packet(
+    data: &Bytes,
+    init_segment: &mut Vec<u8>,
+    gop_buffer: &mut Vec<u8>,
+    init_complete: &mut bool,
+) -> Fmp4Step {
+    if !*init_complete {
+        let moof = if init_segment.is_empty() {
+            find_mp4_box(data, *b"moof")
+        } else {
+            let mut combined = init_segment.clone();
+            combined.extend_from_slice(data);
+            find_mp4_box(&combined, *b"moof")
+        };
+
+        let Some(moof_offset) = moof else {
+            let remaining = MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
+            let to_append = data.len().min(remaining);
+            init_segment.extend_from_slice(&data[..to_append]);
+            return Fmp4Step::NeedMore;
+        };
+
+        let prefix_len = init_segment.len();
+        let take = moof_offset.saturating_sub(prefix_len);
+        init_segment.extend_from_slice(&data[..take.min(data.len())]);
+        let fragment = data.slice(take.min(data.len())..);
+        *init_complete = true;
+        gop_buffer.clear();
+        gop_buffer.extend_from_slice(&fragment);
+        return Fmp4Step::Started { forward: fragment };
+    }
+
+    if find_mp4_box(data, *b"moof") == Some(0) {
+        gop_buffer.clear();
+    }
+    gop_buffer.extend_from_slice(data);
+    if gop_buffer.len() > MAX_GOP_BUFFER_SIZE {
+        gop_buffer.clear();
+    }
+    Fmp4Step::Fragment { forward: data.clone() }
+}
+
+/// Broadcast one chunk to every connected client, dropping any that have
+/// disconnected or fallen too far behind (dropping bytes mid-stream corrupts
+/// the container, so a slow client is disconnected rather than starved).
+/// Each successful delivery is counted in `stats` when `count` is set.
+fn broadcast_chunk(
+    clients: &mut Vec<mpsc::Sender<Bytes>>,
+    chunk: &Bytes,
+    stats: &mut NodeStatsTracker,
+    count: bool,
+) {
+    let mut i = 0;
+    while i < clients.len() {
+        match clients[i].try_send(chunk.clone()) {
+            Ok(()) => {
+                if count {
+                    stats.sent();
+                }
+                i += 1;
+            },
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                clients.swap_remove(i);
+                tracing::debug!(client_count = clients.len(), "MSE client disconnected");
+            },
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                clients.swap_remove(i);
+                tracing::warn!(
+                    client_count = clients.len(),
+                    "MSE client too slow, disconnecting to avoid corrupt stream"
+                );
+            },
+        }
+    }
+}
+
+/// Buffers the init segment and replays it to late-joining HTTP clients.
 pub struct HttpMseNode {
     config: HttpMseConfig,
 }
@@ -177,6 +335,10 @@ impl ProcessorNode for HttpMseNode {
         let mut gop_buffer: Vec<u8> = Vec::new();
         let mut init_complete = false;
 
+        // Container framing, detected from the first packet. WebM and fMP4
+        // delimit their init segment and GOPs differently.
+        let mut framing: Option<Framing> = None;
+
         // Overlap buffer: last 3 bytes of previous chunk, for detecting
         // a 4-byte Cluster ID that straddles chunk boundaries.
         let mut overlap: Vec<u8> = Vec::new();
@@ -264,6 +426,38 @@ impl ProcessorNode for HttpMseNode {
                     };
 
                     if data.is_empty() {
+                        continue;
+                    }
+
+                    let framing = *framing.get_or_insert_with(|| detect_framing(&data));
+
+                    if framing == Framing::Fmp4 {
+                        match fmp4_process_packet(
+                            &data,
+                            &mut init_segment,
+                            &mut gop_buffer,
+                            &mut init_complete,
+                        ) {
+                            Fmp4Step::NeedMore => {}
+                            Fmp4Step::Started { forward } => {
+                                let elapsed_ms = u64::try_from(node_start.elapsed().as_millis())
+                                    .unwrap_or(u64::MAX);
+                                tracing::info!(
+                                    init_segment_size = init_segment.len(),
+                                    elapsed_ms,
+                                    "fMP4 init segment captured"
+                                );
+                                if !init_segment.is_empty() {
+                                    let init_bytes = Bytes::copy_from_slice(&init_segment);
+                                    broadcast_chunk(&mut clients, &init_bytes, &mut stats_tracker, false);
+                                }
+                                broadcast_chunk(&mut clients, &forward, &mut stats_tracker, true);
+                            }
+                            Fmp4Step::Fragment { forward } => {
+                                broadcast_chunk(&mut clients, &forward, &mut stats_tracker, true);
+                            }
+                        }
+                        stats_tracker.maybe_send();
                         continue;
                     }
 
@@ -592,9 +786,10 @@ pub fn register_http_mse_nodes(registry: &mut streamkit_core::NodeRegistry) {
         HttpMseNode,
         HttpMseConfig,
         ["transport", "http", "mse"],
-        "Serves WebM streams to HTTP clients for MSE (Media Source Extensions) playback. \
-         Accepts binary data from an upstream WebM muxer and broadcasts to multiple \
-         concurrent HTTP clients with init segment replay for late-joiners.",
+        "Serves WebM or fragmented-MP4 (fMP4) streams to HTTP clients for MSE \
+         (Media Source Extensions) playback. Accepts binary data from an upstream \
+         WebM or fMP4 muxer and broadcasts to multiple concurrent HTTP clients with \
+         init segment replay for late-joiners.",
     );
 }
 
@@ -1103,5 +1298,186 @@ mod tests {
         }
         assert_eq!(truncated.len(), tracks_end);
         assert_eq!(truncated, header);
+    }
+
+    fn mp4_box(box_type: &[u8], payload: &[u8]) -> Vec<u8> {
+        let size = u32::try_from(8 + payload.len()).unwrap();
+        let mut b = Vec::with_capacity(size as usize);
+        b.extend_from_slice(&size.to_be_bytes());
+        b.extend_from_slice(box_type);
+        b.extend_from_slice(payload);
+        b
+    }
+
+    fn concat(parts: &[&[u8]]) -> Vec<u8> {
+        parts.iter().flat_map(|p| p.iter().copied()).collect()
+    }
+
+    #[test]
+    fn test_detect_framing() {
+        let ftyp = mp4_box(b"ftyp", b"isom");
+        assert_eq!(detect_framing(&ftyp), Framing::Fmp4);
+
+        let styp = mp4_box(b"styp", b"msdh");
+        assert_eq!(detect_framing(&styp), Framing::Fmp4);
+
+        // WebM EBML header
+        assert_eq!(detect_framing(&[0x1A, 0x45, 0xDF, 0xA3, 0, 0, 0, 0]), Framing::WebM);
+        // Too short to be fMP4 → WebM (the vp9/av1 default path).
+        assert_eq!(detect_framing(&[0x1F, 0x43]), Framing::WebM);
+    }
+
+    #[test]
+    fn test_find_mp4_box() {
+        let ftyp = mp4_box(b"ftyp", b"isom");
+        let moov_box = mp4_box(b"moov", &[0xAB; 40]);
+        let frag = mp4_box(b"moof", &[0xCD; 16]);
+        let stream = concat(&[&ftyp, &moov_box, &frag]);
+
+        assert_eq!(find_mp4_box(&stream, *b"ftyp"), Some(0));
+        assert_eq!(find_mp4_box(&stream, *b"moov"), Some(ftyp.len()));
+        assert_eq!(find_mp4_box(&stream, *b"moof"), Some(ftyp.len() + moov_box.len()));
+        assert_eq!(find_mp4_box(&stream, *b"mdat"), None);
+
+        // Truncated header (< 8 bytes) yields None rather than panicking.
+        assert_eq!(find_mp4_box(&[0, 0, 0, 16, b'm'], *b"moof"), None);
+    }
+
+    #[test]
+    fn test_find_mp4_box_largesize() {
+        // size == 1 signals a 64-bit largesize in the following 8 bytes.
+        let ftyp = mp4_box(b"ftyp", b"isom");
+        let mut big = Vec::new();
+        big.extend_from_slice(&1u32.to_be_bytes());
+        big.extend_from_slice(b"mdat");
+        big.extend_from_slice(&(24u64).to_be_bytes());
+        big.extend_from_slice(&[0x11; 8]);
+        let moof = mp4_box(b"moof", &[0x22; 8]);
+        let stream = concat(&[&ftyp, &big, &moof]);
+
+        assert_eq!(find_mp4_box(&stream, *b"moof"), Some(ftyp.len() + big.len()));
+    }
+
+    fn fmp4_init() -> Vec<u8> {
+        concat(&[&mp4_box(b"ftyp", b"isom"), &mp4_box(b"moov", &[0xAB; 48])])
+    }
+
+    fn fmp4_fragment(payload: u8) -> Vec<u8> {
+        concat(&[&mp4_box(b"moof", &[payload; 12]), &mp4_box(b"mdat", &[payload; 64])])
+    }
+
+    #[test]
+    fn test_fmp4_first_packet_splits_init_and_fragment() {
+        let init = fmp4_init();
+        let frag = fmp4_fragment(0x01);
+        let packet = Bytes::from(concat(&[&init, &frag]));
+
+        let mut init_segment = Vec::new();
+        let mut gop_buffer = Vec::new();
+        let mut init_complete = false;
+
+        let step =
+            fmp4_process_packet(&packet, &mut init_segment, &mut gop_buffer, &mut init_complete);
+
+        match step {
+            Fmp4Step::Started { forward } => assert_eq!(&forward[..], &frag[..]),
+            _ => panic!("expected Started on first packet"),
+        }
+        assert!(init_complete);
+        assert_eq!(init_segment, init, "init segment must be ftyp+moov only");
+        assert_eq!(gop_buffer, frag, "GOP buffer holds the latest fragment");
+    }
+
+    #[test]
+    fn test_fmp4_subsequent_fragment_resets_gop() {
+        let init = fmp4_init();
+        let frag1 = fmp4_fragment(0x01);
+        let frag2 = fmp4_fragment(0x02);
+
+        let mut init_segment = Vec::new();
+        let mut gop_buffer = Vec::new();
+        let mut init_complete = false;
+
+        fmp4_process_packet(
+            &Bytes::from(concat(&[&init, &frag1])),
+            &mut init_segment,
+            &mut gop_buffer,
+            &mut init_complete,
+        );
+
+        let step = fmp4_process_packet(
+            &Bytes::from(frag2.clone()),
+            &mut init_segment,
+            &mut gop_buffer,
+            &mut init_complete,
+        );
+
+        match step {
+            Fmp4Step::Fragment { forward } => assert_eq!(&forward[..], &frag2[..]),
+            _ => panic!("expected Fragment"),
+        }
+        // A new moof-led fragment replaces the previous GOP so late joiners
+        // always start at the most recent keyframe-aligned segment.
+        assert_eq!(gop_buffer, frag2);
+        assert_eq!(init_segment, init, "init segment is immutable after capture");
+    }
+
+    #[test]
+    fn test_fmp4_init_split_across_packets() {
+        let ftyp = mp4_box(b"ftyp", b"isom");
+        let moov = mp4_box(b"moov", &[0xAB; 48]);
+        let frag = fmp4_fragment(0x07);
+
+        let mut init_segment = Vec::new();
+        let mut gop_buffer = Vec::new();
+        let mut init_complete = false;
+
+        // ftyp+moov with no moof yet → still buffering.
+        let step1 = fmp4_process_packet(
+            &Bytes::from(concat(&[&ftyp, &moov])),
+            &mut init_segment,
+            &mut gop_buffer,
+            &mut init_complete,
+        );
+        assert!(matches!(step1, Fmp4Step::NeedMore));
+        assert!(!init_complete);
+
+        // The moof arrives in the next packet → init completes, fragment forwarded.
+        let step2 = fmp4_process_packet(
+            &Bytes::from(frag.clone()),
+            &mut init_segment,
+            &mut gop_buffer,
+            &mut init_complete,
+        );
+        match step2 {
+            Fmp4Step::Started { forward } => assert_eq!(&forward[..], &frag[..]),
+            _ => panic!("expected Started once moof arrives"),
+        }
+        assert!(init_complete);
+        assert_eq!(init_segment, concat(&[&ftyp, &moov]));
+    }
+
+    #[test]
+    fn test_fmp4_gop_buffer_capped() {
+        let init = fmp4_init();
+        let mut init_segment = Vec::new();
+        let mut gop_buffer = Vec::new();
+        let mut init_complete = false;
+        fmp4_process_packet(
+            &Bytes::from(concat(&[&init, &fmp4_fragment(0x01)])),
+            &mut init_segment,
+            &mut gop_buffer,
+            &mut init_complete,
+        );
+
+        // A single oversized fragment must not grow the buffer past the cap.
+        let huge = concat(&[&mp4_box(b"moof", &[0x09; 8]), &vec![0u8; MAX_GOP_BUFFER_SIZE + 16]]);
+        fmp4_process_packet(
+            &Bytes::from(huge),
+            &mut init_segment,
+            &mut gop_buffer,
+            &mut init_complete,
+        );
+        assert!(gop_buffer.len() <= MAX_GOP_BUFFER_SIZE);
     }
 }
