@@ -304,7 +304,7 @@
     {
       "id": "servo",
       "name": "Servo Web Renderer",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "node_kind": "servo",
       "kind": "native",
       "entrypoint": "libservo_web.so",
