@@ -44,7 +44,7 @@ pub fn validate_add_node_op(
     kind: &str,
     params: Option<&serde_json::Value>,
     perms: &Permissions,
-    security_config: &crate::config::SecurityConfig,
+    policy: file_security::FileSecurityPolicy<'_>,
 ) -> Option<String> {
     if kind == "streamkit::http_input" || kind == "streamkit::http_output" {
         return Some(format!(
@@ -67,7 +67,7 @@ pub fn validate_add_node_op(
                 "Invalid file_reader params: expected params.path to be a string".to_string(),
             );
         };
-        if let Err(e) = file_security::validate_file_path(path, security_config) {
+        if let Err(e) = file_security::validate_file_path(path, policy) {
             return Some(format!("Invalid file path: {e}"));
         }
     }
@@ -79,7 +79,7 @@ pub fn validate_add_node_op(
                 "Invalid file_writer params: expected params.path to be a string".to_string(),
             );
         };
-        if let Err(e) = file_security::validate_write_path(path, security_config) {
+        if let Err(e) = file_security::validate_write_path(path, policy) {
             return Some(format!("Invalid write path: {e}"));
         }
     }
@@ -89,7 +89,7 @@ pub fn validate_add_node_op(
             params.and_then(|p| p.get("script_path")).and_then(serde_json::Value::as_str)
         {
             if !path.trim().is_empty() {
-                if let Err(e) = file_security::validate_file_path(path, security_config) {
+                if let Err(e) = file_security::validate_file_path(path, policy) {
                     return Some(format!("Invalid script_path: {e}"));
                 }
             }
@@ -482,7 +482,7 @@ async fn handle_add_node(
     }
 
     if let Some(message) =
-        validate_add_node_op(&kind, params.as_ref(), perms, &app_state.config.security)
+        validate_add_node_op(&kind, params.as_ref(), perms, app_state.file_security_policy())
     {
         return Some(ResponsePayload::Error { message });
     }
@@ -756,7 +756,7 @@ async fn handle_tune_node(
         &session,
         node_id,
         message,
-        &app_state.config.security,
+        app_state.file_security_policy(),
         &app_state.event_tx,
     )
     .await
@@ -772,7 +772,7 @@ async fn handle_tune_node(
 pub fn validate_update_params_security(
     kind: Option<&str>,
     params: &serde_json::Value,
-    security: &crate::config::SecurityConfig,
+    policy: file_security::FileSecurityPolicy<'_>,
 ) -> bool {
     let file_path = params.get("path").and_then(serde_json::Value::as_str);
     let script_path = params.get("script_path").and_then(serde_json::Value::as_str);
@@ -782,7 +782,7 @@ pub fn validate_update_params_security(
             warn!("Invalid file_reader params: expected params.path to be a string");
             return false;
         };
-        if let Err(e) = file_security::validate_file_path(path, security) {
+        if let Err(e) = file_security::validate_file_path(path, policy) {
             warn!("Invalid file path: {e}");
             return false;
         }
@@ -790,7 +790,7 @@ pub fn validate_update_params_security(
 
     if kind == Some("core::file_writer") {
         if let Some(path) = file_path {
-            if let Err(e) = file_security::validate_write_path(path, security) {
+            if let Err(e) = file_security::validate_write_path(path, policy) {
                 warn!("Invalid write path: {e}");
                 return false;
             }
@@ -800,7 +800,7 @@ pub fn validate_update_params_security(
     if kind == Some("core::script") {
         if let Some(path) = script_path {
             if !path.trim().is_empty() {
-                if let Err(e) = file_security::validate_file_path(path, security) {
+                if let Err(e) = file_security::validate_file_path(path, policy) {
                     warn!("Invalid script_path: {e}");
                     return false;
                 }
@@ -850,7 +850,7 @@ async fn handle_tune_node_fire_and_forget(
             &session,
             node_id,
             message,
-            &app_state.config.security,
+            app_state.file_security_policy(),
             &app_state.event_tx,
         )
         .await
@@ -971,7 +971,7 @@ async fn handle_validate_batch(
         &session,
         operations,
         perms,
-        &app_state.config.security,
+        app_state.file_security_policy(),
     )
     .await;
 
@@ -1017,7 +1017,7 @@ async fn handle_apply_batch(
         &session,
         operations,
         perms,
-        &app_state.config.security,
+        app_state.file_security_policy(),
     )
     .await
     {
@@ -1302,7 +1302,7 @@ mod dispatcher_tests {
         assert!(validate_update_params_security(
             Some("audio::gain"),
             &json!({ "gain": 0.5 }),
-            &read_only_security(),
+            file_security::cwd_policy(&read_only_security()),
         ));
     }
 
@@ -1312,7 +1312,7 @@ mod dispatcher_tests {
         assert!(!validate_update_params_security(
             Some("core::file_reader"),
             &json!({ "path": "/etc/passwd" }),
-            &read_only_security(),
+            file_security::cwd_policy(&read_only_security()),
         ));
     }
 
@@ -1321,7 +1321,7 @@ mod dispatcher_tests {
         assert!(!validate_update_params_security(
             Some("core::file_reader"),
             &json!({ "path": 42 }),
-            &read_only_security(),
+            file_security::cwd_policy(&read_only_security()),
         ));
     }
 
@@ -1331,7 +1331,7 @@ mod dispatcher_tests {
         assert!(!validate_update_params_security(
             Some("core::file_writer"),
             &json!({ "path": "/tmp/anywhere/out.txt" }),
-            &read_only_security(),
+            file_security::cwd_policy(&read_only_security()),
         ));
     }
 
@@ -1341,7 +1341,7 @@ mod dispatcher_tests {
         assert!(validate_update_params_security(
             Some("core::script"),
             &json!({ "script_path": "   " }),
-            &read_only_security(),
+            file_security::cwd_policy(&read_only_security()),
         ));
     }
 

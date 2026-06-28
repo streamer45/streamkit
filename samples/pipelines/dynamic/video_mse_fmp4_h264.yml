@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: Video H.264 fMP4 (MSE Output)
+description: >
+  Encodes colorbars to H.264, muxes to fragmented MP4 (ftyp+moov init segment,
+  then moof/mdat segments) and streams via HTTP/MSE. Unlike the WebM MSE
+  samples, fMP4/H.264 plays in Safari/iOS via a plain <video> element.
+  Access the stream at GET /mse/{session_id}/video
+mode: dynamic
+client:
+  watch:
+    mse_path: /video
+    video: true
+
+nodes:
+  colorbars:
+    kind: video::colorbars
+    params:
+      width: 1280
+      height: 720
+      fps: 30
+      pixel_format: nv12
+      draw_time: true
+
+  h264_encoder:
+    kind: video::openh264::encoder
+    params:
+      bitrate_kbps: 2500
+      max_frame_rate: 30.0
+    needs: colorbars
+
+  mp4_muxer:
+    kind: containers::mp4::muxer
+    params:
+      mode: stream
+      video_width: 1280
+      video_height: 720
+    needs: h264_encoder
+
+  http_mse:
+    kind: transport::http::mse
+    params:
+      path: /video
+      max_clients: 10
+      content_type: 'video/mp4; codecs="avc1.42c01f"'
+    needs: mp4_muxer

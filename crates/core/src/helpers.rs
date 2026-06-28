@@ -72,7 +72,7 @@ pub mod config_helpers {
 }
 
 pub mod path_helpers {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     /// Returns `true` if `path` contains traversal or absolute components
     /// (`..`, `/`, or a Windows drive prefix) that would escape `asset_root`
@@ -86,6 +86,154 @@ pub mod path_helpers {
                     | std::path::Component::Prefix(_)
             )
         })
+    }
+
+    /// Resolves a node asset path against `asset_root` without touching the
+    /// filesystem.
+    ///
+    /// Asset paths are always relative to `asset_root`: absolute paths and `..`
+    /// components are rejected. This is the single source of truth shared by the
+    /// `core::file_reader`/`file_writer`/`script` nodes and the server's
+    /// `file_security` validation, so the path that is validated is exactly the
+    /// path that is read.
+    ///
+    /// # Errors
+    /// Returns an error string if `path` is absolute or contains `..`.
+    pub fn resolve_asset_path(path: &str, asset_root: &Path) -> Result<PathBuf, String> {
+        let path_obj = Path::new(path);
+        if has_path_traversal(path_obj) {
+            return Err(format!(
+                "path must be relative to asset_root and must not contain '..': '{path}'"
+            ));
+        }
+        Ok(asset_root.join(path_obj))
+    }
+
+    /// An `asset_root` that has been canonicalized exactly once at the trust
+    /// boundary.
+    ///
+    /// The path resolvers compare a canonicalized target against `asset_root`
+    /// with [`Path::starts_with`], which only holds when *both* sides are
+    /// canonical. Encoding "already canonical" in the type means the resolvers
+    /// accept a value that is canonical by construction instead of defensively
+    /// re-canonicalizing on every call (a syscall per file node, per validator).
+    /// The server canonicalizes at startup; node-crate callers and embedders
+    /// build one from a raw path (`current_dir()`, a `TempDir`) — which may
+    /// contain symlinked components (e.g. macOS `/tmp` → `/private/tmp`) — via
+    /// [`CanonicalAssetRoot::new`].
+    #[derive(Clone, Debug)]
+    pub struct CanonicalAssetRoot(PathBuf);
+
+    impl CanonicalAssetRoot {
+        /// Canonicalizes `asset_root`, resolving symlinks and `.`/`..`.
+        ///
+        /// # Errors
+        /// Returns an error string if `asset_root` cannot be canonicalized
+        /// (missing, inaccessible, or a permission error on a component).
+        pub fn new(asset_root: &Path) -> Result<Self, String> {
+            asset_root
+                .canonicalize()
+                .map(Self)
+                .map_err(|e| format!("cannot resolve asset_root '{}': {e}", asset_root.display()))
+        }
+
+        #[must_use]
+        pub fn as_path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    /// Resolves an existing asset path and canonicalizes it, ensuring the result
+    /// is a regular file that stays within `asset_root` after symlink resolution.
+    ///
+    /// Canonicalizing at read time and re-checking containment closes the
+    /// validate→read symlink-swap window for relative paths.
+    ///
+    /// # Errors
+    /// Returns an error string if `path` is absolute / contains `..`, cannot be
+    /// canonicalized, is not a regular file, or resolves (via symlinks) outside
+    /// `asset_root`.
+    pub fn resolve_existing_asset_path(
+        path: &str,
+        asset_root: &CanonicalAssetRoot,
+    ) -> Result<PathBuf, String> {
+        let root = asset_root.as_path();
+        let joined = resolve_asset_path(path, root)?;
+        let canonical = joined.canonicalize().map_err(|e| {
+            format!("cannot resolve path '{path}' (file may not exist or is not accessible): {e}")
+        })?;
+        if !canonical.starts_with(root) {
+            return Err(format!(
+                "path '{path}' resolves to '{}' which is outside asset_root '{}'",
+                canonical.display(),
+                root.display()
+            ));
+        }
+        if !canonical.is_file() {
+            return Err(format!(
+                "path '{path}' resolves to '{}' which is not a regular file",
+                canonical.display()
+            ));
+        }
+        Ok(canonical)
+    }
+
+    /// Resolves an asset path whose target may not exist yet (file writes),
+    /// canonicalizing the parent directory and ensuring it stays within
+    /// `asset_root` after symlink resolution.
+    ///
+    /// The target's own name is not canonicalized (it may not exist yet), but if
+    /// it *already* exists as a symlink the link is resolved and required to stay
+    /// within `asset_root`: otherwise a pre-existing in-root symlink
+    /// (`out/report.txt` → `/etc/cron.d/payload`) would let a `File::create`
+    /// follow it and truncate a file outside the root.
+    ///
+    /// # Errors
+    /// Returns an error string if `path` is absolute / contains `..`, lacks a
+    /// file name, whose parent cannot be canonicalized or resolves outside
+    /// `asset_root`, or that is a symlink resolving outside `asset_root`.
+    pub fn resolve_new_asset_path(
+        path: &str,
+        asset_root: &CanonicalAssetRoot,
+    ) -> Result<PathBuf, String> {
+        let root = asset_root.as_path();
+        // Reject absolute / `..` first, but decompose the *relative* path so the
+        // file name and parent come from the same source (deriving the file name
+        // from the joined path would treat a bare `.` as a file named after the
+        // root and silently escape it).
+        resolve_asset_path(path, root)?;
+        let rel = Path::new(path);
+        let file_name = rel
+            .file_name()
+            .ok_or_else(|| format!("write path must include a file name: '{path}'"))?
+            .to_owned();
+        let parent = rel.parent().unwrap_or_else(|| Path::new(""));
+        let canonical_parent = root
+            .join(parent)
+            .canonicalize()
+            .map_err(|e| format!("cannot resolve parent directory for write path '{path}': {e}"))?;
+        if !canonical_parent.starts_with(root) {
+            return Err(format!(
+                "write path '{path}' resolves outside asset_root '{}'",
+                root.display()
+            ));
+        }
+        let target = canonical_parent.join(file_name);
+        if let Ok(meta) = std::fs::symlink_metadata(&target) {
+            if meta.file_type().is_symlink() {
+                let resolved = target.canonicalize().map_err(|e| {
+                    format!("cannot resolve symlinked write target for path '{path}': {e}")
+                })?;
+                if !resolved.starts_with(root) {
+                    return Err(format!(
+                        "write path '{path}' is a symlink resolving to '{}' outside asset_root '{}'",
+                        resolved.display(),
+                        root.display()
+                    ));
+                }
+            }
+        }
+        Ok(target)
     }
 }
 

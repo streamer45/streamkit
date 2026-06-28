@@ -162,10 +162,19 @@ impl Permissions {
                 "containers::*".to_string(),
                 // Transport: allow MoQ, deny HTTP fetcher by default (SSRF risk)
                 "transport::moq::*".to_string(),
-                // Core: explicitly allow safe-ish nodes; deny core::file_writer by default (arbitrary write risk)
+                // Transport HTTP: allow `mse` (serves over the caller's own request, no
+                // arbitrary-URL fetch) so least-privilege gateways can serve live casts
+                // without admin. `transport::http::fetcher` stays denied (SSRF risk).
+                // The oneshot `streamkit::http_input`/`http_output` markers are not gated by
+                // this allowlist (the oneshot path treats them as implicitly allowed), so
+                // they are intentionally not listed here.
+                "transport::http::mse".to_string(),
+                // Core: explicitly allow the safe nodes. Omitted on purpose:
+                // `core::file_writer` / `core::object_store_writer` (arbitrary/external write).
                 "core::passthrough".to_string(),
                 "core::file_reader".to_string(),
                 "core::pacer".to_string(),
+                "core::param_bridge".to_string(),
                 "core::json_serialize".to_string(),
                 "core::text_chunker".to_string(),
                 "core::script".to_string(),
@@ -509,6 +518,20 @@ mod tests {
         assert!(user.is_node_allowed("plugin::native::whisper"));
         assert!(user.is_node_allowed("plugin::native::kokoro"));
         assert!(user.is_node_allowed("plugin::wasm::gain_filter_rust"));
+    }
+
+    #[test]
+    fn test_default_user_http_and_core_node_policy() {
+        let user = Permissions::user();
+        // `mse` serves over the caller's own request and is safe to allow.
+        assert!(user.is_node_allowed("transport::http::mse"));
+        // Safe in-graph core nodes (no external side effects) are allowed.
+        assert!(user.is_node_allowed("core::param_bridge"));
+        // The HTTP fetcher stays denied (arbitrary-URL fetch / SSRF risk), and the
+        // write-capable core nodes stay denied (arbitrary / external write).
+        assert!(!user.is_node_allowed("transport::http::fetcher"));
+        assert!(!user.is_node_allowed("core::file_writer"));
+        assert!(!user.is_node_allowed("core::object_store_writer"));
     }
 
     #[test]

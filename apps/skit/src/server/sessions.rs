@@ -341,7 +341,7 @@ pub async fn create_dynamic_session(
     // File-path security — policy violations are permission denials, not
     // malformed input (preserves the 403 FORBIDDEN status the old HTTP
     // handler returned for AppError::Forbidden from validate_file_*_paths).
-    check_file_path_security(&engine_pipeline, &app_state.config.security)
+    check_file_path_security(&engine_pipeline, app_state.file_security_policy())
         .map_err(CreateSessionError::Forbidden)?;
 
     // Pre-flight: reject early if over the session limit or name is taken,
@@ -555,7 +555,7 @@ pub async fn validate_batch_operations(
     session: &crate::session::Session,
     operations: &[streamkit_api::BatchOperation],
     perms: &crate::permissions::Permissions,
-    security_config: &crate::config::SecurityConfig,
+    policy: crate::file_security::FileSecurityPolicy<'_>,
 ) -> Vec<streamkit_api::ValidationError> {
     let mut errors: Vec<streamkit_api::ValidationError> = Vec::new();
 
@@ -595,7 +595,7 @@ pub async fn validate_batch_operations(
                 kind,
                 params.as_ref(),
                 perms,
-                security_config,
+                policy,
             ) {
                 errors.push(streamkit_api::ValidationError {
                     error_type: streamkit_api::ValidationErrorType::Error,
@@ -637,7 +637,7 @@ pub async fn apply_batch_operations(
     session: &crate::session::Session,
     operations: Vec<streamkit_api::BatchOperation>,
     perms: &crate::permissions::Permissions,
-    security_config: &crate::config::SecurityConfig,
+    policy: crate::file_security::FileSecurityPolicy<'_>,
 ) -> Result<(), String> {
     let mut engine_operations = Vec::new();
     {
@@ -682,7 +682,7 @@ pub async fn apply_batch_operations(
                     kind,
                     params.as_ref(),
                     perms,
-                    security_config,
+                    policy,
                 ) {
                     return Err(message);
                 }
@@ -807,10 +807,10 @@ pub async fn tune_session_node(
     session: &crate::session::Session,
     node_id: String,
     message: streamkit_core::control::NodeControlMessage,
-    security_config: &crate::config::SecurityConfig,
+    policy: crate::file_security::FileSecurityPolicy<'_>,
     event_tx: &tokio::sync::broadcast::Sender<crate::state::BroadcastEvent>,
 ) -> Result<(), String> {
-    tune_session_node_inner(session, node_id, message, security_config, event_tx, false).await
+    tune_session_node_inner(session, node_id, message, policy, event_tx, false).await
 }
 
 /// Like [`tune_session_node`] but the durable params are fully replaced
@@ -826,17 +826,17 @@ pub async fn tune_session_node_replace(
     session: &crate::session::Session,
     node_id: String,
     message: streamkit_core::control::NodeControlMessage,
-    security_config: &crate::config::SecurityConfig,
+    policy: crate::file_security::FileSecurityPolicy<'_>,
     event_tx: &tokio::sync::broadcast::Sender<crate::state::BroadcastEvent>,
 ) -> Result<(), String> {
-    tune_session_node_inner(session, node_id, message, security_config, event_tx, true).await
+    tune_session_node_inner(session, node_id, message, policy, event_tx, true).await
 }
 
 pub(super) async fn tune_session_node_inner(
     session: &crate::session::Session,
     node_id: String,
     message: streamkit_core::control::NodeControlMessage,
-    security_config: &crate::config::SecurityConfig,
+    policy: crate::file_security::FileSecurityPolicy<'_>,
     event_tx: &tokio::sync::broadcast::Sender<crate::state::BroadcastEvent>,
     replace: bool,
 ) -> Result<(), String> {
@@ -851,7 +851,7 @@ pub(super) async fn tune_session_node_inner(
         if !crate::websocket_handlers::validate_update_params_security(
             kind.as_deref(),
             params,
-            security_config,
+            policy,
         ) {
             return Err("Security policy rejected the UpdateParams payload".to_string());
         }
@@ -1110,7 +1110,7 @@ mod sessions_batch_tests {
             &session,
             &[],
             &passthrough_only_perms(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await;
         assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
@@ -1126,7 +1126,7 @@ mod sessions_batch_tests {
             &session,
             &ops,
             &passthrough_only_perms(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await;
 
@@ -1161,8 +1161,13 @@ mod sessions_batch_tests {
             params: Some(serde_json::json!({ "path": outside_path })),
         }];
 
-        let errors =
-            validate_batch_operations(&session, &ops, &perms, &SecurityConfig::default()).await;
+        let errors = validate_batch_operations(
+            &session,
+            &ops,
+            &perms,
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
+        )
+        .await;
 
         assert_eq!(errors.len(), 1, "expected one file-security error, got {errors:?}");
         let err = &errors[0];
@@ -1185,7 +1190,7 @@ mod sessions_batch_tests {
             &session,
             &ops,
             &passthrough_only_perms(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await;
 
@@ -1217,7 +1222,7 @@ mod sessions_batch_tests {
             &session,
             &ops,
             &passthrough_only_perms(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await;
 
@@ -1236,7 +1241,7 @@ mod sessions_batch_tests {
             &session,
             ops,
             &passthrough_only_perms(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await;
 
@@ -1260,7 +1265,7 @@ mod sessions_batch_tests {
             &session,
             ops,
             &passthrough_only_perms(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await;
 
@@ -1287,7 +1292,7 @@ mod sessions_batch_tests {
             &session,
             ops,
             &passthrough_only_perms(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("happy AddNode must succeed");
@@ -1315,9 +1320,14 @@ mod sessions_batch_tests {
         // optimistic semantics this left an orphan in `pipeline.nodes`;
         // confirmed-add must leave nothing behind.
         let ops = vec![add_op("ghost", "core::definitely_not_a_real_kind")];
-        apply_batch_operations(&session, ops, &Permissions::admin(), &SecurityConfig::default())
-            .await
-            .expect("batch is accepted; the engine-side creation is what fails");
+        apply_batch_operations(
+            &session,
+            ops,
+            &Permissions::admin(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
+        )
+        .await
+        .expect("batch is accepted; the engine-side creation is what fails");
 
         // Wait for the engine's `Failed` state transition for this id so the
         // assertion ties to the engine's "creation failed" signal rather
@@ -1376,7 +1386,7 @@ mod sessions_batch_tests {
             &session,
             vec![add_op("x", "core::passthrough")],
             &passthrough_only_perms(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await;
 
@@ -1405,7 +1415,7 @@ mod sessions_batch_tests {
             &session,
             vec![remove_op("inflight")],
             &passthrough_only_perms(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("RemoveNode must succeed");
@@ -1430,9 +1440,14 @@ mod sessions_batch_tests {
             add_op("sink", "core::passthrough"),
             connect_op(("ghost", "out"), ("sink", "in")),
         ];
-        apply_batch_operations(&session, ops, &Permissions::admin(), &SecurityConfig::default())
-            .await
-            .expect("batch is accepted; ghost's creation is what fails");
+        apply_batch_operations(
+            &session,
+            ops,
+            &Permissions::admin(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
+        )
+        .await
+        .expect("batch is accepted; ghost's creation is what fails");
 
         // The edge is recorded synchronously, before any async engine work.
         assert!(
@@ -1485,7 +1500,7 @@ mod sessions_batch_tests {
             &session,
             vec![add_op("ghost", "core::definitely_not_a_real_kind")],
             &Permissions::admin(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("batch is accepted; ghost's creation is what fails");
@@ -1497,7 +1512,7 @@ mod sessions_batch_tests {
             &session,
             vec![add_op("ghost", "core::passthrough")],
             &Permissions::admin(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect_err("re-adding a failed id must be rejected");
@@ -1513,7 +1528,7 @@ mod sessions_batch_tests {
             &session,
             vec![add_op("ghost", "core::definitely_not_a_real_kind")],
             &Permissions::admin(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("batch is accepted; ghost's creation is what fails");
@@ -1525,7 +1540,7 @@ mod sessions_batch_tests {
             &session,
             vec![remove_op("ghost"), add_op("ghost", "core::passthrough")],
             &Permissions::admin(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("remove-then-readd of a failed id must be accepted");
@@ -1541,7 +1556,7 @@ mod sessions_batch_tests {
             &session,
             vec![add_op("ghost", "core::definitely_not_a_real_kind")],
             &Permissions::admin(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("batch is accepted; ghost's creation is what fails");
@@ -1565,7 +1580,7 @@ mod sessions_batch_tests {
             &session,
             vec![add_op("ghost", "core::definitely_not_a_real_kind")],
             &Permissions::admin(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("batch accepted; ghost's creation is what fails");
@@ -1578,7 +1593,7 @@ mod sessions_batch_tests {
             &session,
             vec![remove_op("ghost")],
             &Permissions::admin(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("RemoveNode must succeed");
@@ -1616,7 +1631,7 @@ mod sessions_batch_tests {
             &session,
             ops,
             &passthrough_only_perms(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("connect after AddNode must succeed");
@@ -1651,7 +1666,7 @@ mod sessions_batch_tests {
             &session,
             setup,
             &passthrough_only_perms(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("setup batch must succeed");
@@ -1662,7 +1677,7 @@ mod sessions_batch_tests {
             &session,
             ops,
             &passthrough_only_perms(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("disconnect must succeed");
@@ -1691,7 +1706,7 @@ mod sessions_batch_tests {
             &session,
             setup,
             &passthrough_only_perms(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("setup batch must succeed");
@@ -1708,7 +1723,7 @@ mod sessions_batch_tests {
             &session,
             ops,
             &passthrough_only_perms(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("RemoveNode must succeed");
@@ -1752,7 +1767,7 @@ mod sessions_batch_tests {
             &session,
             vec![add_op("b", "core::passthrough")],
             &Permissions::admin(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("add batch must succeed");
@@ -1760,7 +1775,7 @@ mod sessions_batch_tests {
             &session,
             vec![remove_op("b")],
             &Permissions::admin(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("remove batch must succeed");
@@ -1794,7 +1809,7 @@ mod sessions_batch_tests {
             &session,
             setup,
             &passthrough_only_perms(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("setup batch must succeed");
@@ -1805,7 +1820,7 @@ mod sessions_batch_tests {
             &session,
             vec![remove_op("b")],
             &passthrough_only_perms(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("RemoveNode must succeed");
@@ -1863,7 +1878,7 @@ mod sessions_batch_tests {
             &session,
             vec![add_op("dup", "core::sink")],
             &passthrough_only_perms(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect_err("a duplicate id must be rejected");
@@ -1887,7 +1902,7 @@ mod sessions_batch_tests {
             &session,
             vec![add_op("x", "core::passthrough")],
             &Permissions::admin(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect_err("add batch must fail closed when engine state can't be queried");
@@ -1910,7 +1925,7 @@ mod sessions_batch_tests {
             &session,
             vec![disconnect_op(("a", "out"), ("b", "in"))],
             &Permissions::admin(),
-            &SecurityConfig::default(),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("non-add batch must not require an engine state query");

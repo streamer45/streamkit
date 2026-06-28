@@ -390,6 +390,17 @@ pub struct TelemetryConfig {
     pub otlp_headers: HashMap<String, String>,
     #[serde(default)]
     pub tokio_console: bool,
+    /// Maximum number of characters retained per text field in session
+    /// telemetry events before they are forwarded to WebSocket clients.
+    /// Strings longer than this are truncated server-side to avoid leaking
+    /// large payloads (e.g. full transcripts). Defaults to the core
+    /// telemetry redaction window.
+    #[serde(default = "default_telemetry_max_text_chars")]
+    pub max_text_chars: usize,
+}
+
+fn default_telemetry_max_text_chars() -> usize {
+    streamkit_core::telemetry::TelemetryConfig::default().max_text_chars
 }
 
 impl Default for TelemetryConfig {
@@ -401,6 +412,7 @@ impl Default for TelemetryConfig {
             otlp_traces_endpoint: None,
             otlp_headers: HashMap::new(),
             tokio_console: false,
+            max_text_chars: default_telemetry_max_text_chars(),
         }
     }
 }
@@ -997,8 +1009,9 @@ const fn default_allowed_write_paths() -> Vec<String> {
 #[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
 pub struct SecurityConfig {
     /// Allowed file paths for file_reader nodes.
-    /// Supports glob patterns (e.g., "samples/**", "/data/media/*").
-    /// Relative paths are resolved against the server's working directory.
+    /// Supports glob patterns (e.g., "samples/**", "media/*.wav").
+    /// Patterns are resolved against `[server].asset_root`, matching the
+    /// relative-only contract enforced on node `path` fields.
     /// Default: `["samples/**"]` - only allow reading from the samples directory.
     /// Set to `["**"]` to allow all paths (not recommended for production).
     #[serde(default = "default_allowed_file_paths")]
@@ -1319,6 +1332,24 @@ mod tests {
     fn deserialize_clamp_timeout_preserves_large_values() {
         let w: ClampWrapper = serde_json::from_str(r#"{"v": 60000}"#).unwrap();
         assert_eq!(w.v, Some(60_000));
+    }
+
+    #[test]
+    fn telemetry_max_text_chars_defaults_to_core_window() {
+        assert_eq!(
+            TelemetryConfig::default().max_text_chars,
+            streamkit_core::telemetry::TelemetryConfig::default().max_text_chars,
+        );
+    }
+
+    #[test]
+    fn telemetry_max_text_chars_parses_override_from_toml() {
+        let cfg: Config = Figment::new()
+            .merge(figment::providers::Serialized::defaults(Config::default()))
+            .merge(Toml::string("[telemetry]\nmax_text_chars = 7\n"))
+            .extract()
+            .unwrap();
+        assert_eq!(cfg.telemetry.max_text_chars, 7);
     }
 
     #[test]
