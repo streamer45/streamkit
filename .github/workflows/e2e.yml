@@ -77,7 +77,11 @@ jobs:
           sudo ldconfig
 
       - name: Build skit
-        run: cargo build -p streamkit-server --bin skit --features "svt_av1 dav1d_static"
+        # Release build so PR CI links the same configuration as the nightly
+        # slow-sample run. The rav1d/C-libdav1d symbol collision (both export
+        # the dav1d_* C ABI) only surfaces under the release linker, so a debug
+        # build here would let that regression class slip through to nightly.
+        run: cargo build -p streamkit-server --bin skit --release --features "svt_av1 dav1d_static"
 
       # The `svt_av1` module is feature-gated and off by default, so the
       # workspace `cargo test` in skit.yml never compiles or runs its unit
@@ -88,7 +92,7 @@ jobs:
 
       - name: Start skit server
         run: |
-          SK_SERVER__ADDRESS=127.0.0.1:4545 ./target/debug/skit &
+          SK_SERVER__ADDRESS=127.0.0.1:4545 ./target/release/skit &
           # Wait for the server to be healthy
           HEALTHY=0
           for i in $(seq 1 30); do
