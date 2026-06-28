@@ -615,6 +615,9 @@ fn handle_update_config(
             // transparent frames until the new page paints, preventing the
             // outgoing page's pixels from bleeding into the new capture.
             state.delegate.painted.set(false);
+            // Drop the cached frame so a `read_to_image` miss after the new
+            // page paints can't fall back to the previous URL's last frame.
+            state.last_good_frame = None;
             // Reset the one-shot post-load gate so the new page gets
             // its custom-CSS injection (if any) once it finishes
             // loading.  Render ticks will run `handle_render`'s
