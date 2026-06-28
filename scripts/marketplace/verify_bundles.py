@@ -9,6 +9,10 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+from manifest_builder import SHERPA_CUDA_LIBS  # noqa: E402
+
 
 def readelf_dynamic(path: pathlib.Path) -> tuple[list[str], list[str]]:
     result = subprocess.run(
@@ -36,12 +40,6 @@ def extract_bundle(bundle_path: pathlib.Path, dest: pathlib.Path) -> None:
         check=True,
     )
 
-
-# GPU execution-provider libraries expected inside a cuda-tagged bundle.
-SHERPA_CUDA_LIBS = [
-    "libonnxruntime_providers_cuda.so",
-    "libonnxruntime_providers_shared.so",
-]
 
 # NEEDED/RUNPATH substrings tolerated only for cuda-tagged bundles. CPU bundles
 # stay strict and must not reference any of these.

@@ -122,29 +122,18 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # ---------------------------------------------------------------
 # Marketplace plugin bundles
 #
-# Every plugin shipped in this demo used to be rebuilt from source here
-# (~1h cold build: 11 cargo compiles, sherpa-onnx relink, torch-based
-# Helsinki conversion). We now pull each plugin's signed prebuilt CPU
-# bundle from the same marketplace users install from (GitHub Releases,
-# manifest at `docs/public/registry/plugins/<id>/<version>/manifest.json`).
-# This:
+# Plugins are pulled as signed prebuilt CPU bundles from the same
+# marketplace users install from, so the demo validates the artifacts
+# users actually receive. Each sherpa-backed bundle is self-contained
+# (vendors its own libsherpa-onnx-c-api.so + libonnxruntime.so with
+# RUNPATH=$ORIGIN), so the demo needs no system sherpa-onnx libs.
 #
-# 1. Cuts cold demo build time dramatically (no plugin compiles, no
-#    sherpa relink, no torch install for Helsinki).
-# 2. Makes the demo a validation surface for the artifacts users actually
-#    install -- if a marketplace bundle regresses, the demo catches it.
-# 3. Drops the demo's dependency on building/copying sherpa-onnx libs:
-#    each sherpa-backed bundle vendors its own libsherpa-onnx-c-api.so +
-#    libonnxruntime.so with RUNPATH=$ORIGIN.
-#
-# When bumping a plugin: update its `<ID>_PLUGIN_VERSION` and
+# When bumping a plugin, update its `<ID>_PLUGIN_VERSION` and
 # `<ID>_BUNDLE_SHA256` ARGs together from
-# `docs/public/registry/plugins/<id>/<version>/manifest.json`. Model HF
-# SHAs are pinned similarly from the same manifest's `models[*].sha256`
-# / `models[*].file_checksums` fields.
-#
-# Trust anchor: each sha256 pin is reviewed at upgrade time and acts as
-# the trust boundary (the same model the registry's signed manifest pins).
+# `docs/public/registry/plugins/<id>/<version>/manifest.json`; model HF
+# SHAs come from the same manifest's `models[*].sha256` /
+# `models[*].file_checksums` fields. Each sha256 pin is the trust
+# boundary, matching the model the registry's signed manifest pins.
 # ---------------------------------------------------------------
 
 # Shared base for all bundle-fetch stages -- one apt-get cached across all.
@@ -163,6 +152,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 FROM bundle-deps AS whisper-bundle
 ARG WHISPER_PLUGIN_VERSION=0.3.0
 ARG WHISPER_BUNDLE_SHA256=79212cfa57376ebfcb955fd12522ecf36164071cdc94cf3bf964122837e8f4d2
+ARG WHISPER_GGML_SHA256=818710568da3ca15689e31a743197b520007872ff9576237bda97bd1b469c3d7
 ARG SILERO_VAD_SHA256=1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3
 
 WORKDIR /bundle
@@ -178,6 +168,7 @@ WORKDIR /models
 RUN set -eux; \
     curl --proto '=https' --tlsv1.2 -fsSL -o ggml-tiny-q5_1.bin \
       "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin"; \
+    echo "${WHISPER_GGML_SHA256}  ggml-tiny-q5_1.bin" | sha256sum -c -; \
     curl --proto '=https' --tlsv1.2 -fsSL -o silero_vad.onnx \
       "https://huggingface.co/streamkit/whisper-models/resolve/main/silero_vad.onnx"; \
     echo "${SILERO_VAD_SHA256}  silero_vad.onnx" | sha256sum -c -
@@ -436,13 +427,15 @@ ARG SLINT_PLUGIN_VERSION=0.4.0
 ARG SLINT_BUNDLE_SHA256=2b33767cdd35b9eeba3bec4e1801aa020a59ef9a61c54b28f7c5d71fa087034d
 
 WORKDIR /bundle
+COPY plugins/native/slint/plugin.yml plugin.yml.src
 RUN set -eux; \
     url="https://github.com/streamer45/streamkit/releases/download/plugin-slint-v${SLINT_PLUGIN_VERSION}/slint-${SLINT_PLUGIN_VERSION}-bundle.tar.zst"; \
     curl --proto '=https' --tlsv1.2 -fsSL -o slint-bundle.tar.zst "$url"; \
     echo "${SLINT_BUNDLE_SHA256}  slint-bundle.tar.zst" | sha256sum -c -; \
     mkdir -p extracted; \
     tar --zstd -xf slint-bundle.tar.zst -C extracted; \
-    test -f extracted/libslint.so
+    test -f extracted/libslint.so; \
+    sed "s/^version:.*/version: ${SLINT_PLUGIN_VERSION}/" plugin.yml.src > extracted/plugin.yml
 
 # Runtime stage
 FROM debian:bookworm-slim
@@ -507,13 +500,11 @@ COPY --chown=app:app --from=pocket-tts-bundle /models/pocket-tts /opt/streamkit/
 COPY --chown=app:app --from=supertonic-bundle /bundle/extracted /opt/streamkit/plugins/native/supertonic
 COPY --chown=app:app --from=supertonic-bundle /models/supertonic-v2-onnx /opt/streamkit/models/supertonic-v2-onnx
 
+# The pinned slint bundle predates self-describing bundles, so the slint-bundle
+# stage injects a plugin.yml (version-matched to the pinned bundle) to keep the
+# "Slint Files" asset type + /api/v1/assets/plugin/slint endpoints. Drop the
+# injection once SLINT_PLUGIN_VERSION points at a self-describing bundle.
 COPY --chown=app:app --from=slint-bundle /bundle/extracted /opt/streamkit/plugins/native/slint
-# The pinned slint bundle predates self-describing bundles (no embedded
-# plugin.yml), so the server cannot rediscover Slint's asset type from the
-# extracted bundle alone. Inject the source plugin.yml so the demo keeps the
-# "Slint Files" asset type + /api/v1/assets/plugin/slint endpoints. Drop this
-# once SLINT_PLUGIN_VERSION points at a bundle built with an embedded plugin.yml.
-COPY --chown=app:app plugins/native/slint/plugin.yml /opt/streamkit/plugins/native/slint/plugin.yml
 
 COPY --chown=app:app --from=aac-encoder-bundle /bundle/extracted /opt/streamkit/plugins/native/aac-encoder
 

@@ -13,6 +13,14 @@ import shutil
 import subprocess
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+from manifest_builder import (  # noqa: E402
+    SHERPA_CORE_LIBS,
+    SHERPA_CUDA_LIBS,
+    build_manifest,
+)
+
 
 def sha256_file(path: pathlib.Path) -> str:
     hasher = hashlib.sha256()
@@ -58,18 +66,6 @@ def copy_file(src: pathlib.Path, dest: pathlib.Path) -> None:
 def require_tool(name: str) -> None:
     if shutil.which(name) is None:
         raise RuntimeError(f"Missing required tool: {name}")
-
-
-# Core sherpa runtime libraries vendored into every sherpa-backed bundle.
-SHERPA_CORE_LIBS = ["libsherpa-onnx-c-api.so", "libonnxruntime.so"]
-
-# Additional ONNX Runtime execution-provider libraries required when the
-# vendored libonnxruntime.so is the CUDA-enabled build. The same plugin `.so`
-# loads these at runtime to dispatch to the GPU.
-SHERPA_CUDA_LIBS = [
-    "libonnxruntime_providers_cuda.so",
-    "libonnxruntime_providers_shared.so",
-]
 
 
 def ensure_sherpa_runtime(work_dir: pathlib.Path, accelerator: str = "cpu") -> None:
@@ -192,57 +188,9 @@ def write_plugin_yml(yml_dir: pathlib.Path, manifest: dict) -> None:
     )
 
 
-def strip_none(payload: dict) -> dict:
-    return {key: value for key, value in payload.items() if value is not None}
-
-
 def dump_manifest_bytes(manifest: dict) -> bytes:
     """Produce canonical manifest bytes matching write_json formatting."""
     return (json.dumps(manifest, indent=2, sort_keys=False) + "\n").encode("utf-8")
-
-
-def build_manifest(
-    plugin: dict,
-    plugin_version: str,
-    bundle_block: dict | None,
-    variants: list[dict] | None = None,
-) -> dict:
-    """Build manifest dict from plugin metadata and bundle info.
-
-    `variants` carries accelerator-specific bundles (e.g. a CUDA build). It is
-    omitted entirely when empty so CPU-only manifests stay byte-identical to
-    those produced before variant support existed.
-    """
-    manifest = {
-        "schema_version": 1,
-        "id": plugin["id"],
-        "name": plugin.get("name"),
-        "version": plugin_version,
-        "node_kind": plugin["node_kind"],
-        "kind": plugin["kind"],
-        "description": plugin.get("description"),
-        "license": plugin.get("license"),
-        "license_url": plugin.get("license_url"),
-        "homepage": plugin.get("homepage"),
-        "repository": plugin.get("repo"),
-        "entrypoint": plugin["entrypoint"],
-        "bundle": bundle_block,
-        "compatibility": plugin.get("compatibility"),
-        "models": plugin.get("models", []),
-        "assets": plugin.get("assets") or None,
-    }
-    manifest = strip_none(manifest)
-    if variants:
-        # Insert variants right after `bundle` for readable diffs.
-        ordered = {}
-        for key, value in manifest.items():
-            ordered[key] = value
-            if key == "bundle":
-                ordered["variants"] = variants
-        if "variants" not in ordered:
-            ordered["variants"] = variants
-        manifest = ordered
-    return manifest
 
 
 def verify_existing_signature(
@@ -526,8 +474,10 @@ def main() -> int:
 
             # Append-only: an already-published variant is immutable, so reuse
             # the manifest carried forward above instead of rebuilding it.
+            # Match case-insensitively to mirror the installer's
+            # eq_ignore_ascii_case bundle resolution.
             if any(
-                v.get("accelerator") == accelerator
+                (v.get("accelerator") or "").lower() == accelerator
                 for v in existing_manifest.get("variants", [])
             ):
                 print(
@@ -554,7 +504,7 @@ def main() -> int:
             merged_variants = [
                 v
                 for v in existing_manifest.get("variants", [])
-                if v.get("accelerator") != accelerator
+                if (v.get("accelerator") or "").lower() != accelerator
             ]
             merged_variants.append(variant_block)
             would_be_manifest = build_manifest(

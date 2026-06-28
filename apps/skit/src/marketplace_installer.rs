@@ -42,12 +42,6 @@ const STEP_ACTIVATE: &str = "activate";
 const STEP_LOAD_PLUGIN: &str = "load_plugin";
 const STEP_DOWNLOAD_MODELS: &str = "download_models";
 
-/// File written inside an installed bundle directory recording which accelerator
-/// variant (e.g. `cpu`, `cuda`) was activated. The install directory is keyed by
-/// plugin id + version only, so this marker lets the installer detect a request
-/// to switch a version's variant and report it instead of silently no-opping.
-const ACCELERATOR_MARKER: &str = ".accelerator";
-
 const REGISTRY_TIMEOUT_SECS: u64 = 20;
 const REGISTRY_INDEX_TTL_SECS: u64 = 60;
 const REGISTRY_MANIFEST_TTL_SECS: u64 = 60;
@@ -802,101 +796,130 @@ impl PluginInstaller {
             },
         };
 
-        let selected_accelerator = manifest
-            .resolve_bundle(self.resolve_accelerator(request.accelerator.as_deref()).as_deref())
-            .map(|bundle| bundle.accelerator.to_string());
-
-        let bundle_dir = self.plugin_dir.join("bundles").join(&manifest.id).join(&manifest.version);
-        if bundle_dir.exists() {
-            if let Some(selected) = selected_accelerator.as_deref() {
-                if let Some(installed) = read_accelerator_marker(&bundle_dir).await {
-                    if installed != selected {
-                        let err = anyhow!(
-                            "Plugin '{}' v{} is already installed as the '{}' variant; \
-                             uninstall it first to switch to the '{}' variant",
-                            manifest.id,
-                            manifest.version,
-                            installed,
-                            selected,
-                        );
-                        tracker.fail_step(STEP_DOWNLOAD_BUNDLE, err.to_string()).await;
-                        return Err(err.into());
-                    }
-                }
-            }
-            if !request.install_models {
-                let err = anyhow!("Bundle version '{}' is already installed", manifest.version);
+        // Resolve the requested accelerator once. `resolve_accelerator` probes
+        // the CUDA runtime, so threading the result through `download_bundle`
+        // avoids re-probing and keeps the recorded and downloaded variants in
+        // lockstep.
+        let requested_accelerator = self.resolve_accelerator(request.accelerator.as_deref());
+        let selected_accelerator =
+            if let Some(bundle) = manifest.resolve_bundle(requested_accelerator.as_deref()) {
+                bundle.accelerator.to_ascii_lowercase()
+            } else {
+                let err = anyhow!("Plugin manifest missing required `bundle` section");
                 tracker.fail_step(STEP_DOWNLOAD_BUNDLE, err.to_string()).await;
                 return Err(err.into());
-            }
+            };
+        if let Err(err) =
+            plugin_paths::validate_path_component("accelerator", &selected_accelerator)
+        {
+            tracker.fail_step(STEP_DOWNLOAD_BUNDLE, err.to_string()).await;
+            return Err(err.into());
+        }
+
+        // Install dirs are keyed by id + version + accelerator so CPU and CUDA
+        // builds of the same version coexist and switching variants never
+        // silently no-ops.
+        let bundle_dir = self
+            .plugin_dir
+            .join("bundles")
+            .join(&manifest.id)
+            .join(&manifest.version)
+            .join(&selected_accelerator);
+
+        let bundle_dir = if bundle_dir.exists() {
             if let Err(err) =
                 plugin_paths::ensure_existing_dir_under(&base_real, &bundle_dir, "bundle").await
             {
                 tracker.fail_step(STEP_DOWNLOAD_BUNDLE, err.to_string()).await;
                 return Err(err.into());
             }
-            tracker.succeed_step(STEP_DOWNLOAD_BUNDLE).await;
-            for step in [STEP_EXTRACT_BUNDLE, STEP_ACTIVATE, STEP_LOAD_PLUGIN] {
-                Self::mark_step_succeeded(tracker, step).await;
-            }
-            return Ok(());
-        }
 
-        let bundle_path = match self
-            .download_bundle(request, manifest, tracker, cancel, registry_origin, &base_real)
-            .await
-        {
-            Ok(path) => path,
-            Err(InstallError::Cancelled) => return Err(InstallError::Cancelled),
-            Err(InstallError::Other(err)) => {
+            let already_active =
+                self.read_active_record(&manifest.id).await.is_some_and(|record| {
+                    record.version == manifest.version
+                        && record.accelerator.eq_ignore_ascii_case(&selected_accelerator)
+                });
+            if already_active && !request.install_models {
+                let err = anyhow!(
+                    "Plugin '{}' v{} ({} variant) is already installed",
+                    manifest.id,
+                    manifest.version,
+                    selected_accelerator,
+                );
                 tracker.fail_step(STEP_DOWNLOAD_BUNDLE, err.to_string()).await;
-                return Err(InstallError::Other(err));
-            },
-        };
-        tracker.succeed_step(STEP_DOWNLOAD_BUNDLE).await;
+                return Err(err.into());
+            }
 
-        Self::ensure_not_cancelled(cancel)?;
+            tracker.succeed_step(STEP_DOWNLOAD_BUNDLE).await;
+            Self::mark_step_succeeded(tracker, STEP_EXTRACT_BUNDLE).await;
 
-        tracker.start_step(STEP_EXTRACT_BUNDLE).await;
-        let bundle_dir = match self.extract_bundle(manifest, &bundle_path, &base_real, cancel).await
-        {
-            Ok(dir) => dir,
-            Err(InstallError::Cancelled) => return Err(InstallError::Cancelled),
-            Err(InstallError::Other(err)) => {
-                tracker.fail_step(STEP_EXTRACT_BUNDLE, err.to_string()).await;
-                return Err(InstallError::Other(err));
-            },
-        };
-        tracker.succeed_step(STEP_EXTRACT_BUNDLE).await;
+            if already_active {
+                for step in [STEP_ACTIVATE, STEP_LOAD_PLUGIN] {
+                    Self::mark_step_succeeded(tracker, step).await;
+                }
+                return Ok(());
+            }
 
-        // Write a plugin.yml into the bundle directory so that
-        // `read_local_plugin_manifest` can rediscover asset types on server
-        // restart.  The marketplace manifest is JSON; the local loader expects
-        // YAML, so we serialize the manifest here.
-        if let Err(err) = write_manifest_yml(manifest, &bundle_dir).await {
-            tracing::warn!(
-                plugin_id = %manifest.id,
-                error = %err,
-                "Failed to write plugin.yml into bundle directory; \
-                 asset types may not survive restart"
-            );
-        }
+            bundle_dir
+        } else {
+            let bundle_path = match self
+                .download_bundle(
+                    manifest,
+                    tracker,
+                    cancel,
+                    registry_origin,
+                    &base_real,
+                    requested_accelerator.as_deref(),
+                )
+                .await
+            {
+                Ok(path) => path,
+                Err(InstallError::Cancelled) => return Err(InstallError::Cancelled),
+                Err(InstallError::Other(err)) => {
+                    tracker.fail_step(STEP_DOWNLOAD_BUNDLE, err.to_string()).await;
+                    return Err(InstallError::Other(err));
+                },
+            };
+            tracker.succeed_step(STEP_DOWNLOAD_BUNDLE).await;
 
-        if let Some(selected) = selected_accelerator.as_deref() {
-            if let Err(err) = write_accelerator_marker(&bundle_dir, selected).await {
+            Self::ensure_not_cancelled(cancel)?;
+
+            tracker.start_step(STEP_EXTRACT_BUNDLE).await;
+            let bundle_dir = match self
+                .extract_bundle(manifest, &selected_accelerator, &bundle_path, &base_real, cancel)
+                .await
+            {
+                Ok(dir) => dir,
+                Err(InstallError::Cancelled) => return Err(InstallError::Cancelled),
+                Err(InstallError::Other(err)) => {
+                    tracker.fail_step(STEP_EXTRACT_BUNDLE, err.to_string()).await;
+                    return Err(InstallError::Other(err));
+                },
+            };
+            tracker.succeed_step(STEP_EXTRACT_BUNDLE).await;
+
+            // The local loader rediscovers asset types from a YAML plugin.yml
+            // beside the entrypoint, not from the marketplace JSON manifest, so
+            // serialize one here for restart survival.
+            if let Err(err) = write_manifest_yml(manifest, &bundle_dir).await {
                 tracing::warn!(
                     plugin_id = %manifest.id,
                     error = %err,
-                    "Failed to write accelerator marker into bundle directory; \
-                     switching variants for this version may not be detected"
+                    "Failed to write plugin.yml into bundle directory; \
+                     asset types may not survive restart"
                 );
             }
-        }
+
+            bundle_dir
+        };
 
         Self::ensure_not_cancelled(cancel)?;
 
         tracker.start_step(STEP_ACTIVATE).await;
-        let entrypoint_path = match self.activate_bundle(manifest, &bundle_dir, &base_real).await {
+        let entrypoint_path = match self
+            .activate_bundle(manifest, &selected_accelerator, &bundle_dir, &base_real)
+            .await
+        {
             Ok(path) => path,
             Err(InstallError::Cancelled) => return Err(InstallError::Cancelled),
             Err(InstallError::Other(err)) => {
@@ -1007,20 +1030,25 @@ impl PluginInstaller {
         None
     }
 
+    async fn read_active_record(&self, plugin_id: &str) -> Option<ActivePluginRecord> {
+        let record_path = plugin_record_path(&self.plugin_dir, plugin_id).ok()?;
+        let bytes = tokio::fs::read(&record_path).await.ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
     async fn download_bundle(
         &self,
-        request: &InstallPluginRequest,
         manifest: &crate::marketplace::PluginManifest,
         tracker: &JobTracker,
         cancel: &CancellationToken,
         registry_origin: &OriginKey,
         base_real: &Path,
+        accelerator: Option<&str>,
     ) -> Result<PathBuf, InstallError> {
-        let accelerator = self.resolve_accelerator(request.accelerator.as_deref());
-        let bundle = manifest.resolve_bundle(accelerator.as_deref()).ok_or_else(|| {
+        let bundle = manifest.resolve_bundle(accelerator).ok_or_else(|| {
             InstallError::Other(anyhow!("Plugin manifest missing required `bundle` section"))
         })?;
-        if let Some(requested) = accelerator.as_deref() {
+        if let Some(requested) = accelerator {
             tracing::info!(
                 plugin_id = %manifest.id,
                 requested_accelerator = requested,
@@ -1171,6 +1199,7 @@ impl PluginInstaller {
     async fn extract_bundle(
         &self,
         manifest: &crate::marketplace::PluginManifest,
+        accelerator: &str,
         bundle_path: &Path,
         base_real: &Path,
         cancel: &CancellationToken,
@@ -1179,17 +1208,20 @@ impl PluginInstaller {
             return Err(InstallError::Cancelled);
         }
 
-        let bundles_root = self.plugin_dir.join("bundles").join(&manifest.id);
-        plugin_paths::ensure_dir_under(base_real, &bundles_root, "bundles").await?;
+        let version_dir =
+            self.plugin_dir.join("bundles").join(&manifest.id).join(&manifest.version);
+        plugin_paths::ensure_dir_under(base_real, &version_dir, "bundles").await?;
 
-        let bundle_dir = bundles_root.join(&manifest.version);
+        let bundle_dir = version_dir.join(accelerator);
         if bundle_dir.exists() {
             let version = manifest.version.as_str();
-            return Err(anyhow!("Bundle version '{version}' is already installed").into());
+            return Err(
+                anyhow!("Bundle version '{version}' ({accelerator}) is already installed").into()
+            );
         }
 
         let temp_id = Uuid::new_v4();
-        let temp_dir = bundles_root.join(format!(".tmp-{temp_id}"));
+        let temp_dir = version_dir.join(format!(".tmp-{temp_id}"));
         tokio::fs::create_dir_all(&temp_dir).await.with_context(|| {
             format!("Failed to create temp dir {temp_dir}", temp_dir = temp_dir.display())
         })?;
@@ -1259,6 +1291,7 @@ impl PluginInstaller {
     async fn activate_bundle(
         &self,
         manifest: &crate::marketplace::PluginManifest,
+        accelerator: &str,
         bundle_dir: &Path,
         base_real: &Path,
     ) -> Result<PathBuf, InstallError> {
@@ -1273,6 +1306,7 @@ impl PluginInstaller {
             kind: manifest.kind.clone(),
             entrypoint: entrypoint_path.to_string_lossy().into_owned(),
             installed_at_ms: now_ms(),
+            accelerator: accelerator.to_string(),
         };
         let record_path = plugin_record_path(&self.plugin_dir, &manifest.id)?;
         let payload = serde_json::to_vec_pretty(&record)
@@ -2071,31 +2105,6 @@ async fn write_manifest_yml(
     Ok(())
 }
 
-/// Record the activated accelerator variant inside the bundle directory.
-async fn write_accelerator_marker(bundle_dir: &Path, accelerator: &str) -> Result<()> {
-    let marker_path = bundle_dir.join(ACCELERATOR_MARKER);
-    tokio::fs::write(&marker_path, accelerator.as_bytes())
-        .await
-        .with_context(|| format!("Failed to write {}", marker_path.display()))?;
-    Ok(())
-}
-
-/// Read the accelerator variant previously recorded for an installed bundle.
-///
-/// Returns `None` when the marker is absent (e.g. bundles installed before this
-/// marker existed), in which case the caller treats the variant as unknown and
-/// skips the mismatch check.
-async fn read_accelerator_marker(bundle_dir: &Path) -> Option<String> {
-    let marker_path = bundle_dir.join(ACCELERATOR_MARKER);
-    let contents = tokio::fs::read_to_string(&marker_path).await.ok()?;
-    let trimmed = contents.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
 fn is_safe_relative_path(path: &Path) -> bool {
     if path.is_absolute() {
         return false;
@@ -2138,21 +2147,35 @@ fn now_ms() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_millis())
 }
 
-/// Returns `true` if the NVIDIA CUDA driver runtime is loadable, used to
-/// auto-select CUDA plugin bundle variants. The probe `dlopen`s `libcuda.so.1`
-/// (the driver stub present whenever a usable NVIDIA driver is installed) and
-/// caches the result for the process lifetime.
+/// System libraries that must all be loadable before a host is considered able
+/// to run a CUDA plugin bundle. `libcuda.so.1` is the driver stub, but the
+/// bundles also link the CUDA *runtime* (`libcudart`), which is absent on
+/// driver-only hosts; probing the driver alone would auto-select a CUDA bundle
+/// that then fails to load.
+const CUDA_RUNTIME_LIBS: &[&str] = &["libcuda.so.1", "libcudart.so"];
+
+/// Returns `true` if every named library is loadable via `dlopen`.
+fn libs_loadable(names: &[&str]) -> bool {
+    names.iter().all(|name| {
+        // SAFETY: We only load well-known system libraries and never call into
+        // them; `libloading` unloads them on drop. No symbols are dereferenced.
+        // allow(unsafe_code): dlopen is the only portable way to probe for the
+        // CUDA stack at runtime; the load is side-effect free.
+        #[allow(unsafe_code)]
+        let loaded = unsafe { libloading::Library::new(*name) }.is_ok();
+        loaded
+    })
+}
+
+/// Returns `true` if the full CUDA runtime stack is loadable, used to
+/// auto-select CUDA plugin bundle variants. The result is cached for the
+/// process lifetime.
 fn cuda_runtime_available() -> bool {
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     *AVAILABLE.get_or_init(|| {
-        // SAFETY: We only load a well-known system library and never call into
-        // it; `libloading` unloads it on drop. No symbols are dereferenced.
-        // allow(unsafe_code): dlopen is the only portable way to probe for the
-        // CUDA driver at runtime; the load is side-effect free.
-        #[allow(unsafe_code)]
-        let available = unsafe { libloading::Library::new("libcuda.so.1") }.is_ok();
+        let available = libs_loadable(CUDA_RUNTIME_LIBS);
         if available {
-            tracing::debug!("CUDA driver detected (libcuda.so.1 loadable)");
+            tracing::debug!("CUDA runtime detected (driver + libcudart loadable)");
         }
         available
     })
@@ -2174,6 +2197,13 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
     use tokio::task::JoinHandle;
+
+    #[test]
+    fn libs_loadable_requires_all_named_libraries() {
+        assert!(libs_loadable(&[]));
+        assert!(!libs_loadable(&["libdefinitely-not-real-streamkit.so.999"]));
+        assert!(!libs_loadable(&["libc.so.6", "libdefinitely-not-real.so.999"]));
+    }
 
     fn make_job(status: JobStatus) -> InstallJob {
         InstallJob {
@@ -2719,25 +2749,6 @@ mod tests {
         let yml_in_root = bundle_dir.join("plugin.yml");
         assert!(yml_in_nested.exists(), "plugin.yml should be next to entrypoint");
         assert!(!yml_in_root.exists(), "plugin.yml should NOT be at bundle root");
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn accelerator_marker_round_trips_and_handles_absence() -> Result<()> {
-        let temp_dir = tempfile::tempdir()?;
-        let bundle_dir = temp_dir.path().join("bundle");
-        tokio::fs::create_dir_all(&bundle_dir).await?;
-
-        // Absent marker reads as None so legacy installs skip the mismatch check.
-        assert_eq!(read_accelerator_marker(&bundle_dir).await, None);
-
-        write_accelerator_marker(&bundle_dir, "cuda").await?;
-        assert_eq!(read_accelerator_marker(&bundle_dir).await, Some("cuda".to_string()));
-
-        // An empty marker is treated as unknown rather than an empty variant.
-        tokio::fs::write(bundle_dir.join(ACCELERATOR_MARKER), b"  \n").await?;
-        assert_eq!(read_accelerator_marker(&bundle_dir).await, None);
 
         Ok(())
     }
@@ -3569,8 +3580,154 @@ mod tests {
         assert!(step_succeeded(STEP_EXTRACT_BUNDLE), "bundle extraction should succeed");
         assert!(step_succeeded(STEP_ACTIVATE), "activation should succeed");
 
-        let bundle_dir = plugin_dir.join("bundles").join("demo").join("1.0.0");
+        let bundle_dir = plugin_dir.join("bundles").join("demo").join("1.0.0").join("cpu");
         assert!(bundle_dir.join("libdemo.so").exists(), "entrypoint should be extracted");
+
+        let _ = shutdown_tx.send(());
+        server_handle.await.context("file server task panicked")??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn install_keys_bundle_dir_by_accelerator_for_side_by_side_variants() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let plugin_dir = temp.path().join("plugins");
+        tokio::fs::create_dir_all(&plugin_dir).await?;
+
+        let cpu_bytes = tar_with_entry("libdemo.so", b"cpu build")?;
+        let cuda_bytes = tar_with_entry("libdemo.so", b"cuda build")?;
+        let sha = |bytes: &[u8]| {
+            let mut hasher = Sha256::new();
+            hasher.update(bytes);
+            to_hex(&hasher.finalize())
+        };
+
+        let listener = match TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => listener,
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+                tracing::warn!(error = %err, "Skipping side-by-side variant test");
+                return Ok(());
+            },
+            Err(err) => return Err(err.into()),
+        };
+        let addr = listener.local_addr()?;
+
+        let manifest = crate::marketplace::PluginManifest {
+            schema_version: 1,
+            id: "demo".to_string(),
+            name: None,
+            version: "1.0.0".to_string(),
+            node_kind: "demo".to_string(),
+            kind: PluginKind::Native,
+            description: None,
+            license: None,
+            license_url: None,
+            homepage: None,
+            repository: None,
+            entrypoint: "libdemo.so".to_string(),
+            bundle: Some(crate::marketplace::PluginBundle {
+                url: format!("http://{addr}/cpu.tar"),
+                sha256: sha(&cpu_bytes),
+                size_bytes: None,
+            }),
+            variants: vec![crate::marketplace::PluginBundleVariant {
+                accelerator: "cuda".to_string(),
+                url: format!("http://{addr}/cuda.tar"),
+                sha256: sha(&cuda_bytes),
+                size_bytes: None,
+            }],
+            compatibility: None,
+            models: Vec::new(),
+            assets: Vec::new(),
+        };
+        let manifest_bytes = serde_json::to_vec(&manifest)?;
+        let (pubkey, signature) = minisign_keypair_and_sign(&manifest_bytes)?;
+
+        let index = RegistryIndex {
+            schema_version: 1,
+            plugins: vec![crate::marketplace::RegistryPlugin {
+                id: "demo".to_string(),
+                name: None,
+                description: None,
+                latest: Some("1.0.0".to_string()),
+                versions: vec![crate::marketplace::RegistryPluginVersion {
+                    version: "1.0.0".to_string(),
+                    manifest_url: format!("http://{addr}/manifest.json"),
+                    signature_url: Some(format!("http://{addr}/manifest.json.minisig")),
+                    published_at: None,
+                }],
+            }],
+        };
+        let registry_url = format!("http://{addr}/index.json");
+
+        let (shutdown_tx, server_handle) = serve_static_routes(
+            listener,
+            vec![
+                ("/index.json".to_string(), Bytes::from(serde_json::to_vec(&index)?)),
+                ("/manifest.json".to_string(), Bytes::from(manifest_bytes)),
+                ("/manifest.json.minisig".to_string(), Bytes::from(signature)),
+                ("/cpu.tar".to_string(), Bytes::from(cpu_bytes)),
+                ("/cuda.tar".to_string(), Bytes::from(cuda_bytes)),
+            ],
+        );
+
+        let security = crate::config::PluginMarketplaceSecurityConfig {
+            allow_model_urls: true,
+            marketplace_scheme_policy: crate::config::MarketplaceSchemePolicy::AllowHttp,
+            marketplace_host_policy: crate::config::MarketplaceHostPolicy::AllowPrivate,
+            marketplace_url_allowlist: vec!["http://127.0.0.1:*".to_string()],
+            ..crate::config::PluginMarketplaceSecurityConfig::default()
+        };
+        let queue =
+            build_queue_with(&plugin_dir, vec![registry_url.clone()], vec![pubkey], security)?;
+        let permissions =
+            Permissions { allowed_plugins: vec!["*".to_string()], ..Permissions::default() };
+
+        let install = |accelerator: Option<&str>, job: &str| {
+            let queue = queue.clone();
+            let registry_url = registry_url.clone();
+            let permissions = permissions.clone();
+            let accelerator = accelerator.map(str::to_string);
+            let job = job.to_string();
+            async move {
+                insert_job(&queue, &job, JobStatus::Running).await;
+                let tracker = JobTracker { job_id: job.clone(), queue: queue.clone() };
+                let request = InstallPluginRequest {
+                    registry: registry_url,
+                    plugin_id: "demo".to_string(),
+                    version: None,
+                    install_models: false,
+                    model_ids: None,
+                    accelerator,
+                };
+                // Fabricated .so fails at dlopen, but the record is written during
+                // the preceding ACTIVATE step, which is what we assert on.
+                let _ = queue
+                    .installer
+                    .install(request, permissions, tracker, CancellationToken::new())
+                    .await;
+            }
+        };
+
+        install(None, "cpu-job").await;
+        let cpu_dir = plugin_dir.join("bundles").join("demo").join("1.0.0").join("cpu");
+        assert!(cpu_dir.join("libdemo.so").exists(), "cpu variant should extract under cpu/");
+
+        let record_path = plugin_record_path(&plugin_dir, "demo")?;
+        let record: ActivePluginRecord =
+            serde_json::from_slice(&tokio::fs::read(&record_path).await?)?;
+        assert_eq!(record.accelerator, "cpu", "active record should track cpu");
+
+        // Switching to the cuda variant must download it (no silent no-op) and
+        // leave the cpu variant installed side-by-side.
+        install(Some("cuda"), "cuda-job").await;
+        let cuda_dir = plugin_dir.join("bundles").join("demo").join("1.0.0").join("cuda");
+        assert!(cuda_dir.join("libdemo.so").exists(), "cuda variant should extract under cuda/");
+        assert!(cpu_dir.join("libdemo.so").exists(), "cpu variant must remain side-by-side");
+
+        let record: ActivePluginRecord =
+            serde_json::from_slice(&tokio::fs::read(&record_path).await?)?;
+        assert_eq!(record.accelerator, "cuda", "active record should switch to cuda");
 
         let _ = shutdown_tx.send(());
         server_handle.await.context("file server task panicked")??;

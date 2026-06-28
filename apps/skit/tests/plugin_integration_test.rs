@@ -376,6 +376,7 @@ async fn test_load_active_plugin_on_startup() {
         kind: PluginKind::Native,
         entrypoint: entrypoint_path.to_string_lossy().into_owned(),
         installed_at_ms: 0,
+        accelerator: "cpu".to_string(),
     };
     let record_path = plugin_record_path(&plugins_dir, "gain").unwrap();
     fs::write(&record_path, serde_json::to_vec_pretty(&record).unwrap()).await.unwrap();
@@ -420,6 +421,7 @@ async fn test_uninstall_marketplace_plugin_removes_bundle() {
         kind: PluginKind::Native,
         entrypoint: entrypoint_path.to_string_lossy().into_owned(),
         installed_at_ms: 0,
+        accelerator: "cpu".to_string(),
     };
     let record_path = plugin_record_path(&plugins_dir, "gain").unwrap();
     fs::write(&record_path, serde_json::to_vec_pretty(&record).unwrap()).await.unwrap();

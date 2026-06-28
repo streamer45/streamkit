@@ -42,6 +42,15 @@ while IFS= read -r plugin; do
   echo "Building native plugin: ${plugin}"
   (
     cd "plugins/native/${plugin}"
+    # whisper.cpp/ggml enables GGML_NATIVE (-march=native) by default, which can
+    # emit AVX/AVX512 that SIGILLs on older CPUs than the build runner. The
+    # published bundle must run on any x86-64 host, so pin a portable baseline
+    # (SOURCE_DATE_EPOCH disables ggml's native-default upstream).
+    if [ "${plugin}" = "whisper" ]; then
+      export SOURCE_DATE_EPOCH=1
+      export CFLAGS="-O3 -pipe -fPIC -march=x86-64 -mtune=generic"
+      export CXXFLAGS="-O3 -pipe -fPIC -march=x86-64 -mtune=generic"
+    fi
     CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$(cd ../../.. && pwd)/target/plugins}" cargo build --release
   )
 done <<< "${plugins}"

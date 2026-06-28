@@ -17,6 +17,10 @@ pub struct ActivePluginRecord {
     pub kind: PluginKind,
     pub entrypoint: String,
     pub installed_at_ms: u128,
+    /// Accelerator variant of the activated bundle (e.g. `cpu`, `cuda`).
+    /// Empty on records written before bundles were keyed by accelerator.
+    #[serde(default)]
+    pub accelerator: String,
 }
 
 pub fn active_dir(plugin_dir: &Path) -> PathBuf {

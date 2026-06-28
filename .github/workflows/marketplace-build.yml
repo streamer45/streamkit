@@ -351,10 +351,8 @@ jobs:
   publish-registry:
     name: Publish Registry (PR)
     needs: [build-marketplace, build-marketplace-cuda]
-    # Publish whenever the CPU build succeeded, regardless of the optional CUDA
-    # job's outcome (skipped when build_cuda=false, best-effort otherwise). If the
-    # CUDA job published a merged registry artifact it is used; otherwise the
-    # CPU-only registry from build-marketplace is published.
+    # A successful CPU build is sufficient to publish; the CUDA job is optional
+    # and, when it runs, supersedes the artifact with a merged registry.
     if: ${{ always() && needs.build-marketplace.result == 'success' }}
     runs-on: ubuntu-22.04
     permissions:
