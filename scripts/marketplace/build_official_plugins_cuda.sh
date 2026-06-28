@@ -50,6 +50,6 @@ while IFS= read -r plugin; do
   echo "Building CUDA plugin: ${plugin} ${features[*]:-}"
   (
     cd "${plugin_dir}"
-    CARGO_TARGET_DIR="${target_dir}" cargo build --release "${features[@]}"
+    CARGO_TARGET_DIR="${target_dir}" cargo build --release ${features[@]+"${features[@]}"}
   )
 done <<< "${cuda_plugins}"

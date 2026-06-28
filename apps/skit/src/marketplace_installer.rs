@@ -42,6 +42,12 @@ const STEP_ACTIVATE: &str = "activate";
 const STEP_LOAD_PLUGIN: &str = "load_plugin";
 const STEP_DOWNLOAD_MODELS: &str = "download_models";
 
+/// File written inside an installed bundle directory recording which accelerator
+/// variant (e.g. `cpu`, `cuda`) was activated. The install directory is keyed by
+/// plugin id + version only, so this marker lets the installer detect a request
+/// to switch a version's variant and report it instead of silently no-opping.
+const ACCELERATOR_MARKER: &str = ".accelerator";
+
 const REGISTRY_TIMEOUT_SECS: u64 = 20;
 const REGISTRY_INDEX_TTL_SECS: u64 = 60;
 const REGISTRY_MANIFEST_TTL_SECS: u64 = 60;
@@ -796,8 +802,28 @@ impl PluginInstaller {
             },
         };
 
+        let selected_accelerator = manifest
+            .resolve_bundle(self.resolve_accelerator(request.accelerator.as_deref()).as_deref())
+            .map(|bundle| bundle.accelerator.to_string());
+
         let bundle_dir = self.plugin_dir.join("bundles").join(&manifest.id).join(&manifest.version);
         if bundle_dir.exists() {
+            if let Some(selected) = selected_accelerator.as_deref() {
+                if let Some(installed) = read_accelerator_marker(&bundle_dir).await {
+                    if installed != selected {
+                        let err = anyhow!(
+                            "Plugin '{}' v{} is already installed as the '{}' variant; \
+                             uninstall it first to switch to the '{}' variant",
+                            manifest.id,
+                            manifest.version,
+                            installed,
+                            selected,
+                        );
+                        tracker.fail_step(STEP_DOWNLOAD_BUNDLE, err.to_string()).await;
+                        return Err(err.into());
+                    }
+                }
+            }
             if !request.install_models {
                 let err = anyhow!("Bundle version '{}' is already installed", manifest.version);
                 tracker.fail_step(STEP_DOWNLOAD_BUNDLE, err.to_string()).await;
@@ -854,6 +880,17 @@ impl PluginInstaller {
                 "Failed to write plugin.yml into bundle directory; \
                  asset types may not survive restart"
             );
+        }
+
+        if let Some(selected) = selected_accelerator.as_deref() {
+            if let Err(err) = write_accelerator_marker(&bundle_dir, selected).await {
+                tracing::warn!(
+                    plugin_id = %manifest.id,
+                    error = %err,
+                    "Failed to write accelerator marker into bundle directory; \
+                     switching variants for this version may not be detected"
+                );
+            }
         }
 
         Self::ensure_not_cancelled(cancel)?;
@@ -2034,6 +2071,31 @@ async fn write_manifest_yml(
     Ok(())
 }
 
+/// Record the activated accelerator variant inside the bundle directory.
+async fn write_accelerator_marker(bundle_dir: &Path, accelerator: &str) -> Result<()> {
+    let marker_path = bundle_dir.join(ACCELERATOR_MARKER);
+    tokio::fs::write(&marker_path, accelerator.as_bytes())
+        .await
+        .with_context(|| format!("Failed to write {}", marker_path.display()))?;
+    Ok(())
+}
+
+/// Read the accelerator variant previously recorded for an installed bundle.
+///
+/// Returns `None` when the marker is absent (e.g. bundles installed before this
+/// marker existed), in which case the caller treats the variant as unknown and
+/// skips the mismatch check.
+async fn read_accelerator_marker(bundle_dir: &Path) -> Option<String> {
+    let marker_path = bundle_dir.join(ACCELERATOR_MARKER);
+    let contents = tokio::fs::read_to_string(&marker_path).await.ok()?;
+    let trimmed = contents.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 fn is_safe_relative_path(path: &Path) -> bool {
     if path.is_absolute() {
         return false;
@@ -2657,6 +2719,25 @@ mod tests {
         let yml_in_root = bundle_dir.join("plugin.yml");
         assert!(yml_in_nested.exists(), "plugin.yml should be next to entrypoint");
         assert!(!yml_in_root.exists(), "plugin.yml should NOT be at bundle root");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn accelerator_marker_round_trips_and_handles_absence() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let bundle_dir = temp_dir.path().join("bundle");
+        tokio::fs::create_dir_all(&bundle_dir).await?;
+
+        // Absent marker reads as None so legacy installs skip the mismatch check.
+        assert_eq!(read_accelerator_marker(&bundle_dir).await, None);
+
+        write_accelerator_marker(&bundle_dir, "cuda").await?;
+        assert_eq!(read_accelerator_marker(&bundle_dir).await, Some("cuda".to_string()));
+
+        // An empty marker is treated as unknown rather than an empty variant.
+        tokio::fs::write(bundle_dir.join(ACCELERATOR_MARKER), b"  \n").await?;
+        assert_eq!(read_accelerator_marker(&bundle_dir).await, None);
 
         Ok(())
     }

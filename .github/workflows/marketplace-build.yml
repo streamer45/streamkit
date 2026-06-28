@@ -222,6 +222,11 @@ jobs:
     name: Build Marketplace CUDA Variants
     needs: [build-marketplace]
     if: ${{ inputs.build_cuda }}
+    # GPU variants are best-effort: a failure on the (potentially flaky)
+    # self-hosted runner must never regress CPU registry publishing or per-plugin
+    # releases. continue-on-error keeps the overall workflow green so downstream
+    # CPU jobs still run; the failure is still visible on this job.
+    continue-on-error: true
     # Self-hosted NVIDIA (Ada) runner: CUDA toolkit + nvcc must be preinstalled.
     # Adjust the labels to match your runner registration if they differ.
     runs-on: [self-hosted, linux, x64, gpu]
@@ -346,10 +351,11 @@ jobs:
   publish-registry:
     name: Publish Registry (PR)
     needs: [build-marketplace, build-marketplace-cuda]
-    # build-marketplace-cuda is optional (skipped when build_cuda=false); don't let
-    # a skipped CUDA job block CPU registry publishing. Require the CPU build to
-    # have succeeded and the CUDA build to not have failed.
-    if: ${{ always() && needs.build-marketplace.result == 'success' && needs.build-marketplace-cuda.result != 'failure' }}
+    # Publish whenever the CPU build succeeded, regardless of the optional CUDA
+    # job's outcome (skipped when build_cuda=false, best-effort otherwise). If the
+    # CUDA job published a merged registry artifact it is used; otherwise the
+    # CPU-only registry from build-marketplace is published.
+    if: ${{ always() && needs.build-marketplace.result == 'success' }}
     runs-on: ubuntu-22.04
     permissions:
       contents: write

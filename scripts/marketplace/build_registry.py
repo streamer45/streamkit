@@ -511,9 +511,11 @@ def main() -> int:
                 )
                 continue
 
+            embedded_manifest = build_manifest(plugin, plugin_version, bundle_block=None)
             bundle_info = build_bundle(
                 plugin, plugin_version, bundles_out, work_root,
                 accelerator=accelerator,
+                embedded_manifest=embedded_manifest,
             )
             bundle_base = bundle_url_template.format(
                 plugin_id=plugin_id, version=plugin_version,
