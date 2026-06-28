@@ -157,6 +157,15 @@ func main() {
 	<-done
 }
 
+// clampConcurrency floors the clip-render concurrency at 1. A value < 1 would
+// size clipSem as an unbuffered channel and deadlock every clip render.
+func clampConcurrency(n int) int {
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
 func loadConfig() config {
 	listen := flag.String("listen", getEnvDefault("GATEWAY_LISTEN", defaultListenAddr), "Listen address")
 	skit := flag.String("skit-url", getEnvDefault("SKIT_URL", defaultSkitURL), "Skit backend URL")
@@ -180,6 +189,11 @@ func loadConfig() config {
 	clipMaxDur := time.Duration(*clipMax) * time.Second
 	if clipDefaultDur > clipMaxDur {
 		clipDefaultDur = clipMaxDur
+	}
+
+	if c := clampConcurrency(*maxConc); c != *maxConc {
+		log.Printf("invalid --max-concurrency %d, using %d", *maxConc, c)
+		*maxConc = c
 	}
 
 	resW, resH, err := parseResolution(*resolution)

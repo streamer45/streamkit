@@ -55,7 +55,7 @@ type captureOpts struct {
 }
 
 // optionsSegmentRe matches a leading comma-separated key=value options segment
-// (e.g. "dur=30s" or "vp=1920x1080,dur=30s"). A real host never contains '=',
+// (e.g. "dur=30s" or "res=1920x1080,dur=30s"). A real host never contains '=',
 // so a first segment that matches this is unambiguously options, not the target.
 var optionsSegmentRe = regexp.MustCompile(`^[a-z]+=[^,/]+(,[a-z]+=[^,/]+)*$`)
 
