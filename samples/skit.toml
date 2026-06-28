@@ -479,34 +479,100 @@ delete_plugins = false
 list_nodes = true
 access_all_sessions = false
 
-# Users can access all samples except admin-only ones
+# Sample management (mirrors the built-in Permissions::user()); without these
+# flags the allowed_samples list below would be unreachable.
+list_samples = true
+read_samples = true
+write_samples = true
+delete_samples = true
+
+# Users can access standard samples (mirrors the built-in Permissions::user()).
 allowed_samples = [
     "oneshot/*.yml",
     "oneshot/*.yaml",
     "dynamic/*.yml",
     "dynamic/*.yaml",
-    "demo/*.yml",
-    "demo/*.yaml",
     "user/*.yml",
     "user/*.yaml",
 ]
 
-# Users can use most nodes except potentially dangerous ones
+# Users can use most nodes except potentially dangerous ones. Mirrors the
+# built-in Permissions::user() default. Allowed: MoQ + the HTTP `mse` sink
+# (serves over the caller's own request). Denied by omission:
+# transport::http::fetcher (SSRF), core::file_writer / core::object_store_writer
+# (arbitrary/external write). The oneshot streamkit::http_input/http_output
+# markers are implicitly allowed on the oneshot path and need no entry here.
 allowed_nodes = [
     "audio::*",
-    "transport::*",
-    "core::*",
+    "video::*",
     "containers::*",
+    "transport::moq::*",
+    "transport::http::mse",
+    "core::passthrough",
+    "core::file_reader",
+    "core::pacer",
+    "core::param_bridge",
+    "core::json_serialize",
+    "core::text_chunker",
+    "core::script",
+    "core::telemetry_tap",
+    "core::telemetry_out",
+    "core::sink",
+    "plugin::*",
 ]
 
-# Users cannot load plugins, so this list is empty
-allowed_plugins = []
+# Users cannot load/delete plugins, but may use plugins an admin has already loaded.
+allowed_plugins = ["plugin::*"]
 
 # Users can list bundled system assets and their uploaded assets
+# (mirrors the built-in Permissions::user(): audio, images and fonts).
 allowed_assets = [
     "samples/audio/system/*",
     "samples/audio/user/*",
+    "samples/images/system/*",
+    "samples/images/user/*",
+    "samples/fonts/system/*",
+    "samples/fonts/user/*",
 ]
+
+[permissions.roles.gateway]
+# Least-privilege role for trusted intermediaries that build a small set of
+# fixed pipelines, so they need not run as admin. The node/plugin lists below
+# are scoped to the web-capture example; a different gateway (e.g. speech-gateway)
+# would swap in its own nodes and plugins (audio nodes, whisper/kokoro, etc.).
+create_sessions = true
+destroy_sessions = true
+list_sessions = true
+modify_sessions = true
+tune_nodes = true
+load_plugins = false
+delete_plugins = false
+list_nodes = true
+access_all_sessions = false  # Only its own sessions
+upload_assets = false
+delete_assets = false
+
+allowed_samples = []
+
+# Exactly the node kinds the web-capture / live-cast pipeline needs, nothing more.
+# A plugin kind must be allowed here too: is_node_allowed() runs before the
+# allowed_plugins check, so a plugin missing from allowed_nodes is rejected first.
+# No fetcher (SSRF) and no file_writer (arbitrary write). The oneshot
+# streamkit::http_output marker is implicitly allowed and needs no entry.
+allowed_nodes = [
+    "plugin::native::servo",     # render the page (web-capture)
+    "video::pixel_convert",      # servo RGBA -> encoder input format
+    "video::vp9::encoder",       # encode to VP9
+    "containers::webm::muxer",   # mux into WebM for MSE / http_output
+    "transport::http::mse",      # serve the live cast to the browser (MSE)
+    "core::pacer",
+    "core::sink",
+]
+
+# Only the specific plugin(s) the gateway needs (example: servo for web-capture).
+allowed_plugins = ["plugin::native::servo"]
+
+allowed_assets = []
 
 [permissions.roles.readonly]
 # Read-only role - can only view, not modify
