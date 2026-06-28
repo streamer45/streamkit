@@ -1302,10 +1302,7 @@ mod dispatcher_tests {
         assert!(validate_update_params_security(
             Some("audio::gain"),
             &json!({ "gain": 0.5 }),
-            file_security::FileSecurityPolicy::new(
-                &read_only_security(),
-                std::path::Path::new("."),
-            ),
+            file_security::cwd_policy(&read_only_security()),
         ));
     }
 
@@ -1315,10 +1312,7 @@ mod dispatcher_tests {
         assert!(!validate_update_params_security(
             Some("core::file_reader"),
             &json!({ "path": "/etc/passwd" }),
-            file_security::FileSecurityPolicy::new(
-                &read_only_security(),
-                std::path::Path::new("."),
-            ),
+            file_security::cwd_policy(&read_only_security()),
         ));
     }
 
@@ -1327,10 +1321,7 @@ mod dispatcher_tests {
         assert!(!validate_update_params_security(
             Some("core::file_reader"),
             &json!({ "path": 42 }),
-            file_security::FileSecurityPolicy::new(
-                &read_only_security(),
-                std::path::Path::new("."),
-            ),
+            file_security::cwd_policy(&read_only_security()),
         ));
     }
 
@@ -1340,10 +1331,7 @@ mod dispatcher_tests {
         assert!(!validate_update_params_security(
             Some("core::file_writer"),
             &json!({ "path": "/tmp/anywhere/out.txt" }),
-            file_security::FileSecurityPolicy::new(
-                &read_only_security(),
-                std::path::Path::new("."),
-            ),
+            file_security::cwd_policy(&read_only_security()),
         ));
     }
 
@@ -1353,10 +1341,7 @@ mod dispatcher_tests {
         assert!(validate_update_params_security(
             Some("core::script"),
             &json!({ "script_path": "   " }),
-            file_security::FileSecurityPolicy::new(
-                &read_only_security(),
-                std::path::Path::new("."),
-            ),
+            file_security::cwd_policy(&read_only_security()),
         ));
     }
 

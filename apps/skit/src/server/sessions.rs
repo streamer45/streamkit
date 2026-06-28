@@ -1110,10 +1110,7 @@ mod sessions_batch_tests {
             &session,
             &[],
             &passthrough_only_perms(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await;
         assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
@@ -1129,10 +1126,7 @@ mod sessions_batch_tests {
             &session,
             &ops,
             &passthrough_only_perms(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await;
 
@@ -1171,10 +1165,7 @@ mod sessions_batch_tests {
             &session,
             &ops,
             &perms,
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await;
 
@@ -1199,10 +1190,7 @@ mod sessions_batch_tests {
             &session,
             &ops,
             &passthrough_only_perms(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await;
 
@@ -1234,10 +1222,7 @@ mod sessions_batch_tests {
             &session,
             &ops,
             &passthrough_only_perms(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await;
 
@@ -1256,10 +1241,7 @@ mod sessions_batch_tests {
             &session,
             ops,
             &passthrough_only_perms(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await;
 
@@ -1283,10 +1265,7 @@ mod sessions_batch_tests {
             &session,
             ops,
             &passthrough_only_perms(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await;
 
@@ -1313,10 +1292,7 @@ mod sessions_batch_tests {
             &session,
             ops,
             &passthrough_only_perms(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("happy AddNode must succeed");
@@ -1348,10 +1324,7 @@ mod sessions_batch_tests {
             &session,
             ops,
             &Permissions::admin(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("batch is accepted; the engine-side creation is what fails");
@@ -1413,10 +1386,7 @@ mod sessions_batch_tests {
             &session,
             vec![add_op("x", "core::passthrough")],
             &passthrough_only_perms(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await;
 
@@ -1445,10 +1415,7 @@ mod sessions_batch_tests {
             &session,
             vec![remove_op("inflight")],
             &passthrough_only_perms(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("RemoveNode must succeed");
@@ -1477,10 +1444,7 @@ mod sessions_batch_tests {
             &session,
             ops,
             &Permissions::admin(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("batch is accepted; ghost's creation is what fails");
@@ -1536,10 +1500,7 @@ mod sessions_batch_tests {
             &session,
             vec![add_op("ghost", "core::definitely_not_a_real_kind")],
             &Permissions::admin(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("batch is accepted; ghost's creation is what fails");
@@ -1551,10 +1512,7 @@ mod sessions_batch_tests {
             &session,
             vec![add_op("ghost", "core::passthrough")],
             &Permissions::admin(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect_err("re-adding a failed id must be rejected");
@@ -1570,10 +1528,7 @@ mod sessions_batch_tests {
             &session,
             vec![add_op("ghost", "core::definitely_not_a_real_kind")],
             &Permissions::admin(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("batch is accepted; ghost's creation is what fails");
@@ -1585,10 +1540,7 @@ mod sessions_batch_tests {
             &session,
             vec![remove_op("ghost"), add_op("ghost", "core::passthrough")],
             &Permissions::admin(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("remove-then-readd of a failed id must be accepted");
@@ -1604,10 +1556,7 @@ mod sessions_batch_tests {
             &session,
             vec![add_op("ghost", "core::definitely_not_a_real_kind")],
             &Permissions::admin(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("batch is accepted; ghost's creation is what fails");
@@ -1631,10 +1580,7 @@ mod sessions_batch_tests {
             &session,
             vec![add_op("ghost", "core::definitely_not_a_real_kind")],
             &Permissions::admin(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("batch accepted; ghost's creation is what fails");
@@ -1647,10 +1593,7 @@ mod sessions_batch_tests {
             &session,
             vec![remove_op("ghost")],
             &Permissions::admin(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("RemoveNode must succeed");
@@ -1688,10 +1631,7 @@ mod sessions_batch_tests {
             &session,
             ops,
             &passthrough_only_perms(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("connect after AddNode must succeed");
@@ -1726,10 +1666,7 @@ mod sessions_batch_tests {
             &session,
             setup,
             &passthrough_only_perms(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("setup batch must succeed");
@@ -1740,10 +1677,7 @@ mod sessions_batch_tests {
             &session,
             ops,
             &passthrough_only_perms(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("disconnect must succeed");
@@ -1772,10 +1706,7 @@ mod sessions_batch_tests {
             &session,
             setup,
             &passthrough_only_perms(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("setup batch must succeed");
@@ -1792,10 +1723,7 @@ mod sessions_batch_tests {
             &session,
             ops,
             &passthrough_only_perms(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("RemoveNode must succeed");
@@ -1839,10 +1767,7 @@ mod sessions_batch_tests {
             &session,
             vec![add_op("b", "core::passthrough")],
             &Permissions::admin(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("add batch must succeed");
@@ -1850,10 +1775,7 @@ mod sessions_batch_tests {
             &session,
             vec![remove_op("b")],
             &Permissions::admin(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("remove batch must succeed");
@@ -1887,10 +1809,7 @@ mod sessions_batch_tests {
             &session,
             setup,
             &passthrough_only_perms(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("setup batch must succeed");
@@ -1901,10 +1820,7 @@ mod sessions_batch_tests {
             &session,
             vec![remove_op("b")],
             &passthrough_only_perms(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("RemoveNode must succeed");
@@ -1962,10 +1878,7 @@ mod sessions_batch_tests {
             &session,
             vec![add_op("dup", "core::sink")],
             &passthrough_only_perms(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect_err("a duplicate id must be rejected");
@@ -1989,10 +1902,7 @@ mod sessions_batch_tests {
             &session,
             vec![add_op("x", "core::passthrough")],
             &Permissions::admin(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect_err("add batch must fail closed when engine state can't be queried");
@@ -2015,10 +1925,7 @@ mod sessions_batch_tests {
             &session,
             vec![disconnect_op(("a", "out"), ("b", "in"))],
             &Permissions::admin(),
-            crate::file_security::FileSecurityPolicy::new(
-                &SecurityConfig::default(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&SecurityConfig::default()),
         )
         .await
         .expect("non-add batch must not require an engine state query");

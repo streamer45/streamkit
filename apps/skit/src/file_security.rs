@@ -65,14 +65,6 @@ pub fn validate_file_path(path: &str, policy: FileSecurityPolicy<'_>) -> Result<
         ));
     }
 
-    if !canonical_path.is_file() {
-        return Err(format!(
-            "Path is not a file: '{}' (resolved from '{}')",
-            canonical_path.display(),
-            path
-        ));
-    }
-
     tracing::debug!("File path validation passed: '{}' -> '{}'", path, canonical_path.display());
     Ok(())
 }
@@ -138,6 +130,11 @@ fn check_path_allowed(
     asset_root: &std::path::Path,
     allowed_patterns: &[String],
 ) -> bool {
+    // Escape `asset_root`'s glob metacharacters once so a root like
+    // `/srv/media[prod]` isn't parsed as a character class (which would silently
+    // deny everything) when prepended to relative patterns.
+    let escaped_root = Pattern::escape(&asset_root.to_string_lossy());
+
     for pattern_str in allowed_patterns {
         // Special case: "**" allows everything
         if pattern_str == "**" {
@@ -146,13 +143,12 @@ fn check_path_allowed(
 
         let pattern_path = std::path::Path::new(pattern_str);
 
-        // Build the glob string. For relative patterns we prepend `asset_root`,
-        // escaping its glob metacharacters so a root like `/srv/media[prod]`
-        // doesn't get parsed as a character class and silently deny everything.
+        // Build the glob string. For relative patterns we prepend the escaped
+        // `asset_root`.
         let glob_str = if pattern_path.is_absolute() {
             pattern_str.clone()
         } else {
-            format!("{}/{pattern_str}", Pattern::escape(&asset_root.to_string_lossy()))
+            format!("{escaped_root}/{pattern_str}")
         };
 
         match Pattern::new(&glob_str) {
@@ -184,6 +180,16 @@ fn check_path_allowed(
     }
 
     false
+}
+
+/// Test helper for a policy rooted at the current directory (`"."`).
+///
+/// This is the convention used by the validation/session/websocket
+/// batch-operation tests; centralizing it keeps those call sites from
+/// re-inlining the root choice.
+#[cfg(test)]
+pub fn cwd_policy(config: &SecurityConfig) -> FileSecurityPolicy<'_> {
+    FileSecurityPolicy::new(config, std::path::Path::new("."))
 }
 
 // `unwrap`/`expect` in tests: fixture setup failures should surface as panics at
@@ -263,7 +269,29 @@ mod tests {
         let cfg = read_config(&[&glob_under(&root)]);
         let err = validate_file_path("subdir", FileSecurityPolicy::new(&cfg, &root))
             .expect_err("directory must be rejected");
-        assert!(err.contains("not a file"), "unexpected error: {err}");
+        assert!(err.contains("not a regular file"), "unexpected error: {err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_file_path_accepts_file_under_symlinked_asset_root() {
+        use std::os::unix::fs::symlink;
+
+        let (_tmp, root) = canonical_tempdir();
+        let real = root.join("real");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(real.join("a.yml"), b"x").unwrap();
+        let link = root.join("link");
+        symlink(&real, &link).unwrap();
+
+        // `link` is a non-canonical asset_root (a symlinked component). The
+        // resolver must canonicalize it so the canonical file under `real` is
+        // recognized as inside the root rather than false-rejected as outside.
+        let cfg = read_config(&["**"]);
+        assert!(
+            validate_file_path("a.yml", FileSecurityPolicy::new(&cfg, &link)).is_ok(),
+            "file under a symlinked asset_root must validate"
+        );
     }
 
     #[test]

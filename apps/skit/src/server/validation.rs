@@ -1315,10 +1315,7 @@ mod helper_tests {
         let pipe = pipeline_from("nodes:\n  output:\n    kind: streamkit::http_output\n");
         validate_file_reader_paths(
             &pipe,
-            crate::file_security::FileSecurityPolicy::new(
-                &dummy_security_config(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&dummy_security_config()),
         )
         .unwrap();
     }
@@ -1330,10 +1327,7 @@ mod helper_tests {
         );
         let err = validate_file_reader_paths(
             &pipe,
-            crate::file_security::FileSecurityPolicy::new(
-                &dummy_security_config(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&dummy_security_config()),
         )
         .unwrap_err();
         match err {
@@ -1347,10 +1341,7 @@ mod helper_tests {
         let pipe = pipeline_from("nodes:\n  reader:\n    kind: core::file_reader\n");
         validate_file_reader_paths(
             &pipe,
-            crate::file_security::FileSecurityPolicy::new(
-                &dummy_security_config(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&dummy_security_config()),
         )
         .unwrap();
     }
@@ -1360,10 +1351,7 @@ mod helper_tests {
         let pipe = pipeline_from("nodes:\n  writer:\n    kind: core::file_writer\n");
         let err = validate_file_writer_paths(
             &pipe,
-            crate::file_security::FileSecurityPolicy::new(
-                &dummy_security_config(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&dummy_security_config()),
         )
         .unwrap_err();
         match err {
@@ -1382,10 +1370,7 @@ mod helper_tests {
         );
         let err = validate_file_writer_paths(
             &pipe,
-            crate::file_security::FileSecurityPolicy::new(
-                &dummy_security_config(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&dummy_security_config()),
         )
         .unwrap_err();
         match err {
@@ -1401,10 +1386,7 @@ mod helper_tests {
         );
         let err = validate_file_writer_paths(
             &pipe,
-            crate::file_security::FileSecurityPolicy::new(
-                &dummy_security_config(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&dummy_security_config()),
         )
         .unwrap_err();
         match err {
@@ -1422,14 +1404,8 @@ mod helper_tests {
         let pipe = pipeline_from(
             "nodes:\n  s:\n    kind: core::script\n    params:\n      script_path: \"   \"\n",
         );
-        validate_script_paths(
-            &pipe,
-            crate::file_security::FileSecurityPolicy::new(
-                &dummy_security_config(),
-                std::path::Path::new("."),
-            ),
-        )
-        .unwrap();
+        validate_script_paths(&pipe, crate::file_security::cwd_policy(&dummy_security_config()))
+            .unwrap();
     }
 
     #[cfg(feature = "script")]
@@ -1440,10 +1416,7 @@ mod helper_tests {
         );
         let err = validate_script_paths(
             &pipe,
-            crate::file_security::FileSecurityPolicy::new(
-                &dummy_security_config(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&dummy_security_config()),
         )
         .unwrap_err();
         match err {
@@ -1459,27 +1432,15 @@ mod helper_tests {
     #[test]
     fn validate_script_paths_ignores_non_script_nodes() {
         let pipe = pipeline_from("nodes:\n  output:\n    kind: streamkit::http_output\n");
-        validate_script_paths(
-            &pipe,
-            crate::file_security::FileSecurityPolicy::new(
-                &dummy_security_config(),
-                std::path::Path::new("."),
-            ),
-        )
-        .unwrap();
+        validate_script_paths(&pipe, crate::file_security::cwd_policy(&dummy_security_config()))
+            .unwrap();
     }
 
     #[test]
     fn check_file_path_security_ok_for_clean_pipeline() {
         let pipe = pipeline_from("nodes:\n  output:\n    kind: streamkit::http_output\n");
-        check_file_path_security(
-            &pipe,
-            crate::file_security::FileSecurityPolicy::new(
-                &dummy_security_config(),
-                std::path::Path::new("."),
-            ),
-        )
-        .unwrap();
+        check_file_path_security(&pipe, crate::file_security::cwd_policy(&dummy_security_config()))
+            .unwrap();
     }
 
     #[test]
@@ -1490,10 +1451,7 @@ mod helper_tests {
         );
         let msg = check_file_path_security(
             &pipe,
-            crate::file_security::FileSecurityPolicy::new(
-                &dummy_security_config(),
-                std::path::Path::new("."),
-            ),
+            crate::file_security::cwd_policy(&dummy_security_config()),
         )
         .unwrap_err();
         // The combined error contains both nodes' diagnostics separated by '; '.

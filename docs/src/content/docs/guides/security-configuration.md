@@ -25,16 +25,19 @@ The `core::file_reader` node can read files from disk. Restrict this with allowl
 ```toml
 [security]
 allowed_file_paths = [
-  "samples/**",      # Allow reading samples
-  "/data/audio/**",  # Allow specific data directory
+  "samples/**",  # Allow reading everything under <asset_root>/samples
+  "media/**",    # Allow another directory under <asset_root>
 ]
 ```
 
-Paths use glob patterns. Files outside these patterns cannot be read. Relative
-patterns (and the node `path`/`script_path` fields they guard) are resolved
-against `[server].asset_root` — the same path-space the file nodes read from —
-so validation and runtime always agree. Node paths must be relative to
-`asset_root`; absolute paths and `..` components are rejected.
+Paths use glob patterns. Files outside these patterns cannot be read. Patterns
+(and the node `path`/`script_path` fields they guard) are resolved against
+`[server].asset_root` — the same path-space the file nodes read from — so
+validation and runtime always agree. Node paths must be relative to
+`asset_root`; absolute paths and `..` components are rejected. To read files
+from another location, point `[server].asset_root` at it rather than using an
+absolute pattern (an absolute pattern can never match a path that is always
+resolved under `asset_root`).
 
 ### File writes (core::file_writer)
 
@@ -44,8 +47,8 @@ The `core::file_writer` node can write files to disk. For safety, writes are dis
 [security]
 # Default: [] (deny all writes)
 allowed_write_paths = [
-  "./output/**",
-  "/data/exports/**",
+  "output/**",
+  "exports/**",
 ]
 ```
 
