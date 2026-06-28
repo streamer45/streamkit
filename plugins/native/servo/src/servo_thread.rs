@@ -655,6 +655,10 @@ fn handle_update_config(
             state.rc_width = vw;
             state.rc_height = vh;
             state.last_good_frame = None;
+            // Re-arm the first-paint gate: resizing reallocates the
+            // surfman surface, which is pooled across instances and may
+            // hold a neighbour's pixels until the resized page repaints.
+            state.delegate.painted.set(false);
             servo.spin_event_loop();
         }
     }
