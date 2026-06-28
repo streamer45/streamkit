@@ -5,6 +5,9 @@ node_kind: whisper
 kind: native
 entrypoint: libwhisper.so
 artifact: target/plugins/release/libwhisper.so
+accelerators:
+- cpu
+- cuda
 description: Streaming speech-to-text using whisper.cpp
 license: MPL-2.0
 models:

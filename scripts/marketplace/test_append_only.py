@@ -15,7 +15,7 @@ import sys
 import tempfile
 
 
-def setup_test_registry(registry_path: pathlib.Path) -> None:
+def setup_test_registry(registry_path: pathlib.Path, with_variant: bool = False) -> None:
     """Create a minimal existing registry with one plugin version."""
     plugin_id = "test-plugin"
     version = "0.1.0"
@@ -42,6 +42,15 @@ def setup_test_registry(registry_path: pathlib.Path) -> None:
         },
         "models": [],
     }
+    if with_variant:
+        manifest["variants"] = [
+            {
+                "accelerator": "cuda",
+                "url": "https://example.com/test-plugin-0.1.0-cuda-bundle.tar.zst",
+                "sha256": "deadbeef" * 8,
+                "size_bytes": 2048,
+            }
+        ]
     manifest_path = manifest_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=False) + "\n")
 
@@ -128,8 +137,8 @@ def test_identical_reuse(tmp_dir: pathlib.Path) -> bool:
             str(plugins_json),
             "--existing-registry",
             str(existing_registry),
-            "--bundle-base-url",
-            "https://example.com/bundles",
+            "--bundle-url-template",
+            "https://example.com/bundles/{plugin_id}/{version}",
             "--registry-base-url",
             "https://example.com/registry",
             "--bundles-out",
@@ -199,8 +208,8 @@ def test_changed_metadata_fails(tmp_dir: pathlib.Path) -> bool:
             str(plugins_json),
             "--existing-registry",
             str(existing_registry),
-            "--bundle-base-url",
-            "https://example.com/bundles",
+            "--bundle-url-template",
+            "https://example.com/bundles/{plugin_id}/{version}",
             "--registry-base-url",
             "https://example.com/registry",
             "--bundles-out",
@@ -230,6 +239,67 @@ def test_changed_metadata_fails(tmp_dir: pathlib.Path) -> bool:
     return True
 
 
+def test_cpu_pass_preserves_variants(tmp_dir: pathlib.Path) -> bool:
+    """A CPU pass over a manifest carrying a cuda variant must preserve it."""
+    print("\n=== Test 3: CPU pass preserves published cuda variant ===")
+
+    existing_registry = tmp_dir / "existing_registry"
+    setup_test_registry(existing_registry, with_variant=True)
+
+    plugins_json = tmp_dir / "plugins.json"
+    create_test_plugin_metadata(plugins_json)
+
+    output_registry = tmp_dir / "output_registry"
+    bundles_out = tmp_dir / "bundles"
+    dummy_key = tmp_dir / "dummy.key"
+    dummy_key.write_text("dummy signing key\n")
+    public_key = existing_registry / "streamkit.pub"
+
+    result = subprocess.run(
+        [
+            "python3",
+            "scripts/marketplace/build_registry.py",
+            "--plugins",
+            str(plugins_json),
+            "--existing-registry",
+            str(existing_registry),
+            "--bundle-url-template",
+            "https://example.com/bundles/{plugin_id}/{version}",
+            "--registry-base-url",
+            "https://example.com/registry",
+            "--bundles-out",
+            str(bundles_out),
+            "--registry-out",
+            str(output_registry),
+            "--signing-key",
+            str(dummy_key),
+            "--public-key",
+            str(public_key),
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        print(f"FAIL: Expected success but got exit code {result.returncode}")
+        print(f"STDERR: {result.stderr}")
+        return False
+
+    manifest_path = output_registry / "plugins" / "test-plugin" / "0.1.0" / "manifest.json"
+    if not manifest_path.exists():
+        print(f"FAIL: Manifest not found at {manifest_path}")
+        return False
+
+    manifest = json.loads(manifest_path.read_text())
+    variants = manifest.get("variants")
+    if not variants or variants[0].get("accelerator") != "cuda":
+        print(f"FAIL: cuda variant not preserved; got variants={variants}")
+        return False
+
+    print("PASS: CPU pass preserved the published cuda variant")
+    return True
+
+
 def main() -> int:
     """Run all tests."""
     print("Running append-only registry tests...")
@@ -245,8 +315,12 @@ def main() -> int:
         test2_dir.mkdir()
         test2_passed = test_changed_metadata_fails(test2_dir)
 
+        test3_dir = tmp_dir / "test3"
+        test3_dir.mkdir()
+        test3_passed = test_cpu_pass_preserves_variants(test3_dir)
+
         print("\n" + "=" * 60)
-        if test1_passed and test2_passed:
+        if test1_passed and test2_passed and test3_passed:
             print("✓ All tests passed!")
             return 0
         else:
@@ -255,6 +329,8 @@ def main() -> int:
                 print("  - Test 1 (identical reuse) FAILED")
             if not test2_passed:
                 print("  - Test 2 (immutability check) FAILED")
+            if not test3_passed:
+                print("  - Test 3 (variant preservation) FAILED")
             return 1
 
 

@@ -60,9 +60,23 @@ def require_tool(name: str) -> None:
         raise RuntimeError(f"Missing required tool: {name}")
 
 
-def ensure_sherpa_runtime(work_dir: pathlib.Path) -> None:
+# Core sherpa runtime libraries vendored into every sherpa-backed bundle.
+SHERPA_CORE_LIBS = ["libsherpa-onnx-c-api.so", "libonnxruntime.so"]
+
+# Additional ONNX Runtime execution-provider libraries required when the
+# vendored libonnxruntime.so is the CUDA-enabled build. The same plugin `.so`
+# loads these at runtime to dispatch to the GPU.
+SHERPA_CUDA_LIBS = [
+    "libonnxruntime_providers_cuda.so",
+    "libonnxruntime_providers_shared.so",
+]
+
+
+def ensure_sherpa_runtime(work_dir: pathlib.Path, accelerator: str = "cpu") -> None:
     lib_dir = pathlib.Path(os.environ.get("SHERPA_ONNX_LIB_DIR", "/usr/local/lib"))
-    sherpa_libs = ["libsherpa-onnx-c-api.so", "libonnxruntime.so"]
+    sherpa_libs = list(SHERPA_CORE_LIBS)
+    if accelerator == "cuda":
+        sherpa_libs.extend(SHERPA_CUDA_LIBS)
     for lib in sherpa_libs:
         src = lib_dir / lib
         if not src.exists():
@@ -81,15 +95,22 @@ def build_bundle(
     bundles_out: pathlib.Path,
     work_root: pathlib.Path,
     embedded_manifest: dict | None = None,
+    accelerator: str = "cpu",
 ) -> dict:
     plugin_id = plugin["id"]
-    artifact = pathlib.Path(plugin["artifact"])
+    # CUDA passes may ship a separately compiled artifact (e.g. whisper/helsinki
+    # built with their `cuda` feature). Fall back to the canonical artifact.
+    artifact = pathlib.Path(
+        plugin.get(f"artifact_{accelerator}", plugin["artifact"])
+        if accelerator != "cpu"
+        else plugin["artifact"]
+    )
     entrypoint = pathlib.Path(plugin["entrypoint"])
 
     if not artifact.exists():
         raise FileNotFoundError(f"Missing artifact: {artifact}")
 
-    work_dir = work_root / f"{plugin_id}-{version}"
+    work_dir = work_root / f"{plugin_id}-{version}-{accelerator}"
     if work_dir.exists():
         shutil.rmtree(work_dir)
     ensure_dir(work_dir)
@@ -99,7 +120,7 @@ def build_bundle(
 
     needed, _ = readelf_dynamic(entrypoint_path)
     if "libsherpa-onnx-c-api.so" in needed:
-        ensure_sherpa_runtime(work_dir)
+        ensure_sherpa_runtime(work_dir, accelerator)
         set_runpath_origin(entrypoint_path)
 
     for extra in plugin.get("extra_files", []):
@@ -114,7 +135,10 @@ def build_bundle(
     if embedded_manifest is not None:
         write_json(work_dir / "manifest.json", embedded_manifest)
 
-    bundle_name = f"{plugin_id}-{version}-bundle.tar.zst"
+    if accelerator == "cpu":
+        bundle_name = f"{plugin_id}-{version}-bundle.tar.zst"
+    else:
+        bundle_name = f"{plugin_id}-{version}-{accelerator}-bundle.tar.zst"
     bundle_path = bundles_out / bundle_name
     ensure_dir(bundles_out)
 
@@ -157,8 +181,14 @@ def build_manifest(
     plugin: dict,
     plugin_version: str,
     bundle_block: dict | None,
+    variants: list[dict] | None = None,
 ) -> dict:
-    """Build manifest dict from plugin metadata and bundle info."""
+    """Build manifest dict from plugin metadata and bundle info.
+
+    `variants` carries accelerator-specific bundles (e.g. a CUDA build). It is
+    omitted entirely when empty so CPU-only manifests stay byte-identical to
+    those produced before variant support existed.
+    """
     manifest = {
         "schema_version": 1,
         "id": plugin["id"],
@@ -176,7 +206,18 @@ def build_manifest(
         "compatibility": plugin.get("compatibility"),
         "models": plugin.get("models", []),
     }
-    return strip_none(manifest)
+    manifest = strip_none(manifest)
+    if variants:
+        # Insert variants right after `bundle` for readable diffs.
+        ordered = {}
+        for key, value in manifest.items():
+            ordered[key] = value
+            if key == "bundle":
+                ordered["variants"] = variants
+        if "variants" not in ordered:
+            ordered["variants"] = variants
+        manifest = ordered
+    return manifest
 
 
 def verify_existing_signature(
@@ -359,7 +400,17 @@ def main() -> int:
         "--new-plugins-out",
         help="Path to write JSON file listing newly built plugins (id + version)",
     )
+    parser.add_argument(
+        "--accelerator",
+        default="cpu",
+        help=(
+            "Accelerator to build. 'cpu' (default) builds the canonical bundle; "
+            "any other value (e.g. 'cuda') builds a variant and merges it into "
+            "the matching existing manifest (requires --existing-registry)."
+        ),
+    )
     args = parser.parse_args()
+    accelerator = args.accelerator.strip().lower()
 
     plugins_path = pathlib.Path(args.plugins)
     bundles_out = pathlib.Path(args.bundles_out)
@@ -409,6 +460,20 @@ def main() -> int:
     if work_root.exists():
         shutil.rmtree(work_root)
 
+    # Variant passes (e.g. cuda) layer onto an already-published registry, so
+    # copy the full existing tree forward; untouched plugins must stay present
+    # and only the variant-updated manifests are overwritten below.
+    if accelerator != "cpu":
+        if not args.existing_registry:
+            print(
+                "ERROR: --accelerator other than 'cpu' requires --existing-registry",
+                file=sys.stderr,
+            )
+            return 1
+        src_plugins = existing_registry_path / "plugins"
+        if src_plugins.exists():
+            shutil.copytree(src_plugins, registry_out / "plugins", dirs_exist_ok=True)
+
     for plugin in plugins:
         plugin_id = plugin["id"]
         plugin_version = plugin.get("version")
@@ -418,17 +483,106 @@ def main() -> int:
 
         key = (plugin_id, plugin_version)
 
+        # Variant pass: add an accelerator-specific bundle to an existing
+        # manifest rather than (re)building the canonical CPU bundle.
+        if accelerator != "cpu":
+            if accelerator not in plugin.get("accelerators", ["cpu"]):
+                continue
+            if key not in existing_registry:
+                print(
+                    f"ERROR: {plugin_id}@{plugin_version} has no published CPU "
+                    f"manifest to attach a '{accelerator}' variant to. Build and "
+                    f"publish the CPU bundle first.",
+                    file=sys.stderr,
+                )
+                return 1
+            existing = existing_registry[key]
+            existing_manifest = existing["manifest"]
+
+            # Append-only: an already-published variant is immutable, so reuse
+            # the manifest carried forward above instead of rebuilding it.
+            if any(
+                v.get("accelerator") == accelerator
+                for v in existing_manifest.get("variants", [])
+            ):
+                print(
+                    f"Reusing existing {accelerator} variant for "
+                    f"{plugin_id} v{plugin_version}"
+                )
+                continue
+
+            bundle_info = build_bundle(
+                plugin, plugin_version, bundles_out, work_root,
+                accelerator=accelerator,
+            )
+            bundle_base = bundle_url_template.format(
+                plugin_id=plugin_id, version=plugin_version,
+            )
+            variant_block = {
+                "accelerator": accelerator,
+                "url": f"{bundle_base}/{bundle_info['bundle_name']}",
+                "sha256": bundle_info["sha256"],
+                "size_bytes": bundle_info["size_bytes"],
+            }
+            merged_variants = [
+                v
+                for v in existing_manifest.get("variants", [])
+                if v.get("accelerator") != accelerator
+            ]
+            merged_variants.append(variant_block)
+            would_be_manifest = build_manifest(
+                plugin,
+                plugin_version,
+                existing_manifest.get("bundle"),
+                variants=merged_variants,
+            )
+
+            # Only the variants list may differ; everything else is immutable.
+            existing_core = {k: v for k, v in existing_manifest.items() if k != "variants"}
+            would_be_core = {k: v for k, v in would_be_manifest.items() if k != "variants"}
+            if existing_core != would_be_core:
+                print(
+                    f"ERROR: {plugin_id}@{plugin_version} '{accelerator}' variant "
+                    f"pass would change non-variant manifest fields; bump version.",
+                    file=sys.stderr,
+                )
+                existing_json = json.dumps(existing_core, indent=2, sort_keys=False)
+                would_be_json = json.dumps(would_be_core, indent=2, sort_keys=False)
+                diff = difflib.unified_diff(
+                    existing_json.splitlines(keepends=True),
+                    would_be_json.splitlines(keepends=True),
+                    fromfile="existing",
+                    tofile="would-be",
+                )
+                print("".join(diff), file=sys.stderr)
+                return 1
+
+            manifest_dir = registry_out / "plugins" / plugin_id / plugin_version
+            manifest_path = manifest_dir / "manifest.json"
+            write_json(manifest_path, would_be_manifest)
+            sign_manifest(manifest_path, signing_key)
+            new_plugins.append(
+                {"id": plugin_id, "version": plugin_version, "accelerator": accelerator}
+            )
+            print(
+                f"Added {accelerator} variant for {plugin_id} v{plugin_version} "
+                f"-> {bundle_info['bundle_name']} ({bundle_info['sha256']})"
+            )
+            continue
+
         # Check if this version already exists in the registry
         if key in existing_registry:
             # Verify immutability: check if republishing with same version would change manifest
             existing = existing_registry[key]
             existing_manifest = existing["manifest"]
 
-            # Build would-be manifest using current plugin fields but existing bundle
+            # Build would-be manifest using current plugin fields but existing
+            # bundle and variants (CPU passes never touch published variants).
             would_be_manifest = build_manifest(
                 plugin,
                 plugin_version,
                 existing_manifest["bundle"],
+                variants=existing_manifest.get("variants"),
             )
 
             # Compare parsed JSON objects (robust to formatting differences like trailing newlines)

@@ -11,6 +11,11 @@ on:
         description: "Registry base URL override"
         required: false
         type: string
+      build_cuda:
+        description: "Also build CUDA bundle variants on the self-hosted GPU runner"
+        required: false
+        type: boolean
+        default: true
     secrets:
       MINISIGN_SECRET_KEY:
         required: true
@@ -28,6 +33,9 @@ env:
   RUST_BACKTRACE: 1
   RUSTC_WRAPPER: sccache
   SHERPA_ONNX_VERSION: "1.12.17"
+  # GPU (CUDA-enabled) sherpa-onnx shared build; vendored into cuda variants so
+  # the execution-provider-agnostic plugin .so dispatches to the GPU at runtime.
+  SHERPA_ONNX_GPU_ARCHIVE: "sherpa-onnx-v1.12.17-linux-x64-gpu-shared.tar.bz2"
   MINISIGN_DEB_URL: "http://launchpadlibrarian.net/780165111/minisign_0.12-1_amd64.deb"
   REGISTRY_BASE_URL: ${{ inputs.registry_base_url || 'https://streamkit.dev/registry' }}
 
@@ -210,9 +218,133 @@ jobs:
           path: ~/.cache/sccache
           key: sccache-marketplace-${{ runner.os }}-${{ hashFiles('plugins/**/Cargo.lock') }}
 
+  build-marketplace-cuda:
+    name: Build Marketplace CUDA Variants
+    needs: [build-marketplace]
+    if: ${{ inputs.build_cuda }}
+    # Self-hosted NVIDIA (Ada) runner: CUDA toolkit + nvcc must be preinstalled.
+    # Adjust the labels to match your runner registration if they differ.
+    runs-on: [self-hosted, linux, x64, gpu]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libclang-dev libfontconfig1-dev wget libopenblas-dev zstd patchelf python3-yaml python3-tomli libfdk-aac-dev \
+            build-essential g++ libharfbuzz-dev libfreetype6-dev \
+            libegl1-mesa-dev libgl1-mesa-dev libgbm-dev libdrm-dev libunwind-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+            libdbus-1-dev libpulse-dev libxkbcommon-dev nasm
+
+      - name: Install minisign
+        run: |
+          deb_path="/tmp/minisign.deb"
+          wget -O "${deb_path}" "${MINISIGN_DEB_URL}"
+          if ! sudo dpkg -i "${deb_path}"; then
+            echo "dpkg failed, retrying with apt-get"
+            sudo env NEEDRESTART_MODE=a apt-get install -y "${deb_path}" || true
+          fi
+          command -v minisign >/dev/null
+
+      - name: Install CUDA-enabled sherpa-onnx
+        run: |
+          cd /tmp
+          wget "https://github.com/k2-fsa/sherpa-onnx/releases/download/v${SHERPA_ONNX_VERSION}/${SHERPA_ONNX_GPU_ARCHIVE}"
+          tar xf "${SHERPA_ONNX_GPU_ARCHIVE}"
+          dir="${SHERPA_ONNX_GPU_ARCHIVE%.tar.bz2}"
+          sudo cp -r "${dir}/lib/." /usr/local/lib/
+          sudo cp -r "${dir}/include/." /usr/local/include/
+          sudo ldconfig
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+
+      - name: Restore sccache cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/sccache
+          key: sccache-marketplace-cuda-${{ runner.os }}-${{ hashFiles('plugins/**/Cargo.lock') }}
+          restore-keys: |
+            sccache-marketplace-cuda-${{ runner.os }}-
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Build CUDA plugins
+        run: |
+          bash scripts/marketplace/build_official_plugins_cuda.sh
+
+      - name: Download CPU registry
+        uses: actions/download-artifact@v4
+        with:
+          name: marketplace-registry
+          path: dist/registry-cpu
+
+      - name: Write minisign key
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          if [ -z "${MINISIGN_SECRET_KEY}" ]; then
+            echo "MINISIGN_SECRET_KEY is not set"
+            exit 1
+          fi
+          echo "${MINISIGN_SECRET_KEY}" > /tmp/streamkit.key
+          chmod 600 /tmp/streamkit.key
+
+      - name: Build CUDA registry variants
+        run: |
+          python3 scripts/marketplace/build_registry.py \
+            --plugins marketplace/official-plugins.json \
+            --existing-registry dist/registry-cpu \
+            --accelerator cuda \
+            --bundle-url-template "https://github.com/${{ github.repository }}/releases/download/plugin-{plugin_id}-v{version}" \
+            --registry-base-url "${REGISTRY_BASE_URL}" \
+            --bundles-out dist/bundles-cuda \
+            --registry-out dist/registry \
+            --new-plugins-out dist/new-plugins-cuda.json
+
+      - name: Verify CUDA bundle portability
+        run: |
+          python3 scripts/marketplace/verify_bundles.py \
+            --plugins marketplace/official-plugins.json \
+            --bundles dist/bundles-cuda \
+            --accelerator cuda
+
+      - name: Upload CUDA bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: marketplace-bundles-cuda
+          path: dist/bundles-cuda/*.tar.zst
+          if-no-files-found: ignore
+
+      - name: Upload new CUDA plugins manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: new-plugins-cuda
+          path: dist/new-plugins-cuda.json
+
+      - name: Upload merged registry metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: marketplace-registry
+          overwrite: true
+          path: dist/registry/**
+
+      - name: Save sccache cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/sccache
+          key: sccache-marketplace-cuda-${{ runner.os }}-${{ hashFiles('plugins/**/Cargo.lock') }}
+
   publish-registry:
     name: Publish Registry (PR)
-    needs: [build-marketplace]
+    needs: [build-marketplace, build-marketplace-cuda]
     runs-on: ubuntu-22.04
     permissions:
       contents: write

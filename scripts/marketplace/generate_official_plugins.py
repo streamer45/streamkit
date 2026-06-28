@@ -63,6 +63,7 @@ def validate_plugin(plugin: dict, plugin_dir: pathlib.Path) -> dict:
         "kind",
         "entrypoint",
         "artifact",
+        "accelerators",
         "description",
         "license",
         "license_url",

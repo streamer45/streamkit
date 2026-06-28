@@ -42,6 +42,20 @@ jobs:
           name: new-plugins
           path: artifacts
 
+      - name: Download CUDA bundles
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: marketplace-bundles-cuda
+          path: artifacts/bundles-cuda
+
+      - name: Download new CUDA plugins manifest
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: new-plugins-cuda
+          path: artifacts/cuda
+
       - name: Load plugin metadata
         id: plugins
         run: |
@@ -107,4 +121,27 @@ jobs:
               result = subprocess.run(cmd)
               if result.returncode != 0:
                   print(f'::warning::Skipping {tag}: release may already exist')
+          "
+
+      - name: Attach CUDA bundles to releases
+        if: hashFiles('artifacts/cuda/new-plugins-cuda.json') != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 -c "
+          import json, os, pathlib, subprocess
+
+          data = json.load(open('artifacts/cuda/new-plugins-cuda.json'))
+          for plugin in data.get('plugins', []):
+              pid = plugin['id']
+              version = plugin['version']
+              tag = f'plugin-{pid}-v{version}'
+              bundle = f'artifacts/bundles-cuda/{pid}-{version}-cuda-bundle.tar.zst'
+              if not pathlib.Path(bundle).exists():
+                  print(f'::warning::Missing CUDA bundle for {tag}: {bundle}')
+                  continue
+              print(f'Uploading CUDA bundle to {tag}')
+              result = subprocess.run(['gh', 'release', 'upload', tag, bundle, '--clobber'])
+              if result.returncode != 0:
+                  print(f'::warning::Failed to upload CUDA bundle for {tag}')
           "

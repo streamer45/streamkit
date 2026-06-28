@@ -31,3 +31,28 @@ the following:
   Hugging Face repo so they remain accessible indefinitely (license permitting).
 - **Human review required** before bundling any new third-party shared libraries
   (licensing, security, size, and distro compatibility).
+
+## GPU (CUDA) bundle variants
+
+A plugin can ship an optional `cuda` bundle variant alongside its canonical CPU
+bundle. Clients auto-detect CUDA at install time (or honour an explicit
+`accelerator`) and fall back to the CPU bundle when no GPU is present. To make a
+plugin CUDA-capable:
+
+- Declare `accelerators: [cpu, cuda]` in `plugins/native/<id>/plugin.yml` (the
+  default is CPU-only). This is propagated into `marketplace/official-plugins.json`.
+- For compile-time GPU plugins (e.g. whisper, helsinki), add a `cuda` Cargo
+  feature that enables the backend's CUDA path. `build_official_plugins_cuda.sh`
+  builds with `--features cuda` automatically when the feature exists.
+- sherpa-onnx plugins (kokoro, sensevoice, vad, matcha) are execution-provider
+  agnostic: the same `.so` is repackaged against the CUDA sherpa runtime, so no
+  feature flag is needed — just the `accelerators` declaration.
+- The CUDA registry pass runs on the self-hosted Ada GPU runner in
+  `.github/workflows/marketplace-build.yml` (`build-marketplace-cuda` job). It
+  vendors the GPU ONNX Runtime provider libs (`libonnxruntime_providers_cuda.so`,
+  `libonnxruntime_providers_shared.so`) and layers a `cuda` variant onto the
+  already-published CPU manifest (append-only; a published variant is immutable).
+- CUDA bundles are named `<id>-<ver>-cuda-bundle.tar.zst` and uploaded to the
+  same per-plugin release as the CPU bundle. `verify_bundles.py --accelerator
+  cuda` permits CUDA NEEDED/RUNPATH deps (libcudart/libcublas/libcudnn) that the
+  strict CPU gate rejects.

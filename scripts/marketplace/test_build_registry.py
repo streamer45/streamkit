@@ -63,6 +63,94 @@ class TestBuildManifestRepoField:
         assert "repository" not in manifest
 
 
+SAMPLE_BUNDLE = {
+    "url": "https://example.com/test-plugin-1.0.0-bundle.tar.zst",
+    "sha256": "ab" * 32,
+    "size_bytes": 1024,
+}
+
+CUDA_VARIANT = {
+    "accelerator": "cuda",
+    "url": "https://example.com/test-plugin-1.0.0-cuda-bundle.tar.zst",
+    "sha256": "cd" * 32,
+    "size_bytes": 2048,
+}
+
+
+class TestBuildManifestVariants:
+    """Variant handling in build_registry / check_registry manifest builders."""
+
+    def test_no_variants_omits_field(self):
+        manifest = build_registry.build_manifest(SAMPLE_PLUGIN, "1.0.0", SAMPLE_BUNDLE)
+        assert "variants" not in manifest
+
+    def test_empty_variants_omits_field(self):
+        manifest = build_registry.build_manifest(
+            SAMPLE_PLUGIN, "1.0.0", SAMPLE_BUNDLE, variants=[]
+        )
+        assert "variants" not in manifest
+
+    def test_variants_inserted_after_bundle(self):
+        manifest = build_registry.build_manifest(
+            SAMPLE_PLUGIN, "1.0.0", SAMPLE_BUNDLE, variants=[CUDA_VARIANT]
+        )
+        keys = list(manifest.keys())
+        assert manifest["variants"] == [CUDA_VARIANT]
+        assert keys.index("variants") == keys.index("bundle") + 1
+
+    def test_check_registry_carries_variants(self):
+        manifest = check_registry_versions.build_manifest_from_plugin(
+            SAMPLE_PLUGIN, SAMPLE_BUNDLE, variants=[CUDA_VARIANT]
+        )
+        assert manifest["variants"] == [CUDA_VARIANT]
+
+    def test_build_and_check_manifests_match_with_variants(self):
+        built = build_registry.build_manifest(
+            SAMPLE_PLUGIN, "1.0.0", SAMPLE_BUNDLE, variants=[CUDA_VARIANT]
+        )
+        checked = check_registry_versions.build_manifest_from_plugin(
+            {**SAMPLE_PLUGIN, "version": "1.0.0"}, SAMPLE_BUNDLE, variants=[CUDA_VARIANT]
+        )
+        assert built == checked
+
+
+class TestEnsureSherpaRuntime:
+    """ensure_sherpa_runtime copies extra GPU libs for cuda variants."""
+
+    def _make_libs(self, lib_dir: pathlib.Path, names) -> None:
+        lib_dir.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            (lib_dir / name).write_bytes(b"\x7fELF")
+
+    def test_cpu_copies_core_libs_only(self, tmp_path, monkeypatch):
+        lib_dir = tmp_path / "libs"
+        self._make_libs(
+            lib_dir,
+            build_registry.SHERPA_CORE_LIBS + build_registry.SHERPA_CUDA_LIBS,
+        )
+        monkeypatch.setenv("SHERPA_ONNX_LIB_DIR", str(lib_dir))
+        work = tmp_path / "work"
+        work.mkdir()
+        build_registry.ensure_sherpa_runtime(work, "cpu")
+        for name in build_registry.SHERPA_CORE_LIBS:
+            assert (work / name).exists()
+        for name in build_registry.SHERPA_CUDA_LIBS:
+            assert not (work / name).exists()
+
+    def test_cuda_copies_gpu_provider_libs(self, tmp_path, monkeypatch):
+        lib_dir = tmp_path / "libs"
+        self._make_libs(
+            lib_dir,
+            build_registry.SHERPA_CORE_LIBS + build_registry.SHERPA_CUDA_LIBS,
+        )
+        monkeypatch.setenv("SHERPA_ONNX_LIB_DIR", str(lib_dir))
+        work = tmp_path / "work"
+        work.mkdir()
+        build_registry.ensure_sherpa_runtime(work, "cuda")
+        for name in build_registry.SHERPA_CORE_LIBS + build_registry.SHERPA_CUDA_LIBS:
+            assert (work / name).exists()
+
+
 class TestVerifyExistingSignature:
     """Tests for verify_existing_signature used during manifest reuse."""
 

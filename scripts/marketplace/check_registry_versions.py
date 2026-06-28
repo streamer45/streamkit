@@ -36,8 +36,15 @@ def strip_none(payload: dict) -> dict:
     return {key: value for key, value in payload.items() if value is not None}
 
 
-def build_manifest_from_plugin(plugin: dict, bundle_block: dict | None) -> dict:
-    """Mirror the manifest shape produced by build_registry.py."""
+def build_manifest_from_plugin(
+    plugin: dict, bundle_block: dict | None, variants: list[dict] | None = None
+) -> dict:
+    """Mirror the manifest shape produced by build_registry.py.
+
+    `variants` are carried over verbatim from the committed manifest; they are
+    produced by the build pipeline (not plugin.yml) and must survive the
+    append-only comparison untouched.
+    """
     manifest = {
         "schema_version": 1,
         "id": plugin["id"],
@@ -55,7 +62,17 @@ def build_manifest_from_plugin(plugin: dict, bundle_block: dict | None) -> dict:
         "compatibility": plugin.get("compatibility"),
         "models": plugin.get("models", []),
     }
-    return strip_none(manifest)
+    manifest = strip_none(manifest)
+    if variants:
+        ordered = {}
+        for key, value in manifest.items():
+            ordered[key] = value
+            if key == "bundle":
+                ordered["variants"] = variants
+        if "variants" not in ordered:
+            ordered["variants"] = variants
+        manifest = ordered
+    return manifest
 
 
 def main() -> int:
@@ -92,7 +109,9 @@ def main() -> int:
             continue
 
         committed = json.loads(committed_manifest_path.read_text())
-        would_be = build_manifest_from_plugin(plugin, committed.get("bundle"))
+        would_be = build_manifest_from_plugin(
+            plugin, committed.get("bundle"), committed.get("variants")
+        )
 
         if committed != would_be:
             errors += 1

@@ -6,7 +6,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     fmt::Write,
     path::{Component, Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -58,6 +58,11 @@ pub struct InstallPluginRequest {
     pub install_models: bool,
     #[serde(default)]
     pub model_ids: Option<Vec<String>>,
+    /// Accelerator variant to install (e.g. `"cpu"` or `"cuda"`). When `None`,
+    /// the installer uses the configured default or auto-detects CUDA, falling
+    /// back to the canonical CPU bundle.
+    #[serde(default)]
+    pub accelerator: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -181,6 +186,12 @@ impl InstallJobQueue {
                 allow_model_urls: config.marketplace.security.allow_model_urls,
                 marketplace_policy,
                 registries: config.registries.clone(),
+                default_accelerator: config
+                    .marketplace
+                    .default_accelerator
+                    .as_ref()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
             },
         )?;
         Ok(Self {
@@ -511,6 +522,7 @@ struct PluginInstaller {
     allow_model_urls: bool,
     marketplace_policy: MarketplaceUrlPolicy,
     registries: Vec<String>,
+    default_accelerator: Option<String>,
 }
 
 struct PluginInstallerSettings {
@@ -521,6 +533,7 @@ struct PluginInstallerSettings {
     allow_model_urls: bool,
     marketplace_policy: MarketplaceUrlPolicy,
     registries: Vec<String>,
+    default_accelerator: Option<String>,
 }
 
 struct DownloadModelRequest<'a> {
@@ -562,6 +575,7 @@ impl PluginInstaller {
             allow_model_urls: settings.allow_model_urls,
             marketplace_policy: settings.marketplace_policy,
             registries: settings.registries,
+            default_accelerator: settings.default_accelerator,
         })
     }
 
@@ -803,7 +817,7 @@ impl PluginInstaller {
         }
 
         let bundle_path = match self
-            .download_bundle(manifest, tracker, cancel, registry_origin, &base_real)
+            .download_bundle(request, manifest, tracker, cancel, registry_origin, &base_real)
             .await
         {
             Ok(path) => path,
@@ -938,20 +952,48 @@ impl PluginInstaller {
         Err(anyhow!("Registry '{registry}' is not configured"))
     }
 
+    /// Determines the accelerator to install for, honoring (in order) an
+    /// explicit per-request value, the configured default, and finally runtime
+    /// CUDA auto-detection. `None` means "use the canonical CPU bundle".
+    fn resolve_accelerator(&self, requested: Option<&str>) -> Option<String> {
+        if let Some(value) = requested.map(str::trim).filter(|value| !value.is_empty()) {
+            return Some(value.to_string());
+        }
+        if let Some(value) =
+            self.default_accelerator.as_deref().map(str::trim).filter(|value| !value.is_empty())
+        {
+            return Some(value.to_string());
+        }
+        if cuda_runtime_available() {
+            return Some("cuda".to_string());
+        }
+        None
+    }
+
     async fn download_bundle(
         &self,
+        request: &InstallPluginRequest,
         manifest: &crate::marketplace::PluginManifest,
         tracker: &JobTracker,
         cancel: &CancellationToken,
         registry_origin: &OriginKey,
         base_real: &Path,
     ) -> Result<PathBuf, InstallError> {
-        let bundle = manifest.bundle.as_ref().ok_or_else(|| {
+        let accelerator = self.resolve_accelerator(request.accelerator.as_deref());
+        let bundle = manifest.resolve_bundle(accelerator.as_deref()).ok_or_else(|| {
             InstallError::Other(anyhow!("Plugin manifest missing required `bundle` section"))
         })?;
+        if let Some(requested) = accelerator.as_deref() {
+            tracing::info!(
+                plugin_id = %manifest.id,
+                requested_accelerator = requested,
+                selected_accelerator = bundle.accelerator,
+                "Resolved plugin bundle variant"
+            );
+        }
         let bundle_url = self
             .marketplace_policy
-            .validate_url("bundle url", &bundle.url, Some(registry_origin))
+            .validate_url("bundle url", bundle.url, Some(registry_origin))
             .await?;
         let cache_dir = self.plugin_dir.join("cache").join(&manifest.id).join(&manifest.version);
         plugin_paths::ensure_dir_under(base_real, &cache_dir, "cache").await?;
@@ -991,7 +1033,7 @@ impl PluginInstaller {
                 // For 206 responses, content_length is the remaining bytes.
                 response.content_length().map(|cl| cl + resume_from.unwrap_or(0))
             } else {
-                response.content_length()
+                response.content_length().or(bundle.size_bytes)
             };
             let mut stream = response.bytes_stream();
 
@@ -1055,8 +1097,8 @@ impl PluginInstaller {
             })?;
 
             let actual_hash = to_hex(&hasher.finalize());
-            if !actual_hash.eq_ignore_ascii_case(&bundle.sha256) {
-                let expected = bundle.sha256.as_str();
+            if !actual_hash.eq_ignore_ascii_case(bundle.sha256) {
+                let expected = bundle.sha256;
                 let actual = actual_hash.as_str();
                 hash_mismatch = true;
                 return Err(
@@ -2034,6 +2076,26 @@ fn now_ms() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_millis())
 }
 
+/// Returns `true` if the NVIDIA CUDA driver runtime is loadable, used to
+/// auto-select CUDA plugin bundle variants. The probe `dlopen`s `libcuda.so.1`
+/// (the driver stub present whenever a usable NVIDIA driver is installed) and
+/// caches the result for the process lifetime.
+fn cuda_runtime_available() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        // SAFETY: We only load a well-known system library and never call into
+        // it; `libloading` unloads it on drop. No symbols are dereferenced.
+        // allow(unsafe_code): dlopen is the only portable way to probe for the
+        // CUDA driver at runtime; the load is side-effect free.
+        #[allow(unsafe_code)]
+        let available = unsafe { libloading::Library::new("libcuda.so.1") }.is_ok();
+        if available {
+            tracing::debug!("CUDA driver detected (libcuda.so.1 loadable)");
+        }
+        available
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2067,6 +2129,7 @@ mod tests {
                 version: None,
                 install_models: false,
                 model_ids: None,
+                accelerator: None,
             },
             permissions: Permissions::default(),
         }
@@ -2175,6 +2238,7 @@ mod tests {
                 sha256: "deadbeef".to_string(),
                 size_bytes: None,
             }),
+            variants: Vec::new(),
             compatibility: None,
             models,
             assets: Vec::new(),
@@ -2221,6 +2285,7 @@ mod tests {
                     marketplace_url_allowlist: vec!["http://127.0.0.1:*".to_string()],
                     ..crate::config::PluginMarketplaceSecurityConfig::default()
                 },
+                default_accelerator: None,
             },
             trusted_pubkeys: Vec::new(),
             registries: Vec::new(),
@@ -2324,6 +2389,7 @@ mod tests {
                     marketplace_url_allowlist: vec!["http://127.0.0.1:*".to_string()],
                     ..crate::config::PluginMarketplaceSecurityConfig::default()
                 },
+                default_accelerator: None,
             },
             trusted_pubkeys: Vec::new(),
             registries: Vec::new(),
@@ -2427,6 +2493,7 @@ mod tests {
                     marketplace_url_allowlist: vec!["http://127.0.0.1:*".to_string()],
                     ..crate::config::PluginMarketplaceSecurityConfig::default()
                 },
+                default_accelerator: None,
             },
             trusted_pubkeys: Vec::new(),
             registries: Vec::new(),
@@ -2493,6 +2560,7 @@ mod tests {
                     allow_model_urls: false,
                     ..crate::config::PluginMarketplaceSecurityConfig::default()
                 },
+                default_accelerator: None,
             },
             trusted_pubkeys: Vec::new(),
             registries: Vec::new(),
@@ -3050,6 +3118,7 @@ mod tests {
                 marketplace_enabled: true,
                 allow_native_marketplace: true,
                 security,
+                default_accelerator: None,
             },
             trusted_pubkeys,
             registries,
@@ -3111,6 +3180,7 @@ mod tests {
             version: None,
             install_models: false,
             model_ids: None,
+            accelerator: None,
         };
 
         let job_id = queue.enqueue(request, Permissions::default()).await;
@@ -3339,6 +3409,7 @@ mod tests {
                 sha256: bundle_sha,
                 size_bytes: None,
             }),
+            variants: Vec::new(),
             compatibility: None,
             models: Vec::new(),
             assets: Vec::new(),
@@ -3394,6 +3465,7 @@ mod tests {
             version: None,
             install_models: false,
             model_ids: None,
+            accelerator: None,
         };
 
         // Loading a fabricated native library fails at dlopen, so install()
@@ -3438,6 +3510,7 @@ mod tests {
             version: None,
             install_models: false,
             model_ids: None,
+            accelerator: None,
         };
         let result = queue
             .installer
@@ -3459,6 +3532,7 @@ mod tests {
             version: None,
             install_models: false,
             model_ids: None,
+            accelerator: None,
         };
         let result = queue
             .installer

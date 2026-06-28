@@ -35,6 +35,13 @@ export type PluginBundle = {
   size_bytes?: number | null;
 };
 
+export type PluginBundleVariant = {
+  accelerator: string;
+  url: string;
+  sha256: string;
+  size_bytes?: number | null;
+};
+
 export type PluginCompatibility = {
   streamkit?: string | null;
   os: string[];
@@ -79,6 +86,7 @@ export type PluginManifest = {
   repository?: string | null;
   entrypoint: string;
   bundle: PluginBundle | null;
+  variants?: PluginBundleVariant[];
   compatibility?: PluginCompatibility | null;
   models: ModelSpec[];
 };
@@ -104,6 +112,7 @@ export type InstallPluginRequest = {
   version?: string | null;
   install_models?: boolean;
   model_ids?: string[] | null;
+  accelerator?: string | null;
 };
 
 export type InstallPluginResponse = {

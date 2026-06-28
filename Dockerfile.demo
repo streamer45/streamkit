@@ -5,9 +5,6 @@
 # Demo image: CPU-only with all core plugins (including Pocket TTS, Supertonic, and Slint) and sample pipelines
 # syntax=docker/dockerfile:1
 
-# Version configuration
-ARG SHERPA_ONNX_VERSION=1.12.17
-
 # Stage 1: Build Rust dependencies
 FROM rust:1.95-slim-bookworm AS rust-deps
 
@@ -122,498 +119,338 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       mkdir -p /build/bin && cp /build/target/release-lto/skit /build/bin/skit \
     '
 
-# Stage 4: Build Whisper plugin
-FROM rust:1.95-slim-bookworm AS whisper-builder
+# ---------------------------------------------------------------
+# Marketplace plugin bundles
+#
+# Every plugin shipped in this demo used to be rebuilt from source here
+# (~1h cold build: 11 cargo compiles, sherpa-onnx relink, torch-based
+# Helsinki conversion). We now pull each plugin's signed prebuilt CPU
+# bundle from the same marketplace users install from (GitHub Releases,
+# manifest at `docs/public/registry/plugins/<id>/<version>/manifest.json`).
+# This:
+#
+# 1. Cuts cold demo build time dramatically (no plugin compiles, no
+#    sherpa relink, no torch install for Helsinki).
+# 2. Makes the demo a validation surface for the artifacts users actually
+#    install -- if a marketplace bundle regresses, the demo catches it.
+# 3. Drops the demo's dependency on building/copying sherpa-onnx libs:
+#    each sherpa-backed bundle vendors its own libsherpa-onnx-c-api.so +
+#    libonnxruntime.so with RUNPATH=$ORIGIN.
+#
+# When bumping a plugin: update its `<ID>_PLUGIN_VERSION` and
+# `<ID>_BUNDLE_SHA256` ARGs together from
+# `docs/public/registry/plugins/<id>/<version>/manifest.json`. Model HF
+# SHAs are pinned similarly from the same manifest's `models[*].sha256`
+# / `models[*].file_checksums` fields.
+#
+# Trust anchor: each sha256 pin is reviewed at upgrade time and acts as
+# the trust boundary (the same model the registry's signed manifest pins).
+# ---------------------------------------------------------------
 
-WORKDIR /build
-
-# Install build dependencies for whisper.cpp
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    g++ \
-    cmake \
-    curl \
-    libclang-dev \
-    clang \
-    git \
+# Shared base for all bundle-fetch stages -- one apt-get cached across all.
+FROM debian:bookworm-slim AS bundle-deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates zstd tar bzip2 \
     && rm -rf /var/lib/apt/lists/*
 
-# whisper.cpp/ggml defaults to enabling `GGML_NATIVE` (i.e. `-march=native`) when not cross-compiling.
-# That can produce binaries that crash with SIGILL on older CPUs. Setting SOURCE_DATE_EPOCH disables
-# `GGML_NATIVE_DEFAULT` upstream, making the build portable by default.
-ENV SOURCE_DATE_EPOCH=1
+# ---------------------------------------------------------------
+# Stage: whisper bundle + tiny multilingual model + Silero VAD.
+# The demo deliberately ships the tiny *multilingual* ggml model
+# (ggml-tiny-q5_1.bin from ggerganov/whisper.cpp), which is not one of
+# the registry's manifest models (those are tiny.en/base.en/base) -- the
+# sample pipelines below are rewritten to reference it.
+# ---------------------------------------------------------------
+FROM bundle-deps AS whisper-bundle
+ARG WHISPER_PLUGIN_VERSION=0.3.0
+ARG WHISPER_BUNDLE_SHA256=79212cfa57376ebfcb955fd12522ecf36164071cdc94cf3bf964122837e8f4d2
+ARG SILERO_VAD_SHA256=1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3
 
-# Extra defense-in-depth: ensure the toolchain doesn't auto-enable newer x86 features.
-ENV CFLAGS="-O3 -pipe -fPIC -march=x86-64 -mtune=generic" \
-    CXXFLAGS="-O3 -pipe -fPIC -march=x86-64 -mtune=generic"
+WORKDIR /bundle
+RUN set -eux; \
+    url="https://github.com/streamer45/streamkit/releases/download/plugin-whisper-v${WHISPER_PLUGIN_VERSION}/whisper-${WHISPER_PLUGIN_VERSION}-bundle.tar.zst"; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o whisper-bundle.tar.zst "$url"; \
+    echo "${WHISPER_BUNDLE_SHA256}  whisper-bundle.tar.zst" | sha256sum -c -; \
+    mkdir -p extracted; \
+    tar --zstd -xf whisper-bundle.tar.zst -C extracted; \
+    test -f extracted/libwhisper.so
 
-# Copy only what's needed to build whisper plugin
-# Note: Cargo.toml needed for workspace dependency resolution in core/
-COPY Cargo.toml Cargo.lock ./
-COPY crates/core ./crates/core
-COPY sdks/plugin-sdk ./sdks/plugin-sdk
-COPY plugins/native/whisper ./plugins/native/whisper
+WORKDIR /models
+RUN set -eux; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o ggml-tiny-q5_1.bin \
+      "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin"; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o silero_vad.onnx \
+      "https://huggingface.co/streamkit/whisper-models/resolve/main/silero_vad.onnx"; \
+    echo "${SILERO_VAD_SHA256}  silero_vad.onnx" | sha256sum -c -
 
-# Build whisper plugin
-RUN --mount=type=cache,id=cargo-registry-whisper,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=cargo-git-whisper,target=/usr/local/cargo/git \
-    --mount=type=cache,id=whisper-target-portable-v2,target=/build/plugins/native/whisper/target-portable \
-    cd plugins/native/whisper && \
-    cargo build --release --target-dir target-portable && \
-    mkdir -p /build/dist/native/whisper && \
-    cp target-portable/release/libwhisper.so /build/dist/native/whisper/ && \
-    cp plugin.yml /build/dist/native/whisper/
+# ---------------------------------------------------------------
+# Stage: kokoro bundle + Kokoro multi-lang v1.1 models.
+# ---------------------------------------------------------------
+FROM bundle-deps AS kokoro-bundle
+ARG KOKORO_PLUGIN_VERSION=0.3.0
+ARG KOKORO_BUNDLE_SHA256=0458c130b47a860428431427c26d9c2c80f21a371c7c565138fc351b2d0f652c
+ARG KOKORO_MODELS_SHA256=a3f4c73d043860e3fd2e5b06f36795eb81de0fc8e8de6df703245edddd87dbad
 
-# Download Whisper models (demo image uses a single tiny multilingual model).
-# - ggml-tiny-q5_1.bin: Tiny multilingual STT (quantized)
-#   NOTE: This model is not yet uploaded to streamkit/whisper-models, using original source
-# - silero_vad.onnx: VAD model for Whisper
-RUN mkdir -p /build/models && \
-    curl -L -o /build/models/ggml-tiny-q5_1.bin \
-      https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin && \
-    curl -L -o /build/models/silero_vad.onnx \
-      https://huggingface.co/streamkit/whisper-models/resolve/main/silero_vad.onnx
+WORKDIR /bundle
+RUN set -eux; \
+    url="https://github.com/streamer45/streamkit/releases/download/plugin-kokoro-v${KOKORO_PLUGIN_VERSION}/kokoro-${KOKORO_PLUGIN_VERSION}-bundle.tar.zst"; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o kokoro-bundle.tar.zst "$url"; \
+    echo "${KOKORO_BUNDLE_SHA256}  kokoro-bundle.tar.zst" | sha256sum -c -; \
+    mkdir -p extracted; \
+    tar --zstd -xf kokoro-bundle.tar.zst -C extracted; \
+    test -f extracted/libkokoro.so
 
-# Stage 5: Build Kokoro TTS plugin
-FROM rust:1.95-slim-bookworm AS kokoro-builder
+WORKDIR /models
+RUN set -eux; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o kokoro-multi-lang-v1_1.tar.bz2 \
+      "https://huggingface.co/streamkit/kokoro-models/resolve/main/kokoro-multi-lang-v1_1.tar.bz2"; \
+    echo "${KOKORO_MODELS_SHA256}  kokoro-multi-lang-v1_1.tar.bz2" | sha256sum -c -; \
+    tar xf kokoro-multi-lang-v1_1.tar.bz2; \
+    rm kokoro-multi-lang-v1_1.tar.bz2; \
+    test -d kokoro-multi-lang-v1_1
 
-WORKDIR /build
+# ---------------------------------------------------------------
+# Stage: piper bundle + en_US / es_MX voices.
+# ---------------------------------------------------------------
+FROM bundle-deps AS piper-bundle
+ARG PIPER_PLUGIN_VERSION=0.3.0
+ARG PIPER_BUNDLE_SHA256=28186b6fcff6af6048fb34576a96afe3b49ce5e640d9335a1999f2cd935c2a64
+ARG PIPER_MODEL_EN_SHA256=78c137daa7eddaf57190cf05c020efd6e593015f62c82ee999ef570fc2dff496
+ARG PIPER_MODEL_ES_SHA256=ec33fb689c248fe64810aab564cba97babf0f506672cfd404928d46e751a4721
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    curl \
-    wget \
-    bzip2 \
-    libclang-dev \
-    clang \
-    && rm -rf /var/lib/apt/lists/*
+WORKDIR /bundle
+RUN set -eux; \
+    url="https://github.com/streamer45/streamkit/releases/download/plugin-piper-v${PIPER_PLUGIN_VERSION}/piper-${PIPER_PLUGIN_VERSION}-bundle.tar.zst"; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o piper-bundle.tar.zst "$url"; \
+    echo "${PIPER_BUNDLE_SHA256}  piper-bundle.tar.zst" | sha256sum -c -; \
+    mkdir -p extracted; \
+    tar --zstd -xf piper-bundle.tar.zst -C extracted; \
+    test -f extracted/libpiper.so
 
-# Download and install sherpa-onnx shared library
-ARG SHERPA_ONNX_VERSION
-RUN cd /tmp && \
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/v${SHERPA_ONNX_VERSION}/sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared.tar.bz2 && \
-    tar xf sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared.tar.bz2 && \
-    cp sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared/lib/*.so* /usr/local/lib/ && \
-    ldconfig
-
-# Copy only what's needed to build kokoro plugin
-# Note: Cargo.toml needed for workspace dependency resolution in core/
-COPY Cargo.toml Cargo.lock ./
-COPY crates/core ./crates/core
-COPY sdks/plugin-sdk ./sdks/plugin-sdk
-COPY plugins/native/kokoro ./plugins/native/kokoro
-
-# Build kokoro plugin
-RUN --mount=type=cache,id=cargo-registry-kokoro,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=cargo-git-kokoro,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/build/plugins/native/kokoro/target \
-    cd plugins/native/kokoro && \
-    RUSTFLAGS="-L /usr/local/lib" cargo build --release --target-dir target && \
-    mkdir -p /build/dist/native/kokoro && \
-    cp target/release/libkokoro.so /build/dist/native/kokoro/ && \
-    cp plugin.yml /build/dist/native/kokoro/
-
-# Download Kokoro TTS models
-RUN mkdir -p /build/models && \
-    cd /build/models && \
-    curl -L -o kokoro-multi-lang-v1_1.tar.bz2 \
-      https://huggingface.co/streamkit/kokoro-models/resolve/main/kokoro-multi-lang-v1_1.tar.bz2 && \
-    tar xf kokoro-multi-lang-v1_1.tar.bz2 && \
-    rm kokoro-multi-lang-v1_1.tar.bz2
-
-# Stage 6: Build Piper TTS plugin
-FROM rust:1.95-slim-bookworm AS piper-builder
-
-WORKDIR /build
-
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    curl \
-    wget \
-    bzip2 \
-    libclang-dev \
-    clang \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy sherpa-onnx from kokoro-builder (reuse to avoid duplicate downloads)
-COPY --from=kokoro-builder /usr/local/lib/*.so* /usr/local/lib/
-RUN ldconfig
-
-# Copy only what's needed to build piper plugin
-# Note: Cargo.toml needed for workspace dependency resolution in core/
-COPY Cargo.toml Cargo.lock ./
-COPY crates/core ./crates/core
-COPY sdks/plugin-sdk ./sdks/plugin-sdk
-COPY plugins/native/piper ./plugins/native/piper
-
-# Build piper plugin
-RUN --mount=type=cache,id=cargo-registry-piper,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=cargo-git-piper,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/build/plugins/native/piper/target \
-    cd plugins/native/piper && \
-    RUSTFLAGS="-L /usr/local/lib" cargo build --release --target-dir target && \
-    mkdir -p /build/dist/native/piper && \
-    cp target/release/libpiper.so /build/dist/native/piper/ && \
-    cp plugin.yml /build/dist/native/piper/
-
-# Download Piper TTS models (English + Spanish for translation output)
-RUN mkdir -p /build/models && \
-    cd /build/models && \
-    curl -L -o vits-piper-en_US-libritts_r-medium.tar.bz2 \
-      https://huggingface.co/streamkit/piper-models/resolve/main/vits-piper-en_US-libritts_r-medium.tar.bz2 && \
-    tar xf vits-piper-en_US-libritts_r-medium.tar.bz2 && \
-    rm vits-piper-en_US-libritts_r-medium.tar.bz2 && \
-    cd vits-piper-en_US-libritts_r-medium && \
-    if [ ! -f "model.onnx" ] && [ -f "en_US-libritts_r-medium.onnx" ]; then \
-        ln -sf en_US-libritts_r-medium.onnx model.onnx; \
-    fi && \
-    cd /build/models && \
-    curl -L -o vits-piper-es_MX-claude-high.tar.bz2 \
-      https://huggingface.co/streamkit/piper-models/resolve/main/vits-piper-es_MX-claude-high.tar.bz2 && \
-    tar xf vits-piper-es_MX-claude-high.tar.bz2 && \
-    rm vits-piper-es_MX-claude-high.tar.bz2 && \
-    cd vits-piper-es_MX-claude-high && \
-    if [ ! -f "model.onnx" ] && [ -f "es_MX-claude-high.onnx" ]; then \
-        ln -sf es_MX-claude-high.onnx model.onnx; \
+WORKDIR /models
+RUN set -eux; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o vits-piper-en_US-libritts_r-medium.tar.bz2 \
+      "https://huggingface.co/streamkit/piper-models/resolve/main/vits-piper-en_US-libritts_r-medium.tar.bz2"; \
+    echo "${PIPER_MODEL_EN_SHA256}  vits-piper-en_US-libritts_r-medium.tar.bz2" | sha256sum -c -; \
+    tar xf vits-piper-en_US-libritts_r-medium.tar.bz2; \
+    rm vits-piper-en_US-libritts_r-medium.tar.bz2; \
+    if [ ! -f vits-piper-en_US-libritts_r-medium/model.onnx ] && [ -f vits-piper-en_US-libritts_r-medium/en_US-libritts_r-medium.onnx ]; then \
+      ln -sf en_US-libritts_r-medium.onnx vits-piper-en_US-libritts_r-medium/model.onnx; \
+    fi; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o vits-piper-es_MX-claude-high.tar.bz2 \
+      "https://huggingface.co/streamkit/piper-models/resolve/main/vits-piper-es_MX-claude-high.tar.bz2"; \
+    echo "${PIPER_MODEL_ES_SHA256}  vits-piper-es_MX-claude-high.tar.bz2" | sha256sum -c -; \
+    tar xf vits-piper-es_MX-claude-high.tar.bz2; \
+    rm vits-piper-es_MX-claude-high.tar.bz2; \
+    if [ ! -f vits-piper-es_MX-claude-high/model.onnx ] && [ -f vits-piper-es_MX-claude-high/es_MX-claude-high.onnx ]; then \
+      ln -sf es_MX-claude-high.onnx vits-piper-es_MX-claude-high/model.onnx; \
     fi
 
-# Stage 7: Build SenseVoice STT plugin
-FROM rust:1.95-slim-bookworm AS sensevoice-builder
+# ---------------------------------------------------------------
+# Stage: sensevoice bundle + SenseVoice int8 model + Silero VAD.
+# ---------------------------------------------------------------
+FROM bundle-deps AS sensevoice-bundle
+ARG SENSEVOICE_PLUGIN_VERSION=0.3.0
+ARG SENSEVOICE_BUNDLE_SHA256=eeb8b7f8505e7f7d212a9180b8e6449e76a72112395579ace7a87e263b4a26ce
+ARG SENSEVOICE_MODEL_SHA256=7305f7905bfcf77fa0b39388a313f3da35c68d971661a65475b56fb2162c8e63
 
-WORKDIR /build
+WORKDIR /bundle
+RUN set -eux; \
+    url="https://github.com/streamer45/streamkit/releases/download/plugin-sensevoice-v${SENSEVOICE_PLUGIN_VERSION}/sensevoice-${SENSEVOICE_PLUGIN_VERSION}-bundle.tar.zst"; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o sensevoice-bundle.tar.zst "$url"; \
+    echo "${SENSEVOICE_BUNDLE_SHA256}  sensevoice-bundle.tar.zst" | sha256sum -c -; \
+    mkdir -p extracted; \
+    tar --zstd -xf sensevoice-bundle.tar.zst -C extracted; \
+    test -f extracted/libsensevoice.so
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    curl \
-    wget \
-    bzip2 \
-    libclang-dev \
-    clang \
-    && rm -rf /var/lib/apt/lists/*
+WORKDIR /models
+RUN set -eux; \
+    f="sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09"; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o "${f}.tar.bz2" \
+      "https://huggingface.co/streamkit/sensevoice-models/resolve/main/${f}.tar.bz2"; \
+    echo "${SENSEVOICE_MODEL_SHA256}  ${f}.tar.bz2" | sha256sum -c -; \
+    tar xf "${f}.tar.bz2"; \
+    rm "${f}.tar.bz2"; \
+    test -d "${f}"
 
-# Copy sherpa-onnx from kokoro-builder (reuse to avoid duplicate downloads)
-COPY --from=kokoro-builder /usr/local/lib/*.so* /usr/local/lib/
-RUN ldconfig
+# ---------------------------------------------------------------
+# Stage: vad bundle + ten-vad model.
+# ---------------------------------------------------------------
+FROM bundle-deps AS vad-bundle
+ARG VAD_PLUGIN_VERSION=0.4.0
+ARG VAD_BUNDLE_SHA256=5122e4a24598ad761b4dc385e7ebc2343cb7249f7714546a0d0a56d69ab9d957
+ARG TEN_VAD_SHA256=718cb7eef47e3cf5ddbe7e967a7503f46b8b469c0706872f494dfa921b486206
 
-# Copy only what's needed to build sensevoice plugin
-# Note: Cargo.toml needed for workspace dependency resolution in core/
-COPY Cargo.toml Cargo.lock ./
-COPY crates/core ./crates/core
-COPY sdks/plugin-sdk ./sdks/plugin-sdk
-COPY plugins/native/sensevoice ./plugins/native/sensevoice
+WORKDIR /bundle
+RUN set -eux; \
+    url="https://github.com/streamer45/streamkit/releases/download/plugin-vad-v${VAD_PLUGIN_VERSION}/vad-${VAD_PLUGIN_VERSION}-bundle.tar.zst"; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o vad-bundle.tar.zst "$url"; \
+    echo "${VAD_BUNDLE_SHA256}  vad-bundle.tar.zst" | sha256sum -c -; \
+    mkdir -p extracted; \
+    tar --zstd -xf vad-bundle.tar.zst -C extracted; \
+    test -f extracted/libvad.so
 
-# Build sensevoice plugin
-RUN --mount=type=cache,id=cargo-registry-sensevoice,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=cargo-git-sensevoice,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/build/plugins/native/sensevoice/target \
-    cd plugins/native/sensevoice && \
-    RUSTFLAGS="-L /usr/local/lib" cargo build --release --target-dir target && \
-    mkdir -p /build/dist/native/sensevoice && \
-    cp target/release/libsensevoice.so /build/dist/native/sensevoice/ && \
-    cp plugin.yml /build/dist/native/sensevoice/
+WORKDIR /models
+RUN set -eux; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o ten-vad.onnx \
+      "https://huggingface.co/streamkit/vad-models/resolve/main/ten-vad.onnx"; \
+    echo "${TEN_VAD_SHA256}  ten-vad.onnx" | sha256sum -c -
 
-# Download SenseVoice models
-RUN mkdir -p /build/models && \
-    cd /build/models && \
-    curl -L -o sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 \
-      https://huggingface.co/streamkit/sensevoice-models/resolve/main/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 && \
-    tar xf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 && \
-    rm sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2
+# ---------------------------------------------------------------
+# Stage: matcha bundle + Matcha LJSpeech models.
+# ---------------------------------------------------------------
+FROM bundle-deps AS matcha-bundle
+ARG MATCHA_PLUGIN_VERSION=0.3.0
+ARG MATCHA_BUNDLE_SHA256=46fa83617d0e53d619d9f52ae4b70c9f3a45f31ea9da327ac2bdd012396257bb
+ARG MATCHA_MODEL_SHA256=f7862f5d93b956561ee7aca86bf33504f47726c1d5a559066f3cef8fab6c3e23
+ARG MATCHA_VOCOS_SHA256=0574a135aa1db2de6e181050db2ec528496cacd4a4701fc5d7faf9f9804c0081
 
-# Stage 8: Build VAD plugin
-FROM rust:1.95-slim-bookworm AS vad-builder
+WORKDIR /bundle
+RUN set -eux; \
+    url="https://github.com/streamer45/streamkit/releases/download/plugin-matcha-v${MATCHA_PLUGIN_VERSION}/matcha-${MATCHA_PLUGIN_VERSION}-bundle.tar.zst"; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o matcha-bundle.tar.zst "$url"; \
+    echo "${MATCHA_BUNDLE_SHA256}  matcha-bundle.tar.zst" | sha256sum -c -; \
+    mkdir -p extracted; \
+    tar --zstd -xf matcha-bundle.tar.zst -C extracted; \
+    test -f extracted/libmatcha.so
 
-WORKDIR /build
+WORKDIR /models
+RUN set -eux; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o matcha-icefall-en_US-ljspeech.tar.bz2 \
+      "https://huggingface.co/streamkit/matcha-models/resolve/main/matcha-icefall-en_US-ljspeech.tar.bz2"; \
+    echo "${MATCHA_MODEL_SHA256}  matcha-icefall-en_US-ljspeech.tar.bz2" | sha256sum -c -; \
+    tar xf matcha-icefall-en_US-ljspeech.tar.bz2; \
+    rm matcha-icefall-en_US-ljspeech.tar.bz2; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o matcha-icefall-en_US-ljspeech/vocos-22khz-univ.onnx \
+      "https://huggingface.co/streamkit/matcha-models/resolve/main/matcha-icefall-en_US-ljspeech/vocos-22khz-univ.onnx"; \
+    echo "${MATCHA_VOCOS_SHA256}  matcha-icefall-en_US-ljspeech/vocos-22khz-univ.onnx" | sha256sum -c -
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    curl \
-    wget \
-    bzip2 \
-    libclang-dev \
-    clang \
-    && rm -rf /var/lib/apt/lists/*
+# ---------------------------------------------------------------
+# Stage: helsinki bundle + OPUS-MT EN<->ES models.
+# The from-source build used a Python/torch conversion step; we now pull
+# the pre-converted CTranslate2 model tarballs from streamkit/helsinki-models.
+# ---------------------------------------------------------------
+FROM bundle-deps AS helsinki-bundle
+ARG HELSINKI_PLUGIN_VERSION=0.3.0
+ARG HELSINKI_BUNDLE_SHA256=b8cdfef21d66cfc75596bdb8080cfb20115f6be883c2c1990b2e6edc50190045
+ARG HELSINKI_EN_ES_SHA256=6624ec0babce458c0771f493460e62f7e7dc6d4d832e56dbde1621444d4b37cf
+ARG HELSINKI_ES_EN_SHA256=01a0ddd203b3343d02c013539d4d8f0dfcd747585c9b26f0c3f90f7a11d7cde9
 
-# Copy sherpa-onnx from kokoro-builder (reuse to avoid duplicate downloads)
-COPY --from=kokoro-builder /usr/local/lib/*.so* /usr/local/lib/
-RUN ldconfig
+WORKDIR /bundle
+RUN set -eux; \
+    url="https://github.com/streamer45/streamkit/releases/download/plugin-helsinki-v${HELSINKI_PLUGIN_VERSION}/helsinki-${HELSINKI_PLUGIN_VERSION}-bundle.tar.zst"; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o helsinki-bundle.tar.zst "$url"; \
+    echo "${HELSINKI_BUNDLE_SHA256}  helsinki-bundle.tar.zst" | sha256sum -c -; \
+    mkdir -p extracted; \
+    tar --zstd -xf helsinki-bundle.tar.zst -C extracted; \
+    test -f extracted/libhelsinki.so
 
-# Copy only what's needed to build vad plugin
-# Note: Cargo.toml needed for workspace dependency resolution in core/
-COPY Cargo.toml Cargo.lock ./
-COPY crates/core ./crates/core
-COPY sdks/plugin-sdk ./sdks/plugin-sdk
-COPY plugins/native/vad ./plugins/native/vad
+WORKDIR /models
+RUN set -eux; \
+    hf_base="https://huggingface.co/streamkit/helsinki-models/resolve/main"; \
+    for spec in \
+        "opus-mt-en-es ${HELSINKI_EN_ES_SHA256}" \
+        "opus-mt-es-en ${HELSINKI_ES_EN_SHA256}" \
+    ; do \
+        name=$(echo "$spec" | awk '{print $1}'); \
+        sha=$(echo "$spec" | awk '{print $2}'); \
+        curl --proto '=https' --tlsv1.2 -fsSL -o "${name}.tar.bz2" "${hf_base}/${name}.tar.bz2"; \
+        echo "${sha}  ${name}.tar.bz2" | sha256sum -c -; \
+        tar xf "${name}.tar.bz2"; \
+        rm "${name}.tar.bz2"; \
+        test -d "${name}"; \
+    done
 
-# Build vad plugin
-RUN --mount=type=cache,id=cargo-registry-vad,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=cargo-git-vad,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/build/plugins/native/vad/target \
-    cd plugins/native/vad && \
-    RUSTFLAGS="-L /usr/local/lib" cargo build --release --target-dir target && \
-    mkdir -p /build/dist/native/vad && \
-    cp target/release/libvad.so /build/dist/native/vad/ && \
-    cp plugin.yml /build/dist/native/vad/
+# ---------------------------------------------------------------
+# Stage: pocket-tts bundle + Kyutai Pocket TTS models.
+# ---------------------------------------------------------------
+FROM bundle-deps AS pocket-tts-bundle
+ARG POCKET_TTS_PLUGIN_VERSION=0.3.0
+ARG POCKET_TTS_BUNDLE_SHA256=9f86803c8fce08f84da8484f2e7c38037ed20215df10d0188a423631bc7f76b0
+ARG POCKET_TTS_MODELS_SHA256=7661d610217e8d2b0ae1d8739d384756e50c734fb136047679ca651385ed3035
 
-# Download ten-vad model
-RUN mkdir -p /build/models && \
-    curl -L -o /build/models/ten-vad.onnx \
-      https://huggingface.co/streamkit/vad-models/resolve/main/ten-vad.onnx
+WORKDIR /bundle
+RUN set -eux; \
+    url="https://github.com/streamer45/streamkit/releases/download/plugin-pocket-tts-v${POCKET_TTS_PLUGIN_VERSION}/pocket-tts-${POCKET_TTS_PLUGIN_VERSION}-bundle.tar.zst"; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o pocket-tts-bundle.tar.zst "$url"; \
+    echo "${POCKET_TTS_BUNDLE_SHA256}  pocket-tts-bundle.tar.zst" | sha256sum -c -; \
+    mkdir -p extracted; \
+    tar --zstd -xf pocket-tts-bundle.tar.zst -C extracted; \
+    test -f extracted/libpocket_tts.so
 
-# Stage 9: Build Matcha TTS plugin
-FROM rust:1.95-slim-bookworm AS matcha-builder
+WORKDIR /models
+RUN set -eux; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o pocket-tts-models.tar.bz2 \
+      "https://huggingface.co/streamkit/pocket-tts-models/resolve/main/pocket-tts-b6369a24.tar.bz2"; \
+    echo "${POCKET_TTS_MODELS_SHA256}  pocket-tts-models.tar.bz2" | sha256sum -c -; \
+    tar xf pocket-tts-models.tar.bz2; \
+    rm pocket-tts-models.tar.bz2; \
+    test -d pocket-tts
 
-WORKDIR /build
+# ---------------------------------------------------------------
+# Stage: supertonic bundle + Supertonic v2 ONNX models.
+# ---------------------------------------------------------------
+FROM bundle-deps AS supertonic-bundle
+ARG SUPERTONIC_PLUGIN_VERSION=0.3.0
+ARG SUPERTONIC_BUNDLE_SHA256=cc815d2f807021cdd424936fd8c0d84321773c29eeb6b8c79394b92becf8ae02
+ARG SUPERTONIC_MODELS_SHA256=3c3ba6326cd6c8ee48d4c7322322d1f1f4ebf188bf4a7d80fc218babca186f41
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    curl \
-    wget \
-    bzip2 \
-    libclang-dev \
-    clang \
-    && rm -rf /var/lib/apt/lists/*
+WORKDIR /bundle
+RUN set -eux; \
+    url="https://github.com/streamer45/streamkit/releases/download/plugin-supertonic-v${SUPERTONIC_PLUGIN_VERSION}/supertonic-${SUPERTONIC_PLUGIN_VERSION}-bundle.tar.zst"; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o supertonic-bundle.tar.zst "$url"; \
+    echo "${SUPERTONIC_BUNDLE_SHA256}  supertonic-bundle.tar.zst" | sha256sum -c -; \
+    mkdir -p extracted; \
+    tar --zstd -xf supertonic-bundle.tar.zst -C extracted; \
+    test -f extracted/libsupertonic.so
 
-# Copy sherpa-onnx from kokoro-builder (reuse to avoid duplicate downloads)
-COPY --from=kokoro-builder /usr/local/lib/*.so* /usr/local/lib/
-RUN ldconfig
+WORKDIR /models
+RUN set -eux; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o supertonic-v2-onnx.tar.bz2 \
+      "https://huggingface.co/streamkit/supertonic-models/resolve/main/supertonic-v2-onnx.tar.bz2"; \
+    echo "${SUPERTONIC_MODELS_SHA256}  supertonic-v2-onnx.tar.bz2" | sha256sum -c -; \
+    tar xf supertonic-v2-onnx.tar.bz2; \
+    rm supertonic-v2-onnx.tar.bz2; \
+    test -d supertonic-v2-onnx
 
-# Copy only what's needed to build matcha plugin
-# Note: Cargo.toml needed for workspace dependency resolution in core/
-COPY Cargo.toml Cargo.lock ./
-COPY crates/core ./crates/core
-COPY sdks/plugin-sdk ./sdks/plugin-sdk
-COPY plugins/native/matcha ./plugins/native/matcha
+# ---------------------------------------------------------------
+# Stage: aac-encoder bundle. No models.
+# ---------------------------------------------------------------
+FROM bundle-deps AS aac-encoder-bundle
+ARG AAC_ENCODER_PLUGIN_VERSION=0.2.0
+ARG AAC_ENCODER_BUNDLE_SHA256=6ccf39fdcc4a9b9984980dad0fa73cbcd9d092323b359538785aa0edd6421e7c
 
-# Build matcha plugin
-RUN --mount=type=cache,id=cargo-registry-matcha,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=cargo-git-matcha,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/build/plugins/native/matcha/target \
-    cd plugins/native/matcha && \
-    RUSTFLAGS="-L /usr/local/lib" cargo build --release --target-dir target && \
-    mkdir -p /build/dist/native/matcha && \
-    cp target/release/libmatcha.so /build/dist/native/matcha/ && \
-    cp plugin.yml /build/dist/native/matcha/
+WORKDIR /bundle
+RUN set -eux; \
+    url="https://github.com/streamer45/streamkit/releases/download/plugin-aac-encoder-v${AAC_ENCODER_PLUGIN_VERSION}/aac-encoder-${AAC_ENCODER_PLUGIN_VERSION}-bundle.tar.zst"; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o aac-encoder-bundle.tar.zst "$url"; \
+    echo "${AAC_ENCODER_BUNDLE_SHA256}  aac-encoder-bundle.tar.zst" | sha256sum -c -; \
+    mkdir -p extracted; \
+    tar --zstd -xf aac-encoder-bundle.tar.zst -C extracted; \
+    test -f extracted/libaac_encoder.so
 
-# Download Matcha TTS models
-RUN mkdir -p /build/models && \
-    cd /build/models && \
-    curl -L -o matcha-icefall-en_US-ljspeech.tar.bz2 \
-      https://huggingface.co/streamkit/matcha-models/resolve/main/matcha-icefall-en_US-ljspeech.tar.bz2 && \
-    tar xf matcha-icefall-en_US-ljspeech.tar.bz2 && \
-    rm matcha-icefall-en_US-ljspeech.tar.bz2 && \
-    cd matcha-icefall-en_US-ljspeech && \
-    curl -L -o vocos-22khz-univ.onnx \
-      https://huggingface.co/streamkit/matcha-models/resolve/main/matcha-icefall-en_US-ljspeech/vocos-22khz-univ.onnx
+# ---------------------------------------------------------------
+# Stage: slint bundle. No models.
+# ---------------------------------------------------------------
+FROM bundle-deps AS slint-bundle
+ARG SLINT_PLUGIN_VERSION=0.4.0
+ARG SLINT_BUNDLE_SHA256=2b33767cdd35b9eeba3bec4e1801aa020a59ef9a61c54b28f7c5d71fa087034d
 
-# Stage 10: Build Helsinki Translation plugin (CPU-only)
-FROM rust:1.95-slim-bookworm AS helsinki-builder
-
-WORKDIR /build
-
-# Install dependencies (Rust + Python for model conversion)
-RUN apt-get update && apt-get install -y \
-    curl \
-    git \
-    pkg-config \
-    libssl-dev \
-    libclang-dev \
-    clang \
-    python3 \
-    python3-pip \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy only what's needed to build helsinki plugin
-COPY Cargo.toml Cargo.lock ./
-COPY crates/core ./crates/core
-COPY sdks/plugin-sdk ./sdks/plugin-sdk
-COPY plugins/native/helsinki ./plugins/native/helsinki
-
-# Build helsinki plugin (CPU-only, no cuda feature)
-RUN --mount=type=cache,id=helsinki-cargo-registry,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=helsinki-cargo-git,target=/usr/local/cargo/git \
-    --mount=type=cache,id=helsinki-target,target=/build/plugins/native/helsinki/target \
-    cd plugins/native/helsinki && \
-    cargo build --release --target-dir target && \
-    mkdir -p /build/dist/native/helsinki && \
-    cp target/release/libhelsinki.so /build/dist/native/helsinki/ && \
-    cp plugin.yml /build/dist/native/helsinki/
-
-# Download and convert OPUS-MT models (EN<->ES)
-RUN PIP_BREAK_SYSTEM_PACKAGES=1 pip3 install --no-cache-dir \
-      transformers \
-      sentencepiece \
-      safetensors \
-      torch \
-      tokenizers && \
-    python3 plugins/native/helsinki/download-models.py
-
-# Stage 11: Build Pocket TTS plugin
-FROM rust:1.95-slim-bookworm AS pocket-tts-builder
-
-WORKDIR /build
-
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    g++ \
-    cmake \
-    curl \
-    bzip2 \
-    libclang-dev \
-    clang \
-    git \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy only what's needed to build pocket-tts plugin
-COPY Cargo.toml Cargo.lock ./
-COPY crates/core ./crates/core
-COPY sdks/plugin-sdk ./sdks/plugin-sdk
-COPY plugins/native/pocket-tts ./plugins/native/pocket-tts
-
-# Build pocket-tts plugin
-RUN --mount=type=cache,id=cargo-registry-pocket-tts,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=cargo-git-pocket-tts,target=/usr/local/cargo/git \
-    --mount=type=cache,id=pocket-tts-target,target=/build/plugins/native/pocket-tts/target \
-    cd plugins/native/pocket-tts && \
-    cargo build --release --target-dir target && \
-    mkdir -p /build/dist/native/pocket-tts && \
-    cp target/release/libpocket_tts.so /build/dist/native/pocket-tts/ && \
-    cp plugin.yml /build/dist/native/pocket-tts/
-
-# Download Pocket TTS models
-RUN mkdir -p /build/models && \
-    cd /build/models && \
-    curl -L -o pocket-tts-b6369a24.tar.bz2 \
-      https://huggingface.co/streamkit/pocket-tts-models/resolve/main/pocket-tts-b6369a24.tar.bz2 && \
-    tar xf pocket-tts-b6369a24.tar.bz2 && \
-    rm pocket-tts-b6369a24.tar.bz2
-
-# Stage 12: Build Supertonic TTS plugin
-FROM rust:1.95-slim-bookworm AS supertonic-builder
-
-WORKDIR /build
-
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    g++ \
-    cmake \
-    curl \
-    bzip2 \
-    libclang-dev \
-    clang \
-    git \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy only what's needed to build supertonic plugin
-COPY Cargo.toml Cargo.lock ./
-COPY crates/core ./crates/core
-COPY sdks/plugin-sdk ./sdks/plugin-sdk
-COPY plugins/native/supertonic ./plugins/native/supertonic
-
-# Build supertonic plugin
-RUN --mount=type=cache,id=cargo-registry-supertonic,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=cargo-git-supertonic,target=/usr/local/cargo/git \
-    --mount=type=cache,id=supertonic-target,target=/build/plugins/native/supertonic/target \
-    cd plugins/native/supertonic && \
-    cargo build --release --target-dir target && \
-    mkdir -p /build/dist/native/supertonic && \
-    cp target/release/libsupertonic.so /build/dist/native/supertonic/ && \
-    cp plugin.yml /build/dist/native/supertonic/
-
-# Download Supertonic models
-RUN mkdir -p /build/models && \
-    cd /build/models && \
-    curl -L -o supertonic-v2-onnx.tar.bz2 \
-      https://huggingface.co/streamkit/supertonic-models/resolve/main/supertonic-v2-onnx.tar.bz2 && \
-    tar xf supertonic-v2-onnx.tar.bz2 && \
-    rm supertonic-v2-onnx.tar.bz2
-
-# Stage 13: Build AAC Encoder plugin
-FROM rust:1.95-slim-bookworm AS aac-encoder-builder
-
-WORKDIR /build
-
-# Install build dependencies (libfdk-aac-dev needed by shiguredo_fdk_aac)
-# libfdk-aac-dev is in Debian's non-free component.
-RUN sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources && \
-    apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    libclang-dev \
-    clang \
-    libfdk-aac-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy only what's needed to build aac-encoder plugin
-COPY Cargo.toml Cargo.lock ./
-COPY crates/core ./crates/core
-COPY sdks/plugin-sdk ./sdks/plugin-sdk
-COPY plugins/native/aac-encoder ./plugins/native/aac-encoder
-
-# Build aac-encoder plugin
-RUN --mount=type=cache,id=cargo-registry-aac-encoder,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=cargo-git-aac-encoder,target=/usr/local/cargo/git \
-    --mount=type=cache,id=aac-encoder-target,target=/build/plugins/native/aac-encoder/target \
-    cd plugins/native/aac-encoder && \
-    cargo build --release --target-dir target && \
-    mkdir -p /build/dist/native/aac-encoder && \
-    cp target/release/libaac_encoder.so /build/dist/native/aac-encoder/ && \
-    cp plugin.yml /build/dist/native/aac-encoder/
-
-# Stage 14: Build Slint UI plugin
-FROM rust:1.95-slim-bookworm AS slint-builder
-
-WORKDIR /build
-
-# Install build dependencies (libfontconfig1-dev needed by Slint's software renderer)
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    g++ \
-    cmake \
-    curl \
-    libclang-dev \
-    clang \
-    git \
-    libfontconfig1-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy only what's needed to build slint plugin
-COPY Cargo.toml Cargo.lock ./
-COPY crates/core ./crates/core
-COPY sdks/plugin-sdk ./sdks/plugin-sdk
-COPY plugins/native/slint ./plugins/native/slint
-
-# Build slint plugin
-RUN --mount=type=cache,id=cargo-registry-slint,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=cargo-git-slint,target=/usr/local/cargo/git \
-    --mount=type=cache,id=slint-target,target=/build/plugins/native/slint/target \
-    cd plugins/native/slint && \
-    cargo build --release --target-dir target && \
-    mkdir -p /build/dist/native/slint && \
-    cp target/release/libslint.so /build/dist/native/slint/ && \
-    cp plugin.yml /build/dist/native/slint/
+WORKDIR /bundle
+RUN set -eux; \
+    url="https://github.com/streamer45/streamkit/releases/download/plugin-slint-v${SLINT_PLUGIN_VERSION}/slint-${SLINT_PLUGIN_VERSION}-bundle.tar.zst"; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o slint-bundle.tar.zst "$url"; \
+    echo "${SLINT_BUNDLE_SHA256}  slint-bundle.tar.zst" | sha256sum -c -; \
+    mkdir -p extracted; \
+    tar --zstd -xf slint-bundle.tar.zst -C extracted; \
+    test -f extracted/libslint.so
 
 # Runtime stage
 FROM debian:bookworm-slim
 
 # Install runtime dependencies (include gdb for debugging demo image crashes)
 # libfdk-aac2 is in Debian's non-free component.
+# sherpa-onnx / ONNX Runtime are NOT installed here: each sherpa-backed
+# bundle vendors its own libs (RUNPATH=$ORIGIN).
 RUN sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources && \
     apt-get update && apt-get install -y \
     ca-certificates \
@@ -634,58 +471,45 @@ RUN useradd -m -u 1000 -s /bin/bash app
 # Copy binary from rust builder
 COPY --from=rust-builder /build/bin/skit /usr/local/bin/skit
 
-# Copy sherpa-onnx shared libraries from kokoro-builder
-COPY --from=kokoro-builder /usr/local/lib/*.so* /usr/local/lib/
-RUN ldconfig
+# Plugins are shipped as directory bundles (plugins/native/<id>/ with the
+# .so + embedded manifest.json + any vendored libs) -- the layout the
+# loader expects. Each marketplace bundle is copied verbatim from its
+# fetch stage so $ORIGIN-relative vendored libs stay co-located.
+# IMPORTANT: Use --chown=app:app on every COPY to avoid a bulk `chown -R`
+# later which would duplicate every file in a new layer.
+COPY --chown=app:app --from=whisper-bundle /bundle/extracted /opt/streamkit/plugins/native/whisper
+COPY --chown=app:app --from=whisper-bundle /models/ggml-tiny-q5_1.bin /opt/streamkit/models/ggml-tiny-q5_1.bin
+COPY --chown=app:app --from=whisper-bundle /models/silero_vad.onnx /opt/streamkit/models/silero_vad.onnx
 
-# Copy whisper plugin and models
-# Plugins are shipped as directory bundles (plugins/native/<id>/ with a
-# plugin.yml + the .so) — the layout the loader expects; bare .so files in
-# plugins/native/ are ignored.
-# IMPORTANT: Use --chown=app:app on every COPY to avoid a bulk `chown -R` later
-# which would duplicate every file in a new layer (~12GB waste).
-COPY --chown=app:app --from=whisper-builder /build/dist /opt/streamkit/plugins
-COPY --chown=app:app --from=whisper-builder /build/models /opt/streamkit/models
+COPY --chown=app:app --from=kokoro-bundle /bundle/extracted /opt/streamkit/plugins/native/kokoro
+COPY --chown=app:app --from=kokoro-bundle /models/kokoro-multi-lang-v1_1 /opt/streamkit/models/kokoro-multi-lang-v1_1
 
-# Copy kokoro plugin and models (merge into /opt/streamkit/plugins and /opt/streamkit/models)
-COPY --chown=app:app --from=kokoro-builder /build/dist/native/kokoro /opt/streamkit/plugins/native/kokoro
-COPY --chown=app:app --from=kokoro-builder /build/models/kokoro-multi-lang-v1_1 /opt/streamkit/models/kokoro-multi-lang-v1_1
+COPY --chown=app:app --from=piper-bundle /bundle/extracted /opt/streamkit/plugins/native/piper
+COPY --chown=app:app --from=piper-bundle /models/vits-piper-en_US-libritts_r-medium /opt/streamkit/models/vits-piper-en_US-libritts_r-medium
+COPY --chown=app:app --from=piper-bundle /models/vits-piper-es_MX-claude-high /opt/streamkit/models/vits-piper-es_MX-claude-high
 
-# Copy piper plugin and models (merge into /opt/streamkit/plugins and /opt/streamkit/models)
-COPY --chown=app:app --from=piper-builder /build/dist/native/piper /opt/streamkit/plugins/native/piper
-COPY --chown=app:app --from=piper-builder /build/models/vits-piper-en_US-libritts_r-medium /opt/streamkit/models/vits-piper-en_US-libritts_r-medium
-COPY --chown=app:app --from=piper-builder /build/models/vits-piper-es_MX-claude-high /opt/streamkit/models/vits-piper-es_MX-claude-high
+COPY --chown=app:app --from=sensevoice-bundle /bundle/extracted /opt/streamkit/plugins/native/sensevoice
+COPY --chown=app:app --from=sensevoice-bundle /models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09 /opt/streamkit/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09
 
-# Copy sensevoice plugin and models (merge into /opt/streamkit/plugins and /opt/streamkit/models)
-COPY --chown=app:app --from=sensevoice-builder /build/dist/native/sensevoice /opt/streamkit/plugins/native/sensevoice
-COPY --chown=app:app --from=sensevoice-builder /build/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09 /opt/streamkit/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09
+COPY --chown=app:app --from=helsinki-bundle /bundle/extracted /opt/streamkit/plugins/native/helsinki
+COPY --chown=app:app --from=helsinki-bundle /models/opus-mt-en-es /opt/streamkit/models/opus-mt-en-es
+COPY --chown=app:app --from=helsinki-bundle /models/opus-mt-es-en /opt/streamkit/models/opus-mt-es-en
 
-# Copy helsinki plugin and models
-COPY --chown=app:app --from=helsinki-builder /build/dist/native/helsinki /opt/streamkit/plugins/native/helsinki
-COPY --chown=app:app --from=helsinki-builder /build/models/opus-mt-en-es /opt/streamkit/models/opus-mt-en-es
-COPY --chown=app:app --from=helsinki-builder /build/models/opus-mt-es-en /opt/streamkit/models/opus-mt-es-en
+COPY --chown=app:app --from=vad-bundle /bundle/extracted /opt/streamkit/plugins/native/vad
+COPY --chown=app:app --from=vad-bundle /models/ten-vad.onnx /opt/streamkit/models/ten-vad.onnx
 
-# Copy vad plugin and model (merge into /opt/streamkit/plugins and /opt/streamkit/models)
-COPY --chown=app:app --from=vad-builder /build/dist/native/vad /opt/streamkit/plugins/native/vad
-COPY --chown=app:app --from=vad-builder /build/models/ten-vad.onnx /opt/streamkit/models/ten-vad.onnx
+COPY --chown=app:app --from=matcha-bundle /bundle/extracted /opt/streamkit/plugins/native/matcha
+COPY --chown=app:app --from=matcha-bundle /models/matcha-icefall-en_US-ljspeech /opt/streamkit/models/matcha-icefall-en_US-ljspeech
 
-# Copy matcha plugin and models (merge into /opt/streamkit/plugins and /opt/streamkit/models)
-COPY --chown=app:app --from=matcha-builder /build/dist/native/matcha /opt/streamkit/plugins/native/matcha
-COPY --chown=app:app --from=matcha-builder /build/models/matcha-icefall-en_US-ljspeech /opt/streamkit/models/matcha-icefall-en_US-ljspeech
+COPY --chown=app:app --from=pocket-tts-bundle /bundle/extracted /opt/streamkit/plugins/native/pocket-tts
+COPY --chown=app:app --from=pocket-tts-bundle /models/pocket-tts /opt/streamkit/models/pocket-tts
 
-# Copy pocket-tts plugin and models
-COPY --chown=app:app --from=pocket-tts-builder /build/dist/native/pocket-tts /opt/streamkit/plugins/native/pocket-tts
-COPY --chown=app:app --from=pocket-tts-builder /build/models/pocket-tts /opt/streamkit/models/pocket-tts
+COPY --chown=app:app --from=supertonic-bundle /bundle/extracted /opt/streamkit/plugins/native/supertonic
+COPY --chown=app:app --from=supertonic-bundle /models/supertonic-v2-onnx /opt/streamkit/models/supertonic-v2-onnx
 
-# Copy supertonic plugin and models
-COPY --chown=app:app --from=supertonic-builder /build/dist/native/supertonic /opt/streamkit/plugins/native/supertonic
-COPY --chown=app:app --from=supertonic-builder /build/models/supertonic-v2-onnx /opt/streamkit/models/supertonic-v2-onnx
+COPY --chown=app:app --from=slint-bundle /bundle/extracted /opt/streamkit/plugins/native/slint
 
-# Copy slint plugin (no models needed)
-COPY --chown=app:app --from=slint-builder /build/dist/native/slint /opt/streamkit/plugins/native/slint
-
-# Copy aac-encoder plugin (no models needed)
-COPY --chown=app:app --from=aac-encoder-builder /build/dist/native/aac-encoder /opt/streamkit/plugins/native/aac-encoder
+COPY --chown=app:app --from=aac-encoder-bundle /bundle/extracted /opt/streamkit/plugins/native/aac-encoder
 
 # Copy sample pipelines + small bundled audio samples (Opus/Ogg only)
 COPY --chown=app:app samples/pipelines /opt/streamkit/samples/pipelines
