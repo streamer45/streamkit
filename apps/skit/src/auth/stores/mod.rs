@@ -89,9 +89,6 @@ pub trait KeyProvider: Send + Sync {
     /// a different server or the key has been removed).
     fn verification_key(&self, kid: &str) -> Option<VerificationKeyMaterial>;
 
-    /// Get all valid key IDs (for JWT validation header checks).
-    fn valid_kids(&self) -> Vec<String>;
-
     /// Get the public JWKS representing all verification keys.
     fn jwks(&self) -> Jwks;
 

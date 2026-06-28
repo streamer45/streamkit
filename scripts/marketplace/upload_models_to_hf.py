@@ -36,9 +36,14 @@ ARCHIVE_SUFFIX_MODES: dict[str, str] = json.loads(ARCHIVE_SUFFIXES_PATH.read_tex
 
 
 def archive_mode(file_path: str) -> tuple[str, str] | None:
+    # Match case-insensitively to stay in parity with the Rust installer's
+    # `model_archive_kind`, which uses `eq_ignore_ascii_case`; the suffix table
+    # is lowercase. The original (un-lowered) name is preserved in the returned
+    # base so the archive's directory lookup keeps its real casing.
+    lowered = file_path.lower()
     # Longest suffix first so e.g. `.tar.gz` wins over a bare `.tar`-style match.
     for suffix in sorted(ARCHIVE_SUFFIX_MODES, key=len, reverse=True):
-        if file_path.endswith(suffix):
+        if lowered.endswith(suffix):
             return file_path[: -len(suffix)], ARCHIVE_SUFFIX_MODES[suffix]
     return None
 
@@ -73,23 +78,32 @@ def maybe_create_archive(
             sys.exit("Python was built without lzma support; cannot create .tar.xz archives")
 
     print(f"Creating archive {archive_path} from {source_dir}...")
-    # stdlib tarfile gains native zstd support only in Python 3.14, so route
-    # .tar.zst/.tzst through the `zstandard` package to stay in parity with the
-    # Rust installer's archive handling (see marketplace_installer::model_archive_kind).
-    if tar_mode == "w:zst":
-        try:
-            import zstandard
-        except ImportError:
-            sys.exit(
-                "Missing dependency for .tar.zst archives: pip install zstandard"
-            )
-        with archive_path.open("wb") as raw, zstandard.ZstdCompressor().stream_writer(
-            raw
-        ) as stream, tarfile.open(fileobj=stream, mode="w|") as tar:
-            tar.add(source_dir, arcname=base_name, filter=filter_hidden)
-    else:
-        with tarfile.open(archive_path, tar_mode) as tar:
-            tar.add(source_dir, arcname=base_name, filter=filter_hidden)
+    # Build into a sibling temp file and atomically rename on success so a crash
+    # mid-write never leaves a truncated archive that a later run would blindly
+    # reuse (it would pass `archive_path.exists()` with no integrity check).
+    tmp_path = archive_path.with_name(archive_path.name + ".tmp")
+    try:
+        # stdlib tarfile gains native zstd support only in Python 3.14, so route
+        # .tar.zst/.tzst through the `zstandard` package to stay in parity with the
+        # Rust installer's archive handling (see marketplace_installer::model_archive_kind).
+        if tar_mode == "w:zst":
+            try:
+                import zstandard
+            except ImportError:
+                sys.exit(
+                    "Missing dependency for .tar.zst archives: pip install zstandard"
+                )
+            with tmp_path.open("wb") as raw, zstandard.ZstdCompressor().stream_writer(
+                raw
+            ) as stream, tarfile.open(fileobj=stream, mode="w|") as tar:
+                tar.add(source_dir, arcname=base_name, filter=filter_hidden)
+        else:
+            with tarfile.open(tmp_path, tar_mode) as tar:
+                tar.add(source_dir, arcname=base_name, filter=filter_hidden)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    os.replace(tmp_path, archive_path)
     return archive_path
 
 

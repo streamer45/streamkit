@@ -24,7 +24,7 @@ No outputs.
 | Name | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `chunk_size` | `integer (uint)` | no | `8192` | Size of buffer before writing to disk (default: 8192 bytes)<br />min: `0` |
-| `path` | `string` | yes | — | Path to the file to write |
+| `path` | `string` | yes | — | Path to the file to write, relative to `[server].asset_root`.<br />Absolute paths and `..` components are rejected. |
 
 
 <details>
@@ -34,7 +34,6 @@ No outputs.
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Configuration for the FileWriteNode",
   "properties": {
     "chunk_size": {
       "default": 8192,
@@ -44,7 +43,7 @@ No outputs.
       "type": "integer"
     },
     "path": {
-      "description": "Path to the file to write",
+      "description": "Path to the file to write, relative to `[server].asset_root`.\nAbsolute paths and `..` components are rejected.",
       "type": "string"
     }
   },

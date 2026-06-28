@@ -2114,6 +2114,7 @@ mod tests {
             wasm_dir,
             native_dir,
             Some(std::time::Duration::from_mins(5)),
+            Some(std::time::Duration::from_mins(5)),
         )?;
         Ok(Arc::new(tokio::sync::Mutex::new(manager)))
     }
@@ -2208,6 +2209,7 @@ mod tests {
         let config = PluginConfig {
             directory: plugin_dir.to_string_lossy().to_string(),
             native_call_timeout_secs: Some(300),
+            wasm_call_timeout_secs: Some(300),
             http_management: crate::config::PluginHttpConfig { allow_http_management: false },
             marketplace: crate::config::PluginMarketplaceConfig {
                 marketplace_enabled: true,
@@ -2310,6 +2312,7 @@ mod tests {
         let config = PluginConfig {
             directory: plugin_dir.to_string_lossy().to_string(),
             native_call_timeout_secs: Some(300),
+            wasm_call_timeout_secs: Some(300),
             http_management: crate::config::PluginHttpConfig { allow_http_management: false },
             marketplace: crate::config::PluginMarketplaceConfig {
                 marketplace_enabled: true,
@@ -2412,6 +2415,7 @@ mod tests {
         let config = PluginConfig {
             directory: plugin_dir.to_string_lossy().to_string(),
             native_call_timeout_secs: Some(300),
+            wasm_call_timeout_secs: Some(300),
             http_management: crate::config::PluginHttpConfig { allow_http_management: false },
             marketplace: crate::config::PluginMarketplaceConfig {
                 marketplace_enabled: true,
@@ -2480,6 +2484,7 @@ mod tests {
         let config = PluginConfig {
             directory: plugin_dir.to_string_lossy().to_string(),
             native_call_timeout_secs: Some(300),
+            wasm_call_timeout_secs: Some(300),
             http_management: crate::config::PluginHttpConfig { allow_http_management: false },
             marketplace: crate::config::PluginMarketplaceConfig {
                 marketplace_enabled: true,
@@ -3039,6 +3044,7 @@ mod tests {
         let config = PluginConfig {
             directory: plugin_dir.to_string_lossy().to_string(),
             native_call_timeout_secs: Some(300),
+            wasm_call_timeout_secs: Some(300),
             http_management: crate::config::PluginHttpConfig { allow_http_management: false },
             marketplace: crate::config::PluginMarketplaceConfig {
                 marketplace_enabled: true,

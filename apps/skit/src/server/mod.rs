@@ -1659,7 +1659,65 @@ pub fn create_app_state(
     let wasm_plugin_dir = plugin_base_dir.join("wasm");
     let native_plugin_dir = plugin_base_dir.join("native");
 
+    let asset_root_explicit = config.asset_root.is_some();
+    let asset_root = config.asset_root.clone().unwrap_or_else(|| {
+        std::env::current_dir().expect(
+            "failed to determine current working directory for asset_root; \
+             set [server].asset_root explicitly in skit.toml",
+        )
+    });
+    if asset_root_explicit && !asset_root.exists() {
+        panic!(
+            "configured asset_root '{}' does not exist — \
+             fix the path in skit.toml or create the directory",
+            asset_root.display()
+        );
+    } else if !asset_root_explicit && !asset_root.exists() {
+        std::fs::create_dir_all(&asset_root).unwrap_or_else(|e| {
+            panic!(
+                "default asset_root '{}' does not exist and could not be created: {e}",
+                asset_root.display()
+            );
+        });
+    }
+    // Canonicalize so the allow-list patterns in `file_security` (which join this
+    // root then glob-match canonicalized paths) and the file nodes (which resolve
+    // paths against it at run time) share one absolute, symlink-resolved path-space.
+    let asset_root = asset_root.canonicalize().unwrap_or_else(|e| {
+        panic!(
+            "failed to canonicalize asset_root '{}': {e} — ensure the directory and every \
+             component of its path exist and are accessible, then restart skit",
+            asset_root.display()
+        );
+    });
+    tracing::info!(asset_root = %asset_root.display(), "Asset root resolved");
+
+    let canonical_asset_root = streamkit_core::path_helpers::CanonicalAssetRoot::new(&asset_root)
+        .unwrap_or_else(|e| {
+            panic!("failed to canonicalize asset_root '{}': {e}", asset_root.display());
+        });
+
+    // Allow-list patterns are matched against paths that always resolve under
+    // `asset_root`, so a bare absolute pattern can never match. Warn rather than
+    // silently denying every read/write for operators carrying old configs.
+    for (label, patterns) in [
+        ("allowed_file_paths", &config.security.allowed_file_paths),
+        ("allowed_write_paths", &config.security.allowed_write_paths),
+    ] {
+        for pattern in patterns {
+            if std::path::Path::new(pattern).is_absolute() {
+                tracing::warn!(
+                    pattern = %pattern,
+                    setting = label,
+                    "absolute allow-list pattern will only match if it overlaps asset_root; \
+                     paths are now resolved relative to [server].asset_root — use a relative pattern",
+                );
+            }
+        }
+    }
+
     let mut constraints = streamkit_core::GlobalNodeConstraints::new();
+    constraints.insert(streamkit_nodes::core::AssetRoot(asset_root.clone()));
 
     #[cfg(feature = "script")]
     {
@@ -1703,6 +1761,7 @@ pub fn create_app_state(
         wasm_plugin_dir,
         native_plugin_dir,
         config.plugins.native_call_timeout_secs.map(std::time::Duration::from_secs),
+        config.plugins.wasm_call_timeout_secs.map(std::time::Duration::from_secs),
     )
     .expect("Failed to initialize unified plugin manager");
     let plugin_manager = Arc::new(tokio::sync::Mutex::new(plugin_manager));
@@ -1743,29 +1802,6 @@ pub fn create_app_state(
         config.permissions.role_header = Some(BUILTIN_AUTH_ROLE_HEADER.to_string());
     }
 
-    let asset_root_explicit = config.asset_root.is_some();
-    let asset_root = config.asset_root.clone().unwrap_or_else(|| {
-        std::env::current_dir().expect(
-            "failed to determine current working directory for asset_root; \
-             set [server].asset_root explicitly in skit.toml",
-        )
-    });
-    if asset_root_explicit && !asset_root.exists() {
-        panic!(
-            "configured asset_root '{}' does not exist — \
-             fix the path in skit.toml or create the directory",
-            asset_root.display()
-        );
-    } else if !asset_root_explicit && !asset_root.exists() {
-        std::fs::create_dir_all(&asset_root).unwrap_or_else(|e| {
-            panic!(
-                "default asset_root '{}' does not exist and could not be created: {e}",
-                asset_root.display()
-            );
-        });
-    }
-    tracing::info!(asset_root = %asset_root.display(), "Asset root resolved");
-
     Arc::new(AppState {
         engine,
         session_manager: Arc::new(tokio::sync::Mutex::new(SessionManager::default())),
@@ -1777,6 +1813,7 @@ pub fn create_app_state(
         shutdown_tracker: crate::state::ShutdownTracker::default(),
         plugin_asset_registry,
         asset_root,
+        canonical_asset_root,
         #[cfg(feature = "moq")]
         moq_gateway,
         mse_gateway,

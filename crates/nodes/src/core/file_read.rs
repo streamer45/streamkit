@@ -16,7 +16,8 @@ use tokio::io::AsyncReadExt;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FileReadConfig {
-    /// Path to the file to read
+    /// Path to the file to read, relative to `[server].asset_root`.
+    /// Absolute paths and `..` components are rejected.
     pub path: String,
     /// Size of chunks to read (default: 8192 bytes)
     #[serde(default = "default_chunk_size")]
@@ -64,14 +65,17 @@ impl ProcessorNode for FileReadNode {
         let node_name = context.output_sender.node_name().to_string();
         state_helpers::emit_initializing(&context.state_tx, &node_name);
 
-        let config_path = std::path::Path::new(&self.config.path);
-        if streamkit_core::path_helpers::has_path_traversal(config_path) {
-            return Err(StreamKitError::Runtime(format!(
-                "file_reader path must be relative without '..': {}",
-                self.config.path
-            )));
-        }
-        let resolved_path = context.asset_root.join(config_path);
+        let resolved_path = {
+            let asset_root = context.asset_root.clone();
+            let path = self.config.path.clone();
+            tokio::task::spawn_blocking(move || {
+                let root = streamkit_core::path_helpers::CanonicalAssetRoot::new(&asset_root)?;
+                streamkit_core::path_helpers::resolve_existing_asset_path(&path, &root)
+            })
+            .await
+            .map_err(|e| StreamKitError::Runtime(format!("path resolution task failed: {e}")))?
+            .map_err(StreamKitError::Runtime)?
+        };
         let mut file = tokio::fs::File::open(&resolved_path).await.map_err(|e| {
             StreamKitError::Runtime(format!(
                 "Failed to open file '{}': {e}",

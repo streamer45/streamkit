@@ -50,6 +50,7 @@ fn samples_skit_toml_parses_and_matches_expected_defaults() {
     assert!(config.permissions.roles.contains_key("admin"));
     assert!(config.permissions.roles.contains_key("demo"));
     assert!(config.permissions.roles.contains_key("user"));
+    assert!(config.permissions.roles.contains_key("gateway"));
     assert!(config.permissions.roles.contains_key("readonly"));
 
     let readonly = config.permissions.get_role("readonly");
@@ -57,6 +58,36 @@ fn samples_skit_toml_parses_and_matches_expected_defaults() {
     assert!(!readonly.modify_sessions);
     assert!(!readonly.upload_assets);
     assert!(!readonly.delete_assets);
+
+    // The user role mirrors Permissions::user(): the allowed_samples list is
+    // reachable (sample flags set), the HTTP `mse` sink is allowed, but the
+    // SSRF-risk fetcher and the write-capable core nodes stay denied.
+    let user = config.permissions.get_role("user");
+    assert!(user.list_samples && user.read_samples && user.write_samples && user.delete_samples);
+    assert!(user.is_node_allowed("transport::http::mse"));
+    assert!(user.is_node_allowed("core::param_bridge"));
+    assert!(!user.is_node_allowed("transport::http::fetcher"));
+    assert!(!user.is_node_allowed("core::file_writer"));
+    assert!(!user.is_node_allowed("core::object_store_writer"));
+    // Asset policy also mirrors the built-in: audio, images and fonts.
+    assert!(user.is_asset_allowed("samples/audio/system/beep.wav"));
+    assert!(user.is_asset_allowed("samples/images/system/logo.png"));
+    assert!(user.is_asset_allowed("samples/fonts/system/inter.ttf"));
+
+    // The gateway role is least-privilege but must actually be able to build the
+    // servo -> encode -> mux -> serve pipeline. Crucially the plugin kind has to
+    // pass is_node_allowed() (checked before the plugin allowlist), and the
+    // fetcher / file_writer stay denied.
+    let gateway = config.permissions.get_role("gateway");
+    assert!(gateway.create_sessions);
+    assert!(!gateway.load_plugins);
+    assert!(gateway.is_node_allowed("plugin::native::servo"));
+    assert!(gateway.is_plugin_allowed("plugin::native::servo"));
+    assert!(gateway.is_node_allowed("video::vp9::encoder"));
+    assert!(gateway.is_node_allowed("containers::webm::muxer"));
+    assert!(gateway.is_node_allowed("transport::http::mse"));
+    assert!(!gateway.is_node_allowed("transport::http::fetcher"));
+    assert!(!gateway.is_node_allowed("core::file_writer"));
 
     assert!(config.script.global_fetch_allowlist.is_empty());
 }
