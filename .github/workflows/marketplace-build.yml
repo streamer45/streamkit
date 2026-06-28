@@ -306,6 +306,7 @@ jobs:
             --registry-base-url "${REGISTRY_BASE_URL}" \
             --bundles-out dist/bundles-cuda \
             --registry-out dist/registry \
+            --signing-key /tmp/streamkit.key \
             --new-plugins-out dist/new-plugins-cuda.json
 
       - name: Verify CUDA bundle portability
