@@ -252,6 +252,44 @@ func TestSessionManagerShutdownDuringCreate(t *testing.T) {
 	}
 }
 
+// A session reaped while a deduped late viewer is still waiting in proxyMSE's
+// readiness loop must fail fast (the post-teardown 404 is otherwise
+// indistinguishable from a pre-ready 404, so the loop would spin the full
+// mseReadyTimeout and return a misleading 502).
+func TestProxyMSEFailsFastWhenSessionReaped(t *testing.T) {
+	// Upstream always 404s (as it would for both a not-yet-ready and a
+	// torn-down session).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	m := newSessionManager(&skitClient{client: srv.Client(), baseURL: srv.URL}, 4, 10, time.Hour, time.Hour)
+	gw := &gateway{
+		streamClient:    srv.Client(),
+		skit:            &skitClient{client: srv.Client(), baseURL: srv.URL},
+		sessions:        m,
+		mseReadyTimeout: 30 * time.Second, // long: the test must return well before this
+	}
+	// A session the manager no longer tracks (reaped) — isLive(id) is false.
+	s := &liveSession{id: "sess-reaped", ready: make(chan struct{})}
+	close(s.ready)
+
+	r := httptest.NewRequest(http.MethodGet, "/cast/example.com", nil)
+	w := httptest.NewRecorder()
+
+	start := time.Now()
+	gw.proxyMSE(w, r, s)
+	elapsed := time.Since(start)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", w.Code)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("proxyMSE spun for %v; expected fast fail well under mseReadyTimeout", elapsed)
+	}
+}
+
 func TestSessionManagerShutdownAll(t *testing.T) {
 	ms, srv := newMockSkit()
 	defer srv.Close()

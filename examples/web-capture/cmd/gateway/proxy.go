@@ -117,9 +117,12 @@ func (gw *gateway) proxyOneshot(w http.ResponseWriter, r *http.Request, pipeline
 	streamCopy(ctx, w, resp.Body, "clip")
 }
 
-// proxyMSE streams a live WebM session to the viewer. The http_mse path only
+// proxyMSE streams a live session to the viewer. The http_mse path only
 // registers once the session's pipeline starts, so a freshly created session
-// may 404 briefly — retry until ready or the viewer goes away.
+// may 404 briefly — retry until ready or the viewer goes away. A 404 after the
+// session has been reaped (idle/max-lifetime) is indistinguishable from the
+// startup 404 by status alone, so the loop also checks session liveness and
+// fails fast rather than spinning until the ready timeout.
 func (gw *gateway) proxyMSE(w http.ResponseWriter, r *http.Request, s *liveSession) {
 	ctx := r.Context()
 	streamURL := gw.skit.streamURL(s.id)
@@ -145,6 +148,12 @@ func (gw *gateway) proxyMSE(w http.ResponseWriter, r *http.Request, s *liveSessi
 			_ = r2.Body.Close()
 		}
 		if ctx.Err() != nil {
+			return
+		}
+		if !gw.sessions.isLive(s.id) {
+			log.Printf("cast: session %s reaped before mse stream became ready", s.id)
+			recordRejection("cast", reasonSessionGone)
+			http.Error(w, "stream unavailable, please retry", http.StatusServiceUnavailable)
 			return
 		}
 		if time.Now().After(deadline) {

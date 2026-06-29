@@ -212,6 +212,17 @@ func (m *sessionManager) acquire(ctx context.Context, key string, renderYAML fun
 	return s, nil
 }
 
+// isLive reports whether the session is still tracked (not yet reaped or torn
+// down). proxyMSE uses it to tell a transient pre-ready 404 (pipeline still
+// starting) apart from a 404 after the session was reaped mid-stream — e.g. a
+// max-lifetime reap landing just as a deduped late viewer connects.
+func (m *sessionManager) isLive(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.byID[id]
+	return ok
+}
+
 func (m *sessionManager) release(s *liveSession) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

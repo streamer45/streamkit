@@ -109,6 +109,7 @@ const (
 	reasonSSRFBlocked   rejectReason = "ssrf_blocked"
 	reasonOverCapacity  rejectReason = "over_capacity"
 	reasonUpstreamError rejectReason = "upstream_error"
+	reasonSessionGone   rejectReason = "session_gone"
 )
 
 func recordRejection(endpoint string, reason rejectReason) {
