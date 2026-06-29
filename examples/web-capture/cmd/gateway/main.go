@@ -79,7 +79,6 @@ type gateway struct {
 	castBitrate     int
 	clipEnc         encoderProfile
 	castEnc         encoderProfile
-	maxViewers      int
 	mseReadyTimeout time.Duration
 	skit            *skitClient
 	sessions        *sessionManager
@@ -103,7 +102,6 @@ func main() {
 		client:          ctrlClient,
 		streamClient:    newHTTPClient(true),
 		skitURL:         cfg.skitURL,
-		authToken:       cfg.authToken,
 		clipSem:         make(chan struct{}, cfg.maxConcurrency),
 		clipDefaultDur:  cfg.clipDefaultDur,
 		clipMaxDur:      cfg.clipMaxDur,
@@ -113,7 +111,6 @@ func main() {
 		castBitrate:     cfg.castBitrate,
 		clipEnc:         clipEnc,
 		castEnc:         castEnc,
-		maxViewers:      cfg.maxViewers,
 		mseReadyTimeout: 8 * time.Second,
 		skit:            skit,
 		sessions:        newSessionManager(skit, cfg.maxSessions, cfg.maxViewers, cfg.idleTTL, cfg.maxLifetime),
@@ -331,7 +328,7 @@ func (gw *gateway) serveCast(w http.ResponseWriter, r *http.Request, u *url.URL,
 	// own. The YAML renders lazily — only a session-creating acquire uses it.
 	key := fmt.Sprintf("%s|%dx%d", u.String(), opts.resW, opts.resH)
 	s, err := gw.sessions.acquire(r.Context(), key, func() string {
-		return renderCastPipeline(u.String(), opts.resW, opts.resH, captureFPS, gw.maxViewers, gw.castBitrate, gw.castEnc)
+		return renderCastPipeline(u.String(), opts.resW, opts.resH, captureFPS, gw.sessions.maxViewers, gw.castBitrate, gw.castEnc)
 	})
 	if err != nil {
 		switch {

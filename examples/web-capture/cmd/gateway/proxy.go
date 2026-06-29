@@ -36,12 +36,6 @@ func newHTTPClient(keepAlives bool) *http.Client {
 	}
 }
 
-func (gw *gateway) authReq(req *http.Request) {
-	if gw.authToken != "" {
-		req.Header.Set("Authorization", "Bearer "+gw.authToken)
-	}
-}
-
 func (gw *gateway) failUpstream(w http.ResponseWriter, endpoint string, err error) {
 	log.Printf("%s upstream error: %v", endpoint, err)
 	recordRejection(endpoint, reasonUpstreamError)
@@ -80,7 +74,7 @@ func (gw *gateway) proxyOneshot(w http.ResponseWriter, r *http.Request, pipeline
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	req.Close = true
-	gw.authReq(req)
+	gw.skit.auth(req)
 
 	start := time.Now()
 	resp, err := gw.client.Do(req)
@@ -137,7 +131,7 @@ func (gw *gateway) proxyMSE(w http.ResponseWriter, r *http.Request, s *liveSessi
 			gw.failUpstream(w, "cast", err)
 			return
 		}
-		gw.authReq(req)
+		gw.skit.auth(req)
 		r2, err := gw.streamClient.Do(req)
 		if err == nil && r2.StatusCode == http.StatusOK {
 			resp = r2
@@ -258,8 +252,19 @@ var hopByHop = map[string]bool{
 }
 
 func copyHeaders(dst, src http.Header) {
+	// Headers named in the Connection header are connection-scoped too
+	// (RFC 7230 §6.1) and must not be forwarded.
+	connScoped := make(map[string]bool)
+	for _, v := range src["Connection"] {
+		for _, name := range strings.Split(v, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				connScoped[strings.ToLower(name)] = true
+			}
+		}
+	}
 	for k, vv := range src {
-		if hopByHop[strings.ToLower(k)] {
+		lk := strings.ToLower(k)
+		if hopByHop[lk] || connScoped[lk] {
 			continue
 		}
 		for _, v := range vv {
