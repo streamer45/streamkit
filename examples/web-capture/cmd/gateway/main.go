@@ -275,7 +275,10 @@ func (gw *gateway) handleCapture(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		u, err := validateTarget(r.Context(), target)
+		// Only the DNS-free screen (scheme + literal-IP block) runs here; the
+		// hostname DNS resolution is deferred into the render path so a browser
+		// visit served the autoplay page pays no lookup (see serveClip/serveCast).
+		u, err := parseTargetURL(target)
 		if err != nil {
 			recordRejection(endpoint, reasonSSRFBlocked)
 			http.Error(w, "target host is not allowed", http.StatusForbidden)
@@ -298,18 +301,17 @@ func (gw *gateway) serveClip(w http.ResponseWriter, r *http.Request, u *url.URL,
 		gw.writePlayerPage(w, r, "clip", u)
 		return
 	}
-
-	dur := opts.dur
-	if dur <= 0 {
-		dur = gw.clipDefaultDur
+	if !gw.screenResolvable(w, r, u, "clip") {
+		return
 	}
+
 	release, ok := gw.acquireClip(r.Context())
 	if !ok {
 		return // client disconnected while queued for a slot
 	}
 	defer release()
 
-	yaml := renderClipPipeline(u.String(), opts.resW, opts.resH, captureFPS, clipFrames(dur), gw.clipBitrate, gw.clipEnc)
+	yaml := renderClipPipeline(u.String(), opts.resW, opts.resH, captureFPS, clipFrames(opts.dur), gw.clipBitrate, gw.clipEnc)
 	gw.proxyOneshot(w, r, yaml)
 }
 
@@ -318,6 +320,9 @@ func (gw *gateway) serveCast(w http.ResponseWriter, r *http.Request, u *url.URL,
 	// page's <video> then re-requests this same URL (Accept: */*) and is streamed.
 	if acceptsHTML(r) {
 		gw.writePlayerPage(w, r, "cast", u)
+		return
+	}
+	if !gw.screenResolvable(w, r, u, "cast") {
 		return
 	}
 
@@ -345,6 +350,19 @@ func (gw *gateway) serveCast(w http.ResponseWriter, r *http.Request, u *url.URL,
 	}
 	defer gw.sessions.release(s)
 	gw.proxyMSE(w, r, s)
+}
+
+// screenResolvable completes SSRF validation for the render path by resolving
+// the target hostname; it is called after the player-page short-circuit so a
+// browser visit never pays the DNS lookup. Returns false (and writes a 403)
+// when the host resolves to a blocked address.
+func (gw *gateway) screenResolvable(w http.ResponseWriter, r *http.Request, u *url.URL, endpoint string) bool {
+	if err := resolveTargetAllowed(r.Context(), u); err != nil {
+		recordRejection(endpoint, reasonSSRFBlocked)
+		http.Error(w, "target host is not allowed", http.StatusForbidden)
+		return false
+	}
+	return true
 }
 
 // clipFrames rounds a duration to a whole number of frames (parseDuration
