@@ -373,18 +373,22 @@ fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
         .unwrap_or_else(|| "unknown panic".to_string())
 }
 
+/// A fully transparent RGBA8 frame at the given output dimensions, used until
+/// the page first paints, on a `read_to_image` miss with no cached frame, and
+/// as the post-panic fallback.
+fn transparent_frame(width: u32, height: u32) -> Vec<u8> {
+    vec![0u8; (width as usize) * (height as usize) * 4]
+}
+
 /// Send a fallback frame (last good frame or transparent) after a panic.
 fn send_fallback_frame(instances: &HashMap<NodeId, InstanceState>, node_id: &NodeId) {
     let Some(state) = instances.get(node_id) else {
         return;
     };
-    let fallback = state.last_good_frame.as_ref().map_or_else(
-        || {
-            let len = (state.config.width as usize) * (state.config.height as usize) * 4;
-            vec![0u8; len]
-        },
-        Clone::clone,
-    );
+    let fallback = state
+        .last_good_frame
+        .clone()
+        .unwrap_or_else(|| transparent_frame(state.config.width, state.config.height));
     let _ = state.result_tx.send(ServoThreadResult::Frame { rgba_data: fallback });
 }
 
@@ -504,26 +508,46 @@ fn handle_render(
         );
     }
 
-    // Until Servo has painted the current page at least once, the surfman
-    // surface backing this rendering context may still contain a previous,
-    // unrelated capture's pixels (surfman reuses surfaces across contexts).
-    // Emit a fully transparent frame instead of reading stale content, so a
-    // freshly-opened clip/cast never leaks another session's page.
-    if !state.delegate.painted.get() {
-        let len = (state.config.width as usize) * (state.config.height as usize) * 4;
-        let rgba_data = vec![0u8; len];
-        state.render_count += 1;
-        state.render_duration_sum += render_start.elapsed();
-        if state.result_tx.send(ServoThreadResult::Frame { rgba_data }).is_err() {
-            instances.remove(node_id);
-        }
-        return;
+    let rgba_data = if state.delegate.painted.get() {
+        read_painted_frame(state, node_id)
+    } else {
+        // Until Servo has painted the current page at least once, the surfman
+        // surface backing this rendering context may still contain a previous,
+        // unrelated capture's pixels (surfman reuses surfaces across contexts).
+        // Emit a fully transparent frame instead of reading stale content, so a
+        // freshly-opened clip/cast never leaks another session's page.
+        transparent_frame(state.config.width, state.config.height)
+    };
+
+    let render_duration = render_start.elapsed();
+    state.render_count += 1;
+    state.render_duration_sum += render_duration;
+
+    // Log render time periodically (every 300 frames ~ 10s at 30fps).
+    if state.render_count % 300 == 0 {
+        let avg_us = state.render_duration_sum.as_micros() / u128::from(state.render_count);
+        tracing::debug!(
+            node_id = %node_id,
+            frame = state.render_count,
+            render_us = render_duration.as_micros(),
+            avg_render_us = avg_us,
+            "Servo render metrics",
+        );
     }
 
-    // Always read the full rendering context (rc_width × rc_height) —
-    // this is the native size Servo is currently rendering at.  These
-    // stay constant under `Resize` hints (output-only) but are updated
-    // under `UpdateConfig` when the viewport resolution changes.
+    if state.result_tx.send(ServoThreadResult::Frame { rgba_data }).is_err() {
+        instances.remove(node_id);
+    }
+}
+
+/// Read this instance's painted surface into an RGBA8 frame, scaling to the
+/// output size and falling back to the cached frame (or transparent) on a miss.
+/// Caller must have already confirmed the page has painted at least once.
+fn read_painted_frame(state: &mut InstanceState, node_id: &NodeId) -> Vec<u8> {
+    // Always read the full rendering context (rc_width × rc_height) — the
+    // native size Servo is currently rendering at. These stay constant under
+    // `Resize` hints (output-only) but are updated under `UpdateConfig` when
+    // the viewport resolution changes.
     let rect = Box2D::new(
         Point2D::new(0, 0),
         Point2D::new(
@@ -532,17 +556,23 @@ fn handle_render(
         ),
     );
 
-    // Scale when the rendering context size differs from the output.
     let needs_scaling =
         state.rc_width != state.config.width || state.rc_height != state.config.height;
 
     // `read_to_image` reads whichever surfman context is currently bound
-    // process-wide.  `spin_event_loop` paints every webview and leaves the
+    // process-wide. `spin_event_loop` paints every webview and leaves the
     // last-painted instance's context current, so re-bind ours immediately
-    // before the read to guarantee we capture this instance's surface and
-    // never a concurrent node's (the cross-session pixel leak).
-    let _ = state.rendering_context.make_current();
-    let rgba_data = if let Some(img) = state.rendering_context.read_to_image(rect) {
+    // before the read to capture this instance's surface and never a concurrent
+    // node's (the cross-session pixel leak). A bind failure means the read may
+    // return another instance's pixels, so surface it rather than silently leak.
+    if let Err(e) = state.rendering_context.make_current() {
+        tracing::warn!(
+            node_id = %node_id,
+            error = ?e,
+            "make_current before read_to_image failed; frame may not be this instance's surface",
+        );
+    }
+    if let Some(img) = state.rendering_context.read_to_image(rect) {
         let raw = if needs_scaling {
             let scaled = image::imageops::resize(
                 &img,
@@ -567,29 +597,7 @@ fn handle_render(
         tracing::debug!(node_id = %node_id, "read_to_image returned None, using cached frame");
         cached.clone()
     } else {
-        // No cached frame — send transparent at output resolution.
-        let len = (state.config.width as usize) * (state.config.height as usize) * 4;
-        vec![0u8; len]
-    };
-
-    let render_duration = render_start.elapsed();
-    state.render_count += 1;
-    state.render_duration_sum += render_duration;
-
-    // Log render time periodically (every 300 frames ~ 10s at 30fps).
-    if state.render_count % 300 == 0 {
-        let avg_us = state.render_duration_sum.as_micros() / u128::from(state.render_count);
-        tracing::debug!(
-            node_id = %node_id,
-            frame = state.render_count,
-            render_us = render_duration.as_micros(),
-            avg_render_us = avg_us,
-            "Servo render metrics",
-        );
-    }
-
-    if state.result_tx.send(ServoThreadResult::Frame { rgba_data }).is_err() {
-        instances.remove(node_id);
+        transparent_frame(state.config.width, state.config.height)
     }
 }
 
