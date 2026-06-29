@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -178,11 +179,12 @@ func parseResolution(s string) (w, h int, err error) {
 	return w, h, nil
 }
 
-// validateTarget enforces the public/URL-only policy: http(s) only, and the
-// host must not resolve to a loopback/private/link-local/metadata address. DNS
-// is re-resolved here so a hostname pointing at an internal IP is caught;
-// rebinding between this check and Servo's own fetch is a documented limitation.
-func validateTarget(ctx context.Context, raw string) (*url.URL, error) {
+// parseTargetURL runs the DNS-free half of target validation: http(s)-only
+// scheme plus a literal-IP block check. It is cheap enough to run before the
+// autoplay player page (which never fetches the target), so a browser visit
+// pays no DNS lookup. The page's <video> re-request then hits the render path,
+// where validateTarget completes the check with a single DNS resolution.
+func parseTargetURL(raw string) (*url.URL, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return nil, fmt.Errorf("parse url: %w", err)
@@ -196,22 +198,50 @@ func validateTarget(ctx context.Context, raw string) (*url.URL, error) {
 	if host == "" {
 		return nil, errBlockedTarget
 	}
+	if ip := net.ParseIP(host); ip != nil && isBlockedIP(ip) {
+		return nil, errBlockedTarget
+	}
+	return u, nil
+}
 
+// validateTarget enforces the public/URL-only policy: http(s) only, and the
+// host must not resolve to a loopback/private/link-local/metadata address. DNS
+// is re-resolved here so a hostname pointing at an internal IP is caught;
+// rebinding between this check and Servo's own fetch is a documented limitation.
+func validateTarget(ctx context.Context, raw string) (*url.URL, error) {
+	u, err := parseTargetURL(raw)
+	if err != nil {
+		return nil, err
+	}
+	if err := resolveTargetAllowed(ctx, u); err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
+// resolveTargetAllowed completes validateTarget by resolving a hostname and
+// rejecting it if any address is internal. Literal-IP hosts are already screened
+// by parseTargetURL, so they skip the lookup.
+func resolveTargetAllowed(ctx context.Context, u *url.URL) error {
+	host := u.Hostname()
+	if net.ParseIP(host) != nil {
+		return nil
+	}
 	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	addrs, err := net.DefaultResolver.LookupIPAddr(rctx, host)
 	if err != nil {
-		return nil, fmt.Errorf("resolve host: %w", err)
+		return fmt.Errorf("resolve host: %w", err)
 	}
 	if len(addrs) == 0 {
-		return nil, errBlockedTarget
+		return errBlockedTarget
 	}
 	for _, a := range addrs {
 		if isBlockedIP(a.IP) {
-			return nil, errBlockedTarget
+			return errBlockedTarget
 		}
 	}
-	return u, nil
+	return nil
 }
 
 func isBlockedIP(ip net.IP) bool {
@@ -249,21 +279,31 @@ func blockedV4(v4 net.IP) bool {
 	}
 }
 
-// embeddedV4 returns the IPv4 embedded in a NAT64 (64:ff9b::/96) or 6to4
-// (2002::/16) address, or nil for anything else.
+// embeddedV4 returns the IPv4 address an IPv6 form can reach an IPv4 host
+// through — so the caller can re-screen it against the internal-range block
+// list. Covers NAT64 (well-known 64:ff9b::/96 and RFC 8215 local-use
+// 64:ff9b:1::/48), 6to4 (2002::/16), and the deprecated IPv4-compatible
+// ::a.b.c.d (::/96); returns nil for anything else.
 func embeddedV4(ip net.IP) net.IP {
 	v6 := ip.To16()
 	if v6 == nil || ip.To4() != nil {
 		return nil
 	}
-	nat64 := v6[0] == 0x00 && v6[1] == 0x64 && v6[2] == 0xff && v6[3] == 0x9b &&
-		v6[4] == 0 && v6[5] == 0 && v6[6] == 0 && v6[7] == 0 &&
-		v6[8] == 0 && v6[9] == 0 && v6[10] == 0 && v6[11] == 0
-	if nat64 {
-		return net.IPv4(v6[12], v6[13], v6[14], v6[15])
-	}
-	if v6[0] == 0x20 && v6[1] == 0x02 { // 6to4
+	suffixV4 := net.IPv4(v6[12], v6[13], v6[14], v6[15])
+	switch {
+	case bytes.HasPrefix(v6, []byte{0x00, 0x64, 0xff, 0x9b, 0, 0, 0, 0, 0, 0, 0, 0}): // NAT64 64:ff9b::/96
+		return suffixV4
+	case bytes.HasPrefix(v6, []byte{0x00, 0x64, 0xff, 0x9b, 0x00, 0x01}): // NAT64 64:ff9b:1::/48 (RFC 8215)
+		return suffixV4
+	case v6[0] == 0x20 && v6[1] == 0x02: // 6to4 2002::/16
 		return net.IPv4(v6[2], v6[3], v6[4], v6[5])
+	case bytes.Equal(v6[:12], ipv4CompatPrefix): // ::a.b.c.d (loopback/unspecified already screened)
+		return suffixV4
+	default:
+		return nil
 	}
-	return nil
 }
+
+// ipv4CompatPrefix is the 12 zero bytes that lead an IPv4-compatible IPv6
+// address (::a.b.c.d).
+var ipv4CompatPrefix = make([]byte, 12)
