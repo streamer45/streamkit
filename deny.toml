@@ -81,6 +81,13 @@ ignore = [
   # an unmaintained notice; CMake 4.0 build-error risk is mitigated since
   # CI pins an earlier CMake.
   { id = "RUSTSEC-2026-0150", reason = "transitive dep via opus crate; no safe upgrade available" },
+
+  # ttf-parser is unmaintained (author archived the crate). Transitive dep of
+  # fontdue, which streamkit-nodes uses for text rasterization. No safe upgrade
+  # is available per the advisory; migrating fontdue->skrifa is tracked in
+  # https://github.com/streamer45/streamkit/issues/642. No security
+  # vulnerability, just an unmaintained notice.
+  { id = "RUSTSEC-2026-0192", reason = "transitive dep via fontdue; no safe upgrade available" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
