@@ -69,7 +69,6 @@ type gateway struct {
 	client          *http.Client // oneshot + skit control calls
 	streamClient    *http.Client // long-lived MSE proxy
 	skitURL         string
-	authToken       string
 	clipSem         chan struct{}
 	clipDefaultDur  time.Duration
 	clipMaxDur      time.Duration
@@ -96,11 +95,11 @@ func main() {
 		log.Fatalf("invalid --cast-encoder: %v", err)
 	}
 
-	ctrlClient := newHTTPClient(false)
+	ctrlClient := newHTTPClient(false, 0)
 	skit := &skitClient{client: ctrlClient, baseURL: cfg.skitURL, token: cfg.authToken}
 	gw := &gateway{
 		client:          ctrlClient,
-		streamClient:    newHTTPClient(true),
+		streamClient:    newHTTPClient(true, 10*time.Second),
 		skitURL:         cfg.skitURL,
 		clipSem:         make(chan struct{}, cfg.maxConcurrency),
 		clipDefaultDur:  cfg.clipDefaultDur,
@@ -154,10 +153,12 @@ func main() {
 	<-done
 }
 
-// clampConcurrency floors the clip-render concurrency at 1. A value < 1 would
-// size clipSem as an unbuffered channel and deadlock every clip render.
-func clampConcurrency(n int) int {
+// clampMin floors a capacity knob at 1: --max-concurrency < 1 would size
+// clipSem as an unbuffered channel and deadlock every clip render, and
+// --max-sessions/--max-viewers < 1 would silently reject every cast.
+func clampMin(name string, n int) int {
 	if n < 1 {
+		log.Printf("invalid %s %d, using 1", name, n)
 		return 1
 	}
 	return n
@@ -188,10 +189,9 @@ func loadConfig() config {
 		clipDefaultDur = clipMaxDur
 	}
 
-	if c := clampConcurrency(*maxConc); c != *maxConc {
-		log.Printf("invalid --max-concurrency %d, using %d", *maxConc, c)
-		*maxConc = c
-	}
+	*maxConc = clampMin("--max-concurrency", *maxConc)
+	*maxSessions = clampMin("--max-sessions", *maxSessions)
+	*maxViewers = clampMin("--max-viewers", *maxViewers)
 
 	resW, resH, err := parseResolution(*resolution)
 	if err != nil {

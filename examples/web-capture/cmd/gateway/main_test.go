@@ -6,7 +6,7 @@ package main
 
 import "testing"
 
-func TestClampConcurrency(t *testing.T) {
+func TestClampMin(t *testing.T) {
 	cases := []struct {
 		in   int
 		want int
@@ -17,8 +17,8 @@ func TestClampConcurrency(t *testing.T) {
 		{4, 4},
 	}
 	for _, tc := range cases {
-		if got := clampConcurrency(tc.in); got != tc.want {
-			t.Errorf("clampConcurrency(%d) = %d, want %d", tc.in, got, tc.want)
+		if got := clampMin("--max-concurrency", tc.in); got != tc.want {
+			t.Errorf("clampMin(%d) = %d, want %d", tc.in, got, tc.want)
 		}
 	}
 }
