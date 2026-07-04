@@ -88,6 +88,15 @@ ignore = [
   # https://github.com/streamer45/streamkit/issues/642. No security
   # vulnerability, just an unmaintained notice.
   { id = "RUSTSEC-2026-0192", reason = "transitive dep via fontdue; no safe upgrade available" },
+
+  # quick-xml 0.39 DoS advisories (quadratic duplicate-attribute check and
+  # unbounded NsReader namespace allocation). Transitive dep via opendal, whose
+  # latest release (0.57) pins quick-xml 0.39, so no upgrade path exists yet
+  # (fixed in quick-xml >= 0.41). Exposure is limited to XML responses from the
+  # operator-configured S3 endpoint, not attacker-supplied input. Removal is
+  # tracked in https://github.com/streamer45/streamkit/issues/647.
+  { id = "RUSTSEC-2026-0194", reason = "transitive dep via opendal; no upgrade path; only parses configured S3 endpoint responses" },
+  { id = "RUSTSEC-2026-0195", reason = "transitive dep via opendal; no upgrade path; only parses configured S3 endpoint responses" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
