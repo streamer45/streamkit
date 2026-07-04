@@ -52,6 +52,17 @@ while IFS=$'\t' read -r plugin artifact; do
   echo "Building CUDA plugin: ${plugin} ${features[*]:-}"
   (
     cd "${plugin_dir}"
+    # whisper.cpp/ggml enables GGML_NATIVE (-march=native) by default, which can
+    # emit AVX/AVX512 that SIGILLs on older CPUs than the build runner. Even in
+    # the CUDA build the CPU ggml kernels are still compiled, so pin the same
+    # portable baseline as build_official_plugins.sh (SOURCE_DATE_EPOCH disables
+    # ggml's native-default upstream). These flags only affect host C/C++ code,
+    # not the nvcc-compiled GPU kernels.
+    if [ "${plugin}" = "whisper" ]; then
+      export SOURCE_DATE_EPOCH=1
+      export CFLAGS="-O3 -pipe -fPIC -march=x86-64 -mtune=generic"
+      export CXXFLAGS="-O3 -pipe -fPIC -march=x86-64 -mtune=generic"
+    fi
     CARGO_TARGET_DIR="${target_dir}" cargo build --release ${features[@]+"${features[@]}"}
   )
 

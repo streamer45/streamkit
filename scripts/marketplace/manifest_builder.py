@@ -61,6 +61,11 @@ def build_manifest(
     }
     manifest = strip_none(manifest)
     if variants:
+        if bundle_block is None:
+            raise ValueError(
+                "variants require a bundle block: variants are anchored after "
+                "the 'bundle' key and would be silently dropped without one"
+            )
         ordered: dict = {}
         for key, value in manifest.items():
             ordered[key] = value
