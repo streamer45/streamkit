@@ -81,6 +81,21 @@ ignore = [
   # an unmaintained notice; CMake 4.0 build-error risk is mitigated since
   # CI pins an earlier CMake.
   { id = "RUSTSEC-2026-0150", reason = "transitive dep via opus crate; no safe upgrade available" },
+
+  # quick-xml < 0.41 DoS advisories (quadratic duplicate-attribute check and
+  # unbounded namespace-declaration allocation in NsReader). Transitive dep of
+  # opendal, which pins quick-xml 0.39, so no upgrade path exists yet. Exposure
+  # is limited: opendal only parses XML from the operator-configured S3
+  # endpoint's responses, not attacker-supplied input. Remove once an opendal
+  # release depends on quick-xml >= 0.41 (tracked in #647).
+  { id = "RUSTSEC-2026-0194", reason = "transitive dep via opendal (pins quick-xml 0.39); XML only parsed from trusted S3 endpoint" },
+  { id = "RUSTSEC-2026-0195", reason = "transitive dep via opendal (pins quick-xml 0.39); XML only parsed from trusted S3 endpoint" },
+
+  # ttf-parser is unmaintained. Transitive dep of fontdue (used by
+  # streamkit-nodes for text rendering); fontdue 0.9.3 (latest) still depends
+  # on it. No security vulnerability, just an unmaintained notice. Remove once
+  # fontdue migrates off ttf-parser or we switch to an alternative (e.g. skrifa).
+  { id = "RUSTSEC-2026-0192", reason = "transitive dep via fontdue, no safe upgrade available; unmaintained notice only" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
