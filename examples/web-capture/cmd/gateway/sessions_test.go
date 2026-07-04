@@ -213,10 +213,10 @@ func TestSessionManagerShutdownDuringCreate(t *testing.T) {
 	defer srv.Close()
 	m := newSessionManager(&skitClient{client: srv.Client(), baseURL: srv.URL}, 4, 10, time.Hour, time.Hour)
 
-	acquireDone := make(chan struct{})
+	acquireDone := make(chan error, 1)
 	go func() {
-		_, _ = m.acquire(context.Background(), "https://a.example", testYAML)
-		close(acquireDone)
+		_, err := m.acquire(context.Background(), "https://a.example", testYAML)
+		acquireDone <- err
 	}()
 
 	// Wait until acquire has reserved the session and is blocked in createSession.
@@ -241,7 +241,7 @@ func TestSessionManagerShutdownDuringCreate(t *testing.T) {
 	}()
 
 	close(release) // let creation finish
-	<-acquireDone
+	acquireErr := <-acquireDone
 	<-shutdownDone
 
 	if created.Load() != 1 {
@@ -249,6 +249,14 @@ func TestSessionManagerShutdownDuringCreate(t *testing.T) {
 	}
 	if destroyed.Load() != 1 {
 		t.Fatalf("in-flight session not torn down on shutdown: destroyed=%d", destroyed.Load())
+	}
+	// The creator must not be handed the doomed session, and its id must not be
+	// re-registered in the byID map that shutdownAll just reset.
+	if !errors.Is(acquireErr, errShuttingDown) {
+		t.Fatalf("acquire during shutdown: got %v, want errShuttingDown", acquireErr)
+	}
+	if m.isLive("sess-inflight") {
+		t.Fatal("destroyed in-flight session still registered in byID")
 	}
 }
 

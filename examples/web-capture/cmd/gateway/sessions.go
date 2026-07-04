@@ -205,6 +205,14 @@ func (m *sessionManager) acquire(ctx context.Context, key string, renderYAML fun
 		return nil, err
 	}
 	s.id = id
+	// shutdownAll may have run while the create was in flight: it captured s
+	// (it was in m.sessions) and waits on ready to destroy it, so don't register
+	// the id in the fresh byID map or hand a doomed session to the caller.
+	if m.closed {
+		m.mu.Unlock()
+		close(s.ready)
+		return nil, errShuttingDown
+	}
 	m.byID[id] = s
 	m.mu.Unlock()
 	close(s.ready)
