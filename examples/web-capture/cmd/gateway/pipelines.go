@@ -35,7 +35,7 @@ func renderClipPipeline(targetURL string, resW, resH, fps, frameCount, brKbps in
 		"{{BR_KBPS}}", strconv.Itoa(brKbps),
 		"{{BR_BPS}}", strconv.Itoa(brKbps*1000),
 		"{{MUX_CODEC}}", enc.muxCodec,
-		"{{CONTENT_TYPE}}", enc.contentType,
+		"{{CONTENT_TYPE}}", strconv.Quote(enc.contentType),
 	).Replace(tmpl)
 }
 
@@ -51,7 +51,7 @@ func renderCastPipeline(targetURL string, resW, resH, fps, maxClients, brKbps in
 		"{{MAX_CLIENTS}}", strconv.Itoa(maxClients),
 		"{{BR_KBPS}}", strconv.Itoa(brKbps),
 		"{{BR_BPS}}", strconv.Itoa(brKbps*1000),
-		"{{CONTENT_TYPE}}", enc.contentType,
+		"{{CONTENT_TYPE}}", strconv.Quote(enc.contentType),
 	).Replace(tmpl)
 }
 

@@ -23,15 +23,19 @@ import (
 // seconds; MSE streams run until the viewer leaves). keepAlives is off for the
 // one-shot control/render calls so each gets a fresh connection, and on for the
 // long-lived MSE proxy.
-func newHTTPClient(keepAlives bool) *http.Client {
+// responseHeaderTimeout bounds the wait for upstream response headers only
+// (not the streaming body), so a backend that accepts a connection but never
+// answers can't pin a request past the ready-timeout retry loop.
+func newHTTPClient(keepAlives bool, responseHeaderTimeout time.Duration) *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
 			DialContext: (&net.Dialer{
 				Timeout:   5 * time.Second,
 				KeepAlive: 30 * time.Second,
 			}).DialContext,
-			DisableKeepAlives: !keepAlives,
-			ForceAttemptHTTP2: false,
+			DisableKeepAlives:     !keepAlives,
+			ForceAttemptHTTP2:     false,
+			ResponseHeaderTimeout: responseHeaderTimeout,
 		},
 	}
 }
@@ -178,7 +182,7 @@ func (gw *gateway) proxyMSE(w http.ResponseWriter, r *http.Request, s *liveSessi
 
 	copyHeaders(w.Header(), resp.Header)
 	if w.Header().Get("Content-Type") == "" {
-		w.Header().Set("Content-Type", "video/webm")
+		w.Header().Set("Content-Type", gw.castEnc.contentType)
 	}
 	w.WriteHeader(http.StatusOK)
 	streamCopy(ctx, w, resp.Body, "cast")

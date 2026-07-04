@@ -87,10 +87,12 @@ const (
     needs: encoder`
 )
 
+// Plain MIME values; the pipeline renderers YAML-quote them at substitution
+// time, and proxyMSE reuses them verbatim as a response-header fallback.
 const (
-	h264ContentType = `'video/mp4; codecs="avc1.42c01f"'`
-	vp9ContentType  = `'video/webm; codecs="vp9"'`
-	av1ContentType  = `'video/webm; codecs="av01.0.08M.08"'`
+	h264ContentType = `video/mp4; codecs="avc1.42c01f"`
+	vp9ContentType  = `video/webm; codecs="vp9"`
+	av1ContentType  = `video/webm; codecs="av01.0.08M.08"`
 )
 
 // clipEncoders stay H.264 so downloaded clips play everywhere; software is the

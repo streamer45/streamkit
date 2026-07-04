@@ -43,11 +43,11 @@ func TestClipEncoderProfiles(t *testing.T) {
 
 func TestCastEncoderProfiles(t *testing.T) {
 	cases := map[string][]string{
-		"vp9-sw":  {"video::vp9::encoder", "bitrate_kbps: 6000", "containers::webm::muxer", `codecs="vp9"`},
-		"av1-sw":  {"video::svt_av1::encoder", "crf: 32", "containers::webm::muxer", `codecs="av01.0.08M.08"`},
-		"av1-hw":  {"video::nv::av1_encoder", "bitrate: 6000000", "containers::webm::muxer", `codecs="av01.0.08M.08"`},
-		"h264-sw": {"video::openh264::encoder", "containers::mp4::muxer", "mode: stream", `codecs="avc1.42c01f"`},
-		"h264-hw": {"video::vulkan_video::h264_encoder", "containers::mp4::muxer", "mode: stream", `codecs="avc1.42c01f"`},
+		"vp9-sw":  {"video::vp9::encoder", "bitrate_kbps: 6000", "containers::webm::muxer", `codecs=\"vp9\"`},
+		"av1-sw":  {"video::svt_av1::encoder", "crf: 32", "containers::webm::muxer", `codecs=\"av01.0.08M.08\"`},
+		"av1-hw":  {"video::nv::av1_encoder", "bitrate: 6000000", "containers::webm::muxer", `codecs=\"av01.0.08M.08\"`},
+		"h264-sw": {"video::openh264::encoder", "containers::mp4::muxer", "mode: stream", `codecs=\"avc1.42c01f\"`},
+		"h264-hw": {"video::vulkan_video::h264_encoder", "containers::mp4::muxer", "mode: stream", `codecs=\"avc1.42c01f\"`},
 	}
 	for name, wants := range cases {
 		out := renderCastPipeline("https://example.com", 1920, 1080, 30, 10, 6000, castEncoders[name])
