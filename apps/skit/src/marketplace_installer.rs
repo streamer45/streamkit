@@ -932,7 +932,10 @@ impl PluginInstaller {
         Self::ensure_not_cancelled(cancel)?;
 
         tracker.start_step(STEP_LOAD_PLUGIN).await;
-        match self.load_plugin(manifest, &entrypoint_path, namespaced_kind).await {
+        match self
+            .load_plugin(manifest, &entrypoint_path, namespaced_kind, &selected_accelerator)
+            .await
+        {
             Ok(_) => {
                 tracker.succeed_step(STEP_LOAD_PLUGIN).await;
             },
@@ -1326,6 +1329,7 @@ impl PluginInstaller {
         manifest: &crate::marketplace::PluginManifest,
         entrypoint_path: &Path,
         expected_kind: &str,
+        accelerator: &str,
     ) -> Result<PluginSummary, InstallError> {
         let plugin_type = match manifest.kind {
             PluginKind::Wasm => PluginType::Wasm,
@@ -1358,12 +1362,23 @@ impl PluginInstaller {
             self.plugin_asset_registry.unregister_plugin(&manifest.id).await;
         }
 
-        let summary = tokio::task::spawn_blocking(move || {
-            let mut mgr = manager.blocking_lock();
-            mgr.load_from_path(plugin_type, entrypoint_path)
+        let accelerator = accelerator.to_ascii_lowercase();
+        let mut summary = tokio::task::spawn_blocking({
+            let expected_kind = expected_kind_owned.clone();
+            let accelerator = accelerator.clone();
+            move || {
+                let mut mgr = manager.blocking_lock();
+                let summary = mgr.load_from_path(plugin_type, entrypoint_path)?;
+                if summary.kind == expected_kind {
+                    mgr.set_plugin_accelerator(&summary.kind, Some(accelerator));
+                }
+                drop(mgr);
+                anyhow::Ok(summary)
+            }
         })
         .await
         .context("Plugin load task failed")??;
+        summary.accelerator = Some(accelerator);
 
         if summary.kind != expected_kind {
             let manager = Arc::clone(&self.plugin_manager);

@@ -60,6 +60,7 @@ pub struct PluginSummary {
     pub loaded_at_ms: u128,
     pub plugin_type: PluginType,
     pub version: Option<String>,
+    pub accelerator: Option<String>,
 }
 
 impl PluginSummary {
@@ -88,6 +89,7 @@ impl PluginSummary {
             loaded_at_ms,
             plugin_type: entry.plugin_type,
             version: entry.version.clone(),
+            accelerator: entry.accelerator.clone(),
         }
     }
 }
@@ -106,6 +108,7 @@ struct ManagedPlugin {
     original_kind: String,
     plugin_type: PluginType,
     version: Option<String>,
+    accelerator: Option<String>,
 }
 
 impl ManagedPlugin {
@@ -123,6 +126,7 @@ impl ManagedPlugin {
             original_kind,
             plugin_type: PluginType::Wasm,
             version: None,
+            accelerator: None,
         }
     }
 
@@ -140,6 +144,7 @@ impl ManagedPlugin {
             original_kind,
             plugin_type: PluginType::Native,
             version: None,
+            accelerator: None,
         }
     }
 }
@@ -473,10 +478,14 @@ impl UnifiedPluginManager {
         }
 
         let version = record.version;
+        let accelerator =
+            (!record.accelerator.is_empty()).then(|| record.accelerator.to_ascii_lowercase());
         if let Some(managed) = self.plugins.get_mut(&summary.kind) {
             managed.version = Some(version.clone());
+            managed.accelerator.clone_from(&accelerator);
         }
         summary.version = Some(version);
+        summary.accelerator = accelerator;
 
         Some(summary)
     }
@@ -898,6 +907,14 @@ impl UnifiedPluginManager {
     /// Returns true if the plugin kind is currently loaded.
     pub fn is_plugin_loaded(&self, kind: &str) -> bool {
         self.plugins.contains_key(kind)
+    }
+
+    /// Records the accelerator variant for a loaded plugin so it shows up in
+    /// plugin listings without a server restart.
+    pub fn set_plugin_accelerator(&mut self, kind: &str, accelerator: Option<String>) {
+        if let Some(managed) = self.plugins.get_mut(kind) {
+            managed.accelerator = accelerator;
+        }
     }
 
     fn update_loaded_gauge(&self) {
@@ -1901,7 +1918,7 @@ mod tests {
     fn load_active_plugin_record_happy_path_registers_with_version() {
         // Full active-record path: entrypoint exists under plugin_base_dir
         // and the record's node_kind matches what the .so reports. Plugin
-        // is registered with the version from the record.
+        // is registered with the version and accelerator from the record.
         let Some(so) = panicking_plugin_so_or_skip() else { return };
         let tmp = TempDir::new().unwrap();
         let mut mgr = make_manager(&tmp);
@@ -1917,6 +1934,7 @@ mod tests {
             "kind": "native",
             "entrypoint": entrypoint.display().to_string(),
             "installed_at_ms": 0u64,
+            "accelerator": "CUDA",
         });
         write_active_record(tmp.path(), "panicking.json", &record.to_string());
 
@@ -1925,7 +1943,10 @@ mod tests {
         let s = &summaries[0];
         assert_eq!(s.kind, "plugin::native::panicking");
         assert_eq!(s.version.as_deref(), Some("0.1.0"));
+        assert_eq!(s.accelerator.as_deref(), Some("cuda"));
         assert!(mgr.is_plugin_loaded("plugin::native::panicking"));
+        let listed = mgr.list_plugins();
+        assert_eq!(listed[0].accelerator.as_deref(), Some("cuda"));
     }
 
     #[test]

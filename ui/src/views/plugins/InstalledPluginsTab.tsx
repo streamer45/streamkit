@@ -130,6 +130,7 @@ const InstalledPluginsTab: React.FC = () => {
                   </PluginHeader>
                   <PluginMeta>
                     {plugin.version && <span>Version: {plugin.version}</span>}
+                    {plugin.accelerator && <span>Accelerator: {plugin.accelerator}</span>}
                     <span>Original kind: {plugin.original_kind}</span>
                     <span>File: {plugin.file_name}</span>
                     <span>Loaded: {loadedAt}</span>
