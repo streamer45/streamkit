@@ -42,7 +42,6 @@ tikv-jemalloc-sys = { version = "0.6", features = ["disable_initial_exec_tls"] }
 # destructors race the still-live renderer thread and SIGSEGV.  The test
 # calls `libc::_exit` after asserting to bypass that teardown.
 libc = "0.2"
-uuid = { version = "1", features = ["v4"] }
 
 [lints.clippy]
 # Categories
