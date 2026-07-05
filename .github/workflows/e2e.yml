@@ -62,7 +62,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm cmake ninja-build yasm meson ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm libclang-dev cmake ninja-build yasm meson ffmpeg
 
       - name: Build and install SVT-AV1 from source (v4.1.0)
         run: |
@@ -288,7 +288,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install system dependencies (libvpx for VP9, nasm for AV1 assembly, meson for dav1d)
-        run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm cmake ninja-build yasm meson
+        run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm libclang-dev cmake ninja-build yasm meson
 
       - name: Build and install SVT-AV1 from source (v4.1.0)
         run: |
