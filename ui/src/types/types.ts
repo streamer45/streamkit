@@ -78,4 +78,6 @@ export interface PluginSummary {
   plugin_type: PluginType;
   /** Plugin version from the marketplace record, if available */
   version?: string | null;
+  /** Accelerator variant of the installed bundle (e.g. "cpu", "cuda"), if known */
+  accelerator?: string | null;
 }

@@ -5,6 +5,9 @@ node_kind: sensevoice
 kind: native
 entrypoint: libsensevoice.so
 artifact: target/plugins/release/libsensevoice.so
+accelerators:
+- cpu
+- cuda
 description: Streaming speech-to-text using SenseVoice
 license: MPL-2.0
 models:

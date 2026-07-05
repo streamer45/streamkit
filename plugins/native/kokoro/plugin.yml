@@ -5,6 +5,9 @@ node_kind: kokoro
 kind: native
 entrypoint: libkokoro.so
 artifact: target/plugins/release/libkokoro.so
+accelerators:
+- cpu
+- cuda
 description: Text-to-speech using Sherpa-ONNX Kokoro models
 license: MPL-2.0
 models:

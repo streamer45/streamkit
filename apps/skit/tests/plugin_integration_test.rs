@@ -376,6 +376,7 @@ async fn test_load_active_plugin_on_startup() {
         kind: PluginKind::Native,
         entrypoint: entrypoint_path.to_string_lossy().into_owned(),
         installed_at_ms: 0,
+        accelerator: "cpu".to_string(),
     };
     let record_path = plugin_record_path(&plugins_dir, "gain").unwrap();
     fs::write(&record_path, serde_json::to_vec_pretty(&record).unwrap()).await.unwrap();
@@ -406,7 +407,11 @@ async fn test_uninstall_marketplace_plugin_removes_bundle() {
     let plugins_dir = temp_dir.path().join("plugins");
     fs::create_dir_all(&plugins_dir).await.unwrap();
 
-    let bundle_dir = plugins_dir.join("bundles").join("gain").join("1.0.0");
+    // Mirror the installer's accelerator-keyed layout
+    // (bundles/<id>/<version>/<accelerator>/) so uninstall exercises the
+    // variant-dir removal path, not just the entrypoint file removal.
+    let version_dir = plugins_dir.join("bundles").join("gain").join("1.0.0");
+    let bundle_dir = version_dir.join("cpu");
     fs::create_dir_all(&bundle_dir).await.unwrap();
     let entrypoint_path = bundle_dir
         .join(plugin_path.file_name().expect("plugin file name").to_string_lossy().to_string());
@@ -420,6 +425,7 @@ async fn test_uninstall_marketplace_plugin_removes_bundle() {
         kind: PluginKind::Native,
         entrypoint: entrypoint_path.to_string_lossy().into_owned(),
         installed_at_ms: 0,
+        accelerator: "cpu".to_string(),
     };
     let record_path = plugin_record_path(&plugins_dir, "gain").unwrap();
     fs::write(&record_path, serde_json::to_vec_pretty(&record).unwrap()).await.unwrap();
@@ -447,7 +453,11 @@ async fn test_uninstall_marketplace_plugin_removes_bundle() {
     assert!(!tokio::fs::try_exists(&record_path).await.unwrap(), "Active record should be removed");
     assert!(
         !tokio::fs::try_exists(&bundle_dir).await.unwrap(),
-        "Bundle directory should be removed"
+        "Accelerator variant directory should be removed"
+    );
+    assert!(
+        !tokio::fs::try_exists(&version_dir).await.unwrap(),
+        "Empty version directory should be pruned"
     );
 
     server.shutdown().await;

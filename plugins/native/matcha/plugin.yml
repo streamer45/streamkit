@@ -5,6 +5,9 @@ node_kind: matcha
 kind: native
 entrypoint: libmatcha.so
 artifact: target/plugins/release/libmatcha.so
+accelerators:
+- cpu
+- cuda
 description: Text-to-speech using Matcha models
 license: MPL-2.0
 models:

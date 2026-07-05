@@ -6577,6 +6577,7 @@ dependencies = [
  "image",
  "jemalloc_pprof",
  "jsonwebtoken",
+ "libloading 0.9.0",
  "liblzma",
  "mime_guess",
  "moq-lite",

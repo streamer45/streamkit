@@ -627,6 +627,22 @@ pub(super) async fn find_active_record_for_kind(
     None
 }
 
+async fn remove_dir_if_empty(
+    base_real: &std::path::Path,
+    dir: &std::path::Path,
+    label: &str,
+) -> Result<(), anyhow::Error> {
+    if !tokio::fs::try_exists(dir).await.unwrap_or(false) {
+        return Ok(());
+    }
+    let dir_real = plugin_paths::ensure_existing_dir_under(base_real, dir, label).await?;
+    let mut entries = tokio::fs::read_dir(&dir_real).await?;
+    if entries.next_entry().await?.is_none() {
+        let _ = tokio::fs::remove_dir(&dir_real).await;
+    }
+    Ok(())
+}
+
 pub(super) async fn remove_active_record_and_bundle(
     plugin_dir: &std::path::Path,
     record_path: &std::path::Path,
@@ -641,7 +657,19 @@ pub(super) async fn remove_active_record_and_bundle(
     plugin_paths::validate_path_component("plugin version", &record.version)?;
 
     let bundles_root = plugin_dir.join("bundles").join(&record.plugin_id);
-    let bundle_dir = bundles_root.join(&record.version);
+    let version_dir = bundles_root.join(&record.version);
+
+    // Records written before bundles were keyed by accelerator have an empty
+    // `accelerator`; those live directly under the version dir (legacy layout),
+    // so removing the version dir is correct. Newer records key by accelerator,
+    // so only that variant is removed, leaving sibling variants installed.
+    let bundle_dir = if record.accelerator.is_empty() {
+        version_dir.clone()
+    } else {
+        plugin_paths::validate_path_component("accelerator", &record.accelerator)?;
+        version_dir.join(&record.accelerator)
+    };
+
     if tokio::fs::try_exists(&bundle_dir).await.unwrap_or(false) {
         let bundle_dir_real =
             plugin_paths::ensure_existing_dir_under(&base_real, &bundle_dir, "bundle").await?;
@@ -653,14 +681,8 @@ pub(super) async fn remove_active_record_and_bundle(
         })?;
     }
 
-    if tokio::fs::try_exists(&bundles_root).await.unwrap_or(false) {
-        let bundles_root_real =
-            plugin_paths::ensure_existing_dir_under(&base_real, &bundles_root, "bundles").await?;
-        let mut entries = tokio::fs::read_dir(&bundles_root_real).await?;
-        if entries.next_entry().await?.is_none() {
-            let _ = tokio::fs::remove_dir(&bundles_root_real).await;
-        }
-    }
+    remove_dir_if_empty(&base_real, &version_dir, "version").await?;
+    remove_dir_if_empty(&base_real, &bundles_root, "bundles").await?;
 
     let cache_root = plugin_dir.join("cache").join(&record.plugin_id);
     if tokio::fs::try_exists(&cache_root).await.unwrap_or(false) {

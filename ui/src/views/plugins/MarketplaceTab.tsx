@@ -214,6 +214,7 @@ const startInstall = async ({
   details,
   installModels,
   selectedModelIds,
+  selectedAccelerator,
   resetJob,
   setInstalling,
   setJobId,
@@ -222,6 +223,7 @@ const startInstall = async ({
   details: MarketplacePluginDetails | null;
   installModels: boolean;
   selectedModelIds: string[];
+  selectedAccelerator: string;
   resetJob: () => void;
   setInstalling: React.Dispatch<React.SetStateAction<boolean>>;
   setJobId: React.Dispatch<React.SetStateAction<string | null>>;
@@ -241,6 +243,7 @@ const startInstall = async ({
       version: details.version.version,
       install_models: installModels,
       model_ids: modelIds,
+      accelerator: selectedAccelerator || undefined,
     });
     setJobId(response.job_id);
     resetJob();
@@ -255,6 +258,7 @@ const startInstall = async ({
 const useMarketplaceHandlers = ({
   details,
   selectedModelIds,
+  selectedAccelerator,
   resetJob,
   setInstalling,
   setJobId,
@@ -265,6 +269,7 @@ const useMarketplaceHandlers = ({
 }: {
   details: MarketplacePluginDetails | null;
   selectedModelIds: string[];
+  selectedAccelerator: string;
   resetJob: () => void;
   setInstalling: React.Dispatch<React.SetStateAction<boolean>>;
   setJobId: React.Dispatch<React.SetStateAction<string | null>>;
@@ -280,12 +285,13 @@ const useMarketplaceHandlers = ({
       details,
       installModels: hasSelectedModels,
       selectedModelIds,
+      selectedAccelerator,
       resetJob,
       setInstalling,
       setJobId,
       toast,
     });
-  }, [details, selectedModelIds, resetJob, setInstalling, setJobId, toast]);
+  }, [details, selectedModelIds, selectedAccelerator, resetJob, setInstalling, setJobId, toast]);
 
   const handleClearJob = useCallback(() => {
     setJobId(null);
@@ -344,6 +350,7 @@ const MarketplaceTab: React.FC<MarketplaceTabProps> = ({ active }) => {
   const { searchInput, setSearchInput, debouncedSearch } = useDebouncedSearch('', 300);
   const [selectedPluginId, setSelectedPluginId] = useState<string | null>(null);
   const [licenseAccepted, setLicenseAccepted] = useState(false);
+  const [selectedAccelerator, setSelectedAccelerator] = useState('');
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
   const [jobId, setJobId] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
@@ -368,7 +375,10 @@ const MarketplaceTab: React.FC<MarketplaceTabProps> = ({ active }) => {
   }, [index, selectedPluginId]);
 
   useEffect(() => {
-    startTransition(() => setLicenseAccepted(false));
+    startTransition(() => {
+      setLicenseAccepted(false);
+      setSelectedAccelerator('');
+    });
   }, [selectedPluginId, selectedVersion]);
 
   useEffect(() => {
@@ -412,6 +422,7 @@ const MarketplaceTab: React.FC<MarketplaceTabProps> = ({ active }) => {
   } = useMarketplaceHandlers({
     details,
     selectedModelIds,
+    selectedAccelerator,
     resetJob,
     setInstalling,
     setJobId,
@@ -512,6 +523,8 @@ const MarketplaceTab: React.FC<MarketplaceTabProps> = ({ active }) => {
           details={details}
           selectedVersion={selectedVersion}
           onVersionChange={setSelectedVersion}
+          selectedAccelerator={selectedAccelerator}
+          onAcceleratorChange={setSelectedAccelerator}
           loading={detailsLoading}
           licenseAccepted={licenseAccepted}
           onLicenseAccepted={setLicenseAccepted}
