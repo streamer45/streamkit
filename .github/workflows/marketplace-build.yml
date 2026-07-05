@@ -35,7 +35,7 @@ env:
   SHERPA_ONNX_VERSION: "1.12.17"
   # GPU (CUDA-enabled) sherpa-onnx shared build; vendored into cuda variants so
   # the execution-provider-agnostic plugin .so dispatches to the GPU at runtime.
-  SHERPA_ONNX_GPU_ARCHIVE: "sherpa-onnx-v1.12.17-linux-x64-gpu-shared.tar.bz2"
+  SHERPA_ONNX_GPU_ARCHIVE: "sherpa-onnx-v1.12.17-cuda-12.x-cudnn-9.x-linux-x64-gpu.tar.bz2"
   MINISIGN_DEB_URL: "http://launchpadlibrarian.net/780165111/minisign_0.12-1_amd64.deb"
   REGISTRY_BASE_URL: ${{ inputs.registry_base_url || 'https://streamkit.dev/registry' }}
 
