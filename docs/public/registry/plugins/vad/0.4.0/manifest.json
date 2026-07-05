@@ -13,6 +13,14 @@
     "sha256": "5122e4a24598ad761b4dc385e7ebc2343cb7249f7714546a0d0a56d69ab9d957",
     "size_bytes": 7629384
   },
+  "variants": [
+    {
+      "accelerator": "cuda",
+      "url": "https://github.com/streamer45/streamkit/releases/download/plugin-vad-v0.4.0/vad-0.4.0-cuda-bundle.tar.zst",
+      "sha256": "c5c6143ca3129c642721a11dc8cee41f3dd800796da0eb6e2eac6c85b95f4d43",
+      "size_bytes": 185134357
+    }
+  ],
   "models": [
     {
       "id": "ten-vad",

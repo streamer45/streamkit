@@ -13,6 +13,14 @@
     "sha256": "79212cfa57376ebfcb955fd12522ecf36164071cdc94cf3bf964122837e8f4d2",
     "size_bytes": 8976146
   },
+  "variants": [
+    {
+      "accelerator": "cuda",
+      "url": "https://github.com/streamer45/streamkit/releases/download/plugin-whisper-v0.3.0/whisper-0.3.0-cuda-bundle.tar.zst",
+      "sha256": "1ed98fbb2020a405dda228d59854ebb39d94a083921bdacb77373631ee2e496e",
+      "size_bytes": 108047246
+    }
+  ],
   "models": [
     {
       "id": "whisper-tiny-en-q5_1",

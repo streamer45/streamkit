@@ -13,6 +13,14 @@
     "sha256": "eeb8b7f8505e7f7d212a9180b8e6449e76a72112395579ace7a87e263b4a26ce",
     "size_bytes": 15640298
   },
+  "variants": [
+    {
+      "accelerator": "cuda",
+      "url": "https://github.com/streamer45/streamkit/releases/download/plugin-sensevoice-v0.3.0/sensevoice-0.3.0-cuda-bundle.tar.zst",
+      "sha256": "ed66de1b574da7a99dd00cad98b03e41605a3fbe99e2cdca569af4068e72c1d4",
+      "size_bytes": 192788424
+    }
+  ],
   "models": [
     {
       "id": "sensevoice-small-yue",
