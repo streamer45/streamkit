@@ -26,8 +26,8 @@ Run `just --list` to see all available commands.
 
 ```bash
 sudo apt install libopus-dev cmake pkg-config libssl-dev
-# Optional for VP9/video builds and VP9 sample pipelines:
-sudo apt install libvpx-dev
+# Required for the default build (VP9 bindings are generated at build time):
+sudo apt install libvpx-dev libclang-dev
 ```
 
 ### Rust toolchain

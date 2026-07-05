@@ -182,9 +182,6 @@ jobs:
 
       - name: Build skit (with GPU + HW codecs + SVT-AV1 + dav1d)
         env:
-          VPX_LIB_DIR: /usr/lib/x86_64-linux-gnu
-          VPX_INCLUDE_DIR: /usr/include
-          VPX_VERSION: "1.13.0"
           CUDA_INCLUDE_PATH: /usr/include
           # bindgen (used by shiguredo_nvcodec) needs the clang builtin include
           # path so it can find stddef.h and other compiler-provided headers.
