@@ -74,7 +74,9 @@ runs:
     - name: Install system dependencies
       if: inputs.runs-on-self-hosted != 'true'
       shell: bash
-      run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm
+      # libclang-dev is needed by bindgen (env-libvpx-sys "generate" feature);
+      # the free-disk-aggressive step removes the runner's preinstalled llvm.
+      run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm libclang-dev
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@master
