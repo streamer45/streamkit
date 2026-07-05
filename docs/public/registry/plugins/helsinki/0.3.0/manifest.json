@@ -13,6 +13,14 @@
     "sha256": "b8cdfef21d66cfc75596bdb8080cfb20115f6be883c2c1990b2e6edc50190045",
     "size_bytes": 2789397
   },
+  "variants": [
+    {
+      "accelerator": "cuda",
+      "url": "https://github.com/streamer45/streamkit/releases/download/plugin-helsinki-v0.3.0/helsinki-0.3.0-cuda-bundle.tar.zst",
+      "sha256": "91e1a1220ec9e49b8ebdf1c703447a376e749d231142e5ebf5eea202497062c3",
+      "size_bytes": 3422342
+    }
+  ],
   "models": [
     {
       "id": "opus-mt-en-es",

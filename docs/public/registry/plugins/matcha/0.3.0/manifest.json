@@ -13,6 +13,14 @@
     "sha256": "46fa83617d0e53d619d9f52ae4b70c9f3a45f31ea9da327ac2bdd012396257bb",
     "size_bytes": 7653180
   },
+  "variants": [
+    {
+      "accelerator": "cuda",
+      "url": "https://github.com/streamer45/streamkit/releases/download/plugin-matcha-v0.3.0/matcha-0.3.0-cuda-bundle.tar.zst",
+      "sha256": "28b44047c76bd8d2b0c5e7d07e59c85964b8105a6ae6e7b3935918979c5f118c",
+      "size_bytes": 185227587
+    }
+  ],
   "models": [
     {
       "id": "matcha-icefall-en_US-ljspeech",
