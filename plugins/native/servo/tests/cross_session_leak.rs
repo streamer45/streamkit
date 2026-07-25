@@ -50,7 +50,7 @@ fn register(url: &str) -> (NodeId, Receiver<ServoThreadResult>) {
 fn render(node_id: NodeId, rx: &Receiver<ServoThreadResult>) -> Vec<u8> {
     send(ServoWorkItem::Render { node_id });
     match rx.recv() {
-        Ok(ServoThreadResult::Frame { rgba_data }) => rgba_data,
+        Ok(ServoThreadResult::Frame { rgba_data, .. }) => rgba_data,
         Ok(_) => panic!("expected frame result"),
         Err(e) => panic!("frame recv failed: {e}"),
     }

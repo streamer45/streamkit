@@ -23,6 +23,7 @@ pub struct ServoSourcePlugin {
     result_rx: std::sync::mpsc::Receiver<ServoThreadResult>,
     tick_count: u64,
     duration_us: u64,
+    awaiting_first_load: bool,
     logger: Logger,
 }
 
@@ -99,7 +100,7 @@ impl NativeSourceNode for ServoSourcePlugin {
                     "load_timeout_secs": {
                         "type": "integer",
                         "default": 30,
-                        "description": "(Currently unused: page load is non-blocking; tick() returns transparent frames until the first paint.) Reserved for a future Degraded-state timeout signal.",
+                        "description": "Maximum seconds to hold frame emission while waiting for the initial page to load and paint. Frames start at real page content instead of blank/loading frames; on timeout, emission starts regardless. The wait happens inside the first tick, so keep this below the host's native_call_timeout_secs.",
                         "minimum": 1
                     },
                     "auth": {
@@ -164,6 +165,7 @@ impl NativeSourceNode for ServoSourcePlugin {
                 result_rx,
                 tick_count: 0,
                 duration_us: 1_000_000 / 30,
+                awaiting_first_load: false,
                 logger,
             });
         };
@@ -202,7 +204,15 @@ impl NativeSourceNode for ServoSourcePlugin {
         match result_rx.recv() {
             Ok(ServoThreadResult::InitOk) => {
                 plugin_info!(logger, "Servo instance registered: {node_id}");
-                Ok(Self { config, node_id, result_rx, tick_count: 0, duration_us, logger })
+                Ok(Self {
+                    config,
+                    node_id,
+                    result_rx,
+                    tick_count: 0,
+                    duration_us,
+                    awaiting_first_load: true,
+                    logger,
+                })
             },
             Ok(ServoThreadResult::InitErr(e)) => {
                 Err(format!("Servo instance creation failed: {e}"))
@@ -215,20 +225,36 @@ impl NativeSourceNode for ServoSourcePlugin {
     }
 
     fn tick(&mut self, output: &OutputSender) -> Result<bool, String> {
-        // Request a frame from the shared Servo thread.
-        send_work(ServoWorkItem::Render { node_id: self.node_id })?;
-
-        // Wait for the rendered frame.
-        let rgba_data = match self.result_rx.recv() {
-            Ok(ServoThreadResult::Frame { rgba_data }) => rgba_data,
-            Ok(_) => {
-                plugin_warn!(self.logger, "Unexpected result from Servo thread");
-                return Ok(false);
-            },
-            Err(_) => {
-                return Err("Servo thread result channel closed".to_string());
-            },
+        let Some((mut rgba_data, mut loaded)) = self.request_frame()? else {
+            return Ok(false);
         };
+
+        // Hold the first emitted frame until the page has loaded and
+        // painted (capped by load_timeout_secs), so captures start at
+        // real content rather than blank/loading frames.  Only this
+        // node's tick loop blocks; the shared Servo thread keeps
+        // serving other instances between polls.
+        if self.awaiting_first_load {
+            let deadline = std::time::Instant::now()
+                + std::time::Duration::from_secs(u64::from(self.config.load_timeout_secs));
+            while !loaded && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                let Some(frame) = self.request_frame()? else {
+                    return Ok(false);
+                };
+                (rgba_data, loaded) = frame;
+            }
+            if loaded {
+                plugin_info!(self.logger, "Initial page loaded; starting frame emission");
+            } else {
+                plugin_warn!(
+                    self.logger,
+                    "Page did not finish loading within {}s; starting frame emission anyway",
+                    self.config.load_timeout_secs
+                );
+            }
+            self.awaiting_first_load = false;
+        }
 
         let timestamp_us = self.tick_count * self.duration_us;
         let metadata = Some(PacketMetadata {
@@ -318,5 +344,23 @@ impl NativeSourceNode for ServoSourcePlugin {
     fn cleanup(&mut self) {
         let _ = send_work(ServoWorkItem::Unregister { node_id: self.node_id });
         plugin_info!(self.logger, "Servo instance unregistered: {}", self.node_id);
+    }
+}
+
+impl ServoSourcePlugin {
+    /// Request one rendered frame from the shared Servo thread.
+    ///
+    /// Returns `Ok(None)` on an unexpected (non-frame) result so the
+    /// caller can skip the tick without failing the node.
+    fn request_frame(&self) -> Result<Option<(Vec<u8>, bool)>, String> {
+        send_work(ServoWorkItem::Render { node_id: self.node_id })?;
+        match self.result_rx.recv() {
+            Ok(ServoThreadResult::Frame { rgba_data, loaded }) => Ok(Some((rgba_data, loaded))),
+            Ok(_) => {
+                plugin_warn!(self.logger, "Unexpected result from Servo thread");
+                Ok(None)
+            },
+            Err(_) => Err("Servo thread result channel closed".to_string()),
+        }
     }
 }
