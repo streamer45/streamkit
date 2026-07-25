@@ -245,8 +245,14 @@
       "id": "servo",
       "name": "Servo Web Renderer",
       "description": "Render web pages to RGBA8 video frames via the Servo web engine",
-      "latest": "0.2.0",
+      "latest": "0.2.1",
       "versions": [
+        {
+          "version": "0.2.1",
+          "manifest_url": "https://streamkit.dev/registry/plugins/servo/0.2.1/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/servo/0.2.1/manifest.minisig",
+          "published_at": "2026-07-25"
+        },
         {
           "version": "0.2.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/servo/0.2.0/manifest.json",
