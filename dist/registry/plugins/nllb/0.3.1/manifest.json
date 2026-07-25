@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "nllb",
+  "name": "NLLB",
+  "version": "0.3.1",
+  "node_kind": "nllb",
+  "kind": "native",
+  "description": "Neural machine translation using NLLB",
+  "license": "MPL-2.0",
+  "entrypoint": "libnllb.so",
+  "bundle": {
+    "url": "https://github.com/streamer45/streamkit/releases/download/plugin-nllb-v0.3.1/nllb-0.3.1-bundle.tar.zst",
+    "sha256": "e08b102ff8e2f492e6527fa953ee08531c289f375376848ec2879dcbf6b61801",
+    "size_bytes": 2816534
+  },
+  "models": [
+    {
+      "id": "nllb-200-distilled-600M-ct2-int8",
+      "name": "NLLB-200 distilled 600M (CTranslate2 int8)",
+      "default": false,
+      "source": "huggingface",
+      "repo_id": "streamkit/nllb-models",
+      "revision": "main",
+      "files": [
+        "nllb-200-distilled-600M-ct2-int8.tar.xz"
+      ],
+      "expected_size_bytes": 1135260128,
+      "license": "CC-BY-NC-4.0",
+      "license_url": "https://huggingface.co/facebook/nllb-200-distilled-600M",
+      "sha256": "6c95a9bc42239a189c71d32aeb66b3108a4fef97d194e3360f3a749671a05c35"
+    }
+  ]
+}

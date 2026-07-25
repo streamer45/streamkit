@@ -21,6 +21,10 @@ import json
 import pathlib
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+from manifest_builder import build_manifest  # noqa: E402
+
 
 def load_yaml(path: pathlib.Path) -> dict:
     try:
@@ -32,30 +36,16 @@ def load_yaml(path: pathlib.Path) -> dict:
     return yaml.safe_load(path.read_text())
 
 
-def strip_none(payload: dict) -> dict:
-    return {key: value for key, value in payload.items() if value is not None}
+def build_manifest_from_plugin(
+    plugin: dict, bundle_block: dict | None, variants: list[dict] | None = None
+) -> dict:
+    """Rebuild the would-be manifest from plugin.yml for the append-only check.
 
-
-def build_manifest_from_plugin(plugin: dict, bundle_block: dict | None) -> dict:
-    """Mirror the manifest shape produced by build_registry.py."""
-    manifest = {
-        "schema_version": 1,
-        "id": plugin["id"],
-        "name": plugin.get("name"),
-        "version": plugin.get("version"),
-        "node_kind": plugin["node_kind"],
-        "kind": plugin["kind"],
-        "description": plugin.get("description"),
-        "license": plugin.get("license"),
-        "license_url": plugin.get("license_url"),
-        "homepage": plugin.get("homepage"),
-        "repository": plugin.get("repo"),
-        "entrypoint": plugin["entrypoint"],
-        "bundle": bundle_block,
-        "compatibility": plugin.get("compatibility"),
-        "models": plugin.get("models", []),
-    }
-    return strip_none(manifest)
+    `variants` are carried over verbatim from the committed manifest; they are
+    produced by the build pipeline (not plugin.yml) and must survive the
+    append-only comparison untouched.
+    """
+    return build_manifest(plugin, plugin.get("version"), bundle_block, variants)
 
 
 def main() -> int:
@@ -92,7 +82,9 @@ def main() -> int:
             continue
 
         committed = json.loads(committed_manifest_path.read_text())
-        would_be = build_manifest_from_plugin(plugin, committed.get("bundle"))
+        would_be = build_manifest_from_plugin(
+            plugin, committed.get("bundle"), committed.get("variants")
+        )
 
         if committed != would_be:
             errors += 1

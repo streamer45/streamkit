@@ -6,7 +6,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     fmt::Write,
     path::{Component, Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -58,6 +58,11 @@ pub struct InstallPluginRequest {
     pub install_models: bool,
     #[serde(default)]
     pub model_ids: Option<Vec<String>>,
+    /// Accelerator variant to install (e.g. `"cpu"` or `"cuda"`). When `None`,
+    /// the installer uses the configured default or auto-detects CUDA, falling
+    /// back to the canonical CPU bundle.
+    #[serde(default)]
+    pub accelerator: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -181,6 +186,12 @@ impl InstallJobQueue {
                 allow_model_urls: config.marketplace.security.allow_model_urls,
                 marketplace_policy,
                 registries: config.registries.clone(),
+                default_accelerator: config
+                    .marketplace
+                    .default_accelerator
+                    .as_ref()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
             },
         )?;
         Ok(Self {
@@ -511,6 +522,7 @@ struct PluginInstaller {
     allow_model_urls: bool,
     marketplace_policy: MarketplaceUrlPolicy,
     registries: Vec<String>,
+    default_accelerator: Option<String>,
 }
 
 struct PluginInstallerSettings {
@@ -521,6 +533,7 @@ struct PluginInstallerSettings {
     allow_model_urls: bool,
     marketplace_policy: MarketplaceUrlPolicy,
     registries: Vec<String>,
+    default_accelerator: Option<String>,
 }
 
 struct DownloadModelRequest<'a> {
@@ -562,6 +575,7 @@ impl PluginInstaller {
             allow_model_urls: settings.allow_model_urls,
             marketplace_policy: settings.marketplace_policy,
             registries: settings.registries,
+            default_accelerator: settings.default_accelerator,
         })
     }
 
@@ -782,70 +796,130 @@ impl PluginInstaller {
             },
         };
 
-        let bundle_dir = self.plugin_dir.join("bundles").join(&manifest.id).join(&manifest.version);
-        if bundle_dir.exists() {
-            if !request.install_models {
-                let err = anyhow!("Bundle version '{}' is already installed", manifest.version);
+        // Resolve the requested accelerator once. `resolve_accelerator` probes
+        // the CUDA runtime, so threading the result through `download_bundle`
+        // avoids re-probing and keeps the recorded and downloaded variants in
+        // lockstep.
+        let requested_accelerator = self.resolve_accelerator(request.accelerator.as_deref());
+        let selected_accelerator =
+            if let Some(bundle) = manifest.resolve_bundle(requested_accelerator.as_deref()) {
+                bundle.accelerator.to_ascii_lowercase()
+            } else {
+                let err = anyhow!("Plugin manifest missing required `bundle` section");
                 tracker.fail_step(STEP_DOWNLOAD_BUNDLE, err.to_string()).await;
                 return Err(err.into());
-            }
+            };
+        if let Err(err) =
+            plugin_paths::validate_path_component("accelerator", &selected_accelerator)
+        {
+            tracker.fail_step(STEP_DOWNLOAD_BUNDLE, err.to_string()).await;
+            return Err(err.into());
+        }
+
+        // Install dirs are keyed by id + version + accelerator so CPU and CUDA
+        // builds of the same version coexist and switching variants never
+        // silently no-ops.
+        let bundle_dir = self
+            .plugin_dir
+            .join("bundles")
+            .join(&manifest.id)
+            .join(&manifest.version)
+            .join(&selected_accelerator);
+
+        let bundle_dir = if bundle_dir.exists() {
             if let Err(err) =
                 plugin_paths::ensure_existing_dir_under(&base_real, &bundle_dir, "bundle").await
             {
                 tracker.fail_step(STEP_DOWNLOAD_BUNDLE, err.to_string()).await;
                 return Err(err.into());
             }
-            tracker.succeed_step(STEP_DOWNLOAD_BUNDLE).await;
-            for step in [STEP_EXTRACT_BUNDLE, STEP_ACTIVATE, STEP_LOAD_PLUGIN] {
-                Self::mark_step_succeeded(tracker, step).await;
-            }
-            return Ok(());
-        }
 
-        let bundle_path = match self
-            .download_bundle(manifest, tracker, cancel, registry_origin, &base_real)
-            .await
-        {
-            Ok(path) => path,
-            Err(InstallError::Cancelled) => return Err(InstallError::Cancelled),
-            Err(InstallError::Other(err)) => {
+            let already_active =
+                self.read_active_record(&manifest.id).await.is_some_and(|record| {
+                    record.version == manifest.version
+                        && record.accelerator.eq_ignore_ascii_case(&selected_accelerator)
+                });
+            if already_active && !request.install_models {
+                let err = anyhow!(
+                    "Plugin '{}' v{} ({} variant) is already installed",
+                    manifest.id,
+                    manifest.version,
+                    selected_accelerator,
+                );
                 tracker.fail_step(STEP_DOWNLOAD_BUNDLE, err.to_string()).await;
-                return Err(InstallError::Other(err));
-            },
+                return Err(err.into());
+            }
+
+            tracker.succeed_step(STEP_DOWNLOAD_BUNDLE).await;
+            Self::mark_step_succeeded(tracker, STEP_EXTRACT_BUNDLE).await;
+
+            if already_active {
+                for step in [STEP_ACTIVATE, STEP_LOAD_PLUGIN] {
+                    Self::mark_step_succeeded(tracker, step).await;
+                }
+                return Ok(());
+            }
+
+            bundle_dir
+        } else {
+            let bundle_path = match self
+                .download_bundle(
+                    manifest,
+                    tracker,
+                    cancel,
+                    registry_origin,
+                    &base_real,
+                    requested_accelerator.as_deref(),
+                )
+                .await
+            {
+                Ok(path) => path,
+                Err(InstallError::Cancelled) => return Err(InstallError::Cancelled),
+                Err(InstallError::Other(err)) => {
+                    tracker.fail_step(STEP_DOWNLOAD_BUNDLE, err.to_string()).await;
+                    return Err(InstallError::Other(err));
+                },
+            };
+            tracker.succeed_step(STEP_DOWNLOAD_BUNDLE).await;
+
+            Self::ensure_not_cancelled(cancel)?;
+
+            tracker.start_step(STEP_EXTRACT_BUNDLE).await;
+            let bundle_dir = match self
+                .extract_bundle(manifest, &selected_accelerator, &bundle_path, &base_real, cancel)
+                .await
+            {
+                Ok(dir) => dir,
+                Err(InstallError::Cancelled) => return Err(InstallError::Cancelled),
+                Err(InstallError::Other(err)) => {
+                    tracker.fail_step(STEP_EXTRACT_BUNDLE, err.to_string()).await;
+                    return Err(InstallError::Other(err));
+                },
+            };
+            tracker.succeed_step(STEP_EXTRACT_BUNDLE).await;
+
+            // The local loader rediscovers asset types from a YAML plugin.yml
+            // beside the entrypoint, not from the marketplace JSON manifest, so
+            // serialize one here for restart survival.
+            if let Err(err) = write_manifest_yml(manifest, &bundle_dir).await {
+                tracing::warn!(
+                    plugin_id = %manifest.id,
+                    error = %err,
+                    "Failed to write plugin.yml into bundle directory; \
+                     asset types may not survive restart"
+                );
+            }
+
+            bundle_dir
         };
-        tracker.succeed_step(STEP_DOWNLOAD_BUNDLE).await;
-
-        Self::ensure_not_cancelled(cancel)?;
-
-        tracker.start_step(STEP_EXTRACT_BUNDLE).await;
-        let bundle_dir = match self.extract_bundle(manifest, &bundle_path, &base_real, cancel).await
-        {
-            Ok(dir) => dir,
-            Err(InstallError::Cancelled) => return Err(InstallError::Cancelled),
-            Err(InstallError::Other(err)) => {
-                tracker.fail_step(STEP_EXTRACT_BUNDLE, err.to_string()).await;
-                return Err(InstallError::Other(err));
-            },
-        };
-        tracker.succeed_step(STEP_EXTRACT_BUNDLE).await;
-
-        // Write a plugin.yml into the bundle directory so that
-        // `read_local_plugin_manifest` can rediscover asset types on server
-        // restart.  The marketplace manifest is JSON; the local loader expects
-        // YAML, so we serialize the manifest here.
-        if let Err(err) = write_manifest_yml(manifest, &bundle_dir).await {
-            tracing::warn!(
-                plugin_id = %manifest.id,
-                error = %err,
-                "Failed to write plugin.yml into bundle directory; \
-                 asset types may not survive restart"
-            );
-        }
 
         Self::ensure_not_cancelled(cancel)?;
 
         tracker.start_step(STEP_ACTIVATE).await;
-        let entrypoint_path = match self.activate_bundle(manifest, &bundle_dir, &base_real).await {
+        let entrypoint_path = match self
+            .activate_bundle(manifest, &selected_accelerator, &bundle_dir, &base_real)
+            .await
+        {
             Ok(path) => path,
             Err(InstallError::Cancelled) => return Err(InstallError::Cancelled),
             Err(InstallError::Other(err)) => {
@@ -858,7 +932,10 @@ impl PluginInstaller {
         Self::ensure_not_cancelled(cancel)?;
 
         tracker.start_step(STEP_LOAD_PLUGIN).await;
-        match self.load_plugin(manifest, &entrypoint_path, namespaced_kind).await {
+        match self
+            .load_plugin(manifest, &entrypoint_path, namespaced_kind, &selected_accelerator)
+            .await
+        {
             Ok(_) => {
                 tracker.succeed_step(STEP_LOAD_PLUGIN).await;
             },
@@ -938,6 +1015,30 @@ impl PluginInstaller {
         Err(anyhow!("Registry '{registry}' is not configured"))
     }
 
+    /// Determines the accelerator to install for, honoring (in order) an
+    /// explicit per-request value, the configured default, and finally runtime
+    /// CUDA auto-detection. `None` means "use the canonical CPU bundle".
+    fn resolve_accelerator(&self, requested: Option<&str>) -> Option<String> {
+        if let Some(value) = requested.map(str::trim).filter(|value| !value.is_empty()) {
+            return Some(value.to_string());
+        }
+        if let Some(value) =
+            self.default_accelerator.as_deref().map(str::trim).filter(|value| !value.is_empty())
+        {
+            return Some(value.to_string());
+        }
+        if cuda_runtime_available() {
+            return Some("cuda".to_string());
+        }
+        None
+    }
+
+    async fn read_active_record(&self, plugin_id: &str) -> Option<ActivePluginRecord> {
+        let record_path = plugin_record_path(&self.plugin_dir, plugin_id).ok()?;
+        let bytes = tokio::fs::read(&record_path).await.ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
     async fn download_bundle(
         &self,
         manifest: &crate::marketplace::PluginManifest,
@@ -945,13 +1046,22 @@ impl PluginInstaller {
         cancel: &CancellationToken,
         registry_origin: &OriginKey,
         base_real: &Path,
+        accelerator: Option<&str>,
     ) -> Result<PathBuf, InstallError> {
-        let bundle = manifest.bundle.as_ref().ok_or_else(|| {
+        let bundle = manifest.resolve_bundle(accelerator).ok_or_else(|| {
             InstallError::Other(anyhow!("Plugin manifest missing required `bundle` section"))
         })?;
+        if let Some(requested) = accelerator {
+            tracing::info!(
+                plugin_id = %manifest.id,
+                requested_accelerator = requested,
+                selected_accelerator = bundle.accelerator,
+                "Resolved plugin bundle variant"
+            );
+        }
         let bundle_url = self
             .marketplace_policy
-            .validate_url("bundle url", &bundle.url, Some(registry_origin))
+            .validate_url("bundle url", bundle.url, Some(registry_origin))
             .await?;
         let cache_dir = self.plugin_dir.join("cache").join(&manifest.id).join(&manifest.version);
         plugin_paths::ensure_dir_under(base_real, &cache_dir, "cache").await?;
@@ -991,7 +1101,7 @@ impl PluginInstaller {
                 // For 206 responses, content_length is the remaining bytes.
                 response.content_length().map(|cl| cl + resume_from.unwrap_or(0))
             } else {
-                response.content_length()
+                response.content_length().or(bundle.size_bytes)
             };
             let mut stream = response.bytes_stream();
 
@@ -1055,8 +1165,8 @@ impl PluginInstaller {
             })?;
 
             let actual_hash = to_hex(&hasher.finalize());
-            if !actual_hash.eq_ignore_ascii_case(&bundle.sha256) {
-                let expected = bundle.sha256.as_str();
+            if !actual_hash.eq_ignore_ascii_case(bundle.sha256) {
+                let expected = bundle.sha256;
                 let actual = actual_hash.as_str();
                 hash_mismatch = true;
                 return Err(
@@ -1092,6 +1202,7 @@ impl PluginInstaller {
     async fn extract_bundle(
         &self,
         manifest: &crate::marketplace::PluginManifest,
+        accelerator: &str,
         bundle_path: &Path,
         base_real: &Path,
         cancel: &CancellationToken,
@@ -1100,17 +1211,20 @@ impl PluginInstaller {
             return Err(InstallError::Cancelled);
         }
 
-        let bundles_root = self.plugin_dir.join("bundles").join(&manifest.id);
-        plugin_paths::ensure_dir_under(base_real, &bundles_root, "bundles").await?;
+        let version_dir =
+            self.plugin_dir.join("bundles").join(&manifest.id).join(&manifest.version);
+        plugin_paths::ensure_dir_under(base_real, &version_dir, "bundles").await?;
 
-        let bundle_dir = bundles_root.join(&manifest.version);
+        let bundle_dir = version_dir.join(accelerator);
         if bundle_dir.exists() {
             let version = manifest.version.as_str();
-            return Err(anyhow!("Bundle version '{version}' is already installed").into());
+            return Err(
+                anyhow!("Bundle version '{version}' ({accelerator}) is already installed").into()
+            );
         }
 
         let temp_id = Uuid::new_v4();
-        let temp_dir = bundles_root.join(format!(".tmp-{temp_id}"));
+        let temp_dir = version_dir.join(format!(".tmp-{temp_id}"));
         tokio::fs::create_dir_all(&temp_dir).await.with_context(|| {
             format!("Failed to create temp dir {temp_dir}", temp_dir = temp_dir.display())
         })?;
@@ -1180,6 +1294,7 @@ impl PluginInstaller {
     async fn activate_bundle(
         &self,
         manifest: &crate::marketplace::PluginManifest,
+        accelerator: &str,
         bundle_dir: &Path,
         base_real: &Path,
     ) -> Result<PathBuf, InstallError> {
@@ -1194,6 +1309,7 @@ impl PluginInstaller {
             kind: manifest.kind.clone(),
             entrypoint: entrypoint_path.to_string_lossy().into_owned(),
             installed_at_ms: now_ms(),
+            accelerator: accelerator.to_string(),
         };
         let record_path = plugin_record_path(&self.plugin_dir, &manifest.id)?;
         let payload = serde_json::to_vec_pretty(&record)
@@ -1213,6 +1329,7 @@ impl PluginInstaller {
         manifest: &crate::marketplace::PluginManifest,
         entrypoint_path: &Path,
         expected_kind: &str,
+        accelerator: &str,
     ) -> Result<PluginSummary, InstallError> {
         let plugin_type = match manifest.kind {
             PluginKind::Wasm => PluginType::Wasm,
@@ -1245,12 +1362,23 @@ impl PluginInstaller {
             self.plugin_asset_registry.unregister_plugin(&manifest.id).await;
         }
 
-        let summary = tokio::task::spawn_blocking(move || {
-            let mut mgr = manager.blocking_lock();
-            mgr.load_from_path(plugin_type, entrypoint_path)
+        let accelerator = accelerator.to_ascii_lowercase();
+        let mut summary = tokio::task::spawn_blocking({
+            let expected_kind = expected_kind_owned.clone();
+            let accelerator = accelerator.clone();
+            move || {
+                let mut mgr = manager.blocking_lock();
+                let summary = mgr.load_from_path(plugin_type, entrypoint_path)?;
+                if summary.kind == expected_kind {
+                    mgr.set_plugin_accelerator(&summary.kind, Some(accelerator));
+                }
+                drop(mgr);
+                anyhow::Ok(summary)
+            }
         })
         .await
         .context("Plugin load task failed")??;
+        summary.accelerator = Some(accelerator);
 
         if summary.kind != expected_kind {
             let manager = Arc::clone(&self.plugin_manager);
@@ -2034,6 +2162,40 @@ fn now_ms() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_millis())
 }
 
+/// System libraries that must all be loadable before a host is considered able
+/// to run a CUDA plugin bundle. `libcuda.so.1` is the driver stub, but the
+/// bundles also link the CUDA *runtime* (`libcudart`), which is absent on
+/// driver-only hosts; probing the driver alone would auto-select a CUDA bundle
+/// that then fails to load.
+const CUDA_RUNTIME_LIBS: &[&str] = &["libcuda.so.1", "libcudart.so"];
+
+/// Returns `true` if every named library is loadable via `dlopen`.
+fn libs_loadable(names: &[&str]) -> bool {
+    names.iter().all(|name| {
+        // SAFETY: We only load well-known system libraries and never call into
+        // them; `libloading` unloads them on drop. No symbols are dereferenced.
+        // allow(unsafe_code): dlopen is the only portable way to probe for the
+        // CUDA stack at runtime; the load is side-effect free.
+        #[allow(unsafe_code)]
+        let loaded = unsafe { libloading::Library::new(*name) }.is_ok();
+        loaded
+    })
+}
+
+/// Returns `true` if the full CUDA runtime stack is loadable, used to
+/// auto-select CUDA plugin bundle variants. The result is cached for the
+/// process lifetime.
+fn cuda_runtime_available() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        let available = libs_loadable(CUDA_RUNTIME_LIBS);
+        if available {
+            tracing::debug!("CUDA runtime detected (driver + libcudart loadable)");
+        }
+        available
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2051,6 +2213,13 @@ mod tests {
     use tokio::sync::oneshot;
     use tokio::task::JoinHandle;
 
+    #[test]
+    fn libs_loadable_requires_all_named_libraries() {
+        assert!(libs_loadable(&[]));
+        assert!(!libs_loadable(&["libdefinitely-not-real-streamkit.so.999"]));
+        assert!(!libs_loadable(&["libc.so.6", "libdefinitely-not-real.so.999"]));
+    }
+
     fn make_job(status: JobStatus) -> InstallJob {
         InstallJob {
             info: JobInfo {
@@ -2067,6 +2236,7 @@ mod tests {
                 version: None,
                 install_models: false,
                 model_ids: None,
+                accelerator: None,
             },
             permissions: Permissions::default(),
         }
@@ -2175,6 +2345,7 @@ mod tests {
                 sha256: "deadbeef".to_string(),
                 size_bytes: None,
             }),
+            variants: Vec::new(),
             compatibility: None,
             models,
             assets: Vec::new(),
@@ -2221,6 +2392,7 @@ mod tests {
                     marketplace_url_allowlist: vec!["http://127.0.0.1:*".to_string()],
                     ..crate::config::PluginMarketplaceSecurityConfig::default()
                 },
+                default_accelerator: None,
             },
             trusted_pubkeys: Vec::new(),
             registries: Vec::new(),
@@ -2324,6 +2496,7 @@ mod tests {
                     marketplace_url_allowlist: vec!["http://127.0.0.1:*".to_string()],
                     ..crate::config::PluginMarketplaceSecurityConfig::default()
                 },
+                default_accelerator: None,
             },
             trusted_pubkeys: Vec::new(),
             registries: Vec::new(),
@@ -2427,6 +2600,7 @@ mod tests {
                     marketplace_url_allowlist: vec!["http://127.0.0.1:*".to_string()],
                     ..crate::config::PluginMarketplaceSecurityConfig::default()
                 },
+                default_accelerator: None,
             },
             trusted_pubkeys: Vec::new(),
             registries: Vec::new(),
@@ -2493,6 +2667,7 @@ mod tests {
                     allow_model_urls: false,
                     ..crate::config::PluginMarketplaceSecurityConfig::default()
                 },
+                default_accelerator: None,
             },
             trusted_pubkeys: Vec::new(),
             registries: Vec::new(),
@@ -3050,6 +3225,7 @@ mod tests {
                 marketplace_enabled: true,
                 allow_native_marketplace: true,
                 security,
+                default_accelerator: None,
             },
             trusted_pubkeys,
             registries,
@@ -3111,6 +3287,7 @@ mod tests {
             version: None,
             install_models: false,
             model_ids: None,
+            accelerator: None,
         };
 
         let job_id = queue.enqueue(request, Permissions::default()).await;
@@ -3339,6 +3516,7 @@ mod tests {
                 sha256: bundle_sha,
                 size_bytes: None,
             }),
+            variants: Vec::new(),
             compatibility: None,
             models: Vec::new(),
             assets: Vec::new(),
@@ -3394,6 +3572,7 @@ mod tests {
             version: None,
             install_models: false,
             model_ids: None,
+            accelerator: None,
         };
 
         // Loading a fabricated native library fails at dlopen, so install()
@@ -3416,8 +3595,154 @@ mod tests {
         assert!(step_succeeded(STEP_EXTRACT_BUNDLE), "bundle extraction should succeed");
         assert!(step_succeeded(STEP_ACTIVATE), "activation should succeed");
 
-        let bundle_dir = plugin_dir.join("bundles").join("demo").join("1.0.0");
+        let bundle_dir = plugin_dir.join("bundles").join("demo").join("1.0.0").join("cpu");
         assert!(bundle_dir.join("libdemo.so").exists(), "entrypoint should be extracted");
+
+        let _ = shutdown_tx.send(());
+        server_handle.await.context("file server task panicked")??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn install_keys_bundle_dir_by_accelerator_for_side_by_side_variants() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let plugin_dir = temp.path().join("plugins");
+        tokio::fs::create_dir_all(&plugin_dir).await?;
+
+        let cpu_bytes = tar_with_entry("libdemo.so", b"cpu build")?;
+        let cuda_bytes = tar_with_entry("libdemo.so", b"cuda build")?;
+        let sha = |bytes: &[u8]| {
+            let mut hasher = Sha256::new();
+            hasher.update(bytes);
+            to_hex(&hasher.finalize())
+        };
+
+        let listener = match TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => listener,
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+                tracing::warn!(error = %err, "Skipping side-by-side variant test");
+                return Ok(());
+            },
+            Err(err) => return Err(err.into()),
+        };
+        let addr = listener.local_addr()?;
+
+        let manifest = crate::marketplace::PluginManifest {
+            schema_version: 1,
+            id: "demo".to_string(),
+            name: None,
+            version: "1.0.0".to_string(),
+            node_kind: "demo".to_string(),
+            kind: PluginKind::Native,
+            description: None,
+            license: None,
+            license_url: None,
+            homepage: None,
+            repository: None,
+            entrypoint: "libdemo.so".to_string(),
+            bundle: Some(crate::marketplace::PluginBundle {
+                url: format!("http://{addr}/cpu.tar"),
+                sha256: sha(&cpu_bytes),
+                size_bytes: None,
+            }),
+            variants: vec![crate::marketplace::PluginBundleVariant {
+                accelerator: "cuda".to_string(),
+                url: format!("http://{addr}/cuda.tar"),
+                sha256: sha(&cuda_bytes),
+                size_bytes: None,
+            }],
+            compatibility: None,
+            models: Vec::new(),
+            assets: Vec::new(),
+        };
+        let manifest_bytes = serde_json::to_vec(&manifest)?;
+        let (pubkey, signature) = minisign_keypair_and_sign(&manifest_bytes)?;
+
+        let index = RegistryIndex {
+            schema_version: 1,
+            plugins: vec![crate::marketplace::RegistryPlugin {
+                id: "demo".to_string(),
+                name: None,
+                description: None,
+                latest: Some("1.0.0".to_string()),
+                versions: vec![crate::marketplace::RegistryPluginVersion {
+                    version: "1.0.0".to_string(),
+                    manifest_url: format!("http://{addr}/manifest.json"),
+                    signature_url: Some(format!("http://{addr}/manifest.json.minisig")),
+                    published_at: None,
+                }],
+            }],
+        };
+        let registry_url = format!("http://{addr}/index.json");
+
+        let (shutdown_tx, server_handle) = serve_static_routes(
+            listener,
+            vec![
+                ("/index.json".to_string(), Bytes::from(serde_json::to_vec(&index)?)),
+                ("/manifest.json".to_string(), Bytes::from(manifest_bytes)),
+                ("/manifest.json.minisig".to_string(), Bytes::from(signature)),
+                ("/cpu.tar".to_string(), Bytes::from(cpu_bytes)),
+                ("/cuda.tar".to_string(), Bytes::from(cuda_bytes)),
+            ],
+        );
+
+        let security = crate::config::PluginMarketplaceSecurityConfig {
+            allow_model_urls: true,
+            marketplace_scheme_policy: crate::config::MarketplaceSchemePolicy::AllowHttp,
+            marketplace_host_policy: crate::config::MarketplaceHostPolicy::AllowPrivate,
+            marketplace_url_allowlist: vec!["http://127.0.0.1:*".to_string()],
+            ..crate::config::PluginMarketplaceSecurityConfig::default()
+        };
+        let queue =
+            build_queue_with(&plugin_dir, vec![registry_url.clone()], vec![pubkey], security)?;
+        let permissions =
+            Permissions { allowed_plugins: vec!["*".to_string()], ..Permissions::default() };
+
+        let install = |accelerator: Option<&str>, job: &str| {
+            let queue = queue.clone();
+            let registry_url = registry_url.clone();
+            let permissions = permissions.clone();
+            let accelerator = accelerator.map(str::to_string);
+            let job = job.to_string();
+            async move {
+                insert_job(&queue, &job, JobStatus::Running).await;
+                let tracker = JobTracker { job_id: job.clone(), queue: queue.clone() };
+                let request = InstallPluginRequest {
+                    registry: registry_url,
+                    plugin_id: "demo".to_string(),
+                    version: None,
+                    install_models: false,
+                    model_ids: None,
+                    accelerator,
+                };
+                // Fabricated .so fails at dlopen, but the record is written during
+                // the preceding ACTIVATE step, which is what we assert on.
+                let _ = queue
+                    .installer
+                    .install(request, permissions, tracker, CancellationToken::new())
+                    .await;
+            }
+        };
+
+        install(None, "cpu-job").await;
+        let cpu_dir = plugin_dir.join("bundles").join("demo").join("1.0.0").join("cpu");
+        assert!(cpu_dir.join("libdemo.so").exists(), "cpu variant should extract under cpu/");
+
+        let record_path = plugin_record_path(&plugin_dir, "demo")?;
+        let record: ActivePluginRecord =
+            serde_json::from_slice(&tokio::fs::read(&record_path).await?)?;
+        assert_eq!(record.accelerator, "cpu", "active record should track cpu");
+
+        // Switching to the cuda variant must download it (no silent no-op) and
+        // leave the cpu variant installed side-by-side.
+        install(Some("cuda"), "cuda-job").await;
+        let cuda_dir = plugin_dir.join("bundles").join("demo").join("1.0.0").join("cuda");
+        assert!(cuda_dir.join("libdemo.so").exists(), "cuda variant should extract under cuda/");
+        assert!(cpu_dir.join("libdemo.so").exists(), "cpu variant must remain side-by-side");
+
+        let record: ActivePluginRecord =
+            serde_json::from_slice(&tokio::fs::read(&record_path).await?)?;
+        assert_eq!(record.accelerator, "cuda", "active record should switch to cuda");
 
         let _ = shutdown_tx.send(());
         server_handle.await.context("file server task panicked")??;
@@ -3438,6 +3763,7 @@ mod tests {
             version: None,
             install_models: false,
             model_ids: None,
+            accelerator: None,
         };
         let result = queue
             .installer
@@ -3459,6 +3785,7 @@ mod tests {
             version: None,
             install_models: false,
             model_ids: None,
+            accelerator: None,
         };
         let result = queue
             .installer

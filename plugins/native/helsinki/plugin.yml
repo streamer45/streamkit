@@ -5,6 +5,9 @@ node_kind: helsinki
 kind: native
 entrypoint: libhelsinki.so
 artifact: target/plugins/release/libhelsinki.so
+accelerators:
+- cpu
+- cuda
 description: Neural machine translation using OPUS-MT
 license: MPL-2.0
 models:

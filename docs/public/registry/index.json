@@ -103,8 +103,14 @@
       "id": "nllb",
       "name": "NLLB",
       "description": "Neural machine translation using NLLB",
-      "latest": "0.3.0",
+      "latest": "0.3.1",
       "versions": [
+        {
+          "version": "0.3.1",
+          "manifest_url": "https://streamkit.dev/registry/plugins/nllb/0.3.1/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/nllb/0.3.1/manifest.minisig",
+          "published_at": "2026-07-05"
+        },
         {
           "version": "0.3.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/nllb/0.3.0/manifest.json",
@@ -129,8 +135,14 @@
       "id": "parakeet",
       "name": "Parakeet TDT",
       "description": "Fast speech-to-text using NVIDIA Parakeet TDT via sherpa-onnx",
-      "latest": "0.3.0",
+      "latest": "0.3.1",
       "versions": [
+        {
+          "version": "0.3.1",
+          "manifest_url": "https://streamkit.dev/registry/plugins/parakeet/0.3.1/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/parakeet/0.3.1/manifest.minisig",
+          "published_at": "2026-07-05"
+        },
         {
           "version": "0.3.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/parakeet/0.3.0/manifest.json",
@@ -233,8 +245,14 @@
       "id": "servo",
       "name": "Servo Web Renderer",
       "description": "Render web pages to RGBA8 video frames via the Servo web engine",
-      "latest": "0.1.0",
+      "latest": "0.2.0",
       "versions": [
+        {
+          "version": "0.2.0",
+          "manifest_url": "https://streamkit.dev/registry/plugins/servo/0.2.0/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/servo/0.2.0/manifest.minisig",
+          "published_at": "2026-06-27"
+        },
         {
           "version": "0.1.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/servo/0.1.0/manifest.json",
@@ -247,8 +265,14 @@
       "id": "slint",
       "name": "Slint",
       "description": "Slint UI rendering as a video source \u2014 render .slint files to RGBA8 frames at configurable resolution and frame rate",
-      "latest": "0.4.0",
+      "latest": "0.5.0",
       "versions": [
+        {
+          "version": "0.5.0",
+          "manifest_url": "https://streamkit.dev/registry/plugins/slint/0.5.0/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/slint/0.5.0/manifest.minisig",
+          "published_at": "2026-07-05"
+        },
         {
           "version": "0.4.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/slint/0.4.0/manifest.json",

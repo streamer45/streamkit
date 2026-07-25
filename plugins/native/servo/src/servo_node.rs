@@ -101,6 +101,35 @@ impl NativeSourceNode for ServoSourcePlugin {
                         "default": 30,
                         "description": "(Currently unused: page load is non-blocking; tick() returns transparent frames until the first paint.) Reserved for a future Degraded-state timeout signal.",
                         "minimum": 1
+                    },
+                    "auth": {
+                        "type": "object",
+                        "description": "Init-time authentication for loading private pages. Applied once at WebView creation; not hot-swappable. Credentials are never logged.",
+                        "tunable": false,
+                        "properties": {
+                            "headers": {
+                                "type": "object",
+                                "description": "Arbitrary request headers attached to every navigation, including runtime URL changes (e.g. Authorization, Cookie). Values are credentials.",
+                                "additionalProperties": { "type": "string" }
+                            },
+                            "bearer_token": {
+                                "type": "string",
+                                "description": "Convenience for 'Authorization: Bearer <token>'. Conflicts with an explicit Authorization header."
+                            },
+                            "basic": {
+                                "type": "object",
+                                "description": "HTTP Basic/Digest credentials answered non-interactively on an auth challenge.",
+                                "properties": {
+                                    "username": { "type": "string" },
+                                    "password": { "type": "string" }
+                                },
+                                "required": ["username", "password"]
+                            },
+                            "user_agent": {
+                                "type": "string",
+                                "description": "Custom User-Agent. NOTE: Servo preferences are process-global, so this applies to ALL servo nodes in the process."
+                            }
+                        }
                     }
                 },
                 "required": ["url"]
@@ -157,7 +186,7 @@ impl NativeSourceNode for ServoSourcePlugin {
             config.effective_viewport_width(),
             config.effective_viewport_height(),
             fps,
-            config.url
+            crate::config::redact_url(&config.url)
         );
 
         let node_id = uuid::Uuid::new_v4();
@@ -246,7 +275,11 @@ impl NativeSourceNode for ServoSourcePlugin {
                 node_id: self.node_id,
                 config: self.config.clone(),
             })?;
-            plugin_info!(self.logger, "Updated Servo config (url='{}')", self.config.url);
+            plugin_info!(
+                self.logger,
+                "Updated Servo config (url='{}')",
+                crate::config::redact_url(&self.config.url)
+            );
         }
         Ok(())
     }

@@ -13,6 +13,14 @@
     "sha256": "0458c130b47a860428431427c26d9c2c80f21a371c7c565138fc351b2d0f652c",
     "size_bytes": 7656461
   },
+  "variants": [
+    {
+      "accelerator": "cuda",
+      "url": "https://github.com/streamer45/streamkit/releases/download/plugin-kokoro-v0.3.0/kokoro-0.3.0-cuda-bundle.tar.zst",
+      "sha256": "73fd554dc7afff3e54c982b09bffa514e1778fa5139cdb78145446aa5d6bf078",
+      "size_bytes": 185144342
+    }
+  ],
   "models": [
     {
       "id": "kokoro-multi-lang-v1_1",

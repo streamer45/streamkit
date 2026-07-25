@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "id": "parakeet",
+  "name": "Parakeet TDT",
+  "version": "0.3.1",
+  "node_kind": "parakeet",
+  "kind": "native",
+  "description": "Fast speech-to-text using NVIDIA Parakeet TDT via sherpa-onnx",
+  "license": "MPL-2.0",
+  "homepage": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3",
+  "entrypoint": "libparakeet.so",
+  "bundle": {
+    "url": "https://github.com/streamer45/streamkit/releases/download/plugin-parakeet-v0.3.1/parakeet-0.3.1-bundle.tar.zst",
+    "sha256": "50c85c7c4ce13abb03db538dcea6bea948fee3442403a54acfe7b1f60fb1d7dd",
+    "size_bytes": 15626278
+  },
+  "models": [
+    {
+      "id": "parakeet-tdt-0.6b-v3-int8",
+      "name": "Parakeet TDT 0.6B v3 (25 languages, INT8)",
+      "default": true,
+      "source": "huggingface",
+      "repo_id": "streamkit/parakeet-models",
+      "revision": "main",
+      "files": [
+        "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2"
+      ],
+      "expected_size_bytes": 486660829,
+      "license": "CC-BY-4.0",
+      "license_url": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3",
+      "sha256": "181f96d0dcac111d68c2ee5843655bb08ecb5fe26f845a915c3e4fca7915b9f8"
+    },
+    {
+      "id": "silero-vad",
+      "name": "Silero VAD (v6.2)",
+      "default": true,
+      "source": "huggingface",
+      "repo_id": "streamkit/parakeet-models",
+      "revision": "main",
+      "files": [
+        "silero_vad.onnx"
+      ],
+      "expected_size_bytes": 2327524,
+      "license": "MIT",
+      "license_url": "https://github.com/snakers4/silero-vad/blob/master/LICENSE",
+      "sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
+    }
+  ]
+}

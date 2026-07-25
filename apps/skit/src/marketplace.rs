@@ -227,8 +227,15 @@ pub struct PluginManifest {
     pub entrypoint: String,
     /// Marketplace bundle info.  Required for marketplace-distributed plugins;
     /// absent for local-only plugins that ship alongside their `.so`.
+    ///
+    /// This is the canonical **CPU** bundle. Accelerator-specific builds (e.g.
+    /// CUDA) live in [`PluginManifest::variants`].
     #[serde(default)]
     pub bundle: Option<PluginBundle>,
+    /// Accelerator-specific bundle variants. Empty means CPU-only (use
+    /// [`PluginManifest::bundle`]). Older manifests omit this field entirely.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<PluginBundleVariant>,
     pub compatibility: Option<PluginCompatibility>,
     #[serde(default)]
     pub models: Vec<ModelSpec>,
@@ -239,6 +246,40 @@ pub struct PluginManifest {
     /// in the `GET /api/v1/asset-types` discovery response.
     #[serde(default)]
     pub assets: Vec<PluginAssetSpec>,
+}
+
+impl PluginManifest {
+    /// Selects the bundle to install for the requested `accelerator`.
+    ///
+    /// `Some("cuda")` (or any non-`"cpu"` tag) matches a [`variants`] entry by
+    /// accelerator; if no variant matches — including `None`, `"cpu"`, or an
+    /// unknown tag — this falls back to the canonical CPU [`bundle`].
+    ///
+    /// [`variants`]: PluginManifest::variants
+    /// [`bundle`]: PluginManifest::bundle
+    #[must_use]
+    pub fn resolve_bundle(&self, accelerator: Option<&str>) -> Option<ResolvedBundle<'_>> {
+        if let Some(acc) = accelerator {
+            if !acc.eq_ignore_ascii_case("cpu") {
+                if let Some(variant) =
+                    self.variants.iter().find(|v| v.accelerator.eq_ignore_ascii_case(acc))
+                {
+                    return Some(ResolvedBundle {
+                        accelerator: &variant.accelerator,
+                        url: &variant.url,
+                        sha256: &variant.sha256,
+                        size_bytes: variant.size_bytes,
+                    });
+                }
+            }
+        }
+        self.bundle.as_ref().map(|bundle| ResolvedBundle {
+            accelerator: "cpu",
+            url: &bundle.url,
+            sha256: &bundle.sha256,
+            size_bytes: bundle.size_bytes,
+        })
+    }
 }
 
 /// An asset type declared by a plugin in its manifest.
@@ -296,6 +337,29 @@ pub enum PluginKind {
 pub struct PluginBundle {
     pub url: String,
     pub sha256: String,
+    pub size_bytes: Option<u64>,
+}
+
+/// An accelerator-specific bundle variant (e.g. a CUDA build).
+///
+/// The canonical CPU bundle stays in [`PluginManifest::bundle`]; `variants`
+/// carries additional builds tagged by [`PluginBundleVariant::accelerator`]
+/// (currently `"cpu"` or `"cuda"`). Clients select a variant at install time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginBundleVariant {
+    pub accelerator: String,
+    pub url: String,
+    pub sha256: String,
+    pub size_bytes: Option<u64>,
+}
+
+/// A bundle chosen by [`PluginManifest::resolve_bundle`], borrowing from the
+/// canonical bundle or one of its variants.
+#[derive(Debug, Clone, Copy)]
+pub struct ResolvedBundle<'a> {
+    pub accelerator: &'a str,
+    pub url: &'a str,
+    pub sha256: &'a str,
     pub size_bytes: Option<u64>,
 }
 
@@ -599,6 +663,84 @@ mod tests {
         PluginMarketplaceSecurityConfig,
     };
     use crate::marketplace_security::origin_key;
+
+    fn manifest_with_variants(
+        bundle: Option<PluginBundle>,
+        variants: Vec<PluginBundleVariant>,
+    ) -> PluginManifest {
+        PluginManifest {
+            schema_version: 1,
+            id: "demo".to_string(),
+            name: None,
+            version: "1.0.0".to_string(),
+            node_kind: "demo".to_string(),
+            kind: PluginKind::Native,
+            description: None,
+            license: None,
+            license_url: None,
+            homepage: None,
+            repository: None,
+            entrypoint: "libdemo.so".to_string(),
+            bundle,
+            variants,
+            compatibility: None,
+            models: Vec::new(),
+            assets: Vec::new(),
+        }
+    }
+
+    fn cpu_bundle() -> PluginBundle {
+        PluginBundle {
+            url: "https://example.com/demo-1.0.0-bundle.tar.zst".to_string(),
+            sha256: "cpu".to_string(),
+            size_bytes: Some(1),
+        }
+    }
+
+    fn cuda_variant() -> PluginBundleVariant {
+        PluginBundleVariant {
+            accelerator: "cuda".to_string(),
+            url: "https://example.com/demo-1.0.0-cuda-bundle.tar.zst".to_string(),
+            sha256: "cuda".to_string(),
+            size_bytes: Some(2),
+        }
+    }
+
+    #[test]
+    fn resolve_bundle_defaults_to_cpu() {
+        let manifest = manifest_with_variants(Some(cpu_bundle()), vec![cuda_variant()]);
+        let resolved = manifest.resolve_bundle(None).unwrap();
+        assert_eq!(resolved.accelerator, "cpu");
+        assert_eq!(resolved.sha256, "cpu");
+    }
+
+    #[test]
+    fn resolve_bundle_selects_matching_variant() {
+        let manifest = manifest_with_variants(Some(cpu_bundle()), vec![cuda_variant()]);
+        let resolved = manifest.resolve_bundle(Some("cuda")).unwrap();
+        assert_eq!(resolved.accelerator, "cuda");
+        assert_eq!(resolved.sha256, "cuda");
+    }
+
+    #[test]
+    fn resolve_bundle_falls_back_when_variant_missing() {
+        let manifest = manifest_with_variants(Some(cpu_bundle()), Vec::new());
+        let resolved = manifest.resolve_bundle(Some("cuda")).unwrap();
+        assert_eq!(resolved.accelerator, "cpu");
+    }
+
+    #[test]
+    fn resolve_bundle_cpu_request_ignores_variants() {
+        let manifest = manifest_with_variants(Some(cpu_bundle()), vec![cuda_variant()]);
+        let resolved = manifest.resolve_bundle(Some("cpu")).unwrap();
+        assert_eq!(resolved.accelerator, "cpu");
+    }
+
+    #[test]
+    fn resolve_bundle_none_when_no_bundle() {
+        let manifest = manifest_with_variants(None, Vec::new());
+        assert!(manifest.resolve_bundle(Some("cuda")).is_none());
+    }
 
     fn permissive_policy() -> MarketplaceUrlPolicy {
         let config = PluginConfig {

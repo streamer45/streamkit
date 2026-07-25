@@ -5,6 +5,9 @@ node_kind: vad
 kind: native
 entrypoint: libvad.so
 artifact: target/plugins/release/libvad.so
+accelerators:
+- cpu
+- cuda
 description: Voice activity detection
 license: MPL-2.0
 models:

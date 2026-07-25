@@ -172,13 +172,6 @@ jobs:
 
       - name: Run GPU tests
         env:
-          # The self-hosted runner runs Ubuntu 24.04 which ships libvpx 1.14.0,
-          # but env-libvpx-sys 5.1.3 only has pre-generated FFI bindings up to
-          # 1.13.0.  Setting VPX_LIB_DIR bypasses pkg-config version detection
-          # and VPX_VERSION selects the 1.13.0 bindings (backward-compatible).
-          VPX_LIB_DIR: /usr/lib/x86_64-linux-gnu
-          VPX_INCLUDE_DIR: /usr/include
-          VPX_VERSION: "1.13.0"
           # Ubuntu's nvidia-cuda-toolkit installs headers to /usr/include, not
           # /usr/local/cuda/include.  Tell shiguredo_nvcodec where to find them.
           CUDA_INCLUDE_PATH: /usr/include

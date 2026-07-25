@@ -13,6 +13,14 @@ import shutil
 import subprocess
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+from manifest_builder import (  # noqa: E402
+    SHERPA_CORE_LIBS,
+    SHERPA_CUDA_LIBS,
+    build_manifest,
+)
+
 
 def sha256_file(path: pathlib.Path) -> str:
     hasher = hashlib.sha256()
@@ -60,9 +68,11 @@ def require_tool(name: str) -> None:
         raise RuntimeError(f"Missing required tool: {name}")
 
 
-def ensure_sherpa_runtime(work_dir: pathlib.Path) -> None:
+def ensure_sherpa_runtime(work_dir: pathlib.Path, accelerator: str = "cpu") -> None:
     lib_dir = pathlib.Path(os.environ.get("SHERPA_ONNX_LIB_DIR", "/usr/local/lib"))
-    sherpa_libs = ["libsherpa-onnx-c-api.so", "libonnxruntime.so"]
+    sherpa_libs = list(SHERPA_CORE_LIBS)
+    if accelerator == "cuda":
+        sherpa_libs.extend(SHERPA_CUDA_LIBS)
     for lib in sherpa_libs:
         src = lib_dir / lib
         if not src.exists():
@@ -81,15 +91,22 @@ def build_bundle(
     bundles_out: pathlib.Path,
     work_root: pathlib.Path,
     embedded_manifest: dict | None = None,
+    accelerator: str = "cpu",
 ) -> dict:
     plugin_id = plugin["id"]
-    artifact = pathlib.Path(plugin["artifact"])
+    # CUDA passes may ship a separately compiled artifact (e.g. whisper/helsinki
+    # built with their `cuda` feature). Fall back to the canonical artifact.
+    artifact = pathlib.Path(
+        plugin.get(f"artifact_{accelerator}", plugin["artifact"])
+        if accelerator != "cpu"
+        else plugin["artifact"]
+    )
     entrypoint = pathlib.Path(plugin["entrypoint"])
 
     if not artifact.exists():
         raise FileNotFoundError(f"Missing artifact: {artifact}")
 
-    work_dir = work_root / f"{plugin_id}-{version}"
+    work_dir = work_root / f"{plugin_id}-{version}-{accelerator}"
     if work_dir.exists():
         shutil.rmtree(work_dir)
     ensure_dir(work_dir)
@@ -99,7 +116,7 @@ def build_bundle(
 
     needed, _ = readelf_dynamic(entrypoint_path)
     if "libsherpa-onnx-c-api.so" in needed:
-        ensure_sherpa_runtime(work_dir)
+        ensure_sherpa_runtime(work_dir, accelerator)
         set_runpath_origin(entrypoint_path)
 
     for extra in plugin.get("extra_files", []):
@@ -113,8 +130,12 @@ def build_bundle(
 
     if embedded_manifest is not None:
         write_json(work_dir / "manifest.json", embedded_manifest)
+        write_plugin_yml(entrypoint_path.parent, embedded_manifest)
 
-    bundle_name = f"{plugin_id}-{version}-bundle.tar.zst"
+    if accelerator == "cpu":
+        bundle_name = f"{plugin_id}-{version}-bundle.tar.zst"
+    else:
+        bundle_name = f"{plugin_id}-{version}-{accelerator}-bundle.tar.zst"
     bundle_path = bundles_out / bundle_name
     ensure_dir(bundles_out)
 
@@ -144,39 +165,32 @@ def write_json(path: pathlib.Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=False))
 
 
-def strip_none(payload: dict) -> dict:
-    return {key: value for key, value in payload.items() if value is not None}
+def write_plugin_yml(yml_dir: pathlib.Path, manifest: dict) -> None:
+    """Embed a `plugin.yml` next to the entrypoint so the bundle is
+    self-describing.
+
+    The server's `read_local_plugin_manifest` discovers a plugin's asset types
+    (and other metadata) from a `plugin.yml`/`plugin.yaml` beside the `.so`, not
+    from `manifest.json`. Consumers that extract a bundle directly (e.g. the demo
+    image) therefore need this file to recover declarations like Slint's asset
+    type. The marketplace installer writes the same file from the downloaded
+    manifest; embedding it keeps raw-extraction consumers in parity.
+    """
+    try:
+        import yaml
+    except ImportError as exc:
+        raise RuntimeError(
+            "PyYAML is required. Install python3-yaml or pip install pyyaml."
+        ) from exc
+    ensure_dir(yml_dir)
+    (yml_dir / "plugin.yml").write_text(
+        yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True)
+    )
 
 
 def dump_manifest_bytes(manifest: dict) -> bytes:
     """Produce canonical manifest bytes matching write_json formatting."""
     return (json.dumps(manifest, indent=2, sort_keys=False) + "\n").encode("utf-8")
-
-
-def build_manifest(
-    plugin: dict,
-    plugin_version: str,
-    bundle_block: dict | None,
-) -> dict:
-    """Build manifest dict from plugin metadata and bundle info."""
-    manifest = {
-        "schema_version": 1,
-        "id": plugin["id"],
-        "name": plugin.get("name"),
-        "version": plugin_version,
-        "node_kind": plugin["node_kind"],
-        "kind": plugin["kind"],
-        "description": plugin.get("description"),
-        "license": plugin.get("license"),
-        "license_url": plugin.get("license_url"),
-        "homepage": plugin.get("homepage"),
-        "repository": plugin.get("repo"),
-        "entrypoint": plugin["entrypoint"],
-        "bundle": bundle_block,
-        "compatibility": plugin.get("compatibility"),
-        "models": plugin.get("models", []),
-    }
-    return strip_none(manifest)
 
 
 def verify_existing_signature(
@@ -359,7 +373,17 @@ def main() -> int:
         "--new-plugins-out",
         help="Path to write JSON file listing newly built plugins (id + version)",
     )
+    parser.add_argument(
+        "--accelerator",
+        default="cpu",
+        help=(
+            "Accelerator to build. 'cpu' (default) builds the canonical bundle; "
+            "any other value (e.g. 'cuda') builds a variant and merges it into "
+            "the matching existing manifest (requires --existing-registry)."
+        ),
+    )
     args = parser.parse_args()
+    accelerator = args.accelerator.strip().lower()
 
     plugins_path = pathlib.Path(args.plugins)
     bundles_out = pathlib.Path(args.bundles_out)
@@ -409,6 +433,20 @@ def main() -> int:
     if work_root.exists():
         shutil.rmtree(work_root)
 
+    # Variant passes (e.g. cuda) layer onto an already-published registry, so
+    # copy the full existing tree forward; untouched plugins must stay present
+    # and only the variant-updated manifests are overwritten below.
+    if accelerator != "cpu":
+        if not args.existing_registry:
+            print(
+                "ERROR: --accelerator other than 'cpu' requires --existing-registry",
+                file=sys.stderr,
+            )
+            return 1
+        src_plugins = existing_registry_path / "plugins"
+        if src_plugins.exists():
+            shutil.copytree(src_plugins, registry_out / "plugins", dirs_exist_ok=True)
+
     for plugin in plugins:
         plugin_id = plugin["id"]
         plugin_version = plugin.get("version")
@@ -418,17 +456,125 @@ def main() -> int:
 
         key = (plugin_id, plugin_version)
 
+        # Variant pass: add an accelerator-specific bundle to an existing
+        # manifest rather than (re)building the canonical CPU bundle.
+        if accelerator != "cpu":
+            if accelerator not in plugin.get("accelerators", ["cpu"]):
+                continue
+            if key not in existing_registry:
+                print(
+                    f"ERROR: {plugin_id}@{plugin_version} has no published CPU "
+                    f"manifest to attach a '{accelerator}' variant to. Build and "
+                    f"publish the CPU bundle first.",
+                    file=sys.stderr,
+                )
+                return 1
+            existing = existing_registry[key]
+            existing_manifest = existing["manifest"]
+
+            # Append-only: an already-published variant is immutable, so reuse
+            # the manifest carried forward above instead of rebuilding it.
+            # Match case-insensitively to mirror the installer's
+            # eq_ignore_ascii_case bundle resolution.
+            if any(
+                (v.get("accelerator") or "").lower() == accelerator
+                for v in existing_manifest.get("variants", [])
+            ):
+                print(
+                    f"Reusing existing {accelerator} variant for "
+                    f"{plugin_id} v{plugin_version}"
+                )
+                continue
+
+            embedded_manifest = build_manifest(plugin, plugin_version, bundle_block=None)
+            bundle_info = build_bundle(
+                plugin, plugin_version, bundles_out, work_root,
+                accelerator=accelerator,
+                embedded_manifest=embedded_manifest,
+            )
+            bundle_base = bundle_url_template.format(
+                plugin_id=plugin_id, version=plugin_version,
+            )
+            variant_block = {
+                "accelerator": accelerator,
+                "url": f"{bundle_base}/{bundle_info['bundle_name']}",
+                "sha256": bundle_info["sha256"],
+                "size_bytes": bundle_info["size_bytes"],
+            }
+            merged_variants = [
+                v
+                for v in existing_manifest.get("variants", [])
+                if (v.get("accelerator") or "").lower() != accelerator
+            ]
+            merged_variants.append(variant_block)
+            would_be_manifest = build_manifest(
+                plugin,
+                plugin_version,
+                existing_manifest.get("bundle"),
+                variants=merged_variants,
+            )
+
+            # Only the variants list may differ; everything else is immutable.
+            existing_core = {k: v for k, v in existing_manifest.items() if k != "variants"}
+            would_be_core = {k: v for k, v in would_be_manifest.items() if k != "variants"}
+            if existing_core != would_be_core:
+                print(
+                    f"ERROR: {plugin_id}@{plugin_version} '{accelerator}' variant "
+                    f"pass would change non-variant manifest fields; bump version.",
+                    file=sys.stderr,
+                )
+                existing_json = json.dumps(existing_core, indent=2, sort_keys=False)
+                would_be_json = json.dumps(would_be_core, indent=2, sort_keys=False)
+                diff = difflib.unified_diff(
+                    existing_json.splitlines(keepends=True),
+                    would_be_json.splitlines(keepends=True),
+                    fromfile="existing",
+                    tofile="would-be",
+                )
+                print("".join(diff), file=sys.stderr)
+                return 1
+
+            if not verify_existing_signature(
+                existing["manifest_path"],
+                existing["signature_path"],
+                public_key_path,
+            ):
+                print(
+                    f"ERROR: {plugin_id}@{plugin_version} — existing manifest "
+                    f"signature verification failed before attaching the "
+                    f"'{accelerator}' variant. The manifest may have been "
+                    f"modified after signing; revert the changes or bump the "
+                    f"version to trigger re-signing.",
+                    file=sys.stderr,
+                )
+                return 1
+
+            manifest_dir = registry_out / "plugins" / plugin_id / plugin_version
+            manifest_path = manifest_dir / "manifest.json"
+            write_json(manifest_path, would_be_manifest)
+            sign_manifest(manifest_path, signing_key)
+            new_plugins.append(
+                {"id": plugin_id, "version": plugin_version, "accelerator": accelerator}
+            )
+            print(
+                f"Added {accelerator} variant for {plugin_id} v{plugin_version} "
+                f"-> {bundle_info['bundle_name']} ({bundle_info['sha256']})"
+            )
+            continue
+
         # Check if this version already exists in the registry
         if key in existing_registry:
             # Verify immutability: check if republishing with same version would change manifest
             existing = existing_registry[key]
             existing_manifest = existing["manifest"]
 
-            # Build would-be manifest using current plugin fields but existing bundle
+            # Build would-be manifest using current plugin fields but existing
+            # bundle and variants (CPU passes never touch published variants).
             would_be_manifest = build_manifest(
                 plugin,
                 plugin_version,
                 existing_manifest["bundle"],
+                variants=existing_manifest.get("variants"),
             )
 
             # Compare parsed JSON objects (robust to formatting differences like trailing newlines)

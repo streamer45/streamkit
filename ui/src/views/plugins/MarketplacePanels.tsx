@@ -184,6 +184,8 @@ const MarketplaceInstallWarnings: React.FC<{
 type MarketplaceDetailsPanelProps = {
   details: MarketplacePluginDetails | null;
   selectedVersion: string | null;
+  selectedAccelerator: string;
+  onAcceleratorChange: (value: string) => void;
   loading: boolean;
   licenseAccepted: boolean;
   requiresLicenseAcceptance: boolean;
@@ -206,6 +208,8 @@ type MarketplaceDetailsPanelProps = {
 export const MarketplaceDetailsPanel: React.FC<MarketplaceDetailsPanelProps> = ({
   details,
   selectedVersion,
+  selectedAccelerator,
+  onAcceleratorChange,
   loading,
   licenseAccepted,
   requiresLicenseAcceptance,
@@ -260,6 +264,8 @@ export const MarketplaceDetailsPanel: React.FC<MarketplaceDetailsPanelProps> = (
         details={details}
         selectedVersion={selectedVersion}
         onVersionChange={onVersionChange}
+        selectedAccelerator={selectedAccelerator}
+        onAcceleratorChange={onAcceleratorChange}
       />
       <MarketplaceNativeNotice
         kind={details.manifest.kind}
@@ -322,12 +328,24 @@ type MarketplaceDetailsFieldsProps = {
   details: MarketplacePluginDetails;
   selectedVersion: string | null;
   onVersionChange: (value: string) => void;
+  selectedAccelerator: string;
+  onAcceleratorChange: (value: string) => void;
+};
+
+// The canonical bundle is always the CPU build; `variants` carries additional
+// accelerator-specific builds (e.g. CUDA).
+export const manifestAccelerators = (manifest: MarketplacePluginDetails['manifest']): string[] => {
+  const variants = manifest.variants ?? [];
+  const accelerators = ['cpu', ...variants.map((variant) => variant.accelerator.toLowerCase())];
+  return [...new Set(accelerators)];
 };
 
 const MarketplaceDetailsFields: React.FC<MarketplaceDetailsFieldsProps> = ({
   details,
   selectedVersion,
   onVersionChange,
+  selectedAccelerator,
+  onAcceleratorChange,
 }) => {
   const signatureLabel = details.signature.verified
     ? `\u2713 Verified (${details.signature.key_id ?? 'trusted key'})`
@@ -354,6 +372,11 @@ const MarketplaceDetailsFields: React.FC<MarketplaceDetailsFieldsProps> = ({
           ))}
         </Select>
       </KeyValue>
+      <MarketplaceAcceleratorRow
+        manifest={details.manifest}
+        selectedAccelerator={selectedAccelerator}
+        onAcceleratorChange={onAcceleratorChange}
+      />
       <KeyLabel>Node kind</KeyLabel>
       <KeyValue>{details.manifest.node_kind}</KeyValue>
       <KeyLabel>Entry point</KeyLabel>
@@ -388,6 +411,33 @@ const MarketplaceDetailsFields: React.FC<MarketplaceDetailsFieldsProps> = ({
       )}
       <MarketplaceCompatibilityRows compatibility={details.manifest.compatibility} />
     </KeyValueGrid>
+  );
+};
+
+const MarketplaceAcceleratorRow: React.FC<{
+  manifest: MarketplacePluginDetails['manifest'];
+  selectedAccelerator: string;
+  onAcceleratorChange: (value: string) => void;
+}> = ({ manifest, selectedAccelerator, onAcceleratorChange }) => {
+  const accelerators = manifestAccelerators(manifest);
+  if (accelerators.length < 2) return null;
+  return (
+    <>
+      <KeyLabel>Accelerator</KeyLabel>
+      <KeyValue>
+        <Select
+          value={selectedAccelerator}
+          onChange={(event) => onAcceleratorChange(event.target.value)}
+        >
+          <option value="">Auto-detect</option>
+          {accelerators.map((accelerator) => (
+            <option key={accelerator} value={accelerator}>
+              {accelerator}
+            </option>
+          ))}
+        </Select>
+      </KeyValue>
+    </>
   );
 };
 

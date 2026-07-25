@@ -38,6 +38,9 @@ schemars = "1.2.0"
 base64 = "0.22"
 semver = "1.0"
 
+# For probing CUDA driver availability when selecting plugin bundle variants
+libloading = "0.9"
+
 # For serializing the default config into TOML format
 toml = "1.1"
 

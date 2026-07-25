@@ -587,6 +587,12 @@ pub struct PluginMarketplaceConfig {
     /// Native plugins run in-process and are unsafe without full trust.
     #[serde(default)]
     pub allow_native_marketplace: bool,
+    /// Default accelerator for bundle variant selection (e.g. `"cpu"` or
+    /// `"cuda"`). When unset, the installer auto-detects CUDA availability and
+    /// otherwise falls back to the CPU bundle. A per-install request can
+    /// override this.
+    #[serde(default)]
+    pub default_accelerator: Option<String>,
     #[serde(flatten, default)]
     pub security: PluginMarketplaceSecurityConfig,
 }
