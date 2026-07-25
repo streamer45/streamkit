@@ -100,7 +100,7 @@ impl NativeSourceNode for ServoSourcePlugin {
                     "load_timeout_secs": {
                         "type": "integer",
                         "default": 30,
-                        "description": "Maximum seconds to hold frame emission while waiting for the initial page to load and paint. Frames start at real page content instead of blank/loading frames; on timeout, emission starts regardless.",
+                        "description": "Maximum seconds to hold frame emission while waiting for the initial page to load and paint. Frames start at real page content instead of blank/loading frames; on timeout, emission starts regardless. The wait happens inside the first tick, so keep this below the host's native_call_timeout_secs.",
                         "minimum": 1
                     },
                     "auth": {

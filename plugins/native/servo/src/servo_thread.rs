@@ -412,7 +412,10 @@ fn send_fallback_frame(instances: &HashMap<NodeId, InstanceState>, node_id: &Nod
         .last_good_frame
         .clone()
         .unwrap_or_else(|| transparent_frame(state.config.width, state.config.height));
-    let loaded = page_loaded(state);
+    // A poisoned instance never progresses its load, so report it as
+    // loaded to keep the node's first-frame gate from waiting out the
+    // full load timeout on a cached/transparent fallback.
+    let loaded = state.poisoned || page_loaded(state);
     let _ = state.result_tx.send(ServoThreadResult::Frame { rgba_data: fallback, loaded });
 }
 
@@ -528,8 +531,11 @@ fn handle_render(
     if state.pending_navigation.is_some() && state.webview.url().is_some() {
         if let Some(url) = state.pending_navigation.take() {
             navigate_with_auth(&state.webview, state.config.auth.as_ref(), url);
-            // The builder's `about:blank` may already have completed.
+            // The builder's `about:blank` may already have completed and
+            // painted; re-arm both flags so load/paint state (and the
+            // first-paint surface gate) track the target page.
             state.delegate.loaded.set(false);
+            state.delegate.painted.set(false);
         }
     }
 
