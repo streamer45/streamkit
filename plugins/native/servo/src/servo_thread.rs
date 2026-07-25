@@ -694,18 +694,53 @@ fn create_webview(
 
     // Surface malformed auth here even though `validate` already checked it,
     // so a bad config fails registration rather than silently dropping headers.
-    if let Some(auth) = config.auth.as_ref() {
-        auth.build_request_headers().map_err(|e| format!("invalid auth config: {e}"))?;
+    let headers = match config.auth.as_ref() {
+        Some(auth) => {
+            Some(auth.build_request_headers().map_err(|e| format!("invalid auth config: {e}"))?)
+        },
+        None => None,
+    }
+    .filter(|h| !h.is_empty());
+
+    let mut builder = WebViewBuilder::new(servo, rendering_context.clone())
+        .hidpi_scale_factor(Scale::new(1.0))
+        .delegate(delegate.clone() as Rc<dyn WebViewDelegate>);
+
+    // The initial URL must go through the builder: the constellation
+    // silently drops a `LoadUrl` (`WebView::load`/`load_request`) sent
+    // before it has activated the webview's browsing context, which
+    // happens asynchronously after `build()`.  Custom request headers
+    // can't be attached to the builder's URL, so the auth path builds
+    // with the default `about:blank` and issues the header-carrying
+    // navigation once the browsing context is up.
+    if headers.is_none() {
+        builder = builder.url(parsed_url.clone());
+    }
+    let webview: WebView = builder.build();
+
+    if let Some(headers) = headers {
+        wait_for_browsing_context(&webview, servo)?;
+        // `about:blank` may already have reached `Complete`; the real
+        // page's load starts now.
+        delegate.loaded.set(false);
+        webview.load_request(UrlRequest::new(parsed_url).headers(headers));
     }
 
-    let webview: WebView = WebViewBuilder::new(servo, rendering_context.clone())
-        .hidpi_scale_factor(Scale::new(1.0))
-        .delegate(delegate.clone() as Rc<dyn WebViewDelegate>)
-        .build();
-
-    navigate_with_auth(&webview, config.auth.as_ref(), parsed_url);
-
     Ok((webview, rendering_context, delegate))
+}
+
+/// Spin the event loop until the constellation has activated `webview`'s
+/// browsing context (observable as its session history becoming non-empty).
+fn wait_for_browsing_context(webview: &WebView, servo: &Servo) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while webview.url().is_none() {
+        if Instant::now() > deadline {
+            return Err("timed out waiting for the webview's browsing context".to_string());
+        }
+        servo.spin_event_loop();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    Ok(())
 }
 
 /// Navigate `webview` to `url`, re-applying the configured custom request
