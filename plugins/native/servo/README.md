@@ -7,7 +7,7 @@ SPDX-License-Identifier: MPL-2.0
 # Servo Web Renderer Plugin
 
 Renders web pages to RGBA8 video frames via the [Servo](https://servo.org/)
-browser engine (v0.3.0). This is a **native plugin** — it builds as a shared
+browser engine (v0.4.0). This is a **native plugin** — it builds as a shared
 library (`.so`) loaded by StreamKit at runtime.
 
 ## Architecture
