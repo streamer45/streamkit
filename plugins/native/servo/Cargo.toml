@@ -4,7 +4,7 @@
 
 [package]
 name = "servo-plugin-native"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MPL-2.0"
 
@@ -14,7 +14,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 streamkit-plugin-sdk-native = { path = "../../../sdks/plugin-sdk/native" }
-servo = "0.1"
+servo = "0.4"
 image = { version = "0.25", default-features = false, features = ["png", "rayon"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -22,6 +22,10 @@ uuid = { version = "1", features = ["v4"] }
 url = "2"
 euclid = "0.22"
 dpi = "0.1"
+# Match the `http` major used by servo's embedder-traits so the `HeaderMap`
+# we build for `UrlRequest` (custom request headers / bearer auth) is the
+# same type servo expects.
+http = "1"
 tracing = "0.1"
 
 # Servo pulls in jemalloc via servo-allocator.  By default jemalloc uses
