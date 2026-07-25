@@ -42,9 +42,9 @@ The same URL serves a browser and a player/script: an address-bar visit (`Accept
 | Mode | Format | Plays in |
 |------|--------|----------|
 | `clip` | MP4 / H.264, fragmented (plays inline as it renders) | Everywhere, including Safari/iOS |
-| `cast` | VP9 / WebM by default; H.264 / fMP4 via `cast-encoder=h264-sw` | VP9: Chromium & Firefox. H.264/fMP4: everywhere, including Safari/iOS |
+| `cast` | VP9 / WebM by default; H.264 / fMP4 via `--cast-encoder h264-sw` | VP9: Chromium & Firefox. H.264/fMP4: everywhere, including Safari/iOS |
 
-The cast default (VP9/WebM) is crisper for screen text but plays only in Chromium/Firefox. For universal live playback (incl. Safari/iOS), set `cast-encoder=h264-sw` (or `h264-hw`): `transport::http::mse` serves fragmented MP4, which a plain `<video>` plays everywhere.
+The cast default (VP9/WebM) is crisper for screen text but plays only in Chromium/Firefox. For universal live playback (incl. Safari/iOS), start the gateway with `--cast-encoder h264-sw` (or `h264-hw`): `transport::http::mse` serves fragmented MP4, which a plain `<video>` plays everywhere. The encoder is an instance-wide setting, not a per-request option.
 
 ## Prereqs
 
@@ -114,4 +114,4 @@ Prometheus metrics at `GET /metrics` (not gated by the concurrency limit). Beyon
 
 - **Public / URL-only.** Targets that resolve to loopback/private/link-local/CGNAT/cloud-metadata addresses are rejected (SSRF guard). Auth-gated pages (cookies/headers) are intentionally out of scope — a future self-hosted feature, never the public path. DNS rebinding between the gateway's check and Servo's own fetch is a known gap.
 - **Servo is view-only and software-rendered**: static/CSS pages render at full frame rate; heavy WebGL is ~15–20 fps. No clicking, scrolling, or login.
-- **`cast` in Safari/iOS**: the default VP9/WebM is Chromium/Firefox-only; use `cast-encoder=h264-sw` for fMP4/H.264 that plays in Safari/iOS.
+- **`cast` in Safari/iOS**: the default VP9/WebM is Chromium/Firefox-only; run with `--cast-encoder h264-sw` for fMP4/H.264 that plays in Safari/iOS.
