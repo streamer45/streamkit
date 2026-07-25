@@ -1,0 +1,26 @@
+version: "2"
+linters:
+  default: none
+  enable:
+    - bidichk
+    - errcheck
+    - govet
+    - ineffassign
+    - makezero
+    - misspell
+    - revive
+    - staticcheck
+    - unconvert
+    - unqueryvet
+    - unused
+    - whitespace
+  settings:
+    govet:
+      disable:
+        - fieldalignment
+      enable-all: true
+    unqueryvet:
+      check-sql-builders: true
+issues:
+  max-issues-per-linter: 0 # no maximum
+  max-same-issues: 0 # no maximum

@@ -1683,6 +1683,27 @@ allowed_plugins = []
         });
     }
 
+    #[test]
+    fn config_partial_role_override_deep_merges_builtin() {
+        figment::Jail::expect_with(|jail| {
+            jail.create_file(
+                "skit.toml",
+                r#"[permissions.roles.user]
+allowed_nodes = ["video::*", "containers::*", "transport::http::mse", "plugin::*"]
+"#,
+            )?;
+            let result = load("skit.toml").expect("load with user override");
+            let user = result.config.permissions.roles.get("user").expect("user role");
+            // Fields absent from the TOML must survive from the built-in default
+            // (deep-merge), not reset to the struct's bool default of false.
+            assert!(user.create_sessions, "create_sessions preserved by deep-merge");
+            assert!(user.destroy_sessions, "destroy_sessions preserved by deep-merge");
+            // The overridden array adds the MSE transport node.
+            assert!(user.is_node_allowed("transport::http::mse"));
+            Ok(())
+        });
+    }
+
     fn attr_policy(allowed: &[&str], fallback: &str) -> MetricsAttributePolicy {
         MetricsAttributePolicy {
             allowed: allowed.iter().map(|s| (*s).to_string()).collect(),
