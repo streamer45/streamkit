@@ -80,8 +80,10 @@ pub enum ServoThreadResult {
     InitOk,
     /// Init failed with an error message.
     InitErr(String),
-    /// A rendered frame.
-    Frame { rgba_data: Vec<u8> },
+    /// A rendered frame.  `loaded` is true once the current page has
+    /// reached `LoadStatus::Complete` and painted at least once, letting
+    /// the node gate emission until real content is available.
+    Frame { rgba_data: Vec<u8>, loaded: bool },
 }
 
 /// Handle to the shared Servo thread's work channel.
@@ -410,7 +412,8 @@ fn send_fallback_frame(instances: &HashMap<NodeId, InstanceState>, node_id: &Nod
         .last_good_frame
         .clone()
         .unwrap_or_else(|| transparent_frame(state.config.width, state.config.height));
-    let _ = state.result_tx.send(ServoThreadResult::Frame { rgba_data: fallback });
+    let loaded = page_loaded(state);
+    let _ = state.result_tx.send(ServoThreadResult::Frame { rgba_data: fallback, loaded });
 }
 
 /// Handle a `Register` work item: create the WebView and the per-instance
@@ -421,10 +424,9 @@ fn send_fallback_frame(instances: &HashMap<NodeId, InstanceState>, node_id: &Nod
 /// loop progresses the load asynchronously.  This keeps node-init
 /// latency bounded by GPU surface allocation (sub-second) instead of
 /// blocking on the page's full first paint (5+ seconds for typical
-/// websites).  The `load_timeout_secs` config field is currently a
-/// no-op; it remains in the schema for forward compatibility (a future
-/// change may use it to cap wait-for-load progression for diagnostics
-/// or to move the node into Degraded if the page never loads).
+/// websites).  The node's tick loop uses the `loaded` flag on each
+/// `Frame` result to hold frame emission until the page has loaded and
+/// painted, capped by the `load_timeout_secs` config field.
 ///
 /// One-shot post-load work (custom CSS injection) is gated on
 /// `post_load_done` and runs in `handle_render` once
@@ -573,9 +575,19 @@ fn handle_render(
         );
     }
 
-    if state.result_tx.send(ServoThreadResult::Frame { rgba_data }).is_err() {
+    let loaded = page_loaded(state);
+    if state.result_tx.send(ServoThreadResult::Frame { rgba_data, loaded }).is_err() {
         instances.remove(node_id);
     }
+}
+
+/// Whether the instance's current page has fully loaded and painted.
+/// A pending deferred navigation means any load/paint state belongs to
+/// the builder's `about:blank`, not the target page.
+fn page_loaded(state: &InstanceState) -> bool {
+    state.pending_navigation.is_none()
+        && state.delegate.loaded.get()
+        && state.delegate.painted.get()
 }
 
 /// Read this instance's painted surface into an RGBA8 frame, scaling to the
