@@ -1,6 +1,10 @@
 ---
 name: testing-web-capture
-description: End-to-end testing of the StreamKit web-capture gateway demo (examples/web-capture) with the native servo plugin. Use when verifying clip/cast endpoints, servo page rendering, or cross-session pixel isolation.
+description: >-
+  End-to-end testing of the StreamKit web-capture gateway demo
+  (examples/web-capture) with the native servo plugin. Use when verifying
+  clip/cast endpoints, servo page rendering, or cross-session pixel isolation.
+license: MPL-2.0
 ---
 
 # Testing the web-capture gateway demo
