@@ -61,6 +61,7 @@ pub struct PluginSummary {
     pub plugin_type: PluginType,
     pub version: Option<String>,
     pub accelerator: Option<String>,
+    pub description: Option<String>,
 }
 
 impl PluginSummary {
@@ -90,6 +91,7 @@ impl PluginSummary {
             plugin_type: entry.plugin_type,
             version: entry.version.clone(),
             accelerator: entry.accelerator.clone(),
+            description: entry.description.clone(),
         }
     }
 }
@@ -109,6 +111,7 @@ struct ManagedPlugin {
     plugin_type: PluginType,
     version: Option<String>,
     accelerator: Option<String>,
+    description: Option<String>,
 }
 
 impl ManagedPlugin {
@@ -127,6 +130,7 @@ impl ManagedPlugin {
             plugin_type: PluginType::Wasm,
             version: None,
             accelerator: None,
+            description: None,
         }
     }
 
@@ -145,6 +149,7 @@ impl ManagedPlugin {
             plugin_type: PluginType::Native,
             version: None,
             accelerator: None,
+            description: None,
         }
     }
 }
@@ -753,8 +758,12 @@ impl UnifiedPluginManager {
             }
         }
 
-        let managed =
+        let mut managed =
             ManagedPlugin::new_wasm(plugin, original_kind, categories.clone(), path.to_path_buf());
+        if let Some(manifest) = read_local_plugin_manifest(path) {
+            managed.version = Some(manifest.version);
+            managed.description = manifest.description;
+        }
 
         let plugin_arc = match &managed.plugin {
             LoadedPluginInner::Wasm(p) => Arc::clone(p),
@@ -810,6 +819,7 @@ impl UnifiedPluginManager {
         let kind = streamkit_plugin_native::namespaced_kind(&original_kind)
             .with_context(|| format!("invalid plugin kind '{original_kind}'"))?;
         let categories = metadata.categories.clone();
+        let description = metadata.description.clone();
 
         self.check_kind_conflict(&kind, &original_kind)?;
 
@@ -821,8 +831,15 @@ impl UnifiedPluginManager {
                 .with_context(|| format!("failed to register plugin '{kind}'"))?;
         }
 
-        let managed =
+        let mut managed =
             ManagedPlugin::new_native(plugin, original_kind, categories, path.to_path_buf());
+        managed.description = description;
+        if let Some(manifest) = read_local_plugin_manifest(path) {
+            managed.version = Some(manifest.version);
+            if managed.description.is_none() {
+                managed.description = manifest.description;
+            }
+        }
 
         let summary = PluginSummary::from_entry(kind.clone(), &managed);
         self.plugins.insert(kind, managed);
@@ -1747,6 +1764,30 @@ mod tests {
         assert_eq!(summaries.len(), 1, "expected one loaded plugin, got {summaries:?}");
         assert_eq!(summaries[0].kind, "plugin::native::panicking");
         assert!(mgr.is_plugin_loaded("plugin::native::panicking"));
+    }
+
+    #[test]
+    fn directory_bundle_load_populates_version_and_description_from_manifest() {
+        // Directory bundles (e.g. demo-image plugins) carry a plugin.yml or
+        // marketplace manifest.json next to the .so; version/description must
+        // surface in the summary even without an active record.
+        let Some(so) = panicking_plugin_so_or_skip() else { return };
+        let tmp = TempDir::new().unwrap();
+        let mut mgr = make_manager(&tmp);
+        let bundle_dir = tmp.path().join("native").join("panicking");
+        std::fs::create_dir_all(&bundle_dir).unwrap();
+        std::fs::copy(&so, bundle_dir.join("libpanicking_plugin.so")).unwrap();
+        std::fs::write(
+            bundle_dir.join("plugin.yml"),
+            "id: panicking\nversion: 1.2.3\nnode_kind: panicking\nkind: native\n\
+             entrypoint: libpanicking_plugin.so\ndescription: Manifest description\n",
+        )
+        .unwrap();
+
+        let summaries = mgr.load_existing().expect("load_existing succeeds with one bundle");
+        assert_eq!(summaries.len(), 1, "expected one loaded plugin, got {summaries:?}");
+        assert_eq!(summaries[0].version.as_deref(), Some("1.2.3"));
+        assert!(summaries[0].description.is_some(), "description must be populated");
     }
 
     #[test]

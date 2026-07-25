@@ -108,6 +108,33 @@ describe('MintedTokensTable', () => {
     });
   });
 
+  it('shows token status and filters by active only', async () => {
+    const user = userEvent.setup();
+    const future = Math.floor(Date.now() / 1000) + 3600;
+    render(
+      <MintedTokensTable
+        isLoading={false}
+        tokens={[
+          makeToken({ jti: 'aaa', label: 'still valid', exp: future }),
+          makeToken({ jti: 'bbb', label: 'long gone', exp: 200 }),
+          makeToken({ jti: 'ccc', label: 'pulled', exp: future, revoked: true }),
+        ]}
+        canManageTokens={false}
+        onRevoke={() => {}}
+      />
+    );
+
+    expect(screen.getByText('active')).toBeInTheDocument();
+    expect(screen.getByText('expired')).toBeInTheDocument();
+    expect(screen.getByText('revoked')).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByDisplayValue(/status: any/i), 'active');
+
+    expect(screen.getByText('aaa')).toBeInTheDocument();
+    expect(screen.queryByText('bbb')).not.toBeInTheDocument();
+    expect(screen.queryByText('ccc')).not.toBeInTheDocument();
+  });
+
   it('hides revoke button for current token', () => {
     render(
       <MintedTokensTable

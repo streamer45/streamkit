@@ -76,8 +76,10 @@ export interface PluginSummary {
   loaded_at_ms: number;
   /** Plugin type (wasm or native) */
   plugin_type: PluginType;
-  /** Plugin version from the marketplace record, if available */
+  /** Plugin version from the marketplace record or local manifest, if available */
   version?: string | null;
   /** Accelerator variant of the installed bundle (e.g. "cpu", "cuda"), if known */
   accelerator?: string | null;
+  /** Human-readable plugin description from metadata or manifest, if available */
+  description?: string | null;
 }

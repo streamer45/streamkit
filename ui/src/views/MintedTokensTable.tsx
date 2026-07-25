@@ -47,6 +47,14 @@ function formatIsoUtc(ts: number): string {
   }
 }
 
+type TokenStatus = 'active' | 'expired' | 'revoked';
+
+function tokenStatus(token: TokenInfo): TokenStatus {
+  if (token.revoked) return 'revoked';
+  if (token.exp * 1000 <= Date.now()) return 'expired';
+  return 'active';
+}
+
 function shortJti(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) return trimmed;
@@ -58,7 +66,7 @@ function shortJti(value: string): string {
 type SortDirection = 'asc' | 'desc';
 type SortState = { columnId: ColumnId; direction: SortDirection };
 
-type ColumnId = 'jti' | 'token_type' | 'role' | 'label' | 'created_at' | 'exp' | 'revoked';
+type ColumnId = 'jti' | 'token_type' | 'role' | 'label' | 'created_at' | 'exp' | 'status';
 
 type ColumnDef = {
   id: ColumnId;
@@ -73,6 +81,9 @@ type ColumnDef = {
 
 const allRoles = ['(any)', '(none)', 'viewer', 'user', 'admin'] as const;
 type RoleFilter = (typeof allRoles)[number];
+
+const allStatuses = ['(any)', 'active', 'expired', 'revoked'] as const;
+type StatusFilter = (typeof allStatuses)[number];
 
 export type MintedTokensTableProps = {
   isLoading: boolean;
@@ -91,6 +102,7 @@ export function MintedTokensTable({
 }: MintedTokensTableProps) {
   const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState<RoleFilter>('(any)');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('(any)');
   const [sort, setSort] = useState<SortState>({ columnId: 'created_at', direction: 'desc' });
   const [columnWidths, setColumnWidths] = useState<Record<ColumnId, number>>({
     jti: 110,
@@ -99,7 +111,7 @@ export function MintedTokensTable({
     label: 220,
     created_at: 140,
     exp: 140,
-    revoked: 90,
+    status: 90,
   });
   const [activeResize, setActiveResize] = useState<{
     columnId: ColumnId;
@@ -182,20 +194,30 @@ export function MintedTokensTable({
         resizable: true,
         size: 140,
         minSize: 120,
-        renderCell: (t) => <span title={formatIsoUtc(t.exp)}>{formatUnixSeconds(t.exp)}</span>,
+        renderCell: (t) => (
+          <span
+            title={formatIsoUtc(t.exp)}
+            style={tokenStatus(t) === 'expired' ? { opacity: 0.6 } : undefined}
+          >
+            {formatUnixSeconds(t.exp)}
+          </span>
+        ),
         getSortValue: (t) => t.exp,
       },
       {
-        id: 'revoked',
-        label: 'Revoked',
+        id: 'status',
+        label: 'Status',
         sortable: true,
         resizable: true,
         size: 90,
         minSize: 90,
-        renderCell: (t) => (
-          <Badge $variant={t.revoked ? 'danger' : 'success'}>{t.revoked ? 'yes' : 'no'}</Badge>
-        ),
-        getSortValue: (t) => t.revoked,
+        renderCell: (t) => {
+          const status = tokenStatus(t);
+          const variant =
+            status === 'revoked' ? 'danger' : status === 'expired' ? 'warning' : 'success';
+          return <Badge $variant={variant}>{status}</Badge>;
+        },
+        getSortValue: (t) => tokenStatus(t),
       },
     ],
     []
@@ -220,6 +242,8 @@ export function MintedTokensTable({
         if (t.role !== roleFilter) return false;
       }
 
+      if (statusFilter !== '(any)' && tokenStatus(t) !== statusFilter) return false;
+
       if (!searchValue) return true;
 
       const searchableText = [t.jti, t.label, t.token_type, t.role]
@@ -228,7 +252,7 @@ export function MintedTokensTable({
         .toLowerCase();
       return searchableText.includes(searchValue);
     });
-  }, [tokens, search, roleFilter]);
+  }, [tokens, search, roleFilter, statusFilter]);
 
   const sortedTokens = useMemo(() => {
     const column = columns.find((c) => c.id === sort.columnId);
@@ -331,6 +355,16 @@ export function MintedTokensTable({
             </option>
           ))}
         </Select>
+        <Select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+        >
+          {allStatuses.map((s) => (
+            <option key={s} value={s}>
+              {s === '(any)' ? 'Status: any' : `Status: ${s}`}
+            </option>
+          ))}
+        </Select>
       </FilterRow>
       <TableWrapper>
         <Table role="table" style={{ width: minTableWidth }}>
@@ -416,7 +450,7 @@ export function MintedTokensTable({
               <tr>
                 <td colSpan={columns.length + 1}>
                   <Subtle>
-                    {search.trim() || roleFilter !== '(any)'
+                    {search.trim() || roleFilter !== '(any)' || statusFilter !== '(any)'
                       ? 'No tokens match your filters.'
                       : 'No tokens found.'}
                   </Subtle>
@@ -426,11 +460,12 @@ export function MintedTokensTable({
           </tbody>
         </Table>
       </TableWrapper>
-      {(search.trim() || roleFilter !== '(any)') && sortedTokens.length !== totalRowCount && (
-        <Subtle style={{ marginTop: '8px' }}>
-          Showing {sortedTokens.length} of {totalRowCount} tokens
-        </Subtle>
-      )}
+      {(search.trim() || roleFilter !== '(any)' || statusFilter !== '(any)') &&
+        sortedTokens.length !== totalRowCount && (
+          <Subtle style={{ marginTop: '8px' }}>
+            Showing {sortedTokens.length} of {totalRowCount} tokens
+          </Subtle>
+        )}
     </>
   );
 }

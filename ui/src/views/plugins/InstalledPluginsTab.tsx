@@ -18,6 +18,7 @@ import { getLogger } from '@/utils/logger';
 import {
   EmptyState,
   ErrorBox,
+  MarketplaceListDescription,
   NoticeBox,
   PluginBadge,
   PluginHeader,
@@ -118,6 +119,11 @@ const InstalledPluginsTab: React.FC = () => {
                         {plugin.kind}
                       </span>
                       <PluginBadge $variant={plugin.plugin_type}>{plugin.plugin_type}</PluginBadge>
+                      {plugin.version && (
+                        <span className="code-font" style={{ opacity: 0.75 }}>
+                          v{plugin.version}
+                        </span>
+                      )}
                     </div>
                     <Button
                       variant="danger"
@@ -128,8 +134,11 @@ const InstalledPluginsTab: React.FC = () => {
                       {deletingKind === plugin.kind ? 'Removing…' : 'Unload'}
                     </Button>
                   </PluginHeader>
+                  {plugin.description && (
+                    <MarketplaceListDescription>{plugin.description}</MarketplaceListDescription>
+                  )}
                   <PluginMeta>
-                    {plugin.version && <span>Version: {plugin.version}</span>}
+                    <span>Version: {plugin.version ?? 'unknown'}</span>
                     {plugin.accelerator && <span>Accelerator: {plugin.accelerator}</span>}
                     <span>Original kind: {plugin.original_kind}</span>
                     <span>File: {plugin.file_name}</span>
