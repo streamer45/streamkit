@@ -888,12 +888,14 @@ pub fn plugin_assets_router() -> Router<Arc<AppState>> {
 /// Used when loading local (non-marketplace) plugins from disk.  The manifest
 /// is parsed as a [`PluginManifest`] to extract `assets` declarations.
 ///
-/// Searches for the manifest in two locations:
+/// Searches for the manifest in three locations:
 /// 1. `plugin.yml` / `plugin.yaml` in the same directory as the `.so` file
 ///    (works with the directory-per-plugin layout produced by
 ///    `just copy-plugins-native`, e.g. `.plugins/native/slint/plugin.yml`).
 /// 2. `{stem}.plugin.yml` / `{stem}.plugin.yaml` next to the `.so` file
 ///    (fallback for any non-standard layouts).
+/// 3. `manifest.json` next to the `.so` file (marketplace bundle layout,
+///    for bundles extracted manually into the native plugin directory).
 pub fn read_local_plugin_manifest(
     library_path: &std::path::Path,
 ) -> Option<crate::marketplace::PluginManifest> {
@@ -914,19 +916,28 @@ pub fn read_local_plugin_manifest(
         candidates.push(dir.join(format!("{stem}.plugin.yml")));
         candidates.push(dir.join(format!("{stem}.plugin.yaml")));
     }
+    candidates.push(dir.join("manifest.json"));
 
     for manifest_path in &candidates {
         if manifest_path.exists() {
+            let is_json = manifest_path.extension().and_then(|e| e.to_str()) == Some("json");
             match std::fs::read_to_string(manifest_path) {
-                Ok(contents) => match serde_saphyr::from_str(&contents) {
-                    Ok(manifest) => return Some(manifest),
-                    Err(e) => {
-                        warn!(
-                            path = %manifest_path.display(),
-                            error = %e,
-                            "Failed to parse plugin manifest"
-                        );
-                    },
+                Ok(contents) => {
+                    let parsed = if is_json {
+                        serde_json::from_str(&contents).map_err(|e| e.to_string())
+                    } else {
+                        serde_saphyr::from_str(&contents).map_err(|e| e.to_string())
+                    };
+                    match parsed {
+                        Ok(manifest) => return Some(manifest),
+                        Err(e) => {
+                            warn!(
+                                path = %manifest_path.display(),
+                                error = %e,
+                                "Failed to parse plugin manifest"
+                            );
+                        },
+                    }
                 },
                 Err(e) => {
                     warn!(
@@ -2670,6 +2681,42 @@ mod handler_tests {
              kind: native\n\
              entrypoint: lib{id}.so\n"
         )
+    }
+
+    #[test]
+    fn read_local_plugin_manifest_loads_marketplace_manifest_json() {
+        let tmp = TempDir::new().unwrap();
+        let library = tmp.path().join("libslint.so");
+        std::fs::write(&library, b"").unwrap();
+        let json = serde_json::json!({
+            "id": "slint",
+            "version": "0.2.0",
+            "node_kind": "plugin::native::slint",
+            "kind": "native",
+            "entrypoint": "libslint.so",
+        });
+        std::fs::write(tmp.path().join("manifest.json"), json.to_string()).unwrap();
+        let manifest = read_local_plugin_manifest(&library).expect("manifest");
+        assert_eq!(manifest.id, "slint");
+        assert_eq!(manifest.version, "0.2.0");
+    }
+
+    #[test]
+    fn read_local_plugin_manifest_prefers_yaml_over_manifest_json() {
+        let tmp = TempDir::new().unwrap();
+        let library = tmp.path().join("libslint.so");
+        std::fs::write(&library, b"").unwrap();
+        std::fs::write(tmp.path().join("plugin.yml"), minimal_manifest_yaml("slint")).unwrap();
+        let json = serde_json::json!({
+            "id": "other",
+            "version": "9.9.9",
+            "node_kind": "plugin::native::other",
+            "kind": "native",
+            "entrypoint": "libother.so",
+        });
+        std::fs::write(tmp.path().join("manifest.json"), json.to_string()).unwrap();
+        let manifest = read_local_plugin_manifest(&library).expect("manifest");
+        assert_eq!(manifest.id, "slint");
     }
 
     #[test]
