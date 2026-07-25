@@ -203,6 +203,14 @@ struct InstanceState {
     /// Reset on `UpdateConfig` when the URL changes so the new page
     /// gets the same treatment.
     post_load_done: bool,
+    /// Navigation waiting for the webview's browsing context to come up.
+    /// The constellation silently drops a `LoadUrl` sent before it has
+    /// activated the context (which happens asynchronously after
+    /// `WebViewBuilder::build()`), so navigations that can't ride on the
+    /// builder URL — the custom-header initial load, and URL updates
+    /// arriving before activation — are parked here and issued from
+    /// `handle_render` once `WebView::url()` reports the context is live.
+    pending_navigation: Option<url::Url>,
 }
 
 /// Entry point for the shared Servo thread.
@@ -433,7 +441,7 @@ fn handle_register(
     });
 
     match create_webview(servo_ref, &config) {
-        Ok((webview, rendering_context, delegate)) => {
+        Ok((webview, rendering_context, delegate, pending_navigation)) => {
             tracing::info!(
                 node_id = %node_id,
                 url = %crate::config::redact_url(&config.url),
@@ -463,6 +471,7 @@ fn handle_register(
                     consecutive_panic_count: 0,
                     poisoned: false,
                     post_load_done: false,
+                    pending_navigation,
                 },
             );
         },
@@ -492,6 +501,17 @@ fn handle_render(
     // also what advances the deferred page load registered in
     // `handle_register`.
     servo.spin_event_loop();
+
+    // `WebView::url()` flips to `Some` on the constellation's first
+    // history update, i.e. once the browsing context is active and
+    // `load_request` is no longer dropped.
+    if state.pending_navigation.is_some() && state.webview.url().is_some() {
+        if let Some(url) = state.pending_navigation.take() {
+            navigate_with_auth(&state.webview, state.config.auth.as_ref(), url);
+            // The builder's `about:blank` may already have completed.
+            state.delegate.loaded.set(false);
+        }
+    }
 
     // Run one-shot post-load actions (custom CSS) the first tick that
     // observes a successful load.  Gated to fire exactly once per URL
@@ -591,7 +611,12 @@ fn handle_update_config(
 
     if url_changed {
         if let Ok(parsed) = url::Url::parse(&new_config.url) {
-            navigate_with_auth(&state.webview, state.config.auth.as_ref(), parsed);
+            if state.webview.url().is_none() {
+                state.pending_navigation = Some(parsed);
+            } else {
+                state.pending_navigation = None;
+                navigate_with_auth(&state.webview, state.config.auth.as_ref(), parsed);
+            }
             state.delegate.loaded.set(false);
             // Reset the one-shot post-load gate so the new page gets
             // its custom-CSS injection (if any) once it finishes
@@ -666,14 +691,15 @@ fn handle_resize(
     state.last_good_frame = None;
 }
 
+/// A freshly created webview plus the navigation deferred to the render
+/// loop (see `InstanceState::pending_navigation`), if any.
+type CreatedWebView = (WebView, Rc<SoftwareRenderingContext>, Rc<FrameDelegate>, Option<url::Url>);
+
 /// Create a `WebView` with its own `SoftwareRenderingContext` on the shared
 /// Servo instance.  The rendering context uses the *viewport* dimensions
 /// (which may be larger than the output frame), so the page layout has
 /// room to breathe.  Scaling to output dimensions happens in `handle_render`.
-fn create_webview(
-    servo: &Servo,
-    config: &ServoConfig,
-) -> Result<(WebView, Rc<SoftwareRenderingContext>, Rc<FrameDelegate>), String> {
+fn create_webview(servo: &Servo, config: &ServoConfig) -> Result<CreatedWebView, String> {
     let vw = config.effective_viewport_width();
     let vh = config.effective_viewport_height();
     let size = PhysicalSize::new(vw, vh);
@@ -711,36 +737,19 @@ fn create_webview(
     // before it has activated the webview's browsing context, which
     // happens asynchronously after `build()`.  Custom request headers
     // can't be attached to the builder's URL, so the auth path builds
-    // with the default `about:blank` and issues the header-carrying
-    // navigation once the browsing context is up.
-    if headers.is_none() {
-        builder = builder.url(parsed_url.clone());
-    }
+    // with the default `about:blank` and parks the header-carrying
+    // navigation as `pending_navigation`, issued from `handle_render`
+    // once the context is up — keeping registration non-blocking so
+    // other nodes on the shared thread keep rendering.
+    let pending_navigation = if headers.is_some() {
+        Some(parsed_url)
+    } else {
+        builder = builder.url(parsed_url);
+        None
+    };
     let webview: WebView = builder.build();
 
-    if let Some(headers) = headers {
-        wait_for_browsing_context(&webview, servo)?;
-        // `about:blank` may already have reached `Complete`; the real
-        // page's load starts now.
-        delegate.loaded.set(false);
-        webview.load_request(UrlRequest::new(parsed_url).headers(headers));
-    }
-
-    Ok((webview, rendering_context, delegate))
-}
-
-/// Spin the event loop until the constellation has activated `webview`'s
-/// browsing context (observable as its session history becoming non-empty).
-fn wait_for_browsing_context(webview: &WebView, servo: &Servo) -> Result<(), String> {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while webview.url().is_none() {
-        if Instant::now() > deadline {
-            return Err("timed out waiting for the webview's browsing context".to_string());
-        }
-        servo.spin_event_loop();
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    Ok(())
+    Ok((webview, rendering_context, delegate, pending_navigation))
 }
 
 /// Navigate `webview` to `url`, re-applying the configured custom request
