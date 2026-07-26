@@ -771,12 +771,13 @@ fn handle_render(
 
     pump_instance(state, servo, node_id);
 
-    let rgba_data = if state.delegate.painted.get() {
+    // `page_painted` (not the raw painted flag): with a deferred navigation
+    // pending, any paint state belongs to the builder's `about:blank`, so
+    // reading the surface would emit the wrong page's pixels and skew the
+    // pre-paint frame count for the first-frame diagnostics below.
+    let rgba_data = if page_painted(state) {
         let frame = read_painted_frame(state, node_id);
-        // Gate on `page_painted` (not the raw flag) so a paint of the
-        // builder's `about:blank` on the deferred-navigation path does not
-        // consume the one-shot log before the real page's first frame.
-        if page_painted(state) && !state.content_frame_logged {
+        if !state.content_frame_logged {
             state.content_frame_logged = true;
             // A painted-but-blank surface distinguishes an early/empty paint
             // signal from a late paint when diagnosing black capture starts.
