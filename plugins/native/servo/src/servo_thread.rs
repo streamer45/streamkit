@@ -773,7 +773,10 @@ fn handle_render(
 
     let rgba_data = if state.delegate.painted.get() {
         let frame = read_painted_frame(state, node_id);
-        if !state.content_frame_logged {
+        // Gate on `page_painted` (not the raw flag) so a paint of the
+        // builder's `about:blank` on the deferred-navigation path does not
+        // consume the one-shot log before the real page's first frame.
+        if page_painted(state) && !state.content_frame_logged {
             state.content_frame_logged = true;
             // A painted-but-blank surface distinguishes an early/empty paint
             // signal from a late paint when diagnosing black capture starts.
@@ -965,6 +968,7 @@ fn handle_update_config(
             // hold a neighbour's pixels until the resized page repaints.
             state.delegate.painted.set(false);
             state.first_paint_at = None;
+            state.first_render_at = None;
             state.pre_paint_frames = 0;
             state.content_frame_logged = false;
             servo.spin_event_loop();
