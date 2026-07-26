@@ -167,13 +167,15 @@ pub struct ServoConfig {
     /// Output frame rate.
     #[serde(default = "default_fps")]
     pub fps: u32,
-    /// Optional CSS to inject into the page after load.
+    /// Optional CSS applied at first paint, after the post-paint settle
+    /// period, and at load completion.
     #[serde(default)]
     pub custom_css: Option<String>,
     /// Total frames to generate.  0 = infinite (real-time pacing).
     #[serde(default = "default_frame_count")]
     pub frame_count: u32,
-    /// Maximum seconds to wait for the initial page load.
+    /// Maximum seconds to hold first-frame emission for the initial page.
+    /// Emission starts earlier on load-complete or shortly after first paint.
     #[serde(default = "default_load_timeout_secs")]
     pub load_timeout_secs: u32,
     /// Optional authentication settings for loading private pages.

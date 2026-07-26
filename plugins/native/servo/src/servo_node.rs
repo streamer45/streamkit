@@ -4,13 +4,18 @@
 
 //! `NativeSourceNode` implementation for the Servo web renderer plugin.
 
+use std::time::{Duration, Instant};
+
 use streamkit_plugin_sdk_native::prelude::*;
 use streamkit_plugin_sdk_native::streamkit_core::types::{
     PacketMetadata, PixelFormat, RawVideoFormat, VideoFrame,
 };
 
 use crate::config::ServoConfig;
-use crate::servo_thread::{send_work, NodeId, ServoThreadResult, ServoWorkItem};
+use crate::servo_thread::{send_work, NodeId, ServoThreadResult, ServoWorkItem, POST_PAINT_SETTLE};
+
+/// Interval between status polls while the first-load gate holds emission.
+const LOAD_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Servo web renderer video source plugin.
 ///
@@ -89,7 +94,7 @@ impl NativeSourceNode for ServoSourcePlugin {
                     },
                     "custom_css": {
                         "type": "string",
-                        "description": "Optional CSS to inject into the page",
+                        "description": "Optional CSS applied at three lifecycle triggers: first paint, after the post-paint settle period, and load-complete",
                         "tunable": true
                     },
                     "frame_count": {
@@ -100,7 +105,7 @@ impl NativeSourceNode for ServoSourcePlugin {
                     "load_timeout_secs": {
                         "type": "integer",
                         "default": 30,
-                        "description": "Maximum seconds to hold frame emission while waiting for the initial page to load and paint. Frames start at real page content instead of blank/loading frames; on timeout, emission starts regardless. The wait happens inside the first tick, so keep this below the host's native_call_timeout_secs.",
+                        "description": "Maximum seconds to hold frame emission while the initial page becomes ready. Emission starts on load-complete, or ~2s after the first paint when the load event lags (ad-heavy pages may never fire it); on timeout it starts regardless. The wait happens inside the first tick, so keep this below the host's native_call_timeout_secs.",
                         "minimum": 1
                     },
                     "auth": {
@@ -217,44 +222,22 @@ impl NativeSourceNode for ServoSourcePlugin {
             Ok(ServoThreadResult::InitErr(e)) => {
                 Err(format!("Servo instance creation failed: {e}"))
             },
-            Ok(ServoThreadResult::Frame { .. }) => {
-                Err("Unexpected frame result during init".to_string())
-            },
+            Ok(_) => Err("Unexpected result during init".to_string()),
             Err(_) => Err("Shared Servo thread channel closed during init".to_string()),
         }
     }
 
     fn tick(&mut self, output: &OutputSender) -> Result<bool, String> {
-        let Some((mut rgba_data, mut loaded)) = self.request_frame()? else {
-            return Ok(false);
-        };
-
-        // Hold the first emitted frame until the page has loaded and
-        // painted (capped by load_timeout_secs), so captures start at
-        // real content rather than blank/loading frames.  Only this
-        // node's tick loop blocks; the shared Servo thread keeps
-        // serving other instances between polls.
         if self.awaiting_first_load {
-            let deadline = std::time::Instant::now()
-                + std::time::Duration::from_secs(u64::from(self.config.load_timeout_secs));
-            while !loaded && std::time::Instant::now() < deadline {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                let Some(frame) = self.request_frame()? else {
-                    return Ok(false);
-                };
-                (rgba_data, loaded) = frame;
-            }
-            if loaded {
-                plugin_info!(self.logger, "Initial page loaded; starting frame emission");
-            } else {
-                plugin_warn!(
-                    self.logger,
-                    "Page did not finish loading within {}s; starting frame emission anyway",
-                    self.config.load_timeout_secs
-                );
+            if !self.await_first_load()? {
+                return Ok(false);
             }
             self.awaiting_first_load = false;
         }
+
+        let Some(rgba_data) = self.request_frame()? else {
+            return Ok(false);
+        };
 
         let timestamp_us = self.tick_count * self.duration_us;
         let metadata = Some(PacketMetadata {
@@ -352,15 +335,76 @@ impl ServoSourcePlugin {
     ///
     /// Returns `Ok(None)` on an unexpected (non-frame) result so the
     /// caller can skip the tick without failing the node.
-    fn request_frame(&self) -> Result<Option<(Vec<u8>, bool)>, String> {
+    fn request_frame(&self) -> Result<Option<Vec<u8>>, String> {
         send_work(ServoWorkItem::Render { node_id: self.node_id })?;
         match self.result_rx.recv() {
-            Ok(ServoThreadResult::Frame { rgba_data, loaded }) => Ok(Some((rgba_data, loaded))),
+            Ok(ServoThreadResult::Frame { rgba_data }) => Ok(Some(rgba_data)),
             Ok(_) => {
                 plugin_warn!(self.logger, "Unexpected result from Servo thread");
                 Ok(None)
             },
             Err(_) => Err("Servo thread result channel closed".to_string()),
+        }
+    }
+
+    /// Request the page's `(painted, loaded)` state from the shared Servo
+    /// thread.  Each poll pumps the shared event loop (which is what
+    /// advances the load) without a full-frame readback.
+    ///
+    /// Returns `Ok(None)` on an unexpected (non-status) result so the
+    /// caller can skip the tick without failing the node.
+    fn request_status(&self) -> Result<Option<(bool, bool)>, String> {
+        send_work(ServoWorkItem::Status { node_id: self.node_id })?;
+        match self.result_rx.recv() {
+            Ok(ServoThreadResult::Status { painted, loaded }) => Ok(Some((painted, loaded))),
+            Ok(_) => {
+                plugin_warn!(self.logger, "Unexpected result from Servo thread");
+                Ok(None)
+            },
+            Err(_) => Err("Servo thread result channel closed".to_string()),
+        }
+    }
+
+    /// Hold the first emitted frame until the page is ready, so captures
+    /// start at real content rather than blank/loading frames.
+    ///
+    /// Ready means `LoadStatus::Complete`, or [`POST_PAINT_SETTLE`] after
+    /// the first paint when the load event lags behind visible content
+    /// (ad-heavy pages may never fire it), capped by `load_timeout_secs`.
+    /// Only this node's tick loop blocks; the shared Servo thread keeps
+    /// serving other instances between polls.
+    fn await_first_load(&self) -> Result<bool, String> {
+        let deadline =
+            Instant::now() + Duration::from_secs(u64::from(self.config.load_timeout_secs));
+        let mut first_paint: Option<Instant> = None;
+        loop {
+            let Some((painted, loaded)) = self.request_status()? else {
+                return Ok(false);
+            };
+            if loaded {
+                plugin_info!(self.logger, "Initial page loaded; starting frame emission");
+                return Ok(true);
+            }
+            if painted
+                && first_paint.get_or_insert_with(Instant::now).elapsed() >= POST_PAINT_SETTLE
+            {
+                plugin_info!(
+                    self.logger,
+                    "Initial page painted but load still pending after {:?}; \
+                     starting frame emission",
+                    POST_PAINT_SETTLE
+                );
+                return Ok(true);
+            }
+            if Instant::now() >= deadline {
+                plugin_warn!(
+                    self.logger,
+                    "Page did not finish loading within {}s; starting frame emission anyway",
+                    self.config.load_timeout_secs
+                );
+                return Ok(true);
+            }
+            std::thread::sleep(LOAD_POLL_INTERVAL);
         }
     }
 }

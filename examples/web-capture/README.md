@@ -85,6 +85,7 @@ xdg-open 'http://127.0.0.1:8080/cast/example.com'
 | `GATEWAY_CAST_BITRATE_KBPS` | `--cast-bitrate-kbps` | `6000` | Cast video bitrate (kbps) |
 | `GATEWAY_CLIP_ENCODER` | `--clip-encoder` | `h264-sw` | `h264-sw`, or `h264-hw` (Vulkan Video) |
 | `GATEWAY_CAST_ENCODER` | `--cast-encoder` | `vp9-sw` | `vp9-sw`, `av1-sw`, `av1-hw`, `h264-sw`, `h264-hw` |
+| `GATEWAY_LOAD_TIMEOUT_SECS` | `--load-timeout-secs` | 5 | Max first-frame hold while the page loads (servo `load_timeout_secs`) |
 
 Capture runs at **1080p30** by default: the page renders **and** encodes at the same resolution (1:1, no downscale), so text stays crisp and the page gets a real desktop layout. Drop to `res=1280x720` for less bandwidth or raise to `res=2560x1440` for more detail (capped at 4K); frame rate is fixed at 30.
 

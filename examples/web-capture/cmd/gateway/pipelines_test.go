@@ -11,7 +11,7 @@ import (
 )
 
 func TestRenderClipPipeline(t *testing.T) {
-	out := renderClipPipeline("https://example.com/p?a=1", 1920, 1080, 30, 300, 10000, clipEncoders["h264-sw"])
+	out := renderClipPipeline("https://example.com/p?a=1", 1920, 1080, 30, 5, 300, 10000, clipEncoders["h264-sw"])
 	if strings.Contains(out, "{{") {
 		t.Fatalf("unreplaced placeholder in:\n%s", out)
 	}
@@ -20,6 +20,7 @@ func TestRenderClipPipeline(t *testing.T) {
 		"width: 1920",
 		"height: 1080",
 		"frame_count: 300",
+		"load_timeout_secs: 5",
 		"mode: stream",
 		"video_codec: h264",
 		"bitrate_kbps: 10000",
@@ -39,7 +40,7 @@ func TestRenderClipPipeline(t *testing.T) {
 // any embedded newline/quote so injected keys never appear at line start.
 func TestRenderClipPipelineQuotesURL(t *testing.T) {
 	malicious := "https://x/\"\n  evil: true"
-	out := renderClipPipeline(malicious, 1920, 1080, 30, 30, 10000, clipEncoders["h264-sw"])
+	out := renderClipPipeline(malicious, 1920, 1080, 30, 5, 30, 10000, clipEncoders["h264-sw"])
 	if strings.Contains(out, "\n  evil: true") {
 		t.Errorf("newline injection not escaped:\n%s", out)
 	}
@@ -49,7 +50,7 @@ func TestRenderClipPipelineQuotesURL(t *testing.T) {
 }
 
 func TestRenderCastPipeline(t *testing.T) {
-	out := renderCastPipeline("https://example.com", 1920, 1080, 30, 10, 6000, castEncoders["vp9-sw"])
+	out := renderCastPipeline("https://example.com", 1920, 1080, 30, 5, 10, 6000, castEncoders["vp9-sw"])
 	if strings.Contains(out, "{{") {
 		t.Fatalf("unreplaced placeholder in:\n%s", out)
 	}
@@ -61,6 +62,7 @@ func TestRenderCastPipeline(t *testing.T) {
 		"streaming_mode: live",
 		"width: 1920",
 		"height: 1080",
+		"load_timeout_secs: 5",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("cast pipeline missing %q", want)

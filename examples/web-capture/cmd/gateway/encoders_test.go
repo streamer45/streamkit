@@ -29,7 +29,7 @@ func TestClipEncoderProfiles(t *testing.T) {
 		"h264-hw": {"video::vulkan_video::h264_encoder", "bitrate: 10000000", "framerate: 30", "video_codec: h264"},
 	}
 	for name, wants := range cases {
-		out := renderClipPipeline("https://example.com", 1920, 1080, 30, 300, 10000, clipEncoders[name])
+		out := renderClipPipeline("https://example.com", 1920, 1080, 30, 5, 300, 10000, clipEncoders[name])
 		if strings.Contains(out, "{{") {
 			t.Fatalf("%s: unreplaced placeholder in:\n%s", name, out)
 		}
@@ -50,7 +50,7 @@ func TestCastEncoderProfiles(t *testing.T) {
 		"h264-hw": {"video::vulkan_video::h264_encoder", "containers::mp4::muxer", "mode: stream", `codecs=\"avc1.42c01f\"`},
 	}
 	for name, wants := range cases {
-		out := renderCastPipeline("https://example.com", 1920, 1080, 30, 10, 6000, castEncoders[name])
+		out := renderCastPipeline("https://example.com", 1920, 1080, 30, 5, 10, 6000, castEncoders[name])
 		if strings.Contains(out, "{{") {
 			t.Fatalf("%s: unreplaced placeholder in:\n%s", name, out)
 		}
