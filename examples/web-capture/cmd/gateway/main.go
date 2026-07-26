@@ -44,6 +44,14 @@ const (
 	// opt-in via --clip-encoder / --cast-encoder.
 	defaultClipEncoder = "h264-sw"
 	defaultCastEncoder = "vp9-sw"
+
+	// Cap on how long the renderer holds the first frame waiting for the
+	// page to become ready (servo load_timeout_secs). The plugin default
+	// (30s) assumes offline captures; for an interactive gateway every
+	// second here is dead air before the first byte, and ad-heavy pages
+	// never fire their load event at all. Must stay below mseReadyTimeout
+	// or cast viewers 503 before the stream can produce its init segment.
+	defaultLoadTimeoutSecs = 5
 )
 
 type config struct {
@@ -59,6 +67,7 @@ type config struct {
 	castBitrate    int
 	clipEncoder    string
 	castEncoder    string
+	loadTimeout    int
 	maxSessions    int
 	maxViewers     int
 	idleTTL        time.Duration
@@ -78,6 +87,7 @@ type gateway struct {
 	castBitrate     int
 	clipEnc         encoderProfile
 	castEnc         encoderProfile
+	loadTimeout     int
 	mseReadyTimeout time.Duration
 	skit            *skitClient
 	sessions        *sessionManager
@@ -110,6 +120,7 @@ func main() {
 		castBitrate:     cfg.castBitrate,
 		clipEnc:         clipEnc,
 		castEnc:         castEnc,
+		loadTimeout:     cfg.loadTimeout,
 		mseReadyTimeout: 8 * time.Second,
 		skit:            skit,
 		sessions:        newSessionManager(skit, cfg.maxSessions, cfg.maxViewers, cfg.idleTTL, cfg.maxLifetime),
@@ -180,6 +191,7 @@ func loadConfig() config {
 	castBitrate := flag.Int("cast-bitrate-kbps", envInt("GATEWAY_CAST_BITRATE_KBPS", defaultCastBitrateKbps), "Cast video bitrate (kbps)")
 	clipEncoder := flag.String("clip-encoder", getEnvDefault("GATEWAY_CLIP_ENCODER", defaultClipEncoder), "Clip encoder: h264-sw, h264-hw")
 	castEncoder := flag.String("cast-encoder", getEnvDefault("GATEWAY_CAST_ENCODER", defaultCastEncoder), "Cast encoder: vp9-sw, av1-sw, av1-hw, h264-sw, h264-hw (h264 = fMP4, plays in Safari/iOS)")
+	loadTimeout := flag.Int("load-timeout-secs", envInt("GATEWAY_LOAD_TIMEOUT_SECS", defaultLoadTimeoutSecs), "Max seconds the renderer holds the first frame waiting for page load (servo load_timeout_secs)")
 
 	flag.Parse()
 
@@ -192,6 +204,7 @@ func loadConfig() config {
 	*maxConc = clampMin("--max-concurrency", *maxConc)
 	*maxSessions = clampMin("--max-sessions", *maxSessions)
 	*maxViewers = clampMin("--max-viewers", *maxViewers)
+	*loadTimeout = clampMin("--load-timeout-secs", *loadTimeout)
 
 	resW, resH, err := parseResolution(*resolution)
 	if err != nil {
@@ -212,6 +225,7 @@ func loadConfig() config {
 		castBitrate:    *castBitrate,
 		clipEncoder:    *clipEncoder,
 		castEncoder:    *castEncoder,
+		loadTimeout:    *loadTimeout,
 		maxSessions:    *maxSessions,
 		maxViewers:     *maxViewers,
 		idleTTL:        time.Duration(*idleSecs) * time.Second,
@@ -308,7 +322,7 @@ func (gw *gateway) serveClip(w http.ResponseWriter, r *http.Request, u *url.URL,
 	}
 	defer release()
 
-	yaml := renderClipPipeline(u.String(), opts.resW, opts.resH, captureFPS, clipFrames(opts.dur), gw.clipBitrate, gw.clipEnc)
+	yaml := renderClipPipeline(u.String(), opts.resW, opts.resH, captureFPS, gw.loadTimeout, clipFrames(opts.dur), gw.clipBitrate, gw.clipEnc)
 	gw.proxyOneshot(w, r, yaml)
 }
 
@@ -328,7 +342,7 @@ func (gw *gateway) serveCast(w http.ResponseWriter, r *http.Request, u *url.URL,
 	// own. The YAML renders lazily — only a session-creating acquire uses it.
 	key := fmt.Sprintf("%s|%dx%d", u.String(), opts.resW, opts.resH)
 	s, err := gw.sessions.acquire(r.Context(), key, func() string {
-		return renderCastPipeline(u.String(), opts.resW, opts.resH, captureFPS, gw.sessions.maxViewers, gw.castBitrate, gw.castEnc)
+		return renderCastPipeline(u.String(), opts.resW, opts.resH, captureFPS, gw.loadTimeout, gw.sessions.maxViewers, gw.castBitrate, gw.castEnc)
 	})
 	if err != nil {
 		switch {

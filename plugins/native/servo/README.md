@@ -115,7 +115,7 @@ build.
 | `fps`          | integer | 30      | Output frame rate |
 | `custom_css`   | string  | —       | Optional CSS injected into the page |
 | `frame_count`  | integer | 0       | Total frames to generate (0 = infinite) |
-| `load_timeout_secs` | integer | 30 | Maximum seconds to wait for page load |
+| `load_timeout_secs` | integer | 30 | Maximum seconds to hold frame emission for the initial page. Emission starts on load-complete, or ~2s after first paint when the load event lags |
 | `auth`         | object  | —       | Optional init-time authentication for private pages (see below) |
 
 ### Authentication

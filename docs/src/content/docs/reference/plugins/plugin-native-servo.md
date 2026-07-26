@@ -35,7 +35,7 @@ No inputs.
 | `fps` | `integer` | no | `30` | Output frame rate |
 | `custom_css` | `string` | no | — | Optional CSS to inject into the page |
 | `frame_count` | `integer` | no | `0` | Total frames to generate (`0` = infinite) |
-| `load_timeout_secs` | `integer` | no | `30` | Maximum seconds to wait for page load |
+| `load_timeout_secs` | `integer` | no | `30` | Maximum seconds to hold frame emission for the initial page. Emission starts on load-complete, or ~2s after first paint when the load event lags |
 
 <details>
 <summary>Raw JSON Schema</summary>

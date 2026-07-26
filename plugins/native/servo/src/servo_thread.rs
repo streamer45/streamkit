@@ -22,8 +22,9 @@
 //!
 //! - Work item handlers are wrapped in `catch_unwind` so a panic in one
 //!   node does not bring down the shared thread (and all other nodes).
-//! - Page load errors are detected via timeout when `LoadStatus::Complete`
-//!   is not received within the configured deadline.
+//! - Pages that never reach `LoadStatus::Complete` (common on ad-heavy
+//!   sites) are handled by the node's first-load gate: it releases shortly
+//!   after the first paint, or at `load_timeout_secs` at the latest.
 //! - Each instance caches the last successfully rendered frame; on render
 //!   failures the cached frame is returned instead of a blank.
 //! - After [`POISON_THRESHOLD`] consecutive render panics an instance is
@@ -66,6 +67,10 @@ pub enum ServoWorkItem {
     },
     /// Request a single rendered frame for the given instance.
     Render { node_id: NodeId },
+    /// Pump the event loop and report the instance's load/paint state
+    /// without a frame readback.  Used by the node's first-load gate to
+    /// poll cheaply while it holds emission.
+    Status { node_id: NodeId },
     /// Update the config (URL) for subsequent renders.
     UpdateConfig { node_id: NodeId, config: ServoConfig },
     /// Resize the output dimensions (from compositor upstream hint).
@@ -80,10 +85,12 @@ pub enum ServoThreadResult {
     InitOk,
     /// Init failed with an error message.
     InitErr(String),
-    /// A rendered frame.  `loaded` is true once the current page has
-    /// reached `LoadStatus::Complete` and painted at least once, letting
-    /// the node gate emission until real content is available.
-    Frame { rgba_data: Vec<u8>, loaded: bool },
+    /// A rendered frame.
+    Frame { rgba_data: Vec<u8> },
+    /// Load/paint state for the node's first-load gate.  `painted` is true
+    /// once the current page has painted at least once; `loaded` once it
+    /// has additionally reached `LoadStatus::Complete`.
+    Status { painted: bool, loaded: bool },
 }
 
 /// Handle to the shared Servo thread's work channel.
@@ -131,8 +138,8 @@ pub fn send_work(item: ServoWorkItem) -> Result<(), String> {
 /// `notify_new_frame_ready` -- without it the software rendering context's
 /// framebuffer never receives pixels.
 ///
-/// `loaded` is read by `handle_render`'s post-load gate to fire one-shot
-/// post-load actions (custom CSS injection) on the first tick after the
+/// `loaded` is read by `pump_instance`'s post-load gate to fire one-shot
+/// post-load actions (custom CSS injection) on the first pump after the
 /// page reaches `LoadStatus::Complete`.
 ///
 /// `painted` gates surface reads: surfman reuses the underlying
@@ -278,20 +285,39 @@ fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
                             error = %msg,
                             "Panic during Servo Render — sending fallback frame",
                         );
-                        if let Some(state) = instances.get_mut(&node_id) {
-                            state.consecutive_panic_count += 1;
-                            if state.consecutive_panic_count >= POISON_THRESHOLD {
-                                state.poisoned = true;
-                                tracing::error!(
-                                    node_id = %node_id,
-                                    consecutive_panics = state.consecutive_panic_count,
-                                    "Servo instance poisoned after {} consecutive render \
-                                     panics — skipping Servo calls until URL change",
-                                    POISON_THRESHOLD,
-                                );
-                            }
-                        }
+                        record_panic(&mut instances, &node_id);
                         send_fallback_frame(&instances, &node_id);
+                    },
+                }
+            },
+            ServoWorkItem::Status { node_id } => {
+                // Poisoned instances skip Servo calls; `send_status`
+                // reports them as ready so the first-frame gate does not
+                // wait out its timeout on an instance that will only ever
+                // serve cached fallback frames.
+                if instances.get(&node_id).is_some_and(|s| s.poisoned) {
+                    send_status(&mut instances, &node_id);
+                    continue;
+                }
+
+                let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    handle_status(&mut instances, servo.as_ref(), &node_id);
+                }));
+                match result {
+                    Ok(()) => {
+                        if let Some(state) = instances.get_mut(&node_id) {
+                            state.consecutive_panic_count = 0;
+                        }
+                    },
+                    Err(panic) => {
+                        let msg = panic_message(&panic);
+                        tracing::error!(
+                            node_id = %node_id,
+                            error = %msg,
+                            "Panic during Servo Status — reporting current state",
+                        );
+                        record_panic(&mut instances, &node_id);
+                        send_status(&mut instances, &node_id);
                     },
                 }
             },
@@ -412,11 +438,26 @@ fn send_fallback_frame(instances: &HashMap<NodeId, InstanceState>, node_id: &Nod
         .last_good_frame
         .clone()
         .unwrap_or_else(|| transparent_frame(state.config.width, state.config.height));
-    // A poisoned instance never progresses its load, so report it as
-    // loaded to keep the node's first-frame gate from waiting out the
-    // full load timeout on a cached/transparent fallback.
-    let loaded = state.poisoned || page_loaded(state);
-    let _ = state.result_tx.send(ServoThreadResult::Frame { rgba_data: fallback, loaded });
+    let _ = state.result_tx.send(ServoThreadResult::Frame { rgba_data: fallback });
+}
+
+/// Track a Servo-call panic for an instance, poisoning it after
+/// [`POISON_THRESHOLD`] consecutive panics.
+fn record_panic(instances: &mut HashMap<NodeId, InstanceState>, node_id: &NodeId) {
+    let Some(state) = instances.get_mut(node_id) else {
+        return;
+    };
+    state.consecutive_panic_count += 1;
+    if state.consecutive_panic_count >= POISON_THRESHOLD {
+        state.poisoned = true;
+        tracing::error!(
+            node_id = %node_id,
+            consecutive_panics = state.consecutive_panic_count,
+            "Servo instance poisoned after {} consecutive render \
+             panics — skipping Servo calls until URL change",
+            POISON_THRESHOLD,
+        );
+    }
 }
 
 /// Handle a `Register` work item: create the WebView and the per-instance
@@ -500,24 +541,14 @@ fn handle_register(
     }
 }
 
-/// Handle a `Render` work item: pump the event loop and read pixels.
-fn handle_render(
-    instances: &mut HashMap<NodeId, InstanceState>,
-    servo: Option<&Servo>,
-    node_id: &NodeId,
-) {
-    let (Some(state), Some(servo)) = (instances.get_mut(node_id), servo) else {
-        // Instance or Servo not found — send a fallback frame so the
-        // caller's blocking recv() in tick() does not deadlock.
-        send_fallback_frame(instances, node_id);
-        return;
-    };
-
-    let render_start = Instant::now();
-
+/// Pump the shared event loop on behalf of one instance: bind its
+/// rendering context, spin, issue any parked navigation once the browsing
+/// context is live, and run one-shot post-load actions.
+fn pump_instance(state: &mut InstanceState, servo: &Servo, node_id: &NodeId) {
     // Bind this instance's context before pumping so its own paint targets
     // its own surface.  `SoftwareRenderingContext`/surfman share GL state
-    // process-wide, so the read below additionally re-binds (see there).
+    // process-wide, so frame reads additionally re-bind (see
+    // `read_painted_frame`).
     let _ = state.rendering_context.make_current();
 
     // Pump the event loop to let Servo process pending work — this is
@@ -539,7 +570,7 @@ fn handle_render(
         }
     }
 
-    // Run one-shot post-load actions (custom CSS) the first tick that
+    // Run one-shot post-load actions (custom CSS) the first pump that
     // observes a successful load.  Gated to fire exactly once per URL
     // (`UpdateConfig` resets `post_load_done` on URL change).
     if !state.post_load_done && state.delegate.loaded.get() {
@@ -553,6 +584,53 @@ fn handle_render(
             "Page reached LoadStatus::Complete — post-load actions applied",
         );
     }
+}
+
+/// Handle a `Status` work item: pump the event loop so the deferred page
+/// load progresses, then report load/paint state without the full-frame
+/// readback of `handle_render`.  Keeps the node's first-load polling
+/// cheap on the shared thread.
+fn handle_status(
+    instances: &mut HashMap<NodeId, InstanceState>,
+    servo: Option<&Servo>,
+    node_id: &NodeId,
+) {
+    if let (Some(state), Some(servo)) = (instances.get_mut(node_id), servo) {
+        pump_instance(state, servo, node_id);
+    }
+    send_status(instances, node_id);
+}
+
+/// Report an instance's load/paint state.  Poisoned instances report
+/// ready so the first-frame gate does not wait out its full timeout on
+/// an instance that will only ever serve cached fallback frames.
+fn send_status(instances: &mut HashMap<NodeId, InstanceState>, node_id: &NodeId) {
+    let Some(state) = instances.get(node_id) else {
+        return;
+    };
+    let painted = state.poisoned || page_painted(state);
+    let loaded = state.poisoned || page_loaded(state);
+    if state.result_tx.send(ServoThreadResult::Status { painted, loaded }).is_err() {
+        instances.remove(node_id);
+    }
+}
+
+/// Handle a `Render` work item: pump the event loop and read pixels.
+fn handle_render(
+    instances: &mut HashMap<NodeId, InstanceState>,
+    servo: Option<&Servo>,
+    node_id: &NodeId,
+) {
+    let (Some(state), Some(servo)) = (instances.get_mut(node_id), servo) else {
+        // Instance or Servo not found — send a fallback frame so the
+        // caller's blocking recv() in tick() does not deadlock.
+        send_fallback_frame(instances, node_id);
+        return;
+    };
+
+    let render_start = Instant::now();
+
+    pump_instance(state, servo, node_id);
 
     let rgba_data = if state.delegate.painted.get() {
         read_painted_frame(state, node_id)
@@ -581,19 +659,21 @@ fn handle_render(
         );
     }
 
-    let loaded = page_loaded(state);
-    if state.result_tx.send(ServoThreadResult::Frame { rgba_data, loaded }).is_err() {
+    if state.result_tx.send(ServoThreadResult::Frame { rgba_data }).is_err() {
         instances.remove(node_id);
     }
 }
 
-/// Whether the instance's current page has fully loaded and painted.
+/// Whether the instance's current page has painted at least once.
 /// A pending deferred navigation means any load/paint state belongs to
 /// the builder's `about:blank`, not the target page.
+fn page_painted(state: &InstanceState) -> bool {
+    state.pending_navigation.is_none() && state.delegate.painted.get()
+}
+
+/// Whether the instance's current page has fully loaded and painted.
 fn page_loaded(state: &InstanceState) -> bool {
-    state.pending_navigation.is_none()
-        && state.delegate.loaded.get()
-        && state.delegate.painted.get()
+    page_painted(state) && state.delegate.loaded.get()
 }
 
 /// Read this instance's painted surface into an RGBA8 frame, scaling to the

@@ -41,7 +41,7 @@ fn register(url: &str) -> (NodeId, Receiver<ServoThreadResult>) {
     match rx.recv() {
         Ok(ServoThreadResult::InitOk) => {},
         Ok(ServoThreadResult::InitErr(e)) => panic!("init failed: {e}"),
-        Ok(ServoThreadResult::Frame { .. }) => panic!("unexpected frame during init"),
+        Ok(_) => panic!("unexpected result during init"),
         Err(e) => panic!("init recv failed: {e}"),
     }
     (node_id, rx)

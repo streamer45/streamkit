@@ -14,7 +14,7 @@ import (
 // templates from pipelines/. Each renders and encodes at one resolution (no
 // downscale, so text stays crisp) and carries placeholders the render functions
 // substitute: {{URL}} (strconv.Quote'd so a hostile URL can't break out of the
-// scalar), dimensions/fps/bitrate, the {{ENCODER_BLOCK}} for the chosen profile,
+// scalar), dimensions/fps/load-timeout/bitrate, the {{ENCODER_BLOCK}} for the chosen profile,
 // and the {{CONTENT_TYPE}}/{{MUX_CODEC}} it implies. See encoders.go.
 
 //go:embed pipelines/clip.yml.tmpl
@@ -23,13 +23,14 @@ var clipPipelineTemplate string
 //go:embed pipelines/cast.yml.tmpl
 var castPipelineTemplate string
 
-func renderClipPipeline(targetURL string, resW, resH, fps, frameCount, brKbps int, enc encoderProfile) string {
+func renderClipPipeline(targetURL string, resW, resH, fps, loadTimeoutSecs, frameCount, brKbps int, enc encoderProfile) string {
 	tmpl := strings.Replace(clipPipelineTemplate, "{{ENCODER_BLOCK}}", enc.block, 1)
 	return strings.NewReplacer(
 		"{{URL}}", strconv.Quote(targetURL),
 		"{{WIDTH}}", strconv.Itoa(resW),
 		"{{HEIGHT}}", strconv.Itoa(resH),
 		"{{FPS}}", strconv.Itoa(fps),
+		"{{LOAD_TIMEOUT}}", strconv.Itoa(loadTimeoutSecs),
 		"{{GOP}}", strconv.Itoa(gopForFPS(fps)),
 		"{{FRAME_COUNT}}", strconv.Itoa(frameCount),
 		"{{BR_KBPS}}", strconv.Itoa(brKbps),
@@ -39,7 +40,7 @@ func renderClipPipeline(targetURL string, resW, resH, fps, frameCount, brKbps in
 	).Replace(tmpl)
 }
 
-func renderCastPipeline(targetURL string, resW, resH, fps, maxClients, brKbps int, enc encoderProfile) string {
+func renderCastPipeline(targetURL string, resW, resH, fps, loadTimeoutSecs, maxClients, brKbps int, enc encoderProfile) string {
 	tmpl := strings.Replace(castPipelineTemplate, "{{ENCODER_BLOCK}}", enc.block, 1)
 	tmpl = strings.Replace(tmpl, "{{MUXER_BLOCK}}", enc.muxer, 1)
 	return strings.NewReplacer(
@@ -47,6 +48,7 @@ func renderCastPipeline(targetURL string, resW, resH, fps, maxClients, brKbps in
 		"{{WIDTH}}", strconv.Itoa(resW),
 		"{{HEIGHT}}", strconv.Itoa(resH),
 		"{{FPS}}", strconv.Itoa(fps),
+		"{{LOAD_TIMEOUT}}", strconv.Itoa(loadTimeoutSecs),
 		"{{GOP}}", strconv.Itoa(gopForFPS(fps)),
 		"{{MAX_CLIENTS}}", strconv.Itoa(maxClients),
 		"{{BR_KBPS}}", strconv.Itoa(brKbps),

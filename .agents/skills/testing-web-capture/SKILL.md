@@ -25,7 +25,8 @@ license: MPL-2.0
 ## Verifying frames (don't trust playback alone)
 - Extract frames: `ffmpeg -i clip.mp4 -vf "select='eq(n,30)+eq(n,300)'" -vsync 0 f_%d.png`
 - Pixel stats with PIL: min/max grey and dark-pixel fraction distinguish blank white (min≈255), blank black/pre-paint (max≈0), and real content.
-- Since the first-load gate (plugin >= 0.2.2), clips/casts should show page content from frame 0 (the node holds emission until loaded+painted, capped by `load_timeout_secs`, default 30s). Pre-0.2.2 builds may show all-black cold-start clips or blank lead-ins.
+- Since the first-load gate (plugin >= 0.2.2), clips/casts should show page content from frame 0 (the node holds emission until the page is ready, capped by `load_timeout_secs`, default 30s). Pre-0.2.2 builds may show all-black cold-start clips or blank lead-ins.
+- Since plugin >= 0.2.3, "ready" is load-complete OR ~2s after first paint — ad-heavy pages that never fire their load event no longer stall the full timeout. The gateway also caps `load_timeout_secs` at 5s (GATEWAY_LOAD_TIMEOUT_SECS), so worst-case time-to-first-byte through the gateway is ~5s plus one GOP (~1s).
 - Some pages (e.g. streamkit.dev) may still show a single white first frame — the page's own pre-theme paint, not a gate failure.
 - Testing the load-timeout expiry path via the gateway is hard: SSRF blocks local hanging servers and public "slow" endpoints (httpstat.us sleep, closed ports) fail fast rather than hang.
 

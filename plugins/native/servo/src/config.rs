@@ -173,7 +173,8 @@ pub struct ServoConfig {
     /// Total frames to generate.  0 = infinite (real-time pacing).
     #[serde(default = "default_frame_count")]
     pub frame_count: u32,
-    /// Maximum seconds to wait for the initial page load.
+    /// Maximum seconds to hold first-frame emission for the initial page.
+    /// Emission starts earlier on load-complete or shortly after first paint.
     #[serde(default = "default_load_timeout_secs")]
     pub load_timeout_secs: u32,
     /// Optional authentication settings for loading private pages.
