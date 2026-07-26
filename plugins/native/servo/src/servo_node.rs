@@ -236,7 +236,9 @@ impl NativeSourceNode for ServoSourcePlugin {
 
     fn tick(&mut self, output: &OutputSender) -> Result<bool, String> {
         if self.awaiting_first_load {
-            self.await_first_load()?;
+            if !self.await_first_load()? {
+                return Ok(false);
+            }
             self.awaiting_first_load = false;
         }
 
@@ -357,7 +359,7 @@ impl ServoSourcePlugin {
     /// advances the load) without a full-frame readback.
     ///
     /// Returns `Ok(None)` on an unexpected (non-status) result so the
-    /// caller can bail out without failing the node.
+    /// caller can skip the tick without failing the node.
     fn request_status(&self) -> Result<Option<(bool, bool)>, String> {
         send_work(ServoWorkItem::Status { node_id: self.node_id })?;
         match self.result_rx.recv() {
@@ -378,17 +380,17 @@ impl ServoSourcePlugin {
     /// (ad-heavy pages may never fire it), capped by `load_timeout_secs`.
     /// Only this node's tick loop blocks; the shared Servo thread keeps
     /// serving other instances between polls.
-    fn await_first_load(&self) -> Result<(), String> {
+    fn await_first_load(&self) -> Result<bool, String> {
         let deadline =
             Instant::now() + Duration::from_secs(u64::from(self.config.load_timeout_secs));
         let mut first_paint: Option<Instant> = None;
         loop {
             let Some((painted, loaded)) = self.request_status()? else {
-                return Ok(());
+                return Ok(false);
             };
             if loaded {
                 plugin_info!(self.logger, "Initial page loaded; starting frame emission");
-                return Ok(());
+                return Ok(true);
             }
             if painted
                 && first_paint.get_or_insert_with(Instant::now).elapsed() >= POST_PAINT_SETTLE
@@ -399,7 +401,7 @@ impl ServoSourcePlugin {
                      starting frame emission",
                     POST_PAINT_SETTLE
                 );
-                return Ok(());
+                return Ok(true);
             }
             if Instant::now() >= deadline {
                 plugin_warn!(
@@ -407,7 +409,7 @@ impl ServoSourcePlugin {
                     "Page did not finish loading within {}s; starting frame emission anyway",
                     self.config.load_timeout_secs
                 );
-                return Ok(());
+                return Ok(true);
             }
             std::thread::sleep(LOAD_POLL_INTERVAL);
         }

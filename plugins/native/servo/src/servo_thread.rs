@@ -463,14 +463,9 @@ fn record_panic(instances: &mut HashMap<NodeId, InstanceState>, node_id: &NodeId
 /// Handle a `Register` work item: create the WebView and the per-instance
 /// rendering context, then return `InitOk` *immediately*.
 ///
-/// Page loading is deferred — the first few `handle_render` ticks will
-/// return transparent / partially-painted frames while Servo's event
-/// loop progresses the load asynchronously.  This keeps node-init
-/// latency bounded by GPU surface allocation (sub-second) instead of
-/// blocking on the page's full first paint (5+ seconds for typical
-/// websites).  The node's tick loop uses the `loaded` flag on each
-/// `Frame` result to hold frame emission until the page has loaded and
-/// painted, capped by the `load_timeout_secs` config field.
+/// Page loading is deferred — the node's first tick polls the shared Servo
+/// thread's `Status` item until the page completes loading or has been
+/// painted for the post-paint settle period, capped by `load_timeout_secs`.
 ///
 /// One-shot post-load work (custom CSS injection) is gated on
 /// `post_load_done` and runs in `handle_render` once
