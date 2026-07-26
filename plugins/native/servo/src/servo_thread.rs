@@ -222,8 +222,8 @@ impl CustomCssStages {
         }
     }
 
-    const fn rearm_for_css_change(painted: bool) -> Self {
-        Self { first_paint: painted, post_paint_settle: false, load_complete: false }
+    const fn for_css_change(painted: bool, loaded: bool, settled: bool) -> Self {
+        Self { first_paint: painted, post_paint_settle: settled, load_complete: loaded }
     }
 }
 
@@ -839,7 +839,9 @@ fn handle_update_config(
 
     if css_changed && !url_changed {
         let painted = page_painted(state);
-        state.custom_css_stages = CustomCssStages::rearm_for_css_change(painted);
+        let loaded = page_loaded(state);
+        let settled = state.first_paint_at.is_some_and(|at| at.elapsed() >= POST_PAINT_SETTLE);
+        state.custom_css_stages = CustomCssStages::for_css_change(painted, loaded, settled);
         if let Some(ref css) = new_config.custom_css {
             if painted {
                 inject_custom_css(&state.webview, servo, css);
@@ -1060,14 +1062,18 @@ mod tests {
 
     #[test]
     fn custom_css_change_rearms_future_stages_without_reinjecting_first_paint() {
-        let rearmed = CustomCssStages::rearm_for_css_change(true);
+        let rearmed = CustomCssStages::for_css_change(true, true, true);
 
+        assert_eq!(next_custom_css_stage(true, true, Some(Duration::from_secs(3)), rearmed), None);
+
+        let rearmed = CustomCssStages::for_css_change(true, false, false);
+        assert_eq!(next_custom_css_stage(true, false, Some(Duration::ZERO), rearmed), None);
         assert_eq!(
-            next_custom_css_stage(true, true, Some(Duration::from_secs(3)), rearmed),
-            Some(CustomCssStage::LoadComplete)
+            next_custom_css_stage(true, false, Some(POST_PAINT_SETTLE), rearmed),
+            Some(CustomCssStage::PostPaintSettle)
         );
 
-        let rearmed = CustomCssStages::rearm_for_css_change(false);
+        let rearmed = CustomCssStages::for_css_change(false, false, false);
         assert_eq!(next_custom_css_stage(false, false, None, rearmed), None);
         assert_eq!(
             next_custom_css_stage(true, false, Some(Duration::ZERO), rearmed),
