@@ -28,6 +28,8 @@ license: MPL-2.0
 
 ## Verifying frames (don't trust playback alone)
 - Extract frames: `ffmpeg -i clip.mp4 -vf "select='eq(n,30)+eq(n,300)'" -vsync 0 f_%d.png`
+- Live cast WebM files have no cues — `ffmpeg -ss`/`-sseof` seeking silently returns the first frame. Extract frames
+  with `select='eq(n,N)'` full decodes instead, and beware lexicographic sorting of `%d`-numbered frame files.
 - Pixel stats with PIL: min/max grey and dark-pixel fraction distinguish blank white (min≈255), blank black/pre-paint (max≈0), and real content.
 - Since the first-load gate (plugin >= 0.2.2), clips/casts should show page content from frame 0 (the node holds emission until the page is ready, capped by `load_timeout_secs`, default 30s). Pre-0.2.2 builds may show all-black cold-start clips or blank lead-ins.
 - Since plugin >= 0.2.3, "ready" is load-complete OR ~2s after first paint — ad-heavy pages that never fire their load event no longer stall the full timeout. The gateway also caps `load_timeout_secs` at 5s (GATEWAY_LOAD_TIMEOUT_SECS), so worst-case time-to-first-byte through the gateway is ~5s plus one GOP (~1s).
@@ -54,6 +56,12 @@ license: MPL-2.0
   load completes, so screenshots work — and the on-screen `currentTime` is proof playback advances.
 - Autoplay may land paused in this environment: click the play control, then compare `currentTime` across two views.
 - A cast joined mid-session starts at a non-zero `currentTime` (live stream) — not a defect.
+
+## Tuning a live cast's URL
+- Build the CLI with `cargo build --release -p streamkit-client` (the package is `streamkit-client`, not `skit-cli`), then
+  `target/release/skit-cli tune <session-id> web url <new-url>` (sends a `TuneNode` request over the WebSocket
+  control plane; the value is parsed as YAML, so quote URLs with YAML-special characters). The embedded MCP endpoint is
+  disabled by default (`[mcp]` in `skit.toml`), so MCP tuning is not available out of the box.
 
 ## Cross-session leak checks
 - Sequential: capture page A then page B; sampled B frames must contain no A pixels (use dark/light pages so pixel stats catch leaks).
