@@ -59,8 +59,9 @@ license: MPL-2.0
 
 ## Tuning a live cast's URL
 - Build the CLI with `cargo build --release -p streamkit-client` (the package is `streamkit-client`, not `skit-cli`), then
-  `target/release/skit-cli tune <session-id> web url <new-url>` (uses the REST/WS control plane under the hood).
-  The embedded MCP endpoint is disabled by default (`[mcp]` in `skit.toml`), so MCP tuning is not available out of the box.
+  `target/release/skit-cli tune <session-id> web url <new-url>` (sends a `TuneNode` request over the WebSocket
+  control plane; the value is parsed as YAML, so quote URLs with YAML-special characters). The embedded MCP endpoint is
+  disabled by default (`[mcp]` in `skit.toml`), so MCP tuning is not available out of the box.
 
 ## Cross-session leak checks
 - Sequential: capture page A then page B; sampled B frames must contain no A pixels (use dark/light pages so pixel stats catch leaks).
