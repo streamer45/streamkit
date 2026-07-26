@@ -4,7 +4,7 @@
 
 [package]
 name = "servo-plugin-native"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2021"
 license = "MPL-2.0"
 
@@ -42,10 +42,10 @@ tracing = "0.1"
 tikv-jemalloc-sys = { version = "0.6", features = ["disable_initial_exec_tls"] }
 
 [dev-dependencies]
-# The cross-session leak integration test drives the real Servo engine,
-# which has no clean global-shutdown path: at process exit mozjs' C++
-# destructors race the still-live renderer thread and SIGSEGV.  The test
-# calls `libc::_exit` after asserting to bypass that teardown.
+# The integration tests drive the real Servo engine, which has no clean
+# global-shutdown path: at process exit mozjs' C++ destructors race the
+# still-live renderer thread and SIGSEGV.  Each test calls `libc::_exit`
+# after asserting to bypass that teardown.
 libc = "0.2"
 
 [lints.clippy]

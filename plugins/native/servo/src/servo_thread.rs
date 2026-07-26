@@ -596,6 +596,10 @@ fn handle_register(
         let mut prefs = servo::Preferences {
             network_http_proxy_uri: String::new(),
             network_https_proxy_uri: String::new(),
+            // WebGL2 is off by default in Servo; without it pages that
+            // require a webgl2 context (getContext returns null) render
+            // as static content with no animation.
+            dom_webgl2_enabled: true,
             ..servo::Preferences::default()
         };
         // `Preferences` is a process-global singleton, so the User-Agent of
