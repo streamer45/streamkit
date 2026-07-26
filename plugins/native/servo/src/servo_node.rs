@@ -101,7 +101,7 @@ impl NativeSourceNode for ServoSourcePlugin {
                     },
                     "custom_css": {
                         "type": "string",
-                        "description": "Optional CSS to inject into the page",
+                        "description": "Optional CSS applied at first paint, re-applied after the post-paint settle period, and applied again at load-complete",
                         "tunable": true
                     },
                     "frame_count": {

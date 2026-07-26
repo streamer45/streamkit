@@ -113,7 +113,7 @@ build.
 | `viewport_height` | integer | 0    | Browser viewport height (0 = same as `height`). Set larger to see more of the page, scaled down. |
 | `viewport_resolution` | string | — | Viewport preset (`"WxH"`, e.g. `"1920x1080"`). Tunable at runtime; overrides `viewport_width`/`viewport_height`. |
 | `fps`          | integer | 30      | Output frame rate |
-| `custom_css`   | string  | —       | Optional CSS injected into the page |
+| `custom_css`   | string  | —       | Optional CSS applied at first paint, re-applied after the post-paint settle period, and applied again at load-complete |
 | `frame_count`  | integer | 0       | Total frames to generate (0 = infinite) |
 | `load_timeout_secs` | integer | 30 | Maximum seconds to hold frame emission for the initial page. Emission starts on load-complete, or ~2s after first paint when the load event lags |
 | `auth`         | object  | —       | Optional init-time authentication for private pages (see below) |

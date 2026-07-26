@@ -33,7 +33,7 @@ No inputs.
 | `viewport_height` | `integer` | no | `0` | Browser viewport height (`0` = output height) |
 | `viewport_resolution` | `string` | no | — | Runtime viewport preset (`640x480`, `1280x720`, `1280x960`, `1920x1080`, `2560x1440`) |
 | `fps` | `integer` | no | `30` | Output frame rate |
-| `custom_css` | `string` | no | — | Optional CSS to inject into the page |
+| `custom_css` | `string` | no | — | Optional CSS applied at first paint, re-applied after the post-paint settle period, and applied again at load-complete |
 | `frame_count` | `integer` | no | `0` | Total frames to generate (`0` = infinite) |
 | `load_timeout_secs` | `integer` | no | `30` | Maximum seconds to hold frame emission for the initial page. Emission starts on load-complete, or ~2s after first paint when the load event lags |
 
@@ -52,7 +52,7 @@ No inputs.
     "viewport_height": { "type": "integer", "default": 0 },
     "viewport_resolution": { "type": "string", "enum": ["640x480", "1280x720", "1280x960", "1920x1080", "2560x1440"], "tunable": true },
     "fps": { "type": "integer", "default": 30, "minimum": 1 },
-    "custom_css": { "type": "string", "tunable": true },
+    "custom_css": { "type": "string", "description": "Optional CSS applied at first paint, re-applied after the post-paint settle period, and applied again at load-complete", "tunable": true },
     "frame_count": { "type": "integer", "default": 0 },
     "load_timeout_secs": { "type": "integer", "default": 30, "minimum": 1 }
   }

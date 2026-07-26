@@ -39,6 +39,8 @@ use std::rc::Rc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+const CUSTOM_CSS_POST_PAINT_SETTLE: Duration = Duration::from_secs(2);
+
 use dpi::PhysicalSize;
 use euclid::Scale;
 use servo::{
@@ -185,6 +187,61 @@ impl WebViewDelegate for FrameDelegate {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CustomCssStage {
+    FirstPaint,
+    PostPaintSettle,
+    LoadComplete,
+}
+
+impl CustomCssStage {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::FirstPaint => "first paint",
+            Self::PostPaintSettle => "post-paint settle",
+            Self::LoadComplete => "load complete",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct CustomCssStages {
+    first_paint: bool,
+    post_paint_settle: bool,
+    load_complete: bool,
+}
+
+impl CustomCssStages {
+    const fn mark(&mut self, stage: CustomCssStage) {
+        match stage {
+            CustomCssStage::FirstPaint => self.first_paint = true,
+            CustomCssStage::PostPaintSettle => self.post_paint_settle = true,
+            CustomCssStage::LoadComplete => self.load_complete = true,
+        }
+    }
+}
+
+fn next_custom_css_stage(
+    painted: bool,
+    loaded: bool,
+    first_paint_elapsed: Option<Duration>,
+    fired: CustomCssStages,
+) -> Option<CustomCssStage> {
+    if painted && !fired.first_paint {
+        return Some(CustomCssStage::FirstPaint);
+    }
+    if loaded && !fired.load_complete {
+        return Some(CustomCssStage::LoadComplete);
+    }
+    if painted
+        && first_paint_elapsed.is_some_and(|elapsed| elapsed >= CUSTOM_CSS_POST_PAINT_SETTLE)
+        && !fired.post_paint_settle
+    {
+        return Some(CustomCssStage::PostPaintSettle);
+    }
+    None
+}
+
 /// Per-instance state living on the shared Servo thread.
 ///
 /// Each instance has its own `SoftwareRenderingContext` and `WebView`,
@@ -215,12 +272,12 @@ struct InstanceState {
     /// returned directly.  Set after [`POISON_THRESHOLD`] consecutive
     /// render panics; cleared on URL change (`UpdateConfig`).
     poisoned: bool,
-    /// Tracks whether one-shot post-load work (custom CSS injection) has
-    /// been performed for the current URL.  Set to `true` after we've
-    /// observed `LoadStatus::Complete` and run the post-load actions.
-    /// Reset on `UpdateConfig` when the URL changes so the new page
-    /// gets the same treatment.
-    post_load_done: bool,
+    /// Records which custom CSS injection triggers have fired for the
+    /// current URL.  Reset on `UpdateConfig` when the URL changes.
+    custom_css_stages: CustomCssStages,
+    /// Time at which the current page first painted, used for the delayed
+    /// custom CSS re-application.
+    first_paint_at: Option<Instant>,
     /// Navigation waiting for the webview's browsing context to come up.
     /// The constellation silently drops a `LoadUrl` sent before it has
     /// activated the context (which happens asynchronously after
@@ -467,10 +524,8 @@ fn record_panic(instances: &mut HashMap<NodeId, InstanceState>, node_id: &NodeId
 /// thread's `Status` item until the page completes loading or has been
 /// painted for the post-paint settle period, capped by `load_timeout_secs`.
 ///
-/// One-shot post-load work (custom CSS injection) is gated on
-/// `post_load_done` and runs in `handle_render` once
-/// `delegate.loaded` flips, so the contract that "custom_css is
-/// applied after load" is preserved.
+/// Custom CSS is applied at first paint, after the post-paint settle period,
+/// and at load completion.  Each trigger fires at most once per URL.
 fn handle_register(
     instances: &mut HashMap<NodeId, InstanceState>,
     servo: &mut Option<Servo>,
@@ -524,7 +579,8 @@ fn handle_register(
                     render_duration_sum: Duration::ZERO,
                     consecutive_panic_count: 0,
                     poisoned: false,
-                    post_load_done: false,
+                    custom_css_stages: CustomCssStages::default(),
+                    first_paint_at: None,
                     pending_navigation,
                 },
             );
@@ -538,7 +594,7 @@ fn handle_register(
 
 /// Pump the shared event loop on behalf of one instance: bind its
 /// rendering context, spin, issue any parked navigation once the browsing
-/// context is live, and run one-shot post-load actions.
+/// context is live, and run staged custom CSS actions.
 fn pump_instance(state: &mut InstanceState, servo: &Servo, node_id: &NodeId) {
     // Bind this instance's context before pumping so its own paint targets
     // its own surface.  `SoftwareRenderingContext`/surfman share GL state
@@ -565,19 +621,27 @@ fn pump_instance(state: &mut InstanceState, servo: &Servo, node_id: &NodeId) {
         }
     }
 
-    // Run one-shot post-load actions (custom CSS) the first pump that
-    // observes a successful load.  Gated to fire exactly once per URL
-    // (`UpdateConfig` resets `post_load_done` on URL change).
-    if !state.post_load_done && state.delegate.loaded.get() {
+    let painted = page_painted(state);
+    if painted && state.first_paint_at.is_none() {
+        state.first_paint_at = Some(Instant::now());
+    }
+    let loaded = page_loaded(state);
+    if let Some(stage) = next_custom_css_stage(
+        painted,
+        loaded,
+        state.first_paint_at.map(|at| at.elapsed()),
+        state.custom_css_stages,
+    ) {
+        state.custom_css_stages.mark(stage);
         if let Some(ref css) = state.config.custom_css {
             inject_custom_css(&state.webview, servo, css);
+            tracing::info!(
+                node_id = %node_id,
+                url = %crate::config::redact_url(&state.config.url),
+                trigger = stage.as_str(),
+                "Post-load actions applied",
+            );
         }
-        state.post_load_done = true;
-        tracing::info!(
-            node_id = %node_id,
-            url = %crate::config::redact_url(&state.config.url),
-            "Page reached LoadStatus::Complete — post-load actions applied",
-        );
     }
 }
 
@@ -762,11 +826,8 @@ fn handle_update_config(
             // Drop the cached frame so a `read_to_image` miss after the new
             // page paints can't fall back to the previous URL's last frame.
             state.last_good_frame = None;
-            // Reset the one-shot post-load gate so the new page gets
-            // its custom-CSS injection (if any) once it finishes
-            // loading.  Render ticks will run `handle_render`'s
-            // post-load block when `delegate.loaded` flips.
-            state.post_load_done = false;
+            state.custom_css_stages = CustomCssStages::default();
+            state.first_paint_at = None;
         }
     }
 
@@ -919,7 +980,7 @@ fn navigate_with_auth(webview: &WebView, auth: Option<&ServoAuth>, url: url::Url
     }
 }
 
-/// Inject custom CSS into a loaded page via JavaScript.
+/// Inject custom CSS into a painted page via JavaScript.
 fn inject_custom_css(webview: &WebView, servo: &Servo, css: &str) {
     let escaped =
         css.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n").replace('\r', "\\r");
@@ -941,5 +1002,53 @@ fn inject_custom_css(webview: &WebView, servo: &Servo, css: &str) {
         }
         servo.spin_event_loop();
         std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_css_stages_fire_once_in_page_lifecycle_order() {
+        let mut fired = CustomCssStages::default();
+
+        assert_eq!(
+            next_custom_css_stage(true, false, Some(Duration::ZERO), fired),
+            Some(CustomCssStage::FirstPaint)
+        );
+        fired.mark(CustomCssStage::FirstPaint);
+
+        assert_eq!(
+            next_custom_css_stage(true, true, Some(Duration::from_secs(1)), fired),
+            Some(CustomCssStage::LoadComplete)
+        );
+        fired.mark(CustomCssStage::LoadComplete);
+
+        assert_eq!(
+            next_custom_css_stage(true, true, Some(CUSTOM_CSS_POST_PAINT_SETTLE), fired),
+            Some(CustomCssStage::PostPaintSettle)
+        );
+        fired.mark(CustomCssStage::PostPaintSettle);
+
+        assert_eq!(next_custom_css_stage(true, true, Some(Duration::from_secs(3)), fired), None);
+    }
+
+    #[test]
+    fn custom_css_stages_wait_for_paint_and_settle() {
+        let fired = CustomCssStages::default();
+
+        assert_eq!(next_custom_css_stage(false, false, None, fired), None);
+        assert_eq!(
+            next_custom_css_stage(true, false, Some(Duration::from_secs(1)), fired),
+            Some(CustomCssStage::FirstPaint)
+        );
+
+        let fired = CustomCssStages { first_paint: true, ..fired };
+        assert_eq!(next_custom_css_stage(true, false, Some(Duration::from_secs(1)), fired), None);
+        assert_eq!(
+            next_custom_css_stage(true, false, Some(CUSTOM_CSS_POST_PAINT_SETTLE), fired),
+            Some(CustomCssStage::PostPaintSettle)
+        );
     }
 }

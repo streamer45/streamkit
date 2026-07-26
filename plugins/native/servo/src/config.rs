@@ -167,7 +167,8 @@ pub struct ServoConfig {
     /// Output frame rate.
     #[serde(default = "default_fps")]
     pub fps: u32,
-    /// Optional CSS to inject into the page after load.
+    /// Optional CSS applied at first paint, after the post-paint settle
+    /// period, and at load completion.
     #[serde(default)]
     pub custom_css: Option<String>,
     /// Total frames to generate.  0 = infinite (real-time pacing).
