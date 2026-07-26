@@ -875,6 +875,7 @@ fn handle_update_config(
             // surfman surface, which is pooled across instances and may
             // hold a neighbour's pixels until the resized page repaints.
             state.delegate.painted.set(false);
+            state.first_paint_at = None;
             servo.spin_event_loop();
         }
     }
