@@ -19,4 +19,5 @@ native_source_plugin_entry!(ServoSourcePlugin);
 pub mod test_api {
     pub use crate::config::ServoConfig;
     pub use crate::servo_thread::{send_work, NodeId, ServoThreadResult, ServoWorkItem};
+    pub use streamkit_plugin_sdk_native::prelude::{CLogLevel, Logger};
 }
