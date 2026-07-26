@@ -39,8 +39,6 @@ use std::rc::Rc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-const CUSTOM_CSS_POST_PAINT_SETTLE: Duration = Duration::from_secs(2);
-
 use dpi::PhysicalSize;
 use euclid::Scale;
 use servo::{
@@ -53,6 +51,10 @@ use crate::config::{ServoAuth, ServoBasicAuth, ServoConfig};
 /// Number of consecutive render panics before an instance is marked as
 /// poisoned and Servo calls are skipped entirely.
 const POISON_THRESHOLD: u32 = 5;
+
+/// Shared by the first-load gate and CSS staging so settle CSS is applied
+/// before the gate can release the first frame.
+pub const POST_PAINT_SETTLE: Duration = Duration::from_secs(2);
 
 /// Opaque identifier for a plugin instance on the shared Servo thread.
 pub type NodeId = uuid::Uuid;
@@ -219,6 +221,10 @@ impl CustomCssStages {
             CustomCssStage::LoadComplete => self.load_complete = true,
         }
     }
+
+    const fn rearm_for_css_change(painted: bool) -> Self {
+        Self { first_paint: painted, post_paint_settle: false, load_complete: false }
+    }
 }
 
 fn next_custom_css_stage(
@@ -234,7 +240,7 @@ fn next_custom_css_stage(
         return Some(CustomCssStage::LoadComplete);
     }
     if painted
-        && first_paint_elapsed.is_some_and(|elapsed| elapsed >= CUSTOM_CSS_POST_PAINT_SETTLE)
+        && first_paint_elapsed.is_some_and(|elapsed| elapsed >= POST_PAINT_SETTLE)
         && !fired.post_paint_settle
     {
         return Some(CustomCssStage::PostPaintSettle);
@@ -639,7 +645,7 @@ fn pump_instance(state: &mut InstanceState, servo: &Servo, node_id: &NodeId) {
                 node_id = %node_id,
                 url = %crate::config::redact_url(&state.config.url),
                 trigger = stage.as_str(),
-                "Post-load actions applied",
+                "Custom CSS applied",
             );
         }
     }
@@ -831,13 +837,13 @@ fn handle_update_config(
         }
     }
 
-    // CSS-only changes (no URL change) apply immediately if the current
-    // page is already loaded.  Otherwise they fold into the
-    // render-driven post-load gate above, which will pick up the new
-    // value because we're about to merge `new_config` into `state.config`.
-    if css_changed && !url_changed && state.delegate.loaded.get() {
+    if css_changed && !url_changed {
+        let painted = page_painted(state);
+        state.custom_css_stages = CustomCssStages::rearm_for_css_change(painted);
         if let Some(ref css) = new_config.custom_css {
-            inject_custom_css(&state.webview, servo, css);
+            if painted {
+                inject_custom_css(&state.webview, servo, css);
+            }
         }
     }
 
@@ -1026,7 +1032,7 @@ mod tests {
         fired.mark(CustomCssStage::LoadComplete);
 
         assert_eq!(
-            next_custom_css_stage(true, true, Some(CUSTOM_CSS_POST_PAINT_SETTLE), fired),
+            next_custom_css_stage(true, true, Some(POST_PAINT_SETTLE), fired),
             Some(CustomCssStage::PostPaintSettle)
         );
         fired.mark(CustomCssStage::PostPaintSettle);
@@ -1047,8 +1053,25 @@ mod tests {
         let fired = CustomCssStages { first_paint: true, ..fired };
         assert_eq!(next_custom_css_stage(true, false, Some(Duration::from_secs(1)), fired), None);
         assert_eq!(
-            next_custom_css_stage(true, false, Some(CUSTOM_CSS_POST_PAINT_SETTLE), fired),
+            next_custom_css_stage(true, false, Some(POST_PAINT_SETTLE), fired),
             Some(CustomCssStage::PostPaintSettle)
+        );
+    }
+
+    #[test]
+    fn custom_css_change_rearms_future_stages_without_reinjecting_first_paint() {
+        let rearmed = CustomCssStages::rearm_for_css_change(true);
+
+        assert_eq!(
+            next_custom_css_stage(true, true, Some(Duration::from_secs(3)), rearmed),
+            Some(CustomCssStage::LoadComplete)
+        );
+
+        let rearmed = CustomCssStages::rearm_for_css_change(false);
+        assert_eq!(next_custom_css_stage(false, false, None, rearmed), None);
+        assert_eq!(
+            next_custom_css_stage(true, false, Some(Duration::ZERO), rearmed),
+            Some(CustomCssStage::FirstPaint)
         );
     }
 }

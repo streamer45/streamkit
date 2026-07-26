@@ -12,14 +12,7 @@ use streamkit_plugin_sdk_native::streamkit_core::types::{
 };
 
 use crate::config::ServoConfig;
-use crate::servo_thread::{send_work, NodeId, ServoThreadResult, ServoWorkItem};
-
-/// How long after the first paint the first-load gate keeps waiting for
-/// `LoadStatus::Complete` before starting emission anyway.  Ad-heavy pages
-/// routinely delay the load event by tens of seconds (or never fire it)
-/// while the content is already rendered; painted-plus-settled captures
-/// that content without waiting out the full `load_timeout_secs`.
-const POST_PAINT_SETTLE: Duration = Duration::from_secs(2);
+use crate::servo_thread::{send_work, NodeId, ServoThreadResult, ServoWorkItem, POST_PAINT_SETTLE};
 
 /// Interval between status polls while the first-load gate holds emission.
 const LOAD_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -101,7 +94,7 @@ impl NativeSourceNode for ServoSourcePlugin {
                     },
                     "custom_css": {
                         "type": "string",
-                        "description": "Optional CSS applied at first paint, re-applied after the post-paint settle period, and applied again at load-complete",
+                        "description": "Optional CSS applied at three lifecycle triggers: first paint, after the post-paint settle period, and load-complete",
                         "tunable": true
                     },
                     "frame_count": {
