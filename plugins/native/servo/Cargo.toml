@@ -4,7 +4,7 @@
 
 [package]
 name = "servo-plugin-native"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 license = "MPL-2.0"
 
@@ -29,6 +29,7 @@ dpi = "0.1"
 # we build for `UrlRequest` (custom request headers / bearer auth) is the
 # same type servo expects.
 http = "1"
+# Required by the SDK's `native_source_plugin_entry!` macro expansion.
 tracing = "0.1"
 
 # Servo pulls in jemalloc via servo-allocator.  By default jemalloc uses

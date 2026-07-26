@@ -17,6 +17,12 @@ use crate::servo_thread::{send_work, NodeId, ServoThreadResult, ServoWorkItem, P
 /// Interval between status polls while the first-load gate holds emission.
 const LOAD_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
+/// Upper bound on waiting for a reply from the shared Servo thread.  The
+/// thread answers every request in bounded time (renders take milliseconds;
+/// registration defers the page load), so hitting this means a reply was
+/// dropped — fail the call instead of parking the tick thread forever.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Servo web renderer video source plugin.
 ///
 /// Renders web pages to RGBA8 video frames at a configurable resolution
@@ -203,10 +209,15 @@ impl NativeSourceNode for ServoSourcePlugin {
         let (result_tx, result_rx) = std::sync::mpsc::sync_channel(2);
 
         // Register on the shared Servo thread.
-        send_work(ServoWorkItem::Register { node_id, config: config.clone(), result_tx })?;
+        send_work(ServoWorkItem::Register {
+            node_id,
+            config: config.clone(),
+            result_tx,
+            logger: logger.clone(),
+        })?;
 
         // Wait for init result.
-        match result_rx.recv() {
+        match recv_reply(&result_rx) {
             Ok(ServoThreadResult::InitOk) => {
                 plugin_info!(logger, "Servo instance registered: {node_id}");
                 Ok(Self {
@@ -223,7 +234,7 @@ impl NativeSourceNode for ServoSourcePlugin {
                 Err(format!("Servo instance creation failed: {e}"))
             },
             Ok(_) => Err("Unexpected result during init".to_string()),
-            Err(_) => Err("Shared Servo thread channel closed during init".to_string()),
+            Err(e) => Err(format!("Servo thread init reply not received: {e}")),
         }
     }
 
@@ -337,13 +348,13 @@ impl ServoSourcePlugin {
     /// caller can skip the tick without failing the node.
     fn request_frame(&self) -> Result<Option<Vec<u8>>, String> {
         send_work(ServoWorkItem::Render { node_id: self.node_id })?;
-        match self.result_rx.recv() {
+        match recv_reply(&self.result_rx) {
             Ok(ServoThreadResult::Frame { rgba_data }) => Ok(Some(rgba_data)),
             Ok(_) => {
                 plugin_warn!(self.logger, "Unexpected result from Servo thread");
                 Ok(None)
             },
-            Err(_) => Err("Servo thread result channel closed".to_string()),
+            Err(e) => Err(e),
         }
     }
 
@@ -355,13 +366,13 @@ impl ServoSourcePlugin {
     /// caller can skip the tick without failing the node.
     fn request_status(&self) -> Result<Option<(bool, bool)>, String> {
         send_work(ServoWorkItem::Status { node_id: self.node_id })?;
-        match self.result_rx.recv() {
+        match recv_reply(&self.result_rx) {
             Ok(ServoThreadResult::Status { painted, loaded }) => Ok(Some((painted, loaded))),
             Ok(_) => {
                 plugin_warn!(self.logger, "Unexpected result from Servo thread");
                 Ok(None)
             },
-            Err(_) => Err("Servo thread result channel closed".to_string()),
+            Err(e) => Err(e),
         }
     }
 
@@ -406,5 +417,61 @@ impl ServoSourcePlugin {
             }
             std::thread::sleep(LOAD_POLL_INTERVAL);
         }
+    }
+}
+
+/// Receive a reply from the shared Servo thread with a bounded wait.
+fn recv_reply(
+    result_rx: &std::sync::mpsc::Receiver<ServoThreadResult>,
+) -> Result<ServoThreadResult, String> {
+    recv_reply_within(result_rx, REPLY_TIMEOUT)
+}
+
+fn recv_reply_within(
+    result_rx: &std::sync::mpsc::Receiver<ServoThreadResult>,
+    timeout: Duration,
+) -> Result<ServoThreadResult, String> {
+    match result_rx.recv_timeout(timeout) {
+        Ok(result) => Ok(result),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(format!(
+            "No reply from Servo thread within {timeout:?} — a reply was likely dropped"
+        )),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err("Servo thread result channel closed".to_string())
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recv_reply_errors_instead_of_blocking_when_reply_is_dropped() {
+        let (_tx, rx) = std::sync::mpsc::sync_channel::<ServoThreadResult>(1);
+        let Err(err) = recv_reply_within(&rx, Duration::from_millis(10)) else {
+            panic!("expected timeout error");
+        };
+        assert!(err.contains("No reply from Servo thread"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn recv_reply_errors_on_disconnected_channel() {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoThreadResult>(1);
+        drop(tx);
+        let Err(err) = recv_reply_within(&rx, Duration::from_millis(10)) else {
+            panic!("expected disconnect error");
+        };
+        assert!(err.contains("channel closed"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn recv_reply_returns_available_result() {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoThreadResult>(1);
+        tx.send(ServoThreadResult::InitOk).unwrap();
+        assert!(matches!(
+            recv_reply_within(&rx, Duration::from_millis(10)),
+            Ok(ServoThreadResult::InitOk)
+        ));
     }
 }

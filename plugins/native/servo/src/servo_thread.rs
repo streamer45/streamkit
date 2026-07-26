@@ -30,7 +30,8 @@
 //! - After [`POISON_THRESHOLD`] consecutive render panics an instance is
 //!   *poisoned*: Servo calls are skipped entirely and the cached frame is
 //!   returned until a URL change (`UpdateConfig`) resets the state.
-//! - Frame render timing is emitted via `tracing` for observability.
+//! - Diagnostics are emitted through the host [`Logger`] so they reach the
+//!   skit process (the plugin dylib has no `tracing` subscriber of its own).
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -45,6 +46,8 @@ use servo::{
     AuthenticationRequest, DeviceIntPoint, DeviceIntRect, LoadStatus, RenderingContext, Servo,
     ServoBuilder, SoftwareRenderingContext, UrlRequest, WebView, WebViewBuilder, WebViewDelegate,
 };
+use streamkit_plugin_sdk_native::prelude::Logger;
+use streamkit_plugin_sdk_native::{plugin_debug, plugin_error, plugin_info, plugin_warn};
 
 use crate::config::{ServoAuth, ServoBasicAuth, ServoConfig};
 
@@ -68,6 +71,7 @@ pub enum ServoWorkItem {
         node_id: NodeId,
         config: ServoConfig,
         result_tx: std::sync::mpsc::SyncSender<ServoThreadResult>,
+        logger: Logger,
     },
     /// Request a single rendered frame for the given instance.
     Render { node_id: NodeId },
@@ -284,6 +288,18 @@ struct InstanceState {
     /// Time at which the current page first painted, used for the delayed
     /// custom CSS re-application.
     first_paint_at: Option<Instant>,
+    /// Host logger — the only way shared-thread diagnostics reach skit,
+    /// since the plugin dylib has no `tracing` subscriber.
+    logger: Logger,
+    /// When the first `Render` for the current page arrived, for
+    /// time-to-first-content instrumentation.
+    first_render_at: Option<Instant>,
+    /// Transparent fallback frames emitted before the current page's
+    /// first paint.
+    pre_paint_frames: u64,
+    /// Whether the first painted frame for the current page has been
+    /// logged (with pre-paint frame count and blank-surface check).
+    content_frame_logged: bool,
     /// Navigation waiting for the webview's browsing context to come up.
     /// The constellation silently drops a `LoadUrl` sent before it has
     /// activated the context (which happens asynchronously after
@@ -304,6 +320,9 @@ struct InstanceState {
 #[allow(clippy::cognitive_complexity)] // Main event loop — splitting would obscure control flow
 fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
     let mut instances: HashMap<NodeId, InstanceState> = HashMap::new();
+    // Fallback for diagnostics when the instance is gone (or was never
+    // created): the most recently registered instance's logger.
+    let mut thread_logger: Option<Logger> = None;
     // Servo's Opts is a process-global singleton -- we lazily create the
     // single Servo instance on the first Register and keep it alive for
     // the lifetime of the thread.
@@ -311,29 +330,31 @@ fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
 
     while let Ok(work) = work_rx.recv() {
         match work {
-            ServoWorkItem::Register { node_id, config, result_tx } => {
+            ServoWorkItem::Register { node_id, config, result_tx, logger } => {
+                thread_logger = Some(logger.clone());
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    handle_register(&mut instances, &mut servo, node_id, config, result_tx);
+                    handle_register(&mut instances, &mut servo, node_id, config, result_tx, logger);
                 }));
                 if let Err(panic) = result {
                     let msg = panic_message(&panic);
-                    tracing::error!(
-                        node_id = %node_id,
-                        error = %msg,
-                        "Panic during Servo Register — instance not created",
-                    );
+                    if let Some(logger) = thread_logger.as_ref() {
+                        plugin_error!(
+                            logger,
+                            "[{node_id}] Panic during Servo Register — instance not created: {msg}"
+                        );
+                    }
                 }
             },
             ServoWorkItem::Render { node_id } => {
                 // Poisoned instances skip Servo entirely and return the
                 // cached frame until a URL change resets the state.
                 if instances.get(&node_id).is_some_and(|s| s.poisoned) {
-                    send_fallback_frame(&instances, &node_id);
+                    send_fallback_frame(&instances, &node_id, thread_logger.as_ref());
                     continue;
                 }
 
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    handle_render(&mut instances, servo.as_ref(), &node_id);
+                    handle_render(&mut instances, servo.as_ref(), &node_id, thread_logger.as_ref());
                 }));
                 match result {
                     Ok(()) => {
@@ -343,13 +364,16 @@ fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
                     },
                     Err(panic) => {
                         let msg = panic_message(&panic);
-                        tracing::error!(
-                            node_id = %node_id,
-                            error = %msg,
-                            "Panic during Servo Render — sending fallback frame",
-                        );
+                        if let Some(logger) =
+                            node_logger(&instances, thread_logger.as_ref(), &node_id)
+                        {
+                            plugin_error!(
+                                logger,
+                                "[{node_id}] Panic during Servo Render — sending fallback frame: {msg}"
+                            );
+                        }
                         record_panic(&mut instances, &node_id);
-                        send_fallback_frame(&instances, &node_id);
+                        send_fallback_frame(&instances, &node_id, thread_logger.as_ref());
                     },
                 }
             },
@@ -359,12 +383,12 @@ fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
                 // wait out its timeout on an instance that will only ever
                 // serve cached fallback frames.
                 if instances.get(&node_id).is_some_and(|s| s.poisoned) {
-                    send_status(&mut instances, &node_id);
+                    send_status(&mut instances, &node_id, thread_logger.as_ref());
                     continue;
                 }
 
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    handle_status(&mut instances, servo.as_ref(), &node_id);
+                    handle_status(&mut instances, servo.as_ref(), &node_id, thread_logger.as_ref());
                 }));
                 match result {
                     Ok(()) => {
@@ -374,13 +398,16 @@ fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
                     },
                     Err(panic) => {
                         let msg = panic_message(&panic);
-                        tracing::error!(
-                            node_id = %node_id,
-                            error = %msg,
-                            "Panic during Servo Status — reporting current state",
-                        );
+                        if let Some(logger) =
+                            node_logger(&instances, thread_logger.as_ref(), &node_id)
+                        {
+                            plugin_error!(
+                                logger,
+                                "[{node_id}] Panic during Servo Status — reporting current state: {msg}"
+                            );
+                        }
                         record_panic(&mut instances, &node_id);
-                        send_status(&mut instances, &node_id);
+                        send_status(&mut instances, &node_id, thread_logger.as_ref());
                     },
                 }
             },
@@ -391,10 +418,10 @@ fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
                     let url_changed = !config.url.is_empty() && config.url != state.config.url;
                     if url_changed && (state.poisoned || state.consecutive_panic_count > 0) {
                         if state.poisoned {
-                            tracing::info!(
-                                node_id = %node_id,
-                                new_url = %crate::config::redact_url(&config.url),
-                                "Resetting poisoned state on URL change",
+                            plugin_info!(
+                                state.logger,
+                                "[{node_id}] Resetting poisoned state on URL change to '{}'",
+                                crate::config::redact_url(&config.url)
                             );
                         }
                         state.poisoned = false;
@@ -407,11 +434,13 @@ fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
                 }));
                 if let Err(panic) = result {
                     let msg = panic_message(&panic);
-                    tracing::error!(
-                        node_id = %node_id,
-                        error = %msg,
-                        "Panic during Servo UpdateConfig — config not applied",
-                    );
+                    if let Some(logger) = node_logger(&instances, thread_logger.as_ref(), &node_id)
+                    {
+                        plugin_error!(
+                            logger,
+                            "[{node_id}] Panic during Servo UpdateConfig — config not applied: {msg}"
+                        );
+                    }
                 }
             },
             ServoWorkItem::Resize { node_id, width, height } => {
@@ -420,11 +449,10 @@ fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
                 }));
                 if let Err(panic) = result {
                     let msg = panic_message(&panic);
-                    tracing::error!(
-                        node_id = %node_id,
-                        error = %msg,
-                        "Panic during Servo Resize",
-                    );
+                    if let Some(logger) = node_logger(&instances, thread_logger.as_ref(), &node_id)
+                    {
+                        plugin_error!(logger, "[{node_id}] Panic during Servo Resize: {msg}");
+                    }
                 }
             },
             ServoWorkItem::Unregister { node_id } => {
@@ -433,22 +461,23 @@ fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
                         if state.render_count > 0 {
                             let avg_us = state.render_duration_sum.as_micros()
                                 / u128::from(state.render_count);
-                            tracing::info!(
-                                node_id = %node_id,
-                                total_frames = state.render_count,
-                                avg_render_us = avg_us,
-                                "Unregistered Servo instance",
+                            plugin_info!(
+                                state.logger,
+                                "[{node_id}] Unregistered Servo instance: total_frames = {}, avg_render_us = {avg_us}",
+                                state.render_count
                             );
                         }
                     }
                 }));
                 if let Err(panic) = result {
                     let msg = panic_message(&panic);
-                    tracing::error!(
-                        node_id = %node_id,
-                        error = %msg,
-                        "Panic during Servo Unregister — instance may leak",
-                    );
+                    if let Some(logger) = node_logger(&instances, thread_logger.as_ref(), &node_id)
+                    {
+                        plugin_error!(
+                            logger,
+                            "[{node_id}] Panic during Servo Unregister — instance may leak: {msg}"
+                        );
+                    }
                 }
             },
         }
@@ -471,9 +500,21 @@ fn servo_thread_main(work_rx: std::sync::mpsc::Receiver<ServoWorkItem>) {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
-    tracing::info!(instances_cleared = count, "Servo thread shutting down gracefully");
+    if let Some(logger) = thread_logger.as_ref() {
+        plugin_info!(logger, "Servo thread shutting down gracefully: instances_cleared = {count}");
+    }
     // `servo` is dropped here -- its Drop impl sends Exit and spins
     // until the constellation finishes shutting down.
+}
+
+/// Logger for diagnostics about `node_id`: the instance's own logger, or
+/// the most recently registered instance's as a fallback.
+fn node_logger<'a>(
+    instances: &'a HashMap<NodeId, InstanceState>,
+    fallback: Option<&'a Logger>,
+    node_id: &NodeId,
+) -> Option<&'a Logger> {
+    instances.get(node_id).map(|s| &s.logger).or(fallback)
 }
 
 /// Extract a human-readable message from a panic payload.
@@ -493,8 +534,21 @@ fn transparent_frame(width: u32, height: u32) -> Vec<u8> {
 }
 
 /// Send a fallback frame (last good frame or transparent) after a panic.
-fn send_fallback_frame(instances: &HashMap<NodeId, InstanceState>, node_id: &NodeId) {
+///
+/// When the instance is missing no reply can be built (its dimensions are
+/// unknown); the caller's `recv_timeout` bounds the resulting wait.
+fn send_fallback_frame(
+    instances: &HashMap<NodeId, InstanceState>,
+    node_id: &NodeId,
+    fallback_logger: Option<&Logger>,
+) {
     let Some(state) = instances.get(node_id) else {
+        if let Some(logger) = fallback_logger {
+            plugin_error!(
+                logger,
+                "[{node_id}] Render requested for unknown Servo instance — no frame reply sent"
+            );
+        }
         return;
     };
     let fallback = state
@@ -513,12 +567,10 @@ fn record_panic(instances: &mut HashMap<NodeId, InstanceState>, node_id: &NodeId
     state.consecutive_panic_count += 1;
     if state.consecutive_panic_count >= POISON_THRESHOLD {
         state.poisoned = true;
-        tracing::error!(
-            node_id = %node_id,
-            consecutive_panics = state.consecutive_panic_count,
-            "Servo instance poisoned after {} consecutive render \
-             panics — skipping Servo calls until URL change",
-            POISON_THRESHOLD,
+        plugin_error!(
+            state.logger,
+            "[{node_id}] Servo instance poisoned after {POISON_THRESHOLD} consecutive render \
+             panics — skipping Servo calls until URL change"
         );
     }
 }
@@ -538,6 +590,7 @@ fn handle_register(
     node_id: NodeId,
     config: ServoConfig,
     result_tx: std::sync::mpsc::SyncSender<ServoThreadResult>,
+    logger: Logger,
 ) {
     let servo_ref = servo.get_or_insert_with(|| {
         let mut prefs = servo::Preferences {
@@ -557,13 +610,15 @@ fn handle_register(
 
     match create_webview(servo_ref, &config) {
         Ok((webview, rendering_context, delegate, pending_navigation)) => {
-            tracing::info!(
-                node_id = %node_id,
-                url = %crate::config::redact_url(&config.url),
-                output = %format_args!("{}x{}", config.width, config.height),
-                viewport = %format_args!("{}x{}", config.effective_viewport_width(), config.effective_viewport_height()),
-                scaling = config.needs_scaling(),
-                "Created Servo WebView (page load deferred)",
+            plugin_info!(
+                logger,
+                "[{node_id}] Created Servo WebView (page load deferred): url = '{}', output = {}x{}, viewport = {}x{}, scaling = {}",
+                crate::config::redact_url(&config.url),
+                config.width,
+                config.height,
+                config.effective_viewport_width(),
+                config.effective_viewport_height(),
+                config.needs_scaling()
             );
 
             let rc_width = config.effective_viewport_width();
@@ -587,12 +642,16 @@ fn handle_register(
                     poisoned: false,
                     custom_css_stages: CustomCssStages::default(),
                     first_paint_at: None,
+                    logger,
+                    first_render_at: None,
+                    pre_paint_frames: 0,
+                    content_frame_logged: false,
                     pending_navigation,
                 },
             );
         },
         Err(e) => {
-            tracing::error!(node_id = %node_id, error = %e, "Failed to create Servo WebView");
+            plugin_error!(logger, "[{node_id}] Failed to create Servo WebView: {e}");
             let _ = result_tx.send(ServoThreadResult::InitErr(e));
         },
     }
@@ -641,11 +700,11 @@ fn pump_instance(state: &mut InstanceState, servo: &Servo, node_id: &NodeId) {
         state.custom_css_stages.mark(stage);
         if let Some(ref css) = state.config.custom_css {
             inject_custom_css(&state.webview, servo, css);
-            tracing::info!(
-                node_id = %node_id,
-                url = %crate::config::redact_url(&state.config.url),
-                trigger = stage.as_str(),
-                "Custom CSS applied",
+            plugin_info!(
+                state.logger,
+                "[{node_id}] Custom CSS applied: url = '{}', trigger = {}",
+                crate::config::redact_url(&state.config.url),
+                stage.as_str()
             );
         }
     }
@@ -659,18 +718,29 @@ fn handle_status(
     instances: &mut HashMap<NodeId, InstanceState>,
     servo: Option<&Servo>,
     node_id: &NodeId,
+    fallback_logger: Option<&Logger>,
 ) {
     if let (Some(state), Some(servo)) = (instances.get_mut(node_id), servo) {
         pump_instance(state, servo, node_id);
     }
-    send_status(instances, node_id);
+    send_status(instances, node_id, fallback_logger);
 }
 
 /// Report an instance's load/paint state.  Poisoned instances report
 /// ready so the first-frame gate does not wait out its full timeout on
 /// an instance that will only ever serve cached fallback frames.
-fn send_status(instances: &mut HashMap<NodeId, InstanceState>, node_id: &NodeId) {
+fn send_status(
+    instances: &mut HashMap<NodeId, InstanceState>,
+    node_id: &NodeId,
+    fallback_logger: Option<&Logger>,
+) {
     let Some(state) = instances.get(node_id) else {
+        if let Some(logger) = fallback_logger {
+            plugin_error!(
+                logger,
+                "[{node_id}] Status requested for unknown Servo instance — no status reply sent"
+            );
+        }
         return;
     };
     let painted = state.poisoned || page_painted(state);
@@ -685,21 +755,39 @@ fn handle_render(
     instances: &mut HashMap<NodeId, InstanceState>,
     servo: Option<&Servo>,
     node_id: &NodeId,
+    fallback_logger: Option<&Logger>,
 ) {
     let (Some(state), Some(servo)) = (instances.get_mut(node_id), servo) else {
         // Instance or Servo not found — send a fallback frame so the
         // caller's blocking recv() in tick() does not deadlock.
-        send_fallback_frame(instances, node_id);
+        send_fallback_frame(instances, node_id, fallback_logger);
         return;
     };
 
     let render_start = Instant::now();
+    if state.first_render_at.is_none() {
+        state.first_render_at = Some(render_start);
+    }
 
     pump_instance(state, servo, node_id);
 
     let rgba_data = if state.delegate.painted.get() {
-        read_painted_frame(state, node_id)
+        let frame = read_painted_frame(state, node_id);
+        if !state.content_frame_logged {
+            state.content_frame_logged = true;
+            // A painted-but-blank surface distinguishes an early/empty paint
+            // signal from a late paint when diagnosing black capture starts.
+            let blank = frame.iter().all(|&b| b == 0);
+            plugin_info!(
+                state.logger,
+                "[{node_id}] First painted frame read: pre_paint_frames = {}, since_first_render = {:?}, blank_surface = {blank}",
+                state.pre_paint_frames,
+                state.first_render_at.map(|at| at.elapsed()).unwrap_or_default()
+            );
+        }
+        frame
     } else {
+        state.pre_paint_frames += 1;
         // Until Servo has painted the current page at least once, the surfman
         // surface backing this rendering context may still contain a previous,
         // unrelated capture's pixels (surfman reuses surfaces across contexts).
@@ -715,12 +803,11 @@ fn handle_render(
     // Log render time periodically (every 300 frames ~ 10s at 30fps).
     if state.render_count % 300 == 0 {
         let avg_us = state.render_duration_sum.as_micros() / u128::from(state.render_count);
-        tracing::debug!(
-            node_id = %node_id,
-            frame = state.render_count,
-            render_us = render_duration.as_micros(),
-            avg_render_us = avg_us,
-            "Servo render metrics",
+        plugin_debug!(
+            state.logger,
+            "[{node_id}] Servo render metrics: frame = {}, render_us = {}, avg_render_us = {avg_us}",
+            state.render_count,
+            render_duration.as_micros()
         );
     }
 
@@ -767,10 +854,9 @@ fn read_painted_frame(state: &mut InstanceState, node_id: &NodeId) -> Vec<u8> {
     // node's (the cross-session pixel leak). A bind failure means the read may
     // return another instance's pixels, so surface it rather than silently leak.
     if let Err(e) = state.rendering_context.make_current() {
-        tracing::warn!(
-            node_id = %node_id,
-            error = ?e,
-            "make_current before read_to_image failed; frame may not be this instance's surface",
+        plugin_warn!(
+            state.logger,
+            "[{node_id}] make_current before read_to_image failed; frame may not be this instance's surface: {e:?}"
         );
     }
     if let Some(img) = state.rendering_context.read_to_image(rect) {
@@ -795,7 +881,7 @@ fn read_painted_frame(state: &mut InstanceState, node_id: &NodeId) -> Vec<u8> {
         state.last_good_frame = Some(raw);
         send_buf
     } else if let Some(ref cached) = state.last_good_frame {
-        tracing::debug!(node_id = %node_id, "read_to_image returned None, using cached frame");
+        plugin_debug!(state.logger, "[{node_id}] read_to_image returned None, using cached frame");
         cached.clone()
     } else {
         transparent_frame(state.config.width, state.config.height)
@@ -834,6 +920,9 @@ fn handle_update_config(
             state.last_good_frame = None;
             state.custom_css_stages = CustomCssStages::default();
             state.first_paint_at = None;
+            state.first_render_at = None;
+            state.pre_paint_frames = 0;
+            state.content_frame_logged = false;
         }
     }
 
@@ -860,11 +949,11 @@ fn handle_update_config(
         let vw = state.config.effective_viewport_width();
         let vh = state.config.effective_viewport_height();
         if state.rc_width != vw || state.rc_height != vh {
-            tracing::info!(
-                node_id = %node_id,
-                old = %format_args!("{}x{}", state.rc_width, state.rc_height),
-                new = %format_args!("{vw}x{vh}"),
-                "Resizing Servo viewport via config update",
+            plugin_info!(
+                state.logger,
+                "[{node_id}] Resizing Servo viewport via config update: {}x{} -> {vw}x{vh}",
+                state.rc_width,
+                state.rc_height
             );
             let new_size = PhysicalSize::new(vw, vh);
             state.webview.resize(new_size);
@@ -876,6 +965,8 @@ fn handle_update_config(
             // hold a neighbour's pixels until the resized page repaints.
             state.delegate.painted.set(false);
             state.first_paint_at = None;
+            state.pre_paint_frames = 0;
+            state.content_frame_logged = false;
             servo.spin_event_loop();
         }
     }
@@ -897,11 +988,11 @@ fn handle_resize(
     if state.config.width == width && state.config.height == height {
         return;
     }
-    tracing::info!(
-        node_id = %node_id,
-        old = %format_args!("{}x{}", state.config.width, state.config.height),
-        new = %format_args!("{width}x{height}"),
-        "Resized Servo output via upstream hint",
+    plugin_info!(
+        state.logger,
+        "[{node_id}] Resized Servo output via upstream hint: {}x{} -> {width}x{height}",
+        state.config.width,
+        state.config.height
     );
     state.config.width = width;
     state.config.height = height;

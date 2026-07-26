@@ -14,11 +14,23 @@
 //! Servo engine (software-rendered via llvmpipe — no GPU/display needed)
 //! and is far too heavy for the workspace `cargo test`.
 
+use std::ffi::c_char;
 use std::io::Write;
+use std::os::raw::c_void;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
-use servo_web::test_api::{send_work, NodeId, ServoConfig, ServoThreadResult, ServoWorkItem};
+use servo_web::test_api::{
+    send_work, CLogLevel, Logger, NodeId, ServoConfig, ServoThreadResult, ServoWorkItem,
+};
+
+const extern "C" fn noop_log(
+    _level: CLogLevel,
+    _target: *const c_char,
+    _message: *const c_char,
+    _user_data: *mut c_void,
+) {
+}
 
 const DIM: u32 = 64;
 /// Per-instance tick budget — generous so the `data:` pages reach first
@@ -37,7 +49,8 @@ fn register(url: &str) -> (NodeId, Receiver<ServoThreadResult>) {
     let (tx, rx) = std::sync::mpsc::sync_channel(2);
     let config =
         ServoConfig { url: url.to_string(), width: DIM, height: DIM, ..ServoConfig::default() };
-    send(ServoWorkItem::Register { node_id, config, result_tx: tx });
+    let logger = Logger::new(noop_log, std::ptr::null_mut(), "servo-test");
+    send(ServoWorkItem::Register { node_id, config, result_tx: tx, logger });
     match rx.recv() {
         Ok(ServoThreadResult::InitOk) => {},
         Ok(ServoThreadResult::InitErr(e)) => panic!("init failed: {e}"),
