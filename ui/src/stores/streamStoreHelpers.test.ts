@@ -4,7 +4,7 @@
 
 import * as Moq from '@moq/net';
 import * as Publish from '@moq/publish';
-import { Effect, type Getter } from '@moq/signals';
+import { Effect, Signal, type Getter } from '@moq/signals';
 import * as Watch from '@moq/watch';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -22,6 +22,12 @@ import {
   validateTrackCodecs,
   NULL_MOQ_REFS,
   performConnect,
+  VideoRendererHandle,
+  AudioEmitterHandle,
+  MicrophoneHandle,
+  CameraHandle,
+  ScreenHandle,
+  PublishHandle,
   type ConnectAttempt,
   type ConnectableState,
   type ConnectDecision,
@@ -1365,5 +1371,101 @@ describe('performConnect', () => {
       // Connecting-mid-session is not an error condition — no error message.
       expect(state.errorMessage).not.toContain('Disconnected');
     });
+  });
+});
+
+// Resource handles
+
+describe('resource handles', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('VideoRendererHandle wires the canvas signal into the renderer and closes it', () => {
+    const close = vi.fn();
+    vi.mocked(Watch.Video.Renderer).mockImplementation(function (this: { close: typeof close }) {
+      this.close = close;
+    } as never);
+
+    const decoder = {} as Watch.Video.Decoder;
+    const handle = new VideoRendererHandle(decoder);
+
+    expect(Watch.Video.Renderer).toHaveBeenCalledWith(decoder, { canvas: handle.canvas });
+    handle.close();
+    expect(close).toHaveBeenCalled();
+  });
+
+  it('AudioEmitterHandle wires muted/volume signals into the emitter and closes it', () => {
+    const close = vi.fn();
+    vi.mocked(Watch.Audio.Emitter).mockImplementation(function (this: { close: typeof close }) {
+      this.close = close;
+    } as never);
+
+    const decoder = {} as Watch.Audio.Decoder;
+    const handle = new AudioEmitterHandle(decoder);
+
+    expect(Watch.Audio.Emitter).toHaveBeenCalledWith(decoder, {
+      muted: handle.muted,
+      volume: handle.volume,
+    });
+    expect(handle.muted.peek()).toBe(false);
+    expect(handle.volume.peek()).toBe(0.5);
+    handle.close();
+    expect(close).toHaveBeenCalled();
+  });
+
+  it.each([
+    ['MicrophoneHandle', Publish.Source.Microphone, () => new MicrophoneHandle()],
+    ['CameraHandle', Publish.Source.Camera, () => new CameraHandle()],
+    ['ScreenHandle', Publish.Source.Screen, () => new ScreenHandle()],
+  ] as const)(
+    '%s exposes the capture source getter and closes the inner source',
+    (_name, ctor, make) => {
+      const close = vi.fn();
+      const source = { kind: 'source' };
+      vi.mocked(ctor).mockImplementation(function (this: {
+        close: typeof close;
+        out: { source: typeof source };
+      }) {
+        this.close = close;
+        this.out = { source };
+      } as never);
+
+      const handle = make();
+
+      expect(handle.enabled.peek()).toBe(true);
+      expect(handle.source).toBe(source);
+      handle.close();
+      expect(close).toHaveBeenCalled();
+    }
+  );
+
+  it('PublishHandle closes every owned resource', () => {
+    const broadcast = { close: vi.fn() };
+    const capture = { close: vi.fn() };
+    const video = { close: vi.fn() };
+    const encoder = { close: vi.fn() };
+    const enabled = new Signal(true);
+
+    const handle = new PublishHandle({
+      broadcast: broadcast as unknown as Publish.Broadcast,
+      capture: capture as unknown as Publish.Video.Capture,
+      video: video as unknown as Publish.Video.Encoder,
+      audio: { enabled, encoder: encoder as unknown as Publish.Audio.Encoder },
+    });
+
+    handle.close();
+    expect(video.close).toHaveBeenCalled();
+    expect(encoder.close).toHaveBeenCalled();
+    expect(capture.close).toHaveBeenCalled();
+    expect(broadcast.close).toHaveBeenCalled();
+  });
+
+  it('PublishHandle tolerates missing optional resources on close', () => {
+    const broadcast = { close: vi.fn() };
+    const handle = new PublishHandle({ broadcast: broadcast as unknown as Publish.Broadcast });
+
+    handle.close();
+    expect(broadcast.close).toHaveBeenCalled();
   });
 });
