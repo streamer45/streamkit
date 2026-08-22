@@ -16,7 +16,7 @@
 //! The cache holds at most **one** converted frame (the most recent).
 //! New conversions overwrite the previous entry, so memory usage is O(1)
 //! regardless of how many distinct format pairs are converted over time.
-//! The `PixelFormat` enum currently has 3 variants giving 4 supported
+//! The `PixelFormat` enum currently has 3 variants giving 6 supported
 //! conversion pairs — all well within a single-entry cache strategy.
 //!
 //! Supported conversions:
@@ -24,9 +24,8 @@
 //! - RGBA8 → I420
 //! - NV12  → RGBA8
 //! - I420  → RGBA8
-//!
-//! Unsupported pairs (e.g. NV12 ↔ I420) return an error rather than
-//! silently chaining two conversions.
+//! - NV12  → I420 (lossless plane repack)
+//! - I420  → NV12 (lossless plane repack)
 
 use async_trait::async_trait;
 use opentelemetry::{global, KeyValue};
@@ -45,7 +44,8 @@ use tokio::sync::mpsc;
 
 use super::parse_pixel_format;
 use crate::video::pixel_ops::{
-    i420_to_rgba8_buf, nv12_to_rgba8_buf, rgba8_to_i420_buf, rgba8_to_nv12_buf,
+    i420_to_nv12_buf, i420_to_rgba8_buf, nv12_to_i420_buf, nv12_to_rgba8_buf, rgba8_to_i420_buf,
+    rgba8_to_nv12_buf,
 };
 
 /// Configuration for the pixel format converter node.
@@ -296,7 +296,7 @@ impl ProcessorNode for PixelConvertNode {
 ///
 /// # Errors
 ///
-/// Returns an error for unsupported conversion pairs (e.g. NV12 ↔ I420).
+/// Returns an error for unsupported pixel formats.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn convert_frame(
     frame: &VideoFrame,
@@ -341,10 +341,15 @@ fn convert_frame(
         (PixelFormat::I420, PixelFormat::Rgba8) => {
             i420_to_rgba8_buf(frame.data(), frame.width, frame.height, out_data.as_mut_slice());
         },
+        (PixelFormat::Nv12, PixelFormat::I420) => {
+            nv12_to_i420_buf(frame.data(), frame.width, frame.height, out_data.as_mut_slice());
+        },
+        (PixelFormat::I420, PixelFormat::Nv12) => {
+            i420_to_nv12_buf(frame.data(), frame.width, frame.height, out_data.as_mut_slice());
+        },
         (src, dst) => {
             return Err(StreamKitError::Runtime(format!(
-                "Unsupported pixel format conversion: {src:?} → {dst:?}. \
-                 Only RGBA8 ↔ NV12 and RGBA8 ↔ I420 are supported."
+                "Unsupported pixel format conversion: {src:?} → {dst:?}."
             )));
         },
     }
@@ -580,14 +585,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_unsupported_conversion_pair() {
+    async fn test_nv12_to_i420_conversion() {
         let (input_tx, input_rx) = mpsc::channel(10);
         let mut inputs = HashMap::new();
         inputs.insert("in".to_string(), input_rx);
 
         let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
 
-        // Target is I420, but we'll send NV12 — unsupported pair.
         let node = PixelConvertNode::new(&PixelConvertConfig { output_format: "i420".to_string() })
             .unwrap();
 
@@ -597,15 +601,60 @@ mod tests {
         assert_state_running(&mut state_rx).await;
 
         let frame = create_test_video_frame(64, 64, PixelFormat::Nv12, 128);
+        let expected_size = frame.data().len();
         input_tx.send(Packet::Video(frame)).await.unwrap();
 
         drop(input_tx);
         assert_state_stopped(&mut state_rx).await;
         node_handle.await.unwrap().unwrap();
 
-        // The unsupported conversion should produce no output (error logged).
         let output_packets = mock_sender.get_packets_for_pin("out").await;
-        assert_eq!(output_packets.len(), 0, "Unsupported conversion should produce no output");
+        assert_eq!(output_packets.len(), 1, "NV12 → I420 should produce one output frame");
+
+        if let Packet::Video(out_frame) = &output_packets[0] {
+            assert_eq!(out_frame.pixel_format, PixelFormat::I420);
+            assert_eq!(out_frame.width, 64);
+            assert_eq!(out_frame.height, 64);
+            // The repack preserves total buffer size.
+            assert_eq!(out_frame.data().len(), expected_size);
+        } else {
+            panic!("Expected Video packet");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_i420_to_nv12_conversion() {
+        let (input_tx, input_rx) = mpsc::channel(10);
+        let mut inputs = HashMap::new();
+        inputs.insert("in".to_string(), input_rx);
+
+        let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
+
+        let node = PixelConvertNode::new(&PixelConvertConfig { output_format: "nv12".to_string() })
+            .unwrap();
+
+        let node_handle = tokio::spawn(async move { Box::new(node).run(context).await });
+
+        assert_state_initializing(&mut state_rx).await;
+        assert_state_running(&mut state_rx).await;
+
+        let frame = create_test_video_frame(64, 64, PixelFormat::I420, 128);
+        input_tx.send(Packet::Video(frame)).await.unwrap();
+
+        drop(input_tx);
+        assert_state_stopped(&mut state_rx).await;
+        node_handle.await.unwrap().unwrap();
+
+        let output_packets = mock_sender.get_packets_for_pin("out").await;
+        assert_eq!(output_packets.len(), 1, "I420 → NV12 should produce one output frame");
+
+        if let Packet::Video(out_frame) = &output_packets[0] {
+            assert_eq!(out_frame.pixel_format, PixelFormat::Nv12);
+            assert_eq!(out_frame.width, 64);
+            assert_eq!(out_frame.height, 64);
+        } else {
+            panic!("Expected Video packet");
+        }
     }
 
     #[test]
