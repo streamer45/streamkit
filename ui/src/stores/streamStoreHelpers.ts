@@ -804,31 +804,38 @@ async function setupPublishPath(
   // VP9 encoder's slower startup.
   const deferAudioUntilVideo = needsAudio && needsVideo;
 
-  const capture = needsVideo
-    ? createVideoCapture(healthEffect, videoSourceType === 'screen' ? screen : null, camera)
-    : null;
+  let publish: PublishHandle | undefined;
+  try {
+    const capture = needsVideo
+      ? createVideoCapture(healthEffect, videoSourceType === 'screen' ? screen : null, camera)
+      : null;
 
-  const broadcast = new Publish.Broadcast({
-    connection: connection.established,
-    enabled: true,
-    name: Moq.Path.from(inputBroadcast),
-    display: capture?.out.display,
-  });
-
-  const { audio, video } = createPublishEncoders(
-    broadcast,
-    capture,
-    needsAudio ? microphone : null,
-    !deferAudioUntilVideo,
-    encoderConfig
-  );
-
-  const publish = new PublishHandle({ broadcast, capture, video, audio });
-
-  // Wait for the video encoder to produce a catalog entry before returning.
-  if (needsVideo && video) {
-    logger.info('Step 5b: Waiting for video catalog...');
+    let broadcast: Publish.Broadcast;
     try {
+      broadcast = new Publish.Broadcast({
+        connection: connection.established,
+        enabled: true,
+        name: Moq.Path.from(inputBroadcast),
+        display: capture?.out.display,
+      });
+    } catch (e) {
+      capture?.close();
+      throw e;
+    }
+
+    const { audio, video } = createPublishEncoders(
+      broadcast,
+      capture,
+      needsAudio ? microphone : null,
+      !deferAudioUntilVideo,
+      encoderConfig
+    );
+
+    publish = new PublishHandle({ broadcast, capture, video, audio });
+
+    // Wait for the video encoder to produce a catalog entry before returning.
+    if (needsVideo && video) {
+      logger.info('Step 5b: Waiting for video catalog...');
       await waitForSignalValue(
         video.out.catalog,
         (v) => v !== undefined,
@@ -836,23 +843,25 @@ async function setupPublishPath(
         'Video encoder failed to initialize',
         abortSignal
       );
-    } catch (e) {
-      publish.close();
-      shutdownMediaSource(screen);
-      shutdownMediaSource(camera);
-      shutdownMediaSource(microphone);
-      throw e;
+      logger.info('Step 5b: Video catalog ready');
+      // Now that video is publishing, enable audio so both tracks start
+      // at the same time on the server side.
+      if (deferAudioUntilVideo && audio) {
+        audio.enabled.set(true);
+        logger.info('Step 5c: Audio enabled (deferred until video ready)');
+      }
     }
-    logger.info('Step 5b: Video catalog ready');
-    // Now that video is publishing, enable audio so both tracks start
-    // at the same time on the server side.
-    if (deferAudioUntilVideo && audio) {
-      audio.enabled.set(true);
-      logger.info('Step 5c: Audio enabled (deferred until video ready)');
-    }
-  }
 
-  return { microphone, camera, screen, publish };
+    return { microphone, camera, screen, publish };
+  } catch (e) {
+    // createPublishEncoders and the Broadcast guard above already closed the
+    // capture/broadcast when publish was never constructed.
+    publish?.close();
+    shutdownMediaSource(screen);
+    shutdownMediaSource(camera);
+    shutdownMediaSource(microphone);
+    throw e;
+  }
 }
 
 /** Create a video capture source for a secondary broadcast and wait for device readiness. */
