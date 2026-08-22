@@ -2687,6 +2687,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_wait_for_broadcast_sees_announcement_predating_control_message() {
+        let origin = moq_net::Origin::random().produce();
+        let consumer = origin.consume();
+        let (control_tx, mut control_rx) = mpsc::channel(8);
+
+        // The broadcast is already announced before the wait restarts its
+        // announcement future to consume the control message. The replayed
+        // initial announcement set must still resolve the wait.
+        let _broadcast = origin
+            .create_broadcast("early-cast", moq_net::broadcast::Route::announced())
+            .expect("create_broadcast");
+        control_tx.send(streamkit_core::control::NodeControlMessage::Start).await.unwrap();
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(2),
+            MoqPullNode::wait_for_announced_broadcast(&mut control_rx, &consumer, "early-cast"),
+        )
+        .await
+        .expect("replayed announcement should resolve the wait");
+        assert!(matches!(outcome, BroadcastWait::Broadcast(_)));
+    }
+
+    #[tokio::test]
     async fn test_wait_for_broadcast_shutdown_ends_naturally() {
         let origin = moq_net::Origin::random().produce();
         let consumer = origin.consume();
