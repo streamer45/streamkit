@@ -28,8 +28,8 @@ static SHARED_INSECURE_CLIENT: OnceLock<Result<moq_native::Client, String>> = On
 
 /// Returns a cached `moq_native::Client` with TLS verification disabled.
 ///
-/// In moq-native 0.12, publish/consume origins are set on the `Client` via builder methods
-/// (`with_publish` / `with_consume`) before calling `connect()`.  The cached client has
+/// Publish/subscribe origins are set on the `Client` via builder methods
+/// (`with_publisher` / `with_subscriber`) before calling `connect()`.  The cached client has
 /// neither set, so callers must clone and configure it for each connection.
 fn shared_insecure_client() -> Result<moq_native::Client, StreamKitError> {
     let client = SHARED_INSECURE_CLIENT.get_or_init(|| {
@@ -44,6 +44,63 @@ fn shared_insecure_client() -> Result<moq_native::Client, StreamKitError> {
         Ok(client) => Ok(client.clone()),
         Err(message) => Err(StreamKitError::Runtime(message.clone())),
     }
+}
+
+/// Name + subscription priority for a track, replacing the removed `moq_lite::Track`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct TrackRef {
+    pub name: String,
+    pub priority: u8,
+}
+
+pub(super) async fn subscribe_track(
+    broadcast: &moq_net::broadcast::Consumer,
+    name: &str,
+    priority: u8,
+) -> Result<moq_net::track::Subscriber, moq_net::Error> {
+    broadcast
+        .track(name)?
+        .subscribe(moq_net::track::Subscription::default().with_priority(priority))
+        .await
+}
+
+pub(super) async fn subscribe_catalog(
+    broadcast: &moq_net::broadcast::Consumer,
+) -> Result<moq_net::track::Subscriber, moq_net::Error> {
+    broadcast
+        .track(hang::catalog::Catalog::DEFAULT_NAME)?
+        .subscribe(hang::catalog::Catalog::default_subscription())
+        .await
+}
+
+/// Create a media track carrying hang legacy-container frames.
+///
+/// `hang::container::track_info()` pins the microsecond timescale the legacy
+/// container encodes with; `Info::default()` (milliseconds) would quantize the
+/// net-level frame timestamps.
+pub(super) fn create_media_track(
+    broadcast: &mut moq_net::broadcast::Producer,
+    name: &str,
+    priority: u8,
+) -> Result<moq_net::track::Producer, moq_net::Error> {
+    broadcast.create_track(name, hang::container::track_info().with_priority(priority))
+}
+
+pub(super) fn create_catalog_track(
+    broadcast: &mut moq_net::broadcast::Producer,
+) -> Result<moq_net::track::Producer, moq_net::Error> {
+    broadcast.create_track(
+        hang::catalog::Catalog::DEFAULT_NAME,
+        hang::catalog::Catalog::default_track_info(),
+    )
+}
+
+/// Publish one catalog snapshot as its own single-frame group.
+pub(super) fn write_catalog_json(
+    producer: &mut moq_net::track::Producer,
+    json: impl Into<bytes::Bytes>,
+) -> Result<(), moq_net::Error> {
+    producer.write_frame(moq_net::Timestamp::now(), json.into())
 }
 
 pub(super) fn redact_url_str_for_logs(raw: &str) -> String {

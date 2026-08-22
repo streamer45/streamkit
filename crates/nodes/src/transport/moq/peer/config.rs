@@ -64,7 +64,7 @@ pub(super) enum TrackExit {
     /// Track closed cleanly, stream ended, or shutdown was requested.
     /// The caller should not retry.
     Finished,
-    /// The publisher cancelled the subscription (`moq_lite::Error::Cancel`).
+    /// The publisher cancelled the subscription (`moq_net::Error::Cancel`).
     ///
     /// This typically happens when the browser's `@moq/hang` publish pipeline
     /// transiently tears down the track producer — e.g. when `camera.source`
@@ -121,7 +121,7 @@ pub(super) struct BidirectionalTaskConfig {
 }
 
 pub(super) struct PublisherReceiveLoopWithSlotConfig {
-    pub subscribe: moq_lite::OriginConsumer,
+    pub subscribe: moq_net::origin::Consumer,
     pub broadcast_name: String,
     pub publisher_slot: Arc<Semaphore>,
     pub publisher_events: mpsc::UnboundedSender<PublisherEvent>,

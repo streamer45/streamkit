@@ -15,7 +15,7 @@ pub enum VideoWrite {
     DroppedLeadingDelta,
 }
 
-/// Wraps a `moq_lite::TrackProducer` with MoQ group boundary management.
+/// Wraps a `moq_net::track::Producer` with MoQ group boundary management.
 ///
 /// Groups can be managed explicitly via [`keyframe()`](Self::keyframe) or automatically
 /// via [`with_max_group_duration()`](Self::with_max_group_duration).
@@ -26,8 +26,8 @@ pub enum VideoWrite {
 #[derive(Clone)]
 #[allow(dead_code)] // vendored API surface retained for parity with upstream hang
 pub struct OrderedProducer {
-    pub track: moq_lite::TrackProducer,
-    group: Option<moq_lite::GroupProducer>,
+    pub track: moq_net::track::Producer,
+    group: Option<moq_net::group::Producer>,
     group_start: Option<Timestamp>,
     group_frames: u64,
     max_group_duration: Option<Timestamp>,
@@ -35,7 +35,7 @@ pub struct OrderedProducer {
 
 #[allow(dead_code)] // vendored API surface retained for parity with upstream hang
 impl OrderedProducer {
-    pub const fn new(inner: moq_lite::TrackProducer) -> Self {
+    pub const fn new(inner: moq_net::track::Producer) -> Self {
         Self {
             track: inner,
             group: None,
@@ -122,7 +122,7 @@ impl OrderedProducer {
 
         #[allow(clippy::unwrap_used)] // is_none branch above guarantees Some
         let mut group = self.group.take().unwrap();
-        frame.encode(&mut group)?;
+        frame.write_to(&mut group)?;
         self.group.replace(group);
 
         self.group_frames += 1;
@@ -155,14 +155,14 @@ impl OrderedProducer {
     }
 }
 
-impl From<moq_lite::TrackProducer> for OrderedProducer {
-    fn from(inner: moq_lite::TrackProducer) -> Self {
+impl From<moq_net::track::Producer> for OrderedProducer {
+    fn from(inner: moq_net::track::Producer) -> Self {
         Self::new(inner)
     }
 }
 
 impl std::ops::Deref for OrderedProducer {
-    type Target = moq_lite::TrackProducer;
+    type Target = moq_net::track::Producer;
 
     fn deref(&self) -> &Self::Target {
         &self.track
@@ -174,13 +174,14 @@ impl std::ops::Deref for OrderedProducer {
 mod tests {
     use super::*;
 
-    fn make_track_producer() -> moq_lite::TrackProducer {
-        let origin = moq_lite::Origin::random().produce();
-        let mut broadcast =
-            origin.create_broadcast("test-broadcast").expect("create_broadcast should succeed");
-        broadcast
-            .create_track(moq_lite::Track { name: "test/track".to_string(), priority: 0 })
-            .expect("create_track should succeed")
+    fn make_track_producer() -> (moq_net::origin::Producer, moq_net::track::Producer) {
+        let origin = moq_net::Origin::random().produce();
+        let mut broadcast = origin
+            .create_broadcast("test-broadcast", moq_net::broadcast::Route::announced())
+            .expect("create_broadcast should succeed");
+        let track = super::super::create_media_track(&mut broadcast, "test/track", 0)
+            .expect("create_track should succeed");
+        (origin, track)
     }
 
     fn ts(micros: u64) -> Timestamp {
@@ -193,7 +194,7 @@ mod tests {
 
     #[tokio::test]
     async fn new_initialises_empty_state() {
-        let tp = make_track_producer();
+        let (_origin, tp) = make_track_producer();
         let op = OrderedProducer::new(tp);
         assert!(op.group.is_none());
         assert!(op.group_start.is_none());
@@ -203,28 +204,28 @@ mod tests {
 
     #[tokio::test]
     async fn with_max_group_duration_sets_limit() {
-        let tp = make_track_producer();
+        let (_origin, tp) = make_track_producer();
         let op = OrderedProducer::new(tp).with_max_group_duration(ts(1_000_000));
         assert_eq!(op.max_group_duration, Some(ts(1_000_000)));
     }
 
     #[tokio::test]
     async fn from_trait_constructs_producer() {
-        let tp = make_track_producer();
+        let (_origin, tp) = make_track_producer();
         let op = OrderedProducer::from(tp);
         assert!(op.group.is_none());
     }
 
     #[tokio::test]
     async fn deref_exposes_inner_track() {
-        let tp = make_track_producer();
+        let (_origin, tp) = make_track_producer();
         let op = OrderedProducer::new(tp);
-        let _: &moq_lite::TrackProducer = &op;
+        let _: &moq_net::track::Producer = &op;
     }
 
     #[tokio::test]
     async fn write_creates_group_on_first_frame() {
-        let tp = make_track_producer();
+        let (_origin, tp) = make_track_producer();
         let mut op = OrderedProducer::new(tp);
         assert!(op.group.is_none());
         op.write(&make_frame(0)).expect("write should succeed");
@@ -235,7 +236,7 @@ mod tests {
 
     #[tokio::test]
     async fn write_multiple_frames_increments_counter() {
-        let tp = make_track_producer();
+        let (_origin, tp) = make_track_producer();
         let mut op = OrderedProducer::new(tp);
         op.write(&make_frame(0)).unwrap();
         op.write(&make_frame(1000)).unwrap();
@@ -245,7 +246,7 @@ mod tests {
 
     #[tokio::test]
     async fn keyframe_on_empty_is_noop() {
-        let tp = make_track_producer();
+        let (_origin, tp) = make_track_producer();
         let mut op = OrderedProducer::new(tp);
         op.keyframe().expect("keyframe on empty should succeed");
         assert!(op.group.is_none());
@@ -253,7 +254,7 @@ mod tests {
 
     #[tokio::test]
     async fn keyframe_closes_active_group() {
-        let tp = make_track_producer();
+        let (_origin, tp) = make_track_producer();
         let mut op = OrderedProducer::new(tp);
         op.write(&make_frame(0)).unwrap();
         assert!(op.group.is_some());
@@ -263,7 +264,7 @@ mod tests {
 
     #[tokio::test]
     async fn keyframe_then_write_starts_new_group() {
-        let tp = make_track_producer();
+        let (_origin, tp) = make_track_producer();
         let mut op = OrderedProducer::new(tp);
         op.write(&make_frame(0)).unwrap();
         assert_eq!(op.group_start, Some(ts(0)));
@@ -275,7 +276,7 @@ mod tests {
 
     #[tokio::test]
     async fn max_duration_auto_closes_old_group_and_starts_new() {
-        let tp = make_track_producer();
+        let (_origin, tp) = make_track_producer();
         let mut op = OrderedProducer::new(tp).with_max_group_duration(ts(10_000));
 
         op.write(&make_frame(0)).unwrap();
@@ -290,7 +291,7 @@ mod tests {
 
     #[tokio::test]
     async fn finish_closes_group_and_track() {
-        let tp = make_track_producer();
+        let (_origin, tp) = make_track_producer();
         let mut op = OrderedProducer::new(tp);
         op.write(&make_frame(0)).unwrap();
         op.finish().expect("finish should succeed");
@@ -299,14 +300,14 @@ mod tests {
 
     #[tokio::test]
     async fn finish_on_empty_finishes_track() {
-        let tp = make_track_producer();
+        let (_origin, tp) = make_track_producer();
         let mut op = OrderedProducer::new(tp);
         op.finish().expect("finish on empty should succeed");
     }
 
     #[tokio::test]
     async fn write_video_drops_leading_deltas_until_first_keyframe() {
-        let tp = make_track_producer();
+        let (_origin, tp) = make_track_producer();
         let mut op = OrderedProducer::new(tp);
 
         // Deltas before any keyframe must not open a group: a group that
@@ -322,7 +323,7 @@ mod tests {
 
     #[tokio::test]
     async fn write_video_opens_group_on_keyframe_and_appends_deltas() {
-        let tp = make_track_producer();
+        let (_origin, tp) = make_track_producer();
         let mut op = OrderedProducer::new(tp);
 
         // First keyframe opens group 0.

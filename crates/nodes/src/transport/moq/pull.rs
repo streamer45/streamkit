@@ -4,7 +4,6 @@
 
 use crate::video::{AV1_CONTENT_TYPE, H264_CONTENT_TYPE, VP9_CONTENT_TYPE};
 use async_trait::async_trait;
-use bytes::Buf;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::borrow::Cow;
@@ -43,10 +42,10 @@ type DynamicOutputs = Arc<std::sync::RwLock<HashMap<String, mpsc::Sender<Packet>
 
 /// A catalog-discovered track with optional codec metadata.
 ///
-/// Wraps [`moq_lite::Track`] with the codec detected from the MoQ
+/// Wraps the track name/priority with the codec detected from the MoQ
 /// catalog so that output pins can advertise the correct codec type.
 struct DiscoveredTrack {
-    track: moq_lite::Track,
+    track: super::TrackRef,
     /// `Some(codec)` for video tracks; `None` for audio.
     video_codec: Option<VideoCodec>,
     /// `Some(codec)` for audio tracks; `None` for video.
@@ -346,14 +345,16 @@ impl MoqPullNode {
     /// (unlike [`Self::verify_pin_codecs`] at connection setup): tearing down a
     /// live pipeline over a late optional track is worse than degraded output
     /// on the affected pin.
-    fn attach_late_audio(
+    async fn attach_late_audio(
         &self,
-        broadcast: &moq_lite::BroadcastConsumer,
+        broadcast: &moq_net::broadcast::Consumer,
         new_tracks: &[DiscoveredTrack],
     ) -> Option<(LateTrack, AudioCodec)> {
         let dt = new_tracks.iter().find(|dt| dt.audio_codec.is_some())?;
         let codec = dt.audio_codec?;
-        let consumer = match broadcast.subscribe_track(&dt.track) {
+        let consumer = match super::subscribe_track(broadcast, &dt.track.name, dt.track.priority)
+            .await
+        {
             Ok(consumer) => consumer,
             Err(e) => {
                 tracing::warn!(error = %e, track = %dt.track.name, "MoqPullNode: failed to subscribe to late audio track");
@@ -387,13 +388,15 @@ impl MoqPullNode {
     /// video track (e.g. video added to an audio-only stream) is streamed
     /// mid-session. Returns the subscription and its catalog content-type, or
     /// `None` if there is no video track or the subscribe fails.
-    fn attach_late_video(
+    async fn attach_late_video(
         &self,
-        broadcast: &moq_lite::BroadcastConsumer,
+        broadcast: &moq_net::broadcast::Consumer,
         new_tracks: &[DiscoveredTrack],
     ) -> Option<(LateTrack, &'static str)> {
         let dt = new_tracks.iter().find(|dt| dt.video_codec.is_some())?;
-        let consumer = match broadcast.subscribe_track(&dt.track) {
+        let consumer = match super::subscribe_track(broadcast, &dt.track.name, dt.track.priority)
+            .await
+        {
             Ok(consumer) => consumer,
             Err(e) => {
                 tracing::warn!(error = %e, track = %dt.track.name, "MoqPullNode: failed to subscribe to late video track");
@@ -672,8 +675,8 @@ enum RouteOutcome {
 /// A track subscribed mid-session by the catalog watch, plus the read-loop
 /// state the caller needs to start consuming it.
 struct LateTrack {
-    track: moq_lite::Track,
-    consumer: moq_lite::TrackConsumer,
+    track: super::TrackRef,
+    consumer: moq_net::track::Subscriber,
     pin_name: String,
     pin_registered: bool,
 }
@@ -689,24 +692,24 @@ const CANCEL_YIELD_THRESHOLD: u32 = 5;
 
 impl MoqPullNode {
     fn strip_hang_timestamp_header(
-        mut payload: bytes::Bytes,
-    ) -> Result<(u64, bytes::Bytes), moq_lite::Error> {
+        payload: bytes::Bytes,
+    ) -> Result<(u64, bytes::Bytes), hang::Error> {
         // hang protocol: frame payload is prefixed with a varint timestamp in microseconds.
         // We parse it and forward the remaining bytes (Opus frame data).
-        let timestamp = hang::container::Timestamp::decode(&mut payload)?;
+        let frame = hang::container::Frame::decode(payload)?;
         #[allow(clippy::cast_possible_truncation)] // MoQ timestamps fit in u64
-        let timestamp_us = timestamp.as_micros() as u64;
-        Ok((timestamp_us, payload.copy_to_bytes(payload.remaining())))
+        let timestamp_us = frame.timestamp.as_micros() as u64;
+        Ok((timestamp_us, frame.payload))
     }
 
     /// Read the next raw MoQ frame, returning the payload and whether this
     /// frame is the first in a newly opened MoQ group (i.e. a keyframe
     /// boundary in the hang protocol).
     async fn read_next_raw_moq(
-        track_consumer: &mut moq_lite::TrackConsumer,
-        current_group: &mut Option<moq_lite::GroupConsumer>,
+        track_consumer: &mut moq_net::track::Subscriber,
+        current_group: &mut Option<moq_net::group::Consumer>,
         is_first_in_group: &mut bool,
-    ) -> Result<Option<bytes::Bytes>, moq_lite::Error> {
+    ) -> Result<Option<bytes::Bytes>, moq_net::Error> {
         loop {
             if current_group.is_none() {
                 match track_consumer.next_group().await {
@@ -724,7 +727,7 @@ impl MoqPullNode {
             };
 
             match group.read_frame().await {
-                Ok(Some(payload)) => return Ok(Some(payload)),
+                Ok(Some(frame)) => return Ok(Some(frame.payload)),
                 Ok(None) => {
                     // Group ended; move to the next group.
                     *current_group = None;
@@ -756,44 +759,38 @@ impl MoqPullNode {
 
         let client = super::shared_insecure_client()?;
 
-        let origin = moq_lite::Origin::random().produce();
+        let origin = moq_net::Origin::random().produce();
         let consumer = origin.consume();
         let _consumer_session =
-            Box::pin(client.clone().with_consume(origin).connect(url)).await.map_err(|e| {
+            Box::pin(client.clone().with_subscriber(origin).connect(url)).await.map_err(|e| {
                 StreamKitError::Runtime(format!("Failed to create consumer session: {e}"))
             })?;
 
         // Wait for the broadcast to be announced.  During dynamic session
-        // initialization the publisher (browser) may not have connected yet, so
-        // we poll with a short delay up to the timeout.
-        let broadcast_poll_interval = Duration::from_millis(250);
+        // initialization the publisher (browser) may not have connected yet.
         let discovery_timeout = Duration::from_secs(15);
 
-        let discovery_start = tokio::time::Instant::now();
-        let broadcast = loop {
-            if let Some(b) = consumer.get_broadcast(&self.config.broadcast) {
-                break b;
-            }
-            if discovery_start.elapsed() >= discovery_timeout {
+        let broadcast = match tokio::time::timeout(
+            discovery_timeout,
+            consumer.announced_broadcast(self.config.broadcast.as_str()),
+        )
+        .await
+        {
+            Ok(Some(b)) => b,
+            Ok(None) | Err(_) => {
                 tracing::debug!(
                     broadcast = %self.config.broadcast,
                     "Broadcast not announced within {}s; using default output pin",
                     discovery_timeout.as_secs()
                 );
                 return Ok(Vec::new());
-            }
-            tracing::trace!(
-                broadcast = %self.config.broadcast,
-                "Broadcast not yet announced, retrying..."
-            );
-            tokio::time::sleep(broadcast_poll_interval).await;
+            },
         };
 
         // Subscribe to the catalog track
-        let raw_catalog_track =
-            broadcast.subscribe_track(&hang::catalog::Catalog::default_track()).map_err(|e| {
-                StreamKitError::Runtime(format!("Failed to subscribe to catalog track: {e}"))
-            })?;
+        let raw_catalog_track = super::subscribe_catalog(&broadcast).await.map_err(|e| {
+            StreamKitError::Runtime(format!("Failed to subscribe to catalog track: {e}"))
+        })?;
         let mut catalog_consumer = super::catalog_consumer::CatalogConsumer::new(raw_catalog_track);
 
         // Parse the catalog to discover tracks
@@ -816,7 +813,7 @@ impl MoqPullNode {
             if let Some(codec) = audio_codec_from_catalog(&config.codec) {
                 tracing::info!(track = %name, ?codec, "found audio track");
                 tracks.push(DiscoveredTrack {
-                    track: moq_lite::Track { name: name.clone(), priority: 80 },
+                    track: super::TrackRef { name: name.clone(), priority: 80 },
                     video_codec: None,
                     audio_codec: Some(codec),
                 });
@@ -829,7 +826,7 @@ impl MoqPullNode {
             if let Some(codec) = video_codec_from_catalog(&config.codec) {
                 tracing::info!(track = %name, ?codec, "found video track");
                 tracks.push(DiscoveredTrack {
-                    track: moq_lite::Track { name: name.clone(), priority: 60 },
+                    track: super::TrackRef { name: name.clone(), priority: 60 },
                     video_codec: Some(codec),
                     audio_codec: None,
                 });
@@ -912,7 +909,7 @@ impl MoqPullNode {
         /// One iteration of the multiplexed select loop: a track frame, or a
         /// catalog update that may reveal a late-arriving track.
         enum LoopEvent {
-            Frame(Result<Option<bytes::Bytes>, moq_lite::Error>, ReadSource),
+            Frame(Result<Option<bytes::Bytes>, moq_net::Error>, ReadSource),
             // Boxed: a parsed catalog is far larger than a frame result, so an
             // unboxed variant bloats every `LoopEvent` (clippy::large_enum_variant).
             Catalog(Box<Result<Option<hang::catalog::Catalog>, hang::Error>>),
@@ -932,60 +929,43 @@ impl MoqPullNode {
         let client = super::shared_insecure_client()?;
 
         // Create origin for consuming broadcasts only (no publishing to avoid cycles)
-        let origin = moq_lite::Origin::random().produce();
+        let origin = moq_net::Origin::random().produce();
         let consumer = origin.consume();
         let _consumer_session =
-            Box::pin(client.clone().with_consume(origin).connect(url)).await.map_err(|e| {
+            Box::pin(client.clone().with_subscriber(origin).connect(url)).await.map_err(|e| {
                 StreamKitError::Runtime(format!("Failed to create consumer session: {e}"))
             })?;
 
         // Wait for broadcast to become available
-        let broadcast = {
-            let mut announcements = consumer.clone();
-
-            if let Some(broadcast) = consumer.get_broadcast(&self.config.broadcast) {
-                tracing::info!("Broadcast '{}' is immediately available", self.config.broadcast);
-                broadcast
-            } else {
-                // Wait for announcement
-                tracing::debug!(
-                    "Waiting for broadcast '{}' to be announced...",
-                    self.config.broadcast
-                );
-
-                loop {
-                    tokio::select! {
-                            msg = context.control_rx.recv() => {
-                                match msg {
-                                    Some(streamkit_core::control::NodeControlMessage::Shutdown) => {
-                                        tracing::info!("MoQ pull received shutdown signal while waiting for broadcast");
-                                        return Ok(StreamEndReason::Natural);
-                                    }
-                                    Some(control_msg) => {
-                                        tracing::debug!("MoQ pull received control message while waiting: {:?}", control_msg);
-                                    }
-                                    None => {
-                                        // Control channel closed - engine is shutting down
-                                        tracing::info!("MoQ pull control channel closed while waiting for broadcast");
-                                        return Ok(StreamEndReason::Natural);
-                                    }
-                                }
-                            }
-                            Some((path, maybe_broadcast)) = announcements.announced() => {
-                                if let Some(broadcast) = maybe_broadcast {
-                                    if path.as_str() == self.config.broadcast {
-                                        tracing::info!("Broadcast '{}' has been announced", self.config.broadcast);
-                                        break broadcast;
-                                    }
-                                    // Different broadcast announced, continue waiting
-                    tracing::trace!("Different broadcast announced: {}", path.as_str());
-                                }
-                            }
-                            else => {
-                                tracing::warn!("Announcement channel closed before broadcast '{}' was announced, will reconnect", self.config.broadcast);
-                                return Ok(StreamEndReason::Reconnect);
-                            }
-                        }
+        tracing::debug!("Waiting for broadcast '{}' to be announced...", self.config.broadcast);
+        let broadcast = tokio::select! {
+            msg = context.control_rx.recv() => {
+                match msg {
+                    Some(streamkit_core::control::NodeControlMessage::Shutdown) => {
+                        tracing::info!("MoQ pull received shutdown signal while waiting for broadcast");
+                        return Ok(StreamEndReason::Natural);
+                    }
+                    Some(control_msg) => {
+                        tracing::debug!("MoQ pull received control message while waiting: {:?}", control_msg);
+                        return Ok(StreamEndReason::Reconnect);
+                    }
+                    None => {
+                        // Control channel closed - engine is shutting down
+                        tracing::info!("MoQ pull control channel closed while waiting for broadcast");
+                        return Ok(StreamEndReason::Natural);
+                    }
+                }
+            }
+            maybe_broadcast = consumer.announced_broadcast(self.config.broadcast.as_str()) => {
+                match maybe_broadcast {
+                    Some(broadcast) => {
+                        tracing::info!("Broadcast '{}' has been announced", self.config.broadcast);
+                        broadcast
+                    }
+                    None => {
+                        tracing::warn!("Announcement channel closed before broadcast '{}' was announced, will reconnect", self.config.broadcast);
+                        return Ok(StreamEndReason::Reconnect);
+                    }
                 }
             }
         };
@@ -993,16 +973,12 @@ impl MoqPullNode {
         tracing::info!("Subscribed to broadcast '{}'", self.config.broadcast);
 
         // Get the catalog to find available tracks
-        let raw_catalog_track =
-            broadcast.subscribe_track(&hang::catalog::Catalog::default_track()).map_err(|e| {
-                StreamKitError::Runtime(format!("Failed to subscribe to catalog track: {e}"))
-            })?;
+        let raw_catalog_track = super::subscribe_catalog(&broadcast).await.map_err(|e| {
+            StreamKitError::Runtime(format!("Failed to subscribe to catalog track: {e}"))
+        })?;
         let mut catalog_consumer = super::catalog_consumer::CatalogConsumer::new(raw_catalog_track);
 
-        tracing::debug!(
-            "subscribed to catalog track: {}",
-            hang::catalog::Catalog::default_track().name
-        );
+        tracing::debug!("subscribed to catalog track: {}", hang::catalog::Catalog::DEFAULT_NAME);
 
         // Wait for catalog data with timeout
         let discovered_tracks = self.parse_catalog(&mut catalog_consumer).await?;
@@ -1038,14 +1014,16 @@ impl MoqPullNode {
                 tracing::info!("subscribing to audio track: {}", dt.track.name);
                 let pin_name = dt.track.name.clone();
                 let pin_registered = self.output_pins.iter().any(|p| p.name == pin_name);
-                let consumer = broadcast.subscribe_track(&dt.track).map_err(|e| {
-                    StreamKitError::Runtime(format!("Failed to subscribe to audio track: {e}"))
-                })?;
+                let consumer = super::subscribe_track(&broadcast, &dt.track.name, dt.track.priority)
+                    .await
+                    .map_err(|e| {
+                        StreamKitError::Runtime(format!("Failed to subscribe to audio track: {e}"))
+                    })?;
                 (Some(consumer), Some(pin_name), pin_registered)
             } else {
                 (None, None, false)
             };
-        let mut audio_sub_track: Option<moq_lite::Track> = audio_track.map(|dt| dt.track.clone());
+        let mut audio_sub_track: Option<super::TrackRef> = audio_track.map(|dt| dt.track.clone());
 
         // Subscribe to video track
         let (mut video_track_consumer, mut video_track_pin_name, mut video_track_pin_registered) =
@@ -1053,17 +1031,19 @@ impl MoqPullNode {
                 tracing::info!("subscribing to video track: {}", dt.track.name);
                 let pin_name = dt.track.name.clone();
                 let pin_registered = self.output_pins.iter().any(|p| p.name == pin_name);
-                let consumer = broadcast.subscribe_track(&dt.track).map_err(|e| {
-                    StreamKitError::Runtime(format!("Failed to subscribe to video track: {e}"))
-                })?;
+                let consumer = super::subscribe_track(&broadcast, &dt.track.name, dt.track.priority)
+                    .await
+                    .map_err(|e| {
+                        StreamKitError::Runtime(format!("Failed to subscribe to video track: {e}"))
+                    })?;
                 (Some(consumer), Some(pin_name), pin_registered)
             } else {
                 (None, None, false)
             };
-        let mut video_sub_track: Option<moq_lite::Track> = video_track.map(|dt| dt.track.clone());
+        let mut video_sub_track: Option<super::TrackRef> = video_track.map(|dt| dt.track.clone());
 
-        let mut audio_current_group: Option<moq_lite::GroupConsumer> = None;
-        let mut video_current_group: Option<moq_lite::GroupConsumer> = None;
+        let mut audio_current_group: Option<moq_net::group::Consumer> = None;
+        let mut video_current_group: Option<moq_net::group::Consumer> = None;
 
         // Resolve the video content_type from the discovered track's codec.
         // Falls back to "video/vp9" if no codec info is available. Reassigned
@@ -1192,7 +1172,7 @@ impl MoqPullNode {
                 }
             };
 
-            let (read_result, source): (Result<Option<bytes::Bytes>, moq_lite::Error>, ReadSource) =
+            let (read_result, source): (Result<Option<bytes::Bytes>, moq_net::Error>, ReadSource) =
                 match event {
                     LoopEvent::Frame(result, source) => (result, source),
                     LoopEvent::Catalog(boxed) => match *boxed {
@@ -1202,7 +1182,7 @@ impl MoqPullNode {
 
                             if audio_sub_track.is_none() {
                                 if let Some((late, codec)) =
-                                    self.attach_late_audio(&broadcast, &new_tracks)
+                                    self.attach_late_audio(&broadcast, &new_tracks).await
                                 {
                                     resolved_audio_codec = codec;
                                     audio_track_pin_registered = late.pin_registered;
@@ -1218,7 +1198,7 @@ impl MoqPullNode {
 
                             if video_sub_track.is_none() {
                                 if let Some((late, content_type)) =
-                                    self.attach_late_video(&broadcast, &new_tracks)
+                                    self.attach_late_video(&broadcast, &new_tracks).await
                                 {
                                     video_content_type = content_type;
                                     video_track_pin_registered = late.pin_registered;
@@ -1418,7 +1398,13 @@ impl MoqPullNode {
                             if audio_resubscribe_attempts < MAX_RESUBSCRIBE_ATTEMPTS {
                                 if let Some(track) = audio_sub_track.as_ref() {
                                     audio_resubscribe_attempts += 1;
-                                    match broadcast.subscribe_track(track) {
+                                    match super::subscribe_track(
+                                        &broadcast,
+                                        &track.name,
+                                        track.priority,
+                                    )
+                                    .await
+                                    {
                                         Ok(new_consumer) => {
                                             tracing::info!(
                                                 attempt = audio_resubscribe_attempts,
@@ -1448,7 +1434,13 @@ impl MoqPullNode {
                             if video_resubscribe_attempts < MAX_RESUBSCRIBE_ATTEMPTS {
                                 if let Some(track) = video_sub_track.as_ref() {
                                     video_resubscribe_attempts += 1;
-                                    match broadcast.subscribe_track(track) {
+                                    match super::subscribe_track(
+                                        &broadcast,
+                                        &track.name,
+                                        track.priority,
+                                    )
+                                    .await
+                                    {
                                         Ok(new_consumer) => {
                                             tracing::info!(
                                                 attempt = video_resubscribe_attempts,
@@ -1476,7 +1468,7 @@ impl MoqPullNode {
                         return Ok(StreamEndReason::Natural);
                     }
                 },
-                Err(moq_lite::Error::Cancel) => {
+                Err(moq_net::Error::Cancel) => {
                     consecutive_cancels = consecutive_cancels.saturating_add(1);
                     tracing::debug!(
                         session_packet_count,
@@ -1520,13 +1512,14 @@ impl MoqPullNode {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use super::super::TrackRef;
     use super::*;
     use bytes::BytesMut;
 
     #[test]
     fn test_output_pins_for_tracks_includes_stable_out() {
         let tracks = vec![DiscoveredTrack {
-            track: moq_lite::Track { name: "audio/data".to_string(), priority: 0 },
+            track: TrackRef { name: "audio/data".to_string(), priority: 0 },
             video_codec: None,
             audio_codec: Some(AudioCodec::Opus),
         }];
@@ -1538,7 +1531,7 @@ mod tests {
     #[test]
     fn test_output_pins_for_tracks_dedupes_out_track_name() {
         let tracks = vec![DiscoveredTrack {
-            track: moq_lite::Track { name: "out".to_string(), priority: 0 },
+            track: TrackRef { name: "out".to_string(), priority: 0 },
             video_codec: None,
             audio_codec: Some(AudioCodec::Opus),
         }];
@@ -1549,7 +1542,7 @@ mod tests {
     #[test]
     fn test_output_pins_for_tracks_uses_av1_codec() {
         let tracks = vec![DiscoveredTrack {
-            track: moq_lite::Track { name: "video/data".to_string(), priority: 60 },
+            track: TrackRef { name: "video/data".to_string(), priority: 60 },
             video_codec: Some(VideoCodec::Av1),
             audio_codec: None,
         }];
@@ -1564,7 +1557,7 @@ mod tests {
     #[test]
     fn test_output_pins_for_tracks_defaults_vp9() {
         let tracks = vec![DiscoveredTrack {
-            track: moq_lite::Track { name: "video/data".to_string(), priority: 60 },
+            track: TrackRef { name: "video/data".to_string(), priority: 60 },
             video_codec: Some(VideoCodec::Vp9),
             audio_codec: None,
         }];
@@ -1579,7 +1572,7 @@ mod tests {
     #[test]
     fn test_output_pins_for_tracks_aac_audio() {
         let tracks = vec![DiscoveredTrack {
-            track: moq_lite::Track { name: "audio/data".to_string(), priority: 80 },
+            track: TrackRef { name: "audio/data".to_string(), priority: 80 },
             video_codec: None,
             audio_codec: Some(AudioCodec::Aac),
         }];
@@ -1599,7 +1592,7 @@ mod tests {
     #[test]
     fn test_output_pins_for_tracks_uses_config_default_when_no_audio_discovered() {
         let tracks = vec![DiscoveredTrack {
-            track: moq_lite::Track { name: "video/data".to_string(), priority: 60 },
+            track: TrackRef { name: "video/data".to_string(), priority: 60 },
             video_codec: Some(VideoCodec::Vp9),
             audio_codec: None,
         }];
@@ -1635,11 +1628,11 @@ mod tests {
     #[test]
     fn test_strip_hang_timestamp_header() {
         let mut buf = BytesMut::new();
-        hang::container::Timestamp::from_micros(123)
-            .expect("valid timestamp")
-            .encode(&mut buf)
-            .expect("encode succeeds");
-        buf.extend_from_slice(b"opus-frame-bytes");
+        let frame = hang::container::Frame {
+            timestamp: hang::container::Timestamp::from_micros(123).expect("valid timestamp"),
+            payload: bytes::Bytes::from_static(b"opus-frame-bytes"),
+        };
+        frame.encode(&mut buf).expect("encode succeeds");
         let payload = buf.freeze();
 
         let (ts, stripped) = match MoqPullNode::strip_hang_timestamp_header(payload) {
@@ -1689,12 +1682,12 @@ mod tests {
     fn test_track_selection_uses_codec_fields() {
         let tracks = [
             DiscoveredTrack {
-                track: moq_lite::Track { name: "my-custom-audio".to_string(), priority: 80 },
+                track: TrackRef { name: "my-custom-audio".to_string(), priority: 80 },
                 video_codec: None,
                 audio_codec: Some(AudioCodec::Opus),
             },
             DiscoveredTrack {
-                track: moq_lite::Track { name: "my-custom-video".to_string(), priority: 60 },
+                track: TrackRef { name: "my-custom-video".to_string(), priority: 60 },
                 video_codec: Some(VideoCodec::Vp9),
                 audio_codec: None,
             },
@@ -1708,7 +1701,7 @@ mod tests {
     #[test]
     fn test_output_pins_for_tracks_uses_codec_not_name() {
         let tracks = [DiscoveredTrack {
-            track: moq_lite::Track { name: "non-standard-name".to_string(), priority: 60 },
+            track: TrackRef { name: "non-standard-name".to_string(), priority: 60 },
             video_codec: Some(VideoCodec::Av1),
             audio_codec: None,
         }];
@@ -1734,7 +1727,7 @@ mod tests {
 
     fn video_discovered_track(codec: VideoCodec) -> DiscoveredTrack {
         DiscoveredTrack {
-            track: moq_lite::Track { name: "video/data".to_string(), priority: 60 },
+            track: TrackRef { name: "video/data".to_string(), priority: 60 },
             video_codec: Some(codec),
             audio_codec: None,
         }
@@ -1742,7 +1735,7 @@ mod tests {
 
     fn audio_discovered_track(codec: AudioCodec) -> DiscoveredTrack {
         DiscoveredTrack {
-            track: moq_lite::Track { name: "audio/data".to_string(), priority: 50 },
+            track: TrackRef { name: "audio/data".to_string(), priority: 50 },
             video_codec: None,
             audio_codec: Some(codec),
         }
@@ -1821,12 +1814,12 @@ mod tests {
     #[test]
     fn test_video_codec_mismatch_on_second_track_is_detected() {
         let hd = DiscoveredTrack {
-            track: moq_lite::Track { name: "video/hd".to_string(), priority: 60 },
+            track: TrackRef { name: "video/hd".to_string(), priority: 60 },
             video_codec: Some(VideoCodec::Vp9),
             audio_codec: None,
         };
         let sd_vp9 = DiscoveredTrack {
-            track: moq_lite::Track { name: "video/sd".to_string(), priority: 60 },
+            track: TrackRef { name: "video/sd".to_string(), priority: 60 },
             video_codec: Some(VideoCodec::Vp9),
             audio_codec: None,
         };
@@ -1834,12 +1827,12 @@ mod tests {
         node.output_pins = MoqPullNode::output_pins_for_tracks(&[hd, sd_vp9], AudioCodec::Opus);
 
         let hd_again = DiscoveredTrack {
-            track: moq_lite::Track { name: "video/hd".to_string(), priority: 60 },
+            track: TrackRef { name: "video/hd".to_string(), priority: 60 },
             video_codec: Some(VideoCodec::Vp9),
             audio_codec: None,
         };
         let sd_av1 = DiscoveredTrack {
-            track: moq_lite::Track { name: "video/sd".to_string(), priority: 60 },
+            track: TrackRef { name: "video/sd".to_string(), priority: 60 },
             video_codec: Some(VideoCodec::Av1),
             audio_codec: None,
         };
@@ -1901,33 +1894,18 @@ mod tests {
     /// startup of the audio relay. The first non-empty catalog is authoritative.
     #[tokio::test]
     async fn test_parse_catalog_audio_only_returns_promptly() {
-        let origin = moq_lite::Origin::random().produce();
-        let mut broadcast = origin.create_broadcast("test-broadcast").unwrap();
-        let track = hang::catalog::Catalog::default_track();
-        let mut producer = broadcast.create_track(track.clone()).unwrap();
+        let origin = moq_net::Origin::random().produce();
+        let mut broadcast = origin
+            .create_broadcast("test-broadcast", moq_net::broadcast::Route::announced())
+            .unwrap();
+        let mut producer = super::super::create_catalog_track(&mut broadcast).unwrap();
 
         let consumer = origin.consume();
-        let bc = consumer.get_broadcast("test-broadcast").unwrap();
-        let consumer_track = bc.subscribe_track(&track).unwrap();
+        let bc = consumer.announced_broadcast("test-broadcast").await.unwrap();
+        let consumer_track = super::super::subscribe_catalog(&bc).await.unwrap();
 
-        let mut audio_renditions = std::collections::BTreeMap::new();
-        audio_renditions.insert("audio/data".to_string(), {
-            let mut cfg = hang::catalog::AudioConfig::new(
-                super::super::constants::catalog_audio_codec(AudioCodec::Opus),
-                48000,
-                2,
-            );
-            cfg.bitrate = Some(128_000);
-            cfg
-        });
-        let catalog = hang::catalog::Catalog {
-            audio: hang::catalog::Audio { renditions: audio_renditions },
-            ..Default::default()
-        };
-        let payload = catalog.to_string().unwrap();
-        let mut group = producer.append_group().unwrap();
-        group.write_frame(bytes::Bytes::from(payload)).unwrap();
-        group.finish().unwrap();
+        let catalog = audio_only_catalog();
+        super::super::write_catalog_json(&mut producer, catalog.to_vec().unwrap()).unwrap();
 
         let node = MoqPullNode::new(MoqPullConfig::default());
         let mut cc = super::super::catalog_consumer::CatalogConsumer::new(consumer_track);
@@ -1956,10 +1934,9 @@ mod tests {
             cfg.bitrate = Some(128_000);
             cfg
         });
-        hang::catalog::Catalog {
-            audio: hang::catalog::Audio { renditions: audio_renditions },
-            ..Default::default()
-        }
+        let mut catalog = hang::catalog::Catalog::default();
+        catalog.audio.renditions = audio_renditions;
+        catalog
     }
 
     fn video_catalog(codec: VideoCodec) -> hang::catalog::Catalog {
@@ -1987,22 +1964,20 @@ mod tests {
     /// catalog watch in `run_connection` subscribes to the late track.
     #[tokio::test]
     async fn test_catalog_watch_discovers_late_video_track() {
-        let origin = moq_lite::Origin::random().produce();
-        let mut broadcast = origin.create_broadcast("test-broadcast").unwrap();
-        let track = hang::catalog::Catalog::default_track();
-        let mut producer = broadcast.create_track(track.clone()).unwrap();
+        let origin = moq_net::Origin::random().produce();
+        let mut broadcast = origin
+            .create_broadcast("test-broadcast", moq_net::broadcast::Route::announced())
+            .unwrap();
+        let mut producer = super::super::create_catalog_track(&mut broadcast).unwrap();
 
         let consumer = origin.consume();
-        let bc = consumer.get_broadcast("test-broadcast").unwrap();
-        let consumer_track = bc.subscribe_track(&track).unwrap();
+        let bc = consumer.announced_broadcast("test-broadcast").await.unwrap();
+        let consumer_track = super::super::subscribe_catalog(&bc).await.unwrap();
         let mut cc = super::super::catalog_consumer::CatalogConsumer::new(consumer_track);
 
-        let write_catalog = |producer: &mut moq_lite::TrackProducer,
+        let write_catalog = |producer: &mut moq_net::track::Producer,
                              catalog: &hang::catalog::Catalog| {
-            let payload = catalog.to_string().unwrap();
-            let mut group = producer.append_group().unwrap();
-            group.write_frame(bytes::Bytes::from(payload)).unwrap();
-            group.finish().unwrap();
+            super::super::write_catalog_json(producer, catalog.to_vec().unwrap()).unwrap();
         };
 
         // First update: audio only — initial discovery returns immediately.
@@ -2167,35 +2142,35 @@ mod tests {
     /// Keeps the producer handles alive for the lifetime of the test; dropping
     /// them would close the broadcast and make `subscribe_track` fail.
     struct TestBroadcast {
-        _origin: moq_lite::OriginProducer,
-        _broadcast: moq_lite::BroadcastProducer,
-        _tracks: Vec<moq_lite::TrackProducer>,
-        consumer: moq_lite::BroadcastConsumer,
+        _origin: moq_net::origin::Producer,
+        _broadcast: moq_net::broadcast::Producer,
+        _tracks: Vec<moq_net::track::Producer>,
+        consumer: moq_net::broadcast::Consumer,
     }
 
-    fn broadcast_with_tracks(names: &[&str]) -> TestBroadcast {
-        let origin = moq_lite::Origin::random().produce();
-        let mut broadcast = origin.create_broadcast("test-broadcast").unwrap();
+    async fn broadcast_with_tracks(names: &[&str]) -> TestBroadcast {
+        let origin = moq_net::Origin::random().produce();
+        let mut broadcast = origin
+            .create_broadcast("test-broadcast", moq_net::broadcast::Route::announced())
+            .unwrap();
         let tracks = names
             .iter()
-            .map(|name| {
-                broadcast
-                    .create_track(moq_lite::Track { name: (*name).to_string(), priority: 0 })
-                    .unwrap()
-            })
+            .map(|name| super::super::create_media_track(&mut broadcast, name, 0).unwrap())
             .collect();
-        let consumer = origin.consume().get_broadcast("test-broadcast").unwrap();
+        let consumer = origin.consume().announced_broadcast("test-broadcast").await.unwrap();
         TestBroadcast { _origin: origin, _broadcast: broadcast, _tracks: tracks, consumer }
     }
 
     #[tokio::test]
     async fn test_attach_late_audio_subscribes_and_reports_pin() {
-        let tb = broadcast_with_tracks(&["audio/data"]);
+        let tb = broadcast_with_tracks(&["audio/data"]).await;
         let node = MoqPullNode::new(MoqPullConfig::default());
         let new_tracks = MoqPullNode::extract_tracks(&audio_only_catalog());
 
-        let (late, codec) =
-            node.attach_late_audio(&tb.consumer, &new_tracks).expect("audio track should attach");
+        let (late, codec) = node
+            .attach_late_audio(&tb.consumer, &new_tracks)
+            .await
+            .expect("audio track should attach");
         assert_eq!(late.pin_name, "audio/data");
         assert_eq!(codec, AudioCodec::Opus);
         assert!(!late.pin_registered, "audio/data is not a statically advertised pin");
@@ -2203,7 +2178,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_attach_late_audio_none_without_audio_track() {
-        let tb = broadcast_with_tracks(&["video/data"]);
+        let tb = broadcast_with_tracks(&["video/data"]).await;
         let node = MoqPullNode::new(MoqPullConfig::default());
         let video_only = {
             let mut c = audio_video_catalog();
@@ -2211,17 +2186,19 @@ mod tests {
             c
         };
         let new_tracks = MoqPullNode::extract_tracks(&video_only);
-        assert!(node.attach_late_audio(&tb.consumer, &new_tracks).is_none());
+        assert!(node.attach_late_audio(&tb.consumer, &new_tracks).await.is_none());
     }
 
     #[tokio::test]
     async fn test_attach_late_video_subscribes_and_reports_content_type() {
-        let tb = broadcast_with_tracks(&["video/data"]);
+        let tb = broadcast_with_tracks(&["video/data"]).await;
         let node = MoqPullNode::new(MoqPullConfig::default());
         let new_tracks = MoqPullNode::extract_tracks(&audio_video_catalog());
 
-        let (late, content_type) =
-            node.attach_late_video(&tb.consumer, &new_tracks).expect("video track should attach");
+        let (late, content_type) = node
+            .attach_late_video(&tb.consumer, &new_tracks)
+            .await
+            .expect("video track should attach");
         assert_eq!(late.pin_name, "video/data");
         assert_eq!(content_type, VP9_CONTENT_TYPE);
         assert!(!late.pin_registered);
@@ -2283,14 +2260,16 @@ mod tests {
     /// discovered codec) while warning that downstream consumers may misdecode.
     #[tokio::test]
     async fn test_attach_late_audio_reports_mismatch_codec() {
-        let tb = broadcast_with_tracks(&["audio/data"]);
+        let tb = broadcast_with_tracks(&["audio/data"]).await;
         let config =
             MoqPullConfig { audio_codec: Some(AudioCodec::Aac), ..MoqPullConfig::default() };
         let node = MoqPullNode::new(config);
         let new_tracks = MoqPullNode::extract_tracks(&audio_only_catalog());
 
-        let (late, codec) =
-            node.attach_late_audio(&tb.consumer, &new_tracks).expect("audio track should attach");
+        let (late, codec) = node
+            .attach_late_audio(&tb.consumer, &new_tracks)
+            .await
+            .expect("audio track should attach");
         assert_eq!(codec, AudioCodec::Opus, "discovered codec wins for the live subscription");
         assert_eq!(node.advertised_out_audio_codec(), Some(AudioCodec::Aac));
         assert_eq!(late.pin_name, "audio/data");
@@ -2312,35 +2291,39 @@ mod tests {
 
     #[tokio::test]
     async fn test_attach_late_video_av1_content_type() {
-        let tb = broadcast_with_tracks(&["video/data"]);
+        let tb = broadcast_with_tracks(&["video/data"]).await;
         let node = MoqPullNode::new(MoqPullConfig::default());
         let new_tracks = MoqPullNode::extract_tracks(&video_catalog(VideoCodec::Av1));
-        let (_late, content_type) =
-            node.attach_late_video(&tb.consumer, &new_tracks).expect("av1 track should attach");
+        let (_late, content_type) = node
+            .attach_late_video(&tb.consumer, &new_tracks)
+            .await
+            .expect("av1 track should attach");
         assert_eq!(content_type, AV1_CONTENT_TYPE);
     }
 
     #[tokio::test]
     async fn test_attach_late_video_h264_content_type() {
-        let tb = broadcast_with_tracks(&["video/data"]);
+        let tb = broadcast_with_tracks(&["video/data"]).await;
         let node = MoqPullNode::new(MoqPullConfig::default());
         let new_tracks = MoqPullNode::extract_tracks(&video_catalog(VideoCodec::H264));
-        let (_late, content_type) =
-            node.attach_late_video(&tb.consumer, &new_tracks).expect("h264 track should attach");
+        let (_late, content_type) = node
+            .attach_late_video(&tb.consumer, &new_tracks)
+            .await
+            .expect("h264 track should attach");
         assert_eq!(content_type, H264_CONTENT_TYPE);
     }
 
     /// A broadcast whose producers have been dropped: `subscribe_track` fails,
     /// exercising the attach helpers' subscribe-error paths.
-    fn closed_broadcast(track_names: &[&str]) -> moq_lite::BroadcastConsumer {
-        let origin = moq_lite::Origin::random().produce();
-        let mut broadcast = origin.create_broadcast("test-broadcast").unwrap();
+    async fn closed_broadcast(track_names: &[&str]) -> moq_net::broadcast::Consumer {
+        let origin = moq_net::Origin::random().produce();
+        let mut broadcast = origin
+            .create_broadcast("test-broadcast", moq_net::broadcast::Route::announced())
+            .unwrap();
         for name in track_names {
-            let _ = broadcast
-                .create_track(moq_lite::Track { name: (*name).to_string(), priority: 0 })
-                .unwrap();
+            let _ = super::super::create_media_track(&mut broadcast, name, 0).unwrap();
         }
-        let bc = origin.consume().get_broadcast("test-broadcast").unwrap();
+        let bc = origin.consume().announced_broadcast("test-broadcast").await.unwrap();
         drop(broadcast);
         drop(origin);
         bc
@@ -2348,18 +2331,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_attach_late_audio_none_when_subscribe_fails() {
-        let bc = closed_broadcast(&["audio/data"]);
+        let bc = closed_broadcast(&["audio/data"]).await;
         let node = MoqPullNode::new(MoqPullConfig::default());
         let new_tracks = MoqPullNode::extract_tracks(&audio_only_catalog());
-        assert!(node.attach_late_audio(&bc, &new_tracks).is_none());
+        assert!(node.attach_late_audio(&bc, &new_tracks).await.is_none());
     }
 
     #[tokio::test]
     async fn test_attach_late_video_none_when_subscribe_fails() {
-        let bc = closed_broadcast(&["video/data"]);
+        let bc = closed_broadcast(&["video/data"]).await;
         let node = MoqPullNode::new(MoqPullConfig::default());
         let new_tracks = MoqPullNode::extract_tracks(&audio_video_catalog());
-        assert!(node.attach_late_video(&bc, &new_tracks).is_none());
+        assert!(node.attach_late_video(&bc, &new_tracks).await.is_none());
     }
 
     /// A statically advertised pin routes through the engine's `output_sender`
@@ -2413,89 +2396,108 @@ mod tests {
         );
     }
 
-    fn track_pair(name: &str) -> (moq_lite::TrackProducer, moq_lite::TrackConsumer) {
-        let origin = moq_lite::Origin::random().produce();
-        let mut broadcast = origin.create_broadcast("test-broadcast").unwrap();
-        let track = moq_lite::Track { name: name.to_string(), priority: 0 };
-        let producer = broadcast.create_track(track.clone()).unwrap();
-        let consumer = origin.consume().get_broadcast("test-broadcast").unwrap();
-        let track_consumer = consumer.subscribe_track(&track).unwrap();
-        (producer, track_consumer)
+    struct TrackPair {
+        _origin: moq_net::origin::Producer,
+        _broadcast: moq_net::broadcast::Producer,
+        producer: moq_net::track::Producer,
+        consumer: moq_net::track::Subscriber,
     }
 
-    fn write_group(producer: &mut moq_lite::TrackProducer, frames: &[&[u8]]) {
+    async fn track_pair(name: &str) -> TrackPair {
+        let origin = moq_net::Origin::random().produce();
+        let mut broadcast = origin
+            .create_broadcast("test-broadcast", moq_net::broadcast::Route::announced())
+            .unwrap();
+        let producer = super::super::create_media_track(&mut broadcast, name, 0).unwrap();
+        let bc = origin.consume().announced_broadcast("test-broadcast").await.unwrap();
+        let consumer = super::super::subscribe_track(&bc, name, 0).await.unwrap();
+        TrackPair { _origin: origin, _broadcast: broadcast, producer, consumer }
+    }
+
+    fn write_group(producer: &mut moq_net::track::Producer, frames: &[&[u8]]) {
         let mut group = producer.append_group().unwrap();
-        for f in frames {
-            group.write_frame(bytes::Bytes::copy_from_slice(f)).unwrap();
+        for (i, f) in frames.iter().enumerate() {
+            let ts = moq_net::Timestamp::from_micros(i as u64).unwrap();
+            group.write_frame(ts, bytes::Bytes::copy_from_slice(f)).unwrap();
         }
         group.finish().unwrap();
     }
 
     #[tokio::test]
     async fn test_read_next_raw_moq_walks_groups_and_flags_first_frame() {
-        let (mut producer, mut consumer) = track_pair("audio/data");
-        write_group(&mut producer, &[b"a", b"b"]);
-        write_group(&mut producer, &[b"c"]);
-        producer.finish().unwrap();
+        let mut tp = track_pair("audio/data").await;
+        write_group(&mut tp.producer, &[b"a", b"b"]);
+        write_group(&mut tp.producer, &[b"c"]);
+        tp.producer.finish().unwrap();
 
-        let mut group: Option<moq_lite::GroupConsumer> = None;
+        let mut group: Option<moq_net::group::Consumer> = None;
         let mut is_first = false;
 
-        let p1 =
-            MoqPullNode::read_next_raw_moq(&mut consumer, &mut group, &mut is_first).await.unwrap();
+        let p1 = MoqPullNode::read_next_raw_moq(&mut tp.consumer, &mut group, &mut is_first)
+            .await
+            .unwrap();
         assert_eq!(p1.as_deref(), Some(&b"a"[..]));
         assert!(is_first, "first frame of a freshly opened group is flagged");
 
         is_first = false;
-        let p2 =
-            MoqPullNode::read_next_raw_moq(&mut consumer, &mut group, &mut is_first).await.unwrap();
+        let p2 = MoqPullNode::read_next_raw_moq(&mut tp.consumer, &mut group, &mut is_first)
+            .await
+            .unwrap();
         assert_eq!(p2.as_deref(), Some(&b"b"[..]));
         assert!(!is_first, "subsequent frame in the same group is not flagged");
 
-        let p3 =
-            MoqPullNode::read_next_raw_moq(&mut consumer, &mut group, &mut is_first).await.unwrap();
+        let p3 = MoqPullNode::read_next_raw_moq(&mut tp.consumer, &mut group, &mut is_first)
+            .await
+            .unwrap();
         assert_eq!(p3.as_deref(), Some(&b"c"[..]));
         assert!(is_first, "first frame of the second group is flagged again");
 
-        let end =
-            MoqPullNode::read_next_raw_moq(&mut consumer, &mut group, &mut is_first).await.unwrap();
+        let end = MoqPullNode::read_next_raw_moq(&mut tp.consumer, &mut group, &mut is_first)
+            .await
+            .unwrap();
         assert!(end.is_none(), "finished track reads as end-of-stream");
     }
 
     #[tokio::test]
     async fn test_read_next_raw_moq_propagates_group_error() {
-        let (mut producer, mut consumer) = track_pair("audio/data");
-        let mut g = producer.append_group().unwrap();
-        g.write_frame(bytes::Bytes::from_static(b"a")).unwrap();
-        g.abort(moq_lite::Error::Cancel).unwrap();
+        let mut tp = track_pair("audio/data").await;
+        let mut g = tp.producer.append_group().unwrap();
+        g.write_frame(moq_net::Timestamp::from_micros(0).unwrap(), bytes::Bytes::from_static(b"a"))
+            .unwrap();
 
-        let mut group: Option<moq_lite::GroupConsumer> = None;
+        let mut group: Option<moq_net::group::Consumer> = None;
         let mut is_first = false;
 
-        // Aborting a group drops its cached frames (moq-net), so a consumer that
-        // hasn't drained surfaces the abort error instead of the buffered frame.
-        let err = MoqPullNode::read_next_raw_moq(&mut consumer, &mut group, &mut is_first).await;
+        let p1 = MoqPullNode::read_next_raw_moq(&mut tp.consumer, &mut group, &mut is_first)
+            .await
+            .unwrap();
+        assert_eq!(p1.as_deref(), Some(&b"a"[..]));
+
+        // Aborting the group mid-read surfaces the abort error to the consumer
+        // instead of a silently truncated stream.
+        g.abort(moq_net::Error::Cancel).unwrap();
+        let err = MoqPullNode::read_next_raw_moq(&mut tp.consumer, &mut group, &mut is_first).await;
         assert!(err.is_err(), "an aborted group should surface as an error");
         assert!(group.is_none(), "the errored group is cleared");
     }
 
     #[tokio::test]
     async fn test_read_next_raw_moq_propagates_next_group_error() {
-        let (mut producer, mut consumer) = track_pair("audio/data");
-        producer.abort(moq_lite::Error::Cancel).unwrap();
+        let mut tp = track_pair("audio/data").await;
+        tp.producer.abort(moq_net::Error::Cancel).unwrap();
 
-        let mut group: Option<moq_lite::GroupConsumer> = None;
+        let mut group: Option<moq_net::group::Consumer> = None;
         let mut is_first = false;
-        let err = MoqPullNode::read_next_raw_moq(&mut consumer, &mut group, &mut is_first).await;
+        let err = MoqPullNode::read_next_raw_moq(&mut tp.consumer, &mut group, &mut is_first).await;
         assert!(err.is_err(), "an aborted track should surface as an error");
     }
 
     #[tokio::test]
     async fn test_parse_catalog_errors_when_track_closed() {
-        let (mut producer, consumer) = track_pair(".catalog");
-        producer.finish().unwrap();
+        let mut tp = track_pair(hang::catalog::Catalog::DEFAULT_NAME).await;
+        tp.producer.finish().unwrap();
         let node = MoqPullNode::new(MoqPullConfig::default());
-        let mut cc = super::super::catalog_consumer::CatalogConsumer::new(consumer);
+        let mut cc = super::super::catalog_consumer::CatalogConsumer::new(tp.consumer);
 
         let Err(err) = node.parse_catalog(&mut cc).await else {
             panic!("expected a track-closed error");
@@ -2506,9 +2508,9 @@ mod tests {
     // `start_paused` lets the catalog timeout elapse in virtual time.
     #[tokio::test(start_paused = true)]
     async fn test_parse_catalog_times_out_without_catalog() {
-        let (_producer, consumer) = track_pair(".catalog");
+        let tp = track_pair(hang::catalog::Catalog::DEFAULT_NAME).await;
         let node = MoqPullNode::new(MoqPullConfig::default());
-        let mut cc = super::super::catalog_consumer::CatalogConsumer::new(consumer);
+        let mut cc = super::super::catalog_consumer::CatalogConsumer::new(tp.consumer);
 
         let Err(err) = node.parse_catalog(&mut cc).await else {
             panic!("expected a timeout error");
