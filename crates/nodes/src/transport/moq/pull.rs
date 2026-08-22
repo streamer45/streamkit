@@ -661,6 +661,12 @@ enum StreamEndReason {
     Reconnect,
 }
 
+/// Outcome of waiting for a broadcast announcement.
+enum BroadcastWait {
+    Broadcast(moq_net::broadcast::Consumer),
+    End(StreamEndReason),
+}
+
 /// Result of routing a track frame to an output pin.
 enum RouteOutcome {
     /// Delivered to a connected pin.
@@ -888,6 +894,48 @@ impl MoqPullNode {
         }
     }
 
+    /// Wait for `broadcast` to be announced, servicing control messages.
+    ///
+    /// Non-shutdown control messages (e.g. the engine's startup `Start`) are
+    /// ignored so a pull node waiting for a late publisher keeps waiting.
+    /// Restarting `announced_broadcast` after a control message is safe: each
+    /// call replays the currently active broadcast set, so an announcement
+    /// observed between iterations isn't lost.
+    async fn wait_for_announced_broadcast(
+        control_rx: &mut mpsc::Receiver<streamkit_core::control::NodeControlMessage>,
+        consumer: &moq_net::origin::Consumer,
+        broadcast: &str,
+    ) -> BroadcastWait {
+        loop {
+            tokio::select! {
+                msg = control_rx.recv() => {
+                    match msg {
+                        Some(streamkit_core::control::NodeControlMessage::Shutdown) => {
+                            tracing::info!("MoQ pull received shutdown signal while waiting for broadcast");
+                            return BroadcastWait::End(StreamEndReason::Natural);
+                        }
+                        Some(control_msg) => {
+                            tracing::debug!("MoQ pull ignoring control message while waiting: {:?}", control_msg);
+                        }
+                        None => {
+                            // Control channel closed - engine is shutting down
+                            tracing::info!("MoQ pull control channel closed while waiting for broadcast");
+                            return BroadcastWait::End(StreamEndReason::Natural);
+                        }
+                    }
+                }
+                maybe_broadcast = consumer.announced_broadcast(broadcast) => {
+                    if let Some(bc) = maybe_broadcast {
+                        tracing::info!("Broadcast '{broadcast}' has been announced");
+                        return BroadcastWait::Broadcast(bc);
+                    }
+                    tracing::warn!("Announcement channel closed before broadcast '{broadcast}' was announced, will reconnect");
+                    return BroadcastWait::End(StreamEndReason::Reconnect);
+                }
+            }
+        }
+    }
+
     // MoQ connection state machine with multiplexed track handling and error recovery
     // High complexity is inherent to protocol handling (track management, object streaming, packet routing)
     #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
@@ -933,35 +981,16 @@ impl MoqPullNode {
                 StreamKitError::Runtime(format!("Failed to create consumer session: {e}"))
             })?;
 
-        // Wait for broadcast to become available
         tracing::debug!("Waiting for broadcast '{}' to be announced...", self.config.broadcast);
-        let broadcast = tokio::select! {
-            msg = context.control_rx.recv() => {
-                match msg {
-                    Some(streamkit_core::control::NodeControlMessage::Shutdown) => {
-                        tracing::info!("MoQ pull received shutdown signal while waiting for broadcast");
-                        return Ok(StreamEndReason::Natural);
-                    }
-                    Some(control_msg) => {
-                        tracing::debug!("MoQ pull received control message while waiting: {:?}", control_msg);
-                        return Ok(StreamEndReason::Reconnect);
-                    }
-                    None => {
-                        // Control channel closed - engine is shutting down
-                        tracing::info!("MoQ pull control channel closed while waiting for broadcast");
-                        return Ok(StreamEndReason::Natural);
-                    }
-                }
-            }
-            maybe_broadcast = consumer.announced_broadcast(self.config.broadcast.as_str()) => {
-                if let Some(broadcast) = maybe_broadcast {
-                    tracing::info!("Broadcast '{}' has been announced", self.config.broadcast);
-                    broadcast
-                } else {
-                    tracing::warn!("Announcement channel closed before broadcast '{}' was announced, will reconnect", self.config.broadcast);
-                    return Ok(StreamEndReason::Reconnect);
-                }
-            }
+        let broadcast = match Self::wait_for_announced_broadcast(
+            &mut context.control_rx,
+            &consumer,
+            self.config.broadcast.as_str(),
+        )
+        .await
+        {
+            BroadcastWait::Broadcast(broadcast) => broadcast,
+            BroadcastWait::End(reason) => return Ok(reason),
         };
 
         tracing::info!("Subscribed to broadcast '{}'", self.config.broadcast);
@@ -2629,5 +2658,48 @@ mod tests {
             matches!(result, Err(StreamKitError::Configuration(_))),
             "empty URL should surface as a fatal configuration error, got: {result:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_broadcast_ignores_non_shutdown_control_messages() {
+        let origin = moq_net::Origin::random().produce();
+        let consumer = origin.consume();
+        let (control_tx, mut control_rx) = mpsc::channel(8);
+
+        control_tx.send(streamkit_core::control::NodeControlMessage::Start).await.unwrap();
+
+        let wait =
+            MoqPullNode::wait_for_announced_broadcast(&mut control_rx, &consumer, "late-cast");
+        tokio::pin!(wait);
+
+        // The Start message must be consumed without ending the wait.
+        let early = tokio::time::timeout(Duration::from_millis(100), wait.as_mut()).await;
+        assert!(early.is_err(), "Start must not end the wait for a late publisher");
+
+        let _broadcast = origin
+            .create_broadcast("late-cast", moq_net::broadcast::Route::announced())
+            .expect("create_broadcast");
+
+        let outcome = tokio::time::timeout(Duration::from_secs(2), wait)
+            .await
+            .expect("announcement should resolve the wait");
+        assert!(matches!(outcome, BroadcastWait::Broadcast(_)));
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_broadcast_shutdown_ends_naturally() {
+        let origin = moq_net::Origin::random().produce();
+        let consumer = origin.consume();
+        let (control_tx, mut control_rx) = mpsc::channel(8);
+
+        control_tx.send(streamkit_core::control::NodeControlMessage::Shutdown).await.unwrap();
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(2),
+            MoqPullNode::wait_for_announced_broadcast(&mut control_rx, &consumer, "late-cast"),
+        )
+        .await
+        .expect("shutdown should resolve the wait");
+        assert!(matches!(outcome, BroadcastWait::End(StreamEndReason::Natural)));
     }
 }

@@ -11,7 +11,6 @@
         "@codemirror/view": "^6.43.3",
         "@emotion/react": "^11.14.0",
         "@emotion/styled": "^11.14.1",
-        "@moq/hang": "^0.4.1",
         "@moq/net": "^0.3.2",
         "@moq/publish": "^0.4.4",
         "@moq/signals": "^0.2.2",
