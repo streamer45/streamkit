@@ -722,6 +722,51 @@ function createVideoCapture(
   return null;
 }
 
+/** Construct the publish encoders, closing the already-created capture and
+ *  broadcast if either encoder constructor throws so nothing leaks before a
+ *  PublishHandle owns them. */
+function createPublishEncoders(
+  broadcast: Publish.Broadcast,
+  capture: Publish.Video.Capture | null,
+  microphone: MicrophoneHandle | null,
+  audioEnabledInitially: boolean,
+  encoderConfig: Publish.Video.EncoderProps['config']
+): {
+  audio: { enabled: Signal<boolean>; encoder: Publish.Audio.Encoder } | null;
+  video: Publish.Video.Encoder | null;
+} {
+  let audio: { enabled: Signal<boolean>; encoder: Publish.Audio.Encoder } | null = null;
+  try {
+    if (microphone) {
+      const audioEnabled = new Signal(audioEnabledInitially);
+      audio = {
+        enabled: audioEnabled,
+        encoder: new Publish.Audio.Encoder(AUDIO_TRACK_NAME, {
+          broadcast,
+          enabled: audioEnabled,
+          source: microphone.source,
+        }),
+      };
+    }
+
+    const video = capture
+      ? new Publish.Video.Encoder(VIDEO_TRACK_NAME, {
+          broadcast,
+          capture,
+          enabled: true,
+          config: encoderConfig,
+        })
+      : null;
+
+    return { audio, video };
+  } catch (e) {
+    audio?.encoder.close();
+    capture?.close();
+    broadcast.close();
+    throw e;
+  }
+}
+
 async function setupPublishPath(
   healthEffect: Effect,
   connection: Moq.Connection.Reload,
@@ -770,35 +815,13 @@ async function setupPublishPath(
     display: capture?.out.display,
   });
 
-  let audio: { enabled: Signal<boolean>; encoder: Publish.Audio.Encoder } | null = null;
-  let video: Publish.Video.Encoder | null = null;
-  try {
-    if (needsAudio && microphone) {
-      const audioEnabled = new Signal(!deferAudioUntilVideo);
-      audio = {
-        enabled: audioEnabled,
-        encoder: new Publish.Audio.Encoder(AUDIO_TRACK_NAME, {
-          broadcast,
-          enabled: audioEnabled,
-          source: microphone.source,
-        }),
-      };
-    }
-
-    if (capture) {
-      video = new Publish.Video.Encoder(VIDEO_TRACK_NAME, {
-        broadcast,
-        capture,
-        enabled: true,
-        config: encoderConfig,
-      });
-    }
-  } catch (e) {
-    audio?.encoder.close();
-    capture?.close();
-    broadcast.close();
-    throw e;
-  }
+  const { audio, video } = createPublishEncoders(
+    broadcast,
+    capture,
+    needsAudio ? microphone : null,
+    !deferAudioUntilVideo,
+    encoderConfig
+  );
 
   const publish = new PublishHandle({ broadcast, capture, video, audio });
 
