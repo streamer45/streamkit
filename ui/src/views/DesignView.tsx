@@ -660,8 +660,7 @@ const DesignViewContent: React.FC = () => {
         if (!targetNode) return;
 
         const nodeDefinition = (targetNode.data as Record<string, unknown>)?.nodeDefinition as
-          | { inputs?: unknown[] }
-          | undefined;
+          { inputs?: unknown[] } | undefined;
         const hasDynamicInputs =
           nodeDefinition?.inputs?.some(
             (pin: unknown) =>
