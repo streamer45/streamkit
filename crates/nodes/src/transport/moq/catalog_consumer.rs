@@ -104,6 +104,35 @@ mod tests {
         super::super::write_catalog_json(producer, payload).expect("write catalog");
     }
 
+    /// Dynamic track add/remove republishes the catalog repeatedly; every
+    /// snapshot lands in its own group, so a consumer keeping pace observes
+    /// each successive update.
+    #[tokio::test]
+    async fn next_observes_each_republished_snapshot() {
+        let (_origin, _broadcast, mut producer, consumer) = make_track_pair().await;
+        let mut cc = CatalogConsumer::new(consumer);
+
+        for count in 1..=3usize {
+            let mut catalog = hang::catalog::Catalog::default();
+            for i in 0..count {
+                catalog.audio.renditions.insert(
+                    format!("audio/{i}"),
+                    hang::catalog::AudioConfig::new(
+                        super::super::constants::catalog_audio_codec(
+                            streamkit_core::types::AudioCodec::Opus,
+                        ),
+                        48000,
+                        2,
+                    ),
+                );
+            }
+            write_catalog(&mut producer, &catalog);
+
+            let result = cc.next().await.expect("next").expect("catalog snapshot");
+            assert_eq!(result.audio.renditions.len(), count, "republish {count} not observed");
+        }
+    }
+
     /// `MoqPullNode::run_connection` polls `next()` as one arm of a `select!`
     /// that media frames win tens of times per second, so the future is created
     /// and dropped repeatedly. This exercises that contention directly: poll and
