@@ -8,6 +8,11 @@ import { useStreamStore, type ConnectionStatus } from './streamStore';
 import * as configService from '../services/config';
 
 // Mock the Hang library to avoid import errors
+vi.mock('@moq/net', () => ({
+  default: {},
+  Connection: { Reload: vi.fn() },
+  Path: { from: vi.fn() },
+}));
 vi.mock('@moq/hang', () => ({
   default: {},
   Moq: {

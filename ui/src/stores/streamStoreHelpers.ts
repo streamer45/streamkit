@@ -4,7 +4,7 @@
 
 /** Helpers for streamStore — connection lifecycle, teardown, and health warnings. */
 
-import * as Hang from '@moq/hang';
+import * as Moq from '@moq/net';
 import * as Publish from '@moq/publish';
 import type { Getter } from '@moq/signals';
 import { Effect, Signal } from '@moq/signals';
@@ -109,27 +109,154 @@ export type ConnectDecision =
     }
   | { ok: false; errorMessage: string };
 
+/** Track names must match the pins expected by the `transport::moq::peer`
+ *  node and the sample pipelines (e.g. `moq_peer.video/hd`). */
+export const VIDEO_TRACK_NAME = 'video/hd';
+export const AUDIO_TRACK_NAME = 'audio/data';
+
+/**
+ * Owns the renderer plus the writable canvas signal, preserving the
+ * `videoRenderer.canvas.set(el)` binding contract used by the views.
+ */
+export class VideoRendererHandle {
+  readonly canvas = new Signal<HTMLCanvasElement | undefined>(undefined);
+  readonly renderer: Watch.Video.Renderer;
+
+  constructor(decoder: Watch.Video.Decoder) {
+    this.renderer = new Watch.Video.Renderer(decoder, { canvas: this.canvas });
+  }
+
+  close(): void {
+    this.renderer.close();
+  }
+}
+
+/**
+ * Owns the emitter plus writable muted/volume signals, preserving the
+ * `audioEmitter.muted` / `audioEmitter.volume` contract used by the views.
+ */
+export class AudioEmitterHandle {
+  readonly muted = new Signal(false);
+  readonly volume = new Signal(0.5);
+  readonly emitter: Watch.Audio.Emitter;
+
+  constructor(decoder: Watch.Audio.Decoder) {
+    this.emitter = new Watch.Audio.Emitter(decoder, {
+      muted: this.muted,
+      volume: this.volume,
+    });
+  }
+
+  close(): void {
+    this.emitter.close();
+  }
+}
+
+/** Owns a capture source plus the writable enabled signal used by the toggles. */
+export class MicrophoneHandle {
+  readonly enabled = new Signal(true);
+  readonly inner: Publish.Source.Microphone;
+
+  constructor() {
+    this.inner = new Publish.Source.Microphone({ enabled: this.enabled });
+  }
+
+  get source(): Getter<Publish.Audio.Source | undefined> {
+    return this.inner.out.source;
+  }
+
+  close(): void {
+    this.inner.close();
+  }
+}
+
+export class CameraHandle {
+  readonly enabled = new Signal(true);
+  readonly inner: Publish.Source.Camera;
+
+  constructor(constraints?: { width?: number; height?: number }) {
+    this.inner = new Publish.Source.Camera({ enabled: this.enabled, constraints });
+  }
+
+  get source(): Getter<Publish.Video.Source | undefined> {
+    return this.inner.out.source;
+  }
+
+  close(): void {
+    this.inner.close();
+  }
+}
+
+export class ScreenHandle {
+  readonly enabled = new Signal(true);
+  readonly inner: Publish.Source.Screen;
+
+  constructor(videoConstraints?: { width?: number; height?: number }) {
+    this.inner = new Publish.Source.Screen({ enabled: this.enabled, video: videoConstraints });
+  }
+
+  get source(): Getter<{ audio?: Publish.Audio.Source; video?: Publish.Video.Source } | undefined> {
+    return this.inner.out.source;
+  }
+
+  close(): void {
+    this.inner.close();
+  }
+}
+
+/**
+ * A published broadcast plus its encoders. `@moq/publish` splits the old
+ * monolithic Broadcast config into per-rendition encoders wired to a shared
+ * capture, so this handle owns the whole publish graph for teardown and
+ * exposes the writable enable signals the store toggles need.
+ */
+export class PublishHandle {
+  readonly broadcast: Publish.Broadcast;
+  readonly capture: Publish.Video.Capture | null;
+  readonly video: Publish.Video.Encoder | null;
+  readonly audio: { enabled: Signal<boolean>; encoder: Publish.Audio.Encoder } | null;
+
+  constructor(opts: {
+    broadcast: Publish.Broadcast;
+    capture?: Publish.Video.Capture | null;
+    video?: Publish.Video.Encoder | null;
+    audio?: { enabled: Signal<boolean>; encoder: Publish.Audio.Encoder } | null;
+  }) {
+    this.broadcast = opts.broadcast;
+    this.capture = opts.capture ?? null;
+    this.video = opts.video ?? null;
+    this.audio = opts.audio ?? null;
+  }
+
+  close(): void {
+    this.video?.close();
+    this.audio?.encoder.close();
+    this.capture?.close();
+    this.broadcast.close();
+  }
+}
+
 export type ConnectAttempt = {
-  connection: Hang.Moq.Connection.Reload | null;
+  connection: Moq.Connection.Reload | null;
   healthEffect: Effect | null;
   watch: Watch.Broadcast | null;
   watchSync: Watch.Sync | null;
   audioSource: Watch.Audio.Source | null;
   audioDecoder: Watch.Audio.Decoder | null;
-  audioEmitter: Watch.Audio.Emitter | null;
+  audioEmitter: AudioEmitterHandle | null;
   videoSource: Watch.Video.Source | null;
   videoDecoder: Watch.Video.Decoder | null;
-  videoRenderer: Watch.Video.Renderer | null;
-  microphone: Publish.Source.Microphone | null;
-  camera: Publish.Source.Camera | null;
-  screen: Publish.Source.Screen | null;
-  publish: Publish.Broadcast | null;
+  videoRenderer: VideoRendererHandle | null;
+  microphone: MicrophoneHandle | null;
+  camera: CameraHandle | null;
+  screen: ScreenHandle | null;
+  publish: PublishHandle | null;
   /** Secondary publish broadcast for multi-broadcast mode (e.g. camera PiP). */
-  secondaryPublish: Publish.Broadcast | null;
+  secondaryPublish: PublishHandle | null;
   /** Secondary camera source for multi-broadcast mode. */
-  secondaryCamera: Publish.Source.Camera | null;
+  secondaryCamera: CameraHandle | null;
   /** Secondary screen source for multi-broadcast mode. */
-  secondaryScreen: Publish.Source.Screen | null;
+  secondaryScreen: ScreenHandle | null;
 };
 
 /** Minimal slice of StreamState needed by helper functions. */
@@ -243,16 +370,15 @@ export function waitForSignalValue<T>(
 
 /** Wait for a broadcast to appear on the relay before subscribing. */
 async function waitForBroadcastAnnouncement(
-  connection: Hang.Moq.Connection.Reload,
+  connection: Moq.Connection.Reload,
   broadcastName: string,
   timeoutMs = 15_000,
   abortSignal?: AbortSignal
 ): Promise<void> {
   if (abortSignal?.aborted) throw new DOMException('Aborted', 'AbortError');
-  const conn = connection.established.peek();
-  if (!conn) return;
+  if (!connection.established.peek()) return;
   logger.info(`Waiting for broadcast '${broadcastName}' announcement...`);
-  const announcements = conn.announced();
+  const announcements = connection.announced();
   const deadline = Date.now() + timeoutMs;
   try {
     const abortPromise = abortSignal
@@ -318,9 +444,7 @@ export function formatConnectError(error: unknown): string {
 }
 
 /** Shut down a media source that may expose `.close()` or only `.enabled`. */
-function shutdownMediaSource(
-  source: Publish.Source.Microphone | Publish.Source.Camera | Publish.Source.Screen | null
-): void {
+function shutdownMediaSource(source: MicrophoneHandle | CameraHandle | ScreenHandle | null): void {
   if (!source) return;
   if (typeof source.close === 'function') {
     source.close();
@@ -361,7 +485,7 @@ export function cleanupConnectAttempt(attempt: ConnectAttempt): void {
 
 function setupConnectionStatusSync(
   healthEffect: Effect,
-  connection: Hang.Moq.Connection.Reload,
+  connection: Moq.Connection.Reload,
   get: () => ConnectableState,
   set: StateSetter
 ): void {
@@ -391,7 +515,7 @@ function setupConnectionStatusSync(
 
 function setupWatchPath(
   healthEffect: Effect,
-  connection: Hang.Moq.Connection.Reload,
+  connection: Moq.Connection.Reload,
   outputBroadcast: string,
   outputsAudio: boolean,
   outputsVideo: boolean,
@@ -401,47 +525,58 @@ function setupWatchPath(
   watchSync: Watch.Sync;
   audioSource: Watch.Audio.Source | null;
   audioDecoder: Watch.Audio.Decoder | null;
-  audioEmitter: Watch.Audio.Emitter | null;
+  audioEmitter: AudioEmitterHandle | null;
   videoSource: Watch.Video.Source | null;
   videoDecoder: Watch.Video.Decoder | null;
-  videoRenderer: Watch.Video.Renderer | null;
+  videoRenderer: VideoRendererHandle | null;
 } {
   logger.info('Step 2: Creating watch broadcast (subscribe FIRST)');
   const watch = new Watch.Broadcast({
     connection: connection.established,
     enabled: true,
-    name: Watch.Lite.Path.from(outputBroadcast),
+    name: Moq.Path.from(outputBroadcast),
   });
 
-  const watchSync = new Watch.Sync();
-
   let audioSource: Watch.Audio.Source | null = null;
-  let audioDecoder: Watch.Audio.Decoder | null = null;
-  let audioEmitter: Watch.Audio.Emitter | null = null;
+  let videoSource: Watch.Video.Source | null = null;
 
   if (outputsAudio) {
-    logger.info('Step 3: Creating audio source/decoder/emitter');
-    audioSource = new Watch.Audio.Source(watchSync, { broadcast: watch });
-    audioDecoder = new Watch.Audio.Decoder(audioSource);
-    audioEmitter = new Watch.Audio.Emitter(audioDecoder, {
-      muted: false,
-      volume: 0.5,
+    logger.info('Step 3: Creating audio source');
+    audioSource = new Watch.Audio.Source({
+      broadcast: watch,
+      supported: Watch.Audio.Decoder.supported,
+    });
+  }
+  if (outputsVideo) {
+    logger.info('Step 3b: Creating video source');
+    videoSource = new Watch.Video.Source({
+      broadcast: watch,
+      supported: Watch.Video.Decoder.supported,
     });
   }
 
-  let videoSource: Watch.Video.Source | null = null;
-  let videoDecoder: Watch.Video.Decoder | null = null;
-  let videoRenderer: Watch.Video.Renderer | null = null;
+  const watchSync = new Watch.Sync({
+    connection: connection.established,
+    audio: audioSource?.out.jitter,
+    video: videoSource?.out.jitter,
+  });
 
-  if (outputsVideo) {
-    logger.info('Step 3b: Creating video source/decoder/renderer');
-    videoSource = new Watch.Video.Source(watchSync, { broadcast: watch });
-    videoDecoder = new Watch.Video.Decoder(videoSource);
-    videoRenderer = new Watch.Video.Renderer(videoDecoder);
+  let audioDecoder: Watch.Audio.Decoder | null = null;
+  let audioEmitter: AudioEmitterHandle | null = null;
+  if (audioSource) {
+    audioDecoder = new Watch.Audio.Decoder(audioSource, watchSync, { enabled: true });
+    audioEmitter = new AudioEmitterHandle(audioDecoder);
   }
 
-  set({ watchStatus: watch.status.peek() });
-  healthEffect.subscribe(watch.status, (value) => {
+  let videoDecoder: Watch.Video.Decoder | null = null;
+  let videoRenderer: VideoRendererHandle | null = null;
+  if (videoSource) {
+    videoDecoder = new Watch.Video.Decoder(videoSource, watchSync, { enabled: true });
+    videoRenderer = new VideoRendererHandle(videoDecoder);
+  }
+
+  set({ watchStatus: watch.out.status.peek() });
+  healthEffect.subscribe(watch.out.status, (value) => {
     set({ watchStatus: value });
   });
 
@@ -463,14 +598,12 @@ function setupWatchPath(
  *  types (Publish.Source.Screen vs Publish.Source.Camera have different APIs). */
 async function setupScreenCapture(
   healthEffect: Effect,
-  microphone: Publish.Source.Microphone | null,
+  microphone: MicrophoneHandle | null,
   set: StateSetter,
   abortSignal?: AbortSignal,
   videoConstraints?: { width?: number; height?: number }
-): Promise<Publish.Source.Screen> {
-  const screenProps: ConstructorParameters<typeof Publish.Source.Screen>[0] = { enabled: true };
-  if (videoConstraints) screenProps.video = videoConstraints;
-  const screen = new Publish.Source.Screen(screenProps);
+): Promise<ScreenHandle> {
+  const screen = new ScreenHandle(videoConstraints);
   set({ cameraStatus: screen.source.peek()?.video ? 'ready' : 'requesting' });
   healthEffect.subscribe(screen.source, (v) =>
     set({ cameraStatus: v?.video ? 'ready' : 'requesting' })
@@ -496,14 +629,12 @@ async function setupScreenCapture(
 /** Set up camera capture with 15s timeout for permission dialog. */
 async function setupCameraCapture(
   healthEffect: Effect,
-  microphone: Publish.Source.Microphone | null,
+  microphone: MicrophoneHandle | null,
   set: StateSetter,
   abortSignal?: AbortSignal,
   videoConstraints?: { width?: number; height?: number }
-): Promise<Publish.Source.Camera> {
-  const cameraProps: ConstructorParameters<typeof Publish.Source.Camera>[0] = { enabled: true };
-  if (videoConstraints) cameraProps.constraints = videoConstraints;
-  const camera = new Publish.Source.Camera(cameraProps);
+): Promise<CameraHandle> {
+  const camera = new CameraHandle(videoConstraints);
   set({ cameraStatus: camera.source.peek() ? 'ready' : 'requesting' });
   healthEffect.subscribe(camera.source, (v) => set({ cameraStatus: v ? 'ready' : 'requesting' }));
   if (!camera.source.peek()) {
@@ -533,15 +664,15 @@ async function setupMediaSources(
   abortSignal?: AbortSignal,
   videoConstraints?: { width?: number; height?: number }
 ): Promise<{
-  microphone: Publish.Source.Microphone | null;
-  camera: Publish.Source.Camera | null;
-  screen: Publish.Source.Screen | null;
+  microphone: MicrophoneHandle | null;
+  camera: CameraHandle | null;
+  screen: ScreenHandle | null;
 }> {
-  let microphone: Publish.Source.Microphone | null = null;
-  let camera: Publish.Source.Camera | null = null;
-  let screen: Publish.Source.Screen | null = null;
+  let microphone: MicrophoneHandle | null = null;
+  let camera: CameraHandle | null = null;
+  let screen: ScreenHandle | null = null;
   if (needsAudio) {
-    microphone = new Publish.Source.Microphone({ enabled: true });
+    microphone = new MicrophoneHandle();
     set({ micStatus: microphone.source.peek() ? 'ready' : 'requesting' });
     healthEffect.subscribe(microphone.source, (v) =>
       set({ micStatus: v ? 'ready' : 'requesting' })
@@ -569,9 +700,31 @@ async function setupMediaSources(
   return { microphone, camera, screen };
 }
 
+/** Build the shared video capture from a screen or camera handle.
+ *  Screen capture: derive a video-only signal from the composite
+ *  Screen.source signal ({ audio?, video? } | undefined). System audio from
+ *  screen capture is ignored — mic remains the sole audio source. */
+function createVideoCapture(
+  healthEffect: Effect,
+  screen: ScreenHandle | null,
+  camera: CameraHandle | null
+): Publish.Video.Capture | null {
+  if (screen) {
+    const videoOnlySignal = new Signal<Publish.Video.Source | undefined>(
+      screen.source.peek()?.video
+    );
+    healthEffect.subscribe(screen.source, (v) => videoOnlySignal.set(v?.video));
+    return new Publish.Video.Capture({ source: videoOnlySignal });
+  }
+  if (camera) {
+    return new Publish.Video.Capture({ source: camera.source });
+  }
+  return null;
+}
+
 async function setupPublishPath(
   healthEffect: Effect,
-  connection: Hang.Moq.Connection.Reload,
+  connection: Moq.Connection.Reload,
   inputBroadcast: string,
   needsAudio: boolean,
   needsVideo: boolean,
@@ -580,10 +733,10 @@ async function setupPublishPath(
   set: StateSetter,
   abortSignal?: AbortSignal
 ): Promise<{
-  microphone: Publish.Source.Microphone | null;
-  camera: Publish.Source.Camera | null;
-  screen: Publish.Source.Screen | null;
-  publish: Publish.Broadcast;
+  microphone: MicrophoneHandle | null;
+  camera: CameraHandle | null;
+  screen: ScreenHandle | null;
+  publish: PublishHandle;
 }> {
   // Resolve per-track media hints for the primary video track.
   const videoTrack = tracks.find((t) => t.kind === 'video') ?? null;
@@ -600,52 +753,54 @@ async function setupPublishPath(
   );
 
   logger.info('Step 5: Creating publish broadcast');
-  const broadcastConfig: ConstructorParameters<typeof Publish.Broadcast>[0] = {
-    connection: connection.established,
-    enabled: true,
-    name: Publish.Lite.Path.from(inputBroadcast),
-  };
   // When both audio and video are needed, start audio disabled and enable it
   // after the video encoder is ready.  This ensures both tracks begin MoQ
   // publishing at the same time, preventing the ~0.7s A/V desync from the
   // VP9 encoder's slower startup.
   const deferAudioUntilVideo = needsAudio && needsVideo;
+
+  const capture = needsVideo
+    ? createVideoCapture(healthEffect, videoSourceType === 'screen' ? screen : null, camera)
+    : null;
+
+  const broadcast = new Publish.Broadcast({
+    connection: connection.established,
+    enabled: true,
+    name: Moq.Path.from(inputBroadcast),
+    display: capture?.out.display,
+  });
+
+  let audio: { enabled: Signal<boolean>; encoder: Publish.Audio.Encoder } | null = null;
   if (needsAudio && microphone) {
-    broadcastConfig.audio = {
-      enabled: !deferAudioUntilVideo,
-      source: microphone.source,
+    const audioEnabled = new Signal(!deferAudioUntilVideo);
+    audio = {
+      enabled: audioEnabled,
+      encoder: new Publish.Audio.Encoder(AUDIO_TRACK_NAME, {
+        broadcast,
+        enabled: audioEnabled,
+        source: microphone.source,
+      }),
     };
   }
-  if (needsVideo) {
-    if (videoSourceType === 'screen' && screen) {
-      // Screen capture: derive a video-only signal from the composite
-      // Screen.source signal ({ audio?, video? } | undefined).
-      // System audio from screen capture is ignored — mic remains the
-      // sole audio source.
-      const videoOnlySignal = new Signal<Publish.Video.Source | undefined>(
-        screen.source.peek()?.video
-      );
-      healthEffect.subscribe(screen.source, (v) => videoOnlySignal.set(v?.video));
-      broadcastConfig.video = {
-        source: videoOnlySignal,
-        hd: { enabled: true, config: encoderConfig },
-      };
-    } else if (camera) {
-      broadcastConfig.video = {
-        source: camera.source,
-        hd: { enabled: true, config: encoderConfig },
-      };
-    }
+
+  let video: Publish.Video.Encoder | null = null;
+  if (capture) {
+    video = new Publish.Video.Encoder(VIDEO_TRACK_NAME, {
+      broadcast,
+      capture,
+      enabled: true,
+      config: encoderConfig,
+    });
   }
 
-  const publish = new Publish.Broadcast(broadcastConfig);
+  const publish = new PublishHandle({ broadcast, capture, video, audio });
 
   // Wait for the video encoder to produce a catalog entry before returning.
-  if (needsVideo) {
+  if (needsVideo && video) {
     logger.info('Step 5b: Waiting for video catalog...');
     try {
       await waitForSignalValue(
-        publish.video.catalog,
+        video.out.catalog,
         (v) => v !== undefined,
         10_000,
         'Video encoder failed to initialize',
@@ -661,8 +816,8 @@ async function setupPublishPath(
     logger.info('Step 5b: Video catalog ready');
     // Now that video is publishing, enable audio so both tracks start
     // at the same time on the server side.
-    if (deferAudioUntilVideo) {
-      publish.audio.enabled.set(true);
+    if (deferAudioUntilVideo && audio) {
+      audio.enabled.set(true);
       logger.info('Step 5c: Audio enabled (deferred until video ready)');
     }
   }
@@ -676,18 +831,14 @@ async function createSecondaryVideoSource(
   abortSignal?: AbortSignal,
   videoConstraints?: { width?: number; height?: number }
 ): Promise<{
-  camera: Publish.Source.Camera | null;
-  screen: Publish.Source.Screen | null;
+  camera: CameraHandle | null;
+  screen: ScreenHandle | null;
 }> {
   if (sourceType === 'screen') {
     logger.info(
       'Creating secondary screen capture source — the OS may show an additional picker dialog'
     );
-    const screenProps: ConstructorParameters<typeof Publish.Source.Screen>[0] = { enabled: true };
-    if (videoConstraints) {
-      screenProps.video = videoConstraints;
-    }
-    const screen = new Publish.Source.Screen(screenProps);
+    const screen = new ScreenHandle(videoConstraints);
     if (!screen.source.peek()?.video) {
       try {
         await waitForSignalValue(
@@ -705,11 +856,7 @@ async function createSecondaryVideoSource(
     return { camera: null, screen };
   }
 
-  const cameraProps: ConstructorParameters<typeof Publish.Source.Camera>[0] = { enabled: true };
-  if (videoConstraints) {
-    cameraProps.constraints = videoConstraints;
-  }
-  const camera = new Publish.Source.Camera(cameraProps);
+  const camera = new CameraHandle(videoConstraints);
   if (!camera.source.peek()) {
     try {
       await waitForSignalValue(
@@ -774,14 +921,14 @@ export function filterSecondaryTracks(
 
 async function setupSecondaryPublishPath(
   healthEffect: Effect,
-  connection: Hang.Moq.Connection.Reload,
+  connection: Moq.Connection.Reload,
   broadcastName: string,
   broadcastTracks: PublishTrackConfig[],
   abortSignal?: AbortSignal
 ): Promise<{
-  secondaryPublish: Publish.Broadcast;
-  secondaryCamera: Publish.Source.Camera | null;
-  secondaryScreen: Publish.Source.Screen | null;
+  secondaryPublish: PublishHandle;
+  secondaryCamera: CameraHandle | null;
+  secondaryScreen: ScreenHandle | null;
 }> {
   const { needsVideo, videoSourceType, warnings } = analyzeSecondaryBroadcastTracks(
     broadcastName,
@@ -793,8 +940,8 @@ async function setupSecondaryPublishPath(
   const videoTrack = broadcastTracks.find((t) => t.kind === 'video') ?? null;
   const { encoderConfig, constraints: videoConstraints } = buildVideoEncoderConfig(videoTrack);
 
-  let secondaryCamera: Publish.Source.Camera | null = null;
-  let secondaryScreen: Publish.Source.Screen | null = null;
+  let secondaryCamera: CameraHandle | null = null;
+  let secondaryScreen: ScreenHandle | null = null;
 
   if (needsVideo) {
     const sources = await createSecondaryVideoSource(
@@ -807,37 +954,34 @@ async function setupSecondaryPublishPath(
   }
 
   logger.info(`Setting up secondary publish broadcast '${broadcastName}'`);
-  const broadcastConfig: ConstructorParameters<typeof Publish.Broadcast>[0] = {
+  const capture = needsVideo
+    ? createVideoCapture(healthEffect, secondaryScreen, secondaryCamera)
+    : null;
+
+  const broadcast = new Publish.Broadcast({
     connection: connection.established,
     enabled: true,
-    name: Publish.Lite.Path.from(broadcastName),
-  };
+    name: Moq.Path.from(broadcastName),
+    display: capture?.out.display,
+  });
 
-  if (needsVideo) {
-    if (secondaryScreen) {
-      const videoOnlySignal = new Signal<Publish.Video.Source | undefined>(
-        secondaryScreen.source.peek()?.video
-      );
-      healthEffect.subscribe(secondaryScreen.source, (v) => videoOnlySignal.set(v?.video));
-      broadcastConfig.video = {
-        source: videoOnlySignal,
-        hd: { enabled: true, config: encoderConfig },
-      };
-    } else if (secondaryCamera) {
-      broadcastConfig.video = {
-        source: secondaryCamera.source,
-        hd: { enabled: true, config: encoderConfig },
-      };
-    }
+  let video: Publish.Video.Encoder | null = null;
+  if (capture) {
+    video = new Publish.Video.Encoder(VIDEO_TRACK_NAME, {
+      broadcast,
+      capture,
+      enabled: true,
+      config: encoderConfig,
+    });
   }
 
-  const secondaryPublish = new Publish.Broadcast(broadcastConfig);
+  const secondaryPublish = new PublishHandle({ broadcast, capture, video });
 
-  if (needsVideo) {
+  if (needsVideo && video) {
     logger.info(`Waiting for secondary broadcast '${broadcastName}' video catalog...`);
     try {
       await waitForSignalValue(
-        secondaryPublish.video.catalog,
+        video.out.catalog,
         (v) => v !== undefined,
         10_000,
         `Secondary broadcast '${broadcastName}' video encoder failed to initialize`,
@@ -867,7 +1011,7 @@ function schedulePostConnectWarnings(
     const watchRef = attempt.watch;
     setTimeout(() => {
       if (get().status !== 'connected') return;
-      if (watchRef.status.peek() !== 'live') {
+      if (watchRef.out.status.peek() !== 'live') {
         set({
           errorMessage: `Connected to relay, but output broadcast "${get().outputBroadcast}" is not live yet.`,
         });
@@ -1054,7 +1198,7 @@ function createConnectionAndHealth(
   moqToken: string,
   get: () => ConnectableState,
   set: StateSetter
-): { connection: Hang.Moq.Connection.Reload; healthEffect: Effect } {
+): { connection: Moq.Connection.Reload; healthEffect: Effect } {
   logger.info('Step 1: Creating connection to relay server');
   const url = new URL(serverUrl);
   const jwt = moqToken.trim();
@@ -1062,7 +1206,7 @@ function createConnectionAndHealth(
     url.searchParams.set('jwt', jwt);
   }
 
-  const connection = new Hang.Moq.Connection.Reload({ url, enabled: true });
+  const connection = new Moq.Connection.Reload({ url, enabled: true });
   const healthEffect = new Effect();
   setupConnectionStatusSync(healthEffect, connection, get, set);
   return { connection, healthEffect };

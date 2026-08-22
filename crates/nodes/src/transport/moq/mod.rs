@@ -46,7 +46,7 @@ fn shared_insecure_client() -> Result<moq_native::Client, StreamKitError> {
     }
 }
 
-/// Name + subscription priority for a track, replacing the removed `moq_lite::Track`.
+/// Name + subscription priority for a track subscription.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct TrackRef {
     pub name: String,

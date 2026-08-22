@@ -2,19 +2,22 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-// `Hang` is only needed for the `Moq.Connection.Reload` type —
-// `Watch` and `Publish` provide the media-specific APIs.
-import * as Hang from '@moq/hang';
-import * as Publish from '@moq/publish';
+import type * as Moq from '@moq/net';
 import { Effect } from '@moq/signals';
 import * as Watch from '@moq/watch';
 import { create } from 'zustand';
 
 import {
+  type AudioEmitterHandle,
+  type CameraHandle,
   cleanupConnectAttempt,
   decideConnect,
+  type MicrophoneHandle,
   NULL_MOQ_REFS,
   performConnect,
+  type PublishHandle,
+  type ScreenHandle,
+  type VideoRendererHandle,
 } from './streamStoreHelpers';
 import { fetchConfig } from '../services/config';
 import { getLogger } from '../utils/logger';
@@ -96,25 +99,25 @@ interface StreamState {
   connectingStep: string;
 
   // MoQ references (stored but not serialized)
-  publish: Publish.Broadcast | null;
+  publish: PublishHandle | null;
   watch: Watch.Broadcast | null;
   watchSync: Watch.Sync | null;
   audioSource: Watch.Audio.Source | null;
   audioDecoder: Watch.Audio.Decoder | null;
-  audioEmitter: Watch.Audio.Emitter | null;
+  audioEmitter: AudioEmitterHandle | null;
   videoSource: Watch.Video.Source | null;
   videoDecoder: Watch.Video.Decoder | null;
-  videoRenderer: Watch.Video.Renderer | null;
-  connection: Hang.Moq.Connection.Reload | null;
-  microphone: Publish.Source.Microphone | null;
-  camera: Publish.Source.Camera | null;
-  screen: Publish.Source.Screen | null;
+  videoRenderer: VideoRendererHandle | null;
+  connection: Moq.Connection.Reload | null;
+  microphone: MicrophoneHandle | null;
+  camera: CameraHandle | null;
+  screen: ScreenHandle | null;
   healthEffect: Effect | null;
 
   // Secondary broadcast references (multi-broadcast support)
-  secondaryPublish: Publish.Broadcast | null;
-  secondaryCamera: Publish.Source.Camera | null;
-  secondaryScreen: Publish.Source.Screen | null;
+  secondaryPublish: PublishHandle | null;
+  secondaryCamera: CameraHandle | null;
+  secondaryScreen: ScreenHandle | null;
 
   setServerUrl: (url: string) => void;
   setMoqToken: (token: string) => void;
@@ -146,19 +149,19 @@ interface StreamState {
 
   // Store references to MoQ objects
   setMoqRefs: (refs: {
-    publish: Publish.Broadcast;
+    publish: PublishHandle;
     watch: Watch.Broadcast;
     watchSync: Watch.Sync;
     audioSource: Watch.Audio.Source;
     audioDecoder: Watch.Audio.Decoder;
-    audioEmitter: Watch.Audio.Emitter;
+    audioEmitter: AudioEmitterHandle;
     videoSource: Watch.Video.Source;
     videoDecoder: Watch.Video.Decoder;
-    videoRenderer: Watch.Video.Renderer;
-    connection: Hang.Moq.Connection.Reload;
-    microphone: Publish.Source.Microphone;
-    camera: Publish.Source.Camera;
-    screen: Publish.Source.Screen | null;
+    videoRenderer: VideoRendererHandle;
+    connection: Moq.Connection.Reload;
+    microphone: MicrophoneHandle;
+    camera: CameraHandle;
+    screen: ScreenHandle | null;
   }) => void;
 }
 

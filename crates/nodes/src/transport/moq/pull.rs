@@ -770,21 +770,18 @@ impl MoqPullNode {
         // initialization the publisher (browser) may not have connected yet.
         let discovery_timeout = Duration::from_secs(15);
 
-        let broadcast = match tokio::time::timeout(
+        let Ok(Some(broadcast)) = tokio::time::timeout(
             discovery_timeout,
             consumer.announced_broadcast(self.config.broadcast.as_str()),
         )
         .await
-        {
-            Ok(Some(b)) => b,
-            Ok(None) | Err(_) => {
-                tracing::debug!(
-                    broadcast = %self.config.broadcast,
-                    "Broadcast not announced within {}s; using default output pin",
-                    discovery_timeout.as_secs()
-                );
-                return Ok(Vec::new());
-            },
+        else {
+            tracing::debug!(
+                broadcast = %self.config.broadcast,
+                "Broadcast not announced within {}s; using default output pin",
+                discovery_timeout.as_secs()
+            );
+            return Ok(Vec::new());
         };
 
         // Subscribe to the catalog track
@@ -957,15 +954,12 @@ impl MoqPullNode {
                 }
             }
             maybe_broadcast = consumer.announced_broadcast(self.config.broadcast.as_str()) => {
-                match maybe_broadcast {
-                    Some(broadcast) => {
-                        tracing::info!("Broadcast '{}' has been announced", self.config.broadcast);
-                        broadcast
-                    }
-                    None => {
-                        tracing::warn!("Announcement channel closed before broadcast '{}' was announced, will reconnect", self.config.broadcast);
-                        return Ok(StreamEndReason::Reconnect);
-                    }
+                if let Some(broadcast) = maybe_broadcast {
+                    tracing::info!("Broadcast '{}' has been announced", self.config.broadcast);
+                    broadcast
+                } else {
+                    tracing::warn!("Announcement channel closed before broadcast '{}' was announced, will reconnect", self.config.broadcast);
+                    return Ok(StreamEndReason::Reconnect);
                 }
             }
         };
