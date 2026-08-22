@@ -771,26 +771,33 @@ async function setupPublishPath(
   });
 
   let audio: { enabled: Signal<boolean>; encoder: Publish.Audio.Encoder } | null = null;
-  if (needsAudio && microphone) {
-    const audioEnabled = new Signal(!deferAudioUntilVideo);
-    audio = {
-      enabled: audioEnabled,
-      encoder: new Publish.Audio.Encoder(AUDIO_TRACK_NAME, {
-        broadcast,
-        enabled: audioEnabled,
-        source: microphone.source,
-      }),
-    };
-  }
-
   let video: Publish.Video.Encoder | null = null;
-  if (capture) {
-    video = new Publish.Video.Encoder(VIDEO_TRACK_NAME, {
-      broadcast,
-      capture,
-      enabled: true,
-      config: encoderConfig,
-    });
+  try {
+    if (needsAudio && microphone) {
+      const audioEnabled = new Signal(!deferAudioUntilVideo);
+      audio = {
+        enabled: audioEnabled,
+        encoder: new Publish.Audio.Encoder(AUDIO_TRACK_NAME, {
+          broadcast,
+          enabled: audioEnabled,
+          source: microphone.source,
+        }),
+      };
+    }
+
+    if (capture) {
+      video = new Publish.Video.Encoder(VIDEO_TRACK_NAME, {
+        broadcast,
+        capture,
+        enabled: true,
+        config: encoderConfig,
+      });
+    }
+  } catch (e) {
+    audio?.encoder.close();
+    capture?.close();
+    broadcast.close();
+    throw e;
   }
 
   const publish = new PublishHandle({ broadcast, capture, video, audio });
