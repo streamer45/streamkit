@@ -202,7 +202,10 @@ impl ProcessorNode for MoqPushNode {
 
         // Create a transcoded broadcast and publish it
         let mut broadcast = publisher_origin
-            .create_broadcast(self.config.broadcast.as_str(), moq_net::broadcast::Route::announced())
+            .create_broadcast(
+                self.config.broadcast.as_str(),
+                moq_net::broadcast::Route::announced(),
+            )
             .map_err(|e| {
                 StreamKitError::Runtime(format!(
                     "Failed to create broadcast '{}': {e}",

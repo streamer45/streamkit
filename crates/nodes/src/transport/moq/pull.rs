@@ -1014,11 +1014,14 @@ impl MoqPullNode {
                 tracing::info!("subscribing to audio track: {}", dt.track.name);
                 let pin_name = dt.track.name.clone();
                 let pin_registered = self.output_pins.iter().any(|p| p.name == pin_name);
-                let consumer = super::subscribe_track(&broadcast, &dt.track.name, dt.track.priority)
-                    .await
-                    .map_err(|e| {
-                        StreamKitError::Runtime(format!("Failed to subscribe to audio track: {e}"))
-                    })?;
+                let consumer =
+                    super::subscribe_track(&broadcast, &dt.track.name, dt.track.priority)
+                        .await
+                        .map_err(|e| {
+                            StreamKitError::Runtime(format!(
+                                "Failed to subscribe to audio track: {e}"
+                            ))
+                        })?;
                 (Some(consumer), Some(pin_name), pin_registered)
             } else {
                 (None, None, false)
@@ -1031,11 +1034,14 @@ impl MoqPullNode {
                 tracing::info!("subscribing to video track: {}", dt.track.name);
                 let pin_name = dt.track.name.clone();
                 let pin_registered = self.output_pins.iter().any(|p| p.name == pin_name);
-                let consumer = super::subscribe_track(&broadcast, &dt.track.name, dt.track.priority)
-                    .await
-                    .map_err(|e| {
-                        StreamKitError::Runtime(format!("Failed to subscribe to video track: {e}"))
-                    })?;
+                let consumer =
+                    super::subscribe_track(&broadcast, &dt.track.name, dt.track.priority)
+                        .await
+                        .map_err(|e| {
+                            StreamKitError::Runtime(format!(
+                                "Failed to subscribe to video track: {e}"
+                            ))
+                        })?;
                 (Some(consumer), Some(pin_name), pin_registered)
             } else {
                 (None, None, false)

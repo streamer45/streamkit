@@ -1527,8 +1527,7 @@ impl MoqPeerNode {
         const RESUBSCRIBE_INITIAL_BACKOFF: Duration = Duration::from_millis(100);
 
         let broadcast = broadcast_consumer.clone();
-        let track =
-            crate::transport::moq::TrackRef { name: track_name.to_string(), priority: 2 };
+        let track = crate::transport::moq::TrackRef { name: track_name.to_string(), priority: 2 };
         let sender = routing.output_sender.clone();
         let mut task_shutdown = shutdown_rx.resubscribe();
         let stats = routing.stats_delta_tx.clone();
@@ -2204,9 +2203,7 @@ impl MoqPeerNode {
                 &track.name,
                 track.priority,
             )
-            .map_err(|e| {
-                StreamKitError::Runtime(format!("Failed to create audio track: {e}"))
-            })?;
+            .map_err(|e| StreamKitError::Runtime(format!("Failed to create audio track: {e}")))?;
             Some((track, crate::transport::moq::ordered_producer::OrderedProducer::from(producer)))
         } else {
             None
@@ -2221,9 +2218,7 @@ impl MoqPeerNode {
                 &track.name,
                 track.priority,
             )
-            .map_err(|e| {
-                StreamKitError::Runtime(format!("Failed to create video track: {e}"))
-            })?;
+            .map_err(|e| StreamKitError::Runtime(format!("Failed to create video track: {e}")))?;
             Some((track, crate::transport::moq::ordered_producer::OrderedProducer::from(producer)))
         } else {
             None
@@ -2967,9 +2962,8 @@ mod tests {
 
     async fn make_single_track(track_name: &str) -> SingleTrackFixture {
         let origin = moq_net::Origin::random().produce();
-        let mut broadcast = origin
-            .create_broadcast("input", moq_net::broadcast::Route::announced())
-            .unwrap();
+        let mut broadcast =
+            origin.create_broadcast("input", moq_net::broadcast::Route::announced()).unwrap();
         let producer =
             crate::transport::moq::create_media_track(&mut broadcast, track_name, 2).unwrap();
         let bc = origin.consume().announced_broadcast("input").await.unwrap();
@@ -2989,20 +2983,17 @@ mod tests {
     fn make_publisher_broadcast() -> PublisherBroadcastFixture {
         let origin = moq_net::Origin::random().produce();
         let consumer = origin.consume();
-        let mut broadcast = origin
-            .create_broadcast("input", moq_net::broadcast::Route::announced())
-            .unwrap();
+        let mut broadcast =
+            origin.create_broadcast("input", moq_net::broadcast::Route::announced()).unwrap();
 
         let audio_track =
             crate::transport::moq::TrackRef { name: "audio/data".to_string(), priority: 2 };
         let video_track =
             crate::transport::moq::TrackRef { name: "video/data".to_string(), priority: 2 };
-        let audio =
-            crate::transport::moq::create_media_track(&mut broadcast, &audio_track.name, 2)
-                .unwrap();
-        let video =
-            crate::transport::moq::create_media_track(&mut broadcast, &video_track.name, 2)
-                .unwrap();
+        let audio = crate::transport::moq::create_media_track(&mut broadcast, &audio_track.name, 2)
+            .unwrap();
+        let video = crate::transport::moq::create_media_track(&mut broadcast, &video_track.name, 2)
+            .unwrap();
 
         let catalog_producer = MoqPeerNode::create_and_publish_catalog(
             &mut broadcast,
@@ -3480,9 +3471,8 @@ mod tests {
     #[tokio::test]
     async fn create_and_publish_catalog_aac_advertises_stereo() {
         let publish = moq_net::Origin::random().produce();
-        let mut bcast = publish
-            .create_broadcast("output", moq_net::broadcast::Route::announced())
-            .unwrap();
+        let mut bcast =
+            publish.create_broadcast("output", moq_net::broadcast::Route::announced()).unwrap();
         let audio_track =
             crate::transport::moq::TrackRef { name: "audio/data".to_string(), priority: 80 };
         let catalog = MoqPeerNode::create_and_publish_catalog(
@@ -4082,9 +4072,8 @@ mod tests {
         });
 
         let origin = moq_net::Origin::random().produce();
-        let mut broadcast = origin
-            .create_broadcast("input", moq_net::broadcast::Route::announced())
-            .unwrap();
+        let mut broadcast =
+            origin.create_broadcast("input", moq_net::broadcast::Route::announced()).unwrap();
         let _track =
             crate::transport::moq::create_media_track(&mut broadcast, "video/hd", 2).unwrap();
         let consumer = origin.consume().announced_broadcast("input").await.unwrap();
@@ -4136,9 +4125,8 @@ mod tests {
         );
 
         let origin = moq_net::Origin::random().produce();
-        let mut broadcast = origin
-            .create_broadcast("input", moq_net::broadcast::Route::announced())
-            .unwrap();
+        let mut broadcast =
+            origin.create_broadcast("input", moq_net::broadcast::Route::announced()).unwrap();
         let _track =
             crate::transport::moq::create_media_track(&mut broadcast, "audio/data", 2).unwrap();
         let consumer = origin.consume().announced_broadcast("input").await.unwrap();
