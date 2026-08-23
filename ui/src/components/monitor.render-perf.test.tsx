@@ -7,8 +7,8 @@ import { ReactFlowProvider, useStoreApi, type Node } from '@xyflow/react';
 import React, { useEffect } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { PinRow } from '@/components/node/PinRow';
 import { PinHandle } from '@/components/node/PinHandle';
+import { PinRow } from '@/components/node/PinRow';
 import { sessionStore, nodeKey, nodeStateAtom } from '@/stores/sessionAtoms';
 import type { Connection, NodeState, OutputPin } from '@/types/types';
 

@@ -17,14 +17,14 @@ import React from 'react';
 import { SKTooltip } from '@/components/Tooltip';
 import { nodeKey, nodeStateAtom } from '@/stores/sessionAtoms';
 import type { PacketType } from '@/types/types';
+import { deepEqual } from '@/utils/deepEqual';
+import { getPacketTypeColor } from '@/utils/packetTypes';
 import {
   describeSlowInputsFromConnections,
   extractSlowTimeoutDetailsFromNodeState,
   type MonitorEdgeAlertContext,
   type SlowTimeoutDetails,
 } from '@/utils/pipelineGraph';
-import { deepEqual } from '@/utils/deepEqual';
-import { getPacketTypeColor } from '@/utils/packetTypes';
 
 export type TypedEdgeData = {
   resolvedType?: PacketType;
