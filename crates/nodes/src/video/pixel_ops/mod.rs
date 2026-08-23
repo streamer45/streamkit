@@ -99,4 +99,7 @@ pub fn all_alpha_opaque(rgba: &[u8]) -> bool {
 }
 
 pub use blit::{scale_blit_rgba, scale_blit_rgba_rotated, BlitRect};
-pub use convert::{i420_to_rgba8_buf, nv12_to_rgba8_buf, rgba8_to_i420_buf, rgba8_to_nv12_buf};
+pub use convert::{
+    i420_to_nv12_buf, i420_to_rgba8_buf, nv12_to_i420_buf, nv12_to_rgba8_buf, rgba8_to_i420_buf,
+    rgba8_to_nv12_buf,
+};
