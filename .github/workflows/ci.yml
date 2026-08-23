@@ -120,7 +120,7 @@ jobs:
     runs-on: ubuntu-22.04
     needs: [changes, skit, ui, plugins, e2e, reuse]
     permissions:
-      statuses: read
+      checks: read
     steps:
       - name: Verify Codecov thresholds
         # Only poll when at least one coverage upload was attempted.
@@ -132,52 +132,87 @@ jobs:
         run: |
           max_attempts=30
           delay=10
+          stable_suite_fingerprint=""
           for attempt in $(seq 1 $max_attempts); do
             echo "::group::Attempt $attempt/$max_attempts"
 
-            # Uses commit *statuses* API — if Codecov migrates to check
-            # runs, this query will return nothing and the timeout will fire.
-            codecov=$(gh api "/repos/$REPO/commits/$SHA/status" \
-              --jq '[.statuses[] | select(.context | startswith("codecov/"))]')
-            count=$(echo "$codecov" | jq 'length')
+            # Wait for a completed suite's fingerprint to remain unchanged
+            # before evaluating its incrementally published check runs.
+            suite=$(gh api \
+              "/repos/$REPO/commits/$SHA/check-suites?per_page=100" \
+              --jq '[.check_suites[] | select(.app.slug == "codecov")]
+                    | sort_by(.updated_at) | last')
+            suite_id=$(echo "$suite" | jq -r '.id // empty')
+            suite_status=$(echo "$suite" | jq -r '.status // empty')
 
-            if [[ "$count" -eq 0 ]]; then
-              echo "No Codecov statuses found yet."
+            if [[ -z "$suite_id" ]]; then
+              stable_suite_fingerprint=""
+              echo "No Codecov check suite found yet."
               echo "::endgroup::"
               sleep "$delay"
               continue
             fi
 
-            echo "$codecov" | jq -r '.[] | "  \(.context): \(.state)"'
+            if [[ "$suite_status" != "completed" ]]; then
+              stable_suite_fingerprint=""
+              echo "Latest Codecov check suite is $suite_status."
+              echo "::endgroup::"
+              sleep "$delay"
+              continue
+            fi
+
+            suite_fingerprint=$(echo "$suite" \
+              | jq -r '[.id, .updated_at, .latest_check_runs_count] | @tsv')
+            if [[ "$suite_fingerprint" != "$stable_suite_fingerprint" ]]; then
+              stable_suite_fingerprint="$suite_fingerprint"
+              echo "Completed Codecov suite changed; waiting one ${delay}s interval for publication to settle."
+              echo "::endgroup::"
+              sleep "$delay"
+              continue
+            fi
+
+            codecov=$(gh api \
+              "/repos/$REPO/check-suites/$suite_id/check-runs?per_page=100" \
+              --jq '[.check_runs[] | select(.name | startswith("codecov/"))]')
+            count=$(echo "$codecov" | jq 'length')
+
+            if [[ "$count" -eq 0 ]]; then
+              echo "No Codecov check runs found yet."
+              echo "::endgroup::"
+              sleep "$delay"
+              continue
+            fi
+
+            echo "$codecov" | jq -r '.[] | "  \(.name): \(.status)/\(.conclusion // "pending")"'
 
             # Fail immediately on any threshold violation.
             failed=$(echo "$codecov" \
-              | jq '[.[] | select(.state == "failure" or .state == "error")] | length')
+              | jq '[.[] | select(
+                  .conclusion == "failure" or
+                  .conclusion == "cancelled" or
+                  .conclusion == "timed_out" or
+                  .conclusion == "action_required"
+                )] | length')
             if [[ "$failed" -gt 0 ]]; then
               echo "::endgroup::"
               echo ""
               echo "::error::Codecov threshold violation(s):"
               echo "$codecov" \
-                | jq -r '.[] | select(.state == "failure" or .state == "error")
-                          | "  \(.context): \(.description)"'
+                | jq -r '.[] | select(
+                            .conclusion == "failure" or
+                            .conclusion == "cancelled" or
+                            .conclusion == "timed_out" or
+                            .conclusion == "action_required"
+                          ) | "  \(.name): \(.output.title // .conclusion)"'
               exit 1
             fi
 
-            # Keep waiting while any status is still pending.
-            pending=$(echo "$codecov" \
-              | jq '[.[] | select(.state == "pending")] | length')
-            if [[ "$pending" -eq 0 ]]; then
-              echo "::endgroup::"
-              echo "All Codecov statuses passed."
-              exit 0
-            fi
-
-            echo "$pending status(es) still pending."
             echo "::endgroup::"
-            sleep "$delay"
+            echo "All Codecov check runs passed."
+            exit 0
           done
 
-          echo "::warning::Codecov statuses did not resolve within 5 min — skipping enforcement."
+          echo "::warning::Codecov check runs did not resolve within 5 min — skipping enforcement."
 
       - name: Verify results
         if: always()
