@@ -12,7 +12,7 @@ import {
 import { atom, type Atom } from 'jotai';
 import { useAtomValue } from 'jotai/react';
 import { selectAtom } from 'jotai/utils';
-import React from 'react';
+import React, { useMemo } from 'react';
 
 import { SKTooltip } from '@/components/Tooltip';
 import { nodeKey, nodeStateAtom } from '@/stores/sessionAtoms';
@@ -92,7 +92,7 @@ export function useSlowInputAlert(
 ): TypedEdgeAlert | null {
   const sessionId = monitorAlertContext?.sessionId;
   const targetHandle = edge.targetHandle ?? '';
-  const detailsAtom = React.useMemo<SlowInputDetailsAtom>(() => {
+  const detailsAtom = useMemo<SlowInputDetailsAtom>(() => {
     if (!sessionId) return nullSlowInputDetailsAtom;
     return selectAtom(
       nodeStateAtom(nodeKey(sessionId, edge.target)),
