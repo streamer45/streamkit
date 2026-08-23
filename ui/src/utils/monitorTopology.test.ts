@@ -33,6 +33,16 @@ describe('buildMonitorTopologyKey', () => {
     });
   });
 
+  it('uses the saved position for same-session nodes without a live position', () => {
+    const previousPositions = new Map<string, { x: number; y: number }>();
+    const savedPositions = { node: { x: 48, y: 96 } };
+
+    expect(resolveMonitorNodePosition('node', true, previousPositions, savedPositions)).toEqual({
+      x: 48,
+      y: 96,
+    });
+  });
+
   it("uses the target session's saved position after a cross-session rebuild", () => {
     const previousPositions = new Map([['node', { x: 12, y: 24 }]]);
     const savedPositions = { node: { x: 48, y: 96 } };

@@ -15,7 +15,5 @@ export const resolveMonitorNodePosition = (
   previousPositions: ReadonlyMap<string, MonitorNodePosition>,
   savedPositions: Readonly<Record<string, MonitorNodePosition>>
 ): MonitorNodePosition =>
-  (reusePreviousPositions ? previousPositions.get(nodeName) : savedPositions[nodeName]) ?? {
-    x: 0,
-    y: 0,
-  };
+  (reusePreviousPositions ? previousPositions.get(nodeName) : undefined) ??
+  savedPositions[nodeName] ?? { x: 0, y: 0 };

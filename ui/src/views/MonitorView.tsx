@@ -1026,7 +1026,8 @@ const MonitorViewContent: React.FC = () => {
       const draftFinalInputs = draftBaseInputs;
       const draftFinalOutputs = draftBaseOutputs;
       const draftPos =
-        (reusePreviousPositions ? prevPositions.get(draftId) : savedPositions[draftId]) ??
+        (reusePreviousPositions ? prevPositions.get(draftId) : undefined) ??
+        savedPositions[draftId] ??
         draft.position;
       const node = buildNodeObject({
         nodeName: draftId,
