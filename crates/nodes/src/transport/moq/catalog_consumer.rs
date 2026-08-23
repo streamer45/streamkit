@@ -17,7 +17,15 @@ impl CatalogConsumer {
 
     pub async fn next(&mut self) -> Result<Option<hang::catalog::Catalog>, hang::Error> {
         loop {
+            // biased: drain the held group's snapshot first so a ready
+            // successor group cannot displace an unread catalog frame.
             tokio::select! {
+                biased;
+                Some(frame) = async { self.group.as_mut()?.read_frame().await.transpose() } => {
+                    self.group.take();
+                    let catalog = hang::catalog::Catalog::from_slice(&frame?.payload)?;
+                    return Ok(Some(catalog));
+                },
                 res = self.track.next_group() => {
                     match res? {
                         Some(group) => {
@@ -25,11 +33,6 @@ impl CatalogConsumer {
                         }
                         None => return Ok(None),
                     }
-                },
-                Some(frame) = async { self.group.as_mut()?.read_frame().await.transpose() } => {
-                    self.group.take();
-                    let catalog = hang::catalog::Catalog::from_slice(&frame?.payload)?;
-                    return Ok(Some(catalog));
                 }
             }
         }
@@ -130,6 +133,37 @@ mod tests {
 
             let result = cc.next().await.expect("next").expect("catalog snapshot");
             assert_eq!(result.audio.renditions.len(), count, "republish {count} not observed");
+        }
+    }
+
+    /// Snapshots written back-to-back mean a successor group is already ready
+    /// while the held group's frame is still unread; the biased select must
+    /// drain the held snapshot instead of displacing it.
+    #[tokio::test]
+    async fn next_drains_held_group_before_switching_to_ready_successor() {
+        let (_origin, _broadcast, mut producer, consumer) = make_track_pair().await;
+        let mut cc = CatalogConsumer::new(consumer);
+
+        for count in 1..=3usize {
+            let mut catalog = hang::catalog::Catalog::default();
+            for i in 0..count {
+                catalog.audio.renditions.insert(
+                    format!("audio/{i}"),
+                    hang::catalog::AudioConfig::new(
+                        super::super::constants::catalog_audio_codec(
+                            streamkit_core::types::AudioCodec::Opus,
+                        ),
+                        48000,
+                        2,
+                    ),
+                );
+            }
+            write_catalog(&mut producer, &catalog);
+        }
+
+        for count in 1..=3usize {
+            let result = cc.next().await.expect("next").expect("catalog snapshot");
+            assert_eq!(result.audio.renditions.len(), count, "snapshot {count} skipped");
         }
     }
 
