@@ -1401,8 +1401,8 @@ show-versions:
 
 # --- E2E Tests ---
 
-# Pinned moq-relay commit for e2e relay tests
-moq_relay_commit := "8b1d09c7a53bad1c573bff648c593cb1903c96f7"
+# Pinned moq-relay release ref for e2e relay tests
+moq_relay_ref := "moq-relay-v0.10.10"
 moq_relay_repo := "https://github.com/moq-dev/moq.git"
 
 # Build moq-relay binary for e2e relay tests
@@ -1410,25 +1410,25 @@ build-moq-relay:
     #!/usr/bin/env bash
     set -euo pipefail
     RELAY_BIN="target/moq-relay/moq-relay"
-    COMMIT_FILE="target/moq-relay/.commit"
-    if [ -f "$RELAY_BIN" ] && [ -f "$COMMIT_FILE" ] && [ "$(cat "$COMMIT_FILE")" = "{{moq_relay_commit}}" ]; then
-        echo "moq-relay binary already exists at $RELAY_BIN for commit {{moq_relay_commit}} — skipping build"
+    REF_FILE="target/moq-relay/.ref"
+    if [ -f "$RELAY_BIN" ] && [ -f "$REF_FILE" ] && [ "$(cat "$REF_FILE")" = "{{moq_relay_ref}}" ]; then
+        echo "moq-relay binary already exists at $RELAY_BIN for ref {{moq_relay_ref}} — skipping build"
         exit 0
     fi
     CLONE_DIR="target/moq-relay-src"
-    echo "Cloning moq-dev/moq at {{moq_relay_commit}}..."
+    echo "Cloning moq-dev/moq at {{moq_relay_ref}}..."
     if [ ! -d "$CLONE_DIR/.git" ]; then
-        git clone --depth 1 {{moq_relay_repo}} "$CLONE_DIR"
+        git clone --depth 1 --branch "{{moq_relay_ref}}" {{moq_relay_repo}} "$CLONE_DIR"
     fi
     cd "$CLONE_DIR"
-    git fetch origin {{moq_relay_commit}} --depth 1
-    git checkout {{moq_relay_commit}}
+    git fetch origin "refs/tags/{{moq_relay_ref}}:refs/tags/{{moq_relay_ref}}" --depth 1
+    git checkout --detach "{{moq_relay_ref}}"
     echo "Building moq-relay (release)..."
     cargo build -p moq-relay --release
     cd ../..
     mkdir -p target/moq-relay
     cp "$CLONE_DIR/target/release/moq-relay" "$RELAY_BIN"
-    echo "{{moq_relay_commit}}" > "$COMMIT_FILE"
+    echo "{{moq_relay_ref}}" > "$REF_FILE"
     echo "moq-relay binary ready at $RELAY_BIN"
 
 # Install E2E test dependencies
