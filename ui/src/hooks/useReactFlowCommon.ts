@@ -61,8 +61,7 @@ function validateGhostPinConnection(
   if (!sourceNode || !targetNode) return false;
 
   const nodeDefinition = (targetNode?.data as Record<string, unknown>)?.nodeDefinition as
-    | { inputs?: InputPin[] }
-    | undefined;
+    { inputs?: InputPin[] } | undefined;
   const dynamicPinTemplate = nodeDefinition?.inputs?.find(
     (pin) => typeof pin.cardinality === 'object' && 'Dynamic' in pin.cardinality
   );
@@ -221,8 +220,7 @@ function handleDynamicPinCreation<T extends Record<string, unknown>>(
     const targetNode = nodes.find((n) => n.id === connection.target);
     if (targetNode) {
       const nodeDefinition = (targetNode.data as Record<string, unknown>).nodeDefinition as
-        | { inputs?: InputPin[] }
-        | undefined;
+        { inputs?: InputPin[] } | undefined;
       const { pinName, pin } = generateDynamicPin(targetNode, nodeDefinition);
 
       setNodes((nds) => addDynamicPinToNode(nds, connection.target!, pin));
