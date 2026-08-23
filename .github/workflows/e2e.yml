@@ -334,9 +334,11 @@ jobs:
           if [ ! -d "$CLONE_DIR/.git" ]; then
             rm -rf "$CLONE_DIR"
             git clone --depth 1 --branch "$MOQ_RELAY_REF" https://github.com/moq-dev/moq.git "$CLONE_DIR"
+          else
+            cd "$CLONE_DIR"
+            git fetch origin "refs/tags/$MOQ_RELAY_REF:refs/tags/$MOQ_RELAY_REF" --depth 1
           fi
           cd "$CLONE_DIR"
-          git fetch origin "refs/tags/$MOQ_RELAY_REF:refs/tags/$MOQ_RELAY_REF" --depth 1
           git checkout --detach "$MOQ_RELAY_REF"
           echo "Building moq-relay (release)..."
           cargo build -p moq-relay --release

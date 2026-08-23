@@ -1419,9 +1419,11 @@ build-moq-relay:
     echo "Cloning moq-dev/moq at {{moq_relay_ref}}..."
     if [ ! -d "$CLONE_DIR/.git" ]; then
         git clone --depth 1 --branch "{{moq_relay_ref}}" {{moq_relay_repo}} "$CLONE_DIR"
+    else
+        cd "$CLONE_DIR"
+        git fetch origin "refs/tags/{{moq_relay_ref}}:refs/tags/{{moq_relay_ref}}" --depth 1
     fi
     cd "$CLONE_DIR"
-    git fetch origin "refs/tags/{{moq_relay_ref}}:refs/tags/{{moq_relay_ref}}" --depth 1
     git checkout --detach "{{moq_relay_ref}}"
     echo "Building moq-relay (release)..."
     cargo build -p moq-relay --release
