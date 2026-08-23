@@ -23,6 +23,13 @@ export type SlowTimeoutDetails = {
   syncTimeoutMs: number | null;
 };
 
+export type MonitorEdgeAlertContext = {
+  sessionId: string;
+  connections: Connection[];
+  sourceHandle?: string;
+  targetHandle?: string;
+};
+
 export const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && value !== undefined && typeof value === 'object' && !Array.isArray(value);
 
@@ -51,21 +58,27 @@ export const extractSlowTimeoutDetailsFromNodeState = (
   return { slowPins, newlySlowPins, syncTimeoutMs };
 };
 
-export const describeSlowInputs = (
-  pipeline: Pipeline,
+export const describeSlowInputsFromConnections = (
+  connections: Connection[],
   nodeId: string,
   slowPins: string[]
 ): string[] => {
   if (slowPins.length === 0) return [];
   const slowPinSet = new Set(slowPins);
 
-  const sources = pipeline.connections
+  const sources = connections
     .filter((c) => c.to_node === nodeId && slowPinSet.has(c.to_pin))
     .map((c) => `${c.from_node}.${c.from_pin} → ${c.to_pin}`);
 
   sources.sort();
   return sources;
 };
+
+export const describeSlowInputs = (
+  pipeline: Pipeline,
+  nodeId: string,
+  slowPins: string[]
+): string[] => describeSlowInputsFromConnections(pipeline.connections, nodeId, slowPins);
 
 // Edge connection validation
 
@@ -91,18 +104,34 @@ const isValidEdgeConnection = (conn: Connection, nodeMap: Map<string, RFNode>): 
   return hasSourcePin && hasTargetPin;
 };
 
-export const buildEdgesFromConnections = (connections: Connection[], nodes: RFNode[]): Edge[] => {
+export const buildEdgesFromConnections = (
+  connections: Connection[],
+  nodes: RFNode[],
+  monitorAlertContext?: MonitorEdgeAlertContext
+): Edge[] => {
   const nodeMap = new Map(nodes.map((n) => [n.id, n]));
 
   return connections
     .filter((conn) => isValidEdgeConnection(conn, nodeMap))
-    .map((conn) => ({
-      id: `${conn.from_node}_${conn.from_pin}-${conn.to_node}_${conn.to_pin}`,
-      source: conn.from_node,
-      sourceHandle: conn.from_pin,
-      target: conn.to_node,
-      targetHandle: conn.to_pin,
-    }));
+    .map((conn) => {
+      const edge: Edge = {
+        id: `${conn.from_node}_${conn.from_pin}-${conn.to_node}_${conn.to_pin}`,
+        source: conn.from_node,
+        sourceHandle: conn.from_pin,
+        target: conn.to_node,
+        targetHandle: conn.to_pin,
+      };
+      if (monitorAlertContext) {
+        edge.data = {
+          monitorAlertContext: {
+            ...monitorAlertContext,
+            sourceHandle: conn.from_pin,
+            targetHandle: conn.to_pin,
+          },
+        };
+      }
+      return edge;
+    });
 };
 
 // YAML generation

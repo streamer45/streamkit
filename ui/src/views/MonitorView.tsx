@@ -42,7 +42,6 @@ import { DnDProvider, useDnD } from '@/context/DnDContext';
 import { useToast } from '@/context/ToastContext';
 import { useAutoLayout } from '@/hooks/useAutoLayout';
 import { useContextMenu } from '@/hooks/useContextMenu';
-import { useEdgeAlertSubscription } from '@/hooks/useEdgeAlertSubscription';
 import { useMonitorPreview } from '@/hooks/useMonitorPreview';
 import { useReactFlowCommon } from '@/hooks/useReactFlowCommon';
 import { useResolvedColorMode } from '@/hooks/useResolvedColorMode';
@@ -398,11 +397,6 @@ const MonitorViewContent: React.FC = () => {
     handleStopPreview,
   } = useMonitorPreview(selectedSessionId);
 
-  const pipelineRef = useRef(pipeline);
-  useEffect(() => {
-    pipelineRef.current = pipeline;
-  }, [pipeline]);
-
   useEffect(() => {
     const drafts = draftNodesRef.current;
     if (drafts.size === 0) return;
@@ -523,13 +517,6 @@ const MonitorViewContent: React.FC = () => {
     setNeedsAutoLayout,
     setNeedsFit,
   ]);
-
-  const { topoEffectRanRef } = useEdgeAlertSubscription({
-    selectedSessionId,
-    setEdges,
-    pipelineRef,
-    topoKey,
-  });
 
   const sessionSeenInListRef = useRef(false);
   useEffect(() => {
@@ -1069,7 +1056,13 @@ const MonitorViewContent: React.FC = () => {
       newNodes.push(node);
     }
 
-    const newEdges = buildEdgesFromConnections(pipeline?.connections ?? [], newNodes);
+    const newEdges = buildEdgesFromConnections(
+      pipeline?.connections ?? [],
+      newNodes,
+      selectedSessionId && pipeline
+        ? { sessionId: selectedSessionId, connections: pipeline.connections }
+        : undefined
+    );
 
     for (const n of newNodes) {
       if (prevSelected.has(n.id)) n.selected = true;
@@ -1079,7 +1072,6 @@ const MonitorViewContent: React.FC = () => {
     React.startTransition(() => {
       setNodes((prev) => (prev.length === 0 && newNodes.length === 0 ? prev : newNodes));
       setEdges((prev) => (prev.length === 0 && newEdges.length === 0 ? prev : newEdges));
-      topoEffectRanRef.current = true;
     });
 
     const yamlString = pipeline ? generatePipelineYaml(pipeline, orderedNames) : '';
@@ -1101,7 +1093,6 @@ const MonitorViewContent: React.FC = () => {
     stableOnConfigChange,
     setNodes,
     setEdges,
-    topoEffectRanRef,
   ]);
 
   // Keep YAML in sync with live param overrides; runs only on param changes.

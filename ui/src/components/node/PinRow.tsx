@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import { Position, useUpdateNodeInternals, useStore } from '@xyflow/react';
-import React, { useEffect, useMemo } from 'react';
+import { Position, useUpdateNodeInternals, useStore, type ReactFlowState } from '@xyflow/react';
+import React, { useEffect } from 'react';
 
 import type { InputPin, OutputPin, PacketType } from '@/types/types';
 
@@ -65,8 +65,15 @@ type PinRowProps = {
 
 export const PinRow: React.FC<PinRowProps> = ({ nodeId, side, pins, isInput, totalPins }) => {
   const update = useUpdateNodeInternals();
-  const edges = useStore((state) => state.edges);
-  const nodes = useStore((state) => state.nodeLookup);
+  const hasPassthroughOutput =
+    !isInput && pins.some((pin) => (pin as OutputPin).produces_type === 'Passthrough');
+  const resolvedPassthroughType = useStore(
+    React.useCallback(
+      (state: ReactFlowState): PacketType | null =>
+        hasPassthroughOutput ? findUpstreamOutputType(nodeId, state.nodeLookup, state.edges) : null,
+      [hasPassthroughOutput, nodeId]
+    )
+  );
 
   useEffect(() => {
     update(nodeId);
@@ -83,26 +90,6 @@ export const PinRow: React.FC<PinRowProps> = ({ nodeId, side, pins, isInput, tot
 
   const total = totalPins ?? pins.length;
 
-  // Resolve Passthrough output pin types based on connections
-  const resolvedOutputTypes = useMemo(() => {
-    if (isInput) return new Map<string, PacketType>();
-
-    const resolved = new Map<string, PacketType>();
-    for (const pin of pins) {
-      const outputPin = pin as OutputPin;
-
-      // Skip non-Passthrough pins - they have explicit types
-      if (outputPin.produces_type !== 'Passthrough') continue;
-
-      // Resolve the type by finding upstream connection
-      const resolvedType = findUpstreamOutputType(nodeId, nodes, edges);
-      if (resolvedType) {
-        resolved.set(outputPin.name, resolvedType);
-      }
-    }
-    return resolved;
-  }, [isInput, pins, edges, nodes, nodeId]);
-
   return (
     <>
       {pins.map((p, i: number) => {
@@ -113,7 +100,9 @@ export const PinRow: React.FC<PinRowProps> = ({ nodeId, side, pins, isInput, tot
           packetType = ((p as InputPin).accepts_types?.[0] ?? 'Any') as PacketType;
         } else {
           const outputPin = p as OutputPin;
-          packetType = resolvedOutputTypes.get(name) || outputPin.produces_type;
+          packetType =
+            (outputPin.produces_type === 'Passthrough' ? resolvedPassthroughType : null) ||
+            outputPin.produces_type;
         }
 
         const cardinality = p.cardinality;

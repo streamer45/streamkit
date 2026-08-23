@@ -352,6 +352,26 @@ describe('buildEdgesFromConnections', () => {
     });
   });
 
+  it('attaches monitor alert context without changing design edge data', () => {
+    const nodes = [makeRFNode('a', [], [outPinOne('out')]), makeRFNode('b', [pinOne('in')], [])];
+    const connections: Connection[] = [
+      { from_node: 'a', from_pin: 'out', to_node: 'b', to_pin: 'in' },
+    ];
+    const monitorContext = { sessionId: 'session-1', connections };
+
+    const designEdges = buildEdgesFromConnections(connections, nodes);
+    const monitorEdges = buildEdgesFromConnections(connections, nodes, monitorContext);
+
+    expect(designEdges[0]?.data).toBeUndefined();
+    expect(monitorEdges[0]?.data).toEqual({
+      monitorAlertContext: {
+        ...monitorContext,
+        sourceHandle: 'out',
+        targetHandle: 'in',
+      },
+    });
+  });
+
   it('produces stable ids regardless of input ordering', () => {
     const nodes = [
       makeRFNode('a', [], [outPinOne('out')]),
