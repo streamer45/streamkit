@@ -13,6 +13,8 @@
 //! - RGBA8 → I420
 //! - NV12 → RGBA8
 //! - I420 → RGBA8
+//! - NV12 → I420
+//! - I420 → NV12
 //!
 //! ## Usage
 //!
@@ -25,7 +27,8 @@ mod bench_utils;
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 
 use streamkit_nodes::video::pixel_ops::{
-    i420_to_rgba8_buf, nv12_to_rgba8_buf, rgba8_to_i420_buf, rgba8_to_nv12_buf,
+    i420_to_nv12_buf, i420_to_rgba8_buf, nv12_to_i420_buf, nv12_to_rgba8_buf, rgba8_to_i420_buf,
+    rgba8_to_nv12_buf,
 };
 
 use bench_utils::{generate_i420_frame, generate_nv12_frame, generate_rgba_frame, RESOLUTIONS};
@@ -72,6 +75,18 @@ fn build_scenarios(width: u32, height: u32) -> Vec<ConversionScenario> {
             input: generate_i420_frame(width, height),
             output_size: rgba_size,
             convert_fn: i420_to_rgba8_buf,
+        },
+        ConversionScenario {
+            label: "nv12-to-i420",
+            input: generate_nv12_frame(width, height),
+            output_size: i420_size,
+            convert_fn: nv12_to_i420_buf,
+        },
+        ConversionScenario {
+            label: "i420-to-nv12",
+            input: generate_i420_frame(width, height),
+            output_size: nv12_size,
+            convert_fn: i420_to_nv12_buf,
         },
     ]
 }

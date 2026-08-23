@@ -52,6 +52,11 @@ const (
 	// never fire their load event at all. Must stay below mseReadyTimeout
 	// or cast viewers 503 before the stream can produce its init segment.
 	defaultLoadTimeoutSecs = 5
+
+	// Floor for the cast readiness window and the headroom added on top of
+	// --load-timeout-secs (encode + mux + first segment latency).
+	minMSEReadyTimeout = 8 * time.Second
+	mseReadyHeadroom   = 3 * time.Second
 )
 
 type config struct {
@@ -121,7 +126,7 @@ func main() {
 		clipEnc:         clipEnc,
 		castEnc:         castEnc,
 		loadTimeout:     cfg.loadTimeout,
-		mseReadyTimeout: 8 * time.Second,
+		mseReadyTimeout: mseReadyTimeoutFor(cfg.loadTimeout),
 		skit:            skit,
 		sessions:        newSessionManager(skit, cfg.maxSessions, cfg.maxViewers, cfg.idleTTL, cfg.maxLifetime),
 	}
@@ -173,6 +178,19 @@ func clampMin(name string, n int) int {
 		return 1
 	}
 	return n
+}
+
+// mseReadyTimeoutFor sizes the cast readiness window from the configured
+// load timeout: the pipeline cannot produce its init segment until servo
+// releases the first frame, so the window must exceed --load-timeout-secs
+// (plus headroom for encode/mux/first-segment latency) or every cast
+// viewer on a slow-loading page gets a silent 503.
+func mseReadyTimeoutFor(loadTimeoutSecs int) time.Duration {
+	t := time.Duration(loadTimeoutSecs)*time.Second + mseReadyHeadroom
+	if t < minMSEReadyTimeout {
+		return minMSEReadyTimeout
+	}
+	return t
 }
 
 func loadConfig() config {

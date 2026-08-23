@@ -171,13 +171,13 @@ The gate logic lives in `.github/workflows/ci.yml` under the
 
 ### Coverage threshold enforcement
 
-The `all-checks` gate also verifies Codecov commit statuses. After the
-coverage jobs upload data, Codecov posts commit statuses for project-
-level and patch-level thresholds (configured in `codecov.yml`). The gate
-polls for these statuses and fails if any report a threshold violation.
+The `all-checks` gate also verifies Codecov check runs. After the
+coverage jobs upload data, Codecov posts check runs for project-level and
+patch-level thresholds (configured in `codecov.yml`). The gate polls for
+these check runs and fails if any report a threshold violation.
 This ensures PRs cannot merge with sub-threshold coverage even though
 the coverage jobs themselves use `continue-on-error: true` (so a flaky
-coverage toolchain doesn't block unrelated work). If Codecov statuses
+coverage toolchain doesn't block unrelated work). If Codecov check runs
 do not appear within the polling window (~5 min), the gate degrades
 gracefully with a warning rather than blocking — this prevents a
 Codecov outage from stalling all merges.

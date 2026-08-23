@@ -42,11 +42,11 @@ The `codecov.yml` ratchet plan lives in that file's header comment.
 The project flags (`backend`, `ui`) now report red on any drop > 1% and
 `patch.default` reports red when new / changed code is below 80%.
 These thresholds are **enforced by the merge gate**: the `all-checks`
-job in `ci.yml` polls Codecov commit statuses and fails the required
-check when any threshold is violated. The coverage jobs themselves keep
+job in `ci.yml` polls Codecov check runs and fails the required check when
+any threshold is violated. The coverage jobs themselves keep
 `continue-on-error: true` so a flaky coverage toolchain doesn't
 independently block merges — only Codecov's own threshold verdict
-matters. If Codecov statuses don't appear within the polling window
+matters. If Codecov check runs don't appear within the polling window
 (~5 min), the gate degrades gracefully with a warning rather than
 blocking. Component-level statuses remain informational while individual
 subsystems settle near the 80% target.

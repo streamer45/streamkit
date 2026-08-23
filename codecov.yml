@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-# Codecov configuration. The project and patch statuses below report
-# red on threshold violations. The `All Checks Passed` gate in
-# `.github/workflows/ci.yml` polls these commit statuses and fails the
+# Codecov configuration. The project and patch checks below report red
+# on threshold violations. The `All Checks Passed` gate in
+# `.github/workflows/ci.yml` polls these check runs and fails the
 # required check when any threshold is violated, so coverage regressions
 # block merge even though the coverage jobs use `continue-on-error: true`.
 #
@@ -19,8 +19,8 @@
 #                        informational to red-surfacing once `engine`,
 #                        `nodes`, and `server` are consistently above
 #                        80%.
-#   Merge-gate wiring: the `all-checks` job now polls Codecov commit
-#                        statuses and fails on violations (PR #487).
+#   Merge-gate wiring: the `all-checks` job now polls Codecov check
+#                        runs and fails on violations (PR #487).
 # Stage transitions are intentionally manual — edit this file and remove
 # `informational: true` / tighten `threshold` / `target` as the baseline
 # settles. The `backend` and `ui` flag totals on the Codecov dashboard are
@@ -123,7 +123,7 @@ component_management:
 comment:
   layout: "header, diff, flags, components, files"
   behavior: default
-  # Now that the Codecov statuses report red on threshold violations,
+  # Now that the Codecov check runs report red on threshold violations,
   # the bot only needs to comment when coverage actually changed —
   # otherwise PRs with no covered files get noisy "no change" comments.
   require_changes: true
