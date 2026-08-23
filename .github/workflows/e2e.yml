@@ -331,18 +331,14 @@ jobs:
           fi
           CLONE_DIR="target/moq-relay-src"
           echo "Cloning moq-dev/moq at $MOQ_RELAY_REF..."
-          if [ ! -d "$CLONE_DIR/.git" ]; then
+          if [ ! -d "$CLONE_DIR/.git" ] ||
+            ! git -C "$CLONE_DIR" rev-parse --verify "$MOQ_RELAY_REF^{commit}" >/dev/null 2>&1; then
             rm -rf "$CLONE_DIR"
             git clone --depth 1 --branch "$MOQ_RELAY_REF" https://github.com/moq-dev/moq.git "$CLONE_DIR"
-          else
-            cd "$CLONE_DIR"
-            git fetch origin "refs/tags/$MOQ_RELAY_REF:refs/tags/$MOQ_RELAY_REF" --depth 1
           fi
-          cd "$CLONE_DIR"
-          git checkout --detach "$MOQ_RELAY_REF"
+          git -C "$CLONE_DIR" checkout --detach "$MOQ_RELAY_REF"
           echo "Building moq-relay (release)..."
-          cargo build -p moq-relay --release
-          cd ../..
+          (cd "$CLONE_DIR" && cargo build -p moq-relay --release)
           mkdir -p target/moq-relay
           cp "$CLONE_DIR/target/release/moq-relay" "$RELAY_BIN"
           echo "$MOQ_RELAY_REF" > "$REF_FILE"

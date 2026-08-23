@@ -1417,17 +1417,14 @@ build-moq-relay:
     fi
     CLONE_DIR="target/moq-relay-src"
     echo "Cloning moq-dev/moq at {{moq_relay_ref}}..."
-    if [ ! -d "$CLONE_DIR/.git" ]; then
+    if [ ! -d "$CLONE_DIR/.git" ] ||
+        ! git -C "$CLONE_DIR" rev-parse --verify "{{moq_relay_ref}}^{commit}" >/dev/null 2>&1; then
+        rm -rf "$CLONE_DIR"
         git clone --depth 1 --branch "{{moq_relay_ref}}" {{moq_relay_repo}} "$CLONE_DIR"
-    else
-        cd "$CLONE_DIR"
-        git fetch origin "refs/tags/{{moq_relay_ref}}:refs/tags/{{moq_relay_ref}}" --depth 1
     fi
-    cd "$CLONE_DIR"
-    git checkout --detach "{{moq_relay_ref}}"
+    git -C "$CLONE_DIR" checkout --detach "{{moq_relay_ref}}"
     echo "Building moq-relay (release)..."
-    cargo build -p moq-relay --release
-    cd ../..
+    (cd "$CLONE_DIR" && cargo build -p moq-relay --release)
     mkdir -p target/moq-relay
     cp "$CLONE_DIR/target/release/moq-relay" "$RELAY_BIN"
     echo "{{moq_relay_ref}}" > "$REF_FILE"
