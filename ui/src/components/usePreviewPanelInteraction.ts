@@ -35,14 +35,7 @@ const MAX_HEIGHT = 800;
 
 /** All resize edges and corners supported by the preview panel. */
 export type ResizeEdge =
-  | 'left'
-  | 'top'
-  | 'right'
-  | 'bottom'
-  | 'top-left'
-  | 'top-right'
-  | 'bottom-left'
-  | 'bottom-right';
+  'left' | 'top' | 'right' | 'bottom' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
 
 interface PanelInteraction {
   pos: { right: number; bottom: number };

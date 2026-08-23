@@ -5,13 +5,7 @@
 import type { NodeState } from '@/types/types';
 
 export type SessionStatus =
-  | 'running'
-  | 'initializing'
-  | 'degraded'
-  | 'recovering'
-  | 'failed'
-  | 'stopped'
-  | 'unknown';
+  'running' | 'initializing' | 'degraded' | 'recovering' | 'failed' | 'stopped' | 'unknown';
 
 export function computeSessionStatus(nodeStates: Record<string, NodeState>): SessionStatus {
   const states = Object.values(nodeStates);

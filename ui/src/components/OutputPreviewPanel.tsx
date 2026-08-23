@@ -45,11 +45,6 @@ import { usePreviewPanelInteraction, type ResizeEdge } from './usePreviewPanelIn
 // Re-export styled components for external consumers.
 export { VolumeSlider } from './OutputPreviewPanel.styles';
 
-// Hooks — re-exported from dedicated module for backward compatibility
-
-// Re-export so existing imports from this file continue to work.
-export { useAudioControls } from '@/hooks/useAudioControls';
-
 /** Human-readable connecting-step labels (mirrors StreamView). */
 const CONNECTING_STEP_TEXT: Record<string, string> = {
   devices: 'Requesting devices',
