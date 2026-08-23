@@ -148,6 +148,19 @@ jobs:
           bun install --frozen-lockfile
           bun run build
 
+      # Multiple runner services on the same host share the default CARGO_HOME
+      # and one sccache daemon, so a concurrent job's rust-cache post-step
+      # ("Cleaning cargo registry") can delete registry sources mid-compile and
+      # its sccache post-step can stop the other job's daemon. Isolate
+      # CARGO_HOME and the sccache server socket per runner, with a persistent
+      # per-runner disk cache.
+      - name: Isolate Cargo home and sccache (self-hosted)
+        run: |
+          echo "CARGO_HOME=${RUNNER_TEMP}/cargo-home" >> "$GITHUB_ENV"
+          echo "${RUNNER_TEMP}/cargo-home/bin" >> "$GITHUB_PATH"
+          echo "SCCACHE_SERVER_UDS=${RUNNER_TEMP}/sccache.sock" >> "$GITHUB_ENV"
+          echo "SCCACHE_DIR=${RUNNER_TOOL_CACHE}/sccache-cache" >> "$GITHUB_ENV"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:

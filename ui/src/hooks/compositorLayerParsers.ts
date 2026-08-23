@@ -124,13 +124,7 @@ export type ResizeHandle = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
 
 // Snap/drag/resize computation was extracted to compositorResizeHelpers.ts.
 // Re-export here for backward compatibility with existing imports.
-export {
-  SNAP_GRID,
-  SNAP_THRESHOLD,
-  type SnapGuides,
-  detectSnapGuides,
-  computeUpdatedLayer,
-} from './compositorResizeHelpers';
+export { SNAP_GRID, detectSnapGuides, computeUpdatedLayer } from './compositorResizeHelpers';
 
 // Wire-format types are generated from Rust via ts-rs.
 // See: ui/src/types/generated/compositor-types.ts
