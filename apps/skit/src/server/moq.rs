@@ -94,12 +94,7 @@ pub(super) fn start_moq_webtransport_acceptor(
     tokio::spawn(async move {
         match moq_config.init() {
             Ok(mut server) => {
-                let fingerprints = server
-                    .tls_info()
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .fingerprints
-                    .clone();
+                let fingerprints = server.certificates().fingerprints();
                 gateway.set_fingerprints(fingerprints.clone()).await;
 
                 for (i, fp) in fingerprints.iter().enumerate() {

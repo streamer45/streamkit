@@ -23,7 +23,6 @@ use crate::transport::moq::discovered::{
 };
 use crate::video::{AV1_CONTENT_TYPE, H264_CONTENT_TYPE, VP9_CONTENT_TYPE};
 use async_trait::async_trait;
-use bytes::Buf;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -939,12 +938,12 @@ impl MoqPeerNode {
             .send(streamkit_core::moq_gateway::MoqConnectionResult::Accepted);
 
         // Create origin for receiving from client
-        let client_publish_origin = moq_lite::Origin::random().produce();
+        let client_publish_origin = moq_net::Origin::random().produce();
         let receive_origin = client_publish_origin.consume();
 
         // Accept MoQ session (publisher only sends, no server publish needed)
         let session = request
-            .with_consume(client_publish_origin)
+            .with_subscriber(client_publish_origin)
             .ok()
             .await
             .map_err(|e| StreamKitError::Runtime(format!("Failed to accept session: {e}")))?;
@@ -992,15 +991,15 @@ impl MoqPeerNode {
             .send(streamkit_core::moq_gateway::MoqConnectionResult::Accepted);
 
         // Create origins for full bidirectional MoQ
-        let server_publish_origin = moq_lite::Origin::random().produce();
+        let server_publish_origin = moq_net::Origin::random().produce();
         let send_origin = server_publish_origin.clone();
 
-        let client_publish_origin = moq_lite::Origin::random().produce();
+        let client_publish_origin = moq_net::Origin::random().produce();
         let receive_origin = client_publish_origin.consume();
 
         let session = request
-            .with_publish(server_publish_origin.consume())
-            .with_consume(client_publish_origin)
+            .with_publisher(server_publish_origin.consume())
+            .with_subscriber(client_publish_origin)
             .ok()
             .await
             .map_err(|e| StreamKitError::Runtime(format!("Failed to accept session: {e}")))?;
@@ -1018,7 +1017,7 @@ impl MoqPeerNode {
 
             // Create per-broadcast OriginConsumer clones BEFORE moving
             // receive_origin into the primary loop.
-            let extra_consumers: Vec<(String, moq_lite::OriginConsumer)> =
+            let extra_consumers: Vec<(String, moq_net::origin::Consumer)> =
                 if config.input_broadcasts.len() > 1 {
                     config.input_broadcasts[1..]
                         .iter()
@@ -1202,7 +1201,7 @@ impl MoqPeerNode {
 
     /// Publisher receive loop - receives audio/video from client and sends to pipeline
     async fn publisher_receive_loop(
-        subscribe: moq_lite::OriginConsumer,
+        subscribe: moq_net::origin::Consumer,
         broadcast_name: String,
         shutdown_rx: &mut broadcast::Receiver<()>,
         routing: TrackRouting,
@@ -1223,21 +1222,22 @@ impl MoqPeerNode {
 
     /// Wait for the publisher to announce the expected broadcast
     async fn wait_for_broadcast_announcement(
-        mut subscribe: moq_lite::OriginConsumer,
+        subscribe: moq_net::origin::Consumer,
         broadcast_name: &str,
         shutdown_rx: &mut broadcast::Receiver<()>,
-    ) -> Result<Option<moq_lite::BroadcastConsumer>, StreamKitError> {
+    ) -> Result<Option<moq_net::broadcast::Consumer>, StreamKitError> {
+        let mut announced = subscribe.announced();
         loop {
             tokio::select! {
-                announcement = subscribe.announced() => {
+                announcement = announced.next() => {
                     match announcement {
-                        Some((path, Some(consumer))) => {
+                        Some(moq_net::announce::Update { path, broadcast: Some(consumer) }) => {
                             tracing::info!("Publisher announced broadcast: {}", path.as_str());
                             if path.as_str() == broadcast_name {
                                 return Ok(Some(consumer));
                             }
                         }
-                        Some((path, None)) => {
+                        Some(moq_net::announce::Update { path, broadcast: None }) => {
                             tracing::info!("Publisher unannounced broadcast: {}", path.as_str());
                         }
                         None => {
@@ -1309,7 +1309,7 @@ impl MoqPeerNode {
     /// Supports N tracks per broadcast — each rendition in the catalog gets its
     /// own track processor task, keyed by track name in a `HashMap`.
     async fn watch_catalog_and_process(
-        broadcast_consumer: &moq_lite::BroadcastConsumer,
+        broadcast_consumer: &moq_net::broadcast::Consumer,
         shutdown_rx: &mut broadcast::Receiver<()>,
         routing: &TrackRouting,
     ) -> Result<(), StreamKitError> {
@@ -1333,7 +1333,7 @@ impl MoqPeerNode {
     /// would cause track-name collisions (e.g. two `"video/hd"` entries).
     fn subscribe_catalog_tracks(
         catalog: &hang::catalog::Catalog,
-        broadcast_consumer: &moq_lite::BroadcastConsumer,
+        broadcast_consumer: &moq_net::broadcast::Consumer,
         shutdown_rx: &broadcast::Receiver<()>,
         routing: &TrackRouting,
         pin_prefix: Option<&str>,
@@ -1426,15 +1426,15 @@ impl MoqPeerNode {
     /// `{name}/{track_name}` (e.g. `screen-input/video/hd`).  When `None`,
     /// track names are used directly (e.g. `video/hd`).
     async fn watch_catalog_and_process_inner(
-        broadcast_consumer: &moq_lite::BroadcastConsumer,
+        broadcast_consumer: &moq_net::broadcast::Consumer,
         shutdown_rx: &mut broadcast::Receiver<()>,
         routing: &TrackRouting,
         pin_prefix: Option<&str>,
     ) -> Result<(), StreamKitError> {
         let catalog_track =
-            broadcast_consumer.subscribe_track(&hang::catalog::Catalog::default_track()).map_err(
-                |e| StreamKitError::Runtime(format!("Failed to subscribe to catalog track: {e}")),
-            )?;
+            crate::transport::moq::subscribe_catalog(broadcast_consumer).await.map_err(|e| {
+                StreamKitError::Runtime(format!("Failed to subscribe to catalog track: {e}"))
+            })?;
         let mut catalog_consumer =
             crate::transport::moq::catalog_consumer::CatalogConsumer::new(catalog_track);
 
@@ -1515,7 +1515,7 @@ impl MoqPeerNode {
     /// from `routing.video_codec`, the local fallback) — it labels the frame
     /// `content_type` for video tracks.
     fn spawn_track_processor_with_pin(
-        broadcast_consumer: &moq_lite::BroadcastConsumer,
+        broadcast_consumer: &moq_net::broadcast::Consumer,
         track_name: &str,
         is_video: bool,
         shutdown_rx: &broadcast::Receiver<()>,
@@ -1527,7 +1527,7 @@ impl MoqPeerNode {
         const RESUBSCRIBE_INITIAL_BACKOFF: Duration = Duration::from_millis(100);
 
         let broadcast = broadcast_consumer.clone();
-        let track = moq_lite::Track { name: track_name.to_string(), priority: 2 };
+        let track = crate::transport::moq::TrackRef { name: track_name.to_string(), priority: 2 };
         let sender = routing.output_sender.clone();
         let mut task_shutdown = shutdown_rx.resubscribe();
         let stats = routing.stats_delta_tx.clone();
@@ -1539,12 +1539,15 @@ impl MoqPeerNode {
 
             let mut attempt: u32 = 0;
             loop {
-                let consumer = broadcast.subscribe_track(&track).map_err(|e| {
-                    StreamKitError::Runtime(format!(
-                        "Failed to subscribe to track '{}': {e}",
-                        track.name
-                    ))
-                })?;
+                let consumer =
+                    crate::transport::moq::subscribe_track(&broadcast, &track.name, track.priority)
+                        .await
+                        .map_err(|e| {
+                            StreamKitError::Runtime(format!(
+                                "Failed to subscribe to track '{}': {e}",
+                                track.name
+                            ))
+                        })?;
                 let exit = Self::process_publisher_frames(
                     consumer,
                     sender.clone(),
@@ -1662,7 +1665,7 @@ impl MoqPeerNode {
     // Dynamic output routing adds parameters beyond the static-pin version.
     #[allow(clippy::too_many_arguments)]
     async fn process_publisher_frames(
-        mut track_consumer: moq_lite::TrackConsumer,
+        mut track_consumer: moq_net::track::Subscriber,
         mut output_sender: streamkit_core::OutputSender,
         output_pin: &str,
         is_video: bool,
@@ -1673,7 +1676,7 @@ impl MoqPeerNode {
     ) -> TrackExit {
         let mut frame_count = 0u64;
         let mut last_log = std::time::Instant::now();
-        let mut current_group: Option<moq_lite::GroupConsumer> = None;
+        let mut current_group: Option<moq_net::group::Consumer> = None;
         // Base timestamp for normalization — the first MoQ timestamp on this
         // track is subtracted from all subsequent timestamps so that every
         // track's timeline starts near 0.  This prevents overflow in
@@ -1694,7 +1697,7 @@ impl MoqPeerNode {
                         is_first_in_group = true;
                     },
                     Ok(None) => return TrackExit::Finished, // Stream ended or shutdown
-                    Err(moq_lite::Error::Cancel) => return TrackExit::Cancelled,
+                    Err(moq_net::Error::Cancel) => return TrackExit::Cancelled,
                     Err(e) => {
                         return TrackExit::Error(StreamKitError::Runtime(format!(
                             "Error getting group: {e}"
@@ -1735,16 +1738,16 @@ impl MoqPeerNode {
 
     /// Get the next group from the track consumer.
     ///
-    /// Surfaces the raw [`moq_lite::Error`] so the caller can distinguish
-    /// [`moq_lite::Error::Cancel`] (publisher dropped the track producer —
+    /// Surfaces the raw [`moq_net::Error`] so the caller can distinguish
+    /// [`moq_net::Error::Cancel`] (publisher dropped the track producer —
     /// retryable) from other failures. The `tracing::warn!` here will still
     /// fire for cancellations; that's intentional since they're unexpected
     /// in steady state even if we recover.
     async fn get_next_group(
-        track_consumer: &mut moq_lite::TrackConsumer,
+        track_consumer: &mut moq_net::track::Subscriber,
         shutdown_rx: &mut broadcast::Receiver<()>,
         output_pin: &str,
-    ) -> Result<Option<moq_lite::GroupConsumer>, moq_lite::Error> {
+    ) -> Result<Option<moq_net::group::Consumer>, moq_net::Error> {
         tokio::select! {
             biased;
             group_result = track_consumer.next_group() => {
@@ -1856,7 +1859,7 @@ impl MoqPeerNode {
     /// group, which in the hang protocol corresponds to a keyframe boundary.
     #[allow(clippy::too_many_arguments, clippy::cognitive_complexity)]
     async fn process_frame_from_group(
-        group: &mut moq_lite::GroupConsumer,
+        group: &mut moq_net::group::Consumer,
         output_sender: &mut streamkit_core::OutputSender,
         output_pin: &str,
         is_video: bool,
@@ -1874,7 +1877,7 @@ impl MoqPeerNode {
             biased;
             frame_result = group.read_frame() => {
                 match frame_result {
-                    Ok(Some(mut payload)) => {
+                    Ok(Some(net_frame)) => {
                         *frame_count += 1;
 
                         if last_log.elapsed() > Duration::from_secs(1) {
@@ -1883,10 +1886,11 @@ impl MoqPeerNode {
                             *last_log = std::time::Instant::now();
                         }
 
-                        // Decode the hang protocol timestamp (varint-encoded microseconds)
-                        // and propagate it as PacketMetadata so downstream nodes have timing.
-                        let timestamp = match hang::container::Timestamp::decode(&mut payload) {
-                            Ok(ts) => ts,
+                        // Decode the hang container frame (varint-encoded microsecond
+                        // timestamp prefix + payload) and propagate the timestamp as
+                        // PacketMetadata so downstream nodes have timing.
+                        let frame = match hang::container::Frame::decode(net_frame.payload) {
+                            Ok(frame) => frame,
                             Err(e) => {
                                 tracing::warn!("Failed to decode frame timestamp: {e}");
                                 let _ = stats_delta_tx
@@ -1895,7 +1899,7 @@ impl MoqPeerNode {
                             },
                         };
                         #[allow(clippy::cast_possible_truncation)] // MoQ timestamps fit in u64
-                        let raw_timestamp_us = timestamp.as_micros() as u64;
+                        let raw_timestamp_us = frame.timestamp.as_micros() as u64;
 
                         // Normalize: subtract the first timestamp so the track
                         // starts near 0.  This avoids WebM timecode overflow
@@ -1909,11 +1913,11 @@ impl MoqPeerNode {
                                 "MoQ first frame: video={is_video} raw_ts={raw_timestamp_us}us \
                                  normalized_ts={timestamp_us}us base={base}us \
                                  keyframe={is_keyframe} size={}B",
-                                payload.remaining()
+                                frame.payload.len()
                             );
                         }
 
-                        let data = payload.copy_to_bytes(payload.remaining());
+                        let data = frame.payload;
                         let content_type = if is_video {
                             Some(std::borrow::Cow::Borrowed(match video_codec {
                                 VideoCodec::Av1 => AV1_CONTENT_TYPE,
@@ -1983,12 +1987,12 @@ impl MoqPeerNode {
             .send(streamkit_core::moq_gateway::MoqConnectionResult::Accepted);
 
         // Create origin for sending to client
-        let server_publish_origin = moq_lite::Origin::random().produce();
+        let server_publish_origin = moq_net::Origin::random().produce();
         let send_origin = server_publish_origin.clone();
 
         // Accept MoQ session (subscriber only receives, no client publish needed)
         let session = request
-            .with_publish(server_publish_origin.consume())
+            .with_publisher(server_publish_origin.consume())
             .ok()
             .await
             .map_err(|e| StreamKitError::Runtime(format!("Failed to accept session: {e}")))?;
@@ -2115,7 +2119,7 @@ impl MoqPeerNode {
     // media_state_rx adds a necessary parameter for dynamic media-type resolution.
     #[allow(clippy::too_many_arguments)]
     async fn subscriber_send_loop(
-        publish: moq_lite::OriginProducer,
+        publish: moq_net::origin::Producer,
         broadcast_name: String,
         node_id: String,
         broadcast_rx: broadcast::Receiver<BroadcastFrame>,
@@ -2169,29 +2173,37 @@ impl MoqPeerNode {
 
     /// Setup broadcast, media tracks, and catalog for subscriber
     fn setup_subscriber_broadcast(
-        publish: &moq_lite::OriginProducer,
+        publish: &moq_net::origin::Producer,
         broadcast_name: &str,
         media: &SubscriberMediaConfig,
     ) -> Result<
         (
-            moq_lite::BroadcastProducer,
+            moq_net::broadcast::Producer,
             Option<crate::transport::moq::ordered_producer::OrderedProducer>,
             Option<crate::transport::moq::ordered_producer::OrderedProducer>,
-            moq_lite::TrackProducer,
+            moq_net::track::Producer,
         ),
         StreamKitError,
     > {
         // Create broadcast
-        let mut broadcast_producer = publish.create_broadcast(broadcast_name).ok_or_else(|| {
-            StreamKitError::Runtime(format!("Failed to create broadcast '{broadcast_name}'"))
-        })?;
+        let mut broadcast_producer = publish
+            .create_broadcast(broadcast_name, moq_net::broadcast::Route::announced())
+            .map_err(|e| {
+                StreamKitError::Runtime(format!(
+                    "Failed to create broadcast '{broadcast_name}': {e}"
+                ))
+            })?;
 
         // Create audio track (if audio input connected)
         let audio_track = if media.has_audio {
-            let track = moq_lite::Track { name: "audio/data".to_string(), priority: 80 };
-            let producer = broadcast_producer.create_track(track.clone()).map_err(|e| {
-                StreamKitError::Runtime(format!("Failed to create audio track: {e}"))
-            })?;
+            let track =
+                crate::transport::moq::TrackRef { name: "audio/data".to_string(), priority: 80 };
+            let producer = crate::transport::moq::create_media_track(
+                &mut broadcast_producer,
+                &track.name,
+                track.priority,
+            )
+            .map_err(|e| StreamKitError::Runtime(format!("Failed to create audio track: {e}")))?;
             Some((track, crate::transport::moq::ordered_producer::OrderedProducer::from(producer)))
         } else {
             None
@@ -2199,10 +2211,14 @@ impl MoqPeerNode {
 
         // Create video track (if video input connected)
         let video_track = if media.has_video {
-            let track = moq_lite::Track { name: "video/data".to_string(), priority: 60 };
-            let producer = broadcast_producer.create_track(track.clone()).map_err(|e| {
-                StreamKitError::Runtime(format!("Failed to create video track: {e}"))
-            })?;
+            let track =
+                crate::transport::moq::TrackRef { name: "video/data".to_string(), priority: 60 };
+            let producer = crate::transport::moq::create_media_track(
+                &mut broadcast_producer,
+                &track.name,
+                track.priority,
+            )
+            .map_err(|e| StreamKitError::Runtime(format!("Failed to create video track: {e}")))?;
             Some((track, crate::transport::moq::ordered_producer::OrderedProducer::from(producer)))
         } else {
             None
@@ -2230,14 +2246,14 @@ impl MoqPeerNode {
     /// Create and publish the catalog with audio and/or video track info
     #[allow(clippy::too_many_arguments)]
     fn create_and_publish_catalog(
-        broadcast_producer: &mut moq_lite::BroadcastProducer,
-        audio_track: Option<&moq_lite::Track>,
-        video_track: Option<&moq_lite::Track>,
+        broadcast_producer: &mut moq_net::broadcast::Producer,
+        audio_track: Option<&crate::transport::moq::TrackRef>,
+        video_track: Option<&crate::transport::moq::TrackRef>,
         video_width: u32,
         video_height: u32,
         video_codec: VideoCodec,
         audio_codec: AudioCodec,
-    ) -> Result<moq_lite::TrackProducer, StreamKitError> {
+    ) -> Result<moq_net::track::Producer, StreamKitError> {
         let mut audio_renditions = std::collections::BTreeMap::new();
         if let Some(audio_track) = audio_track {
             audio_renditions.insert(audio_track.name.clone(), {
@@ -2270,24 +2286,16 @@ impl MoqPeerNode {
             });
         }
 
-        let catalog = hang::catalog::Catalog {
-            audio: hang::catalog::Audio { renditions: audio_renditions },
-            video: hang::catalog::Video {
-                renditions: video_renditions,
-                display: None,
-                rotation: None,
-                flip: None,
-            },
-        };
+        let mut catalog = hang::catalog::Catalog::default();
+        catalog.audio.renditions = audio_renditions;
+        catalog.video.renditions = video_renditions;
 
-        let mut catalog_producer = broadcast_producer
-            .create_track(hang::catalog::Catalog::default_track())
+        let mut catalog_producer = crate::transport::moq::create_catalog_track(broadcast_producer)
             .map_err(|e| StreamKitError::Runtime(format!("Failed to create catalog track: {e}")))?;
         let catalog_json = catalog
-            .to_string()
+            .to_json()
             .map_err(|e| StreamKitError::Runtime(format!("Failed to serialize catalog: {e}")))?;
-        catalog_producer
-            .write_frame(catalog_json.into_bytes())
+        crate::transport::moq::write_catalog_json(&mut catalog_producer, catalog_json)
             .map_err(|e| StreamKitError::Runtime(format!("Failed to write catalog frame: {e}")))?;
 
         Ok(catalog_producer)
@@ -2805,21 +2813,21 @@ mod tests {
     }
 
     // These tests drive the publisher and subscriber loops in-process using
-    // `moq_lite::Origin::random().produce()` producer/consumer pairs — no
+    // `moq_net::Origin::random().produce()` producer/consumer pairs — no
     // network or relay required. Frames carry a hang varint timestamp prefix,
     // matching the wire format the loops decode.
 
-    fn ts_payload(timestamp_us: u64, data: &[u8]) -> bytes::Bytes {
-        let mut buf = bytes::BytesMut::new();
-        hang::container::Timestamp::from_micros(timestamp_us).unwrap().encode(&mut buf).unwrap();
-        buf.extend_from_slice(data);
-        buf.freeze()
+    fn container_frame(timestamp_us: u64, data: &[u8]) -> hang::container::Frame {
+        hang::container::Frame {
+            timestamp: hang::container::Timestamp::from_micros(timestamp_us).unwrap(),
+            payload: bytes::Bytes::copy_from_slice(data),
+        }
     }
 
-    fn write_group(producer: &mut moq_lite::TrackProducer, frames: &[(u64, &[u8])]) {
+    fn write_group(producer: &mut moq_net::track::Producer, frames: &[(u64, &[u8])]) {
         let mut group = producer.append_group().unwrap();
         for (ts, data) in frames {
-            group.write_frame(ts_payload(*ts, data)).unwrap();
+            container_frame(*ts, data).write_to(&mut group).unwrap();
         }
         group.finish().unwrap();
     }
@@ -2928,7 +2936,7 @@ mod tests {
     /// Read the next MoQ group off `sub` and return its frame payloads in
     /// order, so tests can assert wire-level group boundaries (a group must
     /// open on a keyframe) rather than internal producer state.
-    async fn read_group_payloads(sub: &mut moq_lite::TrackConsumer) -> Vec<Vec<u8>> {
+    async fn read_group_payloads(sub: &mut moq_net::track::Subscriber) -> Vec<Vec<u8>> {
         let mut group = tokio::time::timeout(Duration::from_secs(2), sub.next_group())
             .await
             .expect("next_group should not hang")
@@ -2940,46 +2948,52 @@ mod tests {
             .expect("read_frame should not hang")
             .expect("read_frame should succeed")
         {
-            payloads.push(hang::container::Frame::decode(frame).unwrap().payload.to_vec());
+            payloads.push(hang::container::Frame::decode(frame.payload).unwrap().payload.to_vec());
         }
         payloads
     }
 
     struct SingleTrackFixture {
-        _origin: moq_lite::OriginProducer,
-        _broadcast: moq_lite::BroadcastProducer,
-        producer: moq_lite::TrackProducer,
-        consumer: moq_lite::TrackConsumer,
+        _origin: moq_net::origin::Producer,
+        _broadcast: moq_net::broadcast::Producer,
+        producer: moq_net::track::Producer,
+        consumer: moq_net::track::Subscriber,
     }
 
-    fn make_single_track(track_name: &str) -> SingleTrackFixture {
-        let origin = moq_lite::Origin::random().produce();
-        let mut broadcast = origin.create_broadcast("input").unwrap();
-        let track = moq_lite::Track { name: track_name.to_string(), priority: 2 };
-        let producer = broadcast.create_track(track.clone()).unwrap();
-        let consumer =
-            origin.consume().get_broadcast("input").unwrap().subscribe_track(&track).unwrap();
+    async fn make_single_track(track_name: &str) -> SingleTrackFixture {
+        let origin = moq_net::Origin::random().produce();
+        let mut broadcast =
+            origin.create_broadcast("input", moq_net::broadcast::Route::announced()).unwrap();
+        let producer =
+            crate::transport::moq::create_media_track(&mut broadcast, track_name, 2).unwrap();
+        let bc = origin.consume().announced_broadcast("input").await.unwrap();
+        let consumer = crate::transport::moq::subscribe_track(&bc, track_name, 2).await.unwrap();
         SingleTrackFixture { _origin: origin, _broadcast: broadcast, producer, consumer }
     }
 
     struct PublisherBroadcastFixture {
-        _origin: moq_lite::OriginProducer,
-        _broadcast: moq_lite::BroadcastProducer,
-        _catalog: moq_lite::TrackProducer,
-        audio: moq_lite::TrackProducer,
-        video: moq_lite::TrackProducer,
-        consumer: moq_lite::OriginConsumer,
+        _origin: moq_net::origin::Producer,
+        _broadcast: moq_net::broadcast::Producer,
+        _catalog: moq_net::track::Producer,
+        audio: moq_net::track::Producer,
+        video: moq_net::track::Producer,
+        consumer: moq_net::origin::Consumer,
     }
 
     fn make_publisher_broadcast() -> PublisherBroadcastFixture {
-        let origin = moq_lite::Origin::random().produce();
+        let origin = moq_net::Origin::random().produce();
         let consumer = origin.consume();
-        let mut broadcast = origin.create_broadcast("input").unwrap();
+        let mut broadcast =
+            origin.create_broadcast("input", moq_net::broadcast::Route::announced()).unwrap();
 
-        let audio_track = moq_lite::Track { name: "audio/data".to_string(), priority: 2 };
-        let video_track = moq_lite::Track { name: "video/data".to_string(), priority: 2 };
-        let audio = broadcast.create_track(audio_track.clone()).unwrap();
-        let video = broadcast.create_track(video_track.clone()).unwrap();
+        let audio_track =
+            crate::transport::moq::TrackRef { name: "audio/data".to_string(), priority: 2 };
+        let video_track =
+            crate::transport::moq::TrackRef { name: "video/data".to_string(), priority: 2 };
+        let audio = crate::transport::moq::create_media_track(&mut broadcast, &audio_track.name, 2)
+            .unwrap();
+        let video = crate::transport::moq::create_media_track(&mut broadcast, &video_track.name, 2)
+            .unwrap();
 
         let catalog_producer = MoqPeerNode::create_and_publish_catalog(
             &mut broadcast,
@@ -3004,7 +3018,7 @@ mod tests {
 
     #[tokio::test]
     async fn process_publisher_frames_emits_video_packets_with_metadata() {
-        let mut fx = make_single_track("video/data");
+        let mut fx = make_single_track("video/data").await;
         write_group(&mut fx.producer, &[(1000, b"key0"), (2000, b"delta1")]);
         write_group(&mut fx.producer, &[(3000, b"key1")]);
         fx.producer.finish().unwrap();
@@ -3060,7 +3074,7 @@ mod tests {
 
     #[tokio::test]
     async fn process_publisher_frames_audio_has_no_content_type() {
-        let mut fx = make_single_track("audio/data");
+        let mut fx = make_single_track("audio/data").await;
         write_group(&mut fx.producer, &[(0, b"opus0")]);
         fx.producer.finish().unwrap();
 
@@ -3093,11 +3107,13 @@ mod tests {
 
     #[tokio::test]
     async fn process_publisher_frames_discards_undecodable_frame() {
-        let mut fx = make_single_track("audio/data");
+        let mut fx = make_single_track("audio/data").await;
         let mut group = fx.producer.append_group().unwrap();
         // Empty payload has no varint timestamp — decode fails (DecodeError::Short).
-        group.write_frame(bytes::Bytes::new()).unwrap();
-        group.write_frame(ts_payload(0, b"ok")).unwrap();
+        group
+            .write_frame(hang::container::Timestamp::from_micros(0).unwrap(), bytes::Bytes::new())
+            .unwrap();
+        container_frame(0, b"ok").write_to(&mut group).unwrap();
         group.finish().unwrap();
         fx.producer.finish().unwrap();
 
@@ -3128,7 +3144,7 @@ mod tests {
 
     #[tokio::test]
     async fn process_publisher_frames_routes_to_dynamic_output() {
-        let mut fx = make_single_track("audio/data");
+        let mut fx = make_single_track("audio/data").await;
         write_group(&mut fx.producer, &[(0, b"opus0"), (20_000, b"opus1")]);
         fx.producer.finish().unwrap();
 
@@ -3164,7 +3180,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_next_group_returns_group_then_finished() {
-        let mut fx = make_single_track("video/data");
+        let mut fx = make_single_track("video/data").await;
         write_group(&mut fx.producer, &[(0, b"a")]);
         fx.producer.finish().unwrap();
         let (_shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
@@ -3179,7 +3195,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_next_group_returns_none_on_shutdown() {
-        let mut fx = make_single_track("video/data");
+        let mut fx = make_single_track("video/data").await;
         let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
         shutdown_tx.send(()).unwrap();
         let g = MoqPeerNode::get_next_group(&mut fx.consumer, &mut shutdown_rx, "video/data").await;
@@ -3260,7 +3276,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_for_broadcast_announcement_returns_none_on_shutdown() {
-        let origin = moq_lite::Origin::random().produce();
+        let origin = moq_net::Origin::random().produce();
         let consumer = origin.consume();
         let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
         shutdown_tx.send(()).unwrap();
@@ -3421,15 +3437,15 @@ mod tests {
 
     #[tokio::test]
     async fn setup_subscriber_broadcast_publishes_catalog_with_both_tracks() {
-        let publish = moq_lite::Origin::random().produce();
+        let publish = moq_net::Origin::random().produce();
         let media = sub_media(true, true);
         let (bcast, audio, video, catalog) =
             MoqPeerNode::setup_subscriber_broadcast(&publish, "output", &media).unwrap();
         assert!(audio.is_some());
         assert!(video.is_some());
 
-        let bc = publish.consume().get_broadcast("output").unwrap();
-        let cat_track = bc.subscribe_track(&hang::catalog::Catalog::default_track()).unwrap();
+        let bc = publish.consume().announced_broadcast("output").await.unwrap();
+        let cat_track = crate::transport::moq::subscribe_catalog(&bc).await.unwrap();
         let mut cc = crate::transport::moq::catalog_consumer::CatalogConsumer::new(cat_track);
         let cat = tokio::time::timeout(Duration::from_secs(2), cc.next())
             .await
@@ -3444,7 +3460,7 @@ mod tests {
 
     #[tokio::test]
     async fn setup_subscriber_broadcast_audio_only_omits_video_track() {
-        let publish = moq_lite::Origin::random().produce();
+        let publish = moq_net::Origin::random().produce();
         let media = sub_media(true, false);
         let (_bcast, audio, video, _catalog) =
             MoqPeerNode::setup_subscriber_broadcast(&publish, "output", &media).unwrap();
@@ -3454,9 +3470,11 @@ mod tests {
 
     #[tokio::test]
     async fn create_and_publish_catalog_aac_advertises_stereo() {
-        let publish = moq_lite::Origin::random().produce();
-        let mut bcast = publish.create_broadcast("output").unwrap();
-        let audio_track = moq_lite::Track { name: "audio/data".to_string(), priority: 80 };
+        let publish = moq_net::Origin::random().produce();
+        let mut bcast =
+            publish.create_broadcast("output", moq_net::broadcast::Route::announced()).unwrap();
+        let audio_track =
+            crate::transport::moq::TrackRef { name: "audio/data".to_string(), priority: 80 };
         let catalog = MoqPeerNode::create_and_publish_catalog(
             &mut bcast,
             Some(&audio_track),
@@ -3468,8 +3486,8 @@ mod tests {
         )
         .unwrap();
 
-        let bc = publish.consume().get_broadcast("output").unwrap();
-        let cat_track = bc.subscribe_track(&hang::catalog::Catalog::default_track()).unwrap();
+        let bc = publish.consume().announced_broadcast("output").await.unwrap();
+        let cat_track = crate::transport::moq::subscribe_catalog(&bc).await.unwrap();
         let mut cc = crate::transport::moq::catalog_consumer::CatalogConsumer::new(cat_track);
         let cat = tokio::time::timeout(Duration::from_secs(2), cc.next())
             .await
@@ -3482,7 +3500,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_subscriber_send_loop_forwards_audio_and_video() {
-        let publish = moq_lite::Origin::random().produce();
+        let publish = moq_net::Origin::random().produce();
         let media = sub_media(true, true);
         let (_bcast, mut audio, mut video, _catalog) =
             MoqPeerNode::setup_subscriber_broadcast(&publish, "output", &media).unwrap();
@@ -3503,7 +3521,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_subscriber_send_loop_records_lagged_discards() {
-        let publish = moq_lite::Origin::random().produce();
+        let publish = moq_net::Origin::random().produce();
         let media = sub_media(true, false);
         let (_bcast, mut audio, mut video, _catalog) =
             MoqPeerNode::setup_subscriber_broadcast(&publish, "output", &media).unwrap();
@@ -3528,7 +3546,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_subscriber_send_loop_stops_on_shutdown() {
-        let publish = moq_lite::Origin::random().produce();
+        let publish = moq_net::Origin::random().produce();
         let media = sub_media(true, true);
         let (_bcast, mut audio, mut video, _catalog) =
             MoqPeerNode::setup_subscriber_broadcast(&publish, "output", &media).unwrap();
@@ -3551,18 +3569,13 @@ mod tests {
         // open its first MoQ group with a delta frame, or a late-joining
         // subscriber's decoder wedges on "a key frame is required after
         // configure()".
-        let publish = moq_lite::Origin::random().produce();
+        let publish = moq_net::Origin::random().produce();
         let media = sub_media(false, true);
         let (_bcast, mut audio, mut video, _catalog) =
             MoqPeerNode::setup_subscriber_broadcast(&publish, "output", &media).unwrap();
 
-        let video_track = moq_lite::Track { name: "video/data".to_string(), priority: 60 };
-        let mut sub = publish
-            .consume()
-            .get_broadcast("output")
-            .unwrap()
-            .subscribe_track(&video_track)
-            .unwrap();
+        let bc = publish.consume().announced_broadcast("output").await.unwrap();
+        let mut sub = crate::transport::moq::subscribe_track(&bc, "video/data", 60).await.unwrap();
 
         // The peer attaches mid-stream: two delta frames arrive before the
         // first keyframe. A trailing delta then lands in the keyframe-led
@@ -3623,18 +3636,13 @@ mod tests {
         // the lag still sees a keyframe-led group). Re-gating on a bare lag
         // count would freeze video until the next keyframe — up to a full GOP —
         // even for a lag that only dropped audio.
-        let publish = moq_lite::Origin::random().produce();
+        let publish = moq_net::Origin::random().produce();
         let media = sub_media(false, true);
         let (_bcast, mut audio, mut video, _catalog) =
             MoqPeerNode::setup_subscriber_broadcast(&publish, "output", &media).unwrap();
 
-        let video_track = moq_lite::Track { name: "video/data".to_string(), priority: 60 };
-        let mut sub = publish
-            .consume()
-            .get_broadcast("output")
-            .unwrap()
-            .subscribe_track(&video_track)
-            .unwrap();
+        let bc = publish.consume().announced_broadcast("output").await.unwrap();
+        let mut sub = crate::transport::moq::subscribe_track(&bc, "video/data", 60).await.unwrap();
 
         let (stats_tx, mut stats_rx) = mpsc::channel::<NodeStatsDelta>(256);
         let mut ctx = make_test_ctx(&mut audio, &mut video, &stats_tx, 40);
@@ -3677,18 +3685,13 @@ mod tests {
         // drift permanently. Interleave audio with the dropped deltas (matched
         // 20ms durations) and assert the kept keyframe lands at the same media
         // time as the concurrent audio — on the wire, not just in a counter.
-        let publish = moq_lite::Origin::random().produce();
+        let publish = moq_net::Origin::random().produce();
         let media = sub_media(true, true);
         let (_bcast, mut audio, mut video, _catalog) =
             MoqPeerNode::setup_subscriber_broadcast(&publish, "output", &media).unwrap();
 
-        let video_track = moq_lite::Track { name: "video/data".to_string(), priority: 60 };
-        let mut sub = publish
-            .consume()
-            .get_broadcast("output")
-            .unwrap()
-            .subscribe_track(&video_track)
-            .unwrap();
+        let bc = publish.consume().announced_broadcast("output").await.unwrap();
+        let mut sub = crate::transport::moq::subscribe_track(&bc, "video/data", 60).await.unwrap();
 
         let video_delta = |data: &'static [u8]| BroadcastFrame {
             data: bytes::Bytes::from_static(data),
@@ -3728,7 +3731,7 @@ mod tests {
             .expect("read_frame should not hang")
             .expect("read_frame should succeed")
             .expect("the keyframe should be published");
-        let decoded = hang::container::Frame::decode(first).unwrap();
+        let decoded = hang::container::Frame::decode(first.payload).unwrap();
         assert_eq!(decoded.payload.as_ref(), b"k0");
         assert_eq!(
             decoded.timestamp.as_micros(),
@@ -3741,7 +3744,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_subscriber_send_loop_skips_frame_without_matching_producer() {
-        let publish = moq_lite::Origin::random().produce();
+        let publish = moq_net::Origin::random().produce();
         let media = sub_media(true, false);
         let (_bcast, mut audio, mut video, _catalog) =
             MoqPeerNode::setup_subscriber_broadcast(&publish, "output", &media).unwrap();
@@ -4068,12 +4071,12 @@ mod tests {
             cfg
         });
 
-        let origin = moq_lite::Origin::random().produce();
-        let mut broadcast = origin.create_broadcast("input").unwrap();
-        let _track = broadcast
-            .create_track(moq_lite::Track { name: "video/hd".to_string(), priority: 2 })
-            .unwrap();
-        let consumer = origin.consume().get_broadcast("input").unwrap();
+        let origin = moq_net::Origin::random().produce();
+        let mut broadcast =
+            origin.create_broadcast("input", moq_net::broadcast::Route::announced()).unwrap();
+        let _track =
+            crate::transport::moq::create_media_track(&mut broadcast, "video/hd", 2).unwrap();
+        let consumer = origin.consume().announced_broadcast("input").await.unwrap();
 
         let mock = crate::test_utils::MockOutputSender::new();
         let sender = mock.to_output_sender("test_node".to_string());
@@ -4121,12 +4124,12 @@ mod tests {
             hang::catalog::AudioConfig::new(catalog_audio_codec(AudioCodec::Aac), 48000, 2),
         );
 
-        let origin = moq_lite::Origin::random().produce();
-        let mut broadcast = origin.create_broadcast("input").unwrap();
-        let _track = broadcast
-            .create_track(moq_lite::Track { name: "audio/data".to_string(), priority: 2 })
-            .unwrap();
-        let consumer = origin.consume().get_broadcast("input").unwrap();
+        let origin = moq_net::Origin::random().produce();
+        let mut broadcast =
+            origin.create_broadcast("input", moq_net::broadcast::Route::announced()).unwrap();
+        let _track =
+            crate::transport::moq::create_media_track(&mut broadcast, "audio/data", 2).unwrap();
+        let consumer = origin.consume().announced_broadcast("input").await.unwrap();
 
         let mock = crate::test_utils::MockOutputSender::new();
         let sender = mock.to_output_sender("test_node".to_string());

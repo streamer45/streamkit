@@ -51,6 +51,45 @@ export function getAuthHeaders(): Record<string, string> {
 }
 
 /**
+ * Mints a short-lived MoQ JWT via the admin API for tests that establish
+ * WebTransport sessions against an auth-enabled gateway.
+ *
+ * Returns null when auth is disabled or no admin token is available. The
+ * token root is derived from the configured gateway URL path, granting
+ * subscribe+publish on everything beneath it.
+ */
+export async function mintMoqToken(page: Page): Promise<string | null> {
+  if (!adminToken) return null;
+
+  const meResponse = await page.request.get('/api/v1/auth/me');
+  const meBody = (await meResponse.json()) as { auth_enabled?: boolean };
+  if (meBody.auth_enabled !== true) return null;
+
+  let root = '/moq';
+  const configResponse = await page.request.get('/api/v1/config');
+  if (configResponse.ok()) {
+    const config = (await configResponse.json()) as { moq_gateway_url?: string | null };
+    if (config.moq_gateway_url) {
+      try {
+        root = new URL(config.moq_gateway_url).pathname;
+      } catch {
+        // Keep the default root when the gateway URL is not parseable.
+      }
+    }
+  }
+
+  const response = await page.request.post('/api/v1/auth/moq-tokens', {
+    headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+    data: { root, subscribe: [''], publish: [''], label: 'e2e-stream', ttl_secs: 3600 },
+  });
+  if (!response.ok()) {
+    throw new Error(`Failed to mint MoQ token: ${response.status()} ${await response.text()}`);
+  }
+  const body = (await response.json()) as { token?: string };
+  return body.token ?? null;
+}
+
+/**
  * Logs in via the UI if the login view is currently shown.
  *
  * When auth is disabled, clicks "Continue without auth".

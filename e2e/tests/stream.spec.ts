@@ -2,9 +2,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import { test, expect, request } from '@playwright/test';
+import { test, expect, request, type Page } from '@playwright/test';
 
-import { ensureLoggedIn, getAuthHeaders } from './auth-helpers';
+import { ensureLoggedIn, getAuthHeaders, mintMoqToken } from './auth-helpers';
 import {
   type ConsoleErrorCollector,
   MOQ_BENIGN_PATTERNS,
@@ -13,6 +13,17 @@ import {
   verifyAudioContextActive,
   verifyCanvasRendering,
 } from './test-helpers';
+
+// The MoQ gateway validates the `?jwt=` query parameter after the
+// WebTransport session is accepted, so an auth-enabled server closes
+// tokenless connections post-establishment. Fill the Stream view's token
+// input before creating a session so the auto-connect carries a valid JWT.
+async function fillMoqTokenIfNeeded(page: Page): Promise<void> {
+  const token = await mintMoqToken(page);
+  if (token) {
+    await page.locator('#moq-token').fill(token);
+  }
+}
 
 test.describe('Stream View - Dynamic Pipeline', () => {
   let collector: ConsoleErrorCollector;
@@ -42,6 +53,8 @@ test.describe('Stream View - Dynamic Pipeline', () => {
     });
     await expect(templateCard).toBeVisible({ timeout: 10_000 });
     await templateCard.click();
+
+    await fillMoqTokenIfNeeded(page);
 
     const createButton = page.getByRole('button', { name: /Create Session/i });
     await expect(createButton).toBeEnabled({ timeout: 5_000 });
@@ -99,6 +112,8 @@ test.describe('Stream View - Dynamic Pipeline', () => {
     await expect(templateCard).toBeVisible({ timeout: 10_000 });
     await templateCard.click();
 
+    await fillMoqTokenIfNeeded(page);
+
     const createButton = page.getByRole('button', { name: /Create Session/i });
     await expect(createButton).toBeEnabled({ timeout: 5_000 });
     await createButton.click();
@@ -115,7 +130,7 @@ test.describe('Stream View - Dynamic Pipeline', () => {
     // either the "Relay: connected" label appears, or the "Connect & Stream"
     // button reappears (meaning auto-connect failed and the UI reset).
     const connected = page.getByText('Relay: connected');
-    const disconnected = page.getByText('Disconnected');
+    const disconnected = page.getByText('Disconnected', { exact: true });
     const connectButton = page.getByRole('button', {
       name: /Connect & Stream/i,
     });
@@ -239,6 +254,8 @@ test.describe('Stream View - Video MoQ Color Bars Pipeline', () => {
     await expect(templateCard).toBeVisible({ timeout: 10_000 });
     await templateCard.click();
 
+    await fillMoqTokenIfNeeded(page);
+
     // Create session.
     const createButton = page.getByRole('button', { name: /Create Session/i });
     await expect(createButton).toBeEnabled({ timeout: 5_000 });
@@ -253,7 +270,7 @@ test.describe('Stream View - Video MoQ Color Bars Pipeline', () => {
 
     // Wait for MoQ connection (auto-connect or manual).
     const connected = page.getByText('Relay: connected');
-    const disconnected = page.getByText('Disconnected');
+    const disconnected = page.getByText('Disconnected', { exact: true });
     const connectButton = page.getByRole('button', {
       name: /Connect & Stream/i,
     });
@@ -381,6 +398,8 @@ test.describe('Stream View - Webcam PiP Pipeline', () => {
     await expect(templateCard).toBeVisible({ timeout: 10_000 });
     await templateCard.click();
 
+    await fillMoqTokenIfNeeded(page);
+
     // Create session.
     const createButton = page.getByRole('button', { name: /Create Session/i });
     await expect(createButton).toBeEnabled({ timeout: 5_000 });
@@ -395,7 +414,7 @@ test.describe('Stream View - Webcam PiP Pipeline', () => {
 
     // Wait for MoQ connection (auto-connect or manual).
     const connected = page.getByText('Relay: connected');
-    const disconnected = page.getByText('Disconnected');
+    const disconnected = page.getByText('Disconnected', { exact: true });
     const connectButton = page.getByRole('button', {
       name: /Connect & Stream/i,
     });

@@ -17,7 +17,7 @@
 //! - Token with `root: "/moq"` DOES match `/moq/session1` (prefix segments)
 
 use super::{AuthError, MoqClaims};
-use moq_lite::{Path, PathOwned};
+use moq_net::{Path, PathOwned};
 use streamkit_core::moq_gateway::MoqAuthChecker;
 
 /// Verified MoQ auth context with permissions reduced by connection path depth.
@@ -224,7 +224,7 @@ mod tests {
         assert!(ctx.can_subscribe("audio/stereo/left"));
         assert!(!ctx.can_subscribe("video"));
         // Note: "audiovisual" should NOT match because it's not a segment prefix
-        // moq_lite uses segment-based matching, not string prefix
+        // moq-net uses segment-based matching, not string prefix
         assert!(!ctx.can_subscribe("audiovisual"));
     }
 

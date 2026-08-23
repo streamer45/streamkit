@@ -47,13 +47,13 @@ url = { version = "2.5.8", optional = true, features = ["serde"] }
 rquickjs = { version = "0.12", features = ["array-buffer", "futures", "loader", "parallel"], optional = true }
 wildmatch = { version = "2.6", optional = true }
 
-moq-native = { version = "0.17.4", optional = true }
-moq-lite = { version = "0.17.0", optional = true }
-hang = { version = "0.19.2", optional = true }
+moq-native = { version = "0.19.12", optional = true }
+moq-net = { version = "0.2.13", optional = true }
+hang = { version = "0.20.6", optional = true }
 
 # For local dev, debugging moq stuff
 # moq-native = { path = "../../moq/rs/moq-native", optional = true }
-# moq-lite = { path = "../../moq/rs/moq", optional = true }
+# moq-net = { path = "../../moq/rs/moq-net", optional = true }
 # hang = { path = "../../moq/rs/hang", optional = true }
 
 serde_json = { version = "1.0", optional = true }
@@ -154,7 +154,7 @@ moq = [
   "dep:schemars",
   "dep:url",
   "dep:moq-native",
-  "dep:moq-lite",
+  "dep:moq-net",
   "dep:hang",
   "dep:serde_json",
 ]

@@ -1402,7 +1402,7 @@ show-versions:
 # --- E2E Tests ---
 
 # Pinned moq-relay release ref for e2e relay tests
-moq_relay_ref := "moq-relay-v0.10.10"
+moq_relay_ref := "moq-relay-v0.14.12"
 moq_relay_repo := "https://github.com/moq-dev/moq.git"
 
 # Build moq-relay binary for e2e relay tests

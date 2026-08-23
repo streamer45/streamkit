@@ -11,6 +11,11 @@ import { useMoqYamlSync } from './useMoqYamlSync';
 
 // useMoqYamlSync transitively imports the stream store, which pulls in the
 // WebTransport-backed @moq/* libraries; stub them so the module loads in jsdom.
+vi.mock('@moq/net', () => ({
+  default: {},
+  Connection: { Reload: vi.fn() },
+  Path: { from: vi.fn() },
+}));
 vi.mock('@moq/hang', () => ({ default: {} }));
 vi.mock('@moq/watch', () => ({ default: {}, Broadcast: vi.fn() }));
 vi.mock('@moq/publish', () => ({ default: {}, Broadcast: vi.fn() }));

@@ -187,9 +187,9 @@ impl ProcessorNode for MoqPushNode {
             },
         };
 
-        let publisher_origin = moq_lite::Origin::random().produce();
+        let publisher_origin = moq_net::Origin::random().produce();
         let _publisher_session =
-            match Box::pin(client.clone().with_publish(publisher_origin.consume()).connect(url))
+            match Box::pin(client.clone().with_publisher(publisher_origin.consume()).connect(url))
                 .await
             {
                 Ok(session) => session,
@@ -201,10 +201,14 @@ impl ProcessorNode for MoqPushNode {
             };
 
         // Create a transcoded broadcast and publish it
-        let mut broadcast =
-            publisher_origin.create_broadcast(&self.config.broadcast).ok_or_else(|| {
+        let mut broadcast = publisher_origin
+            .create_broadcast(
+                self.config.broadcast.as_str(),
+                moq_net::broadcast::Route::announced(),
+            )
+            .map_err(|e| {
                 StreamKitError::Runtime(format!(
-                    "Failed to create broadcast '{}'",
+                    "Failed to create broadcast '{}': {e}",
                     self.config.broadcast
                 ))
             })?;
@@ -240,15 +244,16 @@ impl ProcessorNode for MoqPushNode {
 
         // Create audio track if audio input is connected
         let audio_track = if has_audio {
-            Some(moq_lite::Track { name: "audio/data".to_string(), priority: 80 })
+            Some(super::TrackRef { name: "audio/data".to_string(), priority: 80 })
         } else {
             None
         };
         let mut audio_producer: Option<super::ordered_producer::OrderedProducer> =
             if let Some(ref at) = audio_track {
-                let producer = broadcast.create_track(at.clone()).map_err(|e| {
-                    StreamKitError::Runtime(format!("Failed to create audio track: {e}"))
-                })?;
+                let producer = super::create_media_track(&mut broadcast, &at.name, at.priority)
+                    .map_err(|e| {
+                        StreamKitError::Runtime(format!("Failed to create audio track: {e}"))
+                    })?;
                 Some(producer.into())
             } else {
                 None
@@ -256,15 +261,16 @@ impl ProcessorNode for MoqPushNode {
 
         // Create video track if video input is connected
         let video_track = if has_video {
-            Some(moq_lite::Track { name: "video/data".to_string(), priority: 60 })
+            Some(super::TrackRef { name: "video/data".to_string(), priority: 60 })
         } else {
             None
         };
         let mut video_producer: Option<super::ordered_producer::OrderedProducer> =
             if let Some(ref vt) = video_track {
-                let producer = broadcast.create_track(vt.clone()).map_err(|e| {
-                    StreamKitError::Runtime(format!("Failed to create video track: {e}"))
-                })?;
+                let producer = super::create_media_track(&mut broadcast, &vt.name, vt.priority)
+                    .map_err(|e| {
+                        StreamKitError::Runtime(format!("Failed to create video track: {e}"))
+                    })?;
                 Some(producer.into())
             } else {
                 None
@@ -294,21 +300,14 @@ impl ProcessorNode for MoqPushNode {
             });
         }
 
-        let mut catalog = hang::catalog::Catalog {
-            audio: hang::catalog::Audio { renditions: audio_renditions },
-            video: hang::catalog::Video {
-                renditions: video_renditions,
-                display: None,
-                rotation: None,
-                flip: None,
-            },
-        };
+        let mut catalog = hang::catalog::Catalog::default();
+        catalog.audio.renditions = audio_renditions;
+        catalog.video.renditions = video_renditions;
 
         // Create catalog track and publish the catalog data
-        let mut catalog_producer = broadcast
-            .create_track(hang::catalog::Catalog::default_track())
+        let mut catalog_producer = super::create_catalog_track(&mut broadcast)
             .map_err(|e| StreamKitError::Runtime(format!("Failed to create catalog track: {e}")))?;
-        let catalog_json = match catalog.to_string() {
+        let catalog_json = match catalog.to_json() {
             Ok(json) => json,
             Err(e) => {
                 let err = StreamKitError::Runtime(format!("Failed to serialize catalog: {e}"));
@@ -316,15 +315,10 @@ impl ProcessorNode for MoqPushNode {
                 return Err(err);
             },
         };
-        let catalog_data = catalog_json.into_bytes();
 
-        tracing::debug!(
-            "publishing catalog JSON: {}",
-            std::str::from_utf8(&catalog_data).unwrap_or("<invalid utf8>")
-        );
+        tracing::debug!("publishing catalog JSON: {catalog_json}");
 
-        catalog_producer
-            .write_frame(catalog_data)
+        super::write_catalog_json(&mut catalog_producer, catalog_json)
             .map_err(|e| StreamKitError::Runtime(format!("Failed to write catalog frame: {e}")))?;
         // Keep catalog producer and state alive so we can re-publish when
         // dynamic tracks are added at runtime.
@@ -663,11 +657,11 @@ impl MoqPushNode {
     #[allow(clippy::too_many_arguments)]
     fn handle_pin_management(
         msg: PinManagementMessage,
-        broadcast: &mut moq_lite::BroadcastProducer,
+        broadcast: &mut moq_net::broadcast::Producer,
         dynamic_inputs: &mut Vec<DynamicInputState>,
         initial_delay_ms: u64,
         catalog: &mut hang::catalog::Catalog,
-        catalog_producer: &mut moq_lite::TrackProducer,
+        catalog_producer: &mut moq_net::track::Producer,
         channels: u32,
         video_codec: VideoCodec,
         audio_codec: AudioCodec,
@@ -731,11 +725,11 @@ impl MoqPushNode {
     /// serialization or write failure (logged at error level).
     fn republish_catalog(
         catalog: &hang::catalog::Catalog,
-        catalog_producer: &mut moq_lite::TrackProducer,
+        catalog_producer: &mut moq_net::track::Producer,
     ) -> bool {
-        match catalog.to_string() {
+        match catalog.to_json() {
             Ok(json) => {
-                if let Err(e) = catalog_producer.write_frame(json.into_bytes()) {
+                if let Err(e) = super::write_catalog_json(catalog_producer, json) {
                     tracing::error!("Failed to re-publish catalog: {e}");
                     false
                 } else {
@@ -756,11 +750,11 @@ impl MoqPushNode {
     fn activate_dynamic_input(
         pin: &InputPin,
         channel: tokio::sync::mpsc::Receiver<Packet>,
-        broadcast: &mut moq_lite::BroadcastProducer,
+        broadcast: &mut moq_net::broadcast::Producer,
         dynamic_inputs: &mut Vec<DynamicInputState>,
         initial_delay_ms: u64,
         catalog: &mut hang::catalog::Catalog,
-        catalog_producer: &mut moq_lite::TrackProducer,
+        catalog_producer: &mut moq_net::track::Producer,
         channels: u32,
         video_codec: VideoCodec,
         audio_codec: AudioCodec,
@@ -770,9 +764,8 @@ impl MoqPushNode {
         let is_video = is_video_pin(&pin.name);
         let track_name = track_name_from_pin(&pin.name);
 
-        let track =
-            moq_lite::Track { name: track_name.clone(), priority: if is_video { 60 } else { 80 } };
-        let producer = match broadcast.create_track(track) {
+        let priority = if is_video { 60 } else { 80 };
+        let producer = match super::create_media_track(broadcast, &track_name, priority) {
             Ok(p) => p,
             Err(e) => {
                 tracing::error!(
@@ -881,23 +874,23 @@ mod tests {
     const BROADCAST: &str = "push-cov-test";
 
     /// Uses in-process MoQ so dynamic-pin tests need no network relay.
-    fn push_fixture() -> (
-        moq_lite::OriginProducer,
-        moq_lite::BroadcastProducer,
-        moq_lite::TrackProducer,
+    async fn push_fixture() -> (
+        moq_net::origin::Producer,
+        moq_net::broadcast::Producer,
+        moq_net::track::Producer,
         CatalogConsumer,
     ) {
-        let origin = moq_lite::Origin::random().produce();
-        let mut broadcast = origin.create_broadcast(BROADCAST).expect("create_broadcast");
-        let catalog_producer = broadcast
-            .create_track(hang::catalog::Catalog::default_track())
-            .expect("create catalog track");
+        let origin = moq_net::Origin::random().produce();
+        let mut broadcast = origin
+            .create_broadcast(BROADCAST, moq_net::broadcast::Route::announced())
+            .expect("create_broadcast");
+        let catalog_producer =
+            crate::transport::moq::create_catalog_track(&mut broadcast).expect("catalog track");
 
         let consumer = origin.consume();
-        let bc = consumer.get_broadcast(BROADCAST).expect("get_broadcast");
-        let catalog_track = bc
-            .subscribe_track(&hang::catalog::Catalog::default_track())
-            .expect("subscribe catalog track");
+        let bc = consumer.announced_broadcast(BROADCAST).await.expect("announced_broadcast");
+        let catalog_track =
+            crate::transport::moq::subscribe_catalog(&bc).await.expect("subscribe catalog track");
 
         (origin, broadcast, catalog_producer, CatalogConsumer::new(catalog_track))
     }
@@ -910,7 +903,7 @@ mod tests {
         }
     }
 
-    // A bounded await so a moq-lite regression that stops delivering frames fails
+    // A bounded await so a moq-net regression that stops delivering frames fails
     // fast instead of hanging the whole test binary.
     async fn next_catalog(consumer: &mut CatalogConsumer) -> hang::catalog::Catalog {
         tokio::time::timeout(std::time::Duration::from_secs(5), consumer.next())
@@ -984,7 +977,8 @@ mod tests {
 
     #[tokio::test]
     async fn republish_catalog_writes_observable_frame() {
-        let (_origin, _broadcast, mut catalog_producer, mut catalog_consumer) = push_fixture();
+        let (_origin, _broadcast, mut catalog_producer, mut catalog_consumer) =
+            push_fixture().await;
 
         let mut catalog = hang::catalog::Catalog::default();
         MoqPushNode::insert_catalog_rendition(
@@ -1004,7 +998,8 @@ mod tests {
 
     #[tokio::test]
     async fn activate_dynamic_input_registers_track_and_keeps_channel() {
-        let (_origin, mut broadcast, mut catalog_producer, mut catalog_consumer) = push_fixture();
+        let (_origin, mut broadcast, mut catalog_producer, mut catalog_consumer) =
+            push_fixture().await;
         let mut catalog = hang::catalog::Catalog::default();
         let mut dynamic_inputs: Vec<DynamicInputState> = Vec::new();
 
@@ -1044,7 +1039,8 @@ mod tests {
     // replace branch is therefore unreachable while the old producer is retained.)
     #[tokio::test]
     async fn activate_dynamic_input_duplicate_pin_name_is_noop() {
-        let (_origin, mut broadcast, mut catalog_producer, _catalog_consumer) = push_fixture();
+        let (_origin, mut broadcast, mut catalog_producer, _catalog_consumer) =
+            push_fixture().await;
         let mut catalog = hang::catalog::Catalog::default();
         let mut dynamic_inputs: Vec<DynamicInputState> = Vec::new();
 
@@ -1089,10 +1085,10 @@ mod tests {
     #[allow(clippy::too_many_arguments)] // mirrors the production handle_pin_management signature
     fn handle(
         msg: PinManagementMessage,
-        broadcast: &mut moq_lite::BroadcastProducer,
+        broadcast: &mut moq_net::broadcast::Producer,
         dynamic_inputs: &mut Vec<DynamicInputState>,
         catalog: &mut hang::catalog::Catalog,
-        catalog_producer: &mut moq_lite::TrackProducer,
+        catalog_producer: &mut moq_net::track::Producer,
     ) {
         MoqPushNode::handle_pin_management(
             msg,
@@ -1109,7 +1105,7 @@ mod tests {
 
     #[tokio::test]
     async fn handle_pin_management_request_add_input_pin() {
-        let (_origin, mut broadcast, mut catalog_producer, _cc) = push_fixture();
+        let (_origin, mut broadcast, mut catalog_producer, _cc) = push_fixture().await;
         let mut catalog = hang::catalog::Catalog::default();
         let mut dynamic_inputs = Vec::new();
 
@@ -1144,7 +1140,7 @@ mod tests {
 
     #[tokio::test]
     async fn handle_pin_management_added_then_removed_input_pin() {
-        let (_origin, mut broadcast, mut catalog_producer, _cc) = push_fixture();
+        let (_origin, mut broadcast, mut catalog_producer, _cc) = push_fixture().await;
         let mut catalog = hang::catalog::Catalog::default();
         let mut dynamic_inputs = Vec::new();
 
@@ -1177,7 +1173,7 @@ mod tests {
 
     #[tokio::test]
     async fn handle_pin_management_rejects_output_pin_requests() {
-        let (_origin, mut broadcast, mut catalog_producer, _cc) = push_fixture();
+        let (_origin, mut broadcast, mut catalog_producer, _cc) = push_fixture().await;
         let mut catalog = hang::catalog::Catalog::default();
         let mut dynamic_inputs = Vec::new();
 
@@ -1195,7 +1191,7 @@ mod tests {
 
     #[tokio::test]
     async fn handle_pin_management_ignores_unrelated_messages() {
-        let (_origin, mut broadcast, mut catalog_producer, _cc) = push_fixture();
+        let (_origin, mut broadcast, mut catalog_producer, _cc) = push_fixture().await;
         let mut catalog = hang::catalog::Catalog::default();
         let mut dynamic_inputs = Vec::new();
 

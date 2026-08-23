@@ -2,9 +2,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import * as Hang from '@moq/hang';
+import * as Moq from '@moq/net';
 import * as Publish from '@moq/publish';
-import { Effect, type Getter } from '@moq/signals';
+import { Effect, Signal, type Getter } from '@moq/signals';
 import * as Watch from '@moq/watch';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -22,6 +22,12 @@ import {
   validateTrackCodecs,
   NULL_MOQ_REFS,
   performConnect,
+  VideoRendererHandle,
+  AudioEmitterHandle,
+  MicrophoneHandle,
+  CameraHandle,
+  ScreenHandle,
+  PublishHandle,
   type ConnectAttempt,
   type ConnectableState,
   type ConnectDecision,
@@ -42,25 +48,55 @@ function makeTrack(overrides: Partial<PublishTrackConfig> = {}): PublishTrackCon
 }
 
 // Mock the MoQ libraries to avoid ESM resolution errors in the test environment.
-vi.mock('@moq/hang', () => ({
-  Moq: { Connection: { Reload: vi.fn() } },
+vi.mock('@moq/net', () => ({
+  Connection: { Reload: vi.fn() },
+  Path: { from: vi.fn((s: string) => s) },
 }));
 vi.mock('@moq/publish', () => ({
   Broadcast: vi.fn(),
-  Lite: { Path: { from: vi.fn() } },
+  Audio: { Encoder: vi.fn() },
+  Video: { Capture: vi.fn(), Encoder: vi.fn() },
   Source: { Microphone: vi.fn(), Camera: vi.fn(), Screen: vi.fn() },
 }));
-vi.mock('@moq/watch', () => ({
-  Broadcast: vi.fn(),
-  Sync: vi.fn(),
-  Lite: { Path: { from: vi.fn() } },
-  Audio: { Source: vi.fn(), Decoder: vi.fn(), Emitter: vi.fn() },
-  Video: { Source: vi.fn(), Decoder: vi.fn(), Renderer: vi.fn() },
-}));
-vi.mock('@moq/signals', () => ({
-  Effect: vi.fn(),
-  Signal: vi.fn(),
-}));
+vi.mock('@moq/watch', () => {
+  const AudioDecoder = vi.fn() as ReturnType<typeof vi.fn> & { supported?: unknown };
+  const VideoDecoder = vi.fn() as ReturnType<typeof vi.fn> & { supported?: unknown };
+  AudioDecoder.supported = vi.fn();
+  VideoDecoder.supported = vi.fn();
+  return {
+    Broadcast: vi.fn(),
+    Sync: vi.fn(),
+    Audio: { Source: vi.fn(), Decoder: AudioDecoder, Emitter: vi.fn() },
+    Video: { Source: vi.fn(), Decoder: VideoDecoder, Renderer: vi.fn() },
+  };
+});
+vi.mock('@moq/signals', () => {
+  class MockSignal<T> {
+    #value: T;
+    #listeners: ((v: T) => void)[] = [];
+    constructor(value: T) {
+      this.#value = value;
+    }
+    peek() {
+      return this.#value;
+    }
+    set(value: T) {
+      this.#value = value;
+      for (const l of [...this.#listeners]) l(value);
+    }
+    subscribe(fn: (v: T) => void) {
+      this.#listeners.push(fn);
+      return () => {
+        const idx = this.#listeners.indexOf(fn);
+        if (idx >= 0) this.#listeners.splice(idx, 1);
+      };
+    }
+  }
+  return {
+    Effect: vi.fn(),
+    Signal: MockSignal,
+  };
+});
 
 // decideConnect
 
@@ -960,23 +996,32 @@ describe('performConnect', () => {
     const catalog = createMockSignal<object | undefined>(
       catalogReady ? { ready: true } : undefined
     );
-    const audioEnabledSet = vi.fn();
+    const audioEncoderInputs: { enabled?: { peek(): boolean } }[] = [];
 
     asMock(Publish.Source.Microphone).mockImplementation(function () {
-      return { source: micSource, close: vi.fn() };
+      return { out: { source: micSource }, close: vi.fn() };
     });
     asMock(Publish.Source.Camera).mockImplementation(function () {
-      return { source: camSource, close: vi.fn() };
+      return { out: { source: camSource }, close: vi.fn() };
+    });
+    asMock(Publish.Video.Capture).mockImplementation(function () {
+      return { out: { display: createMockSignal(undefined) }, close: vi.fn() };
+    });
+    asMock(Publish.Video.Encoder).mockImplementation(function () {
+      return { out: { catalog }, close: vi.fn() };
+    });
+    asMock(Publish.Audio.Encoder).mockImplementation(function (
+      _name: string,
+      inputs: { enabled?: { peek(): boolean } }
+    ) {
+      audioEncoderInputs.push(inputs);
+      return { close: vi.fn() };
     });
     asMock(Publish.Broadcast).mockImplementation(function () {
-      return {
-        video: { catalog },
-        audio: { enabled: { set: audioEnabledSet } },
-        close: vi.fn(),
-      };
+      return { close: vi.fn() };
     });
 
-    return { micSource, camSource, catalog, audioEnabledSet };
+    return { micSource, camSource, catalog, audioEncoderInputs };
   }
 
   beforeEach(() => {
@@ -991,20 +1036,20 @@ describe('performConnect', () => {
     });
     get = () => state;
 
-    asMock(Hang.Moq.Connection.Reload).mockImplementation(function () {
+    asMock(Moq.Connection.Reload).mockImplementation(function () {
       return { established: connEstablished, status: connStatus, close: vi.fn() };
     });
     asMock(Effect).mockImplementation(function () {
       return mockEffect;
     });
     asMock(Watch.Broadcast).mockImplementation(function () {
-      return { status: watchStatusSig, close: vi.fn() };
+      return { out: { status: watchStatusSig }, close: vi.fn() };
     });
     asMock(Watch.Sync).mockImplementation(function () {
       return { close: vi.fn() };
     });
     asMock(Watch.Audio.Source).mockImplementation(function () {
-      return { close: vi.fn() };
+      return { out: { jitter: createMockSignal(undefined) }, close: vi.fn() };
     });
     asMock(Watch.Audio.Decoder).mockImplementation(function () {
       return { close: vi.fn() };
@@ -1013,7 +1058,7 @@ describe('performConnect', () => {
       return { close: vi.fn() };
     });
     asMock(Watch.Video.Source).mockImplementation(function () {
-      return { close: vi.fn() };
+      return { out: { jitter: createMockSignal(undefined) }, close: vi.fn() };
     });
     asMock(Watch.Video.Decoder).mockImplementation(function () {
       return { close: vi.fn() };
@@ -1055,7 +1100,7 @@ describe('performConnect', () => {
   it('syncs watchStatus from the broadcast signal during watch setup', async () => {
     watchStatusSig = createMockSignal<string>('pending');
     asMock(Watch.Broadcast).mockImplementation(function () {
-      return { status: watchStatusSig, close: vi.fn() };
+      return { out: { status: watchStatusSig }, close: vi.fn() };
     });
 
     const decision = makeOkDecision({ shouldWatch: true, shouldPublish: false });
@@ -1086,7 +1131,7 @@ describe('performConnect', () => {
 
   it('defers audio publishing until the video catalog is ready', async () => {
     state = makeState({ pipelineNeedsAudio: true, pipelineNeedsVideo: true });
-    const { audioEnabledSet } = setupPublishMocks();
+    const { audioEncoderInputs } = setupPublishMocks();
 
     const decision = makeOkDecision({ shouldWatch: false, shouldPublish: true });
     const abort = new AbortController();
@@ -1096,7 +1141,8 @@ describe('performConnect', () => {
     // For combined audio+video publish, audio is started disabled and explicitly
     // re-enabled after the video catalog is observed (prevents the ~0.7s A/V
     // desync caused by VP9 encoder startup).
-    expect(audioEnabledSet).toHaveBeenCalledWith(true);
+    expect(audioEncoderInputs).toHaveLength(1);
+    expect(audioEncoderInputs[0]?.enabled?.peek()).toBe(true);
   });
 
   it('sets micStatus to requesting when mic source is initially unavailable', async () => {
@@ -1118,7 +1164,7 @@ describe('performConnect', () => {
     vi.useFakeTimers();
 
     connEstablished = createMockSignal<object | undefined>(undefined);
-    asMock(Hang.Moq.Connection.Reload).mockImplementation(function () {
+    asMock(Moq.Connection.Reload).mockImplementation(function () {
       return { established: connEstablished, status: connStatus, close: vi.fn() };
     });
 
@@ -1138,7 +1184,7 @@ describe('performConnect', () => {
 
   it('returns false without overwriting state when aborted mid-connect', async () => {
     connEstablished = createMockSignal<object | undefined>(undefined);
-    asMock(Hang.Moq.Connection.Reload).mockImplementation(function () {
+    asMock(Moq.Connection.Reload).mockImplementation(function () {
       return { established: connEstablished, status: connStatus, close: vi.fn() };
     });
 
@@ -1157,7 +1203,7 @@ describe('performConnect', () => {
 
   it('cleans up resources and reports error when watch setup throws', async () => {
     const connClose = vi.fn();
-    asMock(Hang.Moq.Connection.Reload).mockImplementation(function () {
+    asMock(Moq.Connection.Reload).mockImplementation(function () {
       return { established: connEstablished, status: connStatus, close: connClose };
     });
     asMock(Watch.Broadcast).mockImplementation(function () {
@@ -1181,7 +1227,7 @@ describe('performConnect', () => {
 
       watchStatusSig = createMockSignal<string>('pending');
       asMock(Watch.Broadcast).mockImplementation(function () {
-        return { status: watchStatusSig, close: vi.fn() };
+        return { out: { status: watchStatusSig }, close: vi.fn() };
       });
 
       const decision = makeOkDecision({ shouldWatch: true, shouldPublish: false });
@@ -1214,7 +1260,7 @@ describe('performConnect', () => {
 
       watchStatusSig = createMockSignal<string>('pending');
       asMock(Watch.Broadcast).mockImplementation(function () {
-        return { status: watchStatusSig, close: vi.fn() };
+        return { out: { status: watchStatusSig }, close: vi.fn() };
       });
 
       const decision = makeOkDecision({ shouldWatch: true, shouldPublish: false });
@@ -1325,5 +1371,101 @@ describe('performConnect', () => {
       // Connecting-mid-session is not an error condition — no error message.
       expect(state.errorMessage).not.toContain('Disconnected');
     });
+  });
+});
+
+// Resource handles
+
+describe('resource handles', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('VideoRendererHandle wires the canvas signal into the renderer and closes it', () => {
+    const close = vi.fn();
+    vi.mocked(Watch.Video.Renderer).mockImplementation(function (this: { close: typeof close }) {
+      this.close = close;
+    } as never);
+
+    const decoder = {} as Watch.Video.Decoder;
+    const handle = new VideoRendererHandle(decoder);
+
+    expect(Watch.Video.Renderer).toHaveBeenCalledWith(decoder, { canvas: handle.canvas });
+    handle.close();
+    expect(close).toHaveBeenCalled();
+  });
+
+  it('AudioEmitterHandle wires muted/volume signals into the emitter and closes it', () => {
+    const close = vi.fn();
+    vi.mocked(Watch.Audio.Emitter).mockImplementation(function (this: { close: typeof close }) {
+      this.close = close;
+    } as never);
+
+    const decoder = {} as Watch.Audio.Decoder;
+    const handle = new AudioEmitterHandle(decoder);
+
+    expect(Watch.Audio.Emitter).toHaveBeenCalledWith(decoder, {
+      muted: handle.muted,
+      volume: handle.volume,
+    });
+    expect(handle.muted.peek()).toBe(false);
+    expect(handle.volume.peek()).toBe(0.5);
+    handle.close();
+    expect(close).toHaveBeenCalled();
+  });
+
+  it.each([
+    ['MicrophoneHandle', Publish.Source.Microphone, () => new MicrophoneHandle()],
+    ['CameraHandle', Publish.Source.Camera, () => new CameraHandle()],
+    ['ScreenHandle', Publish.Source.Screen, () => new ScreenHandle()],
+  ] as const)(
+    '%s exposes the capture source getter and closes the inner source',
+    (_name, ctor, make) => {
+      const close = vi.fn();
+      const source = { kind: 'source' };
+      vi.mocked(ctor).mockImplementation(function (this: {
+        close: typeof close;
+        out: { source: typeof source };
+      }) {
+        this.close = close;
+        this.out = { source };
+      } as never);
+
+      const handle = make();
+
+      expect(handle.enabled.peek()).toBe(true);
+      expect(handle.source).toBe(source);
+      handle.close();
+      expect(close).toHaveBeenCalled();
+    }
+  );
+
+  it('PublishHandle closes every owned resource', () => {
+    const broadcast = { close: vi.fn() };
+    const capture = { close: vi.fn() };
+    const video = { close: vi.fn() };
+    const encoder = { close: vi.fn() };
+    const enabled = new Signal(true);
+
+    const handle = new PublishHandle({
+      broadcast: broadcast as unknown as Publish.Broadcast,
+      capture: capture as unknown as Publish.Video.Capture,
+      video: video as unknown as Publish.Video.Encoder,
+      audio: { enabled, encoder: encoder as unknown as Publish.Audio.Encoder },
+    });
+
+    handle.close();
+    expect(video.close).toHaveBeenCalled();
+    expect(encoder.close).toHaveBeenCalled();
+    expect(capture.close).toHaveBeenCalled();
+    expect(broadcast.close).toHaveBeenCalled();
+  });
+
+  it('PublishHandle tolerates missing optional resources on close', () => {
+    const broadcast = { close: vi.fn() };
+    const handle = new PublishHandle({ broadcast: broadcast as unknown as Publish.Broadcast });
+
+    handle.close();
+    expect(broadcast.close).toHaveBeenCalled();
   });
 });
