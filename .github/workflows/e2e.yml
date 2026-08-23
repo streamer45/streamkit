@@ -322,7 +322,7 @@ jobs:
       - name: Build moq-relay for relay e2e tests
         run: |
           set -euo pipefail
-          MOQ_RELAY_REF="moq-relay-v0.10.10"
+          MOQ_RELAY_REF="moq-relay-v0.14.12"
           RELAY_BIN="target/moq-relay/moq-relay"
           REF_FILE="target/moq-relay/.ref"
           if [ -f "$RELAY_BIN" ] && [ -f "$REF_FILE" ] && [ "$(cat "$REF_FILE")" = "$MOQ_RELAY_REF" ]; then
