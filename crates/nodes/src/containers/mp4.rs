@@ -1086,6 +1086,8 @@ fn partition_samples_by_track(
                 audio_samples.push(sample);
                 audio_payloads.push(payload);
             },
+            // The muxer only ever creates audio and video samples.
+            TrackKind::Subtitle => {},
         }
     }
 
