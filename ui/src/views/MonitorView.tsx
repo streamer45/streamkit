@@ -87,6 +87,7 @@ import {
 import { deepMergeSchemas, validateValue } from '@/utils/jsonSchema';
 import type { JsonSchema, JsonSchemaProperty } from '@/utils/jsonSchema';
 import { viewsLogger } from '@/utils/logger';
+import { buildMonitorTopologyKey } from '@/utils/monitorTopology';
 import {
   buildEdgesFromConnections,
   buildNodeObject,
@@ -467,10 +468,11 @@ const MonitorViewContent: React.FC = () => {
     const draftFingerprint = Array.from(draftNodes.entries())
       .map(([id, d]) => `${id}:${d.kind}:${d.missingRequired.join(',')}:${d.inFlight ? '1' : '0'}`)
       .sort();
-    const key = JSON.stringify([kinds, conns, runtimeKeys, draftFingerprint]);
+    const topologyFingerprint = JSON.stringify([kinds, conns, runtimeKeys, draftFingerprint]);
+    const key = buildMonitorTopologyKey(selectedSessionId, topologyFingerprint);
     viewsLogger.debug('topoKey recalculated:', key.substring(0, 100));
     return key;
-  }, [pipeline, draftNodes]);
+  }, [pipeline, draftNodes, selectedSessionId]);
 
   const { setNeedsAutoLayout, setNeedsFit, handleAutoLayout } = useAutoLayout({
     pipeline,
