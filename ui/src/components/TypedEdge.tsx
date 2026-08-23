@@ -2,15 +2,33 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import { BaseEdge, EdgeLabelRenderer, getBezierPath, type EdgeProps } from '@xyflow/react';
-import React from 'react';
+import {
+  BaseEdge,
+  EdgeLabelRenderer,
+  getBezierPath,
+  type Edge,
+  type EdgeProps,
+} from '@xyflow/react';
+import { atom, type Atom } from 'jotai';
+import { useAtomValue } from 'jotai/react';
+import { selectAtom } from 'jotai/utils';
+import React, { useMemo } from 'react';
 
 import { SKTooltip } from '@/components/Tooltip';
+import { nodeKey, nodeStateAtom } from '@/stores/sessionAtoms';
 import type { PacketType } from '@/types/types';
+import { deepEqual } from '@/utils/deepEqual';
 import { getPacketTypeColor } from '@/utils/packetTypes';
+import {
+  describeSlowInputsFromConnections,
+  extractSlowTimeoutDetailsFromNodeState,
+  type MonitorEdgeAlertContext,
+  type SlowTimeoutDetails,
+} from '@/utils/pipelineGraph';
 
 export type TypedEdgeData = {
   resolvedType?: PacketType;
+  monitorAlertContext?: MonitorEdgeAlertContext;
   alert?: {
     kind: string;
     severity: 'warning' | 'error';
@@ -23,6 +41,74 @@ export type TypedEdgeData = {
 };
 
 type TypedEdgeAlert = NonNullable<TypedEdgeData['alert']>;
+type SlowInputDetailsAtom = Atom<SlowTimeoutDetails | null>;
+type AlertEdge = Pick<Edge, 'source' | 'sourceHandle' | 'target' | 'targetHandle'>;
+
+const nullSlowInputDetailsAtom = atom<SlowTimeoutDetails | null>(null);
+
+function buildSlowInputTooltipLines(
+  edge: AlertEdge,
+  details: SlowTimeoutDetails,
+  connections: MonitorEdgeAlertContext['connections']
+): string[] {
+  const slowInputs = describeSlowInputsFromConnections(connections, edge.target, details.slowPins);
+  const lines: string[] = [];
+  if (slowInputs.length > 0) {
+    lines.push(`Slow inputs: ${slowInputs.join(', ')}`);
+  } else if (details.slowPins.length > 0) {
+    lines.push(`Slow pins: ${details.slowPins.join(', ')}`);
+  }
+
+  lines.push(`This: ${edge.source}.${edge.sourceHandle ?? ''} → ${edge.targetHandle ?? ''}`);
+
+  if (details.newlySlowPins.length > 0) {
+    lines.push(`Newly slow: ${details.newlySlowPins.join(', ')}`);
+  }
+  if (details.syncTimeoutMs != null) {
+    lines.push(`Timeout: ${details.syncTimeoutMs}ms`);
+  }
+  return lines;
+}
+
+export function buildSlowInputAlert(
+  edge: AlertEdge,
+  details: SlowTimeoutDetails | null,
+  connections: MonitorEdgeAlertContext['connections']
+): TypedEdgeAlert | null {
+  if (!details) return null;
+  return {
+    kind: 'slow_input_timeout',
+    severity: 'warning',
+    tooltip: {
+      title: `${edge.target} degraded`,
+      lines: buildSlowInputTooltipLines(edge, details, connections),
+    },
+  };
+}
+
+export function useSlowInputAlert(
+  edge: AlertEdge,
+  monitorAlertContext: MonitorEdgeAlertContext | undefined
+): TypedEdgeAlert | null {
+  const sessionId = monitorAlertContext?.sessionId;
+  const targetHandle = edge.targetHandle ?? '';
+  const detailsAtom = useMemo<SlowInputDetailsAtom>(() => {
+    if (!sessionId) return nullSlowInputDetailsAtom;
+    return selectAtom(
+      nodeStateAtom(nodeKey(sessionId, edge.target)),
+      (state) => {
+        const details = extractSlowTimeoutDetailsFromNodeState(state);
+        if (!details || !details.slowPins.includes(targetHandle)) return null;
+        return details;
+      },
+      deepEqual
+    );
+  }, [edge.target, sessionId, targetHandle]);
+  const details = useAtomValue(detailsAtom);
+  return monitorAlertContext
+    ? buildSlowInputAlert(edge, details, monitorAlertContext.connections)
+    : null;
+}
 
 function getTypeColor(resolvedType: PacketType | undefined): string {
   return resolvedType ? getPacketTypeColor(resolvedType) : 'var(--sk-primary)';
@@ -84,6 +170,10 @@ const TypedEdge: React.FC<EdgeProps> = ({
   targetPosition,
   style = {},
   data,
+  source,
+  target,
+  sourceHandleId,
+  targetHandleId,
 }) => {
   const [edgePath, labelX, labelY] = getBezierPath({
     sourceX,
@@ -96,7 +186,17 @@ const TypedEdge: React.FC<EdgeProps> = ({
 
   const typedData = data as TypedEdgeData | undefined;
   const resolvedType = typedData?.resolvedType;
-  const alert = typedData?.alert;
+  const monitorAlertContext = typedData?.monitorAlertContext;
+  const dynamicAlert = useSlowInputAlert(
+    {
+      source,
+      sourceHandle: sourceHandleId,
+      target,
+      targetHandle: targetHandleId,
+    },
+    monitorAlertContext
+  );
+  const alert = dynamicAlert ?? typedData?.alert;
 
   const typeColor = getTypeColor(resolvedType);
   const alertColor = getAlertColor(alert);

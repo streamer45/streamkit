@@ -42,7 +42,6 @@ import { DnDProvider, useDnD } from '@/context/DnDContext';
 import { useToast } from '@/context/ToastContext';
 import { useAutoLayout } from '@/hooks/useAutoLayout';
 import { useContextMenu } from '@/hooks/useContextMenu';
-import { useEdgeAlertSubscription } from '@/hooks/useEdgeAlertSubscription';
 import { useMonitorPreview } from '@/hooks/useMonitorPreview';
 import { useReactFlowCommon } from '@/hooks/useReactFlowCommon';
 import { useResolvedColorMode } from '@/hooks/useResolvedColorMode';
@@ -88,6 +87,7 @@ import {
 import { deepMergeSchemas, validateValue } from '@/utils/jsonSchema';
 import type { JsonSchema, JsonSchemaProperty } from '@/utils/jsonSchema';
 import { viewsLogger } from '@/utils/logger';
+import { buildMonitorTopologyKey, resolveMonitorNodePosition } from '@/utils/monitorTopology';
 import {
   buildEdgesFromConnections,
   buildNodeObject,
@@ -398,11 +398,6 @@ const MonitorViewContent: React.FC = () => {
     handleStopPreview,
   } = useMonitorPreview(selectedSessionId);
 
-  const pipelineRef = useRef(pipeline);
-  useEffect(() => {
-    pipelineRef.current = pipeline;
-  }, [pipeline]);
-
   useEffect(() => {
     const drafts = draftNodesRef.current;
     if (drafts.size === 0) return;
@@ -473,10 +468,11 @@ const MonitorViewContent: React.FC = () => {
     const draftFingerprint = Array.from(draftNodes.entries())
       .map(([id, d]) => `${id}:${d.kind}:${d.missingRequired.join(',')}:${d.inFlight ? '1' : '0'}`)
       .sort();
-    const key = JSON.stringify([kinds, conns, runtimeKeys, draftFingerprint]);
+    const topologyFingerprint = JSON.stringify([kinds, conns, runtimeKeys, draftFingerprint]);
+    const key = buildMonitorTopologyKey(selectedSessionId, topologyFingerprint);
     viewsLogger.debug('topoKey recalculated:', key.substring(0, 100));
     return key;
-  }, [pipeline, draftNodes]);
+  }, [pipeline, draftNodes, selectedSessionId]);
 
   const { setNeedsAutoLayout, setNeedsFit, handleAutoLayout } = useAutoLayout({
     pipeline,
@@ -523,13 +519,6 @@ const MonitorViewContent: React.FC = () => {
     setNeedsAutoLayout,
     setNeedsFit,
   ]);
-
-  const { topoEffectRanRef } = useEdgeAlertSubscription({
-    selectedSessionId,
-    setEdges,
-    pipelineRef,
-    topoKey,
-  });
 
   const sessionSeenInListRef = useRef(false);
   useEffect(() => {
@@ -767,18 +756,7 @@ const MonitorViewContent: React.FC = () => {
   );
 
   const prevTopoKeyForTopologyRef = useRef<string>('');
-
-  const resolveNodePosition = useCallback(
-    (
-      nodeName: string,
-      prevPositions: Map<string, { x: number; y: number }>,
-      savedPositions: Record<string, { x: number; y: number }>
-    ): { position: { x: number; y: number } } => {
-      const pos = prevPositions.get(nodeName) ?? savedPositions[nodeName];
-      return { position: pos ?? { x: 0, y: 0 } };
-    },
-    []
-  );
+  const topologySessionIdRef = useRef<string | null>(null);
 
   const reconstructDynamicInputs = useCallback(
     (
@@ -957,6 +935,8 @@ const MonitorViewContent: React.FC = () => {
       return;
     }
     prevTopoKeyForTopologyRef.current = topoKey;
+    const reusePreviousPositions = topologySessionIdRef.current === selectedSessionId;
+    topologySessionIdRef.current = selectedSessionId;
 
     if (!pipeline && draftNodes.size === 0) {
       viewsLogger.debug('Topology effect: No pipeline, clearing nodes');
@@ -987,7 +967,12 @@ const MonitorViewContent: React.FC = () => {
       const apiNode = pipeline!.nodes[nodeName];
       if (!apiNode) continue;
 
-      const { position: pos } = resolveNodePosition(nodeName, prevPositions, savedPositions);
+      const pos = resolveMonitorNodePosition(
+        nodeName,
+        reusePreviousPositions,
+        prevPositions,
+        savedPositions
+      );
 
       const nodeState =
         (selectedSessionId
@@ -1040,7 +1025,10 @@ const MonitorViewContent: React.FC = () => {
       const draftBaseOutputs = draftDef?.outputs ?? [];
       const draftFinalInputs = draftBaseInputs;
       const draftFinalOutputs = draftBaseOutputs;
-      const draftPos = prevPositions.get(draftId) ?? savedPositions[draftId] ?? draft.position;
+      const draftPos =
+        (reusePreviousPositions ? prevPositions.get(draftId) : undefined) ??
+        savedPositions[draftId] ??
+        draft.position;
       const node = buildNodeObject({
         nodeName: draftId,
         apiNode: {
@@ -1069,7 +1057,13 @@ const MonitorViewContent: React.FC = () => {
       newNodes.push(node);
     }
 
-    const newEdges = buildEdgesFromConnections(pipeline?.connections ?? [], newNodes);
+    const newEdges = buildEdgesFromConnections(
+      pipeline?.connections ?? [],
+      newNodes,
+      selectedSessionId && pipeline
+        ? { sessionId: selectedSessionId, connections: pipeline.connections }
+        : undefined
+    );
 
     for (const n of newNodes) {
       if (prevSelected.has(n.id)) n.selected = true;
@@ -1079,7 +1073,6 @@ const MonitorViewContent: React.FC = () => {
     React.startTransition(() => {
       setNodes((prev) => (prev.length === 0 && newNodes.length === 0 ? prev : newNodes));
       setEdges((prev) => (prev.length === 0 && newEdges.length === 0 ? prev : newEdges));
-      topoEffectRanRef.current = true;
     });
 
     const yamlString = pipeline ? generatePipelineYaml(pipeline, orderedNames) : '';
@@ -1095,13 +1088,11 @@ const MonitorViewContent: React.FC = () => {
     selectedSessionId,
     getNodePositions,
     defByKind,
-    resolveNodePosition,
     resolveDynamicPins,
     stableOnParamChange,
     stableOnConfigChange,
     setNodes,
     setEdges,
-    topoEffectRanRef,
   ]);
 
   // Keep YAML in sync with live param overrides; runs only on param changes.
