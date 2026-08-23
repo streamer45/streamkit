@@ -132,11 +132,12 @@ jobs:
         run: |
           max_attempts=30
           delay=10
+          stable_suite_fingerprint=""
           for attempt in $(seq 1 $max_attempts); do
             echo "::group::Attempt $attempt/$max_attempts"
 
-            # Codecov publishes check runs incrementally; wait for the suite
-            # to complete before evaluating its runs.
+            # Wait for a completed suite's fingerprint to remain unchanged
+            # before evaluating its incrementally published check runs.
             suite=$(gh api \
               "/repos/$REPO/commits/$SHA/check-suites?per_page=100" \
               --jq '[.check_suites[] | select(.app.slug == "codecov")]
@@ -145,6 +146,7 @@ jobs:
             suite_status=$(echo "$suite" | jq -r '.status // empty')
 
             if [[ -z "$suite_id" ]]; then
+              stable_suite_fingerprint=""
               echo "No Codecov check suite found yet."
               echo "::endgroup::"
               sleep "$delay"
@@ -152,7 +154,18 @@ jobs:
             fi
 
             if [[ "$suite_status" != "completed" ]]; then
+              stable_suite_fingerprint=""
               echo "Latest Codecov check suite is $suite_status."
+              echo "::endgroup::"
+              sleep "$delay"
+              continue
+            fi
+
+            suite_fingerprint=$(echo "$suite" \
+              | jq -r '[.id, .updated_at, .latest_check_runs_count] | @tsv')
+            if [[ "$suite_fingerprint" != "$stable_suite_fingerprint" ]]; then
+              stable_suite_fingerprint="$suite_fingerprint"
+              echo "Completed Codecov suite changed; waiting one ${delay}s interval for publication to settle."
               echo "::endgroup::"
               sleep "$delay"
               continue
@@ -178,8 +191,7 @@ jobs:
                   .conclusion == "failure" or
                   .conclusion == "cancelled" or
                   .conclusion == "timed_out" or
-                  .conclusion == "action_required" or
-                  .conclusion == "startup_failure"
+                  .conclusion == "action_required"
                 )] | length')
             if [[ "$failed" -gt 0 ]]; then
               echo "::endgroup::"
@@ -190,24 +202,14 @@ jobs:
                             .conclusion == "failure" or
                             .conclusion == "cancelled" or
                             .conclusion == "timed_out" or
-                            .conclusion == "action_required" or
-                            .conclusion == "startup_failure"
+                            .conclusion == "action_required"
                           ) | "  \(.name): \(.output.title // .conclusion)"'
               exit 1
             fi
 
-            # Keep waiting while any check run is still pending.
-            pending=$(echo "$codecov" \
-              | jq '[.[] | select(.status != "completed")] | length')
-            if [[ "$pending" -eq 0 ]]; then
-              echo "::endgroup::"
-              echo "All Codecov check runs passed."
-              exit 0
-            fi
-
-            echo "$pending check run(s) still pending."
             echo "::endgroup::"
-            sleep "$delay"
+            echo "All Codecov check runs passed."
+            exit 0
           done
 
           echo "::warning::Codecov check runs did not resolve within 5 min — skipping enforcement."
