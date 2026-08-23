@@ -135,8 +135,31 @@ jobs:
           for attempt in $(seq 1 $max_attempts); do
             echo "::group::Attempt $attempt/$max_attempts"
 
+            # Codecov publishes check runs incrementally; wait for the suite
+            # to complete before evaluating its runs.
+            suite=$(gh api \
+              "/repos/$REPO/commits/$SHA/check-suites?per_page=100" \
+              --jq '[.check_suites[] | select(.app.slug == "codecov")]
+                    | sort_by(.updated_at) | last')
+            suite_id=$(echo "$suite" | jq -r '.id // empty')
+            suite_status=$(echo "$suite" | jq -r '.status // empty')
+
+            if [[ -z "$suite_id" ]]; then
+              echo "No Codecov check suite found yet."
+              echo "::endgroup::"
+              sleep "$delay"
+              continue
+            fi
+
+            if [[ "$suite_status" != "completed" ]]; then
+              echo "Latest Codecov check suite is $suite_status."
+              echo "::endgroup::"
+              sleep "$delay"
+              continue
+            fi
+
             codecov=$(gh api \
-              "/repos/$REPO/commits/$SHA/check-runs?filter=latest&per_page=100" \
+              "/repos/$REPO/check-suites/$suite_id/check-runs?per_page=100" \
               --jq '[.check_runs[] | select(.name | startswith("codecov/"))]')
             count=$(echo "$codecov" | jq 'length')
 
