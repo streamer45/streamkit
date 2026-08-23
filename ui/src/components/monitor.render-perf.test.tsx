@@ -24,8 +24,6 @@ const SESSION_ID = 'monitor-perf-session';
 const TARGET_NODE = 'mixer';
 const edgeContext = {
   sessionId: SESSION_ID,
-  sourceHandle: 'audio',
-  targetHandle: 'audio_in',
   connections: [
     { from_node: 'source', from_pin: 'audio', to_node: TARGET_NODE, to_pin: 'audio_in' },
     { from_node: 'source', from_pin: 'video', to_node: TARGET_NODE, to_pin: 'video_in' },
@@ -84,7 +82,6 @@ describe('Monitor edge alert render isolation', () => {
         <AlertProbe targetHandle="video_in" onRender={(alert) => videoRenders.push(alert)} />
       </>
     );
-    const initialAudioRenders = audioRenders.length;
     const initialVideoRenders = videoRenders.length;
 
     act(() => {
@@ -93,13 +90,15 @@ describe('Monitor edge alert render isolation', () => {
 
     expect(audioRenders.at(-1)).not.toBeNull();
     expect(videoRenders.length).toBe(initialVideoRenders);
+    const audioRendersAfterMatchingUpdate = audioRenders.length;
+    const videoRendersAfterMatchingUpdate = videoRenders.length;
 
     act(() => {
       sessionStore.set(nodeStateAtom(nodeKey(SESSION_ID, 'unrelated')), slowState(['audio_in']));
     });
 
-    expect(audioRenders.length).toBeGreaterThan(initialAudioRenders);
-    expect(videoRenders.length).toBe(initialVideoRenders);
+    expect(audioRenders.length).toBe(audioRendersAfterMatchingUpdate);
+    expect(videoRenders.length).toBe(videoRendersAfterMatchingUpdate);
   });
 
   it('warns on matching pins, ignores nonmatching pins, and clears on recovery', () => {

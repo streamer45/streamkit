@@ -364,12 +364,11 @@ describe('buildEdgesFromConnections', () => {
 
     expect(designEdges[0]?.data).toBeUndefined();
     expect(monitorEdges[0]?.data).toEqual({
-      monitorAlertContext: {
-        ...monitorContext,
-        sourceHandle: 'out',
-        targetHandle: 'in',
-      },
+      monitorAlertContext: monitorContext,
     });
+    expect((monitorEdges[0]?.data as { monitorAlertContext?: unknown })?.monitorAlertContext).toBe(
+      monitorContext
+    );
   });
 
   it('produces stable ids regardless of input ordering', () => {

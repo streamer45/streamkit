@@ -26,8 +26,6 @@ export type SlowTimeoutDetails = {
 export type MonitorEdgeAlertContext = {
   sessionId: string;
   connections: Connection[];
-  sourceHandle?: string;
-  targetHandle?: string;
 };
 
 export const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -122,13 +120,7 @@ export const buildEdgesFromConnections = (
         targetHandle: conn.to_pin,
       };
       if (monitorAlertContext) {
-        edge.data = {
-          monitorAlertContext: {
-            ...monitorAlertContext,
-            sourceHandle: conn.from_pin,
-            targetHandle: conn.to_pin,
-          },
-        };
+        edge.data = { monitorAlertContext };
       }
       return edge;
     });

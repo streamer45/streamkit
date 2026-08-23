@@ -45,29 +45,6 @@ type SlowInputDetailsAtom = Atom<SlowTimeoutDetails | null>;
 type AlertEdge = Pick<Edge, 'source' | 'sourceHandle' | 'target' | 'targetHandle'>;
 
 const nullSlowInputDetailsAtom = atom<SlowTimeoutDetails | null>(null);
-const slowInputDetailsAtoms = new Map<string, SlowInputDetailsAtom>();
-
-function getSlowInputDetailsAtom(
-  sessionId: string,
-  targetNode: string,
-  targetHandle: string
-): SlowInputDetailsAtom {
-  const key = `${sessionId}\u0000${targetNode}\u0000${targetHandle}`;
-  const existing = slowInputDetailsAtoms.get(key);
-  if (existing) return existing;
-
-  const selected = selectAtom(
-    nodeStateAtom(nodeKey(sessionId, targetNode)),
-    (state) => {
-      const details = extractSlowTimeoutDetailsFromNodeState(state);
-      if (!details || !details.slowPins.includes(targetHandle)) return null;
-      return details;
-    },
-    deepEqual
-  );
-  slowInputDetailsAtoms.set(key, selected);
-  return selected;
-}
 
 function buildSlowInputTooltipLines(
   edge: AlertEdge,
@@ -113,17 +90,20 @@ export function useSlowInputAlert(
   edge: AlertEdge,
   monitorAlertContext: MonitorEdgeAlertContext | undefined
 ): TypedEdgeAlert | null {
-  const detailsAtom = React.useMemo(
-    () =>
-      monitorAlertContext
-        ? getSlowInputDetailsAtom(
-            monitorAlertContext.sessionId,
-            edge.target,
-            edge.targetHandle ?? ''
-          )
-        : nullSlowInputDetailsAtom,
-    [edge.target, edge.targetHandle, monitorAlertContext]
-  );
+  const sessionId = monitorAlertContext?.sessionId;
+  const targetHandle = edge.targetHandle ?? '';
+  const detailsAtom = React.useMemo<SlowInputDetailsAtom>(() => {
+    if (!sessionId) return nullSlowInputDetailsAtom;
+    return selectAtom(
+      nodeStateAtom(nodeKey(sessionId, edge.target)),
+      (state) => {
+        const details = extractSlowTimeoutDetailsFromNodeState(state);
+        if (!details || !details.slowPins.includes(targetHandle)) return null;
+        return details;
+      },
+      deepEqual
+    );
+  }, [edge.target, sessionId, targetHandle]);
   const details = useAtomValue(detailsAtom);
   return monitorAlertContext
     ? buildSlowInputAlert(edge, details, monitorAlertContext.connections)
@@ -192,6 +172,8 @@ const TypedEdge: React.FC<EdgeProps> = ({
   data,
   source,
   target,
+  sourceHandleId,
+  targetHandleId,
 }) => {
   const [edgePath, labelX, labelY] = getBezierPath({
     sourceX,
@@ -208,9 +190,9 @@ const TypedEdge: React.FC<EdgeProps> = ({
   const dynamicAlert = useSlowInputAlert(
     {
       source,
-      sourceHandle: monitorAlertContext?.sourceHandle,
+      sourceHandle: sourceHandleId,
       target,
-      targetHandle: monitorAlertContext?.targetHandle,
+      targetHandle: targetHandleId,
     },
     monitorAlertContext
   );
