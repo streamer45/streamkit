@@ -701,6 +701,61 @@ pub fn rgba8_to_nv12_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     }
 }
 
+/// Repack an NV12 buffer (Y + interleaved UV) to I420 (Y + planar U + V),
+/// writing into `out`.
+///
+/// This is a lossless plane rearrangement — the Y plane is copied verbatim
+/// and the interleaved UV plane is split into separate U and V planes.  No
+/// colour-space math is involved.
+///
+/// The caller must ensure `out` has length >=
+/// `w * h + 2 * ceil(w/2) * ceil(h/2)` (same total size as the input).
+pub fn nv12_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
+    let w = width as usize;
+    let h = height as usize;
+    let y_size = w * h;
+    let chroma_w = w.div_ceil(2);
+    let chroma_h = h.div_ceil(2);
+    let chroma_size = chroma_w * chroma_h;
+
+    out[..y_size].copy_from_slice(&data[..y_size]);
+
+    let interleaved = &data[y_size..y_size + 2 * chroma_size];
+    let (u_plane, v_plane) = out[y_size..y_size + 2 * chroma_size].split_at_mut(chroma_size);
+    for (i, uv) in interleaved.chunks_exact(2).enumerate() {
+        u_plane[i] = uv[0];
+        v_plane[i] = uv[1];
+    }
+}
+
+/// Repack an I420 buffer (Y + planar U + V) to NV12 (Y + interleaved UV),
+/// writing into `out`.
+///
+/// This is a lossless plane rearrangement — the Y plane is copied verbatim
+/// and the U and V planes are interleaved into a single UV plane.  No
+/// colour-space math is involved.
+///
+/// The caller must ensure `out` has length >=
+/// `w * h + ceil(w/2) * 2 * ceil(h/2)` (same total size as the input).
+pub fn i420_to_nv12_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
+    let w = width as usize;
+    let h = height as usize;
+    let y_size = w * h;
+    let chroma_w = w.div_ceil(2);
+    let chroma_h = h.div_ceil(2);
+    let chroma_size = chroma_w * chroma_h;
+
+    out[..y_size].copy_from_slice(&data[..y_size]);
+
+    let u_plane = &data[y_size..y_size + chroma_size];
+    let v_plane = &data[y_size + chroma_size..y_size + 2 * chroma_size];
+    let interleaved = &mut out[y_size..y_size + 2 * chroma_size];
+    for (i, uv) in interleaved.chunks_exact_mut(2).enumerate() {
+        uv[0] = u_plane[i];
+        uv[1] = v_plane[i];
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -858,6 +913,87 @@ mod tests {
 
         for px in rgba_out.chunks_exact(4) {
             assert_eq!(px[3], 255, "alpha should always be 255");
+        }
+    }
+
+    // --- NV12 ↔ I420 repack tests ---
+
+    fn make_checkerboard_rgba(w: u32, h: u32, a: [u8; 4], b: [u8; 4]) -> Vec<u8> {
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        for row in 0..h as usize {
+            for col in 0..w as usize {
+                let px = if (row + col) % 2 == 0 { a } else { b };
+                buf[(row * w as usize + col) * 4..(row * w as usize + col) * 4 + 4]
+                    .copy_from_slice(&px);
+            }
+        }
+        buf
+    }
+
+    #[test]
+    fn nv12_i420_repack_round_trip_is_lossless() {
+        // Odd dimensions exercise the ceil(w/2)/ceil(h/2) chroma boundary
+        // handling; a checkerboard exercises per-2×2 chroma averaging.
+        for (w, h) in [(4u32, 4u32), (5, 5), (7, 3), (6, 4)] {
+            let rgba = make_checkerboard_rgba(w, h, [255, 0, 0, 255], [0, 0, 255, 255]);
+            let layout = VideoLayout::packed(w, h, PixelFormat::Nv12);
+            let mut nv12 = vec![0u8; layout.total_bytes()];
+            rgba8_to_nv12_buf(&rgba, w, h, &mut nv12);
+
+            let mut i420 = vec![0u8; layout.total_bytes()];
+            nv12_to_i420_buf(&nv12, w, h, &mut i420);
+
+            let mut nv12_back = vec![0u8; layout.total_bytes()];
+            i420_to_nv12_buf(&i420, w, h, &mut nv12_back);
+
+            assert_eq!(nv12, nv12_back, "NV12→I420→NV12 must be lossless at {w}x{h}");
+        }
+    }
+
+    #[test]
+    fn nv12_to_i420_matches_direct_rgba_conversion() {
+        // Converting RGBA→NV12→I420 must yield the exact same planes as
+        // RGBA→I420 directly (the repack is pure plane rearrangement).
+        for (w, h) in [(4u32, 4u32), (5, 5), (7, 3)] {
+            let rgba = make_checkerboard_rgba(w, h, [10, 200, 30, 255], [240, 40, 180, 255]);
+            let layout = VideoLayout::packed(w, h, PixelFormat::I420);
+
+            let mut nv12 = vec![0u8; layout.total_bytes()];
+            rgba8_to_nv12_buf(&rgba, w, h, &mut nv12);
+            let mut i420_from_nv12 = vec![0u8; layout.total_bytes()];
+            nv12_to_i420_buf(&nv12, w, h, &mut i420_from_nv12);
+
+            let mut i420_direct = vec![0u8; layout.total_bytes()];
+            rgba8_to_i420_buf(&rgba, w, h, &mut i420_direct);
+
+            assert_eq!(i420_from_nv12, i420_direct, "plane mismatch at {w}x{h}");
+        }
+    }
+
+    #[test]
+    fn i420_round_trip_checkerboard_odd_dimensions() {
+        // Chroma-subsampling boundary coverage (#509): mixed-colour 2×2
+        // blocks average U/V, so round-trip pixels land on the block mean.
+        for (w, h) in [(5u32, 5u32), (7, 3)] {
+            let rgba_in = make_checkerboard_rgba(w, h, [200, 60, 60, 255], [60, 60, 200, 255]);
+            let layout = VideoLayout::packed(w, h, PixelFormat::I420);
+            let mut yuv = vec![0u8; layout.total_bytes()];
+            rgba8_to_i420_buf(&rgba_in, w, h, &mut yuv);
+
+            let mut rgba_out = vec![0u8; (w * h * 4) as usize];
+            i420_to_rgba8_buf(&yuv, w, h, &mut rgba_out);
+
+            // Luma is per-pixel, so each output pixel must stay closer to
+            // its own input colour than to the opposite checker colour.
+            for (i, (px_in, px_out)) in
+                rgba_in.chunks_exact(4).zip(rgba_out.chunks_exact(4)).enumerate()
+            {
+                let dy = (i16::from(px_in[0]) - i16::from(px_out[0])).abs()
+                    + (i16::from(px_in[1]) - i16::from(px_out[1])).abs()
+                    + (i16::from(px_in[2]) - i16::from(px_out[2])).abs();
+                assert!(dy < 3 * 90, "pixel {i} drifted too far at {w}x{h}: {dy}");
+                assert_eq!(px_out[3], 255);
+            }
         }
     }
 
