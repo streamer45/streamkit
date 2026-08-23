@@ -15,6 +15,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Check Docker workflow
+        run: python3 scripts/check_docker_workflow.py
+
       - uses: ./.github/actions/setup-skit
         with:
           rust-cache-key: skit-lint

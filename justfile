@@ -351,6 +351,10 @@ lint-ui: install-ui
     @echo "Linting UI..."
     @bun run lint
 
+# Validate Docker workflow builder and cache isolation
+check-docker-workflow:
+    @python3 scripts/check_docker_workflow.py
+
 # Auto-fix UI code formatting and linting issues
 [working-directory: 'ui']
 fix-ui: install-ui
@@ -538,7 +542,7 @@ build: build-skit build-ui build-plugins
 test: test-skit test-ui
 
 # Lint all code
-lint: lint-skit lint-ui lint-plugins check-license-headers
+lint: lint-skit lint-ui lint-plugins check-license-headers check-docker-workflow
 
 # Start full development environment (skit + frontend with hot reload)
 dev: install-ui

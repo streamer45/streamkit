@@ -52,6 +52,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Set up Docker Buildx
+        id: buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GitHub Container Registry
@@ -85,15 +86,19 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Prepare CPU build cache
+        run: mkdir -p /mnt/docker-cache/cpu
+
       - name: Build and push CPU image
         uses: docker/build-push-action@v5
         with:
+          builder: ${{ steps.buildx.outputs.name }}
           context: .
           file: ./Dockerfile
           push: ${{ github.event_name == 'push' || inputs.push }}
           tags: ${{ steps.meta.outputs.tags }}
-          cache-from: type=local,src=/mnt/docker-cache
-          cache-to: type=local,dest=/mnt/docker-cache,mode=max
+          cache-from: type=local,src=/mnt/docker-cache/cpu
+          cache-to: type=local,dest=/mnt/docker-cache/cpu,mode=max
           platforms: linux/amd64
           provenance: false
 
@@ -109,6 +114,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Set up Docker Buildx
+        id: buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GitHub Container Registry
@@ -142,15 +148,19 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Prepare GPU build cache
+        run: mkdir -p /mnt/docker-cache/gpu
+
       - name: Build and push GPU image
         uses: docker/build-push-action@v5
         with:
+          builder: ${{ steps.buildx.outputs.name }}
           context: .
           file: ./Dockerfile.gpu
           push: ${{ github.event_name == 'push' || inputs.push }}
           tags: ${{ steps.meta.outputs.tags }}
-          cache-from: type=local,src=/mnt/docker-cache
-          cache-to: type=local,dest=/mnt/docker-cache,mode=max
+          cache-from: type=local,src=/mnt/docker-cache/gpu
+          cache-to: type=local,dest=/mnt/docker-cache/gpu,mode=max
           platforms: linux/amd64
           provenance: false
 
@@ -166,6 +176,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Set up Docker Buildx
+        id: buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GitHub Container Registry
@@ -199,14 +210,18 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Prepare Demo build cache
+        run: mkdir -p /mnt/docker-cache/demo
+
       - name: Build and push Demo image
         uses: docker/build-push-action@v5
         with:
+          builder: ${{ steps.buildx.outputs.name }}
           context: .
           file: ./Dockerfile.demo
           push: ${{ github.event_name == 'push' || inputs.push }}
           tags: ${{ steps.meta.outputs.tags }}
-          cache-from: type=local,src=/mnt/docker-cache
-          cache-to: type=local,dest=/mnt/docker-cache,mode=max
+          cache-from: type=local,src=/mnt/docker-cache/demo
+          cache-to: type=local,dest=/mnt/docker-cache/demo,mode=max
           platforms: linux/amd64
           provenance: false
