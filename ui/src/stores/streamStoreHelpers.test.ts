@@ -996,7 +996,10 @@ describe('performConnect', () => {
     const catalog = createMockSignal<object | undefined>(
       catalogReady ? { ready: true } : undefined
     );
-    const audioEncoderInputs: { enabled?: { peek(): boolean } }[] = [];
+    const audioEncoderInputs: {
+      enabled?: { peek(): boolean };
+      codec?: { mime: string; usedtx?: boolean };
+    }[] = [];
 
     asMock(Publish.Source.Microphone).mockImplementation(function () {
       return { out: { source: micSource }, close: vi.fn() };
@@ -1012,7 +1015,10 @@ describe('performConnect', () => {
     });
     asMock(Publish.Audio.Encoder).mockImplementation(function (
       _name: string,
-      inputs: { enabled?: { peek(): boolean } }
+      inputs: {
+        enabled?: { peek(): boolean };
+        codec?: { mime: string; usedtx?: boolean };
+      }
     ) {
       audioEncoderInputs.push(inputs);
       return { close: vi.fn() };
@@ -1143,6 +1149,7 @@ describe('performConnect', () => {
     // desync caused by VP9 encoder startup).
     expect(audioEncoderInputs).toHaveLength(1);
     expect(audioEncoderInputs[0]?.enabled?.peek()).toBe(true);
+    expect(audioEncoderInputs[0]?.codec).toEqual({ mime: 'opus', usedtx: false });
   });
 
   it('sets micStatus to requesting when mic source is initially unavailable', async () => {

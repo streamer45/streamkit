@@ -745,6 +745,7 @@ function createPublishEncoders(
           broadcast,
           enabled: audioEnabled,
           source: microphone.source,
+          codec: { mime: 'opus', usedtx: false },
         }),
       };
     }
