@@ -87,7 +87,7 @@ import {
 import { deepMergeSchemas, validateValue } from '@/utils/jsonSchema';
 import type { JsonSchema, JsonSchemaProperty } from '@/utils/jsonSchema';
 import { viewsLogger } from '@/utils/logger';
-import { buildMonitorTopologyKey } from '@/utils/monitorTopology';
+import { buildMonitorTopologyKey, resolveMonitorNodePosition } from '@/utils/monitorTopology';
 import {
   buildEdgesFromConnections,
   buildNodeObject,
@@ -756,18 +756,7 @@ const MonitorViewContent: React.FC = () => {
   );
 
   const prevTopoKeyForTopologyRef = useRef<string>('');
-
-  const resolveNodePosition = useCallback(
-    (
-      nodeName: string,
-      prevPositions: Map<string, { x: number; y: number }>,
-      savedPositions: Record<string, { x: number; y: number }>
-    ): { position: { x: number; y: number } } => {
-      const pos = prevPositions.get(nodeName) ?? savedPositions[nodeName];
-      return { position: pos ?? { x: 0, y: 0 } };
-    },
-    []
-  );
+  const topologySessionIdRef = useRef<string | null>(null);
 
   const reconstructDynamicInputs = useCallback(
     (
@@ -946,6 +935,8 @@ const MonitorViewContent: React.FC = () => {
       return;
     }
     prevTopoKeyForTopologyRef.current = topoKey;
+    const reusePreviousPositions = topologySessionIdRef.current === selectedSessionId;
+    topologySessionIdRef.current = selectedSessionId;
 
     if (!pipeline && draftNodes.size === 0) {
       viewsLogger.debug('Topology effect: No pipeline, clearing nodes');
@@ -976,7 +967,12 @@ const MonitorViewContent: React.FC = () => {
       const apiNode = pipeline!.nodes[nodeName];
       if (!apiNode) continue;
 
-      const { position: pos } = resolveNodePosition(nodeName, prevPositions, savedPositions);
+      const pos = resolveMonitorNodePosition(
+        nodeName,
+        reusePreviousPositions,
+        prevPositions,
+        savedPositions
+      );
 
       const nodeState =
         (selectedSessionId
@@ -1029,7 +1025,9 @@ const MonitorViewContent: React.FC = () => {
       const draftBaseOutputs = draftDef?.outputs ?? [];
       const draftFinalInputs = draftBaseInputs;
       const draftFinalOutputs = draftBaseOutputs;
-      const draftPos = prevPositions.get(draftId) ?? savedPositions[draftId] ?? draft.position;
+      const draftPos =
+        (reusePreviousPositions ? prevPositions.get(draftId) : savedPositions[draftId]) ??
+        draft.position;
       const node = buildNodeObject({
         nodeName: draftId,
         apiNode: {
@@ -1089,7 +1087,6 @@ const MonitorViewContent: React.FC = () => {
     selectedSessionId,
     getNodePositions,
     defByKind,
-    resolveNodePosition,
     resolveDynamicPins,
     stableOnParamChange,
     stableOnConfigChange,
