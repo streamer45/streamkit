@@ -436,24 +436,9 @@ impl PermissionsConfig {
         )
     }
 
-    /// Get the default role permissions
-    #[allow(dead_code)]
-    pub fn get_default(&self) -> Permissions {
-        self.get_role(&self.default_role)
-    }
-
     /// Check if we can accept a new session (global limit check)
     pub const fn can_accept_session(&self, current_count: usize) -> bool {
         match self.max_concurrent_sessions {
-            None => true,
-            Some(max) => current_count < max,
-        }
-    }
-
-    /// Check if we can accept a new oneshot pipeline (global limit check)
-    #[allow(dead_code)]
-    pub const fn can_accept_oneshot(&self, current_count: usize) -> bool {
-        match self.max_concurrent_oneshots {
             None => true,
             Some(max) => current_count < max,
         }
@@ -542,15 +527,6 @@ mod tests {
         assert!(config.can_accept_session(9));
         assert!(!config.can_accept_session(10));
         assert!(!config.can_accept_session(11));
-    }
-
-    #[test]
-    fn test_global_oneshot_limits() {
-        let config = PermissionsConfig { max_concurrent_oneshots: Some(5), ..Default::default() };
-
-        assert!(config.can_accept_oneshot(0));
-        assert!(config.can_accept_oneshot(4));
-        assert!(!config.can_accept_oneshot(5));
     }
 
     #[test]
