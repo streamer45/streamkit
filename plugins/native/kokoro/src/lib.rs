@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 mod config;
-mod ffi;
 mod kokoro_node;
 
 use kokoro_node::KokoroTtsNode;

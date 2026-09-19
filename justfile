@@ -413,6 +413,7 @@ lint-plugins:
     @cd plugins/native/slint && cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
     @cd plugins/native/aac-encoder && cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
     @cd plugins/native/servo && cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
+    @cd plugins/native/common && cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --all-targets --all-features -- -D warnings
     @echo "✓ All native plugins passed linting"
 
 # Auto-fix formatting and linting issues in native plugins
@@ -430,6 +431,7 @@ fix-plugins:
     @cd plugins/native/slint && cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @cd plugins/native/aac-encoder && cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @cd plugins/native/servo && cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/common && cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged --all-targets --all-features -- -D warnings
     @echo "✓ All native plugins fixed"
 
 # --- Profiling ---

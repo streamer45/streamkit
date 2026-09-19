@@ -93,6 +93,9 @@ def main() -> int:
     for plugin_dir in sorted(plugins_root.iterdir()):
         if not plugin_dir.is_dir():
             continue
+        if plugin_dir.name == "common":
+            # Shared support crate, not a plugin
+            continue
         # Search order: plugin.yml, plugin.yaml, then deprecated marketplace.yml/yaml
         metadata_path = None
         is_deprecated = False

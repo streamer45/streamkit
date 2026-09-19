@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 mod config;
-mod ffi;
 mod matcha_node;
 
 use matcha_node::MatchaTtsNode;

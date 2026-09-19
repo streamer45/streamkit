@@ -5,7 +5,6 @@
 #![allow(clippy::cognitive_complexity)] // Complex TTS initialization
 
 mod config;
-mod ffi;
 mod piper_node;
 
 use piper_node::PiperTtsNode;

@@ -3,26 +3,22 @@
 # SPDX-License-Identifier: MPL-2.0
 
 [package]
-name = "matcha-plugin-native"
-version = "0.3.0"
+name = "streamkit-plugin-native-common"
+version = "0.1.0"
 edition = "2021"
 license = "MPL-2.0"
+description = "Shared FFI bindings and model wrappers for StreamKit native plugins"
+publish = false
 
-[lib]
-name = "matcha"
-crate-type = ["cdylib"]
+[features]
+default = []
+# Silero VAD wrapper (ONNX Runtime); kept optional so TTS plugins that only
+# need the sherpa-onnx FFI don't pay for the ort/ndarray dependency tree.
+silero-vad = ["dep:ort", "dep:ndarray"]
 
 [dependencies]
-streamkit-plugin-sdk-native = { path = "../../../sdks/plugin-sdk/native" }
-streamkit-plugin-native-common = { path = "../common" }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-unicode-segmentation = "1.10"
-tracing = "0.1"
-once_cell = "1.20"
-
-[build-dependencies]
-cc = "1.0"
+ort = { version = "=2.0.0-rc.10", optional = true }
+ndarray = { version = "0.16", optional = true }
 
 [lints.clippy]
 # Categories
