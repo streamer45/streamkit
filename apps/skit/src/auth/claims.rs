@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 pub const AUD_API: &str = "skit-api";
 
 /// Audience value for MoQ tokens.
-#[allow(dead_code)]
+#[cfg(feature = "moq")]
 pub const AUD_MOQ: &str = "skit-moq";
 
 /// JWT claims for API tokens (HTTP API and WebSocket control plane).
@@ -79,8 +79,8 @@ impl ApiClaims {
 /// - `[""]` (empty string in array) = all broadcasts allowed
 /// - `[]` (empty array) = no broadcasts allowed
 /// - `["foo", "bar"]` = broadcasts starting with "foo" or "bar" allowed
+#[cfg(feature = "moq")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct MoqClaims {
     /// Must be [`AUD_MOQ`].
     pub aud: String,
@@ -105,7 +105,7 @@ pub struct MoqClaims {
     pub jti: String,
 }
 
-#[allow(dead_code)]
+#[cfg(feature = "moq")]
 impl MoqClaims {
     /// Validate claims structure (not cryptographic verification).
     ///
@@ -141,8 +141,8 @@ pub enum ClaimsValidationError {
     #[error("Missing role claim")]
     MissingRole,
 
+    #[cfg(feature = "moq")]
     #[error("Missing root claim")]
-    #[allow(dead_code)]
     MissingRoot,
 }
 
@@ -163,7 +163,7 @@ mod tests {
         assert!(valid.validate().is_ok());
 
         // Wrong audience
-        let wrong_aud = ApiClaims { aud: AUD_MOQ.to_string(), ..valid.clone() };
+        let wrong_aud = ApiClaims { aud: "skit-moq".to_string(), ..valid.clone() };
         assert!(matches!(wrong_aud.validate(), Err(ClaimsValidationError::InvalidAudience { .. })));
 
         // Missing jti
@@ -175,6 +175,7 @@ mod tests {
         assert!(matches!(no_role.validate(), Err(ClaimsValidationError::MissingRole)));
     }
 
+    #[cfg(feature = "moq")]
     #[test]
     fn test_moq_claims_validation() {
         let valid = MoqClaims {
