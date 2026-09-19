@@ -23,9 +23,6 @@ use streamkit_core::moq_gateway::MoqAuthChecker;
 /// Verified MoQ auth context with permissions reduced by connection path depth.
 #[derive(Debug, Clone)]
 pub struct MoqAuthContext {
-    /// The actual connection path (after root validation)
-    #[allow(dead_code)]
-    pub root: PathOwned,
     /// Reduced subscribe permissions (broadcast paths relative to connection)
     pub subscribe: Vec<PathOwned>,
     /// Reduced publish permissions (broadcast paths relative to connection)
@@ -86,7 +83,7 @@ pub fn verify_moq_token(
     let subscribe = claims.subscribe.iter().filter_map(|p| reduce_permission(p, &suffix)).collect();
     let publish = claims.publish.iter().filter_map(|p| reduce_permission(p, &suffix)).collect();
 
-    Ok(MoqAuthContext { root: url_path.to_owned(), subscribe, publish })
+    Ok(MoqAuthContext { subscribe, publish })
 }
 
 /// Reduce a permission path based on connection suffix.
