@@ -58,7 +58,6 @@ use tracing::{debug, info};
 
 /// Errors that can occur during authentication.
 #[derive(Debug, thiserror::Error)]
-#[allow(dead_code)]
 pub enum AuthError {
     #[error("Authentication is disabled")]
     Disabled,
@@ -77,15 +76,6 @@ pub enum AuthError {
 
     #[error("Token not found in metadata store (not minted by this server)")]
     UnknownToken,
-
-    #[error("Token has been revoked")]
-    Revoked,
-
-    #[error("Token expired")]
-    Expired,
-
-    #[error("Invalid audience: expected {expected}, got {actual}")]
-    InvalidAudience { expected: String, actual: String },
 
     #[error("TTL exceeds maximum allowed ({max} seconds)")]
     TtlExceedsMax { max: u64 },
@@ -215,7 +205,7 @@ impl AuthState {
     }
 
     /// Returns false if auth is disabled or the revocation store is unavailable.
-    #[allow(dead_code)]
+    #[cfg(feature = "moq")]
     pub fn is_revoked(&self, token_hash: &str) -> bool {
         self.revocation_store.as_ref().is_some_and(|store| store.is_revoked(token_hash))
     }
@@ -224,7 +214,6 @@ impl AuthState {
         self.token_metadata_store.as_ref()
     }
 
-    #[allow(dead_code)]
     pub fn key_provider(&self) -> Option<&Arc<dyn KeyProvider>> {
         self.key_provider.as_ref()
     }
@@ -472,7 +461,6 @@ impl AuthState {
     }
 
     /// Whether auth should be enabled based on config and bind address.
-    #[allow(dead_code)]
     pub const fn should_enable(config: &AuthConfig, bind_addr: &std::net::SocketAddr) -> bool {
         match config.mode {
             AuthMode::Auto => !bind_addr.ip().is_loopback(),

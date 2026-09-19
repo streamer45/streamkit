@@ -2041,11 +2041,7 @@ pub fn create_app(
 pub async fn start_server(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     let addr: SocketAddr = config.server.address.parse()?;
 
-    let auth_enabled = match config.auth.mode {
-        crate::config::AuthMode::Auto => !addr.ip().is_loopback(),
-        crate::config::AuthMode::Enabled => true,
-        crate::config::AuthMode::Disabled => false,
-    };
+    let auth_enabled = crate::auth::AuthState::should_enable(&config.auth, &addr);
 
     // Deployment footgun: cookie-based auth without TLS.
     //
