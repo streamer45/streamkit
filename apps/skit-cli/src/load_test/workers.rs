@@ -85,8 +85,6 @@ pub async fn oneshot_worker(
 
 pub struct DynamicSession {
     pub session_id: String,
-    #[allow(dead_code)]
-    pub pipeline_path: String,
     pub tunable_node_ids: Vec<String>,
 }
 
@@ -448,7 +446,6 @@ pub async fn session_creator_worker(
                         let _ = session_tx
                             .send(DynamicSession {
                                 session_id,
-                                pipeline_path: pipeline_path.clone(),
                                 tunable_node_ids,
                             })
                             .await;
