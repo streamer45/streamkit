@@ -10,7 +10,6 @@
 mod config;
 mod ffi;
 mod sensevoice_node;
-mod vad;
 
 use sensevoice_node::SenseVoiceNode;
 use streamkit_plugin_sdk_native::prelude::*;

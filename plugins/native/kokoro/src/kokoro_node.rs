@@ -5,7 +5,6 @@
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
-use std::ptr;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -13,8 +12,8 @@ use streamkit_plugin_sdk_native::prelude::*;
 use streamkit_plugin_sdk_native::streamkit_core::types::{AudioFormat, SampleFormat};
 
 use crate::config::KokoroTtsConfig;
-use crate::ffi;
-use crate::sentence_splitter::SentenceSplitter;
+use streamkit_plugin_native_common::sherpa_onnx as ffi;
+use streamkit_plugin_sdk_native::streamkit_core::text::SentenceSplitter;
 
 /// GPU availability status
 /// 0 = not checked, 1 = available, 2 = not available
@@ -361,7 +360,7 @@ impl NativeProcessorNode for KokoroTtsNode {
             plugin_info!(logger, "❌ CACHE MISS - loading model (5 sec)");
 
             // Try to create the engine with the requested execution provider
-            let engine_result = unsafe { create_tts_engine(&logger, &model_dir, &config) };
+            let engine_result = create_tts_engine(&logger, &model_dir, &config);
 
             let engine_ptr = match engine_result {
                 Ok(e) => e,
@@ -380,7 +379,7 @@ impl NativeProcessorNode for KokoroTtsNode {
                     let mut cpu_config = config.clone();
                     cpu_config.execution_provider = "cpu".to_string();
 
-                    match unsafe { create_tts_engine(&logger, &model_dir, &cpu_config) } {
+                    match create_tts_engine(&logger, &model_dir, &cpu_config) {
                         Ok(e) => {
                             plugin_info!(
                                 logger,
@@ -695,7 +694,7 @@ impl KokoroTtsNode {
 }
 
 /// Create TTS engine using Sherpa-ONNX C API
-unsafe fn create_tts_engine(
+fn create_tts_engine(
     logger: &Logger,
     model_dir: &Path,
     config: &KokoroTtsConfig,
@@ -721,13 +720,13 @@ unsafe fn create_tts_engine(
         plugin_info!(logger, file = %path.display(), "File exists: {}", name);
     }
 
-    // Create C strings - keep them alive until after SherpaOnnxCreateOfflineTts call
+    // Create C strings - kept alive inside OfflineTtsConfig through create()
     plugin_info!(logger, "Creating CStrings for paths");
-    let model_cstr = path_to_cstring(&model_path)?;
-    let voices_cstr = path_to_cstring(&voices_path)?;
-    let tokens_cstr = path_to_cstring(&tokens_path)?;
-    let data_dir_cstr = path_to_cstring(&data_dir)?;
-    let dict_dir_cstr = path_to_cstring(&dict_dir)?;
+    let model_cstr = ffi::path_to_cstring(&model_path)?;
+    let voices_cstr = ffi::path_to_cstring(&voices_path)?;
+    let tokens_cstr = ffi::path_to_cstring(&tokens_path)?;
+    let data_dir_cstr = ffi::path_to_cstring(&data_dir)?;
+    let dict_dir_cstr = ffi::path_to_cstring(&dict_dir)?;
 
     let lexicon = format!("{},{}", lexicon_us.to_string_lossy(), lexicon_zh.to_string_lossy());
     plugin_info!(logger, lexicon = %lexicon, "Built lexicon string");
@@ -740,76 +739,7 @@ unsafe fn create_tts_engine(
     // Language field for Kokoro (empty = auto-detect)
     let lang_cstr = CString::new("").map_err(|e| format!("Invalid lang string: {e}"))?;
 
-    plugin_info!(logger, "All CStrings created, building config struct");
-
-    // Build config - match exact C API struct layout!
-    let tts_config = ffi::SherpaOnnxOfflineTtsConfig {
-        model: ffi::SherpaOnnxOfflineTtsModelConfig {
-            // VITS comes first in C API
-            vits: ffi::SherpaOnnxOfflineTtsVitsModelConfig {
-                model: ptr::null(),
-                lexicon: ptr::null(),
-                tokens: ptr::null(),
-                data_dir: ptr::null(),
-                noise_scale: 0.0,
-                noise_scale_w: 0.0,
-                length_scale: 1.0,
-                dict_dir: ptr::null(),
-            },
-            // Common model config fields
-            num_threads: config.num_threads,
-            debug: 0,
-            provider: provider_cstr.as_ptr(),
-            // Matcha placeholder (unused)
-            matcha: ffi::SherpaOnnxOfflineTtsMatchaModelConfig {
-                acoustic_model: ptr::null(),
-                vocoder: ptr::null(),
-                lexicon: ptr::null(),
-                tokens: ptr::null(),
-                data_dir: ptr::null(),
-                noise_scale: 0.0,
-                length_scale: 1.0,
-                dict_dir: ptr::null(),
-            },
-            // Kokoro config (what we actually use)
-            kokoro: ffi::SherpaOnnxOfflineTtsKokoroModelConfig {
-                model: model_cstr.as_ptr(),
-                voices: voices_cstr.as_ptr(),
-                tokens: tokens_cstr.as_ptr(),
-                data_dir: data_dir_cstr.as_ptr(),
-                length_scale: 1.0,
-                dict_dir: dict_dir_cstr.as_ptr(),
-                lexicon: lexicon_cstr.as_ptr(),
-                lang: lang_cstr.as_ptr(),
-            },
-            // Kitten placeholder (unused)
-            kitten: ffi::SherpaOnnxOfflineTtsKittenModelConfig {
-                model: ptr::null(),
-                voices: ptr::null(),
-                tokens: ptr::null(),
-                data_dir: ptr::null(),
-                length_scale: 1.0,
-            },
-            // Zipvoice placeholder (unused)
-            zipvoice: ffi::SherpaOnnxOfflineTtsZipvoiceModelConfig {
-                tokens: ptr::null(),
-                text_model: ptr::null(),
-                flow_matching_model: ptr::null(),
-                vocoder: ptr::null(),
-                data_dir: ptr::null(),
-                pinyin_dict: ptr::null(),
-                feat_scale: 0.0,
-                t_shift: 0.0,
-                target_rms: 0.0,
-                guidance_scale: 0.0,
-            },
-        },
-        // Use empty string for rules
-        rule_fsts: lang_cstr.as_ptr(),
-        max_num_sentences: 1,
-        rule_fars: lang_cstr.as_ptr(),
-        silence_scale: 1.0,
-    };
+    plugin_info!(logger, "All CStrings created, building config");
 
     plugin_info!(logger,
         model = %model_path.display(),
@@ -826,20 +756,26 @@ unsafe fn create_tts_engine(
     plugin_warn!(logger, "2. Likely cause: CUDA provider not available in this ONNX Runtime build");
     plugin_warn!(logger, "3. Or: CUDA version mismatch");
 
-    let tts = ffi::SherpaOnnxCreateOfflineTts(&raw const tts_config);
+    let tts = ffi::OfflineTtsConfig::kokoro(
+        provider_cstr,
+        config.num_threads,
+        false,
+        ffi::KokoroParams {
+            model: model_cstr,
+            voices: voices_cstr,
+            tokens: tokens_cstr,
+            data_dir: data_dir_cstr,
+            length_scale: 1.0,
+            dict_dir: dict_dir_cstr,
+            lexicon: lexicon_cstr,
+            lang: lang_cstr,
+        },
+    )
+    .create()?;
 
     plugin_info!(logger, "✓ SherpaOnnxCreateOfflineTts succeeded: ptr={:p}", tts);
-
-    if tts.is_null() {
-        return Err("Failed to create TTS engine".to_string());
-    }
-
     plugin_info!(logger, "TTS engine created successfully");
     Ok(tts)
-}
-
-fn path_to_cstring(path: &Path) -> Result<CString, String> {
-    CString::new(path.to_string_lossy().as_bytes()).map_err(|e| format!("Invalid path: {e}"))
 }
 
 impl Drop for KokoroTtsNode {

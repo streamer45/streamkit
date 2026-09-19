@@ -4,7 +4,6 @@
 
 mod config;
 mod model;
-mod sentence_splitter;
 mod supertonic_node;
 mod voice;
 

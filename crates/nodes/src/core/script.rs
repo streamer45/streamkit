@@ -679,6 +679,8 @@ impl ScriptNode {
     /// Returns:
     /// - Some(Packet) - Continue processing with this packet
     /// - None - Drop the packet
+    // Allow: `&self` is retained for method-call symmetry with `packet_to_js`,
+    // and `rquickjs::Value` is a cheap GC handle passed by value.
     #[allow(clippy::needless_pass_by_value, clippy::unused_self)]
     fn js_to_packet(
         &self,

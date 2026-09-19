@@ -15,51 +15,7 @@ use axum::http::{HeaderMap, StatusCode};
 pub struct AuthContext {
     pub claims: ApiClaims,
     pub role: String,
-    #[allow(dead_code)]
     pub permissions: Permissions,
-}
-
-#[allow(dead_code)]
-impl AuthContext {
-    /// JWT ID (used for revocation tracking).
-    pub fn jti(&self) -> &str {
-        &self.claims.jti
-    }
-
-    /// Subject (token holder identifier).
-    pub fn sub(&self) -> &str {
-        &self.claims.sub
-    }
-}
-
-/// Optional auth context — never fails; contains `None` when unauthenticated.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct MaybeAuth(pub Option<AuthContext>);
-
-#[allow(dead_code)]
-impl MaybeAuth {
-    pub const fn context(&self) -> Option<&AuthContext> {
-        self.0.as_ref()
-    }
-
-    pub const fn is_authenticated(&self) -> bool {
-        self.0.is_some()
-    }
-
-    #[allow(clippy::ref_option)]
-    pub const fn as_option(&self) -> &Option<AuthContext> {
-        &self.0
-    }
-
-    /// Unwrap or return an unauthorized error.
-    ///
-    /// # Errors
-    ///
-    /// Returns `(StatusCode::UNAUTHORIZED, ...)` if not authenticated.
-    pub fn require(self) -> Result<AuthContext, (StatusCode, String)> {
-        self.0.ok_or_else(|| (StatusCode::UNAUTHORIZED, "Authentication required".to_string()))
-    }
 }
 
 /// Extract token from Authorization header or cookie.
@@ -213,19 +169,5 @@ mod tests {
 
         let token = extract_token(&headers, &config);
         assert!(token.is_none());
-    }
-
-    #[test]
-    fn test_maybe_auth_require() {
-        let auth = MaybeAuth(None);
-        assert!(auth.require().is_err());
-
-        let ctx = AuthContext {
-            claims: ApiClaims::anonymous("admin"),
-            role: "admin".to_string(),
-            permissions: crate::permissions::Permissions::admin(),
-        };
-        let auth = MaybeAuth(Some(ctx));
-        assert!(auth.require().is_ok());
     }
 }

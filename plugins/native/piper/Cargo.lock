@@ -91,6 +91,7 @@ dependencies = [
  "once_cell",
  "serde",
  "serde_json",
+ "streamkit-plugin-native-common",
  "streamkit-plugin-sdk-native",
  "tracing",
  "unicode-segmentation",
@@ -242,6 +243,10 @@ dependencies = [
  "tracing",
  "ts-rs",
 ]
+
+[[package]]
+name = "streamkit-plugin-native-common"
+version = "0.1.0"
 
 [[package]]
 name = "streamkit-plugin-sdk-native"

@@ -16,7 +16,12 @@ metadata = json.loads(plugins_path.read_text())
 plugin_ids = [plugin["id"] for plugin in metadata.get("plugins", [])]
 
 native_root = pathlib.Path("plugins/native")
-native_dirs = [path.name for path in native_root.iterdir() if path.is_dir()]
+# Skip shared support crates that are not plugins
+native_dirs = [
+    path.name
+    for path in native_root.iterdir()
+    if path.is_dir() and path.name != "common"
+]
 
 missing = sorted(set(native_dirs) - set(plugin_ids))
 if missing:

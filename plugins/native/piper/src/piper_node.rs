@@ -5,14 +5,13 @@
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
-use std::ptr;
 use std::sync::Mutex;
 use streamkit_plugin_sdk_native::prelude::*;
 use streamkit_plugin_sdk_native::streamkit_core::types::{AudioFormat, SampleFormat};
 
 use crate::config::PiperTtsConfig;
-use crate::ffi;
-use crate::sentence_splitter::SentenceSplitter;
+use streamkit_plugin_native_common::sherpa_onnx as ffi;
+use streamkit_plugin_sdk_native::streamkit_core::text::SentenceSplitter;
 
 /// Wrapper for TTS engine pointer that implements Send/Sync
 /// SAFETY: We ensure thread-safe access through Mutex
@@ -39,7 +38,7 @@ static TTS_ENGINE_CACHE: std::sync::LazyLock<Mutex<HashMap<(String, i32), TtsEng
         // Only pre-load if model exists (don't fail plugin load if model missing)
         if model_dir.exists() {
             tracing::info!(model_dir = %model_dir.display(), "Warm loading TTS model");
-            match unsafe { create_tts_engine(&model_dir, &default_config) } {
+            match create_tts_engine(&model_dir, &default_config) {
                 Ok(engine) => {
                     let cache_key =
                         (model_dir.to_string_lossy().to_string(), default_config.num_threads);
@@ -207,7 +206,7 @@ impl NativeProcessorNode for PiperTtsNode {
                     "Creating new TTS engine"
                 );
 
-                let engine = unsafe { create_tts_engine(&model_dir, &config)? };
+                let engine = create_tts_engine(&model_dir, &config)?;
                 cache.insert(cache_key, TtsEnginePtr(engine));
                 engine
             }
@@ -366,7 +365,7 @@ impl PiperTtsNode {
 }
 
 /// Create TTS engine using Sherpa-ONNX C API
-unsafe fn create_tts_engine(
+fn create_tts_engine(
     model_dir: &Path,
     config: &PiperTtsConfig,
 ) -> Result<*mut ffi::SherpaOnnxOfflineTts, String> {
@@ -415,89 +414,17 @@ unsafe fn create_tts_engine(
         tracing::info!(file = %path.display(), "File exists: {}", name);
     }
 
-    // Create C strings - keep them alive until after SherpaOnnxCreateOfflineTts call
+    // Create C strings - kept alive inside OfflineTtsConfig through create()
     tracing::info!("Creating CStrings for paths");
-    let model_cstr = path_to_cstring(&model_path)?;
-    let tokens_cstr = path_to_cstring(&tokens_path)?;
-    let data_dir_cstr = path_to_cstring(&data_dir)?;
+    let model_cstr = ffi::path_to_cstring(&model_path)?;
+    let tokens_cstr = ffi::path_to_cstring(&tokens_path)?;
+    let data_dir_cstr = ffi::path_to_cstring(&data_dir)?;
 
-    // IMPORTANT: Keep provider CStrings alive
-    // Allow: Hard-coded string literals are known to be valid C strings (no null bytes)
+    // Allow: Hard-coded string literal is a valid C string (no null bytes)
     #[allow(clippy::unwrap_used)]
     let provider_cpu_cstr = CString::new("cpu").unwrap();
-    #[allow(clippy::unwrap_used)]
-    let empty_cstr = CString::new("").unwrap();
 
-    tracing::info!("All CStrings created, building config struct");
-
-    // Build config - match exact C API struct layout!
-    let tts_config = ffi::SherpaOnnxOfflineTtsConfig {
-        model: ffi::SherpaOnnxOfflineTtsModelConfig {
-            // VITS config (what we actually use for Piper)
-            vits: ffi::SherpaOnnxOfflineTtsVitsModelConfig {
-                model: model_cstr.as_ptr(),
-                lexicon: ptr::null(),
-                tokens: tokens_cstr.as_ptr(),
-                data_dir: data_dir_cstr.as_ptr(),
-                noise_scale: config.noise_scale,
-                noise_scale_w: config.noise_scale_w,
-                length_scale: config.length_scale,
-                dict_dir: ptr::null(),
-            },
-            // Common model config fields
-            num_threads: config.num_threads,
-            debug: 1,
-            provider: provider_cpu_cstr.as_ptr(),
-            // Matcha placeholder (unused)
-            matcha: ffi::SherpaOnnxOfflineTtsMatchaModelConfig {
-                acoustic_model: ptr::null(),
-                vocoder: ptr::null(),
-                lexicon: ptr::null(),
-                tokens: ptr::null(),
-                data_dir: ptr::null(),
-                noise_scale: 0.0,
-                length_scale: 1.0,
-                dict_dir: ptr::null(),
-            },
-            // Kokoro placeholder (unused)
-            kokoro: ffi::SherpaOnnxOfflineTtsKokoroModelConfig {
-                model: ptr::null(),
-                voices: ptr::null(),
-                tokens: ptr::null(),
-                data_dir: ptr::null(),
-                length_scale: 1.0,
-                dict_dir: ptr::null(),
-                lexicon: ptr::null(),
-                lang: ptr::null(),
-            },
-            // Kitten placeholder (unused)
-            kitten: ffi::SherpaOnnxOfflineTtsKittenModelConfig {
-                model: ptr::null(),
-                voices: ptr::null(),
-                tokens: ptr::null(),
-                data_dir: ptr::null(),
-                length_scale: 1.0,
-            },
-            // Zipvoice placeholder (unused)
-            zipvoice: ffi::SherpaOnnxOfflineTtsZipvoiceModelConfig {
-                tokens: ptr::null(),
-                text_model: ptr::null(),
-                flow_matching_model: ptr::null(),
-                vocoder: ptr::null(),
-                data_dir: ptr::null(),
-                pinyin_dict: ptr::null(),
-                feat_scale: 0.0,
-                t_shift: 0.0,
-                target_rms: 0.0,
-                guidance_scale: 0.0,
-            },
-        },
-        // Use empty string for rules
-        rule_fsts: empty_cstr.as_ptr(),
-        max_num_sentences: 1,
-        rule_fars: empty_cstr.as_ptr(),
-        silence_scale: 1.0,
-    };
+    tracing::info!("All CStrings created, building config");
 
     tracing::info!(
         model = %model_path.display(),
@@ -506,20 +433,26 @@ unsafe fn create_tts_engine(
         "About to call SherpaOnnxCreateOfflineTts"
     );
 
-    let tts = ffi::SherpaOnnxCreateOfflineTts(&raw const tts_config);
+    let tts = ffi::OfflineTtsConfig::vits(
+        provider_cpu_cstr,
+        config.num_threads,
+        true,
+        ffi::VitsParams {
+            model: model_cstr,
+            lexicon: None,
+            tokens: tokens_cstr,
+            data_dir: data_dir_cstr,
+            noise_scale: config.noise_scale,
+            noise_scale_w: config.noise_scale_w,
+            length_scale: config.length_scale,
+            dict_dir: None,
+        },
+    )
+    .create()?;
 
     tracing::info!("SherpaOnnxCreateOfflineTts returned: ptr={:p}", tts);
-
-    if tts.is_null() {
-        return Err("Failed to create TTS engine".to_string());
-    }
-
     tracing::info!("TTS engine created successfully");
     Ok(tts)
-}
-
-fn path_to_cstring(path: &Path) -> Result<CString, String> {
-    CString::new(path.to_string_lossy().as_bytes()).map_err(|e| format!("Invalid path: {e}"))
 }
 
 impl Drop for PiperTtsNode {

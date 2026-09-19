@@ -4,8 +4,8 @@
 
 //! Silero VAD v6 wrapper for voice activity detection
 //!
-//! This module provides a lightweight Rust wrapper around the Silero VAD v6 ONNX model
-//! for detecting speech vs. silence in audio streams.
+//! A lightweight Rust wrapper around the Silero VAD v6 ONNX model for
+//! detecting speech vs. silence in audio streams, shared by the STT plugins.
 
 use ndarray::{Array1, Array2, Array3};
 use ort::session::{builder::GraphOptimizationLevel, Session};
@@ -31,6 +31,9 @@ impl SileroVAD {
     /// * `model_path` - Path to the silero_vad.onnx model file
     /// * `sample_rate` - Audio sample rate (8000 or 16000)
     /// * `threshold` - Speech probability threshold (0.0-1.0, default 0.5)
+    ///
+    /// # Errors
+    /// Returns `Err` if the sample rate is unsupported or the model fails to load.
     pub fn new(model_path: &str, sample_rate: u32, threshold: f32) -> Result<Self, String> {
         // Validate sample rate
         if sample_rate != 8000 && sample_rate != 16000 {
@@ -53,7 +56,7 @@ impl SileroVAD {
         Ok(Self { session, sample_rate, state, context, threshold })
     }
 
-    /// Process a 512-sample audio chunk and return speech probability
+    /// Process a 512-sample audio chunk
     ///
     /// Silero VAD v6 requires context from the previous frame for temporal continuity.
     /// The model expects [context_samples + window_samples] = [64 + 512] = 576 samples.
@@ -62,8 +65,12 @@ impl SileroVAD {
     /// * `audio` - Audio samples (exactly 512 samples)
     ///
     /// # Returns
-    /// Speech probability (0.0-1.0)
-    pub fn process_chunk(&mut self, audio: &[f32]) -> Result<f32, String> {
+    /// `(speech_probability, is_speech)` where `is_speech` applies the
+    /// configured threshold to the probability.
+    ///
+    /// # Errors
+    /// Returns `Err` if the chunk is not exactly 512 samples or inference fails.
+    pub fn process_chunk(&mut self, audio: &[f32]) -> Result<(f32, bool), String> {
         if audio.len() != 512 {
             return Err(format!("Silero VAD expects exactly 512 samples, got {}", audio.len()));
         }
@@ -114,38 +121,12 @@ impl SileroVAD {
         // Update context: save last 64 samples of current audio for next frame
         self.context.copy_from_slice(&audio[audio.len() - 64..]);
 
-        Ok(probability)
-    }
-
-    /// Check if audio chunk contains speech
-    ///
-    /// # Arguments
-    /// * `audio` - Audio samples (exactly 512 samples)
-    ///
-    /// # Returns
-    /// `true` if speech detected, `false` if silence
-    #[allow(dead_code)]
-    pub fn is_speech(&mut self, audio: &[f32]) -> Result<bool, String> {
-        let probability = self.process_chunk(audio)?;
-        Ok(probability >= self.threshold)
-    }
-
-    /// Reset VAD state (clears RNN state and context buffer)
-    #[allow(dead_code)]
-    pub fn reset(&mut self) {
-        self.state.fill(0.0);
-        self.context.fill(0.0);
+        Ok((probability, probability >= self.threshold))
     }
 
     /// Update speech threshold
     pub const fn set_threshold(&mut self, threshold: f32) {
         self.threshold = threshold.clamp(0.0, 1.0);
-    }
-
-    /// Get current threshold
-    #[allow(dead_code)]
-    pub const fn threshold(&self) -> f32 {
-        self.threshold
     }
 }
 
@@ -175,11 +156,12 @@ mod tests {
 
         // Test with silence (zeros)
         let silence = vec![0.0f32; 512];
-        let probability = vad.process_chunk(&silence).unwrap();
+        let (probability, is_speech) = vad.process_chunk(&silence).unwrap();
 
         println!("Silence probability: {}", probability);
         // Silence should have low probability
         assert!(probability < 0.5);
+        assert!(!is_speech);
     }
 
     #[test]
@@ -197,7 +179,7 @@ mod tests {
                 + 0.1 * (2.0 * std::f32::consts::PI * 2000.0 * t).sin();
         }
 
-        let probability = vad.process_chunk(&audio).unwrap();
+        let (probability, _) = vad.process_chunk(&audio).unwrap();
         println!("Synthetic speech probability: {}", probability);
     }
 
@@ -257,10 +239,10 @@ mod tests {
 
                 for (i, chunk) in samples.chunks(512).enumerate() {
                     if chunk.len() == 512 {
-                        let probability = vad.process_chunk(chunk).unwrap();
+                        let (probability, is_speech) = vad.process_chunk(chunk).unwrap();
                         probabilities.push(probability);
 
-                        if probability >= 0.5 {
+                        if is_speech {
                             speech_chunks += 1;
                         } else {
                             silence_chunks += 1;

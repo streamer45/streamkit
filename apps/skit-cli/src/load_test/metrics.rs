@@ -192,7 +192,6 @@ impl MetricsCollector {
         MetricsSnapshot {
             elapsed,
             total_ops,
-            total_success,
             total_failures,
             throughput,
             success_rate,
@@ -255,8 +254,6 @@ impl MetricsCollector {
 pub struct MetricsSnapshot {
     pub elapsed: Duration,
     pub total_ops: usize,
-    #[allow(dead_code)]
-    pub total_success: usize,
     pub total_failures: usize,
     pub throughput: f64,
     pub success_rate: f64,

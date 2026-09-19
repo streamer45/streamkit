@@ -49,8 +49,8 @@ pub struct CreateApiTokenRequest {
     #[serde(default)]
     pub ttl_secs: Option<u64>,
 }
+#[cfg(feature = "moq")]
 #[derive(Debug, Deserialize, Serialize)]
-#[allow(dead_code)]
 pub struct CreateMoqTokenRequest {
     pub root: String,
     #[serde(default)]

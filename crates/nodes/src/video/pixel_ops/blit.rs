@@ -103,7 +103,7 @@ pub fn scale_blit_rgba(
     src_height: u32,
     dst_rect: &BlitRect,
     opacity: f32,
-    #[allow(unused_variables)] src_opaque: bool,
+    src_opaque: bool,
     mirror_h: bool,
     mirror_v: bool,
     src_region: Option<(u32, u32, u32, u32)>,

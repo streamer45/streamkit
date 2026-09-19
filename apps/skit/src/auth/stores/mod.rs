@@ -44,10 +44,6 @@ pub enum AuthStoreError {
     #[error("Base64 decode error: {0}")]
     Base64(#[from] base64::DecodeError),
 
-    #[error("Key not found: {0}")]
-    #[allow(dead_code)]
-    KeyNotFound(String),
-
     #[error("Invalid file permissions on {path}: expected 0600, got {actual:o}")]
     InsecurePermissions { path: String, actual: u32 },
 
