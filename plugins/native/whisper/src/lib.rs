@@ -7,17 +7,15 @@
 //! This plugin provides high-performance CPU-based transcription with VAD-based
 //! segmentation for natural speech boundaries and zero chunking artifacts.
 
-mod vad;
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
+use streamkit_plugin_native_common::silero_vad::SileroVAD;
 use streamkit_plugin_sdk_native::prelude::*;
 use streamkit_plugin_sdk_native::streamkit_core::types::{
     AudioFormat, SampleFormat, TranscriptionData, TranscriptionSegment,
 };
-use vad::SileroVAD;
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
 };
@@ -414,11 +412,10 @@ impl NativeProcessorNode for WhisperPlugin {
                 while self.frame_buffer.len() >= 512 {
                     let vad_frame: Vec<f32> = self.frame_buffer.drain(..512).collect();
 
-                    let probability = self
+                    let (probability, is_speech) = self
                         .vad
                         .process_chunk(&vad_frame)
                         .map_err(|e| format!("VAD processing failed: {e}"))?;
-                    let is_speech = probability >= self.config.vad_threshold;
 
                     if is_speech {
                         // Speech detected

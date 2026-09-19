@@ -12,3 +12,5 @@
 //! `scripts/marketplace/build_official_plugins.sh`.
 
 pub mod sherpa_onnx;
+#[cfg(feature = "silero-vad")]
+pub mod silero_vad;

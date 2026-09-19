@@ -897,6 +897,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "streamkit-plugin-native-common"
+version = "0.1.0"
+dependencies = [
+ "ndarray",
+ "ort",
+]
+
+[[package]]
 name = "streamkit-plugin-sdk-native"
 version = "0.2.0"
 dependencies = [
@@ -1144,11 +1152,9 @@ dependencies = [
 name = "whisper-plugin-native"
 version = "0.3.0"
 dependencies = [
- "ndarray",
- "once_cell",
- "ort",
  "serde",
  "serde_json",
+ "streamkit-plugin-native-common",
  "streamkit-plugin-sdk-native",
  "tracing",
  "whisper-rs",

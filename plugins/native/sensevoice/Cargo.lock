@@ -621,11 +621,9 @@ name = "sensevoice-plugin-native"
 version = "0.3.0"
 dependencies = [
  "cc",
- "ndarray",
- "once_cell",
- "ort",
  "serde",
  "serde_json",
+ "streamkit-plugin-native-common",
  "streamkit-plugin-sdk-native",
  "tracing",
 ]
@@ -746,6 +744,14 @@ dependencies = [
  "tokio-util",
  "tracing",
  "ts-rs",
+]
+
+[[package]]
+name = "streamkit-plugin-native-common"
+version = "0.1.0"
+dependencies = [
+ "ndarray",
+ "ort",
 ]
 
 [[package]]

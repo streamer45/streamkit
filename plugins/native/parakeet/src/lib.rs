@@ -11,7 +11,6 @@
 mod config;
 mod ffi;
 mod parakeet_node;
-mod vad;
 
 use parakeet_node::ParakeetNode;
 use streamkit_plugin_sdk_native::prelude::*;

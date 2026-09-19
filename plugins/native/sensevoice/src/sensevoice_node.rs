@@ -13,7 +13,7 @@ use streamkit_plugin_sdk_native::streamkit_core::types::{
 
 use crate::config::SenseVoiceConfig;
 use crate::ffi;
-use crate::vad::SileroVAD;
+use streamkit_plugin_native_common::silero_vad::SileroVAD;
 
 /// Wrapper for recognizer pointer with proper cleanup
 struct RecognizerWrapper {
@@ -321,10 +321,9 @@ impl NativeProcessorNode for SenseVoiceNode {
                             let vad = self.vad.as_mut().ok_or_else(|| {
                                 "VAD not initialized but use_vad is true".to_string()
                             })?;
-                            let probability = vad
-                                .process_chunk(&vad_frame)
-                                .map_err(|e| format!("VAD processing failed: {e}"))?;
-                            probability >= self.config.vad_threshold
+                            vad.process_chunk(&vad_frame)
+                                .map_err(|e| format!("VAD processing failed: {e}"))?
+                                .1
                         }; // vad borrow ends here
 
                         let should_transcribe = if is_speech {
