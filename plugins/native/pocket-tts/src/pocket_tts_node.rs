@@ -12,11 +12,11 @@ use streamkit_plugin_sdk_native::{plugin_debug, plugin_error, plugin_info, plugi
 
 use crate::config::PocketTtsConfig;
 use crate::model::{configure_model, get_or_load_model, ModelCacheKey};
-use crate::sentence_splitter::SentenceSplitter;
 use crate::voice::{
     get_or_load_voice_state, normalize_voice_spec, voice_state_from_base64,
     voice_state_from_wav_bytes, VoiceCacheKey,
 };
+use streamkit_plugin_sdk_native::streamkit_core::text::SentenceSplitter;
 
 pub struct PocketTtsNode {
     model: pocket_tts::TTSModel,

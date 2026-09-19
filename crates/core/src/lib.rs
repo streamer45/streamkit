@@ -65,6 +65,7 @@ pub mod resource_manager;
 pub mod state;
 pub mod stats;
 pub mod telemetry;
+pub mod text;
 pub mod timing;
 pub mod types;
 pub mod view_data;

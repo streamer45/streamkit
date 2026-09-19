@@ -5,6 +5,7 @@
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use streamkit_core::text::{extract_chunk, SENTENCE_BOUNDARIES, SENTENCE_TRAILING};
 use streamkit_core::types::{Packet, PacketType};
 use streamkit_core::{
     config_helpers, state_helpers, InputPin, NodeContext, OutputPin, PinCardinality, ProcessorNode,
@@ -58,32 +59,12 @@ impl TextChunkerNode {
     }
 
     fn extract_sentence(&mut self) -> Option<String> {
-        if self.buffer.len() < self.config.min_length {
-            return None;
-        }
-
-        let boundaries = [". ", ".\n", "! ", "!\n", "? ", "?\n", "。", "！", "？"];
-
-        for boundary in &boundaries {
-            if let Some(pos) = self.buffer.find(boundary) {
-                let end_pos = pos + boundary.len();
-                let sentence: String = self.buffer.drain(..end_pos).collect();
-                return Some(sentence.trim().to_string());
-            }
-        }
-
-        if self.buffer.ends_with('.')
-            || self.buffer.ends_with('!')
-            || self.buffer.ends_with('?')
-            || self.buffer.ends_with('。')
-            || self.buffer.ends_with('！')
-            || self.buffer.ends_with('？')
-        {
-            let sentence = self.buffer.drain(..).collect();
-            return Some(sentence);
-        }
-
-        None
+        extract_chunk(
+            &mut self.buffer,
+            self.config.min_length,
+            SENTENCE_BOUNDARIES,
+            SENTENCE_TRAILING,
+        )
     }
 
     fn extract_word_chunk(&mut self) -> Option<String> {
@@ -115,11 +96,7 @@ impl TextChunkerNode {
     }
 
     fn extract_clause(&mut self) -> Option<String> {
-        if self.buffer.len() < self.config.min_length {
-            return None;
-        }
-
-        let boundaries = [
+        const CLAUSE_BOUNDARIES: &[&str] = &[
             ". ", ".\n", "! ", "!\n", "? ", "?\n", // Sentence endings (English)
             "。", "！", "？", // Sentence endings (Chinese)
             ", ", ",\n", // Commas (natural pauses)
@@ -127,30 +104,9 @@ impl TextChunkerNode {
             " - ", " – ", " — ", // Dashes (with spaces)
             ": ", ":\n", // Colons (list introductions)
         ];
+        const CLAUSE_TRAILING: &[char] = &['.', '!', '?', '。', '！', '？', ',', ';', ':'];
 
-        for boundary in &boundaries {
-            if let Some(pos) = self.buffer.find(boundary) {
-                let end_pos = pos + boundary.len();
-                let clause: String = self.buffer.drain(..end_pos).collect();
-                return Some(clause.trim().to_string());
-            }
-        }
-
-        if self.buffer.ends_with('.')
-            || self.buffer.ends_with('!')
-            || self.buffer.ends_with('?')
-            || self.buffer.ends_with('。')
-            || self.buffer.ends_with('！')
-            || self.buffer.ends_with('？')
-            || self.buffer.ends_with(',')
-            || self.buffer.ends_with(';')
-            || self.buffer.ends_with(':')
-        {
-            let clause = self.buffer.drain(..).collect();
-            return Some(clause);
-        }
-
-        None
+        extract_chunk(&mut self.buffer, self.config.min_length, CLAUSE_BOUNDARIES, CLAUSE_TRAILING)
     }
 
     fn extract_chunk(&mut self) -> Option<String> {

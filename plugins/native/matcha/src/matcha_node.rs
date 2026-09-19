@@ -13,7 +13,7 @@ use streamkit_plugin_sdk_native::streamkit_core::types::{AudioFormat, SampleForm
 
 use crate::config::MatchaTtsConfig;
 use crate::ffi;
-use crate::sentence_splitter::SentenceSplitter;
+use streamkit_plugin_sdk_native::streamkit_core::text::SentenceSplitter;
 
 /// GPU availability status
 /// 0 = not checked, 1 = available, 2 = not available

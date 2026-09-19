@@ -10,8 +10,8 @@ use streamkit_plugin_sdk_native::streamkit_core::types::{AudioFormat, SampleForm
 
 use crate::config::SupertonicConfig;
 use crate::model::{self, TtsModelWrapper};
-use crate::sentence_splitter::SentenceSplitter;
 use crate::voice::{self, StyleWrapper};
+use streamkit_plugin_sdk_native::streamkit_core::text::SentenceSplitter;
 
 pub struct SupertonicNode {
     tts_model: Arc<TtsModelWrapper>,

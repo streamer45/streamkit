@@ -5,7 +5,6 @@
 mod config;
 mod ffi;
 mod kokoro_node;
-mod sentence_splitter;
 
 use kokoro_node::KokoroTtsNode;
 use streamkit_plugin_sdk_native::{native_plugin_entry, NativeProcessorNode};

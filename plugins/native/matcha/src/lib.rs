@@ -5,7 +5,6 @@
 mod config;
 mod ffi;
 mod matcha_node;
-mod sentence_splitter;
 
 use matcha_node::MatchaTtsNode;
 use streamkit_plugin_sdk_native::{native_plugin_entry, NativeProcessorNode};

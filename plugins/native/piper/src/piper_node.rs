@@ -12,7 +12,7 @@ use streamkit_plugin_sdk_native::streamkit_core::types::{AudioFormat, SampleForm
 
 use crate::config::PiperTtsConfig;
 use crate::ffi;
-use crate::sentence_splitter::SentenceSplitter;
+use streamkit_plugin_sdk_native::streamkit_core::text::SentenceSplitter;
 
 /// Wrapper for TTS engine pointer that implements Send/Sync
 /// SAFETY: We ensure thread-safe access through Mutex
