@@ -190,15 +190,6 @@ pub struct SherpaOnnxFeatureConfig {
     pub feature_dim: c_int,
 }
 
-/// Wave data structure (currently unused but kept for future use)
-#[allow(dead_code)]
-#[repr(C)]
-pub struct SherpaOnnxWave {
-    pub samples: *const c_float,
-    pub sample_rate: c_int,
-    pub num_samples: c_int,
-}
-
 extern "C" {
     /// Create offline recognizer
     pub fn SherpaOnnxCreateOfflineRecognizer(
@@ -239,12 +230,4 @@ extern "C" {
     pub fn SherpaOnnxDestroyOfflineRecognizerResult(
         result: *const SherpaOnnxOfflineRecognizerResult,
     );
-
-    /// Read wave file (utility function, currently unused but kept for future use)
-    #[allow(dead_code)]
-    pub fn SherpaOnnxReadWave(filename: *const c_char) -> *const SherpaOnnxWave;
-
-    /// Free wave data (currently unused but kept for future use)
-    #[allow(dead_code)]
-    pub fn SherpaOnnxFreeWave(wave: *const SherpaOnnxWave);
 }
