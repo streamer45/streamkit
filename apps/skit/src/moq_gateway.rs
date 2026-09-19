@@ -18,7 +18,6 @@ use tracing::{debug, error, info, warn};
 /// A route registration from a path pattern to a connection receiver
 struct Route {
     /// The session ID that owns this route
-    #[allow(dead_code)]
     session_id: String,
 
     /// Channel to send accepted connections to the node
@@ -94,17 +93,17 @@ impl MoqGateway {
         // The UI currently connects WebTransport before creating the dynamic session; when the
         // session starts, it registers its routes. Without waiting here, the server would drop
         // the connection before the route exists.
-        let connection_tx: Option<mpsc::UnboundedSender<MoqConnection>> = {
+        let route: Option<(String, mpsc::UnboundedSender<MoqConnection>)> = {
             const MAX_WAIT: Duration = Duration::from_secs(30);
             const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
             let mut waited = Duration::from_secs(0);
             loop {
-                if let Some(tx) = {
+                if let Some(entry) = {
                     let routes = self.routes.read().await;
-                    routes.get(&path).map(|r| r.connection_tx.clone())
+                    routes.get(&path).map(|r| (r.session_id.clone(), r.connection_tx.clone()))
                 } {
-                    break Some(tx);
+                    break Some(entry);
                 }
 
                 if waited >= MAX_WAIT {
@@ -119,7 +118,7 @@ impl MoqGateway {
             }
         };
 
-        if let Some(connection_tx) = connection_tx {
+        if let Some((session_id, connection_tx)) = route {
             let (response_tx, response_rx) = oneshot::channel();
 
             // Type-erase the moq-native Request
@@ -129,22 +128,22 @@ impl MoqGateway {
                 MoqConnection { path: path.clone(), session: session_boxed, response_tx, auth };
 
             if connection_tx.send(conn).is_err() {
-                error!(path = %path, "Failed to send connection to node (channel closed)");
+                error!(path = %path, session_id = %session_id, "Failed to send connection to node (channel closed)");
                 return Err("Node disconnected".to_string());
             }
 
             // Wait for node to accept or reject
             match response_rx.await {
                 Ok(MoqConnectionResult::Accepted) => {
-                    info!(path = %path, "Connection accepted by node");
+                    info!(path = %path, session_id = %session_id, "Connection accepted by node");
                     Ok(())
                 },
                 Ok(MoqConnectionResult::Rejected(reason)) => {
-                    warn!(path = %path, reason = %reason, "Connection rejected by node");
+                    warn!(path = %path, session_id = %session_id, reason = %reason, "Connection rejected by node");
                     Err(reason)
                 },
                 Err(_) => {
-                    error!(path = %path, "Node dropped connection without responding");
+                    error!(path = %path, session_id = %session_id, "Node dropped connection without responding");
                     Err("Node did not respond".to_string())
                 },
             }
@@ -209,9 +208,13 @@ impl MoqGatewayTrait for MoqGateway {
 
     async fn unregister_route(&self, path_pattern: &str) {
         let mut routes = self.routes.write().await;
-        if routes.remove(path_pattern).is_some() {
+        if let Some(route) = routes.remove(path_pattern) {
             self.route_notify.notify_waiters();
-            info!(path_pattern = %path_pattern, "Unregistered MoQ route");
+            info!(
+                path_pattern = %path_pattern,
+                session_id = %route.session_id,
+                "Unregistered MoQ route"
+            );
         }
     }
 }
